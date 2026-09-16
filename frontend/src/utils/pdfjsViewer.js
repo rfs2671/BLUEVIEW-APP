@@ -134,7 +134,28 @@ const STAMP_NAME = '.stamp';
 //       `11` and not `10` because `10` was taken by an earlier draft of this
 //       branch that is being replaced; the stamp only has to MOVE, and a
 //       device staged at `10` by that draft must re-stage for this one.
-const VIEWER_VERSION = '11';
+//  12 — A PREVIEW TIER, SO NOTHING IS EVER BLANK. `11` fixed the open and
+//       broke the scroll: CANVAS_BUDGET_MP holds about two sharp sheets, so
+//       everything else is evicted, and `11` had DELETED the low-resolution
+//       pass — which left an evicted or not-yet-drawn page with literally
+//       nothing to show. Scroll down and back up and the pages reloaded;
+//       fly to sheet 20 and the reader watched 3-4 seconds of nothing.
+//
+//       The fix is IN THE PAGE and nowhere else: a ~0.4 MP preview per sheet,
+//       encoded once to a compressed blob and held for EVERY page outside the
+//       megapixel budget; a sharp tier that now only starts for a sheet still
+//       on screen 150 ms after the scroll stops; a queue that ranks the
+//       visible sheet's preview first, then its sharp render, then the
+//       background preview fill; and a scripted scroll measurement in the
+//       probe, because #544's acceptance measured OPEN ONLY and passed while
+//       scrolling was broken.
+//
+//       viewer.html is written to disk once per stamp, so a device already
+//       staged at `11` would keep the two-sheet window with no preview under
+//       it — the app code would be new, the viewer would be old, and the
+//       reader would keep watching blank sheets. THIS BUMP IS THE FIX'S
+//       ENTIRE DELIVERY MECHANISM.
+const VIEWER_VERSION = '12';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -158,7 +179,17 @@ function viewerHtml() {
     'body{font:14px -apple-system,Roboto,"Helvetica Neue",sans-serif;color:#94a3b8;}',
     '#pages{padding:8px 0 24px;}',
     '.pg{position:relative;margin:0 auto 10px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.55);}',
-    '.pg canvas{display:block;width:100%;height:100%;}',
+    // ── THE TWO TIERS ARE STACKED, NOT SWAPPED ─────────────────────────────
+    //
+    // The preview sits UNDER the sharp canvas rather than being replaced by
+    // it, and that is the whole of why a scroll-back is instant. `trim()`
+    // evicts a sharp canvas by detaching it and zeroing it; the preview is
+    // already painted underneath, so what the reader sees is the drawing
+    // going soft for ~700 ms, never white. A design that swapped the two
+    // would have a frame with neither in it — which is the blank the operator
+    // reported.
+    '.pg canvas{display:block;width:100%;height:100%;position:relative;z-index:1;}',
+    '.pg img.pv{display:block;position:absolute;left:0;top:0;width:100%;height:100%;z-index:0;}',
     '#msg{position:fixed;left:16px;right:16px;top:44%;text-align:center;line-height:1.5;}',
     '</style>',
     '</head>',
@@ -316,6 +347,94 @@ const VIEWER_SCRIPT = [
   // its decode caches. A scroll of more than one page costs a re-render — now
   // ~700 ms, and off the UI thread — which is the deliberate trade.
   '  var CANVAS_BUDGET_MP = 32;',
+  // ══ THE PREVIEW TIER ════════════════════════════════════════════════════
+  //
+  // WHAT THE BUDGET ABOVE COSTS, AND WHAT PAYS FOR IT. 32 MP holds about two
+  // sharp sheets. Everything else is evicted — correctly; the alternative is
+  // a dead renderer — and #544 had DELETED the low-resolution pass, so an
+  // evicted sheet had NOTHING to show. Scroll down and back up and the pages
+  // reloaded. That is the defect this tier exists for, and it is not a
+  // resolution question at all: it is "what is on the screen while the sharp
+  // render is not finished yet".
+  //
+  // ⚠️ THE MEASUREMENT THAT KILLED THE OLD TIER DOES NOT APPLY TO THIS ONE,
+  // AND CONFUSING THE TWO IS HOW THIS REGRESSED. The numbers that removed the
+  // draft pass — 11.2 MP 701 ms beating 0.5 MP 800 ms — are UNCONTENDED,
+  // SINGLE-PAGE, FIRST-PAINT medians. They answer "does a cheap render reach
+  // first paint sooner", and the answer is no. They say nothing whatsoever
+  // about "what does the reader see on a sheet whose bitmap was thrown away
+  // three scrolls ago", because that sheet is not being rendered at all. A
+  // preview is not a faster render. It is a KEPT one.
+  //
+  // ── SO IT IS KEPT FOR EVERY PAGE, AND IT IS NOT EVICTABLE ──────────────
+  //
+  // `CANVAS_BUDGET_MP` governs the SHARP tier only. Previews are held outside
+  // it, for all N pages, for the life of the document. That is only affordable
+  // because of the storage decision below.
+  //
+  // ── STORAGE: A COMPRESSED BLOB, NOT A RESIDENT BITMAP ──────────────────
+  //
+  // The two candidates, priced on the operator's 26-sheet set at this target:
+  //
+  //   raw canvas / ImageBitmap   26 x 0.4 MP x 4 B  =  ~42 MB resident,
+  //                              nothing to decode on draw.
+  //   encoded blob + <img>       26 x ~35 KB        =  ~0.9 MB resident of
+  //                              encoded bytes, plus whatever Chromium
+  //                              chooses to keep decoded near the viewport;
+  //                              ~10-20 ms to decode one on the way in.
+  //
+  // 42 MB IS AFFORDABLE AT 26 SHEETS AND FATAL AT 200, and this viewer is
+  // documented for 200-sheet plan sets in the header of this very file. Raw
+  // is 320 MB of preview alone on that set — straight through the 250-350 MB
+  // renderer kill this page already fights. The encoded tier is ~7 MB on the
+  // same set. A tier that only works on small documents is not a tier.
+  //
+  // THE `<img>` STAYS IN THE DOM once built, which is the other half of the
+  // choice: Chromium keeps the decoded bitmap for images at or near the
+  // viewport and drops it for the far ones by itself, re-decoding on the way
+  // back. That is exactly the eviction policy we would have had to write, and
+  // it is written against the real memory pressure rather than our guess at
+  // it. The decode is ~10-20 ms of the compositor's time on 0.4 MP, not of
+  // ours, and the element is already laid out at full size — so the sheet is
+  // never blank, it is soft for a frame.
+  //
+  // ONE TRANSIENT CANVAS, NOT N. Building a preview allocates a 0.4 MP
+  // scratch canvas, encodes it, and zeroes it on the same turn. Peak preview
+  // cost during the fill is ONE 1.6 MB bitmap, whatever the page count.
+  //
+  // 0.4 MP AND NOT MORE: on a 36x48 sheet that is 548 x 730, about 15 ppi.
+  // Unreadable as a drawing and entirely adequate as "which sheet is this and
+  // where am I" — which is the only question a preview has to answer, because
+  // the sharp render lands within ~700 ms of the scroll stopping.
+  '  var PREVIEW_TARGET_PX = 400000;',
+  // A sheet whose aspect ratio is extreme would otherwise put its long edge
+  // somewhere silly at a fixed pixel COUNT. Bounded like the sharp tier is.
+  '  var PREVIEW_MAX_EDGE = 1024;',
+  // JPEG rather than PNG, and 0.62 rather than 0.8. A plan sheet is a scan:
+  // PNG of a scan is larger than the raw bitmap it came from, and every
+  // megabyte here is multiplied by the page count. The artefacts are invisible
+  // at 15 ppi and the sharp tier is what the reader actually reads.
+  '  var PREVIEW_TYPE = "image/jpeg";',
+  '  var PREVIEW_QUALITY = 0.62;',
+  // ── WHEN THE SCROLL HAS STOPPED ────────────────────────────────────────
+  //
+  // A sharp render is ~700 ms of the one thread there is. Starting one for a
+  // sheet the reader is flying past spends that thread on a sheet that will be
+  // off screen before it lands, and — with a cap of 1 — the sheet he stops on
+  // then waits behind it. So the sharp tier does not start until the scroll
+  // has been quiet for this long, and then only for a sheet still on screen.
+  //
+  // 150 ms is a stop, not a pause: a flick between sheets has gaps far shorter
+  // than this, and a reader who has genuinely stopped does not perceive it.
+  // Previews keep running THROUGHOUT — they are what the reader sees while
+  // flying, and they are the reason the sharp tier can afford to wait.
+  '  var SETTLE_MS = 150;',
+  // A preview job that has not answered in this long has not answered. Long
+  // enough that a genuinely slow sheet on a genuinely slow phone finishes —
+  // the operator's worst contended sheet was 9490 ms — and short enough that
+  // a WebView whose `toBlob` never calls back does not take the only render
+  // thread with it for the life of the document.
+  '  var PREVIEW_JOB_MAX_MS = 20000;',
   // ── SHARPNESS IS NO LONGER ON DEMAND, BECAUSE IT NO LONGER COSTS ───────
   //
   // #413 put a PPI floor on every sheet. #542 took it off first paint and
@@ -1053,6 +1172,28 @@ const VIEWER_SCRIPT = [
   '',
   '  function targetScale(vp1){ return targetScaleInfo(vp1).s; }',
   '',
+  // THE PREVIEW'S OWN SCALE, ANCHORED TO A PIXEL COUNT AND NOTHING ELSE.
+  //
+  // Not a fraction of the sharp scale: that would make a preview's cost track
+  // the sheet's size, and the whole point of a fixed 0.4 MP is that N previews
+  // cost a known amount whatever the set is. Solving for the scale that puts
+  // PREVIEW_TARGET_PX pixels on any page is one square root.
+  //
+  // NEVER LARGER THAN THE SHARP RENDER. A small page — a letter-size logbook
+  // on a phone — can have a sharp scale below the preview's, at which point a
+  // "preview" would be the more expensive of the two and drawn on top of
+  // nothing. Clamped, and the row says when the clamp bound.
+  '  function previewScaleInfo(vp1, sharpS){',
+  '    var area = Math.max(1, vp1.width * vp1.height);',
+  '    var s = Math.sqrt(PREVIEW_TARGET_PX / area);',
+  '    var clamp = "none";',
+  '    var w = vp1.width * s, h = vp1.height * s;',
+  '    if (w > PREVIEW_MAX_EDGE) { s = s * (PREVIEW_MAX_EDGE / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
+  '    if (h > PREVIEW_MAX_EDGE) { s = s * (PREVIEW_MAX_EDGE / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
+  '    if (sharpS && s > sharpS) { s = sharpS; w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "sharp-floor" : clamp + "+sharp-floor"); }',
+  '    return { s: s, w: w, h: h, clamp: clamp };',
+  '  }',
+  '',
   // THE CEILING THE EXISTING CAPS ALLOW, ignoring the viewport entirely.
   //
   // Not a proposal — a MEASUREMENT. The scale anchor today is baseWidth, so a
@@ -1090,9 +1231,43 @@ const VIEWER_SCRIPT = [
   // pdf.js caches the parsed operator list and any decoded images on the page
   // object; on a scanned sheet that outweighs the canvas.
   '    if (slot.page) { try { slot.page.cleanup(); } catch (e) {} slot.page = null; }',
-  '    slot.el.innerHTML = "";',
+  // ⚠️ THIS USED TO BE `slot.el.innerHTML = ""` AND THAT WOULD NOW DELETE THE
+  // PREVIEW. The placeholder holds TWO children: the preview <img>, which is
+  // outside the megapixel budget and must survive every eviction, and the
+  // sharp <canvas>, which is what this function exists to free. Emptying the
+  // element took both — and a slot whose preview had been deleted is the exact
+  // blank sheet this tier was added to abolish, reintroduced by the evictor.
+  //
+  // The canvas is already detached and zeroed above; nothing else here has to
+  // touch the DOM.
   '    slot.done = false;',
   '    slot.busy = false;',
+  '  }',
+  '',
+  // ── GIVING A PREVIEW BACK, WHICH ONLY EVER HAPPENS BETWEEN DOCUMENTS ────
+  //
+  // NOT AN EVICTOR AND MUST NEVER BECOME ONE. `trim()` cannot reach this and
+  // must not: a preview that can be freed is a page that can be blank, which
+  // is the whole defect. The only caller is `teardown()`, where the document
+  // these previews belong to is being destroyed.
+  //
+  // REVOKING THE OBJECT URL IS THE STEP THAT RETURNS THE BYTES. An unreferenced
+  // blob: URL keeps its Blob alive for the life of the document — exactly the
+  // shape of leak `releaseSlot` learned about canvases — and this page outlives
+  // every document the reader opens, so a missed revoke accumulates one whole
+  // set of previews per open.
+  '  function releasePreview(slot){',
+  '    if (slot.pvImg) {',
+  '      try { if (slot.pvImg.parentNode) slot.pvImg.parentNode.removeChild(slot.pvImg); } catch (e) {}',
+  '      try { slot.pvImg.src = ""; } catch (e) {}',
+  '      slot.pvImg = null;',
+  '    }',
+  '    if (slot.pvUrl) { try { URL.revokeObjectURL(slot.pvUrl); } catch (e) {} slot.pvUrl = ""; }',
+  '    slot.pv = false;',
+  '    slot.pvBytes = 0;',
+  '    slot.pvBusy = false;',
+  '    slot.pvFail = "";',
+  '    slot.pgen = slot.pgen + 1;',
   '  }',
   '',
   '  function touch(slot){',
@@ -1197,6 +1372,66 @@ const VIEWER_SCRIPT = [
   // reader's position and not a property of the page.
   '  var queue = [];',
   '  var inFlight = 0;',
+  // ── A SECOND LINE, BECAUSE THE TWO TIERS ARE SCOPED DIFFERENTLY ─────────
+  //
+  // NOT ONE QUEUE WITH A FLAG. `queue` is the SHARP line and the band owns it:
+  // `sweep()` and the observer put a sheet in when it comes near and take it
+  // out again the moment it does not, because a sharp render for a sheet the
+  // reader has left is the sheet he is on, waiting. That is the behaviour #544
+  // established and it is still right.
+  //
+  // A PREVIEW LINE CANNOT BE SCOPED THAT WAY. Previews are built for EVERY
+  // page, near or not — that is the point of them — so the band's "take it out
+  // again" is exactly wrong for a preview job, and putting both in one array
+  // would mean `dequeue()` had to know which kind it was holding. Two arrays,
+  // one rule each, and `dequeue(slot)` keeps meaning precisely what it meant.
+  //
+  // A slot is in `pvQueue` until its preview EXISTS or has failed; nothing
+  // else removes it.
+  '  var pvQueue = [];',
+  // ── PREVIEWS DO NOT START UNTIL THE FIRST SHARP SHEET IS ON SCREEN ─────
+  //
+  // THE ACCEPTANCE THAT MUST NOT MOVE is the open: 633 ms, longest stall under
+  // 200 ms. The background fill is 26 rasterisations, and a single one of them
+  // landing in front of the reader's first sheet would be ~700 ms of the one
+  // thread there is, added to the one number #544 bought. So the fill is armed
+  // by the FIRST SHARP RENDER FINISHING and not one instant earlier, and until
+  // then this page behaves exactly as `11` did.
+  //
+  // AND THERE IS A BELT. If that first render fails — a corrupt sheet, a
+  // cancelled task — nothing would ever arm the fill and the reader would have
+  // a viewer with no previews and no explanation. `armPreviews` is therefore
+  // also called on a timer from `pdf-ready`; whichever comes first wins, and
+  // the failure mode is "previews start a little late", not "never".
+  '  var previewsArmed = false;',
+  // ── HAS THE SCROLL STOPPED ─────────────────────────────────────────────
+  //
+  // TRUE AT REST, INCLUDING AT OPEN, and that matters: the open path never
+  // scrolls, so a `settled` that started false would hold the first sharp
+  // render back by SETTLE_MS and move the number this change must not move.
+  // Only a real scroll event clears it.
+  //
+  // THE TOKEN, AND WHY NOT JUST clearTimeout. A settle timer armed by the
+  // previous scroll event is still due when the next one arrives; clearing it
+  // is the obvious answer and is one silently-unimplemented `clearTimeout`
+  // away from declaring the scroll finished 150 ms after it STARTED. The token
+  // is checked by the timer itself, so a stale one cannot settle anything
+  // whatever the host does with the handle.
+  '  var settled = true;',
+  '  var settleToken = 0;',
+  // ── THE CENSUS THE #544 ACCEPTANCE COULD NOT HAVE TAKEN ────────────────
+  //
+  // started / cancelled / completed, for each tier, for the life of the
+  // document. Three plain integers on the real path — the probe reads them,
+  // but a counter that only exists under the flag is a counter that is wrong
+  // the one time someone needs it, and these cost an increment.
+  //
+  // WHY ALL THREE AND NOT JUST "completed". A viewer that starts nine renders
+  // to finish one is thrashing, and it reports the same completion count as a
+  // viewer that starts one. The gap between started and completed IS the
+  // measurement — it is what a scroll through a set costs the device.
+  '  var rcStarted = 0, rcCancelled = 0, rcCompleted = 0;',
+  '  var pvStarted = 0, pvFailed = 0, pvCompleted = 0;',
   '',
   // Distance from the viewport in CSS pixels: 0 for anything on screen, and
   // how far off it is otherwise. Ties among on-screen sheets fall to queue
@@ -1253,25 +1488,145 @@ const VIEWER_SCRIPT = [
   '    if (i >= 0) queue.splice(i, 1);',
   '  }',
   '',
+  // Every page, once, and it stays there until the preview exists or the page
+  // has told us it cannot be built. The band has no opinion about this line.
+  '  function enqueuePreview(slot){',
+  '    if (slot.pv || slot.pvBusy || slot.pvFail) return;',
+  '    if (pvQueue.indexOf(slot) < 0) pvQueue.push(slot);',
+  '  }',
+  '  function enqueueAllPreviews(){',
+  '    for (var i = 0; i < slots.length; i++) enqueuePreview(slots[i]);',
+  '  }',
+  // THE ARMING IS IDEMPOTENT AND HAS TWO CALLERS ON PURPOSE — the first sharp
+  // render finishing, and a timer from `pdf-ready` in case it never does.
+  '  function armPreviews(){',
+  '    if (previewsArmed || !doc) return;',
+  '    previewsArmed = true;',
+  '    enqueueAllPreviews();',
+  '    pumpQueue();',
+  '  }',
+  '',
+  // ── THE SCROLL STOPPING IS AN EVENT THIS PAGE HAS TO NOTICE ────────────
+  //
+  // Registered for the life of the WebView beside `watchZoom`, not per
+  // document: the scroll belongs to the page. Note it does NOT sweep — on the
+  // observer path the observer reports the band, and on the no-observer path
+  // `scheduleSweep` is already on this same event.
+  '  function markScrolling(){',
+  '    settled = false;',
+  '    settleToken = settleToken + 1;',
+  '    var mine = settleToken;',
+  '    setTimeout(function(){',
+  '      if (mine !== settleToken) return;',
+  '      settled = true;',
+  '      refreshFocus();',
+  '      pumpQueue();',
+  '    }, SETTLE_MS);',
+  // PUMPED IMMEDIATELY, because this is the moment the PREVIEW tier becomes
+  // the only thing allowed to run and the reader is looking at a sheet that
+  // may not have one yet.
+  '    pumpQueue();',
+  '  }',
+  '',
+  // ── THE PICK, IN FOUR RANKS ────────────────────────────────────────────
+  //
+  // ONE THREAD, TWO TIERS, AND NEITHER MAY STARVE THE OTHER. The rank is
+  // re-derived at the instant a slot comes free — for the same reason #544
+  // re-derives `nearness()` there — because every term in it is a fact about
+  // where the reader is NOW.
+  //
+  //   0  A PREVIEW FOR A SHEET ON SCREEN WITH NOTHING ON IT.
+  //      The reader is looking at white. This is the cheapest thing that can
+  //      end that, and it is the rank that answers the operator's "fast jump
+  //      to later pages -> 3-4 SECONDS BLANK": he has landed on a sheet the
+  //      background fill has not reached yet.
+  //
+  //   1  THE SHARP RENDER FOR A SHEET ON SCREEN, once the scroll has settled.
+  //      AHEAD OF ALL BACKGROUND PREVIEW WORK, which is the anti-starvation
+  //      rule in the other direction: the fill is 26 jobs long and must never
+  //      come between the reader and the sheet he has stopped on.
+  //
+  //   3  THE BACKGROUND PREVIEW FILL, nearest first, and only once the first
+  //      sharp sheet is on screen.
+  //
+  // ⚠️ THERE IS NO RANK FOR "SHARP, IN THE BAND, OFF SCREEN", AND THAT IS NOT
+  // AN OVERSIGHT. #544 prefetched a sharp render either side of the reader so
+  // a one-page scroll would not be a re-decode. IT CANNOT WORK UNDER THIS
+  // BUDGET AND THE ARITHMETIC IS NOT CLOSE: a sheet is 12.58 MP at the edge
+  // cap, the budget is 32 MP, page height is near viewport height so two
+  // sheets are partly visible for most of a scroll — and `trim()` evicts
+  // FARTHEST FROM THE READER FIRST, which is precisely the prefetched one.
+  // 25.2 MP resident plus a third sheet is 37.8 MP, so the third is freed on
+  // the same turn it attaches. That is ~700 ms of the only thread there is,
+  // spent to allocate a bitmap and immediately zero it, while the reader's own
+  // sheet waits behind it.
+  //
+  // WHAT PAYS FOR DROPPING IT is the tier above: the neighbour the prefetch
+  // was for already has a preview, instantly, at no cost at all. The sharp
+  // render follows within SETTLE_MS + one render of the reader stopping on it.
+  //
+  // NEITHER TIER CAN STARVE THE OTHER BECAUSE RANK 1's DEMAND IS BOUNDED: it
+  // is the one or two sheets actually on screen, and they finish. Rank 3
+  // resumes the moment they do. In the other direction rank 3 can never delay
+  // rank 0 or 1, because the rank is re-read before every single start.
+  '  function pickNext(){',
+  '    var i, slot, best = null, bestD = 0, bestRank = 9, d, rank;',
+  // Rank 0 and rank 3 both come out of the preview line.
+  '    if (previewsArmed) {',
+  '      for (i = 0; i < pvQueue.length; i++) {',
+  '        slot = pvQueue[i];',
+  '        if (slot.pv || slot.pvBusy || slot.pvFail) continue;',
+  '        rank = (onScreen(slot) && !slot.done) ? 0 : 3;',
+  '        d = nearness(slot);',
+  '        if (rank < bestRank || (rank === bestRank && d < bestD)) { bestRank = rank; bestD = d; best = slot; }',
+  '      }',
+  '    }',
+  '    if (bestRank === 0) return { slot: best, tier: "preview", rank: 0 };',
+  // ── AND ONLY IF THE SCROLL HAS STOPPED ─────────────────────────────────
+  //
+  // A sharp render started mid-flick is ~700 ms of the only thread there is,
+  // spent on a sheet that will be off screen before it lands — and the sheet
+  // the reader stops on then waits behind it. That is the "3-4 SECONDS BLANK"
+  // report, made of one useless render plus one useful one. Checked once,
+  // outside the scan, because it is a fact about the reader and not about any
+  // candidate.
+  '    if (!settled) { if (!best) return null; return { slot: best, tier: "preview", rank: bestRank }; }',
+  '    for (i = 0; i < queue.length; i++) {',
+  '      slot = queue[i];',
+  '      if (slot.busy || slot.done) continue;',
+  // RE-CHECKED AT THE MOMENT OF STARTING, not at the moment of queueing, and
+  // against a STRICTER test than the band this sheet was queued under. The
+  // reader may have moved a long way while it sat in line, and the observer
+  // does not always get to report it first. `onScreen` implies `inBand`, so
+  // the guard #544 put here is still satisfied — by something narrower.
+  '      if (!onScreen(slot)) continue;',
+  // Every surviving candidate is on screen and therefore at nearness 0, so
+  // ties fall to queue order — which is page order, the top of the viewport,
+  // where the reader is looking. The same tie-break #544 stated.
+  '      rank = 1;',
+  '      d = nearness(slot);',
+  '      if (rank < bestRank || (rank === bestRank && d < bestD)) { bestRank = rank; bestD = d; best = slot; }',
+  '    }',
+  '    if (!best) return null;',
+  '    return { slot: best, tier: (bestRank === 3 ? "preview" : "sharp"), rank: bestRank };',
+  '  }',
+  '',
   '  function pumpQueue(){',
-  // The probe suite suspends the render path while it measures; the queue IS
+  // The probe suite suspends the render path while it measures; the queues ARE
   // the deferred list, so nothing has to be put aside anywhere else and
   // `abResume` only has to pump again. Inert with the flag off.
   '    if (PROBE && abSuspend) return;',
-  '    while (inFlight < MAX_CONCURRENT_RENDERS && queue.length) {',
-  '      var bi = 0, bd = nearness(queue[0]), i, d;',
-  '      for (i = 1; i < queue.length; i++) {',
-  '        d = nearness(queue[i]);',
-  '        if (d < bd) { bd = d; bi = i; }',
-  '      }',
-  '      var slot = queue.splice(bi, 1)[0];',
-  '      if (slot.busy || slot.done) continue;',
-  // RE-CHECKED AT THE MOMENT OF STARTING, not at the moment of queueing. The
-  // reader may have moved a long way while this sat in line, and the observer
-  // does not always get to report it first.
-  '      if (!slot.near && !inBand(slot)) continue;',
-  '      renderSlot(slot);',
+  '    while (inFlight < MAX_CONCURRENT_RENDERS) {',
+  '      var pick = pickNext();',
+  '      if (!pick) break;',
+  '      if (pick.tier === "preview") { dequeuePreview(pick.slot); renderPreview(pick.slot); }',
+  '      else { dequeue(pick.slot); renderSlot(pick.slot); }',
   '    }',
+  '  }',
+  '',
+  '  function dequeuePreview(slot){',
+  '    var i = pvQueue.indexOf(slot);',
+  '    if (i >= 0) pvQueue.splice(i, 1);',
   '  }',
   '',
   // ── THE MEASUREMENT HAS TO BE ABLE TO STOP THE THING IT IS MEASURING ───
@@ -1318,6 +1673,7 @@ const VIEWER_SCRIPT = [
   '    if (slot.busy) return;',
   '    slot.busy = true;',
   '    inFlight = inFlight + 1;',
+  '    rcStarted = rcStarted + 1;',
   // EXACTLY ONCE ON EVERY PATH OUT — resolved, cancelled, generation-stale or
   // thrown. A leaked count is a viewer that stops rendering for good, which is
   // a worse failure than the one being fixed, and a drain that never completes
@@ -1384,21 +1740,262 @@ const VIEWER_SCRIPT = [
   '        if (slot.canvas && slot.canvas !== canvas) {',
   '          try { slot.canvas.width = 0; slot.canvas.height = 0; } catch (e) {}',
   '        }',
-  '        slot.el.innerHTML = "";',
+  // ⚠️ NOT `slot.el.innerHTML = ""` ANY MORE. The placeholder holds the
+  // preview <img> as well, and emptying it would delete the very thing that
+  // keeps this sheet from being blank the next time `trim()` takes this canvas
+  // away. Only a PREVIOUS canvas is removed, and it has already been zeroed
+  // two lines up.
+  '        if (slot.canvas && slot.canvas.parentNode) {',
+  '          try { slot.canvas.parentNode.removeChild(slot.canvas); } catch (e) {}',
+  '        }',
   '        slot.el.appendChild(canvas);',
   '        slot.canvas = canvas;',
   '        slot.done = true;',
+  '        rcCompleted = rcCompleted + 1;',
   '        touch(slot);',
   '        trim();',
+  // THE FILL IS ARMED BY THE FIRST SHARP SHEET LANDING AND NOT BEFORE — the
+  // open number this change must not move is measured up to here.
+  '        armPreviews();',
   '        finish();',
   '      });',
   '    })["catch"](function(e){',
   '      slot.task = null;',
   '      slot.busy = false;',
+  '      if (e && e.name === "RenderingCancelledException") rcCancelled = rcCancelled + 1;',
   '      finish();',
   '      if (e && e.name === "RenderingCancelledException") return;',
+  // A SHEET THAT CANNOT BE DRAWN STILL ARMS THE FILL. Otherwise one corrupt
+  // page at the top of a set leaves every other sheet in the document with no
+  // preview and the reader with no explanation.
+  '      armPreviews();',
   '      post({ type: "pdf-page-error", page: slot.n, detail: String(e) });',
   '    });',
+  '  }',
+  '',
+  // ══ BUILDING ONE PREVIEW ════════════════════════════════════════════════
+  //
+  // THE SHAPE IS DELIBERATELY NOT `renderSlot`'s. A sharp render KEEPS its
+  // canvas — that is what `trim()` is bounding. A preview ENCODES its canvas
+  // and throws it away on the same turn, so the peak cost of filling a
+  // 200-sheet set is one 0.4 MP scratch bitmap, not two hundred.
+  //
+  // IT HOLDS ITS PAGE LOCALLY AND CLEANS IT UP ITSELF. `slot.page` belongs to
+  // the sharp tier and `releaseSlot` nulls it; a preview that parked its page
+  // there would have it pulled out from under it by an eviction of the sharp
+  // canvas, which is a completely unrelated event.
+  //
+  // `slot.pgen` AND NOT `slot.gen`, for the same reason. `gen` is bumped by
+  // every eviction, and an eviction of the sharp canvas has no business
+  // discarding a preview that is half built. `pgen` moves only when the
+  // DOCUMENT goes.
+  '  function renderPreview(slot){',
+  '    if (slot.pv || slot.pvBusy || slot.pvFail) return;',
+  '    slot.pvBusy = true;',
+  '    inFlight = inFlight + 1;',
+  '    pvStarted = pvStarted + 1;',
+  '    var pgen = slot.pgen;',
+  '    var settledOut = false;',
+  '    var pv0 = MEASURE ? pnow() : 0;',
+  '    function done(){',
+  '      if (settledOut) return;',
+  '      settledOut = true;',
+  '      slot.pvBusy = false;',
+  '      inFlight = inFlight - 1;',
+  '      pumpQueue();',
+  '    }',
+  // A PREVIEW THAT CANNOT BE BUILT IS RECORDED AND NOT RETRIED. A retry loop
+  // on a page pdf.js refuses would spend the one thread forever on a sheet
+  // that will never draw, and the reader would lose the sharp tier as well as
+  // the preview. The reason travels in the probe row.
+  '    function giveUp(why){',
+  '      if (settledOut) return;',
+  '      slot.pvFail = String(why || "unknown");',
+  '      pvFailed = pvFailed + 1;',
+  '      probePost("preview", { page: slot.n, error: slot.pvFail });',
+  '      done();',
+  '    }',
+  // ── A JOB THAT NEVER ANSWERS MUST NOT TAKE THE THREAD WITH IT ──────────
+  //
+  // `inFlight` is decremented on exactly one path out of here, and that is the
+  // right shape — but `toBlob` is a callback with no error channel, and a
+  // WebView build that simply never calls it would leave the count at 1 for
+  // ever. MAX_CONCURRENT_RENDERS is 1, so that is not a lost preview: it is a
+  // VIEWER THAT NEVER DRAWS ANOTHER SHEET, which is a far worse failure than
+  // the blank page this tier exists to fix. `renderSlot` has the same note
+  // about its own count and the same reason.
+  '    setTimeout(function(){ giveUp("preview-timeout"); }, PREVIEW_JOB_MAX_MS);',
+  '    doc.getPage(slot.n).then(function(page){',
+  '      if (slot.pgen !== pgen) { try { page.cleanup(); } catch (e) {} done(); return null; }',
+  '      var vp1 = page.getViewport({ scale: 1 });',
+  '      var sharpS = targetScaleInfo(vp1).s;',
+  '      var info = previewScaleInfo(vp1, sharpS);',
+  '      var vp = page.getViewport({ scale: info.s });',
+  '      var c = document.createElement("canvas");',
+  '      c.width = Math.max(1, Math.floor(vp.width));',
+  '      c.height = Math.max(1, Math.floor(vp.height));',
+  '      var rawBytes = c.width * c.height * 4;',
+  '      var ctx = c.getContext("2d");',
+  '      if (!ctx) { try { c.width = 0; c.height = 0; } catch (e) {} giveUp("no-2d-context"); return null; }',
+  '      var task = page.render({ canvasContext: ctx, viewport: vp });',
+  '      var r0 = MEASURE ? pnow() : 0;',
+  '      return task.promise.then(function(){',
+  '        var renderMs = MEASURE ? r1(pnow() - r0) : 0;',
+  '        if (slot.pgen !== pgen) { try { c.width = 0; c.height = 0; } catch (e) {} try { page.cleanup(); } catch (e) {} done(); return; }',
+  '        keepPreview(slot, c, info, rawBytes, renderMs, pv0, pgen);',
+  '        try { page.cleanup(); } catch (e) {}',
+  '      });',
+  '    })["catch"](function(e){',
+  '      giveUp(String((e && (e.name || e.message)) || e));',
+  '    });',
+  '',
+  // ── THE ENCODE, AND THE THREE WAYS A WEBVIEW CAN ANSWER IT ─────────────
+  //
+  // `toBlob` is what we want: it hands back the encoded bytes with a real
+  // `size` on them, which is the number the memory report is made of.
+  //
+  // `toDataURL` is the fallback for a WebView with no `toBlob` and no
+  // `createObjectURL`. It is a base64 STRING, so it costs about a third more
+  // than the blob and is held as a JS string rather than by the image cache —
+  // worse on both counts, and still enormously better than a raw bitmap.
+  //
+  // AND IF NEITHER WORKS, THE RAW CANVAS IS KEPT. A device that cannot encode
+  // still gets previews, at ~1.6 MB a sheet, and the `preview-mem` row says
+  // `storage: "canvas"` so the total is never mistaken for the encoded one.
+  // Failing to a blank sheet because the encoder was missing would be the
+  // original defect with a better excuse.
+  '    function keepPreview(slot2, c, info, rawBytes, renderMs, t0, pgen2){',
+  '      var cw = c.width, ch = c.height;',
+  '      function attach(storage, url, bytes, encodeMs){',
+  // A LATE ENCODER IS NOT A SECOND PREVIEW. The watchdog above may already
+  // have given this job up and handed the thread to another sheet; if the
+  // callback then arrives, its canvas AND its object URL go back and nothing
+  // else happens — attaching here would count a completion the census has
+  // already recorded as a failure, and would leave `inFlight` one below the
+  // truth. The revoke matters as much as the canvas: this is the one path on
+  // which a blob: URL is created and never reaches a slot, so nothing else
+  // would ever give it back.
+  '        if (settledOut || slot2.pgen !== pgen2) {',
+  '          try { c.width = 0; c.height = 0; } catch (e) {}',
+  '          if (storage === "blob" && url) { try { URL.revokeObjectURL(url); } catch (e) {} }',
+  '          done();',
+  '          return;',
+  '        }',
+  '        if (storage === "canvas") {',
+  '          c.className = "pv";',
+  '          slot2.pvImg = c;',
+  '          slot2.pvUrl = "";',
+  '        } else {',
+  '          var img = document.createElement("img");',
+  '          img.className = "pv";',
+  '          img.alt = "";',
+  '          img.src = url;',
+  '          slot2.pvImg = img;',
+  '          slot2.pvUrl = (storage === "blob") ? url : "";',
+  '          try { c.width = 0; c.height = 0; } catch (e) {}',
+  '        }',
+  // UNDER THE CANVAS, ALWAYS. `insertBefore(x, firstChild)` puts the preview
+  // behind a sharp canvas that is already there — which happens whenever the
+  // background fill reaches a sheet the reader has already read.
+  '        try { slot2.el.insertBefore(slot2.pvImg, slot2.el.firstChild || null); }',
+  '        catch (e) { try { slot2.el.appendChild(slot2.pvImg); } catch (e2) {} }',
+  '        slot2.pv = true;',
+  '        slot2.pvBytes = bytes;',
+  '        slot2.pvRawBytes = rawBytes;',
+  '        slot2.pvStorage = storage;',
+  '        pvCompleted = pvCompleted + 1;',
+  '        probePost("preview", { page: slot2.n, storage: storage,',
+  '          scale: Math.round(info.s * 10000) / 10000, clamp: info.clamp,',
+  '          canvasW: cw, canvasH: ch,',
+  '          megapixels: Math.round((cw * ch) / 1e5) / 10,',
+  '          rawBytes: rawBytes, storedBytes: bytes,',
+  '          compressionRatio: bytes ? Math.round((rawBytes / bytes) * 10) / 10 : null,',
+  '          renderMs: renderMs, encodeMs: encodeMs, totalMs: r1(pnow() - t0) });',
+  '        maybeReportPreviewMemory();',
+  '        done();',
+  '      }',
+  '      var e0 = MEASURE ? pnow() : 0;',
+  '      var canBlobUrl = false;',
+  '      try { canBlobUrl = !!(window.URL && typeof URL.createObjectURL === "function"); } catch (e) { canBlobUrl = false; }',
+  '      if (canBlobUrl && typeof c.toBlob === "function") {',
+  '        try {',
+  '          c.toBlob(function(blob){',
+  '            if (!blob) { attach("canvas", "", rawBytes, r1(pnow() - e0)); return; }',
+  '            var url = "";',
+  '            try { url = URL.createObjectURL(blob); } catch (e) { url = ""; }',
+  '            if (!url) { attach("canvas", "", rawBytes, r1(pnow() - e0)); return; }',
+  '            attach("blob", url, blob.size || 0, r1(pnow() - e0));',
+  '          }, PREVIEW_TYPE, PREVIEW_QUALITY);',
+  '          return;',
+  '        } catch (e) {}',
+  '      }',
+  '      if (typeof c.toDataURL === "function") {',
+  '        var du = "";',
+  '        try { du = c.toDataURL(PREVIEW_TYPE, PREVIEW_QUALITY); } catch (e) { du = ""; }',
+  // base64 carries three bytes in four characters, so the resident cost of a
+  // data URL is about three quarters of its length. Reported as what it is.
+  '        if (du && du.length > 32) { attach("dataurl", du, Math.round(du.length * 0.75), r1(pnow() - e0)); return; }',
+  '      }',
+  '      attach("canvas", "", rawBytes, r1(pnow() - e0));',
+  '    }',
+  '  }',
+  '',
+  // ── WHAT THE PREVIEW TIER ACTUALLY COST, SUMMED OFF WHAT WAS BUILT ─────
+  //
+  // MEASURED, NOT ESTIMATED, AND THAT IS THE ONLY REASON IT IS WORTH POSTING.
+  // `storedBytes` is a real `Blob.size` (or a real string length) per page and
+  // `rawBytes` is the width and height of the canvas that was ACTUALLY
+  // allocated — the same principle `canvasPixels` rests on. Nothing here is
+  // derived from a constant, so the row stays true if the target, the quality
+  // or the sheet size moves.
+  //
+  // `rawBytes` IS CARRIED BESIDE IT ON PURPOSE. It is the number the rejected
+  // design would have paid, and a report that only states the winner's figure
+  // leaves nobody able to check the decision.
+  '  function maybeReportPreviewMemory(){',
+  '    if (!MEASURE || !doc) return;',
+  '    var i, built = 0, stored = 0, storage = "", mixed = false;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      if (!slots[i].pv) continue;',
+  '      built++;',
+  '      stored = stored + (slots[i].pvBytes || 0);',
+  '      if (!storage) storage = slots[i].pvStorage; else if (storage !== slots[i].pvStorage) mixed = true;',
+  '    }',
+  '    if (built + previewsUnbuildable() < slots.length) return;',
+  '    if (previewMemoryPosted) return;',
+  '    previewMemoryPosted = true;',
+  '    var sharpPx = 0;',
+  '    for (i = 0; i < rendered.length; i++) sharpPx = sharpPx + canvasPixels(rendered[i]);',
+  '    probePost("preview-mem", {',
+  '      pages: slots.length, previewsBuilt: built, storage: mixed ? "mixed" : (storage || "none"),',
+  '      previewStoredBytes: stored,',
+  '      previewStoredMB: Math.round(stored / 1e4) / 100,',
+  '      previewBytesPerPage: built ? Math.round(stored / built) : 0,',
+  '      previewRawEquivalentMB: Math.round((rawEquivalentBytes()) / 1e4) / 100,',
+  '      sharpResidentMP: Math.round(sharpPx / 1e5) / 10,',
+  '      sharpResidentMB: Math.round((sharpPx * 4) / 1e4) / 100,',
+  '      totalResidentMB: Math.round(((sharpPx * 4) + stored) / 1e4) / 100,',
+  '      budgetMP: CANVAS_BUDGET_MP,',
+  '      previewTargetPx: PREVIEW_TARGET_PX, previewQuality: PREVIEW_QUALITY',
+  '    });',
+  '  }',
+  '  var previewMemoryPosted = false;',
+  '  function previewsUnbuildable(){',
+  '    var i, n = 0;',
+  '    for (i = 0; i < slots.length; i++) { if (slots[i].pvFail) n++; }',
+  '    return n;',
+  '  }',
+  // What the raw-bitmap design would have been holding at this moment, from
+  // the dimensions really used. The comparison the storage choice rests on,
+  // carried in the row rather than left in a comment.
+  '  function rawEquivalentBytes(){',
+  '    var i, t = 0, s;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      s = slots[i];',
+  '      if (!s.pv) continue;',
+  '      t = t + (s.pvRawBytes || 0);',
+  '    }',
+  '    return t;',
   '  }',
   '',
   '  function inBand(slot){',
@@ -1556,6 +2153,11 @@ const VIEWER_SCRIPT = [
   '    for (var i = 0; i < slots.length; i++) {',
   '      slots[i].near = false;',
   '      releaseSlot(slots[i]);',
+  // THE ONE PLACE A PREVIEW IS EVER GIVEN BACK. The document these belong to
+  // is being destroyed; every blob: URL has to be revoked here or the page —
+  // which outlives every document the reader opens — accumulates a whole set
+  // of previews per open, with nothing holding a reference to say so.
+  '      releasePreview(slots[i]);',
   '    }',
   '    rendered.length = 0;',
   // releaseSlot() takes each one out of the line above; this is the belt to
@@ -1563,6 +2165,7 @@ const VIEWER_SCRIPT = [
   // after and a slot still queued would be a reference to a page that no
   // longer has a document behind it.
   '    queue.length = 0;',
+  '    pvQueue.length = 0;',
   '    focus = null;',
   // The only point at which the file bytes can go — see the note at
   // getDocument below.
@@ -1609,8 +2212,15 @@ const VIEWER_SCRIPT = [
   '            el.className = "pg";',
   '            el.style.width = baseWidth + "px";',
   '            el.style.height = Math.round(baseWidth * (vp1.height / vp1.width)) + "px";',
+  // `pv` IS A SEPARATE AXIS FROM `done`, NOT A STAGE OF IT. `done` means "the
+  // sharp canvas is attached" and is cleared by every eviction; `pv` means
+  // "this sheet has something to show" and, once true, stays true for the life
+  // of the document. A single tri-state would have made the evictor's job
+  // ambiguous — the whole point is that one of the two survives it.
   '            var slot = { n: pageNo, el: el, done: false, busy: false,',
-  '                          near: false, canvas: null, page: null, task: null, gen: 0 };',
+  '                          near: false, canvas: null, page: null, task: null, gen: 0,',
+  '                          pv: false, pvImg: null, pvUrl: "", pvBytes: 0, pvRawBytes: 0,',
+  '                          pvStorage: "", pvBusy: false, pvFail: "", pgen: 0 };',
   '            el.__slot = slot;',
   '            slots.push(slot);',
   '            pagesEl.appendChild(el);',
@@ -2001,6 +2611,168 @@ const VIEWER_SCRIPT = [
   '    }',
   '  }',
   '',
+  // ══ THE SCRIPTED SCROLL, WHICH IS THE MEASUREMENT #544 DID NOT TAKE ═════
+  //
+  // ⚠️ THE ACCEPTANCE FOR #544 MEASURED THE OPEN ONLY, AND PASSED WHILE
+  // SCROLLING WAS BROKEN. Every row the probe emitted — `boot`, `open`,
+  // `parse`, `layout`, `render-ab`, `uithread` — is about the first paint of
+  // the first sheet. None of them can see a page that reloads on the way back
+  // up, because nothing in the suite ever scrolls. A probe that cannot fail
+  // the thing that is broken is not an instrument, and this is the row that
+  // would have caught it.
+  //
+  // WHAT IT DRIVES, AND WHY IT IS A PROBE AND NOT A TEST. It uses the page's
+  // OWN scroll handler, band, settle timer and queue — `window.scrollTo`,
+  // then `markScrolling()`, then `sweep()`, exactly what a reader's thumb
+  // produces — so what it times is the shipping path and not a rehearsal of
+  // it. The executing harness asserts the same properties on a fake clock;
+  // this is the reading from the device the operator actually holds.
+  //
+  // THREE NUMBERS A LEG, and they are the acceptance verbatim:
+  //   previewMs   from the scroll to something being on the sheet. `0` with
+  //               `previewPrebuilt:true` is the ANSWER, not a missing
+  //               measurement — the fill got there first and there was
+  //               nothing left to wait for.
+  //   sharpMs     from the scroll to the sharp canvas attaching. Contains the
+  //               150 ms settle by design; the reader's thumb pays it too.
+  //   maxBlankOnScreen  sheets visible with NEITHER tier on them, at every
+  //               16 ms tick of the leg. This is "no blank page EVER once
+  //               previews are built", as an integer. Anything but 0 is the
+  //               defect, whatever the two times say.
+  '  var SCROLL_PROBE_POLL_MS = 16;',
+  '  var SCROLL_PROBE_MAX_MS = 8000;',
+  '  var PREVIEW_FILL_MAX_MS = 45000;',
+  '  function slotFor(n){',
+  '    var i;',
+  '    for (i = 0; i < slots.length; i++) { if (slots[i].n === n) return slots[i]; }',
+  '    return null;',
+  '  }',
+  '  function docScrollTop(){',
+  '    try { if (typeof window.pageYOffset === "number") return window.pageYOffset; } catch (e) {}',
+  '    try { return (document.documentElement && document.documentElement.scrollTop) || 0; } catch (e) {}',
+  '    return 0;',
+  '  }',
+  // NEITHER TIER, AND ON SCREEN. Not "no sharp canvas" — a sheet showing its
+  // preview is not blank, and counting it would make the number report the
+  // budget rather than the defect.
+  '  function blankOnScreen(){',
+  '    var i, n = 0;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      if (visibleHeight(slots[i]) > 0 && !slots[i].pv && !slots[i].done) n++;',
+  '    }',
+  '    return n;',
+  '  }',
+  '  function previewsPending(){',
+  '    var i, n = 0;',
+  '    for (i = 0; i < slots.length; i++) { if (!slots[i].pv && !slots[i].pvFail) n++; }',
+  '    return n;',
+  '  }',
+  '  function residentPixels(){',
+  '    var i, t = 0;',
+  '    for (i = 0; i < rendered.length; i++) t = t + canvasPixels(rendered[i]);',
+  '    return t;',
+  '  }',
+  '',
+  '  function scrollLeg(label, pageNo, next){',
+  '    var slot = slotFor(pageNo);',
+  // ⚠️ `scrollPhase` AND NOT `phase`, AND THAT IS NOT A STYLE PREFERENCE.
+  //
+  // `backend/scripts/find_reads_without_writers.py` decides whether a Mongo
+  // field is CLIENT-FED by TEXT SEARCH over frontend/**/*.js* for
+  // `['"]?\bNAME\b['"]?\s*[:=]`. `daily_logs.phase` is the read-without-writer
+  // that sweep was built for and the one its ratchet names by hand — so a
+  // probe row with a key called `phase` reclassifies it as client-fed, drops
+  // it out of the findings, and turns the ratchet's own "did the baseline
+  // silently shrink" test red. Measured: three failures in
+  // tests/test_reads_without_writers.py off fifteen lines in this file.
+  //
+  // THE MATCH IS OVER-BROAD AND THAT IS A REAL DEFECT, but it is the sweep's
+  // and not this file's, and its baseline is a ratchet where a silent shrink
+  // reads as progress — so it is fixed on its own change, not by loosening it
+  // here. What THIS file owes is a key that cannot collide: every Mongo field
+  // in this codebase is snake_case, the search is case-sensitive, and a
+  // camelCase name therefore cannot be one. Any new probe key should be read
+  // the same way before it is typed.
+  '    if (!slot) { probePost("scroll", { scrollPhase: label, page: pageNo, error: "no-such-page" }); if (next) next(); return; }',
+  '    var hadPreview = !!slot.pv, hadSharp = !!slot.done;',
+  '    var s0 = rcStarted, c0 = rcCancelled, d0 = rcCompleted, p0 = pvStarted;',
+  '    var y = slot.el.getBoundingClientRect().top + docScrollTop();',
+  '    try { window.scrollTo(0, y); } catch (e) {}',
+  // THE PAGE'S OWN HANDLERS, called the way a scroll event calls them. A probe
+  // that reached into the queue directly would be measuring a path no reader
+  // ever takes.
+  '    markScrolling();',
+  '    sweep();',
+  '    var t0 = pnow();',
+  '    var previewMs = hadPreview ? 0 : null;',
+  '    var sharpMs = hadSharp ? 0 : null;',
+  '    var maxBlank = 0;',
+  '    (function tick(){',
+  '      var b = blankOnScreen();',
+  '      if (b > maxBlank) maxBlank = b;',
+  '      if (previewMs === null && slot.pv) previewMs = r1(pnow() - t0);',
+  '      if (sharpMs === null && slot.done) sharpMs = r1(pnow() - t0);',
+  '      var elapsed = pnow() - t0;',
+  '      if ((previewMs !== null && sharpMs !== null) || elapsed > SCROLL_PROBE_MAX_MS) {',
+  '        probePost("scroll", {',
+  '          scrollPhase: label, page: pageNo,',
+  '          previewPrebuilt: hadPreview, sharpResident: hadSharp,',
+  '          previewMs: previewMs, sharpMs: sharpMs,',
+  // THE QUESTION THE OPERATOR ASKED IN THOSE WORDS: "scroll back to page 1 —
+  // record whether it re-renders". A sheet whose canvas was still resident did
+  // not; one whose canvas the budget had taken did.
+  '          reRendered: !hadSharp,',
+  '          maxBlankOnScreen: maxBlank,',
+  '          timedOut: elapsed > SCROLL_PROBE_MAX_MS,',
+  '          startedDuringLeg: rcStarted - s0, cancelledDuringLeg: rcCancelled - c0,',
+  '          completedDuringLeg: rcCompleted - d0, previewsDuringLeg: pvStarted - p0,',
+  '          residentMP: Math.round(residentPixels() / 1e5) / 10,',
+  '          budgetMP: CANVAS_BUDGET_MP, settleMs: SETTLE_MS',
+  '        });',
+  '        if (next) next();',
+  '        return;',
+  '      }',
+  '      setTimeout(tick, SCROLL_PROBE_POLL_MS);',
+  '    })();',
+  '  }',
+  '',
+  '  function probeScrollTest(after){',
+  '    if (!PROBE || !doc || !slots.length) { if (after) after(); return; }',
+  // THE PREVIEWS HAVE TO EXIST BEFORE THE ACCEPTANCE MEANS ANYTHING. "No blank
+  // page EVER **once previews are built**" is the operator's own wording; a
+  // leg run while the fill is halfway would report a blank that is a schedule,
+  // not a defect. The wait is capped and `filled:false` is the honest answer
+  // when it runs out, so the rows can be discounted rather than believed.
+  '    armPreviews();',
+  '    var f0 = pnow();',
+  '    (function waitFill(){',
+  '      var pending = previewsPending();',
+  '      if (pending > 0 && (pnow() - f0) <= PREVIEW_FILL_MAX_MS) {',
+  '        pumpQueue();',
+  '        setTimeout(waitFill, 50);',
+  '        return;',
+  '      }',
+  '      probePost("scroll-setup", { pages: slots.length,',
+  '        previewsBuilt: slots.length - pending, unbuildable: previewsUnbuildable(),',
+  '        fillWaitedMs: r1(pnow() - f0), filled: pending === 0,',
+  '        previewStarted: pvStarted, previewCompleted: pvCompleted, previewFailed: pvFailed });',
+  // TWENTY, OR THE LAST SHEET IF THE SET IS SHORTER. The operator's set is 26
+  // and "page 20" is his own number; a smaller document must still produce a
+  // row rather than silently skipping the leg.
+  '      var target = (doc.numPages < 20) ? doc.numPages : 20;',
+  '      scrollLeg("jump-to-p" + target, target, function(){',
+  '        scrollLeg("back-to-p1", 1, function(){',
+  '          probePost("render-census", {',
+  '            sharpStarted: rcStarted, sharpCancelled: rcCancelled, sharpCompleted: rcCompleted,',
+  '            previewStarted: pvStarted, previewCompleted: pvCompleted, previewFailed: pvFailed,',
+  '            maxConcurrent: MAX_CONCURRENT_RENDERS, budgetMP: CANVAS_BUDGET_MP,',
+  '            residentMP: Math.round(residentPixels() / 1e5) / 10 });',
+  '          if (after) after();',
+  '        });',
+  '      });',
+  '    })();',
+  '  }',
+  '',
   '  function probeSuite(){',
   '    if (!PROBE) return;',
   '    abDrain(function(waitedMs, stillInflight){',
@@ -2087,7 +2859,13 @@ const VIEWER_SCRIPT = [
   // step from here on is still a render or a second parsed document, and the
   // band starting up underneath any of them would put the contention straight
   // back into the numbers that are left.
-  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ abResume(); probePost("suite", { done: true }); }); }); }',
+  // THE SCROLL TEST RUNS LAST AND AFTER `abResume()`, WHICH IS NOT AN
+  // ORDERING PREFERENCE. It drives the SHIPPING queue — the suspension that
+  // isolates the A/B would stop every render it is waiting on, and it would
+  // time out on all four numbers and report a broken viewer. It is also the
+  // only measurement here that deliberately leaves the page somewhere other
+  // than where the reader left it, so nothing may follow it.
+  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ abResume(); probeScrollTest(function(){ probePost("suite", { done: true }); }); }); }); }',
   '            if (!nat) { thenWorker(); return; }',
   // Anchored to the SCAN's own pixels, then held to the same caps — the
   // "render it at what the plan actually is" case, measured rather than
@@ -2146,6 +2924,12 @@ const VIEWER_SCRIPT = [
   // document, so it is watched for the life of the page — and `resetDocument`
   // reads the answer rather than re-registering.
   '  watchZoom();',
+  // AND SO DOES THE SCROLL. Same reasoning and the same hazard: this page
+  // outlives every document, so a listener added per open would accumulate one
+  // per document. `true` for the capture phase, matching `scheduleSweep` — a
+  // WebView can scroll an inner element rather than the window, and a
+  // bubbling-phase listener on `window` never hears it.
+  '  try { window.addEventListener("scroll", markScrolling, true); } catch (e) {}',
   '',
   // ── HANDING THE PAGE BACK BETWEEN DOCUMENTS ────────────────────────────
   //
@@ -2180,6 +2964,18 @@ const VIEWER_SCRIPT = [
   // the viewport is the only reading that is true for both cases, and it
   // keeps the fail-toward-legible answer when the zoom cannot be read at all.
   '    sharp = zoomIsSharp();',
+  // THE NEXT DOCUMENT ARMS ITS OWN FILL. `previewsArmed` is a fact about one
+  // document's first sharp sheet; carrying it across would start 26 background
+  // rasterisations on top of the next document's open — the one number this
+  // change exists not to move.
+  '    previewsArmed = false;',
+  '    previewMemoryPosted = false;',
+  '    rcStarted = 0; rcCancelled = 0; rcCompleted = 0;',
+  '    pvStarted = 0; pvFailed = 0; pvCompleted = 0;',
+  // AT REST, because scrolling to the top is not a scroll the reader made and
+  // must not hold the first sharp render back by SETTLE_MS.
+  '    settleToken = settleToken + 1;',
+  '    settled = true;',
   '    try { window.scrollTo(0, 0); } catch (e) {}',
   '  }',
   '',
@@ -2360,6 +3156,18 @@ const VIEWER_SCRIPT = [
   '      if (msgEl) msgEl.style.display = "none";',
   '      watch();',
   '      post({ type: "pdf-ready", pages: doc.numPages });',
+  // ── THE BELT ON THE PREVIEW FILL ───────────────────────────────────────
+  //
+  // The fill is armed by the first SHARP render finishing, which is what keeps
+  // it off the open's critical path. If that render never finishes — a sheet
+  // pdf.js refuses, a band that somehow admits nothing, a cancel that races
+  // the only page on screen — nothing else would ever arm it and the reader
+  // would have a viewer with no previews at all and no way to tell why.
+  //
+  // FAIL TOWARD HAVING PREVIEWS. Whichever comes first wins; on a healthy open
+  // the first sharp sheet lands in well under this and the timer finds the
+  // flag already set.
+  '      setTimeout(armPreviews, 2500);',
   // THE OPEN IS OVER. Everything the operator waits for has happened, so the
   // stall figure is closed here and the A/B suite starts only now — after
   // `watch()` has queued the band's renders, on a second turn, so the suite
