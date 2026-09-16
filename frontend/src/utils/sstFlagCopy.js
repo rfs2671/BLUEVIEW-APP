@@ -73,6 +73,12 @@ const CLASS_CLAUSE = {
     + 'confirmed against the card',
   conflict: 'the card colour and the printed class do not agree',
   dead: 'this card class is no longer issued',
+  // NOT 'could not be confirmed', which is what CLASS_UNVERIFIED says and
+  // would collapse the one distinction this code exists to make. Nothing
+  // failed to read here: the worker answered on the gate's manual-entry
+  // picker, and the CP's job is to check what he said against the card.
+  self_reported: 'the card class was stated by the worker and has not been '
+    + 'checked against the card',
 };
 
 const EXPIRY_CLAUSE = {
@@ -86,6 +92,7 @@ const EXPIRY_CLAUSE = {
 const FROM_REVIEW_REASON = {
   CLASS_UNVERIFIED: { cls: 'unconfirmed' },
   CLASS_FROM_COLOR_UNCONFIRMED: { cls: 'colour' },
+  CLASS_SELF_REPORTED: { cls: 'self_reported' },
   CLASS_CONFLICTED: { cls: 'conflict' },
   CLASS_EXPIRED_SCHEME: { cls: 'dead' },
   EXPIRY_UNPARSEABLE: { exp: 'unread' },

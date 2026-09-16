@@ -197,6 +197,9 @@ export default function WorkerDetailScreen() {
   // English-only: this screen has no language path. Codes mirror review.jsx.
   const CERT_REVIEW_REASON = {
     CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
+    // Something WAS answered — by the worker, on the gate's manual-entry
+    // picker. He is checking a claim, not reading an illegible field.
+    CLASS_SELF_REPORTED: 'Card class was stated by the worker — check it against the card',
     EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
     EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
     EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
