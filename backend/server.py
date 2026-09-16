@@ -41038,6 +41038,35 @@ async def _auto_aggregate_project_model(project_id: str) -> None:
 # See plan_text.combined_set_decision. The status is stored on the file so
 # Plans & Files can say why a PDF has no index, instead of looking broken.
 COMBINED_SET_SKIPPED = "skipped_combined_set"
+
+# ── A REPORT WE WROTE IS NOT A DRAWING SET ────────────────────────────────
+#
+# We generate Blueview reports as PDFs. A customer saves one into the Dropbox
+# folder their project is synced from, the sync copies it into Plans & Files
+# like any other PDF, and the plan indexer reads our own report as if it were
+# a drawing set. Measured on 852 East 176th: Blueview_Report_3846_Bailey_Ave_
+# 2026-03-10.pdf, two pages, indexed, no sheet number on either — sitting in
+# the corpus the concept vocabulary is derived from, and about a different
+# building than the project it is filed on.
+#
+# Skipped by NAME, before the download, because nothing about the file's
+# contents would tell us: it is a construction document, and a good one. What
+# disqualifies it is that we wrote it.
+#
+# NOT is_document. That flag says "this page is a form, not a drawing" and
+# keeps it searchable, which is right for a DOB filing a superintendent may
+# ask about. This is a round trip of our own output, and indexing it teaches
+# the index nothing it did not already have.
+GENERATED_REPORT_SKIPPED = "skipped_generated_report"
+# `\b` would not fire before the underscore in "Blueview_Report_3846":
+# both sides are word characters. The test is that "report" is not the start
+# of a longer word, so "Reporting" is somebody else's file.
+_GENERATED_REPORT_RE = re.compile(r"^\s*blueview[\s_\-]*report(?![A-Za-z])", re.I)
+
+
+def is_generated_report(name: Optional[str]) -> bool:
+    """True for a PDF this system produced, whatever folder it came back in."""
+    return bool(_GENERATED_REPORT_RE.match(str(name or "").strip()))
 # The queue can reach a combined set before the discipline sets it duplicates
 # are indexed. Its job is then put back with a not_before, and the worker moves
 # on to the project's other files; the check runs again with the profile the
@@ -41375,6 +41404,22 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
     if not QWEN_API_KEY:
         logger.info("Plan index skipped — QWEN_API_KEY not configured")
         return {"outcome": "failed", "error": "QWEN_API_KEY not configured"}
+    # Before the download: a report of ours costs nothing to refuse and
+    # everything to index.
+    file_name_early = file_record.get("name") or ""
+    if is_generated_report(file_name_early):
+        logger.info(f"Plan index: {file_name_early} is a report we generated — not indexed")
+        try:
+            await db.project_files.update_one(
+                {"_id": to_query_id(str(file_record.get("_id") or "")),
+                 "project_id": project_id},
+                {"$set": {"index_status": {
+                    "state": GENERATED_REPORT_SKIPPED,
+                    "reason": "a Blueview report, not a drawing set",
+                    "at": datetime.now(timezone.utc)}}})
+        except Exception as e:
+            logger.warning(f"could not record the generated-report skip: {e!r}")
+        return {"outcome": "skipped", "reason": GENERATED_REPORT_SKIPPED}
     if not _r2_client or not file_record.get("r2_key"):
         logger.info(
             f"Plan index skipped (no R2 object) for "
