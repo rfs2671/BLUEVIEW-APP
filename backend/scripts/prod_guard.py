@@ -81,6 +81,44 @@ def add_guard_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
+#: Flags that USED to mean "really do it" on the scripts in this directory.
+#: They no longer gate anything. Listed so the refusal below can name the one
+#: the caller actually typed.
+LEGACY_WRITE_FLAGS = ("--execute", "--apply", "--commit", "--yes")
+
+
+def refuse_legacy_flag(argv=None) -> None:
+    """A runbook that says `--execute` must FAIL LOUDLY, not silently no-op.
+
+    Sixteen of the twenty scripts here already had a write flag -- `--execute`,
+    `--apply`, `--dry-run/--execute` -- and every one of them is written down in
+    a docstring, a runbook or somebody's shell history. Two outcomes were
+    available when `--i-know` took over as the gate, and both of the obvious
+    ones are wrong:
+
+      SILENTLY WRITE on the old flag  -- then the guard is decoration.
+      SILENTLY NO-OP on the old flag  -- then an operator runs the documented
+                                         command, sees a clean report, and
+                                         believes a migration ran that did not.
+
+    So the old flag without the new one is an ERROR that names both. The third
+    outcome is the only honest one: the command stops and says what changed.
+    """
+    argv = list(argv if argv is not None else sys.argv[1:])
+    if "--i-know" in argv:
+        return
+    used = [f for f in LEGACY_WRITE_FLAGS if f in argv]
+    if not used:
+        return
+    sys.stderr.write(
+        f"\n{' and '.join(used)} no longer authorises a production write.\n"
+        "  The gate is now --i-know, and it requires --reason and --session\n"
+        "  so the audit row can say who ran this and why. Nothing was\n"
+        "  changed.\n\n"
+        "  Add:  --i-know --reason '<why>' --session <id>\n\n")
+    raise SystemExit(2)
+
+
 def check_guard(args) -> bool:
     """True when the script may write. Exits 2 when the flag is there and the
     provenance is not.
@@ -113,11 +151,22 @@ def check_guard(args) -> bool:
 
 async def script_audit(db, action: str, resource_type: str, resource_id: str,
                        details: dict, args, name: Optional[str] = None) -> None:
-    """Write the row. Called ONCE PER DOCUMENT TOUCHED, not once per run.
+    """Write the row.
 
-    PER DOCUMENT, because "the script updated 4 rows" is not an audit trail —
-    the question afterwards is always about one project, and a summary row
-    cannot answer it. `details` carries the before/after for that document.
+    ── HOW MANY ROWS, AND IT IS A JUDGEMENT PER SCRIPT ─────────────────────
+
+    ONE PER DOCUMENT for a targeted change -- reparenting a project, setting a
+    building's levels. "The script updated 4 rows" is not an audit trail when
+    the question afterwards is about one project, and `details` carries the
+    before/after for that document.
+
+    ONE PER RUN for a bulk migration. A backfill touching ten thousand rows
+    would otherwise write ten thousand audit rows and bury every other entry in
+    the collection; there the row records the selector, the counts and the
+    reason, which is what anybody asks of a migration.
+
+    The rule is: could a person afterwards ask about ONE of these documents? If
+    yes, a row each. If the only question is "did the migration run", one row.
 
     NOT FAILURE-ISOLATED, and this is the one place in the codebase where that
     is right. The app's `audit_log` swallows a write failure because refusing
@@ -141,3 +190,108 @@ def report_dry_run(what: str) -> None:
     sys.stdout.write(
         f"\nDRY RUN — nothing was written.\n  Would: {what}\n"
         "  Re-run with --i-know --reason '<why>' --session <id> to apply.\n\n")
+
+
+# ── THE AUDITED HANDLE ──────────────────────────────────────────────────────
+#
+# WHY A WRAPPER AND NOT A CALL AT EVERY WRITE SITE.
+#
+# Twenty scripts, twenty-six write calls, every one in a differently-shaped
+# main(). Hand-placing an audit call at each is twenty-six chances to put it
+# after an early return, inside the wrong branch, or on the dry-run path -- and
+# a source test can only prove the call EXISTS, not that it runs when the write
+# runs. The failure it is guarding against is precisely "the write happened and
+# nothing recorded it", so a guard that can be bypassed by control flow is the
+# wrong shape.
+#
+# Wrapping the handle makes the row a property of the WRITE rather than of the
+# script: `db.dob_logs.delete_many(...)` audits because it executed, not
+# because somebody remembered. One line changes per script.
+#
+# IT RECORDS THE SELECTOR AND THE RESULT, which is what anybody asks
+# afterwards: what did it match, what did it change, what was the filter. The
+# arguments are stringified and truncated -- an audit row is evidence that
+# something happened, not a copy of the payload.
+
+#: The methods that change stored data. Anything not here passes straight
+#: through untouched, so a wrapped handle reads exactly like a bare one.
+_WRITE_METHODS = frozenset({
+    "update_one", "update_many", "insert_one", "insert_many",
+    "delete_one", "delete_many", "bulk_write", "replace_one",
+    "find_one_and_update", "find_one_and_delete", "drop",
+})
+
+#: NEVER AUDIT THE AUDIT LOG. `script_audit` is itself an `insert_one`, so
+#: without this a single write recurses until the stack ends.
+_NEVER_AUDITED = frozenset({AUDIT_COLLECTION})
+
+
+def _short(value, limit: int = 300) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+class _AuditedCollection:
+    def __init__(self, coll, parent, cname):
+        self._coll, self._parent, self._cname = coll, parent, cname
+
+    def __getattr__(self, attr):
+        target = getattr(self._coll, attr)
+        if attr not in _WRITE_METHODS or self._cname in _NEVER_AUDITED:
+            return target
+
+        async def _wrapped(*a, **kw):
+            result = await target(*a, **kw)
+            # AFTER the write, and deliberately: a row claiming a change that
+            # then failed is worse than no row. The counts below only exist
+            # once the driver has answered.
+            details = {
+                "method": attr,
+                "collection": self._cname,
+                "args": [_short(x) for x in a][:3],
+            }
+            for field in ("matched_count", "modified_count", "deleted_count",
+                          "upserted_id", "inserted_id"):
+                got = getattr(result, field, None)
+                if got is not None:
+                    details[field] = str(got)
+            await script_audit(
+                self._parent._db, f"script_{attr}", "collection", self._cname,
+                details, self._parent._args, name=self._parent._name,
+            )
+            return result
+
+        return _wrapped
+
+
+class _AuditedDb:
+    """A Motor database whose writes record themselves.
+
+    READS ARE UNTOUCHED and cost nothing: `__getattr__` only wraps a collection,
+    and the collection only wraps the eleven write methods.
+    """
+
+    def __init__(self, db, args, name):
+        self._db, self._args, self._name = db, args, name
+
+    def __getattr__(self, attr):
+        return _AuditedCollection(getattr(self._db, attr), self, attr)
+
+    def __getitem__(self, key):
+        return _AuditedCollection(self._db[key], self, str(key))
+
+
+def audited(db, args, name: Optional[str] = None):
+    """Wrap a database handle so every write leaves an audit row.
+
+    Used as the ONE line a production-writing script changes:
+
+        db = audited(client[dbname], args, NAME)
+
+    Returns the handle unchanged when the guard has not authorised a write --
+    there is nothing to audit on a dry run, and wrapping would only add a layer
+    to step through while debugging one.
+    """
+    if not getattr(args, "i_know", False):
+        return db
+    return _AuditedDb(db, args, name or script_name())

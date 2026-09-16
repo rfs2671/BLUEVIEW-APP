@@ -48,6 +48,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:audit_fabricated_certs", the session and the reason. Without --i-know the
+# handle is unwrapped and nothing is written. See prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "audit_fabricated_certs"
+
+
 RECOGNIZED_SST_PREFIX = "SST"
 OSHA_PREFIX = "OSHA"
 
@@ -120,9 +134,16 @@ def plan_for_worker(worker: dict):
 
 
 async def main() -> int:
+    refuse_legacy_flag()
     ap = argparse.ArgumentParser(description="Repair buggy certification rows (dry-run by default).")
     ap.add_argument("--apply", action="store_true", help="Write changes. Without this, reports only.")
+    add_guard_args(ap)
     args = ap.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.apply = check_guard(args)
 
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
@@ -130,7 +151,7 @@ async def main() -> int:
         print("ERROR: MONGO_URL and DB_NAME env vars required", file=sys.stderr)
         return 2
 
-    db = AsyncIOMotorClient(mongo_url)[db_name]
+    db = audited(AsyncIOMotorClient(mongo_url)[db_name], args, NAME)
     mode = "APPLY" if args.apply else "DRY RUN (no writes)"
     print(f"=== audit_fabricated_certs — {mode} ===\n")
 

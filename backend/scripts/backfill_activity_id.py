@@ -154,6 +154,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:backfill_activity_id", the session and the reason. Without --i-know the
+# handle is unwrapped and nothing is written. See prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "backfill_activity_id"
+
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -323,6 +337,7 @@ async def apply_plan(db, plan: dict, dry_run: bool = False) -> dict:
 
 
 async def main() -> int:
+    refuse_legacy_flag()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--apply", action="store_true",
                     help="actually write (default is a dry run)")
@@ -330,7 +345,13 @@ async def main() -> int:
                     help="restrict to one logbook _id")
     ap.add_argument("--limit", type=int, default=0,
                     help="process at most N documents (0 = all)")
+    add_guard_args(ap)
     args = ap.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.apply = check_guard(args)
 
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
@@ -341,7 +362,7 @@ async def main() -> int:
     from motor.motor_asyncio import AsyncIOMotorClient
     from server import to_query_id
 
-    db = AsyncIOMotorClient(mongo_url)[db_name]
+    db = audited(AsyncIOMotorClient(mongo_url)[db_name], args, NAME)
 
     query = dict(CANDIDATE_QUERY)
     if args.logbook_id:

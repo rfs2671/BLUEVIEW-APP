@@ -74,6 +74,20 @@ import bson  # noqa: E402
 import server  # noqa: E402
 from pymongo import MongoClient  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:strip_inline_worker_image", the session and the reason. Without --i-know the
+# handle is unwrapped and nothing is written. See prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "strip_inline_worker_image"
+
+
 #: Everything that differs between the two fields. The RULES are not in here.
 FIELDS = {
     "selfie": {
@@ -134,10 +148,17 @@ def _verify(key: str, inline_len: int):
 
 
 def main() -> int:
+    refuse_legacy_flag()
     ap = argparse.ArgumentParser()
     ap.add_argument("field", choices=sorted(FIELDS))
     ap.add_argument("--apply", action="store_true")
+    add_guard_args(ap)
     args = ap.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.apply = check_guard(args)
     F = FIELDS[args.field]
     INLINE, KEY, URL = F["inline"], F["key"], F["url"]
 
