@@ -231,14 +231,39 @@ class ADotOhOneIsTheSameSheetRevised(unittest.TestCase):
         _run(server._supersede_plan_pages("p1"))
         self.assertEqual(self._row("ar325-12")["superseded_by"], "owners")
 
-    def test_a_cover_sheet_is_still_never_superseded_across_sets(self):
+    def test_a_cover_sheet_is_reissued_within_its_own_set(self):
+        """AR - 8.18.26's T-001.01 is AR - 3.28.25's T-001.00, redrawn. The
+        structural set's own T-001.00 is a different cover and is untouched:
+        the stem key is scoped by discipline, which is what the T-/EN-/GN-
+        exclusion was protecting."""
         self._file("ar825", 1, "AR - 8.18.26.pdf")
         self._file("ar325", 2, "AR - 3.28.25.pdf")
+        self._file("st", 3, "ST - 7.29.26.pdf")
         self._page("ar825", 1, "T-001.01", "h-825")
+        self._page("ar825", 6, "A-100.01", "h-825")
         self._page("ar325", 1, "T-001.00", "h-325")
+        self._page("ar325", 11, "A-100.00", "h-325")
+        self._page("st", 1, "T-001.00", "h-st")
+        self._page("st", 2, "S-101.00", "h-st")
         _run(server._supersede_plan_pages("p1"))
-        self.assertIsNone(self._row("ar325-1")["superseded_by"])
+        self.assertEqual(self._row("ar325-1")["superseded_by"], "ar825")
         self.assertIsNone(self._row("ar825-1")["superseded_by"])
+        self.assertIsNone(self._row("st-1")["superseded_by"],
+                          "the structural cover is not the architectural one")
+
+    def test_the_same_general_sheet_in_two_issues_is_not_a_reissue(self):
+        """Both files print GN-001.00 — nothing was renumbered, so nothing was
+        replaced, and the old exclusion still holds. See
+        test_plan_index_v3.py for the cross-discipline half of this."""
+        self._file("ar825", 1, "AR - 8.18.26.pdf")
+        self._file("ar901", 0, "AR - 9.1.26.pdf")
+        self._page("ar825", 3, "GN-001.00", "h-825")
+        self._page("ar825", 6, "A-100.01", "h-825")
+        self._page("ar901", 1, "GN-001.00", "h-901")
+        self._page("ar901", 2, "A-101.00", "h-901")
+        _run(server._supersede_plan_pages("p1"))
+        self.assertIsNone(self._row("ar825-3")["superseded_by"])
+        self.assertIsNone(self._row("ar901-1")["superseded_by"])
 
     def test_two_places_in_the_set_means_two_sheets(self):
         """Corroboration. If the title blocks say 16 of 31 and 22 of 31, a
@@ -273,15 +298,28 @@ class ADotOhOneIsTheSameSheetRevised(unittest.TestCase):
         self.assertEqual(self._row("ar325-2")["superseded_by"], "ar825")
         self.assertIsNone(self._row("ar825-2")["superseded_by"])
 
-    def test_the_same_number_in_two_files_still_goes_by_the_drawing_date(self):
-        """Unchanged for a plain sheet number: the title block leads. Only a
-        .00 -> .01 reissue reads the file's date first."""
-        self._file("owners", 0, "Owners set - 6.9.26.pdf")
-        self._file("ar", 10, "AR - 3.28.25.pdf")
-        self._page("owners", 1, "A-101.00", "h-owners")
-        self._page("ar", 12, "A-101.00", "h-ar")
+    def test_a_stale_cloud_does_not_win_a_plain_sheet_number_either(self):
+        """The same fault, on the exact-number key. Only the OLDER sheet was
+        ever clouded, so a revision date exists on one side and not the other,
+        and reading it first hands the older file the win. FA-007 has no
+        suffix, so this is the plain key and not the reissue one."""
+        self._file("new", 0, "FA - 8.30.26.pdf")
+        self._file("old", 1, "FA - 6.30.26.pdf")
+        self._page("new", 7, "FA-007", "h-new")
+        self._page("old", 7, "FA-007", "h-old")
+        self.db.document_page_index.rows[-1]["revision_date"] = "5/12/2026"
         _run(server._supersede_plan_pages("p1"))
-        self.assertEqual(self._row("ar-12")["superseded_by"], "owners")
+        self.assertEqual(self._row("old-7")["superseded_by"], "new")
+        self.assertIsNone(self._row("new-7")["superseded_by"])
+
+    def test_the_revision_date_still_breaks_a_tie_between_two_same_day_issues(self):
+        self._file("a", 0, "AR - 6.9.26 (Gas change).pdf")
+        self._file("b", 1, "AR - 6.9.26.pdf")
+        self._page("a", 1, "FA-007", "h-a", )
+        self._page("b", 1, "FA-007", "h-b")
+        self.db.document_page_index.rows[-1]["revision_date"] = "6/9/2026"
+        _run(server._supersede_plan_pages("p1"))
+        self.assertEqual(self._row("a-1")["superseded_by"], "b")
 
     def test_agreeing_places_supersede(self):
         self._boyland_architectural()

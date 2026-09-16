@@ -41630,9 +41630,12 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     # This used to be "the newest upload wins", and on 588 Boyland that hid
     # the June 2026 owners set behind the March 2025 architectural set, because
     # the March set had been re-synced most recently. Now, in order:
-    #   1. the revision date read from the title block
-    #   2. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   2. the revision date read from the title block
     #   3. upload time
+    # See _order for why the title-block date is the tie-break and not the
+    # lead: it is the date of a revision cloud, and the sheet that supersedes
+    # another frequently carries none.
     #
     # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
     #
@@ -41696,9 +41699,19 @@ async def _supersede_plan_pages(project_id: str) -> dict:
             out.append(("hash", r["file_hash"], r.get("page_number")))
         sn = _norm(r.get("sheet_number"))
         fam = family.get(r.get("file_id"))
-        if sn and fam and _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
-            out.append(("stem", fam, _stem_key(sn)) if _SHEET_SUFFIX_RE.search(sn)
-                       else ("sheet", fam, sn))
+        if not sn or not fam:
+            return out
+        # T-, EN- and GN- stay out of the exact-number key: that is the one
+        # that hid the structural set's T-001.00 behind the architectural
+        # set's, and MH's EN-001.00 behind PL's. They DO get a stem key, and
+        # the pass below keeps only the ones that are a genuine reissue —
+        # AR - 8.18.26's T-001.01 for AR - 3.28.25's T-001.00. Two files of the
+        # same discipline that both print GN-001.00 are not a reissue of each
+        # other and neither is hidden.
+        if _SHEET_SUFFIX_RE.search(sn):
+            out.append(("stem", fam, _stem_key(sn)))
+        elif _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
+            out.append(("sheet", fam, sn))
         return out
 
     members: Dict[tuple, Dict[str, list]] = {}
@@ -41706,24 +41719,37 @@ async def _supersede_plan_pages(project_id: str) -> dict:
         for k in _keys(r):
             members.setdefault(k, {}).setdefault(r.get("file_id"), []).append(r)
 
+    # ── THE FILE'S DATE LEADS ──────────────────────────────────────────────
+    #
+    # A title-block revision date is the date of the last revision CLOUD on
+    # that sheet. It is not the date the set was issued, and the sheet that
+    # replaces another often carries none at all: AR - 3.28.25's Z-001.00
+    # carries 2/27/2025 and AR - 8.18.26's Z-001.01 carries nothing, so
+    # reading the revision date first put the March sheet above the August one
+    # and the reissue superseded itself backwards.
+    #
+    # The failure is not particular to a reissue. Any pair where only the older
+    # sheet was ever clouded picks the wrong winner the same way, and the
+    # revision date is only evidence about the newer drawing when the newer
+    # drawing actually carries one. The file is the issue; the date on the file
+    # is the date of the issue; the revision date breaks ties between two
+    # issues of the same day.
     def _order(fid, file_rows):
         revs = [d for d in (_parse_sheet_date(x.get("revision_date")) for x in file_rows) if d]
-        return (max(revs) if revs else _date.min,
-                name_date.get(fid) or _date.min,
+        return (name_date.get(fid) or _date.min,
+                max(revs) if revs else _date.min,
                 uploaded[fid])
 
-    # ── FOR A REISSUE, THE FILE'S DATE LEADS ───────────────────────────────
-    #
-    # A title-block revision date is the date of the last revision cloud on
-    # that sheet, which is not the date the set was issued. AR - 3.28.25's
-    # Z-001.00 carries 2/27/2025; AR - 8.18.26's Z-001.01, the sheet that
-    # replaces it, carries none at all — so ordering by revision date first put
-    # the March sheet above the August one and the reissue superseded itself
-    # backwards. Across a .00 -> .01 pair the file is the issue, and the date
-    # on the file is the date of the issue.
-    def _order_reissue(fid, file_rows):
-        rev, nd, up = _order(fid, file_rows)
-        return (nd, rev, up)
+    # A COVER SHEET IS REISSUED, NOT DUPLICATED. T-, EN- and GN- reach the
+    # stem key so that T-001.00 and T-001.01 of one architectural set resolve
+    # to one cover. Where every row under the stem carries the SAME number,
+    # nothing was reissued — it is the same general sheet bound into two
+    # issues — and the old exclusion still applies.
+    for k in [k for k in members
+              if k[0] == "stem" and _sheet_prefix(k[2]) in _NEVER_SUPERSEDE_ACROSS_SETS]:
+        numbers = {_norm(r.get("sheet_number")) for rs in members[k].values() for r in rs}
+        if len(numbers) < 2:
+            del members[k]
 
     # THE SET'S OWN INDEX GETS A VETO. Two sheets whose title blocks claim
     # DIFFERENT places in the set are different sheets, whatever their numbers
@@ -41740,11 +41766,7 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     winners: Dict[tuple, Tuple[str, tuple]] = {}
     for k, by_file in members.items():
         if len(by_file) > 1:
-            pick = _order_reissue if k[0] == "stem" else _order
-            best = max(by_file, key=lambda f: pick(f, by_file[f]))
-            # The STORED value stays in one currency: a row can sit in a hash
-            # key and a stem key at once, and the two claims on it are compared
-            # against each other below.
+            best = max(by_file, key=lambda f: _order(f, by_file[f]))
             winners[k] = (best, _order(best, by_file[best]))
 
     by_winner: Dict[str, list] = {}
