@@ -59,6 +59,7 @@ import json
 import math
 import re
 from collections import Counter
+from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 EXTRACTION_VERSION = 3
@@ -1062,10 +1063,24 @@ def _equiv(s: str) -> str:
     return s
 
 
+# A SHORT TERM MUST START A WORD. "what type of AC units" answered out of
+# GN-001.00's "APPROVED TYPE MAIL RECEPTACLES": recePTACles contains "ptac",
+# one of the synonyms for "ac", so a mail-box note matched an HVAC question.
+# The left boundary only — a term still grows to the right, so "pile" matches
+# "PILES" and "condens" matches "CONDENSING", which is the whole point of
+# stemming. Applied below six characters, where an accidental substring is a
+# real risk; a longer word inside another word is not a case that occurs.
+@lru_cache(maxsize=512)
+def _term_rx(variant: str) -> "re.Pattern[str]":
+    body = re.escape(variant)
+    return re.compile((r"\b" + body) if len(variant) <= 5 else body)
+
+
 def _matches(text: str, terms: List[str]) -> bool:
     low = _equiv((text or "").lower())
     terms = [t for t in terms if t]
-    return bool(terms) and all(any(v in low for v in _variants(t)) for t in terms)
+    return bool(terms) and all(
+        any(_term_rx(v).search(low) for v in _variants(t)) for t in terms)
 
 
 _QTY_HEADERS = ("qty", "quantity", "count", "no.", "no", "number", "#", "total")
@@ -1129,10 +1144,12 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
                         counted += 1
                 if counted:
                     out.append({"sheet": sheet, "count": total, "source": "schedule_qty",
-                                "name": s.get("name"), "rows": counted, "via": s.get("source")})
+                                "name": s.get("name"), "rows": counted, "via": s.get("source"),
+                                "verify": schedule_needs_verifying(chunks, ch)})
                     continue
             out.append({"sheet": sheet, "count": len(matched), "source": "schedule_rows",
-                        "name": s.get("name"), "via": s.get("source")})
+                        "name": s.get("name"), "via": s.get("source"),
+                        "verify": schedule_needs_verifying(chunks, ch)})
     return out
 
 
@@ -1163,7 +1180,10 @@ def format_count_answer(subject: str, hits: List[Dict[str, Any]]) -> Optional[st
         where = f"{h['sheet'] or '?'}"
         # A schedule read from the image, not the text layer, says so: its
         # numbers could not be checked against printed text.
-        seen = ", read from the drawing image" if h.get("via") == "vision" else ""
+        seen = ""
+        if h.get("via") == "vision":
+            seen = (", read from the drawing image — verify against the sheet"
+                    if h.get("verify") else ", read from the drawing image")
         if h["source"] == "schedule_rows":
             lines.append(f"{where}: {h.get('name') or 'schedule'} lists {h['count']} row(s){seen}")
         elif h["source"] == "schedule_qty":
@@ -1185,6 +1205,158 @@ def format_existence_answer(subject: str, hits: List[Dict[str, Any]]) -> Optiona
     first = hits[0]
     return (f"Yes — {label.lower()} is on {', '.join(sheets[:4]) or 'the indexed drawings'}.\n"
             f"{first['sheet'] or '?'} ({first['source']}): {first['line']}")
+
+
+# WHERE A MENTION IS WORTH MOST. A schedule and a spec state things; a floor
+# plan's text layer merely contains the word. "stucco thickness" answered
+# "Mentioned on A-100.00, A-300, A-105.01, A-100.01" and cut A-500.00 — the
+# wall-type schedule that carries the assembly — at the four-sheet limit,
+# because the list was in whatever order the chunks happened to be scanned.
+_MENTION_RANK = ("schedule", "specs", "legend", "notes", "elements", "callouts", "text")
+
+
+def _by_source(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    order = {k: i for i, k in enumerate(_MENTION_RANK)}
+    return sorted(hits, key=lambda h: order.get(h.get("source"), 99))
+
+
+# Columns worth quoting out of a schedule: what a unit is CALLED and what it
+# IS. Capacity and electrical columns are real data but they are not the answer
+# to "what type", and a WhatsApp line has no room for them.
+_SCHED_KEEP = ("unit no", "unit", "mark", "tag", "type", "no.", "symbol", "designation",
+               "qty", "quantity", "make", "manufacturer", "model", "size", "description")
+
+
+# A NUMBER READ OFF A PICTURE, AND WHETHER ANYTHING CONFIRMS IT. The schedules
+# section falls back to the vision model when a table grid has no text in its
+# cells, so a vision-sourced schedule comes, by construction, from a region the
+# text layer could not read. M-200.00 is the case: the ROOMS PTAC UNITS
+# SCHEDULE gives 21, 9 and 11 units, and the whole text layer of that page is
+# "HVAC SCHEDULES / AND DETAILS / M-200.00 / P: / E: / W: / 9" — 47 characters.
+# Nothing on the page confirms 21.
+#
+# Confirmed means EVERY number the table states is printed somewhere in the
+# page's own text layer. Not a proportion: one incidental digit matching out of
+# thirty-seven is not confirmation, and a threshold would have to be argued for
+# every future sheet. Only the raw `text` chunk counts — notes and legend on a
+# scanned page are the model's reading too, and checking one against the other
+# confirms nothing.
+# A VALUE, NOT A NAME. The digits in "PTAC-1" and "PTH093K" are part of an
+# identifier; matching those against the page would confirm a schedule by
+# its own tags. A number has to stand as its own token on both sides.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.\-])\d[\d,]*(?:\.\d+)?(?![A-Za-z0-9])")
+
+
+def _page_key(ch: Dict[str, Any]) -> Any:
+    return ch.get("page_id") or (ch.get("sheet_number"), ch.get("page_number"))
+
+
+def _numbers_in(text: str) -> set:
+    return {m.group(0).replace(",", "").rstrip(".") for m in _NUMBER_RE.finditer(text or "")}
+
+
+def schedule_needs_verifying(chunks: List[Dict[str, Any]], sched: Dict[str, Any]) -> bool:
+    """True when a vision-read schedule states numbers the page text does not."""
+    payload = sched.get("payload") or {}
+    if payload.get("source") != "vision":
+        return False
+    stated = set()
+    for row in payload.get("rows") or []:
+        for cell in row:
+            stated |= _numbers_in(str(cell))
+    if not stated:
+        return False                 # a table of words has no number to be wrong
+    key = _page_key(sched)
+    printed = set()
+    for ch in chunks:
+        if ch.get("chunk_type") == "text" and _page_key(ch) == key:
+            printed |= _numbers_in(ch.get("text") or "")
+    return bool(stated - printed)
+
+
+def answer_named_schedule(chunks: List[Dict[str, Any]], terms: List[str],
+                          limit: int = 2) -> List[Dict[str, Any]]:
+    """A schedule whose OWN NAME is the thing asked about answers a question
+    about that thing, even when not one line prints the attribute word.
+
+    "what type of AC units" is answered by ROOMS PTAC UNITS SCHEDULE on
+    M-200.00 — make, model and quantity for every unit — and by nothing at all
+    that says the word "type". Matching lines could never reach it; the name of
+    the table is the match."""
+    out: List[Dict[str, Any]] = []
+    for ch in chunks:
+        if ch.get("chunk_type") != "schedule":
+            continue
+        payload = ch.get("payload") or {}
+        name = (payload.get("name") or "").strip()
+        if not name or not _matches(name, terms):
+            continue
+        out.append({"sheet": ch.get("sheet_number"), "name": name,
+                    "columns": [str(c or "") for c in (payload.get("columns") or [])],
+                    "rows": payload.get("rows") or [],
+                    "via": payload.get("source") or payload.get("via"),
+                    "verify": schedule_needs_verifying(chunks, ch)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def format_named_schedule_answer(subject: str, hits: List[Dict[str, Any]],
+                                 max_rows: int = 6) -> Optional[str]:
+    if not hits:
+        return None
+    label = (subject or "That").strip()
+    label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
+    blocks = []
+    for h in hits:
+        cols = h.get("columns") or []
+        keep = [i for i, c in enumerate(cols)
+                if any(k in (c or "").strip().lower() for k in _SCHED_KEEP)]
+        if not keep:
+            keep = list(range(min(4, len(cols))))
+        head = f"{h['sheet'] or '?'}: {h['name']}"
+        # A schedule read from the image, not the text layer, says so: its
+        # cells could not be checked against printed text.
+        if h.get("via") == "vision":
+            head += (" (read from the drawing image — verify against the sheet)"
+                     if h.get("verify") else " (read from the drawing image)")
+        lines = [head]
+        if cols:
+            lines.append(" | ".join(cols[i] for i in keep if i < len(cols)))
+        for row in (h.get("rows") or [])[:max_rows]:
+            cells = [str(row[i]) for i in keep if i < len(row)]
+            if any(c.strip() for c in cells):
+                lines.append(" | ".join(cells))
+        extra = len(h.get("rows") or []) - max_rows
+        if extra > 0:
+            lines.append(f"...and {extra} more row(s).")
+        blocks.append("\n".join(lines))
+    return f"{label} — from the schedule:\n" + "\n\n".join(blocks)
+
+
+def format_open_answer(subject: str, hits: List[Dict[str, Any]],
+                       limit: int = 3) -> Optional[str]:
+    """A question that is not a count, not a yes/no and names no attribute —
+    "Whats the helical piles". The drawings still say something about it, and
+    what they say is quoted with the sheet it is printed on. No claim is made
+    beyond the quote."""
+    if not hits:
+        return None
+    label = (subject or "That").strip()
+    label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
+    lines: List[str] = []
+    seen = set()
+    for h in _by_source(hits):
+        key = (h.get("sheet"), (h.get("line") or "")[:60])
+        if not h.get("line") or key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"{h.get('sheet') or '?'} ({h.get('source')}): {h['line']}")
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return None
+    return f"{label} — on the drawings:\n" + "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1234,6 +1406,14 @@ _Q_STOP = {
     # "PTAC units", "sprinkler system". Requiring them hid the answer.
     "unit", "units", "system", "systems", "equipment", "used", "project", "site",
 }
+
+# A WORD EVERY SHEET CONTAINS IS NOT A SUBJECT. "what type of AC units are in
+# the building" searched for 'building' and answered out of GN-001.00's
+# "...REQUIRED BY THE BUILDING TYPE OF CONSTRUCTION" — the attribute word sat
+# next to the generic word, so a fire-rating note outranked the PTAC schedule.
+# Dropped when the question carries a real subject too, KEPT when it is the
+# whole subject, so "what is the building height" still has something to find.
+_Q_WEAK = {"building", "buildings", "structure", "house", "job", "work", "area"}
 
 
 # "What about roof protection?" is asked the way a person asks whether a thing
@@ -1327,7 +1507,8 @@ def question_terms(text: str, keywords: Optional[List[Any]] = None, limit: int =
                 and not re.fullmatch(r"[a-z]{1,3}\d{1,2}[a-z]?|rd|fd|ad|co", w)):
             continue
         out.append(w)
-    return out[:limit]
+    strong = [w for w in out if w not in _Q_WEAK]
+    return (strong or out)[:limit]
 
 
 _LINE_SOURCES = ("specs", "notes", "schedule", "elements", "legend", "callouts", "text")
@@ -1356,7 +1537,7 @@ def _value_near_term(line: str, terms: List[str], rx: "re.Pattern[str]") -> bool
     # word, so the term ('STUD') is never mistaken for another assembly.
     spans = []
     for s in stems:
-        for m in re.finditer(re.escape(s), low):
+        for m in _term_rx(s).finditer(low):
             end = m.end()
             while end < len(low) and low[end].isalpha():
                 end += 1
@@ -1447,7 +1628,7 @@ def format_not_stated(mentions: List[Dict[str, Any]], terms: Optional[List[str]]
     symbols with no printed number. The answer says so and says how to get the
     sheet, instead of listing every floor plan whose legend defines the symbol."""
     sheets: List[str] = []
-    for h in mentions:
+    for h in _by_source(mentions):
         if h.get("sheet") and h["sheet"] not in sheets:
             sheets.append(h["sheet"])
     if count and terms:
@@ -1519,11 +1700,19 @@ def answer_question(chunks: List[Dict[str, Any]], text: str,
                     keywords: Optional[List[Any]] = None) -> Optional[Dict[str, str]]:
     """The one dispatch both the WhatsApp handler and the local harness call.
 
-    {"text", "outcome"}, or None when the text cannot answer it and the caller
-    should go to the vision model (an attribute with no value line, or a
-    question that is none of count / exists / attribute)."""
+    THE TEXT IS SEARCHED FIRST, ALWAYS. question_kind picks the SHAPE of the
+    answer — count, attribute, existence — and nothing more. It used to decide
+    whether to look at all, so "Whats the helical piles" and "What piles used
+    on site?" (no count word, no attribute word, no leading auxiliary) went
+    straight to a vision model that spent 90 seconds and returned nothing,
+    while S-001.00 had "HELICAL PILES (BB # 2014-020)" printed on it the whole
+    time. A question that reaches the vision model without the drawings' own
+    text having been read is a bug.
+
+    {"text", "outcome"}, or None only when the text genuinely has nothing:
+    the caller may then go to the vision model."""
     kind, attribute = question_kind(text)
-    if not kind or not chunks:
+    if not chunks:
         return None
     terms = question_terms(text, keywords)
     if not terms:
@@ -1551,22 +1740,46 @@ def answer_question(chunks: List[Dict[str, Any]], text: str,
         if hits:
             return {"text": format_existence_answer(subject, hits), "outcome": "chunk_exists"}
         return {"text": "Not found on indexed drawings.", "outcome": "chunk_exists_not_found"}
-    hits = (answer_attribute(chunks, terms, attribute)
-            or (head and answer_attribute(chunks, head, attribute)) or [])
-    if hits:
-        return {"text": format_attribute_answer(subject, attribute, hits),
-                "outcome": "chunk_attribute"}
-    # NAMED BUT NO VALUE: say so, with the sheets. A heading or a scale next
-    # to the word is not a value, and quoting one reads as an answer.
+    if kind == "attribute":
+        hits = (answer_attribute(chunks, terms, attribute)
+                or (head and answer_attribute(chunks, head, attribute)) or [])
+        if hits:
+            return {"text": format_attribute_answer(subject, attribute, hits),
+                    "outcome": "chunk_attribute"}
+        # A TABLE NAMED FOR THE THING IS THE ANSWER. Before saying "not
+        # stated", look for a schedule whose title is the subject: the PTAC
+        # schedule answers "what type of AC units" with its rows, having never
+        # printed the word "type" anywhere on the sheet.
+        sched = (answer_named_schedule(chunks, terms)
+                 or (head and answer_named_schedule(chunks, head)) or [])
+        if sched:
+            return {"text": format_named_schedule_answer(subject, sched),
+                    "outcome": "chunk_schedule"}
+        # NAMED BUT NO VALUE: say so, with the sheets. A heading or a scale
+        # next to the word is not a value, and quoting one reads as an answer.
+        mentions = answer_existence(chunks, terms) or (head and answer_existence(chunks, head)) or []
+        if mentions:
+            return {"text": format_not_stated(mentions), "outcome": "chunk_attribute_not_stated"}
+        return None
+    # NEITHER A COUNT NOR A YES/NO NOR AN ATTRIBUTE. "Whats the helical piles",
+    # "Foundation....". The subject is still a thing the drawings name, so the
+    # text is searched for it and what it says is quoted with its sheet.
+    sched = answer_named_schedule(chunks, terms) or (head and answer_named_schedule(chunks, head)) or []
+    if sched:
+        return {"text": format_named_schedule_answer(subject, sched),
+                "outcome": "chunk_schedule"}
     mentions = answer_existence(chunks, terms) or (head and answer_existence(chunks, head)) or []
-    if mentions:
-        return {"text": format_not_stated(mentions), "outcome": "chunk_attribute_not_stated"}
+    text_answer = format_open_answer(subject, mentions)
+    if text_answer:
+        return {"text": text_answer, "outcome": "chunk_open"}
     return None
 
 
 __all__ = [
     "answer_question", "question_kind", "question_terms", "answer_attribute", "format_attribute_answer",
     "format_not_stated", "ATTRIBUTE_PATTERNS",
+    "answer_named_schedule", "format_named_schedule_answer", "format_open_answer",
+    "schedule_needs_verifying",
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
     "validate_section", "merge_sections", "verify_numbers", "number_in_text",

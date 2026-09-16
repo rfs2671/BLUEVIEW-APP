@@ -381,9 +381,15 @@ class CountsAndAttributesComeFromTheText(unittest.TestCase):
         self.assertLess(src.index("_answer_plan_from_chunks("),
                         src.index("_retrieve_plan_candidates("))
 
-    def test_a_v3_spatial_question_goes_to_one_sheet(self):
+    def test_a_v3_spatial_question_goes_to_at_most_two_sheets(self):
+        # Was [:1]. Changed 2026-09-16: with one candidate a single timed-out
+        # vision call was the whole answer — "Whats the helical piles" spent
+        # 98 seconds to say "not found". Two sheets at
+        # PLAN_VQA_TIMEOUT_SECONDS still cost less than the one call did, and
+        # the point of the cap — not walking the whole set — is unchanged.
         src = inspect.getsource(server._handle_plan_query)
-        self.assertIn("candidates = candidates[:1]", src)
+        self.assertIn("candidates = candidates[:2]", src)
+        self.assertLessEqual(server.PLAN_VQA_TIMEOUT_SECONDS * 2, 90.0)
 
 
 class ThePageRowAndItsChunks(unittest.TestCase):
