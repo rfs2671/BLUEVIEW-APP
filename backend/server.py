@@ -42525,6 +42525,15 @@ async def _vision_budget_exceeded(project_id: Optional[str]) -> bool:
         return False
 
 
+# WHAT A PERSON WILL WAIT FOR, STANDING ON A SITE. The budget was 90 seconds,
+# and on 2026-09-16 two questions spent all of it and returned nothing: 98 s
+# and 92 s end to end, for "Not found on the indexed drawings." The model
+# either reads a plan page well inside this or it is not going to, and the
+# candidate loop in _handle_plan_query moves to the next sheet when it does
+# not — so a slow sheet now costs a retry rather than the whole reply.
+PLAN_VQA_TIMEOUT_SECONDS = 30.0
+
+
 async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
                            sheet_number: str, sheet_title: str,
                            project_id: Optional[str] = None) -> Optional[str]:
@@ -42554,7 +42563,7 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         user_question=question.strip(),
     )
     try:
-        async with ServerHttpClient(timeout=90.0) as client_http:
+        async with ServerHttpClient(timeout=PLAN_VQA_TIMEOUT_SECONDS) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -42586,6 +42595,13 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         # against the same unbounded-tail model. WhatsApp plan QA had no live
         # traffic during the 09-11 -> 09-15 window, so it cost nothing; it was
         # the same trap, unsprung.
+        if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
+            # Not worth a stack trace: it is the budget doing its job, and the
+            # caller has another candidate to try. Named explicitly because
+            # str(httpx.ReadTimeout()) is the empty string.
+            logger.warning("Qwen VQA timed out after %ss sheet=%s (model=%s)",
+                           PLAN_VQA_TIMEOUT_SECONDS, sheet_number, QWEN_MODEL)
+            return None
         logger.exception("Qwen VQA failed: %r (model=%s)", e, QWEN_MODEL)
         return None
 
@@ -42847,13 +42863,20 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
     # Existence ("are there chase walls") and attributes ("stucco thickness",
     # "post gauge", "pile type") are answered from the note, legend, schedule
     # and spec lines, quoting the line. An attribute with no line carrying a
-    # value falls through to the vision model on the single best sheet.
+    # value is answered by a schedule named for the thing if the set has one,
+    # then by naming the sheets that mention it; only a subject the drawings
+    # never name at all falls through to the vision model.
     """
-    kind, _attribute = plan_extract.question_kind(route_text)
-    if not kind:
-        chunks = []
-    else:
-        chunks = await _current_v3_chunks(project_id)
+    # THE TEXT IS READ BEFORE ANY PICTURE IS LOOKED AT. This used to ask
+    # question_kind() first and skip the chunk lookup entirely when it came
+    # back None — so "Whats the helical piles" and "What piles used on site?"
+    # never touched the index and went to the vision model, which spent 90
+    # seconds and answered nothing, while S-001.00 had HELICAL PILES printed
+    # on it. Classification chooses the SHAPE of the answer, never whether to
+    # look at all. A question that reaches the vision model without the
+    # drawings' own text having been searched is a bug;
+    # tests/test_plan_chunks_first.py asserts the order.
+    chunks = await _current_v3_chunks(project_id)
     if not chunks:
         # Cheap existence probe for the caller's top-1 decision.
         has_v3 = bool(await db.document_page_chunks.find_one(
@@ -43093,10 +43116,14 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         _mark("retrieval")
         _stage["candidates"] = len(candidates)
     # A version 3 project sends a spatial question to the vision model on the
-    # ONE best sheet. Walking three sheets tripled the latency and the spend
-    # for an answer the first sheet either has or does not.
+    # two best sheets. Three tripled the latency and the spend for an answer
+    # the first sheet either has or does not; one left nothing to fall back on
+    # when the first call timed out, which is what "Whats the helical piles"
+    # did on 2026-09-16 — candidates=1, one 90-second timeout, 98 seconds to
+    # "not found". At PLAN_VQA_TIMEOUT_SECONDS the pair still costs less than
+    # the single call used to.
     if has_v3 and effective_question:
-        candidates = candidates[:1]
+        candidates = candidates[:2]
     if not candidates:
         await send_whatsapp_message(
             group_id,
