@@ -1144,10 +1144,12 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
                         counted += 1
                 if counted:
                     out.append({"sheet": sheet, "count": total, "source": "schedule_qty",
-                                "name": s.get("name"), "rows": counted, "via": s.get("source")})
+                                "name": s.get("name"), "rows": counted, "via": s.get("source"),
+                                "verify": schedule_needs_verifying(chunks, ch)})
                     continue
             out.append({"sheet": sheet, "count": len(matched), "source": "schedule_rows",
-                        "name": s.get("name"), "via": s.get("source")})
+                        "name": s.get("name"), "via": s.get("source"),
+                        "verify": schedule_needs_verifying(chunks, ch)})
     return out
 
 
@@ -1178,7 +1180,10 @@ def format_count_answer(subject: str, hits: List[Dict[str, Any]]) -> Optional[st
         where = f"{h['sheet'] or '?'}"
         # A schedule read from the image, not the text layer, says so: its
         # numbers could not be checked against printed text.
-        seen = ", read from the drawing image" if h.get("via") == "vision" else ""
+        seen = ""
+        if h.get("via") == "vision":
+            seen = (", read from the drawing image — verify against the sheet"
+                    if h.get("verify") else ", read from the drawing image")
         if h["source"] == "schedule_rows":
             lines.append(f"{where}: {h.get('name') or 'schedule'} lists {h['count']} row(s){seen}")
         elif h["source"] == "schedule_qty":
@@ -1222,6 +1227,53 @@ _SCHED_KEEP = ("unit no", "unit", "mark", "tag", "type", "no.", "symbol", "desig
                "qty", "quantity", "make", "manufacturer", "model", "size", "description")
 
 
+# A NUMBER READ OFF A PICTURE, AND WHETHER ANYTHING CONFIRMS IT. The schedules
+# section falls back to the vision model when a table grid has no text in its
+# cells, so a vision-sourced schedule comes, by construction, from a region the
+# text layer could not read. M-200.00 is the case: the ROOMS PTAC UNITS
+# SCHEDULE gives 21, 9 and 11 units, and the whole text layer of that page is
+# "HVAC SCHEDULES / AND DETAILS / M-200.00 / P: / E: / W: / 9" — 47 characters.
+# Nothing on the page confirms 21.
+#
+# Confirmed means EVERY number the table states is printed somewhere in the
+# page's own text layer. Not a proportion: one incidental digit matching out of
+# thirty-seven is not confirmation, and a threshold would have to be argued for
+# every future sheet. Only the raw `text` chunk counts — notes and legend on a
+# scanned page are the model's reading too, and checking one against the other
+# confirms nothing.
+# A VALUE, NOT A NAME. The digits in "PTAC-1" and "PTH093K" are part of an
+# identifier; matching those against the page would confirm a schedule by
+# its own tags. A number has to stand as its own token on both sides.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9.\-])\d[\d,]*(?:\.\d+)?(?![A-Za-z0-9])")
+
+
+def _page_key(ch: Dict[str, Any]) -> Any:
+    return ch.get("page_id") or (ch.get("sheet_number"), ch.get("page_number"))
+
+
+def _numbers_in(text: str) -> set:
+    return {m.group(0).replace(",", "").rstrip(".") for m in _NUMBER_RE.finditer(text or "")}
+
+
+def schedule_needs_verifying(chunks: List[Dict[str, Any]], sched: Dict[str, Any]) -> bool:
+    """True when a vision-read schedule states numbers the page text does not."""
+    payload = sched.get("payload") or {}
+    if payload.get("source") != "vision":
+        return False
+    stated = set()
+    for row in payload.get("rows") or []:
+        for cell in row:
+            stated |= _numbers_in(str(cell))
+    if not stated:
+        return False                 # a table of words has no number to be wrong
+    key = _page_key(sched)
+    printed = set()
+    for ch in chunks:
+        if ch.get("chunk_type") == "text" and _page_key(ch) == key:
+            printed |= _numbers_in(ch.get("text") or "")
+    return bool(stated - printed)
+
+
 def answer_named_schedule(chunks: List[Dict[str, Any]], terms: List[str],
                           limit: int = 2) -> List[Dict[str, Any]]:
     """A schedule whose OWN NAME is the thing asked about answers a question
@@ -1242,7 +1294,8 @@ def answer_named_schedule(chunks: List[Dict[str, Any]], terms: List[str],
         out.append({"sheet": ch.get("sheet_number"), "name": name,
                     "columns": [str(c or "") for c in (payload.get("columns") or [])],
                     "rows": payload.get("rows") or [],
-                    "via": payload.get("source") or payload.get("via")})
+                    "via": payload.get("source") or payload.get("via"),
+                    "verify": schedule_needs_verifying(chunks, ch)})
         if len(out) >= limit:
             break
     return out
@@ -1265,7 +1318,8 @@ def format_named_schedule_answer(subject: str, hits: List[Dict[str, Any]],
         # A schedule read from the image, not the text layer, says so: its
         # cells could not be checked against printed text.
         if h.get("via") == "vision":
-            head += " (read from the drawing image)"
+            head += (" (read from the drawing image — verify against the sheet)"
+                     if h.get("verify") else " (read from the drawing image)")
         lines = [head]
         if cols:
             lines.append(" | ".join(cols[i] for i in keep if i < len(cols)))
@@ -1725,6 +1779,7 @@ __all__ = [
     "answer_question", "question_kind", "question_terms", "answer_attribute", "format_attribute_answer",
     "format_not_stated", "ATTRIBUTE_PATTERNS",
     "answer_named_schedule", "format_named_schedule_answer", "format_open_answer",
+    "schedule_needs_verifying",
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
     "validate_section", "merge_sections", "verify_numbers", "number_in_text",

@@ -395,8 +395,12 @@ class D5b_SchedulesDrawnAsShapesAreReadFromTheImage(unittest.TestCase):
         for c in chunks:
             c["sheet_number"] = "M-200.00"
         ans = pe.answer_question(chunks, "how many PTAC units")
+        # The caveat grew a second half on 2026-09-16. This page has no text
+        # chunk at all, so nothing printed confirms 21, 9 or 11 — see
+        # schedule_needs_verifying.
         self.assertEqual(ans["text"], "PTAC:\nM-200.00: 41 (ROOMS PTAC UNITS SCHEDULE, qty "
-                                      "column, read from the drawing image)")
+                                      "column, read from the drawing image — verify "
+                                      "against the sheet)")
 
     def test_no_empty_grid_and_not_a_thin_plan_is_one_call(self):
         calls = []

@@ -164,6 +164,70 @@ class AScheduleNamedForTheThingAnswersIt(unittest.TestCase):
         self.assertEqual(pe.answer_named_schedule(chunks(), ["sidewalk"]), [])
 
 
+class ANumberReadOffAPictureSaysSo(unittest.TestCase):
+    """M-200.00's PTAC schedule states 21, 9 and 11 units. The whole text layer
+    of that page is 47 characters — "HVAC SCHEDULES / AND DETAILS / M-200.00 /
+    P: / E: / W: / 9". Nothing on the page confirms 21."""
+
+    def _vision_schedules(self):
+        return [c for c in chunks()
+                if c.get("chunk_type") == "schedule"
+                and (c.get("payload") or {}).get("source") == "vision"]
+
+    def test_the_set_has_seven_of_them_on_five_sheets(self):
+        vis = self._vision_schedules()
+        self.assertEqual(len(vis), 7)
+        self.assertEqual(sorted({c["sheet_number"] for c in vis}),
+                         ["M-001.00", "M-200.00", "S-105.00", "S-301.00", "S-302.00"])
+
+    def test_the_ptac_answer_asks_for_the_sheet_to_be_checked(self):
+        a = answer("what type of AC units are in the building")
+        self.assertIn("read from the drawing image — verify against the sheet", a["text"])
+
+    def test_and_so_does_a_count_taken_off_it(self):
+        a = answer("how many ptac units")
+        self.assertEqual(a["outcome"], "chunk_count")
+        self.assertIn("41", a["text"])          # 21 + 9 + 11, none of them printed
+        self.assertIn("verify against the sheet", a["text"])
+
+    def test_a_table_of_words_has_no_number_to_be_wrong_about(self):
+        # GENERAL ABBREVIATIONS on M-001.00 is vision-read and states nothing
+        # numeric. It still says where it came from; it does not ask for a check.
+        abbrev = [c for c in self._vision_schedules()
+                  if (c["payload"].get("name") or "") == "GENERAL ABBREVIATIONS"]
+        self.assertTrue(abbrev)
+        self.assertFalse(pe.schedule_needs_verifying(chunks(), abbrev[0]))
+
+    def test_a_schedule_the_text_layer_read_is_never_flagged(self):
+        flagged = [c for c in chunks()
+                   if c.get("chunk_type") == "schedule"
+                   and (c.get("payload") or {}).get("source") != "vision"
+                   and pe.schedule_needs_verifying(chunks(), c)]
+        self.assertEqual(flagged, [])
+
+    def test_every_stated_number_has_to_be_printed_somewhere(self):
+        page = [{"chunk_type": "text", "sheet_number": "X-1", "page_number": 1,
+                 "text": "PUMP SCHEDULE 4 GPM 60 HZ"}]
+        confirmed = {"chunk_type": "schedule", "sheet_number": "X-1", "page_number": 1,
+                     "payload": {"source": "vision", "rows": [["P-1", "4", "60"]]}}
+        self.assertFalse(pe.schedule_needs_verifying(page + [confirmed], confirmed))
+        # One cell the page does not print is enough. A proportion would have to
+        # be argued for every future sheet; a single incidental digit matching
+        # out of thirty-seven is not confirmation.
+        partial = {"chunk_type": "schedule", "sheet_number": "X-1", "page_number": 1,
+                   "payload": {"source": "vision", "rows": [["P-1", "4", "99"]]}}
+        self.assertTrue(pe.schedule_needs_verifying(page + [partial], partial))
+
+    def test_the_models_own_reading_never_confirms_itself(self):
+        # notes and legend on a scanned page are the model's words too. Only
+        # the raw text chunk counts as printed text.
+        notes = [{"chunk_type": "notes", "sheet_number": "X-2", "page_number": 1,
+                  "text": "21 UNITS TOTAL"}]
+        sched = {"chunk_type": "schedule", "sheet_number": "X-2", "page_number": 1,
+                 "payload": {"source": "vision", "rows": [["PTAC-1", "21"]]}}
+        self.assertTrue(pe.schedule_needs_verifying(notes + [sched], sched))
+
+
 class MentionsLeadWithWhatStatesThings(unittest.TestCase):
 
     def test_a_schedule_outranks_a_floor_plans_text_layer(self):
