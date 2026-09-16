@@ -1,4 +1,4 @@
-# get-page-index.ps1
+﻿# get-page-index.ps1
 #
 # Re-indexes the plans on 588 Boyland, waits for it to finish, then saves what
 # was stored:
@@ -40,7 +40,11 @@
 param(
     [switch]$Resume,          # keep finished pages, index only the rest
     [switch]$SkipReindex,     # no re-index: just the dumps
-    [string[]]$Files,         # re-index only these files (parts of file names)
+    [string[]]$FileMatch,     # re-index only these files (parts of file names)
+                              # NOT $Files: a param() type constraint outlives the
+                              # binding, PowerShell variable names are case-
+                              # insensitive, and `$files = @($status.files)` below
+                              # then coerced every response object to a string.
     [int]$PollSeconds = 30,
     [int]$StallMinutes = 20   # stop waiting after this long with no progress
 )
@@ -83,6 +87,33 @@ function Save-Utf8 {
 
 function Get-Stamp {
     return (Get-Date).ToString('HH:mm:ss')
+}
+
+# The per-file rows of a document-index-status response, and one rendered
+# progress line. Both are functions so a test can drive them from a recorded
+# response without a login — see tests/test_status_display.ps1.
+#
+# THE GUARD IS THE POINT. On 2026-09-16 a full re-index displayed blank names
+# and 0/0 for its whole run, because the rows arrived here as [string] and
+# every property read came back $null. A row that is not an object is a bug in
+# this script, not a server that sent nothing, and it now says so instead of
+# rendering zeroes for ninety minutes.
+function Get-StatusRows {
+    param($Status)
+    $rows = @()
+    foreach ($r in @($Status.files)) {
+        if ($r -isnot [psobject] -or $null -eq $r.file_id) {
+            throw "document-index-status row is $($r.GetType().Name), not an object — the response was coerced before it was read"
+        }
+        $rows += $r
+    }
+    return $rows
+}
+
+function Format-StatusLine {
+    param($File)
+    return ("    {0}  {1}/{2}  {3}" -f $File.file_name, [int]$File.indexed_pages,
+            [int]$File.total_pages, $File.queue_status)
 }
 
 # One file's state from a document-index-status entry. The queue's own status
@@ -200,7 +231,7 @@ $watchIds = @()
 
 # powershell -File hands a comma list over as ONE string, so split it here.
 $fileParts = @()
-foreach ($entry in @($Files)) {
+foreach ($entry in @($FileMatch)) {
     foreach ($part in ("$entry" -split ',')) {
         if ($part.Trim()) { $fileParts += $part.Trim() }
     }
@@ -333,10 +364,10 @@ if ($queued -gt 0) {
             continue
         }
 
-        $files = @($status.files)
+        $statusRows = @(Get-StatusRows $status)
         if ($watchIds.Count -gt 0) {
-            # -Files: wait for the files that were re-indexed, not the whole project.
-            $files = @($files | Where-Object { $watchIds -contains $_.file_id })
+            # -FileMatch: wait for the files re-indexed, not the whole project.
+            $statusRows = @($statusRows | Where-Object { $watchIds -contains $_.file_id })
         }
         $done = 0
         $skipped = 0
@@ -344,7 +375,7 @@ if ($queued -gt 0) {
         $pagesIndexed = 0
         $pagesTotal = 0
         $pending = @()
-        foreach ($f in $files) {
+        foreach ($f in $statusRows) {
             $state = Get-FileState $f
             if ($state -eq 'skipped') {
                 $skipped += 1
@@ -366,9 +397,9 @@ if ($queued -gt 0) {
         }
 
         Write-Host ("[{0}] {1}/{2} files finished ({3} skipped as combined sets, {4} failed)  {5}/{6} pages" -f `
-            (Get-Stamp), $done, $files.Count, $skipped, $failed.Count, $pagesIndexed, $pagesTotal)
+            (Get-Stamp), $done, $statusRows.Count, $skipped, $failed.Count, $pagesIndexed, $pagesTotal)
         foreach ($f in $pending) {
-            Write-Host ("    {0}  {1}/{2}  {3}" -f $f.file_name, [int]$f.indexed_pages, [int]$f.total_pages, $f.queue_status)
+            Write-Host (Format-StatusLine $f)
         }
         foreach ($f in $failed) {
             $why = ''
@@ -376,7 +407,7 @@ if ($queued -gt 0) {
             Write-Host ("    FAILED {0}: {1}" -f $f.file_name, $why) -ForegroundColor Red
         }
 
-        if ($files.Count -gt 0 -and $done -eq $files.Count) {
+        if ($statusRows.Count -gt 0 -and $done -eq $statusRows.Count) {
             if ($failed.Count -gt 0) {
                 Write-Host "[$(Get-Stamp)] Every file has finished; $($failed.Count) failed (listed above)." -ForegroundColor Yellow
             }

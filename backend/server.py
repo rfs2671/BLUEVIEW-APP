@@ -40393,7 +40393,8 @@ async def _ocr_page_text(project_id: str, jpeg_bytes: bytes) -> Tuple[str, Optio
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
                              file_hash: str, page_number: int, fields: dict,
-                             boilerplate, discipline: Optional[str] = None) -> int:
+                             boilerplate, discipline: Optional[str] = None,
+                             file_name: Optional[str] = None) -> int:
     """Replace this page's chunks. The page row must already exist."""
     page = await db.document_page_index.find_one(
         {"file_id": file_id, "page_number": page_number}, {"_id": 1})
@@ -40416,6 +40417,10 @@ async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
             "page_id": str(page["_id"]), "page_number": page_number,
             "sheet_number": fields.get("sheet_number"),
             "sheet_title": fields.get("sheet_title"),
+            # SO A RECORD CAN ALWAYS SAY WHERE IT IS. A page whose sheet number
+            # could not be read still has a file and a page, and an answer that
+            # cites "? (text): CONC. WALL" names nothing anyone can open.
+            "file_name": file_name,
             # THE SAME MARK MEANS DIFFERENT THINGS IN DIFFERENT SETS. On 588
             # Boyland 'S' is the sanitary stack on five plumbing sheets, the
             # storm stack on two, and a smoke detector on one architectural
@@ -40599,7 +40604,7 @@ async def _index_single_page(
                 await _write_page_chunks(
                     project_id=project_id, company_id=company_id, file_id=file_id,
                     file_hash=file_hash, page_number=page_number, fields=spec_fields,
-                    boilerplate=boilerplate, discipline=discipline,
+                    boilerplate=boilerplate, discipline=discipline, file_name=file_name,
                 )
             except Exception as e:
                 logger.exception("spec page chunks failed %s p%s: %r", file_name, page_number, e)
@@ -40857,7 +40862,7 @@ async def _index_single_page(
         await _write_page_chunks(
             project_id=project_id, company_id=company_id, file_id=file_id,
             file_hash=file_hash, page_number=page_number, fields=fields,
-            boilerplate=boilerplate, discipline=discipline,
+            boilerplate=boilerplate, discipline=discipline, file_name=file_name,
         )
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
