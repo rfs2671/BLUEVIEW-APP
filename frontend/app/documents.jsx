@@ -673,7 +673,10 @@ function buildStyles(colors, isDark) {
   indexFailureNote: {
     fontSize: 12,
     lineHeight: 16,
-    color: colors.status?.danger || '#D9534F',
+    // criticalText, not critical: this is 12px body copy, and the text token
+    // is the one that clears AA on both themes (5.19:1 dark, 4.51:1 light).
+    // A literal hex here also fails the palette sweep, as it did.
+    color: colors.state.criticalText,
     marginTop: 4,
   },
   header: {
