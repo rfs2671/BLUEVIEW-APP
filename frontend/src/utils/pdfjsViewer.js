@@ -191,7 +191,32 @@ const STAMP_NAME = '.stamp';
 //       viewer.html is written to disk once per stamp, so a device already
 //       staged at `12` would keep paying 4000 ms a sheet. THIS BUMP IS THE
 //       FIX'S ENTIRE DELIVERY MECHANISM.
-const VIEWER_VERSION = '13';
+//  14 — A 150 ms CROSSFADE ON THE FIRST SHARP PAINT OF A SHEET, AND NOTHING
+//       ELSE. `13` is fast and never blank; what is left is that the swap
+//       from the preview to the sharp canvas happens in one frame — thick
+//       soft lines to thin crisp ones, in the middle of the reader's
+//       attention. The sharp canvas now attaches transparent and one class
+//       flip transitions it to opaque over 150 ms; the preview is already
+//       underneath, so that is a crossfade with no second layer to manage.
+//
+//       PRESENTATION ONLY, DELIBERATELY. `slot.done` is set at the same
+//       instant it always was, `finish()` gives the render slot back at the
+//       same instant, `trim()` runs on the same numbers and no preview is
+//       held one millisecond longer. Nothing in `13`'s timing, queueing or
+//       memory moved, and the executing suite asserts the tiers and budgets
+//       unchanged either side of this.
+//
+//       AND NOT ON A ZOOM RE-RENDER. A per-slot `sharpPainted` flag, set
+//       where the canvas attaches and cleared by `releaseSlot`, is the
+//       difference: a sheet re-rendered while it is ALREADY sharp swaps
+//       instantly, and a sheet that `trim()` evicted and the reader came
+//       back to fades again — correctly, because the eviction left the
+//       preview on screen and that is exactly the state a first paint fades
+//       out of.
+//
+//       viewer.html is written to disk once per stamp, so a device staged at
+//       `13` keeps the hard swap and sees none of this.
+const VIEWER_VERSION = '14';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -225,6 +250,22 @@ function viewerHtml() {
     // would have a frame with neither in it — which is the blank the operator
     // reported.
     '.pg canvas{display:block;width:100%;height:100%;position:relative;z-index:1;}',
+    // ── THE CROSSFADE IS TWO RULES AND ONE CLASS FLIP ──────────────────────
+    //
+    // Because the preview is ALREADY UNDERNEATH (z-index 0 against the
+    // canvas's 1), fading the canvas in from transparent IS the crossfade.
+    // There is no second animation, nothing to fade out, and — this is the
+    // part that matters — no reason to keep a preview resident a moment
+    // longer than the tier above already keeps it. `xf` is what the sharp
+    // canvas attaches with; `xf on` is what a single setTimeout(0) flips it
+    // to, one turn later, and the 150 ms belongs entirely to the compositor.
+    //
+    // ⚠️ A CANVAS THAT MUST NOT FADE CARRIES NEITHER CLASS, so its opacity is
+    // never declared at all and no transition exists on it to be started by
+    // accident. That is the zoom re-render, and it swaps in one frame exactly
+    // as it did before this rule was written.
+    '.pg canvas.xf{opacity:0;transition:opacity 150ms linear;}',
+    '.pg canvas.xf.on{opacity:1;}',
     '.pg img.pv{display:block;position:absolute;left:0;top:0;width:100%;height:100%;z-index:0;}',
     '#msg{position:fixed;left:16px;right:16px;top:44%;text-align:center;line-height:1.5;}',
     '</style>',
@@ -1331,6 +1372,14 @@ const VIEWER_SCRIPT = [
   // The canvas is already detached and zeroed above; nothing else here has to
   // touch the DOM.
   '    slot.done = false;',
+  // AND THE NEXT SHARP CANVAS ON THIS SHEET IS A FIRST PAINT AGAIN. What the
+  // reader is looking at the instant this line runs is the PREVIEW — the
+  // eviction took the canvas and deliberately left the layer under it — so a
+  // sheet he scrolls back to is in exactly the state the crossfade exists for.
+  // Clearing it here rather than anywhere else is also what keeps the flag
+  // honest for free: every path that can take a canvas away comes through this
+  // function, including `teardown()`.
+  '    slot.sharpPainted = false;',
   '    slot.busy = false;',
   '  }',
   '',
@@ -1898,6 +1947,29 @@ const VIEWER_SCRIPT = [
   '        if (slot.canvas && slot.canvas.parentNode) {',
   '          try { slot.canvas.parentNode.removeChild(slot.canvas); } catch (e) {}',
   '        }',
+  // ── WHETHER THIS PAINT IS THE ONE THE READER SHOULD SEE ARRIVE ────────
+  //
+  // TWO CONDITIONS, AND BOTH ARE ABOUT WHAT IS ON THE SCREEN RIGHT NOW.
+  //
+  //   !slot.sharpPainted   this sheet has no sharp canvas the reader has
+  //                        already accepted. True on a first paint and true
+  //                        again after an eviction (`releaseSlot` clears it);
+  //                        FALSE for a re-render of a sheet that is currently
+  //                        sharp, which is the pinch. A fade on every zoom
+  //                        step would be worse than the jump it replaces —
+  //                        the sheet would go soft under the reader's fingers
+  //                        each time he moved them.
+  //
+  //   slot.pv              there is a preview underneath to fade FROM. On the
+  //                        very first sheet of an open there is not: previews
+  //                        are armed BY this attach and not before, so the
+  //                        layer under it is the white placeholder. Fading up
+  //                        from white would add 150 ms to the one number the
+  //                        operator actually timed, to soften a transition
+  //                        that is not the one being complained about.
+  '        var xfade = !slot.sharpPainted && !!slot.pv;',
+  '        if (xfade) canvas.className = "xf";',
+  '        slot.sharpPainted = true;',
   '        slot.el.appendChild(canvas);',
   '        slot.canvas = canvas;',
   '        slot.done = true;',
@@ -1908,6 +1980,32 @@ const VIEWER_SCRIPT = [
   // open number this change must not move is measured up to here.
   '        armPreviews();',
   '        finish();',
+  // ── ARMED LAST, ON PURPOSE, AND IT IS ONE CLASS FLIP ──────────────────
+  //
+  // ⚠️ THIS LINE SITS AFTER `finish()` SO THAT NOTHING ABOUT THE SLOT'S
+  // RELEASE CAN HAVE MOVED. `slot.done` was set above at the instant it
+  // always was and `finish()` gave the render slot back at the instant it
+  // always did; the crossfade is arranged strictly afterwards and cannot
+  // delay either. A reviewer comparing `13` to this one should be able to
+  // stop reading at `finish()`.
+  //
+  // WHY A TIMER AND NOT A REFLOW. A CSS transition needs the element to have
+  // been seen at `opacity:0` before the change, and the two ways to get that
+  // are a forced layout (`canvas.offsetWidth`, which is a full layout of a
+  // document that may be 200 sheets long, on the thread this work spent four
+  // rounds freeing) or one turn of the event loop. The turn is free.
+  //
+  // WHY setTimeout AND NOT requestAnimationFrame. pdf.js's own canvas renderer
+  // yields BETWEEN CHUNKS on rAF, so an rAF callback queued here waits behind
+  // the next sheet's chunks; a 0 ms timer is an ordinary task and is not
+  // scheduled against them. And the failure mode if the turn never comes is
+  // the one to prefer anyway: the canvas stays transparent and the reader goes
+  // on seeing the PREVIEW, which is what he was seeing before — never a blank
+  // sheet, and never worse than `13`.
+  //
+  // It is not an animation loop. It fires once, sets a class, and the 150 ms
+  // after that costs this thread nothing.
+  '        if (xfade) setTimeout(function(){ canvas.className = "xf on"; }, 0);',
   '      });',
   '    })["catch"](function(e){',
   '      slot.task = null;',
@@ -2571,8 +2669,18 @@ const VIEWER_SCRIPT = [
   // "this sheet has something to show" and, once true, stays true for the life
   // of the document. A single tri-state would have made the evictor's job
   // ambiguous — the whole point is that one of the two survives it.
+  // `sharpPainted` IS A THIRD AXIS AND NOT A STAGE OF EITHER. `done` means
+  // "the sharp canvas is attached RIGHT NOW"; `sharpPainted` means "this sheet
+  // has already shown the reader a sharp canvas since the last time it was
+  // evicted", and the only thing that reads it is the crossfade. They are
+  // cleared by the same call — `releaseSlot` — and set at the same statement,
+  // but they come apart exactly where the question does: a zoom re-render
+  // clears `done` and leaves `sharpPainted` alone, which is the whole
+  // distinction between a swap the reader should not see fade and a first
+  // paint he should.
   '            var slot = { n: pageNo, el: el, done: false, busy: false,',
   '                          near: false, canvas: null, page: null, task: null, gen: 0,',
+  '                          sharpPainted: false,',
   '                          pv: false, pvImg: null, pvUrl: "", pvBytes: 0, pvRawBytes: 0,',
   '                          pvStorage: "", pvBusy: false, pvFail: "", pgen: 0 };',
   '            el.__slot = slot;',

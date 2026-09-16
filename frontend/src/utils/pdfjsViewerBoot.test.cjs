@@ -1316,6 +1316,7 @@ async function main() {
   await tierFairness();
   await scrollProbe();
   await encodeOffSlot();
+  await firstPaintCrossfade();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2505,6 +2506,201 @@ async function encodeOffSlot() {
     ok(s.sandbox.pageYOffset === 0,
       `the page is handed back where the open left it (scrollTop ${s.sandbox.pageYOffset})`);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 16. THE FIRST SHARP PAINT FADES IN. A ZOOM RE-RENDER DOES NOT.
+//
+// WHAT THE READER SEES. The preview sits UNDER the sharp canvas, so the moment
+// the sharp render attaches the drawing goes from thick soft lines to thin
+// crisp ones in a single frame — a visible jump, in the middle of about half a
+// second of his attention. It is the last rough edge on a viewer whose timing,
+// queueing and memory are all settled and measured.
+//
+// THE FIX IS PRESENTATION ONLY, AND THAT IS WHAT THIS SECTION GUARDS. The
+// canvas attaches carrying a class that makes it transparent, one class flip
+// turns it opaque, and a 150 ms CSS transition does the rest on the
+// compositor. `slot.done`, `finish()`, `trim()` and the preview's lifetime are
+// all untouched — which is why not one number in sections 8-15 moves.
+//
+// ⚠️ AND IT IS NOT ON EVERY PAINT. A pinch that re-renders a sheet which is
+// ALREADY sharp must swap the way it does today. A fade on every zoom step
+// would be worse than the jump it replaces: the reader is holding a gesture
+// and the sheet would go soft under his fingers each time he moved them.
+//
+// THE DISTINCTION IS A PER-SLOT FLAG, `sharpPainted`, set where a canvas
+// attaches and cleared by `releaseSlot`:
+//
+//   first sharp paint of a page        flag false   ->  fade
+//   zoom re-render while still sharp   flag true    ->  instant
+//   evicted by trim(), scrolled back   eviction cleared it  ->  fade again
+//
+// The third line is the one that could not have been carried on the canvas
+// element or on `done` alone. `trim()` takes the canvas and leaves the preview
+// on purpose, so at the moment the sheet comes back the PREVIEW is what is on
+// the screen — exactly the state the first paint fades out of, and therefore a
+// first paint again by the only definition that describes what the reader
+// sees.
+//
+// A FOURTH CASE FALLS OUT OF THE SAME GATE AND IS ASSERTED BELOW: the very
+// first sheet of an open has no preview under it at all, because `armPreviews`
+// is called BY that first sharp landing and not before. There is nothing to
+// fade from, so it does not fade, and the open number this file spent four
+// rounds on stays byte-for-byte what it is.
+// ═══════════════════════════════════════════════════════════════════════════
+async function firstPaintCrossfade() {
+  console.log('\n── the first sharp paint fades; a zoom re-render does not ────\n');
+
+  // The CSS lives in `viewerHtml()`, not in VIEWER_SCRIPT, so this reads the
+  // whole module rather than the extracted script.
+  const moduleSrc = fs.readFileSync(VIEWER, 'utf8');
+  const script = viewerScript();
+
+  // ── (a) THE 150 ms IS CSS'S, AND THE PAGE'S ONLY JOB IS ONE CLASS FLIP ──
+  ok(/\.pg canvas\.xf\{[^}]*opacity:0/.test(moduleSrc),
+    'a canvas marked for the crossfade attaches transparent');
+  ok(/\.pg canvas\.xf\{[^}]*transition:opacity 150ms/.test(moduleSrc),
+    'and the 150 ms is declared as a CSS transition on the stylesheet');
+  ok(/\.pg canvas\.xf\.on\{[^}]*opacity:1/.test(moduleSrc),
+    'and turning it on is a class, not a computed opacity');
+  // ⚠️ THE THREAD IS THE WHOLE POINT OF THE LAST FOUR ROUNDS. A rAF loop or an
+  // interval stepping opacity would put a per-frame JS task back on the one
+  // thread that was just cleared, to do something the compositor does for
+  // free.
+  ok(!/requestAnimationFrame/.test(script),
+    'and nothing steps the opacity from JS — no animation loop on the render thread');
+
+  // ── REACHING A SLOT. `el.__slot` is the page's own back-pointer and the
+  //    only door into a slot from outside; the viewer is an IIFE with no
+  //    export and no postMessage that touches one sheet.
+  const elFor = (s, n) => s.els.find((e) => e.__slot && e.__slot.n === n) || null;
+  const slotOf = (s, n) => { const e = elFor(s, n); return e ? e.__slot : null; };
+  // THE SHARP CANVAS, WHETHER OR NOT IT IS ALIVE. `__child` keeps pointing at
+  // an evicted canvas (the page detaches it and zeroes it; it does not null
+  // the harness's field), which is exactly what makes identity comparison
+  // across an eviction meaningful.
+  const canvasOf = (s, n) => { const e = elFor(s, n); return e ? e.__child : null; };
+  const liveCanvas = (s, n) => {
+    const c = canvasOf(s, n);
+    return c && Number(c.width) > 0 ? c : null;
+  };
+  const hasPreview = (s, n) => {
+    const e = elFor(s, n);
+    return !!(e && e.__kids.some((k) => k && k.className === 'pv'
+      && (k.src || Number(k.width) > 0)));
+  };
+
+  const s = bootLive({
+    search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 40,
+    pageH: 886, viewportH: 883,
+  });
+  await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+  s.scrollTo(0);
+  s.deliverIOGeo();
+  await s.pump();
+
+  // ── (b) THE OPEN DOES NOT FADE ─────────────────────────────────────────
+  //
+  // Sheet 1's sharp render is what ARMS the preview fill, so at the instant it
+  // attached there was no preview on any sheet in the document. A fade there
+  // would be a fade up from the white placeholder — 150 ms added to the one
+  // number the operator actually timed.
+  {
+    const c = liveCanvas(s, 1);
+    ok(!!c, 'the first sheet of the open is drawn');
+    ok(!!c && !/\bxf\b/.test(c.className),
+      `and does NOT fade — its render lands before any preview exists, so there `
+      + `is nothing underneath to fade from (class "${c ? c.className : 'none'}")`);
+  }
+
+  // ── (c) A FIRST SHARP PAINT OVER A PREVIEW DOES FADE ───────────────────
+  const TARGET = 12;
+  ok(hasPreview(s, TARGET),
+    `sheet ${TARGET} has a preview built while the reader was elsewhere`);
+  ok(!s.residentPages().includes(TARGET),
+    `and no sharp canvas yet (resident ${s.residentPages().join(',') || 'none'})`);
+
+  s.scrollTo((TARGET - 1) * s.pageH);
+  s.deliverIOGeo();
+  // ⚠️ STOPS AT THE ATTACH, NOT AT EXHAUSTION. `pumpUntil` checks its predicate
+  // after the microtasks settle and before the next timer fires, so this
+  // returns with the canvas in the DOM and the class flip still in the timer
+  // queue — which is the only moment the STARTING state of the transition can
+  // be observed at all.
+  const arrived = await s.pumpUntil(() => !!liveCanvas(s, TARGET));
+  ok(arrived, `the reader scrolls to sheet ${TARGET} and it is rasterised`);
+  const c1 = liveCanvas(s, TARGET);
+  ok(!!c1 && c1.className === 'xf',
+    `and the sharp canvas goes into the DOM TRANSPARENT, over the preview `
+    + `(class "${c1 ? c1.className : 'none'}")`);
+  await s.pump();
+  ok(!!c1 && c1.className === 'xf on',
+    `and one class flip later it is opaque — the fade itself never touched JS `
+    + `(class "${c1 ? c1.className : 'none'}")`);
+  ok(hasPreview(s, TARGET),
+    'and the preview is still there, held exactly as long as it was before');
+
+  // ── (d) A ZOOM RE-RENDER OF A SHEET THAT IS ALREADY SHARP DOES NOT ─────
+  //
+  // Driven by clearing `done` on a slot whose generation, canvas and preview
+  // are all untouched, which is what a re-render at a new scale is and the
+  // only thing it is. Nothing else in the page can produce a second sharp
+  // render into a live slot — `renderSlot` returns on `done` and `releaseSlot`
+  // moves the generation — so this is the state under test, reached the only
+  // way it can be reached from outside.
+  const slot = slotOf(s, TARGET);
+  ok(!!slot && slot.sharpPainted === true,
+    'the slot records that this sheet has had its first sharp paint');
+  const before = canvasOf(s, TARGET);
+  slot.done = false;
+  s.deliverIOGeo();
+  const swapped = await s.pumpUntil(() => {
+    const c = liveCanvas(s, TARGET);
+    return !!c && c !== before;
+  });
+  ok(swapped, 'a pinch re-renders the sheet at the new scale');
+  const c2 = liveCanvas(s, TARGET);
+  ok(!!c2 && c2.className === '',
+    `and the new canvas replaces the old one INSTANTLY — no fade class on a `
+    + `sheet that was already sharp (class "${c2 ? c2.className : 'none'}")`);
+  await s.pump();
+  ok(!!c2 && c2.className === '',
+    'and nothing turns one on a tick later either');
+
+  // ── (e) AN EVICTION AND A RETURN IS A FIRST PAINT AGAIN ────────────────
+  //
+  // THE READER WALKS, HE DOES NOT TELEPORT, and here that is arithmetic rather
+  // than realism: CANVAS_BUDGET_MP is 32 and a sheet of this geometry is
+  // ~12.6 MP, so TWO resident sheets are under the budget and nothing is
+  // evicted at all. It takes a third to make `trim()` bind, and when it does
+  // it takes the one farthest from the reader — which is sheet 12.
+  for (const stop of [19, 26]) {
+    s.scrollTo((stop - 1) * s.pageH);
+    s.deliverIOGeo();
+    await s.pump();
+  }
+  ok(!s.residentPages().includes(TARGET),
+    `the budget took sheet ${TARGET}'s canvas while the reader was away `
+    + `(resident ${s.residentPages().join(',') || 'none'})`);
+  ok(hasPreview(s, TARGET),
+    'and left its preview, which is what is on the screen on the way back');
+  ok(!!slotOf(s, TARGET) && slotOf(s, TARGET).sharpPainted === false,
+    'and the eviction cleared the first-paint flag along with the canvas');
+
+  s.scrollTo((TARGET - 1) * s.pageH);
+  s.deliverIOGeo();
+  const returned = await s.pumpUntil(() => !!liveCanvas(s, TARGET));
+  ok(returned, `the reader scrolls back to sheet ${TARGET} and it is drawn again`);
+  const c3 = liveCanvas(s, TARGET);
+  ok(!!c3 && c3 !== before && c3 !== c2, 'on a canvas that is not either of the earlier ones');
+  ok(!!c3 && c3.className === 'xf',
+    `and it fades in again, because the preview is what the eviction left on `
+    + `screen (class "${c3 ? c3.className : 'none'}")`);
+  await s.pump();
+  ok(!!c3 && c3.className === 'xf on', 'and turns opaque the same way');
+
+  ok(!s.threw, `and nothing threw anywhere in the sequence${
+    s.threw ? ` — ${s.threw && s.threw.message}` : ''}`);
 }
 
 main().then(() => {
