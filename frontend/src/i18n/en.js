@@ -529,6 +529,13 @@ export default {
     locationQuestion: 'Where on site?',
     locationOther: 'Somewhere else',
     locationOtherPrompt: 'Where was the work?',
+    // NOBODY HAS ENTERED THIS BUILDING'S LEVELS, so the four chips above are a
+    // default list and not this job's floors. Said out loud because a CP
+    // picking "2nd Floor" from a guessed list is recording a location in a
+    // legal document, and because the remedy is one he can carry out himself:
+    // typing the real level under "Somewhere else" makes it a chip for
+    // everyone on the project tomorrow.
+    locationsAreDefault: "These are the usual levels — nobody has entered this building's yet. Type the real one under “Somewhere else” and it stays on the list.",
     // The camera is unreachable until crew, activity and location are set, so
     // that every photo carries all three before the shutter fires. The reason
     // is stated rather than the button just being absent.

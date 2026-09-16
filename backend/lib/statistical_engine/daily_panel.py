@@ -87,6 +87,11 @@ from lib.statistical_engine.baselines import (
 
 logger = logging.getLogger(__name__)
 
+from lib.project_state import (  # noqa: E402
+    drop_fixture_rows,
+    fixture_company_ids,
+)
+
 
 # ── PR #15A constants ─────────────────────────────────────────────
 
@@ -1330,7 +1335,20 @@ async def nightly_panel_build_for_all_projects(
                 "n_rows_inserted": 0, "errors": []}
 
     try:
+        # FIXTURE TENANTS ARE NOT PEERS. This read was `find({})` -- every
+        # project on the platform, every tenant, deleted or not -- and the
+        # panel it builds is what real projects are scored AGAINST. A company
+        # literally named "test", holding two projects somebody clicks through
+        # to try a feature, was in the comparison set.
+        #
+        # FILTERED IN PYTHON RATHER THAN IN THE QUERY, on purpose: the read
+        # above must keep its exact shape (`find({})` with no projection) so
+        # that a failure here cannot change which projects the panel sees --
+        # only how many. See lib/project_state.fixture_company_ids, which fails
+        # open to the empty set.
+        _fixtures = await fixture_company_ids(db)
         projects = await db.projects.find({}).to_list(length=None)
+        projects = drop_fixture_rows(projects, _fixtures)
     except Exception as e:
         logger.warning(
             "[pr15a_panel_build] active projects fetch failed: %r", e,

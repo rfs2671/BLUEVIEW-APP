@@ -609,6 +609,22 @@ export const projectsAPI = {
     const response = await apiClient.get(`/api/projects/${projectId}/required-logbooks`);
     return response.data;
   },
+
+  /**
+   * Which levels this building has, READ OFF ITS OWN INDEXED SHEETS.
+   *
+   * A SUGGESTION AND A GET. Nothing is written by asking: the admin reads the
+   * proposal beside the sheet numbers it came from and presses Save on the
+   * form, which goes through the ordinary project update. The server answers
+   * with `levels` (each naming the sheets it was found on), `patch` (the
+   * fields an Apply would set), `unmapped` (strings the table did not
+   * understand, verbatim) and `title_gaps` (indexed pages with no sheet title
+   * at all, which is what bounds how complete the answer can be).
+   */
+  getSuggestedLevels: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/suggested-levels`);
+    return response.data;
+  },
 };
 
 /**

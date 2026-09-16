@@ -23,6 +23,7 @@ import {
   X,
   Search,
   CheckCircle,
+  Layers,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, GlassListItem } from '../../src/components/GlassCard';
@@ -86,7 +87,22 @@ export default function ProjectsScreen() {
     //
     // Sending NOTHING lets the server's own classification run.
     project_class: 'regular',
+    ...EMPTY_LEVELS,
   });
+
+  // -- EDITING AN EXISTING PROJECT'S LEVELS --------------------------------
+  // The levels are the one thing on a project that is WRONG UNTIL SOMEBODY
+  // ANSWERS, and every project that exists today was created before the
+  // question was asked. A create-only form would have left both live projects
+  // with no floor chips forever, which is the state this work exists to end.
+  const [editTarget, setEditTarget] = useState(null);   // the project row
+  const [editLevels, setEditLevels] = useState(EMPTY_LEVELS);
+  const [savingLevels, setSavingLevels] = useState(false);
+
+  const openLevelEditor = (project) => {
+    setEditTarget(project);
+    setEditLevels(levelsOf(project));
+  };
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -171,10 +187,11 @@ export default function ProjectsScreen() {
         // OMITTED unless he picked one. A key present with any value is an
         // override; the absence is what lets the server classify.
         project_class: newProject.project_class,
+        ...levelPatch(newProject),
       });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '', project_class: 'regular' });
+      setNewProject({ address: '', project_class: 'regular', ...EMPTY_LEVELS });
       setShowAddModal(false);
       toast.success('Project Created', 'New project added');
     } catch (error) {
@@ -182,6 +199,32 @@ export default function ProjectsScreen() {
       toast.error('Create Error', error.response?.data?.detail || 'Could not create project');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleSaveLevels = async () => {
+    if (!editTarget) return;
+    const id = getProjectId(editTarget);
+    setSavingLevels(true);
+    try {
+      // EVERY FIELD, EVERY TIME -- including the false ones. update_project
+      // drops only None, so false is a real value that clears a flag, and
+      // sending only the true ones would make a toggle one-way.
+      const patch = levelPatch(editLevels, true);
+      const updated = await projectsAPI.update(id, patch);
+      setProjects((prev) => prev.map((p) => (
+        getProjectId(p) === id ? { ...p, ...patch, ...(updated || {}) } : p
+      )));
+      setEditTarget(null);
+      toast.success('Saved', 'The floor list on the daily log follows this.');
+    } catch (error) {
+      console.error('Failed to save building levels:', error);
+      toast.error(
+        'Not saved',
+        error.response?.data?.detail || failureDetail('error', error, 'this project'),
+      );
+    } finally {
+      setSavingLevels(false);
     }
   };
 
@@ -280,6 +323,7 @@ export default function ProjectsScreen() {
                 <ProjectsTable
                   projects={filteredProjects}
                   onRowPress={(project) => router.push(`/project/${getProjectId(project)}`)}
+                  onEditLevels={openLevelEditor}
                   onDelete={(project) => handleDeleteProject(getProjectId(project))}
                 />
               ) : filteredProjects.map((project) => (
@@ -369,7 +413,23 @@ export default function ProjectsScreen() {
                     />
                   </View>
 
-                  {/* Delete — small, pinned to the card's top-right
+                  {/* Building levels -- SHIPPED WITH ITS OWN ENTRY POINT.
+                      A form nothing opens is a field nobody fills in, and an
+                      unanswered storey count is exactly why the daily log's
+                      location question has been one chip wide. Sits left of
+                      the trash, in the same corner strip. */}
+                  <Pressable
+                    onPress={() => openLevelEditor(project)}
+                    style={({ hovered }) => [s.levelsCorner, hovered && { backgroundColor: withAlpha('#ffffff', 0.12) }]}
+                    hitSlop={10}
+                    accessibilityLabel={'Building levels'}
+                  >
+                    {({ hovered }) => (
+                      <Layers size={15} strokeWidth={1.5} color={hovered ? colors.text.primary : colors.text.muted} />
+                    )}
+                  </Pressable>
+
+                  {/* Delete -- small, pinned to the card's top-right
                       corner (out of the badge row), sitting in the empty
                       corner above the ring's arc. */}
                   <Pressable
@@ -481,6 +541,12 @@ export default function ProjectsScreen() {
                     </View>
                   </View>
 
+                  <LevelFields
+                    s={s}
+                    value={newProject}
+                    onChange={(patch) => setNewProject({ ...newProject, ...patch })}
+                  />
+
                   <GlassButton
                     title="Create Project"
                     onPress={handleAddProject}
@@ -492,8 +558,294 @@ export default function ProjectsScreen() {
             </View>
           </KeyboardAvoidingView>
         </Modal>
+        {/* Building levels -- the same fields, on a project that exists. */}
+        <Modal
+          visible={editTarget != null}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setEditTarget(null)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={s.modalOverlay}
+          >
+            <Pressable style={s.modalBackdrop} onPress={() => setEditTarget(null)} />
+            <View style={s.modalContent}>
+              <GlassCard variant="modal" style={s.modalCard}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>Building levels</Text>
+                  <GlassButton
+                    variant="icon"
+                    icon={<X size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                    onPress={() => setEditTarget(null)}
+                  />
+                </View>
+                <View style={s.modalForm}>
+                  <Text style={s.levelsProject} {...clampLines(2)}>
+                    {editTarget?.name || editTarget?.address || ''}
+                  </Text>
+                  <LevelFields
+                    s={s}
+                    value={editLevels}
+                    onChange={(patch) => setEditLevels({ ...editLevels, ...patch })}
+                    projectId={editTarget ? getProjectId(editTarget) : null}
+                  />
+                  <GlassButton
+                    title="Save"
+                    onPress={handleSaveLevels}
+                    loading={savingLevels}
+                    style={s.createButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
+  );
+}
+
+/**
+ * WHICH LEVELS THIS BUILDING HAS -- the capture half of the daily log's
+ * location chips.
+ *
+ * -- WHY THE TOGGLES ARE NOT DERIVED FROM THE NUMBER ------------------------
+ *
+ * A storey count cannot say whether there is a cellar under the building or a
+ * bulkhead over it: a 4-storey building with a cellar and one without both say
+ * 4. Those are where a lot of the work happens and where a CP has to be able
+ * to say work happened, so each one is asked.
+ *
+ * -- NOT A CLASSIFICATION CONTROL, EXCEPT THE ONE THAT IS -------------------
+ *
+ * building_stories IS a 3310 input -- the server re-classifies on it, and at 10
+ * storeys a project becomes Major A and picks up two more required daily logs.
+ * The four toggles are not: a cellar does not make a building major, and the
+ * server keeps them out of classification_fields for that reason. The note
+ * under the field says so, because an admin typing a number into a form has no
+ * other way to learn that it moves the project's obligations.
+ *
+ * -- BLANK IS A REAL ANSWER -------------------------------------------------
+ *
+ * An empty storey count is left empty, not sent as 0. "Nobody said" and "zero
+ * storeys" are different facts and only one of them is ever true of a building.
+ */
+const LEVEL_TOGGLES = [
+  { key: 'has_sub_cellar', label: 'Sub-cellar' },
+  { key: 'has_cellar', label: 'Cellar' },
+  { key: 'has_mezzanine', label: 'Mezzanine' },
+  { key: 'has_roof_bulkhead', label: 'Roof / bulkhead' },
+];
+
+const EMPTY_LEVELS = {
+  building_stories: '',
+  has_sub_cellar: false,
+  has_cellar: false,
+  has_mezzanine: false,
+  has_roof_bulkhead: false,
+};
+
+/** The level fields of a stored project, as the form holds them. */
+const levelsOf = (project) => ({
+  building_stories: project?.building_stories != null
+    ? String(project.building_stories) : '',
+  has_sub_cellar: Boolean(project?.has_sub_cellar),
+  has_cellar: Boolean(project?.has_cellar),
+  has_mezzanine: Boolean(project?.has_mezzanine),
+  has_roof_bulkhead: Boolean(project?.has_roof_bulkhead),
+});
+
+/**
+ * The form's levels as a request body.
+ *
+ * withBlanks is the difference between CREATE and EDIT and it is not cosmetic.
+ * On create, an untouched toggle must send nothing -- the project has no answer
+ * and false would record one. On edit the admin is looking at the switches, so
+ * every one of them is his answer, including the off ones; without this a
+ * toggle could be turned on and never off again.
+ */
+function levelPatch(form, withBlanks = false) {
+  const out = {};
+  const n = parseInt(form?.building_stories, 10);
+  if (Number.isFinite(n) && n > 0) out.building_stories = n;
+  LEVEL_TOGGLES.forEach(({ key }) => {
+    if (form?.[key] || withBlanks) out[key] = Boolean(form?.[key]);
+  });
+  return out;
+}
+
+/**
+ * WHICH LEVELS THE DRAWINGS SAY, offered beside the fields.
+ *
+ * -- WHY THIS EXISTS AT ALL ---------------------------------------------------
+ *
+ * building_stories was null on every project this product has, because nothing
+ * ever wrote it. Asking an admin to type a storey count he would have to go and
+ * look up is how it stays null. 588 Thomas has 155 indexed plan pages and its
+ * title blocks say the answer: A-100.00 FIRST FLOOR PLAN, A-103.00 FOURTH FLOOR
+ * PLAN, A-104.00 MEZZANINE PLAN, A-105.01 ROOF AND BULKHEAD PLAN.
+ *
+ * -- IT NEVER WRITES ----------------------------------------------------------
+ *
+ * Apply fills the FORM. Nothing reaches the project until he presses Save, and
+ * Save is the same request a typed answer makes. He can change any field after
+ * applying, and closing the modal discards it.
+ *
+ * -- IT SHOWS ITS WORKING -----------------------------------------------------
+ *
+ * Every level names the sheets it came from, because "4th Floor" is a claim and
+ * "4th Floor - A-103.00" is a claim he can check against the drawing he already
+ * has. `unmapped` prints the strings the table did not understand rather than
+ * dropping them: on 588 that is "first underground", the one genuinely
+ * ambiguous sheet in the set, and it is the line that needs a human. `pages`
+ * and `title_gaps` bound the answer -- 24 of 155 indexed rows carry no sheet
+ * title at all, so the list is drawn from a set with known holes in it.
+ */
+function SuggestFromPlans({ s, projectId, onApply }) {
+  const [state, setState] = useState('idle');   // idle | loading | done | none | error
+  const [data, setData] = useState(null);
+
+  const run = async () => {
+    setState('loading');
+    try {
+      const res = await projectsAPI.getSuggestedLevels(projectId);
+      setData(res || null);
+      setState((res?.levels || []).length > 0 ? 'done' : 'none');
+    } catch (e) {
+      console.error('Failed to read levels from plans:', e);
+      setState('error');
+    }
+  };
+
+  if (!projectId) return null;
+
+  return (
+    <View style={s.inputGroup}>
+      <GlassButton
+        title={state === 'done' ? 'Read the plans again' : 'Suggest levels from plans'}
+        onPress={run}
+        loading={state === 'loading'}
+      />
+
+      {state === 'none' && (
+        <Text style={s.inputHint}>
+          No levels found on this project&apos;s indexed sheets
+          {data?.pages ? ` (${data.pages} pages read)` : ' (no plans indexed yet)'}.
+        </Text>
+      )}
+      {state === 'error' && (
+        <Text style={s.inputHint}>Could not read the plans. Nothing was changed.</Text>
+      )}
+
+      {state === 'done' && data && (
+        <>
+          {(data.levels || []).map((lv) => (
+            <View key={lv.token} style={s.levelRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.levelLabel}>{lv.label}</Text>
+                <Text style={s.inputHint}>
+                  {(lv.sheets || []).length > 0
+                    ? (lv.sheets || []).join(', ')
+                    : `${lv.pages} page${lv.pages === 1 ? '' : 's'}`}
+                </Text>
+              </View>
+            </View>
+          ))}
+
+          {(data.unmapped || []).length > 0 && (
+            <Text style={s.inputHint}>
+              Not understood, left for you:{' '}
+              {(data.unmapped || []).join(' · ')}
+            </Text>
+          )}
+          <Text style={s.inputHint}>
+            {`Read from ${data.pages} indexed page${data.pages === 1 ? '' : 's'}`}
+            {data.title_gaps
+              ? `, ${data.title_gaps} of which carry no sheet title.`
+              : '.'}
+          </Text>
+
+          <GlassButton
+            title="Use these"
+            onPress={() => onApply(data.patch || {})}
+          />
+          <Text style={s.inputHint}>
+            This fills the fields above. Nothing is saved until you press Save.
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
+function LevelFields({ s, value, onChange, projectId }) {
+  return (
+    <>
+      <View style={s.inputGroup}>
+        <Text style={s.inputLabel}>STORIES ABOVE GROUND</Text>
+        <GlassInput
+          value={String(value?.building_stories ?? '')}
+          onChangeText={(text) => onChange({ building_stories: text.replace(/[^0-9]/g, '') })}
+          placeholder="e.g. 4"
+          keyboardType="number-pad"
+        />
+        {/* IT MOVES THE CLASS IN BOTH DIRECTIONS, and the second sentence is
+            there because of a live project. 8 Walworth Street is stored
+            major_b with no storey count, no height and no footprint — an
+            admin set it by hand. Saving a number here sends no project_class,
+            so the server re-derives from the measurement and stamps
+            classification_source "measured", which on that project would drop
+            two required daily logs. An admin typing a number has no other way
+            to find that out before he presses save. */}
+        <Text style={s.inputHint}>
+          Sets the floor list on the daily log. It also decides the §3310
+          class: 10 or more makes this Major A and adds two required daily
+          logs. If an admin set the class by hand, saving a number here
+          replaces it with the measured one.
+        </Text>
+      </View>
+
+      <View style={s.inputGroup}>
+        <Text style={s.inputLabel}>OTHER LEVELS</Text>
+        {LEVEL_TOGGLES.map((lv) => {
+          const on = Boolean(value?.[lv.key]);
+          return (
+            <Pressable
+              key={lv.key}
+              onPress={() => onChange({ [lv.key]: !on })}
+              style={s.levelRow}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: on }}
+            >
+              <Text style={s.levelLabel}>{lv.label}</Text>
+              <View style={[s.levelToggle, on && s.levelToggleOn]}>
+                <Text style={[s.levelToggleText, on && s.levelToggleTextOn]}>
+                  {on ? 'YES' : 'NO'}
+                </Text>
+              </View>
+            </Pressable>
+          );
+        })}
+        <Text style={s.inputHint}>
+          A storey count cannot say whether there is a cellar under the building
+          or a bulkhead over it. These four do not change the project class.
+        </Text>
+      </View>
+
+      <SuggestFromPlans
+        s={s}
+        projectId={projectId}
+        onApply={(patch) => onChange({
+          ...(patch.building_stories != null
+            ? { building_stories: String(patch.building_stories) } : {}),
+          has_sub_cellar: Boolean(patch.has_sub_cellar),
+          has_cellar: Boolean(patch.has_cellar),
+          has_mezzanine: Boolean(patch.has_mezzanine),
+          has_roof_bulkhead: Boolean(patch.has_roof_bulkhead),
+        })}
+      />
+    </>
   );
 }
 
@@ -622,6 +974,16 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.md,
     zIndex: 2,
   },
+  // Left of the trash, same strip. Offset by the trash's own width plus a
+  // gap so the two never overlap on a narrow card.
+  levelsCorner: {
+    position: 'absolute',
+    top: spacing.sm,
+    right: spacing.sm + 28,
+    padding: spacing.xs,
+    borderRadius: borderRadius.md,
+    zIndex: 2,
+  },
   // PR #52 L3 — the right-side cluster (badges + risk donut + delete)
   // keeps intrinsic width (flexShrink:0) so it never squeezes the title
   // column, which is what forced the mid-word wraps.
@@ -746,6 +1108,56 @@ function buildStyles(colors, isDark) {
     color: colors.text.subtle,
     fontSize: 11,
     marginTop: 2,
+  },
+  // WHAT THE FIELD DOES, under the field. The storey count silently moves a
+  // project's 3310 class and therefore which logs it must keep; an admin
+  // typing a number has no other way to find that out.
+  inputHint: {
+    color: colors.text.subtle,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  levelsProject: {
+    color: colors.text.secondary,
+    fontSize: 14,
+  },
+  levelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.03),
+    marginBottom: spacing.xs,
+  },
+  levelLabel: {
+    fontSize: 14,
+    color: colors.text.secondary,
+  },
+  levelToggle: {
+    minWidth: 46,
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: withAlpha('#ffffff', 0.15),
+    backgroundColor: withAlpha('#ffffff', 0.04),
+    alignItems: 'center',
+  },
+  levelToggleOn: {
+    backgroundColor: semantic.verifiedBg,
+    borderColor: '#4ade80',
+  },
+  levelToggleText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.text.muted,
+  },
+  levelToggleTextOn: {
+    color: '#4ade80',
   },
   toggleRow: {
     flexDirection: 'row',

@@ -119,11 +119,37 @@ class _Projects:
         return self.row
 
 
+class _EmptyColl:
+    """logbooks / checkins for the cadence block, which reads both.
+
+    IT ANSWERS NOTHING RATHER THAN BEING ABSENT. The endpoint gained a weekly
+    cadence read after these fixtures were written; an absent attribute made
+    every test in the file fail with an AttributeError that had nothing to do
+    with what it was asserting."""
+
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+
+    def find(self, *a, **k):
+        return self
+
+    async def to_list(self, *a, **k):
+        return list(self.rows)
+
+    def __aiter__(self):
+        async def _gen():
+            for r in self.rows:
+                yield r
+        return _gen()
+
+
 def _install(reg_row, project_row=None):
     class _DB:
         cs_registrations = _Regs(reg_row)
         projects = _Projects(project_row if project_row is not None
                              else dict(PROJECT_ROW))
+        logbooks = _EmptyColl()
+        checkins = _EmptyColl()
     server.db = _DB()
     return _DB
 
@@ -293,12 +319,23 @@ class TheEndpointCarriesIt(Base):
         finally:
             server.project_access_ok = original
 
-    def test_the_required_set_still_carries_the_log(self):
-        """THE HALF THAT MUST NOT CHANGE. The tile is still rendered; it is the
-        label that changes. Hiding it would leave a CP unable to see that the
-        log exists or who owns it."""
+    def test_the_required_set_NO_LONGER_carries_the_log(self):
+        """THE HALF THAT CHANGED, AND THE ARGUMENT IT REVERSES.
+
+        This assertion used to read `assertIn`, under the heading "THE HALF THAT
+        MUST NOT CHANGE", on the reasoning that hiding the tile would leave a CP
+        unable to see that the log exists or who owns it. OPERATOR RULING: BC
+        3301.13.13 is the superintendent's own record, it is not the CP's
+        document, and its existence is not his business. Hidden, not locked.
+
+        WHAT THIS FILE STILL OWNS is the sentence below it: the tile and the
+        gate read ONE fact. That is now a stronger claim, not a weaker one --
+        the same `may_file` decides both whether he is refused and whether he is
+        shown. See test_the_superintendents_log_is_not_the_cps_business.py for
+        the identity itself, and for the unregistered project where nothing is
+        hidden from anybody."""
         res = self._get(WILSON)
-        self.assertIn(CS_LOG, res["required_logbooks"])
+        self.assertNotIn(CS_LOG, res["required_logbooks"])
 
     def test_and_now_says_he_may_not_file_it(self):
         res = self._get(WILSON)
@@ -313,12 +350,23 @@ class TheEndpointCarriesIt(Base):
 
     def test_the_rest_of_the_payload_is_untouched(self):
         """An older client reads `required_logbooks` and `activations` and
-        ignores `filing`; it must keep working exactly as it did."""
+        ignores `filing`; every key it reads is still there.
+
+        THE SHAPE IS UNCHANGED AND THE CONTENTS ARE NOT, which is the whole
+        point of hiding server-side: an old build that cannot receive an OTA
+        renders a shorter list rather than a tile it has no business showing.
+
+        The activation row moved to the man who may file it -- for WILSON it is
+        now absent, because leaving the log's name in the block beneath a list
+        it is no longer on would say "On -- it is on your logbook list" about a
+        list that does not hold it."""
         res = self._get(WILSON)
         for key in ("project_id", "project_class", "classification_assessed",
                     "required_logbooks", "activations"):
             self.assertIn(key, res)
-        self.assertTrue(any(a["log_type"] == CS_LOG for a in res["activations"]))
+        self.assertFalse(any(a["log_type"] == CS_LOG for a in res["activations"]))
+        self.assertTrue(any(a["log_type"] == CS_LOG
+                            for a in self._get(MICHAEL)["activations"]))
 
     def test_a_project_without_the_flag_reports_no_restriction(self):
         off = {**PROJECT_ROW, "superintendent_log_active": False}

@@ -39,8 +39,14 @@ const path = require('path');
 
 let p = 0; let f = 0;
 const ok = (c, l) => { if (c) { p += 1; } else { f += 1; console.log('  FAIL ', l); } };
+// LINE ENDINGS NORMALISED BEFORE ANY MATCH. This repo checks out CRLF on
+// Windows (core.autocrlf=true) and LF in CI, so a pattern spanning two lines
+// passes on one machine and fails on the other for a reason that has nothing to
+// do with the assertion. Caught the hard way: a multi-line check here went red
+// immediately after a rebase re-checked the file out, having passed all day.
 const src = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'app', 'projects', 'index.jsx'), 'utf8');
+  path.join(__dirname, '..', '..', 'app', 'projects', 'index.jsx'), 'utf8')
+  .split('\r\n').join('\n');
 ok(src.length > 0, 'create screen source read and non-empty');
 
 console.log('\n-- the field starts at regular --');
@@ -48,8 +54,13 @@ ok(/project_class: 'regular',/.test(src),
   "initial state is 'regular', the operator's stated default");
 ok(!/project_class: null/.test(src),
   'no null initial state survives — there is no unset state any more');
-ok(/setNewProject\(\{ address: '', project_class: 'regular' \}\)/.test(src),
+ok(/setNewProject\(\{ address: '', project_class: 'regular', \.\.\.EMPTY_LEVELS \}\)/.test(src),
   'and the reset after a successful create returns to regular, not to unset');
+ok(/\.\.\.EMPTY_LEVELS,\n\s*\}\);/.test(src),
+  'THE RESET CLEARS THE BUILDING LEVELS TOO. The form gained a storey count '
+  + 'and four level toggles; a reset that restored only the class would carry '
+  + 'the last building answered for into the next project created, which is '
+  + 'how a cellar appears on a site that has none');
 
 console.log('\n-- it is always sent --');
 ok(/project_class: newProject\.project_class,/.test(src),
