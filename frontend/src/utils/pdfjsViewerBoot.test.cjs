@@ -58,7 +58,13 @@ function viewerScript() {
 // WebAssembly, no fetch — the capability probes must all fail soft, because
 // on a real device some of them will.
 // ═══════════════════════════════════════════════════════════════════════════
-function boot({ search = '', scale = 1, visualViewport = true } = {}) {
+function boot({
+  search = '', scale = 1, visualViewport = true,
+  // Same three knobs `bootLive` carries, for the cases that only need the
+  // capability read: `?caps=1` runs `probeBoot` and `probeEnv` and stops, and
+  // those two rows are where the device-derived budgets are declared.
+  cssWidth = 390, dpr = 3, deviceMemory = 4,
+} = {}) {
   const posted = [];
   const listeners = {};
 
@@ -80,11 +86,11 @@ function boot({ search = '', scale = 1, visualViewport = true } = {}) {
     document: {
       getElementById: () => makeEl(),
       createElement: () => makeEl(),
-      documentElement: { clientWidth: 390, clientHeight: 800 },
+      documentElement: { clientWidth: cssWidth, clientHeight: 800 },
       addEventListener(t, f) { listeners[`doc:${t}`] = f; },
     },
-    screen: { width: 390, height: 844 },
-    navigator: { userAgent: 'stub', deviceMemory: 4, hardwareConcurrency: 8 },
+    screen: { width: cssWidth, height: 844 },
+    navigator: { userAgent: 'stub', hardwareConcurrency: 8 },
     performance: { now: () => 1, getEntriesByType: () => [] },
     XMLHttpRequest: function XHR() { this.open = () => {}; this.send = () => {}; },
     IntersectionObserver: function IO() { this.observe = () => {}; this.disconnect = () => {}; },
@@ -100,13 +106,16 @@ function boot({ search = '', scale = 1, visualViewport = true } = {}) {
     clearInterval: () => {},
     Promise, Math, JSON, String, Number, Date, Object, RegExp, Array, Error,
   };
+  if (deviceMemory !== null && deviceMemory !== undefined) {
+    sandbox.navigator.deviceMemory = deviceMemory;
+  }
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
   sandbox.window.location = { search };
-  sandbox.window.devicePixelRatio = 3;
+  sandbox.window.devicePixelRatio = dpr;
   sandbox.window.innerHeight = 800;
-  sandbox.window.innerWidth = 390;
+  sandbox.window.innerWidth = cssWidth;
   sandbox.window.scrollTo = () => {};
   sandbox.window.addEventListener = (t, f) => { listeners[`win:${t}`] = f; };
   sandbox.window.removeEventListener = () => {};
@@ -285,6 +294,18 @@ ok(!!run.listeners['vv:resize'],
 //    under test is the SHAPE of the suite, not a rasteriser.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// A 36x48" sheet in PDF user units (72/inch) — the document this viewer
+// exists for, and the one every measurement in this file was taken on.
+//
+// ⚠️ MODULE SCOPE, NOT bootLive's, because the TIER CLASSIFIER now needs it.
+// `isPreviewRender` used to compare against a constant the page declared
+// (`PREVIEW_TARGET_PX`); the page no longer declares one — the preview is
+// computed per device — so the only stable boundary left is the SHARP tier's
+// own ceiling on this geometry, and that is arithmetic over these two numbers
+// and MAX_CANVAS_EDGE.
+const PT_W = 2592;
+const PT_H = 3456;
+
 function bootLive({
   search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf',
   pages = 3,
@@ -352,6 +373,30 @@ function bootLive({
   // What the encoder itself costs once it runs, charged to the fake clock by
   // whichever call was used. 29-61 ms on the device for a 774x516 sheet.
   encodeCostMs = 0,
+  // ── THE THREE NUMBERS THE PREVIEW TIER IS NOW ANCHORED TO ─────────────
+  //
+  // A preview is built at `clientWidth * devicePixelRatio`, so a harness that
+  // fixed all three of these could not tell a viewer that computes the width
+  // from a viewer that hardcodes one — which is precisely the defect `14`
+  // shipped (PREVIEW_TARGET_PX = 400000, the same 0.4 MP on every device).
+  //
+  // `deviceMemory` is `null` for the WebView that does not implement it. That
+  // is not an exotic case: it is ABSENT ON MOST ANDROID WEBVIEWS, so the
+  // fallback is a shipping path and not a defensive branch.
+  cssWidth = 390,
+  dpr = 3,
+  deviceMemory = 4,
+  // ── THE SHEET'S OWN SIZE IN PDF USER UNITS ────────────────────────────
+  //
+  // 2592 x 3456 is the 36x48 drawing this viewer exists for and every other
+  // case here uses it. It is a parameter because ON THAT GEOMETRY THE TWO
+  // TIERS CANNOT INVERT: a preview large enough to overtake the sharp render
+  // hits MAX_CANVAS_EDGE at the same scale the sharp render does, so the two
+  // MEET and the `sharp-floor` clamp is unreachable. A letter page is where
+  // the rule can actually bind — the sharp tier is anchored on a 150 ppi floor
+  // there, and a dpr above 3 asks the preview for more than that.
+  ptW = PT_W,
+  ptH = PT_H,
 } = {}) {
   const posted = [];
   const listeners = {};
@@ -506,17 +551,12 @@ function bootLive({
     return !hasPv && !hasSharp;
   }).map((el) => el.__slot.n);
 
-  // A 36x48" sheet in PDF user units (72/inch) — the document this viewer
-  // exists for, and the one every measurement above was taken on.
-  const PT_W = 2592;
-  const PT_H = 3456;
-
   function makePage(n) {
     const page = {
       _n: n,
       cleanups: 0,
       getViewport({ scale }) {
-        return { width: PT_W * scale, height: PT_H * scale, scale, __scale: scale };
+        return { width: ptW * scale, height: ptH * scale, scale, __scale: scale };
       },
       getOperatorList() { return Promise.resolve({ fnArray: [], argsArray: [] }); },
       objs: { get() { return null; } },
@@ -526,7 +566,7 @@ function bootLive({
         inFlight += 1;
         if (inFlight > maxInFlight) maxInFlight = inFlight;
         const rec = { page: n, scale, startedAt: now, endedAt: null, inFlightAtStart: inFlight,
-          mp: Math.round(((PT_W * scale) * (PT_H * scale)) / 1e5) / 10 };
+          mp: Math.round(((ptW * scale) * (ptH * scale)) / 1e5) / 10 };
         renders.push(rec);
         const ms = hooks.renderMsFor ? hooks.renderMsFor(rec) : slotRenderMs;
         let cancelled = false;
@@ -607,12 +647,18 @@ function bootLive({
     document: {
       getElementById: () => makeEl(),
       createElement: () => makeEl(),
-      documentElement: { clientWidth: 390, clientHeight: viewportH },
+      // MUTABLE, because a rotation is a change to this object and to nothing
+      // else the page can see. `resizeTo()` below writes it and fires the
+      // event a device would.
+      documentElement: { clientWidth: cssWidth, clientHeight: viewportH },
       head,
       addEventListener(t, f) { listeners[`doc:${t}`] = f; },
     },
-    screen: { width: 390, height: 844 },
-    navigator: { userAgent: 'stub', deviceMemory: 4, hardwareConcurrency: 8 },
+    screen: { width: cssWidth, height: 844 },
+    // `deviceMemory: null` is the WebView that does not implement the API, and
+    // the property is DELETED rather than set to null so a `typeof` check sees
+    // what it would see on the device.
+    navigator: { userAgent: 'stub', hardwareConcurrency: 8 },
     performance: { now: () => now, getEntriesByType: () => [] },
     XMLHttpRequest: XHR,
     // AN OBSERVER THAT RECORDS RATHER THAN SWALLOWS. It still fires nothing on
@@ -696,13 +742,20 @@ function bootLive({
     };
   }
 
+  // PRESENT ONLY WHEN THE CASE SAYS SO. `deviceMemory: null` leaves the
+  // property off the object entirely, which is what the page reads on the
+  // WebViews that do not implement it.
+  if (deviceMemory !== null && deviceMemory !== undefined) {
+    sandbox.navigator.deviceMemory = deviceMemory;
+  }
+
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
   sandbox.window.location = { search };
-  sandbox.window.devicePixelRatio = 3;
+  sandbox.window.devicePixelRatio = dpr;
   sandbox.window.innerHeight = viewportH;
-  sandbox.window.innerWidth = 390;
+  sandbox.window.innerWidth = cssWidth;
   // `pageYOffset` MOVES WITH IT. The page reads it to turn a placeholder's
   // rect into an absolute scroll target, and a sandbox that never defined it
   // would make every `scrollTo` land on the same place — which looks exactly
@@ -794,6 +847,24 @@ function bootLive({
     if (onScroll) { try { onScroll(); } catch (e) { threw = threw || e; } }
   }
 
+  // ── A ROTATION, OR A BROWSER WINDOW DRAGGED WIDER ─────────────────────
+  //
+  // Both are the same event to the page: `clientWidth` changes and `resize`
+  // fires. The device-pixel ratio can move with it (a window dragged onto a
+  // second monitor), so the case may set that too.
+  //
+  // ⚠️ NOTHING ELSE IS TOUCHED. The placeholders keep their heights, because
+  // `layout()` sized them once and the page has never re-laid them out; what
+  // is under test is the PREVIEW WIDTH decision and only that.
+  function resizeTo(w, newDpr) {
+    sandbox.document.documentElement.clientWidth = Number(w) || 0;
+    sandbox.window.innerWidth = Number(w) || 0;
+    sandbox.screen.width = Number(w) || 0;
+    if (newDpr) sandbox.window.devicePixelRatio = newDpr;
+    const onResize = listeners['win:resize'];
+    if (onResize) { try { onResize(); } catch (e) { threw = threw || e; } }
+  }
+
   // Drain: give the event loop a turn, settle microtasks, then fire the
   // earliest due timer, and repeat.
   //
@@ -856,9 +927,9 @@ function bootLive({
   }
 
   return { posted, listeners, renders, sandbox, pump, pumpUntil, deliverIO, deliverIOGeo,
-    scrollTo, hooks, marks, workersMade, injectedScripts, residentPixels, residentPages,
+    scrollTo, resizeTo, hooks, marks, workersMade, injectedScripts, residentPixels, residentPages,
     sharpPixels, previewPages, blankOnScreen, objectUrls, els, encodes,
-    pageH, viewportH,
+    pageH, viewportH, cssWidth, dpr,
     get now() { return now; },
     get threw() { return threw; },
     get maxInFlight() { return maxInFlight; } };
@@ -1317,6 +1388,7 @@ async function main() {
   await scrollProbe();
   await encodeOffSlot();
   await firstPaintCrossfade();
+  await previewFitWidth();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1716,27 +1788,40 @@ async function workerPath() {
 //     eviction takes the sharp canvas and LEAVES the preview; and a reader
 //     scrolled back to an evicted sheet is looking at something.
 // ═══════════════════════════════════════════════════════════════════════════
-const PREVIEW_TARGET_PX = (() => {
-  const m = /var PREVIEW_TARGET_PX = ([\d.]+);/.exec(viewerScript());
-  return m ? Number(m[1]) : null;
-})();
 const SETTLE_MS = (() => {
   const m = /var SETTLE_MS = ([\d.]+);/.exec(viewerScript());
   return m ? Number(m[1]) : null;
 })();
-// WHICH TIER A RECORDED RENDER BELONGS TO, derived from the page's own target
-// and not from a number written here. On the 36x48 geometry the two are 0.4 MP
-// and ~12.6 MP, and every case below asserts that gap is real before relying
-// on it — a classifier that silently collapsed would make each of these pass
-// for the wrong reason.
-const isPreviewRender = (r) => PREVIEW_TARGET_PX !== null
-  && r.mp <= ((PREVIEW_TARGET_PX / 1e6) * 1.25);
+const MAX_CANVAS_EDGE = (() => {
+  const m = /var MAX_CANVAS_EDGE = ([\d.]+);/.exec(viewerScript());
+  return m ? Number(m[1]) : null;
+})();
+// ── WHICH TIER A RECORDED RENDER BELONGS TO ──────────────────────────────
+//
+// ⚠️ THIS USED TO READ `PREVIEW_TARGET_PX` OFF THE SCRIPT, AND THE SCRIPT NO
+// LONGER HAS ONE. That constant WAS the defect: 400000 px on every device, so
+// a preview on the operator's 443 CSS px x 2.44 phone was 774 px wide against
+// a 1080 px screen — visibly coarse at fit width, which is exactly what he
+// reported and what `14`'s crossfade could not help. The preview width is now
+// computed per device and there is no constant left to compare against.
+//
+// SO THE BOUNDARY IS THE SHARP TIER'S OWN CEILING, which on this geometry is
+// arithmetic and not a guess: a 36x48 sheet asks for far more than
+// MAX_CANVAS_EDGE, so the long edge lands exactly on it and the short edge
+// follows the aspect ratio. 4096 x 3072 = 12.58 MP. Half of that separates a
+// fit-width preview (1.83 MP at 390 CSS px x 3) from a sharp sheet by a
+// factor of nearly seven, and every case below asserts the gap is real before
+// relying on it.
+const SHARP_MP = MAX_CANVAS_EDGE === null ? null
+  : ((MAX_CANVAS_EDGE * (MAX_CANVAS_EDGE * (PT_W / PT_H))) / 1e6);
+const isPreviewRender = (r) => SHARP_MP !== null && r.mp < (SHARP_MP / 2);
 
 async function previewTier() {
   console.log('\n── a preview for every page, and it outlives the budget ───────\n');
 
-  ok(typeof PREVIEW_TARGET_PX === 'number' && PREVIEW_TARGET_PX > 0,
-    `the page declares a preview pixel target (got ${PREVIEW_TARGET_PX})`);
+  ok(typeof SHARP_MP === 'number' && SHARP_MP > 0,
+    `the sharp tier's ceiling on this geometry is known (${
+      SHARP_MP === null ? '?' : SHARP_MP.toFixed(2)} MP)`);
   ok(typeof SETTLE_MS === 'number' && SETTLE_MS > 0,
     `and a settle interval for the sharp tier (got ${SETTLE_MS} ms)`);
   // THE DELETED TIER IS BACK AS A KEPT ONE, NOT AS A FASTER RENDER. If the
@@ -1842,10 +1927,14 @@ async function previewTier() {
     const pvEls = s.els.filter((el) => el.className === 'pv');
     ok(pvEls.length === 26, `there are 26 preview layers (got ${pvEls.length})`);
     const rawHeld = pvEls.reduce((t, el) => t + ((Number(el.width) || 0) * (Number(el.height) || 0)), 0);
+    // The raw-design comparison is priced off the dimensions the page REALLY
+    // chose, read out of the encoder calls it made, rather than off a constant
+    // the page no longer declares.
+    const rawWouldBe = s.encodes.reduce((t, e) => t + (e.w * e.h * 4), 0);
     ok(rawHeld === 0,
       `and not one of them is a live bitmap — the tier holds encoded bytes (${
         (rawHeld * 4 / 1e6).toFixed(1)} MB of raw preview resident, raw design would be ${
-        ((26 * PREVIEW_TARGET_PX * 4) / 1e6).toFixed(0)} MB)`);
+        (rawWouldBe / 1e6).toFixed(0)} MB)`);
     ok(pvEls.every((el) => typeof el.src === 'string' && el.src.indexOf('data:image/jpeg') === 0),
       'each is an <img> against an encoded data: URL, which is what lets Chromium '
       + 'decide for itself which of them to keep decoded');
@@ -2701,6 +2790,391 @@ async function firstPaintCrossfade() {
 
   ok(!s.threw, `and nothing threw anywhere in the sequence${
     s.threw ? ` — ${s.threw && s.threw.message}` : ''}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 20. THE PREVIEW IS WHAT THE READER LOOKS AT, SO IT IS SIZED FOR HIS SCREEN.
+//
+//     ⚠️ `14` TREATED THE PREVIEW AS A PLACEHOLDER AND THE OPERATOR TREATED
+//     IT AS THE PAGE, AND HE IS RIGHT. `CANVAS_BUDGET_MP` holds about two
+//     sharp sheets out of twenty-six, so a scroll back ALWAYS lands on a
+//     preview — not occasionally, not during a flick, ALWAYS. A tier the
+//     reader is guaranteed to be looking at is not a placeholder.
+//
+//     AND IT WAS 0.4 MP ON EVERY DEVICE. `PREVIEW_TARGET_PX = 400000` put
+//     774 px across a 36x48 sheet; the operator's Pixel 10 Pro XL is 443 CSS
+//     px at dpr 2.4375, which is 1080 REAL pixels across the same width. So
+//     every preview was upscaled 1.4x on the way to the glass and the lines
+//     were visibly thick — the "thick preview lines" report, exactly.
+//
+//     `13` FIXED THE FOUR SECONDS AND `14` FIXED THE HARD SWAP, AND NEITHER
+//     TOUCHED THE RESOLUTION. #560's 150 ms crossfade made no visible
+//     difference on the device and could not have: fading more smoothly into
+//     an illegible image does not make it legible. The fade stays; it was
+//     never the defect.
+//
+//     WHAT IS ASSERTED HERE. That the width is COMPUTED from the device and
+//     not written down; that the only ceiling on it is memory and the sharp
+//     tier; that a rotation does not throw the work away; and — first,
+//     because without it none of the rest can be checked on a phone — that
+//     the probe says WHICH VIEWER IS ON THE DEVICE.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The stamp, off the module rather than off the script, so the identity below
+// is derived from the thing that actually gates re-staging.
+const MODULE_VIEWER_VERSION = (() => {
+  const m = /const VIEWER_VERSION = '(\d+)';/.exec(fs.readFileSync(VIEWER, 'utf8'));
+  return m ? m[1] : null;
+})();
+
+async function previewFitWidth() {
+  console.log('\n── the preview is a device-pixel sheet, not a thumbnail ──────\n');
+
+  // ── (a) WHICH VIEWER IS ON THE PHONE ──────────────────────────────────
+  //
+  // ⚠️ THE GAP THAT MADE #560 UNVERIFIABLE. `alreadyStaged()` writes
+  // viewer.html once per VIEWER_VERSION and returns null when the stamp moved,
+  // so a bump DOES restage — the mechanism is correct. But NOTHING the page
+  // posts carried the stamp, so a device run that reported "no change" could
+  // not be told apart from an OTA that had not applied. That is an instrument
+  // that cannot fail: both outcomes read identically.
+  //
+  // DERIVED, NOT DUPLICATED. The script carries a literal because every line
+  // of VIEWER_SCRIPT must be a static string (pdfjsViewerMemory asserts it, and
+  // a concatenated line would break the AST walk). So the gate is the IDENTITY
+  // between the two — bump one without the other and this goes red.
+  {
+    ok(!!MODULE_VIEWER_VERSION,
+      `the module declares a stamp (${MODULE_VIEWER_VERSION})`);
+    const m = /var VIEWER_VERSION = "(\d+)";/.exec(viewerScript());
+    ok(!!m, `and the page carries it too (${m ? m[1] : 'NOT IN THE SCRIPT'})`);
+    ok(!!m && m[1] === MODULE_VIEWER_VERSION,
+      `and the two are the same stamp — a bump on one side only is how a `
+      + `device reports a version it is not running (module ${
+        MODULE_VIEWER_VERSION}, page ${m ? m[1] : 'none'})`);
+
+    const caps = boot({ search: '?caps=1' });
+    const bootRow = probeData(caps.posted, 'boot')[0] || {};
+    const envRow = probeData(caps.posted, 'env')[0] || {};
+    ok(bootRow.viewerVersion === MODULE_VIEWER_VERSION,
+      `the boot row says which viewer answered (${bootRow.viewerVersion})`);
+    ok(envRow.viewerVersion === MODULE_VIEWER_VERSION,
+      `and so does the env row (${envRow.viewerVersion})`);
+  }
+
+  // ── (b) NO FIXED PREVIEW SIZE SURVIVES IN THE PAGE ────────────────────
+  {
+    const js = viewerScript();
+    ok(!/var PREVIEW_TARGET_PX/.test(js),
+      'the fixed 0.4 MP preview target is gone, not retuned — a constant is what '
+      + 'made every device get the same preview');
+    ok(!/var PREVIEW_MAX_EDGE/.test(js),
+      'and so is the 1024 px edge cap, which would have clipped a 1080 px phone '
+      + 'back below its own screen');
+    ok(/var PREVIEW_QUALITY = 0\.8;/.test(js),
+      'the JPEG quality is 0.8 — a preview the reader reads is not a thumbnail');
+    // ⚠️ THE FOUR SECONDS MUST NOT COME BACK. Restated here rather than left
+    // to section 19 because this change rewrites the encode path's caller.
+    ok(!/\.toBlob\(/.test(js),
+      'and nothing calls toBlob — it is a 4000 ms idle-task wait on Android, '
+      + 'not an encoder');
+  }
+
+  // ── (c) THE WIDTH IS THE DEVICE'S, MEASURED OFF THE CANVASES ENCODED ──
+  //
+  // 390 CSS px at dpr 3 is 1170 real pixels. Read off the encoder calls the
+  // page actually made, not off a constant and not off the probe's own claim.
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 40,
+      pageH: 886, viewportH: 883, cssWidth: 390, dpr: 3, deviceMemory: 4,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.scrollTo(0);
+    s.deliverIOGeo();
+    await s.pump();
+
+    const want = 390 * 3;
+    ok(s.encodes.length >= 26,
+      `every sheet was encoded (${s.encodes.length} encoder calls for 26 sheets)`);
+    const wrong = s.encodes.filter((e) => Math.abs(e.w - want) > 1);
+    ok(wrong.length === 0,
+      `and every preview is ${want} px wide — clientWidth x devicePixelRatio, `
+      + `computed per device (${wrong.length} off target: ${
+        wrong.slice(0, 3).map((e) => `${e.w}x${e.h}`).join(' ') || 'none'})`);
+    ok(s.encodes.every((e) => e.call === 'toDataURL'),
+      'through toDataURL on every one of them');
+
+    // THE TIERS ARE STILL FAR APART. A fit-width preview is 1.83 MP against a
+    // 12.58 MP sheet — nearly seven times — so the sharp tier is still doing
+    // something and this is not a viewer that quietly renders one tier twice.
+    const pv = s.renders.filter(isPreviewRender);
+    const sh = s.renders.filter((r) => !isPreviewRender(r));
+    ok(pv.length >= 26 && sh.length >= 1,
+      `both tiers still run (${pv.length} preview, ${sh.length} sharp)`);
+    ok(pv.length && sh.length && sh[0].mp > pv[0].mp * 3,
+      `and the sharp sheet is still far larger (${sh.length ? sh[0].mp : '?'} MP vs ${
+        pv.length ? pv[0].mp : '?'} MP)`);
+
+    // ── (d) WHAT THE PROBE HAS TO REPORT, OR THE DEVICE RUN SAYS NOTHING ─
+    const mem = probeData(s.posted, 'preview-mem')[0] || {};
+    for (const k of ['previewWidthPx', 'previewStoredBytes', 'previewBytesPerPage',
+      'previewBudgetBytes', 'fillTotalMs', 'previewBytesPerPx',
+      'deviceMemoryKnown', 'sharpBudgetMp']) {
+      ok(typeof mem[k] === 'number' || typeof mem[k] === 'boolean',
+        `the memory row carries ${k} (${mem[k]})`);
+    }
+    ok(mem.previewWidthPx === want,
+      `and the width it reports is the width it built at (${mem.previewWidthPx})`);
+    ok(typeof mem.fillTotalMs === 'number' && mem.fillTotalMs > 0,
+      `and how long all 26 took end to end (${mem.fillTotalMs} ms on the fake clock)`);
+
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length === 26, `a row a sheet (${rows.length})`);
+    for (const k of ['canvasW', 'canvasH', 'encodeMs', 'storedBytes']) {
+      ok(rows.every((r) => typeof r[k] === 'number'),
+        `each carries ${k} (page 1: ${rows.length ? rows[0][k] : '?'})`);
+    }
+    ok(!s.threw, `and nothing threw${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (e) THE BUDGETS ARE READ OFF THE DEVICE, AND FALL BACK OUT LOUD ───
+  //
+  // ⚠️ `navigator.deviceMemory` IS CLAMPED TO 8 BY THE SPEC AND IS ABSENT ON
+  // MOST ANDROID WEBVIEWS. Both facts matter: a 16 GB Pixel reports exactly
+  // what a 64 GB desktop reports, so memory ALONE must never be what raises
+  // the sharp budget — 64 MP is 256 MB of RGBA and renderer kills on this
+  // device were reported at 250-350 MB. The viewport is the second term.
+  {
+    const phone = boot({ search: '?caps=1', cssWidth: 443, dpr: 2.4375, deviceMemory: 8 });
+    const phoneEnv = probeData(phone.posted, 'env')[0] || {};
+    ok(phoneEnv.CANVAS_BUDGET_MP === 32,
+      `a phone-width viewport keeps the 32 MP sharp budget even when deviceMemory `
+      + `reports its clamped maximum of 8 (got ${phoneEnv.CANVAS_BUDGET_MP} MP)`);
+    ok(phoneEnv.previewWidthPx === Math.round(443 * 2.4375),
+      `and previews at ${Math.round(443 * 2.4375)} px, the operator's real screen (got ${
+        phoneEnv.previewWidthPx})`);
+
+    const desk = boot({ search: '?caps=1', cssWidth: 1920, dpr: 1, deviceMemory: 8 });
+    const deskEnv = probeData(desk.posted, 'env')[0] || {};
+    ok(deskEnv.CANVAS_BUDGET_MP > 32,
+      `a wide viewport with 8 GB to back it gets more (got ${deskEnv.CANVAS_BUDGET_MP} MP)`);
+    ok(deskEnv.CANVAS_BUDGET_MP <= 64,
+      `but never past the kill threshold the budget was derived against (${
+        deskEnv.CANVAS_BUDGET_MP} MP = ${deskEnv.CANVAS_BUDGET_MP * 4} MB)`);
+
+    const small = boot({ search: '?caps=1', cssWidth: 1920, dpr: 1, deviceMemory: 2 });
+    const smallEnv = probeData(small.posted, 'env')[0] || {};
+    ok(smallEnv.CANVAS_BUDGET_MP === 32,
+      `a wide viewport on a 2 GB device does NOT (got ${smallEnv.CANVAS_BUDGET_MP} MP)`);
+
+    // THE API IS ABSENT, WHICH IS THE COMMON CASE ON ANDROID WEBVIEW.
+    const blind = boot({ search: '?caps=1', cssWidth: 443, dpr: 2.4375, deviceMemory: null });
+    const blindEnv = probeData(blind.posted, 'env')[0] || {};
+    ok(blindEnv.deviceMemoryKnown === false,
+      'a WebView with no deviceMemory says so rather than inventing a number');
+    ok(blindEnv.previewBudgetBytes === 32 * 1000000,
+      `and falls back to a 32 MB preview budget (got ${blindEnv.previewBudgetBytes})`);
+    ok(blindEnv.CANVAS_BUDGET_MP === 32,
+      `and the 32 MP sharp budget (got ${blindEnv.CANVAS_BUDGET_MP} MP)`);
+    ok(blindEnv.previewWidthPx === Math.round(443 * 2.4375),
+      `and it still previews at full device width — the width does not depend on `
+      + `the memory API (got ${blindEnv.previewWidthPx})`);
+
+    // 5% OF WHAT THE DEVICE REPORTS, when it reports anything.
+    const known = boot({ search: '?caps=1', deviceMemory: 4 });
+    const knownEnv = probeData(known.posted, 'env')[0] || {};
+    ok(knownEnv.deviceMemoryKnown === true
+      && knownEnv.previewBudgetBytes === Math.round(4 * 1e9 * 0.05),
+      `and 5% of a reported 4 GB when it does (got ${knownEnv.previewBudgetBytes})`);
+  }
+
+  // ── (e2) AND THE BUDGET SHRINKS THE SHEETS RATHER THAN DROPPING THEM ──
+  //
+  // ⚠️ A GUARD NOBODY DRIVES IS A GUARD NOBODY HAS CHECKED. The memory clamp
+  // does not bind on the shipping case — 26 sheets at 1080 px is ~6 MB against
+  // a 200 MB budget — so without a case that makes it bind, "the budget is
+  // enforced" would rest entirely on a comment.
+  //
+  // A 3840 px window at dpr 2 on a WebView with no `deviceMemory` asks for
+  // 7680 x 10240 a sheet against the 32 MB fallback, which is the one
+  // combination where it really does. THE ASSERTION IS THAT ALL 26 SURVIVE:
+  // a budget enforced by building previews until the money runs out leaves
+  // the last sheets blank, which is the defect this tier exists to abolish
+  // wearing the clothes of its own guard.
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 40,
+      pageH: 886, viewportH: 883, cssWidth: 3840, dpr: 2, deviceMemory: null,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length === 26,
+      `every sheet is still previewed when the budget binds (${rows.length} of 26)`);
+    ok(rows.length > 0 && rows.every((r) => /\bmem\b/.test(String(r.clamp))),
+      `and the row names the memory clamp as the thing that bound (${
+        rows.length ? rows[0].clamp : 'no rows'})`);
+    ok(s.encodes.length > 0 && s.encodes.every((e) => e.w < 3840),
+      `with the sheets SHRUNK rather than any of them dropped (${
+        s.encodes.length ? `${s.encodes[0].w}x${s.encodes[0].h}` : 'none'})`);
+    ok(s.blankOnScreen().length === 0,
+      `and nothing on screen is blank (blank: ${s.blankOnScreen().join(',') || 'none'})`);
+    const mem = probeData(s.posted, 'preview-mem')[0] || {};
+    ok(mem.previewBudgetBytes === 32 * 1000000 && mem.previewBudgetExceeded === false,
+      `inside the 32 MB fallback it was given (${mem.previewBudgetUsedPct}% used, exceeded ${
+        mem.previewBudgetExceeded})`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (f) A ROTATION DOES NOT THROW THE WORK AWAY ───────────────────────
+  //
+  // THREE CASES AND THE MIDDLE ONE IS THE POINT. A viewer that rebuilt on
+  // every resize would re-rasterise 26 sheets when the keyboard opened; one
+  // that never rebuilt would leave a landscape reader on portrait-width
+  // previews for the life of the document.
+  {
+    const s = bootLive({
+      search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 40,
+      pageH: 886, viewportH: 883, cssWidth: 390, dpr: 3,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.scrollTo(0);
+    s.deliverIOGeo();
+    await s.pump();
+    const built = s.encodes.length;
+    ok(built >= 26, `26 previews are built at 1170 px (${built} encodes)`);
+
+    // A SHRINK. Portrait from landscape, or a keyboard. Nothing is rebuilt:
+    // the previews in hand are BETTER than the new target, and throwing them
+    // away would cost 26 rasterisations to make the page worse.
+    s.resizeTo(300);
+    await s.pump();
+    ok(s.encodes.length === built,
+      `a viewport that SHRINKS rebuilds nothing (${s.encodes.length - built} new encodes)`);
+
+    // A TRIVIAL GROWTH. 450 x 3 = 1350, which is 1.15x — inside the 25% band.
+    s.resizeTo(450);
+    await s.pump();
+    ok(s.encodes.length === built,
+      `and a growth under 25% rebuilds nothing either (${
+        s.encodes.length - built} new encodes at 1350 px)`);
+
+    // A REAL ROTATION. 600 x 3 = 1800, which is 1.54x.
+    s.resizeTo(600);
+    await s.pump();
+    ok(s.encodes.length >= built + 26,
+      `a growth past 25% rebuilds the set (${s.encodes.length - built} new encodes)`);
+    const after = s.encodes.slice(built);
+    ok(after.length > 0 && after.every((e) => Math.abs(e.w - 1800) <= 1),
+      `at the new width (${after.length ? `${after[0].w}x${after[0].h}` : 'none'})`);
+    ok(s.previewPages().length === 26,
+      `every sheet still has a preview afterwards (${s.previewPages().length} of 26)`);
+    ok(s.blankOnScreen().length === 0,
+      `and nothing on screen went blank while it happened (blank: ${
+        s.blankOnScreen().join(',') || 'none'})`);
+    ok(!s.threw, `and the rebuild does not throw${
+      s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (g) THE TIERS CANNOT INVERT ───────────────────────────────────────
+  //
+  // ⚠️ A 3840 px window at dpr 2 asks for a 7680 px preview, and the SHARP
+  // tier on a 36x48 sheet is edge-capped at 3072 px wide. Without a rule the
+  // "preview" would be two and a half times the size of the thing it is a
+  // preview of: more expensive to build, more expensive to hold, and drawn
+  // underneath a smaller canvas. The rule is that the preview scale is
+  // clamped to the sharp scale, and the clamp travels in the row so nobody
+  // has to infer that it bound.
+  {
+    const sharpW = Math.round(MAX_CANVAS_EDGE * (PT_W / PT_H));
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 6, slotRenderMs: 40,
+      pageH: 886, viewportH: 883, cssWidth: 3840, dpr: 2, deviceMemory: 8,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+    ok(s.encodes.length >= 6,
+      `a 3840 px window still previews every sheet (${s.encodes.length} encodes)`);
+    const over = s.encodes.filter((e) => e.w > sharpW + 1);
+    ok(over.length === 0,
+      `and no preview is larger than the sharp render it sits under (${sharpW} px `
+      + `sharp; ${over.length} previews over it${
+        over.length ? `, largest ${Math.max(...over.map((e) => e.w))} px` : ''})`);
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length > 0 && rows.every((r) => r.clamp && r.clamp !== 'none'),
+      `and every row names the clamp that bound rather than leaving it to be `
+      + `inferred (${rows.length ? rows[0].clamp : 'no rows'})`);
+    // ⚠️ ON A 36x48 SHEET THE TWO TIERS MEET, THEY DO NOT INVERT. A preview
+    //    big enough to overtake the sharp render hits MAX_CANVAS_EDGE at the
+    //    same scale the sharp render does, so both land on 3072 x 4096 and
+    //    `sharp-floor` is never the clamp that bound. Said out loud because a
+    //    green case here proves the CAPS hold, not that the inversion rule
+    //    does — the sub-case below is where that rule can fail.
+    ok(s.encodes.length > 0 && s.encodes.every((e) => e.w === sharpW),
+      `on this geometry the tiers converge on the same canvas rather than `
+      + `inverting (preview ${s.encodes.length ? s.encodes[0].w : '?'} px, sharp ${sharpW} px)`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (g2) AND WHERE IT CAN INVERT, THE RULE IS WHAT STOPS IT ───────────
+  //
+  // A LETTER PAGE AT dpr 4. The sharp tier there is anchored on the 150 ppi
+  // floor — 612 pt wide is 1275 px, nowhere near MAX_CANVAS_EDGE — while the
+  // preview asks for 390 x 4 = 1560 px. Without the clamp the "preview" would
+  // be 1.5x the pixels of the thing it is a preview of, cost more to build,
+  // cost more to hold, and be drawn UNDERNEATH a smaller canvas.
+  //
+  // THIS IS THE CASE THAT CAN FAIL. Remove the `sharp-floor` clamp and (g)
+  // above stays green — the canvas caps cover it — and this one goes red.
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 4, slotRenderMs: 40,
+      pageH: 886, viewportH: 883, cssWidth: 390, dpr: 4, deviceMemory: 4,
+      ptW: 612, ptH: 792,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+    ok(s.encodes.length >= 4,
+      `a letter-size document at dpr 4 previews every page (${s.encodes.length} encodes)`);
+    const want = 390 * 4;
+    ok(s.encodes.every((e) => e.w < want),
+      `and the preview is NOT the ${want} px the viewport asked for — it is held `
+      + `to the sharp render (${s.encodes.length ? s.encodes[0].w : '?'} px)`);
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length > 0 && rows.every((r) => /sharp-floor/.test(String(r.clamp))),
+      `and the row says so by name (${rows.length ? rows[0].clamp : 'no rows'})`);
+    // ⚠️ THE TWO TIERS ARE NOW THE SAME SIZE HERE, so `isPreviewRender` cannot
+    //    tell them apart on this geometry and no case above may be applied to
+    //    it. What can still be asserted is that the SHARP tier ran at all —
+    //    a clamp that accidentally suppressed it would leave the reader on a
+    //    preview for ever, and the resident set is where that shows.
+    ok(s.residentPages().length >= 1,
+      `with the sharp tier still landing a canvas beside it (resident ${
+        s.residentPages().join(',') || 'none'})`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (h) THE BUILD RULES DID NOT MOVE ──────────────────────────────────
+  //
+  // Restated as an assertion because this change makes every preview seven
+  // times the pixels it was, and all three of these are what stop that being
+  // felt: the fill is background work, it waits out a scroll, and it never
+  // holds the one render slot across an encode.
+  {
+    const js = viewerScript();
+    ok(/var MAX_CONCURRENT_RENDERS = 1;/.test(js),
+      'still one rasterisation at a time');
+    const rp = js.slice(js.indexOf('function renderPreview(slot){'));
+    const drawIdx = rp.indexOf('releaseRenderSlot();');
+    const encIdx = rp.indexOf('encQueue.push(');
+    ok(drawIdx > 0 && encIdx > drawIdx,
+      'and the render slot is still given back at the DRAW, before the encode is '
+      + 'even queued — the 4000 ms defect stays fixed');
+  }
 }
 
 main().then(() => {
