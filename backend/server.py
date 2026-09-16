@@ -38952,8 +38952,192 @@ async def _handle_dob_status(project_id: str) -> str:
     return "\n".join(lines)
 
 
+# ── WHAT A DAY'S LOG ACTUALLY CONTAINS ────────────────────────────────────
+#
+# This tool read `daily_logs` and reported `observations`, `status` and
+# `signed_by_name`. Measured on production, 2026-09-16: 0 of 92 daily_logs
+# carry `observations`, 0 carry `signed_by_name`, 1 carries `status`. So the
+# answer was always "0 observation(s), 0 uncorrected" — well formed, and empty
+# of everything the log holds.
+#
+# The schema it was reading belongs to `logbooks`, a different collection, four
+# times larger, which nothing reached at all. And on 588 Boyland — the one
+# project the bot is used on — there are 329 logbooks and ZERO daily_logs, so
+# every date answered "No daily log filed" whatever had been filed that day.
+#
+# Both collections are read now, and what is printed is what is there.
+_LOGBOOK_LABEL = {
+    "daily_jobsite": "daily jobsite log",
+    "site_superintendent_log": "superintendent log",
+    "toolbox_talk": "toolbox talk",
+    "osha_log": "OSHA log",
+    "preshift_signin": "pre-shift sign-in",
+    "scaffold_maintenance": "scaffold maintenance",
+    "subcontractor_orientation": "subcontractor orientation",
+}
+_LOGBOOK_ORDER = ("daily_jobsite", "site_superintendent_log", "toolbox_talk",
+                  "osha_log", "preshift_signin", "scaffold_maintenance",
+                  "subcontractor_orientation")
+DAILY_LOG_MAX_CHARS = 1600
+
+
+def _log_clean(v: Any) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip()
+
+
+def _log_field(v: Any) -> str:
+    """A checkbox group is a dict, and `{'compressor': True}` is not a line a
+    superintendent reads. The ticked names are."""
+    if isinstance(v, dict):
+        return ", ".join(k.replace("_", " ") for k, on in v.items() if on)
+    if isinstance(v, list):
+        return ", ".join(_log_clean(x) for x in v if _log_clean(x))
+    return _log_clean(v)
+
+
+def _weather_line(d: Dict[str, Any]) -> Optional[str]:
+    """One weather line, not the same reading twice.
+
+    daily_logs carries BOTH a composed `weather` ("Light Rain, 62F, wind 10
+    mph E") and the pieces it was composed from, so joining every field gave
+    "Light Rain, 62F, wind 10 mph E, Light Rain, 62F, 10 mph E"."""
+    whole = _log_clean(d.get("weather"))
+    parts = [_log_clean(d.get(k)) for k in ("weather_condition", "weather_temp",
+                                            "weather_wind")]
+    parts = [p for p in dict.fromkeys(parts) if p]
+    if whole and all(p.split()[0].rstrip(",") in whole for p in parts if p):
+        return whole                      # already composed from the pieces
+    bits = [b for b in dict.fromkeys([whole] + parts) if b]
+    return ", ".join(bits) or None
+
+
+def _render_daily_jobsite(data: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    w = _weather_line(data)
+    if w:
+        out.append(f"    weather: {w}")
+    gd = _log_clean(data.get("general_description"))
+    if gd:
+        out.append(f"    work: {gd}")
+    for a in (data.get("activities") or [])[:6]:
+        if not isinstance(a, dict):
+            continue
+        who = _log_clean(a.get("company"))
+        n = _log_clean(a.get("num_workers"))
+        what = _log_clean(a.get("work_description"))
+        # 'work_locations' on this schema; 'work_location' on an older one.
+        where = _log_clean(a.get("work_locations") or a.get("work_location"))
+        head = " ".join(x for x in (who, f"({n})" if n else "") if x)
+        body = " — ".join(x for x in (what, where) if x)
+        if head and body:
+            out.append(f"      {head}: {body}")
+        elif head or body:
+            out.append(f"      {head or body}")
+        pics = [p for p in (a.get("photos") or []) if isinstance(p, dict)]
+        if pics:
+            out.append(f"        {len(pics)} photo(s)")
+    failed = [k.replace("_", " ") for k, v in (data.get("checklist_items") or {}).items()
+              if isinstance(v, dict)
+              and _log_clean(v.get("result")).lower() not in ("pass", "", "na", "n/a")]
+    if failed:
+        out.append(f"    checklist not passed: {', '.join(failed[:8])}")
+    for o in (data.get("observations") or [])[:6]:
+        if not isinstance(o, dict):
+            continue
+        desc = _log_clean(o.get("description") or o.get("note"))
+        if not desc:
+            continue
+        tail = " — ".join(x for x in (_log_clean(o.get("responsible_party")),
+                                      _log_clean(o.get("remedy"))) if x)
+        out.append(f"    observation: {desc}" + (f" — {tail}" if tail else ""))
+    for k, label in (("equipment_on_site", "equipment"),
+                     ("visitors_deliveries", "visitors/deliveries"),
+                     ("areas_visited", "areas visited")):
+        v = _log_field(data.get(k))
+        if v:
+            out.append(f"    {label}: {v}")
+    return out
+
+
+def _render_superintendent(data: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    pres = data.get("presence") if isinstance(data.get("presence"), dict) else {}
+    inout = " to ".join(x for x in (_log_clean(pres.get("arrived_at")),
+                                    _log_clean(pres.get("departed_at"))) if x)
+    if inout:
+        out.append(f"    on site {inout}")
+    prog = data.get("progress") if isinstance(data.get("progress"), dict) else {}
+    summary = _log_clean(prog.get("summary"))
+    if summary:
+        out.append(f"    progress: {summary}")
+    insp = data.get("daily_inspection") if isinstance(data.get("daily_inspection"), dict) else {}
+    loc = _log_clean(insp.get("location"))
+    if loc:
+        out.append(f"    inspected: {loc}")
+    # A section that says "none to report" IS the report, and it is not worth a
+    # line. Only the ones carrying something are.
+    for key, label in (("unsafe_conditions", "unsafe conditions"),
+                       ("orders_given", "orders given"),
+                       ("dob_actions", "DOB actions"),
+                       ("incidents", "incidents")):
+        sec = data.get(key)
+        if isinstance(sec, dict) and not sec.get("none_to_report"):
+            detail = _log_clean(sec.get("summary") or sec.get("description")
+                                or sec.get("note")) or "reported"
+            out.append(f"    {label}: {detail}")
+    return out
+
+
+def _render_logbook(book: Dict[str, Any]) -> List[str]:
+    kind = book.get("log_type") or "log"
+    data = book.get("data") if isinstance(book.get("data"), dict) else {}
+    who = _log_clean(book.get("cp_name") or book.get("created_by_name"))
+    head = _LOGBOOK_LABEL.get(kind, str(kind).replace("_", " "))
+    out = [f"  {head}" + (f" ({who})" if who else "")]
+    if kind == "daily_jobsite":
+        out += _render_daily_jobsite(data)
+    elif kind == "site_superintendent_log":
+        out += _render_superintendent(data)
+    elif kind == "toolbox_talk":
+        att = [a for a in (data.get("attendees") or []) if isinstance(a, dict)]
+        bits = [x for x in (_log_clean(data.get("type_of_work")),
+                            _log_clean(data.get("meeting_time")),
+                            f"{len(att)} attended" if att else "") if x]
+        if bits:
+            out.append("    " + ", ".join(bits))
+    elif kind == "osha_log":
+        entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)]
+        if entries:
+            out.append(f"    {len(entries)} worker card(s) recorded")
+    elif kind == "preshift_signin":
+        n = _log_clean(data.get("total_count")) or str(len(data.get("workers") or []))
+        if n and n != "0":
+            out.append(f"    {n} signed in")
+    return out
+
+
+def _render_daily_log_row(log: Dict[str, Any]) -> List[str]:
+    """The other collection, and its own fields — none of which were printed."""
+    who = _log_clean(log.get("created_by_name"))
+    out = ["  daily log" + (f" ({who})" if who else "")]
+    w = _weather_line(log)
+    if w:
+        out.append(f"    weather: {w}")
+    n = _log_clean(log.get("worker_count"))
+    if n:
+        out.append(f"    {n} workers")
+    for key, label in (("work_performed", "work"), ("notes", "notes"),
+                       ("corrective_actions", "corrective actions"),
+                       ("incident_log", "incidents"),
+                       ("subcontractor_cards", "subcontractor cards")):
+        v = _log_clean(log.get(key))
+        if v and v.lower() not in ("none", "n/a", "na", "false"):
+            out.append(f"    {label}: {v[:200]}")
+    return out
+
+
 async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
-    """The daily jobsite / OSHA log for one day.
+    """Everything filed for one day, from both places a day can be filed.
 
     ── WHY THIS TOOL EXISTS ───────────────────────────────────────────────
     #
@@ -38963,10 +39147,6 @@ async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
     # because the log had no home, and a request with no tool falls to whatever
     # tool will take it.
     #
-    # `open_items` already read this collection but only ever for TODAY and
-    # only the uncorrected observations. A question about the log itself, or
-    # about a particular day, had nothing to call.
-    #
     # THE DATE ARRIVES RESOLVED. The agent is told to compute "last Thursday"
     # against the NOW line in its context block and pass YYYY-MM-DD; this does
     # not parse English, because two date parsers disagreeing is worse than
@@ -38974,37 +39154,38 @@ async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
     if not project_id:
         return "Could not determine project."
     day = (date or "").strip() or eastern_today()
+    books: List[Dict[str, Any]] = []
+    legacy = None
     try:
-        log = await db.daily_logs.find_one(
+        books = await db.logbooks.find(
+            {"project_id": str(project_id), "date": day,
+             "is_deleted": {"$ne": True}},
+        ).to_list(24)
+    except Exception as e:
+        logger.warning(f"logbook read failed for {project_id} {day}: {e}")
+    try:
+        legacy = await db.daily_logs.find_one(
             {"project_id": str(project_id), "date": day,
              "is_deleted": {"$ne": True}},
         )
     except Exception as e:
         logger.warning(f"daily log read failed for {project_id} {day}: {e}")
-        return f"Couldn't read the log for {day}."
 
-    if not log:
-        # NAMED, NOT "no log found". "Nothing for Thursday 11 Sep" is checkable;
-        # "no daily log found" leaves the reader unsure which day was looked at.
-        return f"No daily log filed for {day}."
+    if not books and not legacy:
+        # NAMED, NOT "no log found". "Nothing filed for 2026-09-11" is
+        # checkable; "no daily log found" leaves the reader unsure which day
+        # was looked at.
+        return f"Nothing filed for {day}."
 
-    obs = log.get("observations") or []
-    open_obs = [o for o in obs if not o.get("corrected")]
-    lines = [f"Daily log {day}:"]
-    status = log.get("status") or log.get("state")
-    if status:
-        lines.append(f"  status: {status}")
-    signed = log.get("signed_by_name") or log.get("signed_by")
-    if signed:
-        lines.append(f"  signed by {signed}")
-    lines.append(f"  {len(obs)} observation(s), {len(open_obs)} uncorrected")
-    for i, o in enumerate(open_obs[:8], 1):
-        desc = (o.get("description") or o.get("note") or "").strip()
-        if desc:
-            lines.append(f"  {i}. {desc[:120]}")
-    if len(open_obs) > 8:
-        lines.append(f"  (+{len(open_obs) - 8} more)")
-    return "\n".join(lines)
+    order = {k: i for i, k in enumerate(_LOGBOOK_ORDER)}
+    books.sort(key=lambda b: order.get(b.get("log_type"), 99))
+    lines = [f"Log for {day}:"]
+    for b in books:
+        lines.extend(_render_logbook(b))
+    if legacy:
+        lines.extend(_render_daily_log_row(legacy))
+    out = "\n".join(lines)
+    return out if len(out) <= DAILY_LOG_MAX_CHARS else out[:DAILY_LOG_MAX_CHARS - 3] + "..."
 
 
 async def _handle_open_items(project_id: str) -> str:
