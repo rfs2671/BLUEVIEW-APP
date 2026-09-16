@@ -216,7 +216,57 @@ const STAMP_NAME = '.stamp';
 //
 //       viewer.html is written to disk once per stamp, so a device staged at
 //       `13` keeps the hard swap and sees none of this.
-const VIEWER_VERSION = '14';
+//  15 — THE PREVIEW IS WHAT THE READER LOOKS AT, SO IT IS SIZED FOR HIS
+//       SCREEN. `14`'s crossfade made NO VISIBLE DIFFERENCE on the device,
+//       and it could not have: fading more smoothly into an illegible image
+//       does not make it legible. The fade was never the defect and it stays.
+//
+//       THE DEFECT IS ARITHMETIC AND IT WAS THERE FROM `12`.
+//       `CANVAS_BUDGET_MP` holds about two sharp sheets out of twenty-six, so
+//       a scroll back lands on a PREVIEW — not occasionally, not during a
+//       flick, ALWAYS. And every preview was `PREVIEW_TARGET_PX = 400000`:
+//       774 px across a 36x48 sheet, on a Pixel 10 Pro XL whose 443 CSS px
+//       viewport is 1080 REAL pixels wide. Every preview was upscaled 1.4x
+//       on the way to the glass. That is the "thick preview lines" report,
+//       in one number, and no amount of presentation fixes it.
+//
+//       SO THE PREVIEW IS BUILT AT `clientWidth * devicePixelRatio` — the
+//       fit-width sheet at one canvas pixel per device pixel, computed per
+//       device, with NO fixed cap anywhere. At fit width it is then
+//       indistinguishable from the sharp render, and the sharp tier is what
+//       the reader gets when he ZOOMS, which is the only time its extra
+//       pixels can be seen at all.
+//
+//       WHAT BOUNDS IT IS MEMORY AND THE TIER ABOVE, not a constant:
+//         * total preview storage <= 5% of `navigator.deviceMemory`, and
+//           32 MB when that API is absent — which on Android WebView it
+//           usually is. The cap SHRINKS the previews so the whole set still
+//           fits; it never drops a page, because a page with no preview is
+//           the blank sheet this tier exists to abolish.
+//         * never larger than the sharp render it sits under. A 3840 px
+//           window at dpr 2 asks for 7680 px and the sharp tier is edge-
+//           capped at 3072; without the clamp the "preview" would be two and
+//           a half times the thing it previews.
+//         * `CANVAS_BUDGET_MP` now scales too — but NOT on memory alone.
+//           `navigator.deviceMemory` is clamped to 8 by the spec, so a 16 GB
+//           phone reports exactly what a 64 GB desktop reports; memory can
+//           only PERMIT the larger budget and a desktop-class viewport is
+//           what asks for it. 64 MP is 256 MB of RGBA and this device's
+//           renderer kills were reported at 250-350 MB.
+//
+//       A ROTATION RECOMPUTES THE WIDTH AND REBUILDS ONLY IF IT GREW BY MORE
+//       THAN 25%. A shrink keeps the better previews it already has; a
+//       trivial growth is not worth 26 rasterisations; and the old preview
+//       stays on screen until the new one lands, so a rebuild is never a
+//       blank sheet.
+//
+//       ⚠️ AND THE PROBE NOW SAYS WHICH VIEWER ANSWERED. Nothing it posted
+//       carried `VIEWER_VERSION`, so a device run reporting "no change" was
+//       indistinguishable from an OTA that had not applied — which is what
+//       happened to `14`. `viewerVersion` is on the boot row and the env row,
+//       and the executing suite asserts the page's literal and this constant
+//       are the same stamp.
+const VIEWER_VERSION = '15';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -306,6 +356,24 @@ function viewerHtml() {
 // System WebView the device happens to have.
 const VIEWER_SCRIPT = [
   '(function(){',
+  // ── WHICH VIEWER IS ON THE PHONE ───────────────────────────────────────
+  //
+  // ⚠️ WITHOUT THIS, A DEVICE RUN CANNOT BE READ. viewer.html is written to
+  // disk once per stamp and re-used until the stamp moves, so every report
+  // this file's history is built on has two possible explanations — the fix
+  // did not work, or the fix is not on the phone — and NOTHING the page
+  // posted could tell them apart. That is exactly what happened to `14`: the
+  // operator reported "no visible difference" and nobody could say whether
+  // the OTA had applied. It travels on the boot row and the env row, which
+  // are the first two things the probe emits.
+  //
+  // A LITERAL, AND NOT `'... ' + VIEWER_VERSION + ' ...'`, BECAUSE EVERY LINE
+  // OF THIS ARRAY MUST BE A STATIC STRING — `pdfjsViewerMemory` walks the AST
+  // and refuses a concatenated one. The duplication is therefore deliberate
+  // and it is GATED: `pdfjsViewerBoot` asserts this literal and the module's
+  // `const VIEWER_VERSION` are the same stamp, so bumping one alone is a red
+  // suite rather than a device reporting a version it is not running.
+  '  var VIEWER_VERSION = "15";',
   '  var msgEl = document.getElementById("msg");',
   '  var pagesEl = document.getElementById("pages");',
   '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page, keeps big plans off the OOM killer
@@ -423,7 +491,72 @@ const VIEWER_SCRIPT = [
   // 250-350 MB and pdf.js additionally retaining the 31.7 MB file buffer and
   // its decode caches. A scroll of more than one page costs a re-render — now
   // ~700 ms, and off the UI thread — which is the deliberate trade.
+  //
+  // ⚠️ THIS LITERAL IS THE FLOOR AND THE FALLBACK, NOT THE FINAL VALUE.
+  // `applyDeviceBudgets()` below may RAISE it once, at boot, on a device that
+  // both permits and needs more. It is declared as a plain number because the
+  // static gates read it as one (`pdfjsViewerMemory` walks for a numeric
+  // literal between 32 and 64; `pdfRenderProbe` greps this exact line), and
+  // because the number those gates are checking IS the phone's.
   '  var CANVAS_BUDGET_MP = 32;',
+  // ══ WHAT THIS DEVICE WILL GIVE US, READ OFF THE DEVICE ══════════════════
+  //
+  // ⚠️ `navigator.deviceMemory` IS NOT "HOW MUCH RAM THIS MACHINE HAS", AND
+  // TREATING IT AS THAT IS HOW A PHONE ENDS UP WITH A DESKTOP'S BUDGET.
+  // Two properties of the API decide the whole shape of what follows:
+  //
+  //   IT IS CLAMPED TO 8.  The spec buckets the value to one of
+  //     0.25/0.5/1/2/4/8 and caps it, deliberately, as a fingerprinting
+  //     defence. So the operator's 16 GB Pixel 10 Pro XL reports `8` and a
+  //     64 GB workstation reports `8`. A budget keyed on memory alone would
+  //     hand his phone 64 MP = 256 MB of RGBA, and the renderer kills this
+  //     file's header documents were reported at 250-350 MB — with pdf.js
+  //     still holding the 31.7 MB file buffer on top. That is not a tuning
+  //     mistake, it is the crash-after-load defect put back.
+  //
+  //   IT IS OFTEN ABSENT.  Android System WebView frequently does not
+  //     implement it at all, so `undefined` is a SHIPPING PATH and not a
+  //     defensive branch. Every reader of it below states its fallback, and
+  //     `deviceMemoryKnown` travels in the probe row so a device reading is
+  //     never mistaken for a measured one.
+  //
+  // WHAT WE OBSERVE, said plainly because the operator asked: on the harness
+  // the value is whatever the case sets; on a real Android WebView we expect
+  // it to be missing more often than not, and the probe's `deviceMemoryKnown`
+  // is what will settle it on his phone.
+  '  var DEVICE_MEMORY_FALLBACK_GB = 4;',
+  // 5% OF REPORTED MEMORY, and a flat 32 MB when there is nothing to take a
+  // percentage of. 5% of 4 GB is 200 MB, which is far more than a 26-sheet set
+  // needs (~5 MB) — this is a guard against the 200-sheet sets, not a knob.
+  '  var PREVIEW_MEM_FRACTION = 0.05;',
+  '  var PREVIEW_MEM_FALLBACK_BYTES = 32000000;',
+  // ── THE BUDGET IS IN BYTES AND THE DECISION IS IN PIXELS ───────────────
+  //
+  // To turn one into the other before a single sheet has been encoded takes a
+  // rate. 0.15 B/px is a JPEG at quality 0.8 on a scanned plan sheet, and it
+  // is AN ESTIMATE THAT THE PROBE REPLACES WITH A MEASUREMENT: every
+  // `preview` row carries the real `storedBytes` for real dimensions, and
+  // `preview-mem` carries the measured `previewBytesPerPx` beside this
+  // constant. If the two disagree on the device, this is the number to move —
+  // with that row as the evidence.
+  '  var PREVIEW_EST_BYTES_PER_PX = 0.15;',
+  // ── HOW MUCH WIDER THE VIEWPORT HAS TO GET BEFORE THE WORK IS REDONE ───
+  //
+  // A ROTATION MUST NOT THROW 26 RASTERISATIONS AWAY, and neither must a
+  // keyboard opening, a split-screen handle moving, or a browser window
+  // nudged. Two rules, and the asymmetry is the point:
+  //
+  //   the viewport SHRANK       keep everything. The previews in hand are
+  //                             BETTER than the new target; rebuilding would
+  //                             spend the one thread making the page worse.
+  //   it grew by <= 25%         keep everything. 25% of linear width is the
+  //                             point below which the upscale is not visible
+  //                             on a photograph of a drawing, and 26 sheets
+  //                             is far too much to pay for it.
+  //
+  // Above that the set is rebuilt — and the OLD preview stays on screen until
+  // the new one lands, so a rebuild is never a blank sheet.
+  '  var PREVIEW_REBUILD_GROWTH = 1.25;',
   // ══ THE PREVIEW TIER ════════════════════════════════════════════════════
   //
   // WHAT THE BUDGET ABOVE COSTS, AND WHAT PAYS FOR IT. 32 MP holds about two
@@ -500,24 +633,46 @@ const VIEWER_SCRIPT = [
   // ours, and the element is already laid out at full size — so the sheet is
   // never blank, it is soft for a frame.
   //
-  // ONE TRANSIENT CANVAS, NOT N. Building a preview allocates a 0.4 MP
-  // scratch canvas, encodes it, and zeroes it on the same turn. Peak preview
-  // cost during the fill is ONE 1.6 MB bitmap, whatever the page count.
+  // ONE TRANSIENT CANVAS, NOT N. Building a preview allocates one scratch
+  // canvas, encodes it, and zeroes it on the same turn. Peak preview cost
+  // during the fill is ONE bitmap, whatever the page count.
   //
-  // 0.4 MP AND NOT MORE: on a 36x48 sheet that is 548 x 730, about 15 ppi.
-  // Unreadable as a drawing and entirely adequate as "which sheet is this and
-  // where am I" — which is the only question a preview has to answer, because
-  // the sharp render lands within ~700 ms of the scroll stopping.
-  '  var PREVIEW_TARGET_PX = 400000;',
-  // A sheet whose aspect ratio is extreme would otherwise put its long edge
-  // somewhere silly at a fixed pixel COUNT. Bounded like the sharp tier is.
-  '  var PREVIEW_MAX_EDGE = 1024;',
-  // JPEG rather than PNG, and 0.62 rather than 0.8. A plan sheet is a scan:
-  // PNG of a scan is larger than the raw bitmap it came from, and every
-  // megabyte here is multiplied by the page count. The artefacts are invisible
-  // at 15 ppi and the sharp tier is what the reader actually reads.
+  // ══ AND ITS SIZE IS THE READER'S SCREEN, NOT A NUMBER WRITTEN HERE ══════
+  //
+  // ⚠️ THIS IS WHERE `var PREVIEW_TARGET_PX = 400000;` USED TO BE, AND IT WAS
+  // THE DEFECT. The note that stood here said 0.4 MP is "entirely adequate as
+  // 'which sheet is this and where am I' — the only question a preview has to
+  // answer, because the sharp render lands within ~700 ms". The second half
+  // is true and the first half is false, and `CANVAS_BUDGET_MP` is why: the
+  // budget holds about TWO sharp sheets out of twenty-six, so a reader
+  // scrolling back is looking at a preview EVERY TIME — not for 700 ms, but
+  // until he stops there and the settle fires, and again the moment he leaves.
+  // A tier the reader is guaranteed to be looking at is not a placeholder,
+  // and it has to answer the question a drawing is opened to answer.
+  //
+  // 774 px ACROSS A 36x48 SHEET, on a Pixel 10 Pro XL: 443 CSS px at dpr
+  // 2.4375 is 1080 real pixels of glass, so every preview was upscaled 1.4x
+  // by the compositor on its way to the screen. Thick, soft lines — which is
+  // precisely what was reported, and `14`'s crossfade could only make the
+  // arrival of the sharp sheet smoother, never the preview legible.
+  //
+  // SO THE ANCHOR IS `clientWidth * devicePixelRatio`: one canvas pixel per
+  // device pixel at fit width, computed per device, NO FIXED CAP. On his
+  // phone that is 1080 px; at fit width the preview and the sharp render are
+  // then the same picture, and the sharp tier earns its 12.58 MP only when
+  // the reader pinches in. See `previewWidthTarget()`.
+  // JPEG rather than PNG, and 0.8 rather than 0.62. A plan sheet is a scan:
+  // PNG of a scan is larger than the raw bitmap it came from. 0.62 was chosen
+  // when the artefacts sat at 15 ppi under a sharp render the reader was
+  // assumed to be waiting for; at fit-width device resolution this IS the
+  // image he reads, and JPEG ringing on hairlines is visible at 0.62.
+  //
+  // THE COST IS BOUNDED BY THE BUDGET ABOVE AND NOT BY THIS. 0.8 on a
+  // 1080x1440 sheet is ~100-250 KB by estimate and the probe reports the
+  // measured figure per page; if the budget binds, the WIDTH gives way, never
+  // the page count.
   '  var PREVIEW_TYPE = "image/jpeg";',
-  '  var PREVIEW_QUALITY = 0.62;',
+  '  var PREVIEW_QUALITY = 0.8;',
   // ── WHEN THE SCROLL HAS STOPPED ────────────────────────────────────────
   //
   // A sharp render is ~700 ms of the one thread there is. Starting one for a
@@ -730,7 +885,11 @@ const VIEWER_SCRIPT = [
   // blob-worker probe comes back supported.
   '  function probeBoot(){',
   '    if (!MEASURE) return;',
-  '    var d = { scriptStartMs: r1(pnow()) };',
+  // ⚠️ FIRST FIELD OF THE FIRST ROW THE PROBE EMITS. Everything else in this
+  // file is a measurement of a viewer, and this says WHICH viewer. Without it
+  // "the change made no difference" and "the OTA did not apply" are the same
+  // reading — which is exactly how `14` was reported.
+  '    var d = { viewerVersion: VIEWER_VERSION, scriptStartMs: r1(pnow()) };',
   '    try {',
   '      var nav = performance.getEntriesByType("navigation")[0];',
   '      if (nav) {',
@@ -755,7 +914,7 @@ const VIEWER_SCRIPT = [
   '',
   '  function probeEnv(){',
   '    if (!MEASURE) return;',
-  '    var d = {};',
+  '    var d = { viewerVersion: VIEWER_VERSION };',
   '    try { d.ua = String(navigator.userAgent || "").slice(0, 200); } catch (e) {}',
   '    try { d.dpr = window.devicePixelRatio || 1; } catch (e) {}',
   '    try { d.clientW = document.documentElement.clientWidth; } catch (e) {}',
@@ -773,6 +932,18 @@ const VIEWER_SCRIPT = [
   '    d.BAND = BAND;',
   '    d.CANVAS_BUDGET_MP = CANVAS_BUDGET_MP;',
   '    d.MAX_CONCURRENT_RENDERS = MAX_CONCURRENT_RENDERS;',
+  // ── WHAT THE TWO TIERS RESOLVED TO ON THIS DEVICE ──────────────────────
+  //
+  // Both budgets are now computed rather than written down, so the constants
+  // in the source no longer answer "what did this phone get". These do, and
+  // `deviceMemoryKnown` says whether either of them rests on a measurement or
+  // on a fallback — which is the difference between a number and a guess.
+  '    d.deviceMemoryKnown = deviceMemoryKnown();',
+  '    d.deviceMemoryFallbackGB = DEVICE_MEMORY_FALLBACK_GB;',
+  '    d.previewWidthPx = previewWidthTarget();',
+  '    d.previewBudgetBytes = previewBudgetBytes();',
+  '    d.previewQuality = PREVIEW_QUALITY;',
+  '    d.sharpBudgetMp = CANVAS_BUDGET_MP;',
   '    probePost("env", d);',
   '  }',
   '',
@@ -1008,6 +1179,19 @@ const VIEWER_SCRIPT = [
   '    clearInterval(hbTimer); hbTimer = null;',
   '    probePost("uithread", { label: label, longestStallMs: r1(hbMax), ticks: hbTicks, stallsOver100ms: hbOver });',
   '  }',
+  '',
+  // ── THE BUDGETS ARE SETTLED BEFORE ANYTHING READS THEM ────────────────
+  //
+  // ⚠️ HERE AND NOT BESIDE THE VIEWER'S OWN `capabilityRead` CALL, BECAUSE
+  // CAPS MODE RETURNS TWENTY LINES BELOW AND NEVER REACHES IT. The capability
+  // screen opens this page with `?caps=1` precisely to read what this device
+  // resolved to, so a budget applied after that return would have the one
+  // caller that exists to report it reporting the declared fallback instead —
+  // an instrument confidently stating the wrong number.
+  //
+  // Both callers of `capabilityRead` are therefore downstream of this line,
+  // and `trim()` — the other reader — cannot run until a document arrives.
+  '  applyDeviceBudgets();',
   '',
   // ── CAPS MODE ENDS HERE ────────────────────────────────────────────────
   //
@@ -1303,26 +1487,130 @@ const VIEWER_SCRIPT = [
   '',
   '  function targetScale(vp1){ return targetScaleInfo(vp1).s; }',
   '',
-  // THE PREVIEW'S OWN SCALE, ANCHORED TO A PIXEL COUNT AND NOTHING ELSE.
+  // ══ WHAT THE DEVICE REPORTS, AND WHAT IS DONE WITH IT ═══════════════════
   //
-  // Not a fraction of the sharp scale: that would make a preview's cost track
-  // the sheet's size, and the whole point of a fixed 0.4 MP is that N previews
-  // cost a known amount whatever the set is. Solving for the scale that puts
-  // PREVIEW_TARGET_PX pixels on any page is one square root.
+  // READ ON EVERY CALL, NOT CACHED AT BOOT. `deviceMemory` never changes, but
+  // the VIEWPORT does — a rotation, a split-screen handle, a browser window
+  // dragged — and every consumer below wants the answer as it is now. The
+  // reads are property lookups; there is nothing to memoise.
+  '  function deviceMemoryGB(){',
+  '    try {',
+  '      var m = navigator.deviceMemory;',
+  '      return (typeof m === "number" && m > 0) ? m : 0;',
+  '    } catch (e) { return 0; }',
+  '  }',
+  '  function deviceMemoryKnown(){ return deviceMemoryGB() > 0; }',
+  '  function viewportCssWidth(){',
+  '    var w = 0;',
+  '    try { w = document.documentElement.clientWidth || window.innerWidth || 0; } catch (e) { w = 0; }',
+  '    return Math.max(200, w || 320);',
+  '  }',
+  '  function devicePixels(){',
+  '    var d = 1;',
+  '    try { d = window.devicePixelRatio || 1; } catch (e) { d = 1; }',
+  '    return (d > 0) ? d : 1;',
+  '  }',
+  // ── THE PREVIEW'S WIDTH: THE READER'S SCREEN, IN REAL PIXELS ───────────
   //
-  // NEVER LARGER THAN THE SHARP RENDER. A small page — a letter-size logbook
-  // on a phone — can have a sharp scale below the preview's, at which point a
-  // "preview" would be the more expensive of the two and drawn on top of
-  // nothing. Clamped, and the row says when the clamp bound.
-  '  function previewScaleInfo(vp1, sharpS){',
-  '    var area = Math.max(1, vp1.width * vp1.height);',
-  '    var s = Math.sqrt(PREVIEW_TARGET_PX / area);',
+  // NO CAP HERE ON PURPOSE. Every ceiling this number can meet is applied in
+  // `previewScaleInfo` against a number that MEANS something — the memory
+  // budget, the canvas limits, the sharp render it sits under — and each one
+  // names itself in the probe row when it binds. A constant here would be
+  // `PREVIEW_MAX_EDGE` again: a limit with no reason attached, silently
+  // deciding what the reader sees.
+  '  function previewWidthTarget(){',
+  '    return Math.round(viewportCssWidth() * devicePixels());',
+  '  }',
+  // ── HOW MANY BYTES THE WHOLE PREVIEW SET MAY HOLD ──────────────────────
+  //
+  // 5% of what the device says it has, and a flat 32 MB when it says nothing.
+  // The fallback is DELIBERATELY the tighter of the two: a WebView that will
+  // not tell us how much memory it has is not a WebView to guess generously
+  // about, and 32 MB still holds a 26-sheet set six times over.
+  '  function previewBudgetBytes(){',
+  '    var gb = deviceMemoryGB();',
+  '    if (gb > 0) return Math.round(gb * 1e9 * PREVIEW_MEM_FRACTION);',
+  '    return PREVIEW_MEM_FALLBACK_BYTES;',
+  '  }',
+  // ── AND HOW MANY PIXELS THAT IS, FOR ONE PAGE OF N ─────────────────────
+  //
+  // ⚠️ THE CAP SHRINKS THE PREVIEWS, IT NEVER DROPS A PAGE. A budget enforced
+  // by building previews until the money runs out leaves the last sheets of a
+  // long set with nothing on them — which is the blank-sheet defect this whole
+  // tier exists to abolish, reintroduced by its own guard. Dividing the budget
+  // by the page count first means every sheet is covered at whatever
+  // resolution the set can afford.
+  '  function previewPixelAllowance(nPages){',
+  '    var per = previewBudgetBytes() / Math.max(1, nPages || 1);',
+  '    return per / PREVIEW_EST_BYTES_PER_PX;',
+  '  }',
+  // ── AND WHAT THE SHARP TIER MAY HOLD ───────────────────────────────────
+  //
+  // TWO TERMS, AND BOTH ARE NECESSARY. Memory PERMITS the larger budget;
+  // a desktop-class viewport ASKS for it. Neither alone is a reason:
+  //
+  //   memory alone   `deviceMemory` is clamped to 8, so the operator's 16 GB
+  //                  phone reports what a workstation reports. Raising his
+  //                  budget to 64 MP is 256 MB of resident RGBA against
+  //                  renderer kills reported at 250-350 MB on that device.
+  //   width alone    a 1920 px window on a 2 GB Chromebook has the same
+  //                  headroom problem and none of the memory to absorb it.
+  //
+  // 900 CSS px is the split. It is above every phone in portrait and above
+  // most in landscape, and below every desktop window anyone reads a plan set
+  // in. A tablet in landscape lands on the desktop side, which is the correct
+  // answer: it has the sheet area to justify the sheets.
+  '  function sharpBudgetMp(){',
+  '    var gb = deviceMemoryGB();',
+  '    var permits = (gb >= 8);',
+  '    var wide = (viewportCssWidth() >= 900);',
+  '    return (permits && wide) ? 64 : 32;',
+  '  }',
+  // ONCE, AT BOOT, BEFORE ANYTHING IS MEASURED OR DRAWN. `CANVAS_BUDGET_MP`
+  // is read by `trim()` on every eviction and reported by `probeEnv`, so the
+  // value has to be settled before either can run.
+  '  function applyDeviceBudgets(){',
+  '    CANVAS_BUDGET_MP = sharpBudgetMp();',
+  '  }',
+  '',
+  // ── THE PREVIEW'S OWN SCALE: FIT WIDTH, IN DEVICE PIXELS ───────────────
+  //
+  // ⚠️ THIS USED TO SOLVE FOR A FIXED PIXEL COUNT (`PREVIEW_TARGET_PX`), and
+  // the note here said N previews should "cost a known amount whatever the set
+  // is". They still do — the memory budget below is that guarantee — but the
+  // count was the wrong thing to fix, because it made the preview's
+  // RESOLUTION a function of the sheet's size and of nothing about the reader.
+  // A 36x48 drawing got 774 px across; a letter page got the same 0.4 MP and
+  // looked fine; the operator reads 36x48 drawings.
+  //
+  // THE ANCHOR IS THE VIEWPORT IN DEVICE PIXELS, so the preview lands at
+  // exactly one canvas pixel per screen pixel at fit width and the compositor
+  // upscales nothing.
+  //
+  // THREE CEILINGS, EACH NAMED WHEN IT BINDS:
+  //
+  //   mem          the whole set has to fit the preview budget. Shrinks the
+  //                sheet; never drops one.
+  //   edge/maxpx   the canvas limits, the same two the sharp tier obeys. A
+  //                preview that cannot be allocated is not a preview.
+  //   sharp-floor  NEVER LARGER THAN THE SHARP RENDER IT SITS UNDER. A 3840 px
+  //                window at dpr 2 asks for 7680 px and the sharp tier is
+  //                edge-capped at 3072 — without this the "preview" would be
+  //                two and a half times the thing it previews: dearer to
+  //                build, dearer to hold, and drawn underneath something
+  //                smaller. That inverts the tiers, and this is the rule.
+  '  function previewScaleInfo(vp1, sharpS, widthPx, allowancePx){',
+  '    var target = widthPx || previewWidthTarget();',
+  '    var s = target / Math.max(1, vp1.width);',
   '    var clamp = "none";',
   '    var w = vp1.width * s, h = vp1.height * s;',
-  '    if (w > PREVIEW_MAX_EDGE) { s = s * (PREVIEW_MAX_EDGE / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
-  '    if (h > PREVIEW_MAX_EDGE) { s = s * (PREVIEW_MAX_EDGE / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
-  '    if (sharpS && s > sharpS) { s = sharpS; w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "sharp-floor" : clamp + "+sharp-floor"); }',
-  '    return { s: s, w: w, h: h, clamp: clamp };',
+  '    function note(name){ clamp = (clamp === "none" ? name : clamp + "+" + name); }',
+  '    if (allowancePx && w * h > allowancePx) { s = s * Math.sqrt(allowancePx / (w * h)); w = vp1.width * s; h = vp1.height * s; note("mem"); }',
+  '    if (w > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / w); w = vp1.width * s; h = vp1.height * s; note("edge-w"); }',
+  '    if (h > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / h); w = vp1.width * s; h = vp1.height * s; note("edge-h"); }',
+  '    if (w * h > MAX_CANVAS_PX) { s = s * Math.sqrt(MAX_CANVAS_PX / (w * h)); w = vp1.width * s; h = vp1.height * s; note("maxpx"); }',
+  '    if (sharpS && s > sharpS) { s = sharpS; w = vp1.width * s; h = vp1.height * s; note("sharp-floor"); }',
+  '    return { s: s, w: w, h: h, clamp: clamp, widthTarget: target };',
   '  }',
   '',
   // THE CEILING THE EXISTING CAPS ALLOW, ignoring the viewport entirely.
@@ -1414,6 +1702,8 @@ const VIEWER_SCRIPT = [
   '    slot.pvBytes = 0;',
   '    slot.pvBusy = false;',
   '    slot.pvFail = "";',
+  '    slot.pvStale = false;',
+  '    slot.pvWidthPx = 0;',
   '    slot.pgen = slot.pgen + 1;',
   '  }',
   '',
@@ -1573,6 +1863,25 @@ const VIEWER_SCRIPT = [
   // also called on a timer from `pdf-ready`; whichever comes first wins, and
   // the failure mode is "previews start a little late", not "never".
   '  var previewsArmed = false;',
+  // ── THE WIDTH THIS DOCUMENT'S PREVIEWS WERE ACTUALLY BUILT AT ──────────
+  //
+  // NOT `previewWidthTarget()` READ AGAIN. The target is what the viewport
+  // says NOW; this is what is on the screen, and the difference between the
+  // two is the entire rotation decision. Settled once, when the fill is armed,
+  // so every sheet in one document is built at one width — a set with mixed
+  // preview resolutions would look like a rendering bug as the reader scrolls
+  // through it.
+  '  var pvWidthPx = 0;',
+  // Per-page pixel allowance from the memory budget, settled with the width
+  // and for the same reason.
+  '  var pvAllowancePx = 0;',
+  // ── HOW LONG THE WHOLE FILL TOOK, WHICH IS AN ACCEPTANCE NUMBER ────────
+  //
+  // "time to build all 26" is the figure the redesign is judged on, and
+  // nothing reported it: the per-page rows carry `totalMs` for one sheet and
+  // `preview-mem` carried no clock at all. Stamped when the fill is armed and
+  // read when the last preview lands.
+  '  var pvFillStartMs = 0;',
   // ── HAS THE SCROLL STOPPED ─────────────────────────────────────────────
   //
   // TRUE AT REST, INCLUDING AT OPEN, and that matters: the open path never
@@ -1659,8 +1968,17 @@ const VIEWER_SCRIPT = [
   '',
   // Every page, once, and it stays there until the preview exists or the page
   // has told us it cannot be built. The band has no opinion about this line.
+  // `pvStale` IS WHY THIS IS NOT `if (slot.pv)`. A preview that exists but was
+  // built for a narrower viewport is still ON THE SCREEN and still the only
+  // thing standing between the reader and a blank sheet — so it is not
+  // released, it is re-queued, and the old bytes stay visible until the new
+  // ones land. See `rebuildPreviews`.
+  '  function previewWanted(slot){',
+  '    if (slot.pvBusy || slot.pvFail) return false;',
+  '    return (!slot.pv) || !!slot.pvStale;',
+  '  }',
   '  function enqueuePreview(slot){',
-  '    if (slot.pv || slot.pvBusy || slot.pvFail) return;',
+  '    if (!previewWanted(slot)) return;',
   '    if (pvQueue.indexOf(slot) < 0) pvQueue.push(slot);',
   '  }',
   '  function enqueueAllPreviews(){',
@@ -1668,12 +1986,75 @@ const VIEWER_SCRIPT = [
   '  }',
   // THE ARMING IS IDEMPOTENT AND HAS TWO CALLERS ON PURPOSE — the first sharp
   // render finishing, and a timer from `pdf-ready` in case it never does.
+  //
+  // AND IT IS WHERE THE WIDTH IS SETTLED. By this point the document has been
+  // laid out and the viewport is whatever the reader is holding; every sheet
+  // in this set is then built at one width, and only `rebuildPreviews` moves
+  // it.
   '  function armPreviews(){',
   '    if (previewsArmed || !doc) return;',
   '    previewsArmed = true;',
+  '    pvWidthPx = previewWidthTarget();',
+  '    pvAllowancePx = previewPixelAllowance(slots.length);',
+  '    pvFillStartMs = pnow();',
   '    enqueueAllPreviews();',
   '    pumpQueue();',
   '  }',
+  '',
+  // ── A ROTATION, OR A WINDOW DRAGGED WIDER ──────────────────────────────
+  //
+  // ⚠️ THE ASYMMETRY IS THE WHOLE RULE AND IT IS EASY TO GET BACKWARDS. A
+  // viewport that SHRANK leaves previews that are better than the new target —
+  // rebuilding them spends the one render slot 26 times to make the page
+  // worse. A growth inside `PREVIEW_REBUILD_GROWTH` is not visible and is not
+  // worth 26 rasterisations either. Only real growth rebuilds.
+  //
+  // AND THE REBUILD IS NOT AN EVICTION. `slot.pv` stays true, the <img> keeps
+  // its bytes and stays on the screen, and `runEncode` REPLACES the src when
+  // the new encode lands. Nothing goes blank at any point, which is the
+  // property that makes this affordable at all — a reader who rotates gets a
+  // slightly soft page for a few seconds rather than a white one.
+  //
+  // DEBOUNCED BY THE EVENT ITSELF: `resize` fires repeatedly through a drag,
+  // and each call compares against `pvWidthPx`, which only moves when a
+  // rebuild is actually started. A drag from 400 to 900 therefore starts one
+  // rebuild and not five.
+  '  function rebuildPreviews(){',
+  '    var i, n = 0;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      if (!slots[i].pv) continue;',
+  '      slots[i].pvStale = true;',
+  '      n = n + 1;',
+  '    }',
+  '    enqueueAllPreviews();',
+  '    pumpQueue();',
+  '    return n;',
+  '  }',
+  '  function onViewportResize(){',
+  '    if (!doc || !previewsArmed) return;',
+  '    var target = previewWidthTarget();',
+  '    if (!(target > pvWidthPx * PREVIEW_REBUILD_GROWTH)) return;',
+  '    var was = pvWidthPx;',
+  '    pvWidthPx = target;',
+  '    pvAllowancePx = previewPixelAllowance(slots.length);',
+  '    pvFillStartMs = pnow();',
+  '    previewMemoryPosted = false;',
+  '    var n = rebuildPreviews();',
+  '    probePost("preview-resize", { fromWidthPx: was, toWidthPx: target,',
+  '      growth: was ? Math.round((target / was) * 100) / 100 : null,',
+  '      rebuilt: n, pages: slots.length });',
+  '  }',
+  // REGISTERED FOR THE LIFE OF THE PAGE, beside `watchZoom` and the scroll
+  // listener, and for the same reason: the viewport belongs to the WebView and
+  // not to the document, so a listener added per open would accumulate one per
+  // document.
+  //
+  // ⚠️ AND NOT ON THE `scheduleSweep` LISTENER, WHICH ONLY EXISTS ON THE
+  // NO-IntersectionObserver PATH. Every device that has an observer — which is
+  // every device this ships to — had no `resize` handler at all, so nothing in
+  // this page has ever noticed a rotation.
+  '  try { window.addEventListener("resize", onViewportResize); } catch (e) {}',
+  '  try { window.addEventListener("orientationchange", onViewportResize); } catch (e) {}',
   '',
   // ── THE SCROLL STOPPING IS AN EVENT THIS PAGE HAS TO NOTICE ────────────
   //
@@ -1759,8 +2140,16 @@ const VIEWER_SCRIPT = [
   '      var fillHeld = (!settled) || (encQueue.length >= PREVIEW_ENCODE_BACKLOG);',
   '      for (i = 0; i < pvQueue.length; i++) {',
   '        slot = pvQueue[i];',
-  '        if (slot.pv || slot.pvBusy || slot.pvFail) continue;',
-  '        rank = (onScreen(slot) && !slot.done) ? 0 : 3;',
+  '        if (!previewWanted(slot)) continue;',
+  // ── A STALE PREVIEW IS NEVER RANK 0 ────────────────────────────────────
+  //
+  // Rank 0 means "the reader is looking at white". A sheet whose preview was
+  // built for a narrower viewport is showing him a picture — a slightly soft
+  // one — so it is background work, and it must not be allowed to jump the
+  // queue in front of the sharp render for the sheet he has stopped on. That
+  // is the difference between a rotation costing a few soft seconds and a
+  // rotation costing 26 rasterisations of priority.
+  '        rank = (onScreen(slot) && !slot.done && !slot.pv) ? 0 : 3;',
   '        if (rank === 3 && fillHeld) continue;',
   '        d = nearness(slot);',
   '        if (rank < bestRank || (rank === bestRank && d < bestD)) { bestRank = rank; bestD = d; best = slot; }',
@@ -2048,7 +2437,7 @@ const VIEWER_SCRIPT = [
   // discarding a preview that is half built. `pgen` moves only when the
   // DOCUMENT goes.
   '  function renderPreview(slot){',
-  '    if (slot.pv || slot.pvBusy || slot.pvFail) return;',
+  '    if (!previewWanted(slot)) return;',
   '    slot.pvBusy = true;',
   '    inFlight = inFlight + 1;',
   '    pvStarted = pvStarted + 1;',
@@ -2101,7 +2490,11 @@ const VIEWER_SCRIPT = [
   '      if (slot.pgen !== pgen) { try { page.cleanup(); } catch (e) {} done(); return null; }',
   '      var vp1 = page.getViewport({ scale: 1 });',
   '      var sharpS = targetScaleInfo(vp1).s;',
-  '      var info = previewScaleInfo(vp1, sharpS);',
+  // THE WIDTH THIS DOCUMENT WAS ARMED AT, not the one the viewport reports
+  // right now. A job that started before a resize and a job that started after
+  // it must not produce different-sized previews for the same set: the width
+  // moves in `onViewportResize`, once, and the whole set follows it.
+  '      var info = previewScaleInfo(vp1, sharpS, pvWidthPx, pvAllowancePx);',
   '      var vp = page.getViewport({ scale: info.s });',
   '      var c = document.createElement("canvas");',
   '      c.width = Math.max(1, Math.floor(vp.width));',
@@ -2317,29 +2710,65 @@ const VIEWER_SCRIPT = [
   '    var enc = encodeToUrl(c, job.rawBytes);',
   '    var encodeMs = MEASURE ? r1(pnow() - e0) : 0;',
   '    encoderReport(c);',
-  '    if (enc.storage === "canvas") {',
-  '      c.className = "pv";',
-  '      slot2.pvImg = c;',
-  '      slot2.pvUrl = "";',
-  '    } else {',
-  '      var img = document.createElement("img");',
-  '      img.className = "pv";',
-  '      img.alt = "";',
-  '      img.src = enc.url;',
-  '      slot2.pvImg = img;',
-  // NOTHING TO REVOKE. A `data:` URL is a string the <img> owns; it goes when
-  // `releasePreview` clears the src. `pvUrl` stays as the field that means
-  // "this preview holds an object URL someone has to hand back", and it is
-  // empty on every path this page now takes — which is one fewer lifetime to
-  // get wrong than `12` had.
+  // ── A REBUILD REPLACES THE BYTES IN THE ELEMENT THAT IS ALREADY THERE ──
+  //
+  // ⚠️ NOT A SECOND `<img>`. A rotation re-encodes every sheet, and a path
+  // that appended each new one would leave two preview layers per page
+  // stacked at z-index 0 — the old bytes retained for the life of the
+  // document, doubling on every rebuild, with nothing holding a reference to
+  // say so. Swapping `src` on the existing element hands the old string back
+  // to the collector and never leaves the sheet without something to paint:
+  // the browser keeps the old frame until the new one has decoded.
+  //
+  // THE FALLBACK CANNOT REUSE, because a raw preview IS a canvas and the new
+  // one is a different canvas. It is swapped whole and the old one zeroed,
+  // which is the same discipline `releaseSlot` applies to a sharp bitmap.
+  //
+  // NOTHING TO REVOKE EITHER WAY. A `data:` URL is a string the <img> owns; it
+  // goes when the src is replaced or when `releasePreview` clears it. `pvUrl`
+  // stays as the field that means "this preview holds an object URL someone
+  // has to hand back", and it is empty on every path this page now takes.
+  '    var swapSrc = !!(slot2.pvStale && slot2.pvImg && slot2.pvStorage !== "canvas"',
+  '                     && enc.storage !== "canvas");',
+  '    if (swapSrc) {',
+  '      slot2.pvImg.src = enc.url;',
   '      slot2.pvUrl = "";',
   '      try { c.width = 0; c.height = 0; } catch (e) {}',
+  '    } else {',
+  // Whatever was there is detached and its bytes dropped BEFORE the new layer
+  // goes in, so a rebuild never leaves two.
+  '      if (slot2.pvImg) {',
+  '        try { if (slot2.pvImg.parentNode) slot2.pvImg.parentNode.removeChild(slot2.pvImg); } catch (e) {}',
+  '        try { slot2.pvImg.src = ""; } catch (e) {}',
+  '        try { slot2.pvImg.width = 0; slot2.pvImg.height = 0; } catch (e) {}',
+  '      }',
+  '      if (enc.storage === "canvas") {',
+  '        c.className = "pv";',
+  '        slot2.pvImg = c;',
+  '      } else {',
+  '        var img = document.createElement("img");',
+  '        img.className = "pv";',
+  '        img.alt = "";',
+  '        img.src = enc.url;',
+  '        slot2.pvImg = img;',
+  '        try { c.width = 0; c.height = 0; } catch (e) {}',
+  '      }',
+  '      slot2.pvUrl = "";',
   '    }',
+  '    slot2.pvStale = false;',
+  '    slot2.pvWidthPx = cw;',
   // UNDER THE CANVAS, ALWAYS. `insertBefore(x, firstChild)` puts the preview
   // behind a sharp canvas that is already there — which happens whenever the
   // background fill reaches a sheet the reader has already read.
-  '    try { slot2.el.insertBefore(slot2.pvImg, slot2.el.firstChild || null); }',
-  '    catch (e) { try { slot2.el.appendChild(slot2.pvImg); } catch (e2) {} }',
+  // ⚠️ AND ONLY IF IT IS NOT ALREADY THERE. On a rebuild the element is the
+  // one already in the placeholder and only its `src` changed; `insertBefore`
+  // against itself is a no-op in a browser but not in every DOM, and a page
+  // that grew a second copy of its own preview layer on every rotation is a
+  // leak nothing would report.
+  '    if (slot2.pvImg.parentNode !== slot2.el) {',
+  '      try { slot2.el.insertBefore(slot2.pvImg, slot2.el.firstChild || null); }',
+  '      catch (e) { try { slot2.el.appendChild(slot2.pvImg); } catch (e2) {} }',
+  '    }',
   '    slot2.pv = true;',
   '    slot2.pvBytes = enc.bytes;',
   '    slot2.pvRawBytes = job.rawBytes;',
@@ -2394,12 +2823,24 @@ const VIEWER_SCRIPT = [
   '  function maybeReportPreviewMemory(){',
   '    if (!MEASURE || !doc) return;',
   '    var i, built = 0, stored = 0, storage = "", mixed = false;',
+  '    var pixels = 0, stale = 0;',
   '    for (i = 0; i < slots.length; i++) {',
+  '      if (slots[i].pvStale) stale++;',
   '      if (!slots[i].pv) continue;',
   '      built++;',
   '      stored = stored + (slots[i].pvBytes || 0);',
+  // The denominator of the MEASURED bytes-per-pixel, off the dimensions really
+  // allocated. `PREVIEW_EST_BYTES_PER_PX` is what the budget was spent
+  // against; this is what it actually cost, and the two travel together so
+  // the estimate can be corrected from a device run rather than from a guess.
+  '      pixels = pixels + ((slots[i].pvRawBytes || 0) / 4);',
   '      if (!storage) storage = slots[i].pvStorage; else if (storage !== slots[i].pvStorage) mixed = true;',
   '    }',
+  // ⚠️ NOT WHILE A REBUILD IS HALF DONE. Every sheet still has a preview
+  // during a rotation — that is the point of `pvStale` — so the census below
+  // would be satisfied and the row would report a set at two different widths
+  // as if it were one. A row that averages two answers is worse than no row.
+  '    if (stale > 0) return;',
   '    if (built + previewsUnbuildable() < slots.length) return;',
   '    if (previewMemoryPosted) return;',
   '    previewMemoryPosted = true;',
@@ -2415,7 +2856,29 @@ const VIEWER_SCRIPT = [
   '      sharpResidentMB: Math.round((sharpPx * 4) / 1e4) / 100,',
   '      totalResidentMB: Math.round(((sharpPx * 4) + stored) / 1e4) / 100,',
   '      budgetMP: CANVAS_BUDGET_MP,',
-  '      previewTargetPx: PREVIEW_TARGET_PX, previewQuality: PREVIEW_QUALITY',
+  '      previewQuality: PREVIEW_QUALITY,',
+  // ── THE FIVE THE REDESIGN IS JUDGED ON, plus what it was allowed to spend
+  //
+  // `previewWidthPx` is the width the set was BUILT at, not the width the
+  // viewport reports now — on a rotation those differ, and the one that
+  // explains the picture is this one.
+  '      previewWidthPx: pvWidthPx,',
+  '      previewWidthTargetPx: previewWidthTarget(),',
+  '      previewBudgetBytes: previewBudgetBytes(),',
+  '      previewBudgetUsedPct: Math.round((stored / Math.max(1, previewBudgetBytes())) * 1000) / 10,',
+  // OVER BUDGET IS A READING, NOT AN IMPOSSIBILITY. The allowance is spent
+  // against an ESTIMATED bytes-per-pixel; if the estimate is low the set
+  // overshoots, and this is the flag that says so rather than a cap that
+  // silently drops the sheets at the end.
+  '      previewBudgetExceeded: stored > previewBudgetBytes(),',
+  '      previewBytesPerPx: pixels ? Math.round((stored / pixels) * 1000) / 1000 : 0,',
+  '      previewBytesPerPxEstimate: PREVIEW_EST_BYTES_PER_PX,',
+  // TIME TO BUILD THE WHOLE SET, armed to last sheet. The acceptance number.
+  '      fillTotalMs: pvFillStartMs ? r1(pnow() - pvFillStartMs) : 0,',
+  '      deviceMemoryGB: deviceMemoryGB() || null,',
+  '      deviceMemoryKnown: deviceMemoryKnown(),',
+  '      sharpBudgetMp: CANVAS_BUDGET_MP,',
+  '      viewerVersion: VIEWER_VERSION',
   '    });',
   '  }',
   '  var previewMemoryPosted = false;',
@@ -2681,8 +3144,15 @@ const VIEWER_SCRIPT = [
   '            var slot = { n: pageNo, el: el, done: false, busy: false,',
   '                          near: false, canvas: null, page: null, task: null, gen: 0,',
   '                          sharpPainted: false,',
+  // `pvStale` IS A FOURTH AXIS AND NOT A STAGE OF `pv` EITHER. `pv` means
+  // "this sheet has something to show"; `pvStale` means "what it is showing
+  // was built for a narrower viewport". Both true at once is the whole of the
+  // rotation design — the reader keeps looking at the old preview while the
+  // new one is built — and collapsing them into one tri-state would make the
+  // blank-sheet census ambiguous exactly where it must not be.
   '                          pv: false, pvImg: null, pvUrl: "", pvBytes: 0, pvRawBytes: 0,',
-  '                          pvStorage: "", pvBusy: false, pvFail: "", pgen: 0 };',
+  '                          pvStorage: "", pvBusy: false, pvFail: "", pgen: 0,',
+  '                          pvStale: false, pvWidthPx: 0 };',
   '            el.__slot = slot;',
   '            slots.push(slot);',
   '            pagesEl.appendChild(el);',
@@ -3468,6 +3938,13 @@ const VIEWER_SCRIPT = [
   // rasterisations on top of the next document's open — the one number this
   // change exists not to move.
   '    previewsArmed = false;',
+  // AND SO DOES THE WIDTH. It is a fact about ONE document's fill — the
+  // viewport when that set was armed — and carrying it across would make the
+  // next document's rotation test compare against a width it was never built
+  // at, which is either a rebuild nobody needed or one nobody got.
+  '    pvWidthPx = 0;',
+  '    pvAllowancePx = 0;',
+  '    pvFillStartMs = 0;',
   '    previewMemoryPosted = false;',
   '    rcStarted = 0; rcCancelled = 0; rcCompleted = 0;',
   '    pvStarted = 0; pvFailed = 0; pvCompleted = 0;',
