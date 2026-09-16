@@ -78,22 +78,57 @@ function makeScaler(js) {
     `var MAX_CANVAS_PX = ${constOf('MAX_CANVAS_PX')};`,
     `var TARGET_PPI = ${constOf('TARGET_PPI')};`,
     grab('targetScaleInfo'),
-    'return targetScaleInfo(vp1, over);',
+    'return targetScaleInfo(vp1, over, wantFloor);',
   ].join('\n');
-  // `sharp` IS A PARAMETER HERE BECAUSE IT IS A VARIABLE THERE. The viewer's
-  // ppi floor is no longer unconditional — it is attached to the reader having
-  // zoomed in — so the scale function reads a module-level `sharp` flag when it
-  // is not told otherwise. Supplying it as an argument is what lets this file
-  // run BOTH tiers of the real function rather than describing them.
+  // `wantFloor` IS A PARAMETER HERE BECAUSE IT IS A PARAMETER THERE. The ppi
+  // floor is unconditional on the shipping path again — `targetScaleInfo`
+  // defaults it to true — and the probe's A/B passes it explicitly so it can
+  // time both anchors. Supplying it here is what lets this file RUN both
+  // rather than describe them.
   // eslint-disable-next-line no-new-func
-  const fn = new Function('vp1', 'over', 'baseWidth', 'window', 'sharp', body);
-  return (widthIn, heightIn, cssPx, dpr, sharp, over) => fn(
+  const fn = new Function('vp1', 'over', 'baseWidth', 'window', 'wantFloor', body);
+  return (widthIn, heightIn, cssPx, dpr, wantFloor, over) => fn(
     { width: widthIn * 72, height: heightIn * 72 },
     over,
     cssPx,
     { devicePixelRatio: dpr },
-    !!sharp,
+    wantFloor,
   );
+}
+
+/**
+ * WHAT THE SHIPPING PATH ACTUALLY ASKS FOR: `targetScaleInfo(vp1)`, with no
+ * third argument at all. Lifted separately because the question this file now
+ * answers is what the DEFAULT is — a helper that always passed the flag could
+ * never catch the default being quietly changed back.
+ */
+function makeShippingScaler(js) {
+  const i = js.indexOf('function targetScaleInfo(');
+  const end = js.indexOf('\n  }\n', i);
+  const num = (name) => Number(js.match(new RegExp(`var ${name} = (\\d+);`))[1]);
+  const body = [
+    `var MAX_CANVAS_EDGE = ${num('MAX_CANVAS_EDGE')};`,
+    `var MAX_CANVAS_PX = ${num('MAX_CANVAS_PX')};`,
+    `var TARGET_PPI = ${num('TARGET_PPI')};`,
+    js.slice(i, end + 4),
+    'return targetScaleInfo(vp1);',
+  ].join('\n');
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('vp1', 'baseWidth', 'window', body);
+  // ⚠️ REPORTED, NOT THROWN. Nothing outside `targetScaleInfo` is supplied
+  // here on purpose: the shipping path calls it with one argument and the
+  // whole point is that it needs nothing else to decide the floor. A default
+  // that reached back out to a module-level flag — which is exactly what this
+  // file used to assert — makes this reference fail, and that IS the finding.
+  // Letting it throw would exit 1 with a stack trace and no name; a named
+  // failure says which property broke.
+  return (widthIn, heightIn, cssPx, dpr) => {
+    try {
+      return fn({ width: widthIn * 72, height: heightIn * 72 }, cssPx, { devicePixelRatio: dpr });
+    } catch (e) {
+      return { s: NaN, w: NaN, h: NaN, anchor: 'threw', floor: null, err: String(e && e.message) };
+    }
+  };
 }
 
 /** What the OLD formula produced, for the never-fewer-pixels comparison. */
@@ -110,6 +145,7 @@ function oldScale(widthIn, cssPx, dpr, maxEdge, maxPx, heightIn) {
 
 const JS = viewerScript();
 const scale = makeScaler(JS);
+const shippingScale = makeShippingScaler(JS);
 const EDGE = Number(JS.match(/var MAX_CANVAS_EDGE = (\d+);/)[1]);
 const MAXPX = Number(JS.match(/var MAX_CANVAS_PX = (\d+);/)[1]);
 
@@ -121,58 +157,68 @@ const DEVICES = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// THE FLOOR IS NOW ATTACHED TO THE ZOOM, NOT TO THE OPEN.
+// THE FLOOR IS BACK ON AT FIRST PAINT, AND THE MEASUREMENT IS WHY.
 //
-// #413 was right about the resolution and wrong about when to pay for it. A
-// 36x48 sheet at a phone's viewport scale is 32.5 ppi and genuinely
-// unreadable, so the floor had to exist. But it applied on EVERY page of
-// EVERY open, and the band rasterises four or five sheets before the operator
-// has touched anything — 63 MP on the UI thread to show a drawing nobody has
-// asked to read the fine print of yet. An inspector waits through all of it.
+// #542 attached #413's ppi floor to the zoom, on the reasoning that a phone
+// went 1.83 MP a sheet to 12.58 MP — 6.9x — with no worker to put the work
+// on, and that the band rasterised four or five sheets before the operator
+// touched anything.
 //
-// So there are two tiers now, and this file runs both:
+// ⚠️ THE PREMISE IS REFUTED. Isolated medians on the operator's Pixel 10 Pro
+// XL, three runs each, inflight 0, spread under 90 ms:
 //
-//   FIRST PAINT  viewport-anchored, floor OFF. Byte-for-byte the scale the
-//                viewer used before #413, which is the claim "instant open"
-//                actually rests on.
-//   ZOOMED IN    floor ON. Exactly what #413 bought, delivered the moment
-//                someone pinches in to read.
+//     0.5 MP   800 ms
+//     1.2 MP   742 ms
+//    11.2 MP   701 ms      <- twenty-two times the pixels, and FASTER
 //
-// The two assertions that matter are therefore NOT "always >= 85 ppi" any
-// more. They are: first paint costs what it cost before #413, and zooming in
-// gets back everything #413 bought. Both are below, and both are run rather
-// than described.
+// The per-page cost is CONTENT DECODE — 710 FlateDecode and 147 DCTDecode
+// operators on one of his sheets — and it does not care how many pixels are
+// filled. A cheaper tier is not a faster tier; it is the same wait and a
+// blurrier drawing. So the deferral bought nothing and cost the reader 32 ppi
+// until he thought to pinch.
+//
+// WHAT THIS FILE ASSERTS NOW is therefore the opposite of what it did, and
+// deliberately so: the SHIPPING DEFAULT is the floor, every device clears
+// 85 ppi from the first paint, and asking for the viewport anchor explicitly
+// (which the probe's A/B still does) never produces MORE pixels than the
+// floor does.
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log('\n── ARCH-E 36x48: first paint vs zoomed in ───────────────────');
-let firstPaintIsPre413 = true;
-let sharpAtLeast85 = true;
-let sharpNeverFewer = true;
+console.log('\n── ARCH-E 36x48: what the reader gets at first paint ─────────');
+let shippingIsTheFloor = true;
+let openAtLeast85 = true;
+let floorNeverFewer = true;
 for (const [label, css, dpr] of DEVICES) {
-  const open = scale(36, 48, css, dpr, false);
-  const zoom = scale(36, 48, css, dpr, true);
+  const open = shippingScale(36, 48, css, dpr);
+  const viewportOnly = scale(36, 48, css, dpr, false);
+  const floored = scale(36, 48, css, dpr, true);
   const pre413 = oldScale(36, css, dpr, EDGE, MAXPX, 48);
   console.log(
     `  ${label}   open ${(72 * open.s).toFixed(1).padStart(5)} ppi `
     + `${(open.w * open.h / 1e6).toFixed(2).padStart(5)} MP`
-    + `   ->  zoom ${(72 * zoom.s).toFixed(1).padStart(5)} ppi `
-    + `${(zoom.w * zoom.h / 1e6).toFixed(2).padStart(5)} MP`
-    + `   (${(zoom.w * zoom.h / (open.w * open.h)).toFixed(1)}x)`,
+    + `   (viewport-only would be ${(72 * viewportOnly.s).toFixed(1).padStart(5)} ppi `
+    + `${(viewportOnly.w * viewportOnly.h / 1e6).toFixed(2).padStart(5)} MP,`
+    + ` pre-#413 ${(72 * pre413).toFixed(1)} ppi)`,
   );
-  if (Math.abs(open.s - pre413) > 1e-9) firstPaintIsPre413 = false;
-  if (72 * zoom.s < 85) sharpAtLeast85 = false;
-  if (zoom.s < open.s - 1e-9) sharpNeverFewer = false;
+  // ⚠️ NaN COMPARES FALSE AGAINST EVERYTHING, so a scaler that could not run
+  // at all would sail through `Math.abs(a - b) > eps`. Finiteness is checked
+  // first and explicitly — this is the difference between "the default is the
+  // floor" and "the default could not be evaluated".
+  if (!Number.isFinite(open.s) || Math.abs(open.s - floored.s) > 1e-12) shippingIsTheFloor = false;
+  if (!Number.isFinite(open.s) || 72 * open.s < 85) openAtLeast85 = false;
+  if (!Number.isFinite(floored.s) || floored.s < viewportOnly.s - 1e-9) floorNeverFewer = false;
 }
 
-ok(firstPaintIsPre413,
-  'FIRST PAINT is exactly the pre-#413 viewport-anchored scale — a phone is '
-  + 'back to 1.83 MP a sheet instead of 12.58, which is the instant open');
-ok(sharpAtLeast85,
-  'AND ZOOMING IN still reaches >= 85 ppi on every device — #413 is deferred, '
-  + 'not reverted');
-ok(sharpNeverFewer,
-  'the zoomed tier never renders FEWER pixels than first paint, so the '
-  + 're-render can only ever sharpen');
+ok(shippingIsTheFloor,
+  'THE SHIPPING DEFAULT IS THE FLOOR — targetScaleInfo(vp1) with no third '
+  + 'argument is identical to asking for it, on every device. This is the '
+  + 'assertion that catches the default being changed back');
+ok(openAtLeast85,
+  'so every device is at >= 85 ppi from the FIRST paint, with no pinch — the '
+  + 'measured cost of which is ~0 ms, because the per-page cost is decode');
+ok(floorNeverFewer,
+  'and the floor never renders FEWER pixels than the viewport anchor, so '
+  + 'turning it on can only ever sharpen');
 
 console.log('\n── the caps still bind, so the ceiling did not move ──────────');
 {
@@ -194,37 +240,37 @@ console.log('\n── the caps still bind, so the ceiling did not move ───
     + 'paint and zoom are identical there and that device is untouched');
 }
 
-console.log('\n── small pages: the floor is off at open, so letter is too ───');
+console.log('\n── small pages: the floor barely touches a letter sheet ──────');
 {
   // US Letter, 8.5x11 — the logbook case, 16-93 KB and two pages.
   //
   // THE POINT OF THIS BLOCK. The floor was never the reason a LOGBOOK was
-  // slow: it lifted a letter page from 1.77 MP to 2.10 MP, 1.19x, which
-  // cannot be 20 seconds. Gating the floor therefore CANNOT be the logbook
-  // fix, and this block exists to keep that honest — it records the small
-  // number rather than letting the branch claim the logbook as a win.
+  // slow: it lifts a letter page from 1.77 MP to 2.10 MP, 1.19x, which cannot
+  // be 20 seconds. Turning it back on therefore cannot be a logbook
+  // REGRESSION either, and this block keeps that honest in both directions —
+  // it records the small number rather than letting anyone claim the logbook
+  // as a win or fear it as a cost.
   for (const [label, css, dpr] of DEVICES) {
-    const open = scale(8.5, 11, css, dpr, false);
-    const zoom = scale(8.5, 11, css, dpr, true);
-    const pre413 = oldScale(8.5, css, dpr, EDGE, MAXPX, 11);
+    const open = shippingScale(8.5, 11, css, dpr);
+    const viewportOnly = scale(8.5, 11, css, dpr, false);
     console.log(
       `  letter on ${label.trim().padEnd(26)} open ${(72 * open.s).toFixed(1)} ppi `
-      + `${(open.w * open.h / 1e6).toFixed(2)} MP -> zoom ${(72 * zoom.s).toFixed(1)} ppi `
-      + `${(zoom.w * zoom.h / 1e6).toFixed(2)} MP`,
+      + `${(open.w * open.h / 1e6).toFixed(2)} MP  (viewport-only `
+      + `${(72 * viewportOnly.s).toFixed(1)} ppi ${
+        (viewportOnly.w * viewportOnly.h / 1e6).toFixed(2)} MP)`,
     );
-    ok(Math.abs(open.s - pre413) < 1e-9,
-      `  letter on ${label.trim()} opens at the pre-#413 scale too`);
-    ok(zoom.s >= open.s - 1e-9,
-      '    ...and zooming in never loses pixels');
+    ok(open.s >= viewportOnly.s - 1e-9,
+      `  letter on ${label.trim()} never loses pixels to the floor`);
   }
-  const phoneOpen = scale(8.5, 11, 390, 3, false);
-  const phoneZoom = scale(8.5, 11, 390, 3, true);
-  const ratio = (phoneZoom.w * phoneZoom.h) / (phoneOpen.w * phoneOpen.h);
+  const phoneViewport = scale(8.5, 11, 390, 3, false);
+  const phoneOpen = shippingScale(8.5, 11, 390, 3);
+  const ratio = (phoneOpen.w * phoneOpen.h) / (phoneViewport.w * phoneViewport.h);
   ok(ratio < 1.25,
     `a letter page costs only ${ratio.toFixed(2)}x more at the floor than at `
     + 'the viewport scale — which is why the ppi floor was never the reason a '
-    + 'LOGBOOK took 20 seconds');
-  const tablet = scale(8.5, 11, 1024, 2, true);
+    + 'LOGBOOK took 20 seconds, and why putting it back cannot be the reason '
+    + 'one gets slower');
+  const tablet = shippingScale(8.5, 11, 1024, 2);
   ok(tablet.anchor === 'viewport',
     'a tablet is far above the floor, so the viewport term still wins there '
     + 'even with the floor switched on');
@@ -232,13 +278,14 @@ console.log('\n── small pages: the floor is off at open, so letter is too �
 
 console.log('\n── which term wins, in each tier ────────────────────────────');
 {
-  const open = scale(36, 48, 390, 3, false);
-  const zoom = scale(36, 48, 390, 3, true);
-  ok(open.anchor === 'viewport' && open.floor === false,
-    'at first paint a phone is viewport-anchored and reports the floor as off');
-  ok(zoom.anchor === 'ppi' && zoom.floor === true,
-    'once zoomed, the ppi floor is the term that wins for a 36x48 sheet');
-  ok(zoom.targetPpi === Number(JS.match(/var TARGET_PPI = (\d+);/)[1]),
+  const open = shippingScale(36, 48, 390, 3);
+  const viewportOnly = scale(36, 48, 390, 3, false);
+  ok(open.anchor === 'ppi' && open.floor === true,
+    'at first paint a phone is ppi-anchored and reports the floor as ON');
+  ok(viewportOnly.anchor === 'viewport' && viewportOnly.floor === false,
+    'and the probe can still ask for the viewport anchor explicitly, which is '
+    + 'what keeps its A/B a comparison of two real things');
+  ok(open.targetPpi === Number(JS.match(/var TARGET_PPI = (\d+);/)[1]),
     'and the info object still reports the constant, so the probe can see it');
 }
 
@@ -258,30 +305,44 @@ console.log('\n── the probe A/B still means something ───────�
 // with extra steps — which is the one outcome #413 was raised to prevent. So
 // these read the generated script.
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n── the zoom actually switches the tier ──────────────────────');
+console.log('\n── what the pinch still does: it narrows the band ───────────');
 {
+  // ⚠️ `sharp` NO LONGER MEANS "RESOLUTION". Every sheet is drawn at the floor
+  // from the first paint, so a pinch cannot change what is on screen — it
+  // changes how much PREFETCH is worth holding. A reader who has zoomed in is
+  // looking at one sheet, and with a sharp sheet at 12.58 MP that is a memory
+  // lever that matters more than it did, not less.
   ok(/var sharp = false;/.test(JS),
-    'the viewer opens with the floor OFF');
+    'the viewer opens with the WIDE band');
   ok(/var ZOOM_SHARP = 1\.25;/.test(JS),
-    'there is a zoom threshold that turns it on');
+    'there is a zoom threshold that narrows it');
   ok(/function goSharp\(\)\{/.test(JS),
     'and a transition that runs when the threshold is crossed');
   const gs = JS.slice(JS.indexOf('function goSharp(){'));
   ok(/if \(sharp\) return;\s*\n\s*'?\s*sharp = true;/.test(gs.slice(0, 200))
      || /if \(sharp\) return;[\s\S]{0,80}sharp = true;/.test(gs),
-    'goSharp is one-way and idempotent — no flicker back to 32 ppi on pinch-out');
-  ok(/releaseSlot\(slots\[i\]\)/.test(gs.slice(0, 600)),
-    'it frees every canvas drawn at the old scale rather than leaving a '
-    + 'mixed-resolution page');
+    'goSharp is one-way and idempotent — no band thrash on every pinch gesture');
+  // ⚠️ DELIBERATELY INVERTED. It used to free every canvas, because the pinch
+  // changed the scale and everything drawn was at the wrong one. Releasing
+  // them now would blank the sheet the reader has just pinched INTO and redraw
+  // it at the identical scale — a flicker bought with a second of the one
+  // render slot, for nothing.
+  ok(!/releaseSlot\(slots\[i\]\)/.test(gs.slice(0, 600)),
+    'and it no longer blanks every sheet — the page the reader just pinched '
+    + 'into is already at the scale it would be redrawn at');
+  ok(/rewatch\(\);/.test(gs.slice(0, 600)),
+    'it rebuilds the observer instead, which is the only way to change a rootMargin');
   ok(/visualViewport/.test(JS),
     'the zoom is read from visualViewport, which is what native pinch-zoom moves');
-  // FAIL TOWARD LEGIBLE. A WebView that cannot report its zoom must not strand
-  // a reader at 32 ppi in a cellar with no way to ask for more; a slow open is
-  // an inconvenience, an unreadable sheet is the #413 defect returning.
+  // FAIL TOWARD THE SMALLER RESIDENT SET. A WebView that cannot report its
+  // zoom gets the narrow band from first paint: it can never be told to
+  // narrow later, and holding a wide band of 12.58 MP sheets on a device
+  // nothing can correct is the renderer kill this branch exists to stop.
   const wz = JS.slice(JS.indexOf('function watchZoom(){'));
   ok(/if \(!vv\) \{ zoomBlind = true; sharp = true; return; \}/.test(wz.slice(0, 900)),
-    'with no visualViewport the floor stays ON from first paint — a device '
-    + 'that cannot report zoom fails toward the legible render, never away');
+    'with no visualViewport the NARROW band is used from first paint — a '
+    + 'device that cannot report zoom fails toward the smaller resident set, '
+    + 'and it loses no sharpness by doing so because the floor is unconditional');
   // And it must STAY on across documents. `resetDocument` puts the next
   // document back on the fast tier, so a blind device that only set `sharp`
   // once would be reset into the 32-ppi render it can never escape.
@@ -354,7 +415,7 @@ console.log('\n── the fixed cost finally gets a number ───────
 console.log('\n── the stamp moved, or none of this reaches a device ─────────');
 {
   const m = /const VIEWER_VERSION = '(\d+)';/.exec(fs.readFileSync(VIEWER, 'utf8'));
-  ok(!!m && Number(m[1]) >= 8,
+  ok(!!m && Number(m[1]) >= 11,
     'VIEWER_VERSION bumped — viewer.html is written to disk once and re-used '
     + 'until this changes, so without a bump every already-staged device keeps '
     + 'the slow viewer and the fix ships to nobody',

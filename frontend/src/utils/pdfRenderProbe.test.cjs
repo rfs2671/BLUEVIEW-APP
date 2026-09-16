@@ -337,9 +337,105 @@ try {
   // change them, and a later "fix" that edits them must fail this test
   // deliberately rather than slip past a probe branch.
   ok(/var MAX_CANVAS_PX = 16000000;/.test(script), 'MAX_CANVAS_PX unchanged (16e6)');
+  // ⚠️ DELIBERATELY RE-PINNED, NOT SLIPPED PAST. This block exists to force a
+  // failure when a cap moves; two moved, and each is re-pinned WITH THE REASON
+  // beside it so the next change has to argue with the reason and not just
+  // with a number.
+  //
+  // MAX_CANVAS_EDGE stays 4096, and that is a decision and not an oversight.
+  // An earlier draft of this branch raised it to a measured 16384 on the
+  // argument that 11 of the 16 budgeted megapixels were never used. The
+  // binding constraint has since changed: with a real worker the parse and the
+  // image decode are off the UI thread and what is left on it is PAINT, which
+  // is the one cost that does scale with pixels — and the acceptance criterion
+  // now in play is a main-thread stall under 200 ms. There is no measurement
+  // saying a 16 MP sheet paints inside that. 4096 is the value that has been
+  // in the field for months and the one the operator's 11.2 MP / 701 ms
+  // ceiling reading was taken at.
   ok(/var MAX_CANVAS_EDGE = 4096;/.test(script), 'MAX_CANVAS_EDGE unchanged (4096)');
-  ok(/var BAND = 1\.5;/.test(script), 'BAND unchanged (1.5)');
-  ok(/var KEEP_RENDERED = 7;/.test(script), 'KEEP_RENDERED unchanged (7)');
+  // BAND 1.5 -> 0.6. 1.5 spanned four viewport heights and was sized for a
+  // viewer that drew a 1.2 MP sheet with the PPI floor off until someone
+  // pinched. Every sheet is now drawn at the floor, so a band of five is 63 MP
+  // queued before the reader has touched anything — work the budget would
+  // immediately throw away. 0.6 is a viewport height either side: the reader's
+  // sheet plus one, which is the depth the budget can hold.
+  ok(/var BAND = 0\.6;/.test(script),
+    'BAND is 0.6 — the reader\'s sheet plus one either side, matched to the budget');
+  // KEEP_RENDERED is GONE, not retuned. It never bound anything: trim() skipped
+  // any page marked `visible`, and `visible` was the BAND. The replacement is a
+  // megapixel budget whose one protection rule is "on screen".
+  ok(!/var KEEP_RENDERED/.test(script),
+    'the page-count window is gone — it never bound anything');
+  ok(/var CANVAS_BUDGET_MP = 32;/.test(script),
+    'and the resident bitmap is bounded in megapixels instead (32 MP = 128 MB)');
+  ok(/var MAX_CONCURRENT_RENDERS = 1;/.test(script),
+    'and exactly one rasterisation may be in flight');
+}
+
+// ── 6b. THE WORKER IS BUILT BY THE PAGE, AND THE FALLBACK IS AUDIBLE ─────
+//
+// The probe measured `workerpath verdict: FAKE` on a device where a blob
+// worker does page 1 in 618 ms, and the cause was a deliberate `<script
+// src="pdf.worker.min.js">` in the page. These pin the shape of the fix so it
+// cannot be reverted by accident: the tag stays out, the source is read with
+// XHR (fetch is rejected on a file:// origin — measured), and every path out
+// of the setup posts on the ORDINARY channel.
+{
+  const raw = viewerSrc;
+  const html = raw.slice(raw.indexOf('function viewerHtml()'), raw.indexOf('const VIEWER_SCRIPT'));
+  ok(!/<script src="' \+ WORKER_NAME/.test(html),
+    'the page does not load pdf.worker.min.js as a <script> — that tag is what made '
+    + 'pdf.js short-circuit to its main-thread handler');
+  ok(/function ensureWorker\(done\)\{/.test(script),
+    'the page sets its own worker up');
+  ok(/GlobalWorkerOptions\.workerPort = w;/.test(script),
+    'via workerPort — workerSrc would send pdf.js back through the blocked construction');
+  ok(/readText\("pdf\.worker\.min\.js"/.test(script),
+    'reading the source with XHR, which is what works on a file:// origin');
+  ok(!/fetch\("pdf\.worker\.min\.js"\)[\s\S]{0,200}createObjectURL/.test(script),
+    'and not with fetch(), which that origin rejects');
+  // EVERY exit from settleWorker posts, probe or no probe. A silent fallback
+  // is how the main-thread worker survived unnoticed.
+  const settle = script.slice(script.indexOf('function settleWorker(mode, reason){'));
+  ok(/post\(\{ type: "pdf-worker", mode: mode, reason: workerReason \}\);/.test(settle.slice(0, 700)),
+    'and says which worker it ended up with on the ordinary channel, not behind the probe flag');
+  ok(/if \(workerSettled\) return;/.test(settle.slice(0, 200)),
+    'exactly once');
+  // AND THE HOST HAS TO DO SOMETHING WITH IT. A message nothing handles is the
+  // same silence in a different place.
+  ok(/msg\?\.type === 'pdf-worker'/.test(componentSrc),
+    'and the host handles pdf-worker rather than dropping it on the floor');
+  ok(/\[pdfworker\] mode=/.test(componentSrc),
+    'logging which worker is live');
+  ok(/pdf-worker'\)[\s\S]{0,600}probeLines\.current\.push/.test(componentSrc),
+    'and putting it in the shareable report, which is the artefact the operator '
+    + 'actually sends back');
+}
+
+// ── 6c. THE EXPENSIVE PROBES CANNOT RUN FOR A READER WHO DID NOT ASK ─────
+//
+// ITEM 5, PINNED. `probeCanvasLimits` walks a ladder to 16384x16384 — about a
+// gigabyte of allocation — and `probeImageFilters` scans every operator of
+// page 1. Both are gated on `MEASURE = PROBE || CAPS`, both of which come from
+// URL params, so neither can run in the shipping viewer. That was already true
+// and nothing asserted it; this is what stops a later edit widening one of
+// them without noticing.
+{
+  ok(/function probeCanvasLimits\(\)\{\s*if \(!MEASURE\) return;/.test(script),
+    'the canvas-limit ladder refuses to run unless probe=1 or caps=1');
+  ok(/function probeImageFilters\(next\)\{\s*if \(!PROBE\) \{ if \(next\) next\(\); return; \}/.test(script),
+    'and the image-filter scan is narrower still — PROBE only');
+  // AND NOTHING ELSE MAY CALL THEM. A guard is only as good as the set of
+  // callers it covers, so the callers are counted rather than assumed.
+  const ladderCalls = (script.match(/probeCanvasLimits\(\)/g) || []).length;
+  ok(ladderCalls === 2,
+    'the ladder has exactly one call site besides its declaration',
+    `found ${ladderCalls} occurrences`);
+  const capsBody = script.slice(script.indexOf('function capabilityRead(after){'),
+    script.indexOf('function capabilityRead(after){') + 600);
+  ok(/if \(!MEASURE\) \{ if \(after\) after\(\); return; \}/.test(capsBody)
+    && /probeCanvasLimits\(\);/.test(capsBody),
+    'and that call site is inside capabilityRead, behind the same MEASURE gate');
 }
 
 // ── 7. THE SUITE FREES WHAT IT ALLOCATES ─────────────────────────────────

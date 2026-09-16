@@ -570,6 +570,27 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                     } catch (_e) {}
                     return;
                   }
+                  // ── WHICH WORKER THE PAGE ENDED UP WITH ───────────────
+                  //
+                  // NOT A PROBE ROW, ON PURPOSE. The viewer used to parse and
+                  // rasterise every sheet on the UI thread because a page
+                  // <script> defined `globalThis.pdfjsWorker`, and nothing
+                  // anywhere said so — the reason it survived is that it was
+                  // silent. The page now builds a real Worker from a blob: URL
+                  // and falls back only on failure, and it announces WHICH on
+                  // the ordinary channel so a reader who is not being measured
+                  // still sees it.
+                  //
+                  // It also joins `probeLines` when a probe run is going, so
+                  // the answer rides in the report the operator taps Share on
+                  // rather than living only in an adb log nobody has attached.
+                  if (msg?.type === 'pdf-worker') {
+                    const line = `[pdfworker] mode=${msg.mode}${msg.reason ? ` reason=${msg.reason}` : ''}`;
+                    if (msg.mode === 'real') console.log(line);
+                    else console.warn(`Offline PDF viewer fell back to the main-thread worker: ${line}`);
+                    try { probeLines.current.push(line); } catch (_e) {}
+                    return;
+                  }
                   // THE HANDSHAKE. The page is loaded and listening; anything
                   // posted before this is dropped with no error, so the first
                   // document is held until it arrives.

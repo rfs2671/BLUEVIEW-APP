@@ -47,14 +47,25 @@ import { Asset } from 'expo-asset';
  *   page LEAVING the viewport, so nothing ever came back. A 200-sheet plan set
  *   scrolled end to end accumulated the whole thing and Chromium killed the
  *   renderer, which is what the crash-after-load reports were. The page now
- *   holds a bounded window of rasterised sheets (KEEP_RENDERED) and frees the
- *   rest — removing the element AND zeroing width/height, because removal on
- *   its own does not drop the bitmap.
+ *   holds the resident bitmap under a MEGAPIXEL budget (CANVAS_BUDGET_MP) and
+ *   frees the rest — removing the element AND zeroing width/height, because
+ *   removal on its own does not drop the bitmap. Megapixels and not a page
+ *   count: the same seven sheets measured 27.4 MB un-zoomed and 336 MB zoomed
+ *   in, and 336 MB is where the renderer gets killed.
  *
- * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. assets/pdfjs/*.txt currently hold
- *    documented placeholders, not the real pdf.js build. `ensurePdfJsViewer()`
- *    detects that by size and returns { ok: false, reason: 'assets-missing' }
- *    so the UI can say so instead of showing a blank page.
+ * WHERE THE WORK HAPPENS
+ *   pdf.js parses and decodes in a REAL Worker, built here from a blob: URL
+ *   because a file:// page cannot construct one from a path (see
+ *   `ensureWorker`). What stays on the UI thread is the CANVAS PAINT — pdf.js
+ *   replays the operator list through a real 2D context on the main thread —
+ *   so the residual stall this viewer can still show is paint, not decode.
+ *
+ * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. `ensurePdfJsViewer()` checks
+ *    assets/pdfjs/*.txt by SIZE and returns { ok: false, reason:
+ *    'assets-missing' } if they are placeholders rather than the real pdf.js
+ *    build, so the UI can say so instead of showing a blank page. (They are
+ *    real in this tree — 377 KB and 1.13 MB — but the check stays: a
+ *    placeholder is what a fresh clone of a fork would get.)
  */
 
 // The pdf.js dist files, shipped as `.txt` because Metro bundles `.js` as
@@ -109,7 +120,21 @@ const STAMP_NAME = '.stamp';
 //       numbers instead of nine, emit no `layoutMs` split and no worker-path
 //       verdict, and every question this round exists to settle would stay
 //       open. THIS BUMP IS THE MEASUREMENT'S ENTIRE DELIVERY MECHANISM.
-const VIEWER_VERSION = '9';
+//  11 — A REAL WORKER, ONE RENDER AT A TIME, AND A BUDGET IN MEGAPIXELS.
+//       The three things this stamp delivers are all IN THE PAGE and nowhere
+//       else: the worker is now built from a blob: URL by the page itself
+//       (the `<script src="pdf.worker.min.js">` tag is gone, which is what
+//       made pdf.js short-circuit to the main-thread handler), the render
+//       queue and its cap of 1 live in the page, and so does `trim()`'s
+//       megapixel budget. viewer.html is written to disk once per stamp, so a
+//       device already staged at `9` would keep parsing and rasterising every
+//       sheet on the UI thread, keep starting a dozen rasterisations at once,
+//       and keep a window measured in pages — the app code would be new and
+//       the viewer would be old, and the change would reach nobody.
+//       `11` and not `10` because `10` was taken by an earlier draft of this
+//       branch that is being replaced; the stamp only has to MOVE, and a
+//       device staged at `10` by that draft must re-stage for this one.
+const VIEWER_VERSION = '11';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -140,10 +165,25 @@ function viewerHtml() {
     '<body>',
     '<div id="pages"></div>',
     '<div id="msg">Loading document…</div>',
-    // Worker FIRST: defines globalThis.pdfjsWorker, which makes pdf.js skip the
-    // real-Worker attempt (blocked from a file:// origin) and go straight to
-    // the main-thread handler with no console noise.
-    '<script src="' + WORKER_NAME + '"></script>',
+    // ⚠️ THE WORKER IS NOT LOADED HERE ANY MORE, AND MUST NOT BE.
+    //
+    // This page used to carry `<script src="pdf.worker.min.js">` ahead of
+    // pdf.js, with a comment saying it "makes pdf.js skip the real-Worker
+    // attempt (blocked from a file:// origin)". That tag defines
+    // `globalThis.pdfjsWorker`, and pdf.js short-circuits on it to the
+    // main-thread handler — so the 1.1 MB worker bundle was read off storage,
+    // COMPILED ON THE UI THREAD at every boot, and then used to parse and
+    // rasterise every sheet on that same thread.
+    //
+    // THE REASON GIVEN FOR IT IS FALSE ON THIS DEVICE. `new Worker("pdf.worker
+    // .min.js")` is indeed blocked from a file:// origin. A Worker built from
+    // a blob: URL is not, and the operator's Pixel 10 Pro XL proved it:
+    // blob workers supported, page 1 through a real worker in 618 ms. The page
+    // now reads the worker SOURCE as text (XHR — fetch() is rejected on this
+    // origin) and constructs one itself; see `ensureWorker` below.
+    //
+    // Putting the tag back would silently restore the fake worker whatever
+    // `ensureWorker` does, because pdf.js checks the global first.
     '<script src="' + LIB_NAME + '"></script>',
     '<script>',
     VIEWER_SCRIPT,
@@ -192,48 +232,131 @@ const VIEWER_SCRIPT = [
   // How far either side of the viewport a page counts as "near". Feeds both
   // the observer's rootMargin and the no-observer sweep, so the two paths
   // agree on what is near.
-  '  var BAND = 1.5;',
-  // THE WINDOW. At BAND = 1.5 the near set spans four viewport heights, which
-  // on a phone is four or five full-width sheets, so anything smaller than
-  // that would have the observer and the evictor fighting: a page still inside
-  // the band would be freed and then never redrawn, because
-  // IntersectionObserver reports threshold CROSSINGS, not steady state. 7 is
-  // the near set plus roughly a page of hysteresis each side — a flick back
-  // lands on a canvas that is still there — and it caps the page at about 7
-  // sheets of bitmap (~30–50 MB) no matter how long the set is.
-  '  var KEEP_RENDERED = 7;',
-  // ── SHARPNESS ON DEMAND, WHICH IS WHAT #413 SHOULD HAVE BEEN ───────────
   //
-  // #413 was right about the resolution and wrong about when to pay for it.
-  // A 36x48 sheet at a phone's viewport scale is 32.5 ppi and genuinely
-  // unreadable, so `TARGET_PPI` had to exist. But it applied on every page of
-  // every open: a phone went 1.83 MP a sheet to 12.58 MP, 6.9x, and the band
-  // rasterises four or five sheets before the operator has touched anything.
-  // That is ~63 MP on the UI thread — with no worker to put it on — to show a
-  // drawing nobody has yet asked to read the fine print of. An inspector
-  // waits through all of it, every single time.
+  // ⚠️ THIS USED TO BE `var KEEP_RENDERED = 7;` AND IT NEVER BOUND ANYTHING.
+  // `trim()` skipped any page still marked `visible`, and `visible` was set by
+  // an IntersectionObserver whose rootMargin IS THE BAND — so the band marked
+  // several sheets unfreeable at once and a "window of 7" could sit at
+  // whatever size the band happened to be. Measured: the same seven sheets are
+  // 27.4 MB un-zoomed and 336 MB zoomed in. 336 MB is the figure a Chromium
+  // renderer gets killed at, which is what the crash-after-load reports were.
   //
-  // So the floor is attached to the ZOOM instead of to the open. `sharp` is
-  // false at first paint and the scale is viewport-anchored — byte for byte
-  // what this viewer rendered before #413 — and the first pinch past
-  // ZOOM_SHARP switches it on and redraws. The legibility arrives at the
-  // moment someone zooms in to read, which is the only moment it was ever
-  // wanted.
+  // A PAGE COUNT WAS THE WRONG UNIT REGARDLESS. What runs out is pixels. See
+  // CANVAS_BUDGET_MP below, which is read off the canvas that was ACTUALLY
+  // allocated, and whose protection rule is ON SCREEN rather than in-band —
+  // the two halves that make it a ceiling instead of a hope.
   //
-  // ONE WAY ONLY. `sharp` never returns to false. A reader who has zoomed in
-  // once is reading the drawing, and dropping back to 32 ppi on every
-  // pinch-out would be a flicker on every gesture and a re-render to pay for
-  // it. `trim()` and the band below bound the memory in both directions
-  // instead.
+  // ── HOW FAR EITHER SIDE TO PREFETCH ──────────────────────────────────
+  //
+  // 1.5 spanned four viewport heights — four or five full-width sheets — and
+  // was sized for a viewer that drew a cheap 1.2 MP sheet with the PPI floor
+  // switched off until someone pinched. Every sheet is now drawn at the floor
+  // (see `targetScaleInfo`), which is 12.58 MP on an arch-E drawing, so a band
+  // of five is 63 MP of bitmap queued before the reader has touched anything —
+  // work the budget below would immediately throw away.
+  //
+  // 0.6 is a viewport height either side, which on a device whose sheets are
+  // about a viewport tall is the reader's sheet PLUS ONE EITHER SIDE. That is
+  // the prefetch depth the budget can actually hold, so the queue and the
+  // evictor stop fighting: what gets drawn is what gets kept.
+  '  var BAND = 0.6;',
+  // ── ONE RASTERISATION AT A TIME ────────────────────────────────────────
+  //
+  // `renderSlot` guards per slot (`if (slot.busy) return;`). NOTHING capped
+  // the global in-flight count, and the IntersectionObserver's first callback
+  // arrives with the ENTIRE BAND — so it called renderSlot on every page as it
+  // walked the entries and every sheet's wall clock contained all the others.
+  // On the operator's phone, twenty sheets of a 26-sheet plan:
+  //
+  //   4585 4591 4749 4912 5323 5465 5886 6304 6310 6668
+  //   6935 7529 7601 7933 8214 8790 8970 9004 9281 9490
+  //
+  // A monotonic climb is the signature of CONTENTION, not of size — the same
+  // sheet renders in 742 ms uncontended. His white screen was page 1 waiting
+  // in a queue nobody bounded.
+  //
+  // 1 AND NOT 2. Total work is unchanged; what changes is that the sheet the
+  // reader is looking at finishes in its own uncontended time instead of last,
+  // behind eleven he cannot see. Two concurrent rasterisations is the same
+  // contention in miniature — and with a real worker (see `ensureWorker`) the
+  // resource being protected is now pdf.js's single worker thread plus the one
+  // UI thread that paints, which is still one of each.
+  '  var MAX_CONCURRENT_RENDERS = 1;',
+  // ── THE RESIDENT BITMAP, IN MEGAPIXELS ─────────────────────────────────
+  //
+  // THE UNIT IS PIXELS BECAUSE PIXELS ARE WHAT RUN OUT. A canvas holds RGBA,
+  // four bytes each, whatever was drawn into it, so megapixels x 4 is
+  // megabytes with no assumption about scale, tier or sheet size anywhere in
+  // it. `canvasPixels()` reads width and height off the bitmap that was
+  // ACTUALLY allocated; a budget computed from a constant "MB per sheet" would
+  // be a page count wearing a different name and wrong by an order of
+  // magnitude the moment the scale moved.
+  //
+  // THE DERIVATION, on the operator's 31.7 MB set and this viewer's caps:
+  //
+  //   the floor that cannot be freed   `trim()` may not free a sheet that is
+  //     2 sheets, 32 MP worst case     ON SCREEN, and page height is close
+  //                                    enough to viewport height that two are
+  //                                    partly visible for most of a scroll.
+  //                                    At the absolute MAX_CANVAS_PX ceiling
+  //                                    that is 2 x 16 MP. THE BUDGET MUST
+  //                                    CLEAR THIS or trim() spins on a set it
+  //                                    cannot reduce — which is precisely the
+  //                                    failure KEEP_RENDERED had, except that
+  //                                    one protected the whole BAND.
+  //   what is worth keeping            the reader's sheet and one either side,
+  //     3 x 12.58 MP = 37.7 MP         so a one-page scroll is not a re-decode.
+  //                                    12.58 MP is a 36x48 sheet at the 4096
+  //                                    edge cap; his measured ceiling render
+  //                                    was 11.2 MP.
+  //
+  // 32 MP = 128 MB of RGBA. It holds the on-screen sheet and one neighbour
+  // outright and most of a second, against renderer kills reported at
+  // 250-350 MB and pdf.js additionally retaining the 31.7 MB file buffer and
+  // its decode caches. A scroll of more than one page costs a re-render — now
+  // ~700 ms, and off the UI thread — which is the deliberate trade.
+  '  var CANVAS_BUDGET_MP = 32;',
+  // ── SHARPNESS IS NO LONGER ON DEMAND, BECAUSE IT NO LONGER COSTS ───────
+  //
+  // #413 put a PPI floor on every sheet. #542 took it off first paint and
+  // attached it to the pinch, on the reasoning that a phone went 1.83 MP a
+  // sheet to 12.58 MP — 6.9x — with no worker to put the work on, and the
+  // band rasterised four or five sheets before the operator touched anything.
+  //
+  // ⚠️ THE PREMISE OF THAT REASONING IS REFUTED BY MEASUREMENT. Isolated
+  // medians on the operator's Pixel 10 Pro XL, three runs each, inflight 0,
+  // spread under 90 ms:
+  //
+  //     0.5 MP   800 ms
+  //     1.2 MP   742 ms
+  //    11.2 MP   701 ms      <- twenty-two times the pixels, and FASTER
+  //
+  // MEGAPIXELS DO NOT DRIVE THE COST OF A SHEET. The per-page cost is fixed
+  // and it is CONTENT DECODE — 710 FlateDecode and 147 DCTDecode operators on
+  // one of his sheets — not fill. A tier that renders fewer pixels pays the
+  // same ~750 ms and hands the reader a blurrier drawing, which is why the
+  // low-resolution first pass this branch used to carry has been DELETED
+  // rather than tuned: it cost 800 ms to save nothing and the sharp pass ran
+  // afterwards anyway.
+  //
+  // SO THE FLOOR IS BACK ON AT FIRST PAINT, for every sheet, and
+  // `targetScaleInfo` defaults `wantFloor` to true. What used to be bought
+  // with a resolution tier is bought with the queue (one sheet at a time,
+  // the reader's first) and the megapixel budget above instead.
+  //
+  // ⚠️ IF A LATER PROBE FINDS A VECTOR-HEAVY SET THAT DOES SCALE WITH PIXELS —
+  // many Flate ops, few DCT — this is the constant to revisit, and the
+  // evidence to bring is per-page `renderMs` against `megapixels` on that set.
+  // Do not reinstate a tier without it.
   '  var ZOOM_SHARP = 1.25;',
-  // THE BAND, ONCE THE EXPENSIVE SCALE IS IN USE. This is the fix for the
-  // zoom-then-reload, and KEEP_RENDERED could not have been: `trim()` never
-  // frees a page that is still in the band, so at BAND = 1.5 the four or five
-  // near sheets are unfreeable whatever the window is set to. Seven sheets at
-  // 12.58 MP is 350 MB of bitmap and five is still 250 MB, which is what gets
-  // a Chromium renderer killed and reloaded. A reader who has pinched in is
-  // looking at ONE sheet; 0.25 spans a viewport and a half either side, so
-  // the near set is one or two.
+  // WHAT `sharp` STILL MEANS: TIGHTEN THE BAND. It is no longer a resolution
+  // switch — every sheet is already at the floor — so a pinch no longer blanks
+  // and redraws anything. What a pinch does change is how much prefetch is
+  // worth holding: a reader who has zoomed in is looking at ONE sheet, and
+  // 0.25 spans a quarter of a viewport either side, so the near set is one or
+  // two. With a sharp sheet at 12.58 MP that is a memory lever and it matters
+  // more than it did, not less; `trim()` frees whatever falls out of the new
+  // band on its own merits.
   '  var BAND_SHARP = 0.25;',
   '  var sharp = false;',
   // ONE FUNCTION, BOTH READERS. The observer's rootMargin and the
@@ -398,7 +521,8 @@ const VIEWER_SCRIPT = [
   '    d.MAX_CANVAS_EDGE = MAX_CANVAS_EDGE;',
   '    d.MAX_CANVAS_PX = MAX_CANVAS_PX;',
   '    d.BAND = BAND;',
-  '    d.KEEP_RENDERED = KEEP_RENDERED;',
+  '    d.CANVAS_BUDGET_MP = CANVAS_BUDGET_MP;',
+  '    d.MAX_CONCURRENT_RENDERS = MAX_CONCURRENT_RENDERS;',
   '    probePost("env", d);',
   '  }',
   '',
@@ -693,6 +817,169 @@ const VIEWER_SCRIPT = [
   '    try { xhr.send(null); } catch (e) { err("send:" + e); }',
   '  }',
   '',
+  // Same door, TEXT instead of bytes. `fetch()` on a file:// URL is rejected
+  // outright in Chromium and the probe confirmed it on the device; XHR is not,
+  // and is what `allowFileAccessFromFileURLs` grants — it is already how 30 MB
+  // of PDF gets off disk on this very page.
+  '  function readText(url, ok, err){',
+  '    var xhr = new XMLHttpRequest();',
+  '    try { xhr.open("GET", url, true); } catch (e) { err("open:" + e); return; }',
+  '    xhr.onload = function(){',
+  '      var t = xhr.responseText;',
+  '      if (t && t.length) ok(String(t));',
+  '      else err("empty-response");',
+  '    };',
+  '    xhr.onerror = function(){ err("xhr-blocked"); };',
+  '    try { xhr.send(null); } catch (e) { err("send:" + e); }',
+  '  }',
+  '',
+  // ══ A REAL WORKER ═══════════════════════════════════════════════════════
+  //
+  // WHAT WAS HERE BEFORE, AND WHY IT WAS WRONG. The page loaded
+  // pdf.worker.min.js as a <script>, which defines `globalThis.pdfjsWorker`,
+  // which makes pdf.js skip the real-Worker attempt and install its MAIN
+  // THREAD message handler instead. The comment justifying it said a real
+  // Worker is "blocked from a file:// origin".
+  //
+  // THAT IS TRUE OF ONE CONSTRUCTION AND FALSE OF THE OTHER.
+  // `new Worker("pdf.worker.min.js")` from a file:// page is blocked. A Worker
+  // constructed from a `blob:` URL inherits the creating document's origin and
+  // is allowed — and the operator's device settled it rather than a
+  // compatibility table:
+  //
+  //     workerpath verdict: FAKE — parse AND rasterise on the MAIN thread
+  //     fetch() of workerSrc is REJECTED; XHR works; blob workers ARE supported
+  //     worker-ab on the SAME device: a REAL worker works, page 1 = 618 ms
+  //
+  // So: XHR the worker source as text -> Blob -> createObjectURL -> Worker ->
+  // `GlobalWorkerOptions.workerPort`. `workerPort` and not `workerSrc`,
+  // because workerSrc would send pdf.js back through the blocked construction.
+  //
+  // ⚠️ WHAT MOVES OFF THE UI THREAD AND WHAT DOES NOT. The worker does the
+  // PARSE and the IMAGE DECODE — the 710 Flate and 147 DCT operators that are
+  // the fixed per-page cost. It does NOT paint: pdf.js replays the operator
+  // list through a real CanvasRenderingContext2D on the main thread, and
+  // nothing short of running CanvasGraphics inside the worker against an
+  // OffscreenCanvas would change that. pdf.js does not support it, and this
+  // page does not attempt it. The residual main-thread stall is PAINT, and
+  // the `uithread` probe's `longestStallMs` is the number that measures it.
+  //
+  // ⚠️ THE FALLBACK IS LOUD, ON PURPOSE. A silent fallback is exactly how the
+  // main-thread worker survived: every reading taken afterwards gets
+  // interpreted against the wrong model and nothing in the log says so. Every
+  // path out of here posts `pdf-worker` on the ORDINARY channel, probe flag or
+  // no probe flag.
+  '  var workerMode = "unset";',
+  '  var workerReason = "";',
+  '  var workerSettled = false;',
+  '  var workerStarted = false;',
+  '  var workerWaiters = [];',
+  '  var workerObj = null;',
+  '  var workerBlobUrl = "";',
+  // The worker source has to be long enough to BE the bundle. A Worker built
+  // out of a truncated read is a Worker that never answers, and a hang with no
+  // error is worse than the main-thread path it was replacing. The real
+  // pdf.worker.min.js is ~1.1 MB; anything under 50 KB is not it.
+  '  var MIN_WORKER_SOURCE_CHARS = 50000;',
+  '',
+  '  function settleWorker(mode, reason){',
+  '    if (workerSettled) return;',
+  '    workerMode = mode;',
+  '    workerReason = reason || "";',
+  '    workerSettled = true;',
+  '    post({ type: "pdf-worker", mode: mode, reason: workerReason });',
+  '    try { console.log("[pdfjs] worker: " + mode + (workerReason ? " (" + workerReason + ")" : "")); } catch (e) {}',
+  '    probePost("worker-setup", { mode: mode, reason: workerReason });',
+  '    var ws = workerWaiters;',
+  '    workerWaiters = [];',
+  '    for (var i = 0; i < ws.length; i++) { try { ws[i](); } catch (e) {} }',
+  '  }',
+  '',
+  // THE OLD PATH, ON PURPOSE AND BY NAME. Injecting the <script> the page no
+  // longer carries is what defines `globalThis.pdfjsWorker` and puts pdf.js
+  // back on its main-thread handler — the exact behaviour that shipped for
+  // months, so a device that cannot give us a Worker is no worse off than it
+  // was. `workerSrc` is set either way: it is what the probe reads, and on a
+  // build where the injection fails it is pdf.js's own last resort.
+  '  function useMainThreadWorker(reason){',
+  '    var el = null, parent = null;',
+  '    function land(extra){',
+  '      try { pdfjsLib.GlobalWorkerOptions.workerSrc = "' + WORKER_NAME + '"; } catch (e) {}',
+  '      settleWorker("main-thread", reason + (extra || ""));',
+  '    }',
+  '    try { el = document.createElement("script"); } catch (e) { el = null; }',
+  '    try { parent = document.head || document.body || null; } catch (e) { parent = null; }',
+  '    if (!el || !parent || typeof parent.appendChild !== "function") { land("; no-script-injection"); return; }',
+  '    el.onload = function(){ land(""); };',
+  '    el.onerror = function(){ land("; worker-script-load-failed"); };',
+  '    try { el.src = "' + WORKER_NAME + '"; parent.appendChild(el); }',
+  '    catch (e) { land("; inject-threw:" + e); }',
+  '  }',
+  '',
+  // A Worker whose script throws on load reports it here, asynchronously and
+  // possibly AFTER `getDocument` has already been handed the port — at which
+  // point the document never resolves and the reader sees "Loading…" for ever.
+  // So this does not merely log: it tears the port down, falls back, and
+  // re-opens whatever document was in flight.
+  '  function workerBlewUp(reason){',
+  '    if (workerMode !== "real") return;',
+  // MARKED DEAD ON THE FIRST LINE, not when the fallback lands. A Worker can
+  // report more than one error, and `useMainThreadWorker` settles on a later
+  // turn (the injected <script> has to load) — so a second `onerror` arriving
+  // in that window would pass the guard above and re-open the document twice.
+  '    workerMode = "dying";',
+  '    try { if (workerObj) workerObj.terminate(); } catch (e) {}',
+  '    try { if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl); } catch (e) {}',
+  '    workerObj = null; workerBlobUrl = "";',
+  '    try { pdfjsLib.GlobalWorkerOptions.workerPort = null; } catch (e) {}',
+  // Re-opened rather than resumed: the half-built document behind the dead
+  // port cannot be recovered, and `workerStarted` stays true so the blob path
+  // is never attempted a second time.
+  '    workerSettled = false;',
+  '    var reopen = fileUrl;',
+  '    workerWaiters.push(function(){ if (reopen) openDocument(reopen); });',
+  '    useMainThreadWorker("worker-error:" + reason);',
+  '  }',
+  '',
+  '  function ensureWorker(done){',
+  '    if (workerSettled) { if (done) done(); return; }',
+  '    if (done) workerWaiters.push(done);',
+  '    if (workerStarted) return;',
+  '    workerStarted = true;',
+  '    var canBlob = false;',
+  '    try {',
+  '      canBlob = (typeof Worker !== "undefined") && (typeof Blob !== "undefined")',
+  '        && !!window.URL && typeof URL.createObjectURL === "function";',
+  '    } catch (e) { canBlob = false; }',
+  '    if (!canBlob) { useMainThreadWorker("no-Worker-or-Blob-in-this-WebView"); return; }',
+  '    readText("' + WORKER_NAME + '", function(text){',
+  '      if (!text || text.length < MIN_WORKER_SOURCE_CHARS) {',
+  '        useMainThreadWorker("worker-source-short:" + (text ? text.length : 0));',
+  '        return;',
+  '      }',
+  '      var w = null, u = "";',
+  '      try {',
+  '        u = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));',
+  '        w = new Worker(u);',
+  '      } catch (e) {',
+  '        try { if (u) URL.revokeObjectURL(u); } catch (e2) {}',
+  '        useMainThreadWorker("worker-construct:" + e);',
+  '        return;',
+  '      }',
+  '      workerObj = w; workerBlobUrl = u;',
+  '      try { w.onerror = function(ev){ workerBlewUp(String((ev && (ev.message || ev.type)) || "unknown")); }; } catch (e) {}',
+  '      try { pdfjsLib.GlobalWorkerOptions.workerPort = w; }',
+  '      catch (e) {',
+  '        try { w.terminate(); } catch (e2) {}',
+  '        try { URL.revokeObjectURL(u); } catch (e2) {}',
+  '        workerObj = null; workerBlobUrl = "";',
+  '        useMainThreadWorker("workerPort-assign:" + e);',
+  '        return;',
+  '      }',
+  '      settleWorker("real", "");',
+  '    }, function(code){ useMainThreadWorker("worker-source-" + code); });',
+  '  }',
+  '',
   '  var doc = null;',
   '  var slots = [];',
   // Rasterised pages, least-recently-wanted first. The only thing that keeps a
@@ -743,11 +1030,16 @@ const VIEWER_SCRIPT = [
   // A/B still measures what it was written to measure.
   '    var viewportS = (baseWidth / vp1.width) * Math.min(dpr, 2) * (over === undefined ? 1.5 : over);',
   '    var ppiS = TARGET_PPI / 72;',
-  // THE FLOOR IS NOW A TIER, NOT A CONSTANT. `wantFloor` left undefined means
-  // "whatever the viewer is currently doing", which is what the real render
-  // path passes; the probe's A/B passes it explicitly so it can time both
-  // tiers without depending on what the reader happened to have done.
-  '    var floorOn = (wantFloor === undefined) ? sharp : !!wantFloor;',
+  // THE FLOOR IS ON, ALWAYS. It was briefly attached to `sharp` — the reader
+  // having pinched in — on the reasoning that 12.58 MP a sheet was too
+  // expensive to pay for at first paint. The operator's isolated medians
+  // refute that: 11.2 MP renders in 701 ms and 0.5 MP in 800 ms on the same
+  // device and the same sheet, because the per-page cost is content decode and
+  // not fill. A sheet that is cheaper in pixels is not cheaper in time, so
+  // there was nothing to defer and the reader was being handed 32 ppi for
+  // nothing. `wantFloor` survives as a PARAMETER so the probe's A/B can still
+  // time both anchors without depending on what the reader happened to do.
+  '    var floorOn = (wantFloor === undefined) ? true : !!wantFloor;',
   '    var s = floorOn ? Math.max(viewportS, ppiS) : viewportS;',
   '    var anchor = (floorOn && ppiS > viewportS) ? "ppi" : "viewport";',
   '    var w = vp1.width * s, h = vp1.height * s;',
@@ -782,6 +1074,10 @@ const VIEWER_SCRIPT = [
   // Setting width and height to 0 drops the bitmap there and then, which is
   // the only step that actually returns the megabytes.
   '  function releaseSlot(slot){',
+  // A slot being given back must not still be waiting in line for a render.
+  // Same reason the generation stamp exists below: the work is queued for a
+  // canvas that is about to stop existing.
+  '    dequeue(slot);',
   '    if (slot.task) { try { slot.task.cancel(); } catch (e) {} slot.task = null; }',
   // Anything already in flight for this slot renders into a canvas we are
   // about to throw away; the generation stamp tells it not to attach.
@@ -805,14 +1101,176 @@ const VIEWER_SCRIPT = [
   '    rendered.push(slot);',
   '  }',
   '',
-  // Hold the window down to KEEP_RENDERED, oldest first. A page still inside
-  // the band is skipped, never freed — the observer would not fire for it
-  // again and it would sit blank on screen.
+  // ── STOPPING WORK vs DISCARDING A RESULT: TWO MECHANISMS, ONE JOB EACH ──
+  //
+  // These are NOT interchangeable and neither covers the other's case.
+  //
+  //   RenderTask.cancel()  STOPS THE WORK. pdf.js is the only thing that can
+  //                        stop rasterising, and this is the only way to ask
+  //                        it. With MAX_CONCURRENT_RENDERS = 1 the in-flight
+  //                        render holds the only slot there is, so a sheet the
+  //                        reader has left is not merely wasted — it is the
+  //                        sheet he IS looking at, waiting. Its promise
+  //                        rejects with RenderingCancelledException, which the
+  //                        catch below already swallows silently.
+  //
+  //   slot.gen             STOPS THE RESULT BEING USED. cancel() is a request,
+  //                        not a guarantee: a render can complete in the window
+  //                        between the call and the promise settling, into a
+  //                        canvas `releaseSlot` has already thrown away.
+  //
+  // `releaseSlot` does BOTH, because it is discarding the slot's identity.
+  // Leaving the band does cancel ONLY: the slot keeps its identity and may be
+  // re-rendered later at the same generation, and if cancel loses the race the
+  // late canvas is harmless and slightly useful — the page is out of band, so
+  // `trim()` can free it on merit.
+  '  function cancelInFlight(slot){',
+  '    if (!slot.task) return;',
+  '    try { slot.task.cancel(); } catch (e) {}',
+  '  }',
+  '',
+  // WHAT A SLOT IS ACTUALLY COSTING, read off the bitmap that was allocated
+  // rather than recomputed from a scale. A canvas holds four bytes a pixel
+  // whatever was drawn into it, so this prices any sheet at any scale with no
+  // knowledge of the render path whatsoever.
+  '  function canvasPixels(slot){',
+  '    var c = slot.canvas;',
+  '    if (!c) return 0;',
+  '    return (c.width || 0) * (c.height || 0);',
+  '  }',
+  '',
+  // ── WHAT MAY NOT BE FREED IS WHAT IS ON SCREEN ─────────────────────────
+  //
+  // ⚠️ THIS IS THE HALF OF THE OLD EVICTOR THAT WAS WRONG. `trim()` skipped
+  // any page marked `visible`, and `visible` was set by an observer whose
+  // rootMargin is the BAND — so a band of five marked five sheets unfreeable
+  // and no budget, in pages or in pixels, could bind. The rule that actually
+  // has to hold is narrower and is the one a reader would state: DO NOT FREE
+  // A SHEET HE CAN SEE. Everything else is fair game, and freeing it is
+  // correct — the observer's `near` set keeps it queued, so if he scrolls back
+  // it is redrawn rather than left blank.
+  '  function onScreen(slot){',
+  '    return visibleHeight(slot) > 0;',
+  '  }',
+  '',
+  // Hold the resident bitmap under the megapixel budget, FARTHEST FROM THE
+  // READER FIRST. Least-recently-used answers the wrong question here: a
+  // reader who scrolls back to a sheet he drew three sheets ago wants that
+  // one kept and the one he has just left freed, and recency says the
+  // opposite. Distance in pages from the sheet he is looking at is the key,
+  // which is the same key `pumpQueue` picks by — one notion of "near the
+  // reader", used in both directions.
   '  function trim(){',
-  '    var i = 0;',
-  '    while (rendered.length > KEEP_RENDERED && i < rendered.length) {',
-  '      if (rendered[i].visible) { i = i + 1; continue; }',
-  '      releaseSlot(rendered.splice(i, 1)[0]);',
+  '    var budget = CANVAS_BUDGET_MP * 1000000;',
+  '    var total = 0, i;',
+  '    for (i = 0; i < rendered.length; i++) total = total + canvasPixels(rendered[i]);',
+  '    while (total > budget) {',
+  '      var wi = -1, wd = -1, d;',
+  '      for (i = 0; i < rendered.length; i++) {',
+  '        if (onScreen(rendered[i])) continue;',
+  '        d = focus ? Math.abs(rendered[i].n - focus.n) : 0;',
+  '        if (d > wd) { wd = d; wi = i; }',
+  '      }',
+  // Everything left is on screen. The budget is sized to clear that floor
+  // (see CANVAS_BUDGET_MP), so this is the "two enormous sheets are both
+  // visible" case and the honest answer is to stop rather than blank one.
+  '      if (wi < 0) break;',
+  '      total = total - canvasPixels(rendered[wi]);',
+  '      releaseSlot(rendered.splice(wi, 1)[0]);',
+  '    }',
+  '  }',
+  '',
+  // ── THE QUEUE, AND WHY ORDER MATTERS AS MUCH AS THE CAP ────────────────
+  //
+  // A queue of one that still starts with sheet 12 because sheet 12 came first
+  // out of the observer's callback fixes nothing — the reader still watches a
+  // white screen while eleven sheets he cannot see are drawn ahead of his.
+  //
+  // SO THE CHOICE IS RE-MADE EVERY TIME, not fixed when the page was queued.
+  // `pumpQueue` scans for the nearest sheet at the instant a slot comes free,
+  // which is the only moment it can act on the answer; a page that was nearest
+  // when it went in is not nearest ten seconds later, and a priority queue
+  // sorted once would be a FIFO with extra steps.
+  //
+  // O(n) a pick, on a queue that is the band — a handful of entries. A heap
+  // would have to be re-keyed on every scroll anyway, because the key is the
+  // reader's position and not a property of the page.
+  '  var queue = [];',
+  '  var inFlight = 0;',
+  '',
+  // Distance from the viewport in CSS pixels: 0 for anything on screen, and
+  // how far off it is otherwise. Ties among on-screen sheets fall to queue
+  // order, which is page order — the top of the viewport, where the reader is
+  // looking.
+  '  function nearness(slot){',
+  '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
+  '    var r = slot.el.getBoundingClientRect();',
+  '    if (r.bottom < 0) return -r.bottom;',
+  '    if (r.top > h) return r.top - h;',
+  '    return 0;',
+  '  }',
+  '',
+  // How much of this sheet the reader can actually see. Feeds both `onScreen`
+  // (trim's one protection rule) and `focus` (which sheet the eviction order
+  // is measured from), so the two cannot drift apart.
+  '  function visibleHeight(slot){',
+  '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
+  '    var r = slot.el.getBoundingClientRect();',
+  '    var top = r.top > 0 ? r.top : 0;',
+  '    var bot = r.bottom < h ? r.bottom : h;',
+  '    return bot > top ? bot - top : 0;',
+  '  }',
+  '',
+  // THE SHEET THE READER IS ON. "On screen" is not specific enough: page
+  // height is close enough to viewport height that two sheets are partly
+  // visible through most of a scroll. The focus is the one showing the most of
+  // itself. It is recomputed after every observer callback and every sweep,
+  // because the answer is a property of where the reader is and not of any
+  // page — and it KEEPS ITS LAST VALUE when nothing is on screen, so a
+  // momentary gap does not make every resident sheet equidistant.
+  '  var focus = null;',
+  '  function refreshFocus(){',
+  '    var best = null, bestH = 0, i, vh;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      if (!slots[i].near) continue;',
+  '      vh = visibleHeight(slots[i]);',
+  '      if (vh > bestH) { bestH = vh; best = slots[i]; }',
+  '    }',
+  '    if (best) focus = best;',
+  '  }',
+  '',
+  '  function enqueue(slot){',
+  '    if (slot.done) { touch(slot); return; }',
+  '    if (slot.busy) return;',
+  '    if (queue.indexOf(slot) < 0) queue.push(slot);',
+  '  }',
+  '',
+  // A sheet the reader has scrolled away from comes straight back out. Queued
+  // work for a page nobody is looking at is work stolen from the page they
+  // are.
+  '  function dequeue(slot){',
+  '    var i = queue.indexOf(slot);',
+  '    if (i >= 0) queue.splice(i, 1);',
+  '  }',
+  '',
+  '  function pumpQueue(){',
+  // The probe suite suspends the render path while it measures; the queue IS
+  // the deferred list, so nothing has to be put aside anywhere else and
+  // `abResume` only has to pump again. Inert with the flag off.
+  '    if (PROBE && abSuspend) return;',
+  '    while (inFlight < MAX_CONCURRENT_RENDERS && queue.length) {',
+  '      var bi = 0, bd = nearness(queue[0]), i, d;',
+  '      for (i = 1; i < queue.length; i++) {',
+  '        d = nearness(queue[i]);',
+  '        if (d < bd) { bd = d; bi = i; }',
+  '      }',
+  '      var slot = queue.splice(bi, 1)[0];',
+  '      if (slot.busy || slot.done) continue;',
+  // RE-CHECKED AT THE MOMENT OF STARTING, not at the moment of queueing. The
+  // reader may have moved a long way while this sat in line, and the observer
+  // does not always get to report it first.
+  '      if (!slot.near && !inBand(slot)) continue;',
+  '      renderSlot(slot);',
   '    }',
   '  }',
   '',
@@ -830,45 +1288,47 @@ const VIEWER_SCRIPT = [
   // SO THE SUITE SUSPENDS THE NORMAL PATH AND WAITS FOR IT TO GO QUIET, and
   // then says in every row that it did. Three probe-only pieces of state:
   //
-  //   abInflight   how many REAL slot rasterisations are running right now.
-  //                Counted here rather than inferred, because "in flight" is a
-  //                property of the render path and nothing else can see it.
-  //   abSuspend    when true, a page that would have been rasterised is put
-  //                aside instead. The band keeps being observed and `trim()`
-  //                keeps running; only the rasterisation is deferred.
-  //   abDeferred   what was put aside, replayed verbatim on resume — the same
-  //                slots the unsuspended path would have drawn, so the viewer
-  //                the operator is holding ends up in the state it would have
-  //                been in anyway, a few seconds later.
+  //   inFlight     how many REAL slot rasterisations are running right now.
+  //                NOT a probe counter any more — the render cap needs the
+  //                same number, and two counters for one fact is how they
+  //                drift apart. Declared with the queue above.
+  //   abSuspend    when true, `pumpQueue` starts nothing. The band keeps being
+  //                observed, `trim()` keeps running and pages keep being
+  //                QUEUED; only the rasterisation is deferred.
+  //   the queue    is itself the deferred list, so there is no second array to
+  //                replay from and no way for the two to disagree about what
+  //                was put aside. `abResume` pumps, and the viewer ends up in
+  //                the state it would have been in anyway, a few seconds later.
   //
-  // INERT WITH THE FLAG OFF. Every one of these is behind `PROBE`, which is
-  // the same convention `pt0` below already uses and which the executing test
-  // asserts by rendering a six-sheet band with the probe off and checking the
-  // path is still uncapped and still concurrent.
-  '  var abInflight = 0;',
+  // INERT WITH THE FLAG OFF. `abSuspend` is only ever read behind `PROBE`, and
+  // the executing test asserts it by driving a six-sheet band with the probe
+  // off and checking the cap still holds and every sheet is still drawn.
   '  var abSuspend = false;',
-  '  var abDeferred = [];',
   // A hard stop, so a device where something never settles still reports
   // rather than hanging the suite forever. `drained:false` in the row is then
   // the honest answer and the reader can discount the numbers themselves.
   '  var AB_DRAIN_MAX_MS = 60000;',
   '',
+  // THE ONLY CALLER OF THIS IS `pumpQueue`. Everything else enqueues, which is
+  // what keeps the cap honest: there is no second door into a rasterisation,
+  // and `pdfjsViewerMemory` asserts that from the call graph rather than by
+  // inspection.
   '  function renderSlot(slot){',
   '    if (slot.done) { touch(slot); return; }',
   '    if (slot.busy) return;',
-  // PUT ASIDE, NOT DROPPED. `slot.busy` is deliberately NOT set: the slot is
-  // untouched, so a resume that calls renderSlot again takes the normal path.
-  '    if (PROBE && abSuspend) {',
-  '      if (abDeferred.indexOf(slot) < 0) abDeferred.push(slot);',
-  '      return;',
-  '    }',
   '    slot.busy = true;',
+  '    inFlight = inFlight + 1;',
   // EXACTLY ONCE ON EVERY PATH OUT — resolved, cancelled, generation-stale or
-  // thrown. A leaked count is a drain that never completes, which would hang
-  // the suite on the one device it most needs to report from.
-  '    var abSettled = false;',
-  '    function abDone(){ if (!PROBE || abSettled) return; abSettled = true; abInflight = abInflight - 1; }',
-  '    if (PROBE) abInflight = abInflight + 1;',
+  // thrown. A leaked count is a viewer that stops rendering for good, which is
+  // a worse failure than the one being fixed, and a drain that never completes
+  // on the one device that most needs to report.
+  '    var settled = false;',
+  '    function finish(){',
+  '      if (settled) return;',
+  '      settled = true;',
+  '      inFlight = inFlight - 1;',
+  '      pumpQueue();',
+  '    }',
   '    var gen = slot.gen;',
   // PROBE: `pt0` and the stamps below are plain locals on the real render
   // path. They cost two subtractions and a branch when the probe is off, and
@@ -876,7 +1336,7 @@ const VIEWER_SCRIPT = [
   // be measuring a different one, warm, with the operator list already parsed.
   '    var pt0 = PROBE ? pnow() : 0;',
   '    doc.getPage(slot.n).then(function(page){',
-  '      if (slot.gen !== gen) { slot.busy = false; abDone(); try { page.cleanup(); } catch (e) {} return null; }',
+  '      if (slot.gen !== gen) { slot.busy = false; finish(); try { page.cleanup(); } catch (e) {} return null; }',
   '      slot.page = page;',
   '      var ptGetPage = PROBE ? pnow() : 0;',
   '      var vp1 = page.getViewport({ scale: 1 });',
@@ -908,7 +1368,6 @@ const VIEWER_SCRIPT = [
   '      return slot.task.promise.then(function(){',
   '        slot.task = null;',
   '        slot.busy = false;',
-  '        abDone();',
   '        if (PROBE) {',
   '          var ptRender1 = pnow();',
   '          probePost("timing", {',
@@ -919,7 +1378,7 @@ const VIEWER_SCRIPT = [
   '            totalMs: r1(ptRender1 - pt0)',
   '          });',
   '        }',
-  '        if (slot.gen !== gen) { canvas.width = 0; canvas.height = 0; return; }',
+  '        if (slot.gen !== gen) { canvas.width = 0; canvas.height = 0; finish(); return; }',
   // A slot released and re-requested mid-render can have two renders land on
   // it. Whatever was here loses its bitmap before it loses its parent.
   '        if (slot.canvas && slot.canvas !== canvas) {',
@@ -931,11 +1390,12 @@ const VIEWER_SCRIPT = [
   '        slot.done = true;',
   '        touch(slot);',
   '        trim();',
+  '        finish();',
   '      });',
   '    })["catch"](function(e){',
   '      slot.task = null;',
   '      slot.busy = false;',
-  '      abDone();',
+  '      finish();',
   '      if (e && e.name === "RenderingCancelledException") return;',
   '      post({ type: "pdf-page-error", page: slot.n, detail: String(e) });',
   '    });',
@@ -948,14 +1408,24 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   // The no-IntersectionObserver path, and the same shape as the observer's
-  // callback: mark what is near, draw only that, then trim. Bounded by
-  // KEEP_RENDERED exactly like the observer path.
+  // callback: mark what is near, QUEUE only that, trim, then let the queue
+  // start one. Bounded by the megapixel budget and the render cap exactly like
+  // the observer path — the two must not disagree about either.
+  //
+  // THE WHOLE BAND GOES IN BEFORE ANYTHING STARTS, which is the point: the
+  // nearest sheet can only be chosen once the candidates are all known.
   '  function sweep(){',
   '    for (var i = 0; i < slots.length; i++) {',
-  '      slots[i].visible = inBand(slots[i]);',
-  '      if (slots[i].visible) renderSlot(slots[i]);',
+  '      slots[i].near = inBand(slots[i]);',
+  '      if (slots[i].near) { enqueue(slots[i]); }',
+  '      else { dequeue(slots[i]); cancelInFlight(slots[i]); }',
   '    }',
+  // BEFORE trim(), because the focus is the sheet eviction distance is
+  // measured from, and BEFORE pumpQueue(), because it is also what the next
+  // pick is measured against.
+  '    refreshFocus();',
   '    trim();',
+  '    pumpQueue();',
   '  }',
   '',
   '  var sweepPending = false;',
@@ -985,18 +1455,31 @@ const VIEWER_SCRIPT = [
   '      sweep();',
   '      return;',
   '    }',
+  // THE BATCH IS THE OPPORTUNITY. A callback arrives with every page that
+  // crossed the threshold — at first observation, that is the whole band. The
+  // old shape called renderSlot on each as it went and started a dozen
+  // rasterisations on one thread. This one records the whole batch FIRST and
+  // only then asks the queue to start ONE, which is what makes "nearest first"
+  // a question that can be answered at all.
   '    io = new IntersectionObserver(function(entries){',
   '      for (var i = 0; i < entries.length; i++) {',
   '        var slot = entries[i].target.__slot;',
   '        if (!slot) continue;',
   '        if (entries[i].isIntersecting) {',
-  '          slot.visible = true;',
-  '          renderSlot(slot);',
+  '          slot.near = true;',
+  '          enqueue(slot);',
   '        } else {',
-  '          slot.visible = false;',
+  '          slot.near = false;',
+  '          dequeue(slot);',
+  // AND STOP THE ONE ALREADY RUNNING. `dequeue` only takes a sheet out of the
+  // LINE; with one thread, an in-flight render for a sheet the reader has left
+  // is the sheet he is looking at, waiting behind it.
+  '          cancelInFlight(slot);',
   '        }',
   '      }',
+  '      refreshFocus();',
   '      trim();',
+  '      pumpQueue();',
   '    }, { rootMargin: (band() * 100) + "% 0px" });',
   '    for (var j = 0; j < slots.length; j++) io.observe(slots[j].el);',
   '  }',
@@ -1009,21 +1492,26 @@ const VIEWER_SCRIPT = [
   '    watch();',
   '  }',
   '',
-  // ── THE TIER CHANGE ────────────────────────────────────────────────────
+  // ── WHAT THE PINCH STILL DOES, AND WHAT IT NO LONGER HAS TO ────────────
   //
-  // Everything already rasterised is at the wrong scale, so it all goes. The
-  // PLACEHOLDERS are untouched — `slot.el` keeps the width and height layout()
-  // gave it — so the document does not move under the reader's finger while
-  // this happens; pages blank and come back sharper in place.
+  // IT USED TO BLANK EVERY SHEET. `sharp` was the RESOLUTION switch: first
+  // paint was viewport-anchored at 32.5 ppi and the pinch turned the PPI floor
+  // on, so everything already drawn was at the wrong scale and had to go.
+  //
+  // THAT IS NO LONGER WHAT IT MEANS. Every sheet is drawn at the floor from
+  // first paint (the measurement that killed the tier is in the comment above
+  // ZOOM_SHARP), so releasing every canvas here would blank the page the
+  // reader has just pinched into and redraw it AT THE SAME SCALE — a flicker
+  // bought with a second of thread, for nothing.
+  //
+  // SO `sharp` NOW MEANS ONE THING ONLY: TIGHTEN THE BAND. A reader who has
+  // pinched in is looking at one sheet, and BAND_SHARP is what stops the
+  // prefetch either side of it being drawn at all. `trim()` frees what falls
+  // out of the new band on its own merits.
   '  function goSharp(){',
   '    if (sharp) return;',
   '    sharp = true;',
   '    probePost("sharp", { zoom: r1(zoomScale()), band: band() });',
-  '    for (var i = 0; i < slots.length; i++) {',
-  '      slots[i].visible = false;',
-  '      releaseSlot(slots[i]);',
-  '    }',
-  '    rendered.length = 0;',
   '    rewatch();',
   '  }',
   '',
@@ -1066,10 +1554,16 @@ const VIEWER_SCRIPT = [
   '    window.removeEventListener("scroll", scheduleSweep, true);',
   '    window.removeEventListener("resize", scheduleSweep);',
   '    for (var i = 0; i < slots.length; i++) {',
-  '      slots[i].visible = false;',
+  '      slots[i].near = false;',
   '      releaseSlot(slots[i]);',
   '    }',
   '    rendered.length = 0;',
+  // releaseSlot() takes each one out of the line above; this is the belt to
+  // that pair of braces, because `resetDocument` empties `slots` straight
+  // after and a slot still queued would be a reference to a page that no
+  // longer has a document behind it.
+  '    queue.length = 0;',
+  '    focus = null;',
   // The only point at which the file bytes can go — see the note at
   // getDocument below.
   '    if (doc) { try { doc.destroy(); } catch (e) {} doc = null; }',
@@ -1116,7 +1610,7 @@ const VIEWER_SCRIPT = [
   '            el.style.width = baseWidth + "px";',
   '            el.style.height = Math.round(baseWidth * (vp1.height / vp1.width)) + "px";',
   '            var slot = { n: pageNo, el: el, done: false, busy: false,',
-  '                          visible: false, canvas: null, page: null, task: null, gen: 0 };',
+  '                          near: false, canvas: null, page: null, task: null, gen: 0 };',
   '            el.__slot = slot;',
   '            slots.push(slot);',
   '            pagesEl.appendChild(el);',
@@ -1161,10 +1655,18 @@ const VIEWER_SCRIPT = [
   //
   // WHY IT IS A FIELD AND NOT A COMMENT. Whoever reads these numbers next has
   // a phone screenshot of a log, not this file. "The suite drains first" is a
-  // promise they cannot check; `inflight: 0, pending: 0` on the row is a fact
-  // they can. And if a later change breaks the drain, the rows say so
+  // promise they cannot check; `inflight: 0, suspended: true` on the row is a
+  // fact they can. And if a later change breaks the drain, the rows say so
   // themselves instead of quietly going back to measuring contention.
-  '      var qIn = abInflight, qPend = abDeferred.length;',
+  //
+  // ⚠️ `pending` IS NOT PART OF THE CLAIM AND MUST NOT BE READ AS IF IT WERE.
+  // Sheets legitimately sit in the queue while the suite runs — the band is
+  // still being observed and pages are still being enqueued. They are not
+  // contention because `pumpQueue` starts nothing while `abSuspend` is set,
+  // and `suspended` is the field that says that. `pending` is reported beside
+  // it so a reader can see there was something being held back, which is what
+  // makes the suspension meaningful rather than vacuous.
+  '      var qIn = inFlight, qPend = queue.length, qSusp = !!abSuspend;',
   '      var r0 = pnow();',
   '      var t = page.render({ canvasContext: ctx, viewport: vp });',
   '      t.promise.then(function(){',
@@ -1174,7 +1676,7 @@ const VIEWER_SCRIPT = [
   '          canvasW: wpx, canvasH: hpx,',
   '          megapixels: Math.round((wpx * hpx) / 1e5) / 10,',
   '          ppi: r1(wpx / (vp1.width / 72)),',
-  '          inflight: qIn, pending: qPend,',
+  '          inflight: qIn, pending: qPend, suspended: qSusp,',
   '          canvasAllocMs: r1(a1 - a0), renderMs: r1(r1ms - r0) };',
   '        if (extra) { for (var k in extra) { if (Object.prototype.hasOwnProperty.call(extra, k)) out[k] = extra[k]; } }',
   '        if (extra && extra.variant) {',
@@ -1453,10 +1955,10 @@ const VIEWER_SCRIPT = [
   // Recorded on the FIRST call only. Without it the row would say how many
   // were left at the end (always 0) and never how many there were to drain —
   // and a drain of nothing looks identical to a drain that worked.
-  '    if (waited === undefined) abDrainStartInflight = abInflight;',
+  '    if (waited === undefined) abDrainStartInflight = inFlight;',
   '    abSuspend = true;',
   '    var w = waited || 0;',
-  '    if (abInflight <= 0 || w >= AB_DRAIN_MAX_MS) { next(w, abInflight); return; }',
+  '    if (inFlight <= 0 || w >= AB_DRAIN_MAX_MS) { next(w, inFlight); return; }',
   '    setTimeout(function(){ abDrain(next, w + 50); }, 50);',
   '  }',
   '',
@@ -1467,13 +1969,13 @@ const VIEWER_SCRIPT = [
   '  function abResume(){',
   '    if (!PROBE) return;',
   '    abSuspend = false;',
-  '    var pending = abDeferred.slice();',
-  '    abDeferred.length = 0;',
-  '    probePost("resume", { suspended: false, replayed: pending.length });',
-  // Replayed verbatim rather than re-swept: these are exactly the slots the
-  // unsuspended path would have rasterised, so the viewer ends up in the state
-  // it would have been in anyway, a few seconds later.
-  '    for (var i = 0; i < pending.length; i++) renderSlot(pending[i]);',
+  '    var pending = queue.length;',
+  '    probePost("resume", { suspended: false, replayed: pending });',
+  // NOTHING TO REPLAY FROM, because nothing was ever taken out. The suspension
+  // stopped `pumpQueue` starting work; the queue kept filling exactly as it
+  // would have. So the resume is one call and there is no second list that can
+  // disagree with the first about what was deferred.
+  '    pumpQueue();',
   '  }',
   '',
   // ── THE MEDIAN ROWS ────────────────────────────────────────────────────
@@ -1493,7 +1995,8 @@ const VIEWER_SCRIPT = [
   '        minMs: minOf(rec.runs), maxMs: maxOf(rec.runs),',
   '        scale: rec.meta.scale, megapixels: rec.meta.megapixels, ppi: rec.meta.ppi,',
   '        canvasW: rec.meta.canvasW, canvasH: rec.meta.canvasH, clamp: rec.meta.clamp,',
-  '        inflight: rec.meta.inflight, pending: rec.meta.pending',
+  '        inflight: rec.meta.inflight, pending: rec.meta.pending,',
+  '        suspended: rec.meta.suspended',
   '      });',
   '    }',
   '  }',
@@ -1503,7 +2006,7 @@ const VIEWER_SCRIPT = [
   '    abDrain(function(waitedMs, stillInflight){',
   '      probePost("drain", { waitedMs: waitedMs, inflightAtStart: abDrainStartInflight,',
   '        inflightNow: stillInflight, drained: stillInflight <= 0,',
-  '        deferred: abDeferred.length, capMs: AB_DRAIN_MAX_MS });',
+  '        deferred: queue.length, capMs: AB_DRAIN_MAX_MS });',
   '      probeSuiteIsolated();',
   '    });',
   '  }',
@@ -1511,8 +2014,30 @@ const VIEWER_SCRIPT = [
   '  function probeSuiteIsolated(){',
   '    doc.getPage(1).then(function(page){',
   '      var vp1 = page.getViewport({ scale: 1 });',
+  // ── THE THREE VARIANTS HAVE TO SPAN REAL PIXEL COUNTS ─────────────────
+  //
+  // THEY STOPPED DOING SO AND IT WOULD HAVE BEEN SILENT. `cur` and `noOver`
+  // were `targetScaleInfo(vp1, 1.5)` and `(vp1, 1.0)` — a comparison of the
+  // viewport oversample. With the PPI floor unconditional again, the floor
+  // term wins on any large sheet and the edge clamp binds both, so on a 36x48
+  // drawing all three variants land on THE SAME SCALE. Three identical renders
+  // reported as an A/B is worse than no A/B: it looks like an answer.
+  //
+  // So the low variant asks for the VIEWPORT ANCHOR EXPLICITLY — the third
+  // argument `targetScaleInfo` kept for exactly this. On the operator's phone
+  // that is ~1.2 MP against the shipping 12.58 MP and the ~16 MP ceiling,
+  // which is a real spread across an order of magnitude.
+  //
+  // ⚠️ THIS IS THE MEASUREMENT THAT SETTLES THE NEXT QUESTION. His set is
+  // image-heavy — 147 DCTDecode operators a sheet — and on it the cost is
+  // fixed: 0.5 MP took 800 ms and 11.2 MP took 701 ms. A VECTOR-heavy set
+  // (many Flate, few DCT) might genuinely scale with pixels, and if it does,
+  // a cheaper first pass becomes worth having again. `imgfilters` already
+  // reports the operator census; these three rows are the renderMs-against-
+  // megapixels half of the same question, and they only mean something while
+  // the three scales differ.
   '      var cur = targetScaleInfo(vp1, 1.5);',
-  '      var noOver = targetScaleInfo(vp1, 1.0);',
+  '      var noOver = targetScaleInfo(vp1, 1.0, false);',
   '      var ceil = ceilingScaleInfo(vp1);',
   '      try { page.cleanup(); } catch (e) {}',
   // ONE DEFINITION, THREE PASSES. Written once so a later pass cannot drift
@@ -1523,13 +2048,13 @@ const VIEWER_SCRIPT = [
   // PDFViewer.native.jsx logs `label` verbatim into the report the operator
   // shares, and two identically-labelled rows would be unreadable in exactly
   // the artefact this was built to produce.
-  '      var V_CUR = "viewport/over1.5 (SHIPPING)";',
-  '      var V_NOOVER = "viewport/over1.0";',
+  '      var V_CUR = "ppi-floor/over1.5 (SHIPPING)";',
+  '      var V_NOOVER = "viewport-anchor/no-floor (CHEAP)";',
   '      var V_CEIL = "cap-ceiling (HEADROOM)";',
   '      function threeScales(pass, after){',
   '        var tag = "pass" + pass + " ";',
-  '        probeRenderAt(1, cur.s, tag + "anchor:viewport over:1.5 (SHIPPING)", { pass: pass, clamp: cur.clamp, variant: V_CUR }, function(){',
-  '          probeRenderAt(1, noOver.s, tag + "anchor:viewport over:1.0", { pass: pass, clamp: noOver.clamp, variant: V_NOOVER }, function(){',
+  '        probeRenderAt(1, cur.s, tag + "anchor:" + cur.anchor + " over:1.5 (SHIPPING)", { pass: pass, clamp: cur.clamp, variant: V_CUR }, function(){',
+  '          probeRenderAt(1, noOver.s, tag + "anchor:viewport floor:off (CHEAP)", { pass: pass, clamp: noOver.clamp, variant: V_NOOVER }, function(){',
   '            probeRenderAt(1, ceil.s, tag + "anchor:cap-ceiling (HEADROOM)", { pass: pass, clamp: ceil.clamp, variant: V_CEIL }, after);',
   '          });',
   '        });',
@@ -1612,6 +2137,11 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   '  capabilityRead(function(){});',
+  // STARTED AT BOOT, NOT AT FIRST OPEN. Reading 1.1 MB off file:// storage and
+  // constructing a Worker from it is work that does not depend on the
+  // document, and the WebView is created well before the host posts one — so
+  // paying it here takes it off the open's critical path entirely.
+  '  ensureWorker(function(){});',
   // ONCE, BEFORE ANY DOCUMENT. The zoom belongs to the WebView, not to the
   // document, so it is watched for the life of the page — and `resetDocument`
   // reads the answer rather than re-registering.
@@ -1641,7 +2171,7 @@ const VIEWER_SCRIPT = [
   // path switched off and nothing on screen to explain it. The deferred slots
   // belong to a document that no longer exists, so they go rather than
   // replay.
-  '    if (PROBE) { abSuspend = false; abDeferred.length = 0; abRuns = {}; }',
+  '    if (PROBE) { abSuspend = false; abRuns = {}; }',
   // THE NEXT DOCUMENT GETS THE FAST TIER AGAIN — unless the WebView is STILL
   // pinched in. Plain `sharp = false` was wrong: native zoom is a property of
   // the WebView, not of the document, so a reader who zoomed into sheet A and
@@ -1659,7 +2189,12 @@ const VIEWER_SCRIPT = [
   '    fileUrl = url;',
   '    if (msgEl) { msgEl.style.display = ""; msgEl.textContent = "Loading document\\u2026"; }',
   '    hbStart();',
-  '    loadCurrent();',
+  // THE WORKER HAS TO BE DECIDED BEFORE `getDocument`, because that is the
+  // call that binds it. Memoised: the setup runs once for the life of the
+  // WebView and every later open goes straight through. It is also kicked off
+  // at boot below, so by the time the host posts a document the answer is
+  // usually already in.
+  '    ensureWorker(function(){ loadCurrent(); });',
   '  }',
   '',
   // react-native-webview delivers `postMessage` to `document` on Android and
@@ -1704,40 +2239,66 @@ const VIEWER_SCRIPT = [
   // Afterwards pdf.js may have populated things itself and the global no
   // longer distinguishes "was already there" from "was created on demand".
   //
-  // BEST-EFFORT ON THE LAST FIELD, AND SAID SO. `task._worker._webWorker` is
-  // pdf.js internals and may not exist on a given build; when it cannot be
-  // read the verdict falls back to the global, and when neither is available
-  // it says `unknown` rather than guessing. An honest `unknown` is a usable
-  // answer; a confident wrong one is not.
+  // ⚠️ `task._worker._webWorker` IS THE WRONG FIELD NOW, AND READING IT WOULD
+  // SCORE THE ACCEPTANCE CRITERION BACKWARDS. pdf.js takes two different
+  // branches: `_initialize()` when it has to construct a Worker itself, which
+  // assigns `_webWorker`, and `_initializeFromPort()` when it is HANDED one —
+  // which is the branch this page now takes, and which never assigns it. A
+  // verdict read off that field reports "FAKE" on a document being parsed
+  // entirely off the UI thread.
+  //
+  // SO THE VERDICT COMES FROM THE PAGE'S OWN SETUP, which is the only thing
+  // that actually knows: `workerMode` is set by `settleWorker` on every path,
+  // including every fallback, and it is the same value posted on the ordinary
+  // `pdf-worker` channel. The pdf.js internals ride along as CORROBORATION —
+  // `workerPortType` is "object" exactly when the port was accepted, and
+  // `workerMessageHandlerPresent` is true exactly when the main-thread handler
+  // is installed — so a reader can see the two agree rather than trust one.
   '  function probeWorkerPath(task, hadGlobal){',
   '    if (!PROBE) return;',
   '    var d = { globalWorkerDefinedBeforeGetDocument: !!hadGlobal, workerSrc: null,',
   '              workerMessageHandlerPresent: false, workerPortType: "undefined",',
-  '              taskWebWorker: "unreadable", verdict: "unknown" };',
+  '              taskWebWorker: "unreadable", mode: workerMode, reason: workerReason,',
+  '              verdict: "unknown" };',
   '    try { d.workerSrc = pdfjsLib.GlobalWorkerOptions.workerSrc || null; } catch (e) {}',
   '    try { d.workerPortType = typeof pdfjsLib.GlobalWorkerOptions.workerPort; } catch (e) {}',
   '    try { d.workerMessageHandlerPresent = !!(globalThis.pdfjsWorker && globalThis.pdfjsWorker.WorkerMessageHandler); } catch (e) {}',
-  '    var known = false;',
   '    try {',
   '      if (task && task._worker && Object.prototype.hasOwnProperty.call(task._worker, "_webWorker")) {',
   '        d.taskWebWorker = task._worker._webWorker ? "present" : "null";',
-  '        d.verdict = task._worker._webWorker',
-  '          ? "REAL Worker — rasterisation is off the UI thread"',
-  '          : "FAKE worker — pdf.js parses and rasterises on the MAIN thread";',
-  '        known = true;',
   '      }',
   '    } catch (e) { d.taskWebWorkerError = String(e); }',
-  '    if (!known && d.globalWorkerDefinedBeforeGetDocument) {',
-  '      d.verdict = "FAKE worker — globalThis.pdfjsWorker was defined before getDocument, '
-    + 'so pdf.js uses the main-thread handler";',
+  '    if (workerMode === "real") {',
+  '      d.verdict = "REAL Worker (blob: port) — parse and image decode are off the UI thread; '
+    + 'canvas paint is not";',
+  '    } else if (workerMode === "main-thread") {',
+  '      d.verdict = "FAKE worker — pdf.js parses and rasterises on the MAIN thread (fell back: "',
+  '        + workerReason + ")";',
   '    }',
   '    probePost("workerpath", d);',
   '  }',
   '',
+  // ONE OPEN AT A TIME, AND THE LAST ONE WINS.
+  //
+  // Two opens can be in flight at once — the host posts a second document
+  // while the first is still parsing, or (new here) the worker dies mid-parse
+  // and `workerBlewUp` re-opens through the main-thread fallback. `resetDocument`
+  // sets `doc = null`, but it cannot reach INTO the pending `task.promise` of
+  // the open it superseded: that promise still resolves later and assigns
+  // `doc = pdf`, laying a second set of slots over the document the reader is
+  // actually looking at.
+  //
+  // A generation stamp is the same mechanism `slot.gen` already uses for a
+  // render, applied to the open. A superseded chain destroys the document it
+  // just parsed and stops, rather than publishing it.
+  '  var loadGen = 0;',
   '  function loadCurrent(){',
   '  var ptOpen0 = PROBE ? pnow() : 0;',
   '  var ptLayoutMs = 0, ptParseMs = 0, ptBytesMs = 0;',
+  '  loadGen = loadGen + 1;',
+  '  var myGen = loadGen;',
   '  readBytes(fileUrl, function(bytes){',
+  '    if (myGen !== loadGen) return;',
   '    var ptBytes = PROBE ? pnow() : 0;',
   '    if (PROBE) { ptBytesMs = r1(ptBytes - ptOpen0); probePost("bytes", { readMs: ptBytesMs, byteLength: (bytes && bytes.length) || 0 }); }',
   // Captured on the line BEFORE the call, because the call itself is what
@@ -1761,6 +2322,7 @@ const VIEWER_SCRIPT = [
   '    if (PROBE) probeWorkerPath(task, hadGlobalWorker);',
   '    var ptParse0 = PROBE ? pnow() : 0;',
   '    task.promise.then(function(pdf){',
+  '      if (myGen !== loadGen) { try { pdf.destroy(); } catch (e) {} return null; }',
   '      doc = pdf;',
   '      if (PROBE) { ptParseMs = r1(pnow() - ptParse0); probePost("parse", { parseMs: ptParseMs, pages: pdf.numPages }); }',
   '      var ptLayout0 = PROBE ? pnow() : 0;',
@@ -1786,6 +2348,11 @@ const VIEWER_SCRIPT = [
   '        });',
   '      });',
   '    }).then(function(){',
+  // The superseded chain stops HERE too, not just at the parse. Without this
+  // it would hide the newer open's "Loading", build a second observer over
+  // slots that belong to nothing, and post a `pdf-ready` naming a document
+  // that was destroyed two lines up.
+  '      if (myGen !== loadGen || !doc) return;',
   // HIDDEN, NOT REMOVED. This page now outlives the document it is showing,
   // so the next `openDocument` needs this element back to say "Loading" with.
   // Removing it from the DOM was safe only while a second document meant a
