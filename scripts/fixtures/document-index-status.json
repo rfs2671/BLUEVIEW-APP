@@ -1,0 +1,560 @@
+{
+ "complete": {
+  "qwen_configured": true,
+  "files": [
+   {
+    "file_id": "6a902d6ecda47e90e7b6b1c9",
+    "file_name": "3540K25_588 THOMAS S BOYLAND STREET-AS BUILT 08-24-26.pdf",
+    "total_pages": 1,
+    "indexed_pages": 1,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 1,
+     "pages_total": 1,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902d71cda47e90e7b6b1cb",
+    "file_name": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+    "total_pages": 0,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": {
+     "state": "skipped_combined_set"
+    },
+    "queue_status": "skipped",
+    "queue": {
+     "status": "skipped",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 1,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc3cda47e90e7b6b1cf",
+    "file_name": "AR - 6.9.26 (Gas change).pdf",
+    "total_pages": 2,
+    "indexed_pages": 2,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 2,
+     "pages_total": 2,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc7cda47e90e7b6b1d1",
+    "file_name": "AR - 8.18.26.pdf",
+    "total_pages": 10,
+    "indexed_pages": 10,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 10,
+     "pages_total": 10,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc8cda47e90e7b6b1d3",
+    "file_name": "cross connection - 6.13.25.pdf",
+    "total_pages": 6,
+    "indexed_pages": 6,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 6,
+     "pages_total": 6,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc9cda47e90e7b6b1d7",
+    "file_name": "FA - 6.30.26.pdf",
+    "total_pages": 7,
+    "indexed_pages": 7,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 7,
+     "pages_total": 7,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcbcda47e90e7b6b1d9",
+    "file_name": "MH - 7.2.26.pdf",
+    "total_pages": 13,
+    "indexed_pages": 13,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 13,
+     "pages_total": 13,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcccda47e90e7b6b1da",
+    "file_name": "Owners set - 6.9.26.pdf",
+    "total_pages": 6,
+    "indexed_pages": 6,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 6,
+     "pages_total": 6,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcecda47e90e7b6b1dc",
+    "file_name": "PL - 6.29.26.pdf",
+    "total_pages": 21,
+    "indexed_pages": 21,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 21,
+     "pages_total": 21,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcfcda47e90e7b6b1de",
+    "file_name": "SD1-2 - 4.1.25.pdf",
+    "total_pages": 4,
+    "indexed_pages": 4,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 4,
+     "pages_total": 4,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd1cda47e90e7b6b1e0",
+    "file_name": "SP - 6.24.26.pdf",
+    "total_pages": 4,
+    "indexed_pages": 4,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 4,
+     "pages_total": 4,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd2cda47e90e7b6b1e3",
+    "file_name": "SP 4th floor after CO - 5.6.25.pdf",
+    "total_pages": 1,
+    "indexed_pages": 1,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 1,
+     "pages_total": 1,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd3cda47e90e7b6b1e5",
+    "file_name": "SSP - 6.18.25.pdf",
+    "total_pages": 13,
+    "indexed_pages": 13,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 13,
+     "pages_total": 13,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd5cda47e90e7b6b1e7",
+    "file_name": "ST - 7.29.26.pdf",
+    "total_pages": 14,
+    "indexed_pages": 14,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 14,
+     "pages_total": 14,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a90ebce1df3e1f2588018a2",
+    "file_name": "AR - 3.28.25.pdf",
+    "total_pages": 26,
+    "indexed_pages": 26,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 26,
+     "pages_total": 26,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a9822c09bc6408dd7130c43",
+    "file_name": "588 Thomas S Boyland Street shed-1.pdf",
+    "total_pages": 1,
+    "indexed_pages": 1,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 1,
+     "pages_total": 1,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   }
+  ]
+ },
+ "mid_run": {
+  "qwen_configured": true,
+  "files": [
+   {
+    "file_id": "6a902d6ecda47e90e7b6b1c9",
+    "file_name": "3540K25_588 THOMAS S BOYLAND STREET-AS BUILT 08-24-26.pdf",
+    "total_pages": 1,
+    "indexed_pages": 1,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 1,
+     "pages_total": 1,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902d71cda47e90e7b6b1cb",
+    "file_name": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+    "total_pages": 0,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": {
+     "state": "skipped_combined_set"
+    },
+    "queue_status": "skipped",
+    "queue": {
+     "status": "skipped",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 1,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc3cda47e90e7b6b1cf",
+    "file_name": "AR - 6.9.26 (Gas change).pdf",
+    "total_pages": 2,
+    "indexed_pages": 2,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 2,
+     "pages_total": 2,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc7cda47e90e7b6b1d1",
+    "file_name": "AR - 8.18.26.pdf",
+    "total_pages": 10,
+    "indexed_pages": 10,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 10,
+     "pages_total": 10,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc8cda47e90e7b6b1d3",
+    "file_name": "cross connection - 6.13.25.pdf",
+    "total_pages": 6,
+    "indexed_pages": 6,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 6,
+     "pages_total": 6,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dc9cda47e90e7b6b1d7",
+    "file_name": "FA - 6.30.26.pdf",
+    "total_pages": 7,
+    "indexed_pages": 7,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 7,
+     "pages_total": 7,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcbcda47e90e7b6b1d9",
+    "file_name": "MH - 7.2.26.pdf",
+    "total_pages": 13,
+    "indexed_pages": 5,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "running",
+    "queue": {
+     "status": "running",
+     "pages_done": 5,
+     "pages_total": 13,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcccda47e90e7b6b1da",
+    "file_name": "Owners set - 6.9.26.pdf",
+    "total_pages": 6,
+    "indexed_pages": 6,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "done",
+    "queue": {
+     "status": "done",
+     "pages_done": 6,
+     "pages_total": 6,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcecda47e90e7b6b1dc",
+    "file_name": "PL - 6.29.26.pdf",
+    "total_pages": 21,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dcfcda47e90e7b6b1de",
+    "file_name": "SD1-2 - 4.1.25.pdf",
+    "total_pages": 4,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd1cda47e90e7b6b1e0",
+    "file_name": "SP - 6.24.26.pdf",
+    "total_pages": 4,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd2cda47e90e7b6b1e3",
+    "file_name": "SP 4th floor after CO - 5.6.25.pdf",
+    "total_pages": 1,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd3cda47e90e7b6b1e5",
+    "file_name": "SSP - 6.18.25.pdf",
+    "total_pages": 13,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a902dd5cda47e90e7b6b1e7",
+    "file_name": "ST - 7.29.26.pdf",
+    "total_pages": 14,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a90ebce1df3e1f2588018a2",
+    "file_name": "AR - 3.28.25.pdf",
+    "total_pages": 26,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   },
+   {
+    "file_id": "6a9822c09bc6408dd7130c43",
+    "file_name": "588 Thomas S Boyland Street shed-1.pdf",
+    "total_pages": 1,
+    "indexed_pages": 0,
+    "last_indexed_at": null,
+    "index_status": null,
+    "queue_status": "queued",
+    "queue": {
+     "status": "queued",
+     "pages_done": 0,
+     "pages_total": null,
+     "attempts": 1,
+     "deferrals": 0,
+     "error": null
+    }
+   }
+  ]
+ }
+}

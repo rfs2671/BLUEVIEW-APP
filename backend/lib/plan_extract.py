@@ -1148,6 +1148,34 @@ def _qty_column(columns: List[str]) -> Optional[int]:
     return None
 
 
+# WHERE AN ANSWER SAYS IT CAME FROM, AND NEVER '?'. A page whose sheet number
+# could not be read is indexed with sheet_number None — deliberately, since a
+# wrong number hides another sheet. Its chunks were cited anyway, as
+# "? (text): CONC. WALL", which names nothing a superintendent can open and
+# reads like a fault in the system rather than a gap in the drawings.
+#
+# A record is citable when it can say where it is: the sheet number, failing
+# that the file and page every chunk carries, and failing both it is not
+# quoted at all.
+def cite(hit: Dict[str, Any]) -> Optional[str]:
+    sheet = hit.get("sheet")
+    if isinstance(sheet, str):
+        sheet = sheet.strip()
+    if sheet:
+        return str(sheet)
+    page, name = hit.get("page"), (hit.get("file") or "").strip()
+    if name and page:
+        return f"{name} p{page}"
+    if page:
+        return f"page {page}"
+    return None
+
+
+def citable(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Only the hits that can say where they came from."""
+    return [h for h in (hits or []) if cite(h)]
+
+
 def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[str, Any]]:
     """Counts that are PRINTED, with the sheet they are printed on.
 
@@ -1169,6 +1197,7 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
                         and el.get("count_verified") is True):
                     out.append({"sheet": sheet, "count": el["count_if_stated"],
                                 "source": "elements", "name": el.get("name"),
+                                "file": ch.get("file_name"), "page": ch.get("page_number"),
                                 "where": el.get("location_hint")})
         elif kind == "schedule":
             s = ch.get("payload") or {}
@@ -1199,10 +1228,12 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
                 if counted:
                     out.append({"sheet": sheet, "count": total, "source": "schedule_qty",
                                 "name": s.get("name"), "rows": counted, "via": s.get("source"),
+                                "file": ch.get("file_name"), "page": ch.get("page_number"),
                                 "verify": schedule_needs_verifying(chunks, ch)})
                     continue
             out.append({"sheet": sheet, "count": len(matched), "source": "schedule_rows",
                         "name": s.get("name"), "via": s.get("source"),
+                        "file": ch.get("file_name"), "page": ch.get("page_number"),
                         "verify": schedule_needs_verifying(chunks, ch)})
     return out
 
@@ -1218,6 +1249,7 @@ def answer_existence(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dic
         for line in (ch.get("text") or "").splitlines():
             if _matches(line, terms):
                 out.append({"sheet": ch.get("sheet_number"), "source": ch.get("chunk_type"),
+                        "file": ch.get("file_name"), "page": ch.get("page_number"),
                             "line": line.strip()[:200], "title": ch.get("sheet_title")})
                 break
     return out
@@ -1231,7 +1263,7 @@ def format_count_answer(subject: str, hits: List[Dict[str, Any]]) -> Optional[st
     label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
     lines = []
     for h in hits:
-        where = f"{h['sheet'] or '?'}"
+        where = cite(h) or "?"
         # A schedule read from the image, not the text layer, says so: its
         # numbers could not be checked against printed text.
         seen = ""
@@ -1258,7 +1290,7 @@ def format_existence_answer(subject: str, hits: List[Dict[str, Any]]) -> Optiona
             sheets.append(h["sheet"])
     first = hits[0]
     return (f"Yes — {label.lower()} is on {', '.join(sheets[:4]) or 'the indexed drawings'}.\n"
-            f"{first['sheet'] or '?'} ({first['source']}): {first['line']}")
+            f"{cite(first)} ({first['source']}): {first['line']}")
 
 
 # WHERE A MENTION IS WORTH MOST. A schedule and a spec state things; a floor
@@ -1346,6 +1378,7 @@ def answer_named_schedule(chunks: List[Dict[str, Any]], terms: List[str],
         if not name or not _matches(name, terms):
             continue
         out.append({"sheet": ch.get("sheet_number"), "name": name,
+                    "file": ch.get("file_name"), "page": ch.get("page_number"),
                     "columns": [str(c or "") for c in (payload.get("columns") or [])],
                     "rows": payload.get("rows") or [],
                     "via": payload.get("source") or payload.get("via"),
@@ -1368,7 +1401,7 @@ def format_named_schedule_answer(subject: str, hits: List[Dict[str, Any]],
                 if any(k in (c or "").strip().lower() for k in _SCHED_KEEP)]
         if not keep:
             keep = list(range(min(4, len(cols))))
-        head = f"{h['sheet'] or '?'}: {h['name']}"
+        head = f"{cite(h)}: {h['name']}"
         # A schedule read from the image, not the text layer, says so: its
         # cells could not be checked against printed text.
         if h.get("via") == "vision":
@@ -1405,7 +1438,7 @@ def format_open_answer(subject: str, hits: List[Dict[str, Any]],
         if not h.get("line") or key in seen:
             continue
         seen.add(key)
-        lines.append(f"{h.get('sheet') or '?'} ({h.get('source')}): {h['line']}")
+        lines.append(f"{cite(h)} ({h.get('source')}): {h['line']}")
         if len(lines) >= limit:
             break
     if not lines:
@@ -1657,6 +1690,7 @@ def answer_attribute(chunks: List[Dict[str, Any]], terms: List[str], attribute: 
                 continue
             seen.add(key)
             out.append({"sheet": ch.get("sheet_number"), "source": ch.get("chunk_type"),
+                        "file": ch.get("file_name"), "page": ch.get("page_number"),
                         "line": hit[:200]})
             if len(out) >= limit:
                 return out
@@ -1669,7 +1703,7 @@ def format_attribute_answer(subject: str, attribute: str,
         return None
     label = f"{(subject or 'That').strip()} {attribute}".strip()
     label = label[:1].upper() + label[1:]
-    return f"{label}:\n" + "\n".join(f"{h['sheet'] or '?'}: {h['line']}" for h in hits)
+    return f"{label}:\n" + "\n".join(f"{cite(h)}: {h['line']}" for h in hits)
 
 
 def format_not_stated(mentions: List[Dict[str, Any]], terms: Optional[List[str]] = None,
@@ -1683,8 +1717,9 @@ def format_not_stated(mentions: List[Dict[str, Any]], terms: Optional[List[str]]
     sheet, instead of listing every floor plan whose legend defines the symbol."""
     sheets: List[str] = []
     for h in _by_source(mentions):
-        if h.get("sheet") and h["sheet"] not in sheets:
-            sheets.append(h["sheet"])
+        where = cite(h)
+        if where and where not in sheets:
+            sheets.append(where)
     if count and terms:
         for h in mentions:
             title = (h.get("title") or "").lower()
@@ -1726,6 +1761,7 @@ def answer_tag_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dic
         for item in ch.get("payload") or []:
             if item.get("tag") in cands and item.get("count"):
                 out.append({"sheet": ch.get("sheet_number"), "tag": item["tag"],
+                            "file": ch.get("file_name"), "page": ch.get("page_number"),
                             "count": int(item["count"]), "source": item.get("source")})
     return out
 
@@ -1833,6 +1869,7 @@ __all__ = [
     "answer_question", "question_kind", "question_terms", "answer_attribute", "format_attribute_answer",
     "format_not_stated", "ATTRIBUTE_PATTERNS",
     "answer_named_schedule", "format_named_schedule_answer", "format_open_answer",
+    "cite", "citable",
     "schedule_needs_verifying",
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
