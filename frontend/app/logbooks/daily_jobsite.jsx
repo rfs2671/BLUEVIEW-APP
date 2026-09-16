@@ -100,6 +100,7 @@ import {
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
+  locationChipsFor, levelsAreDefault,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
   stepComplete,
   rosterKey,
@@ -314,24 +315,19 @@ const CHECKLIST_ITEMS = [
 ];
 
 /**
- * Location chips are DERIVED, not invented.
+ * Location chips are DERIVED, not invented — and the derivation MOVED.
  *
- * There is no location vocabulary anywhere in this codebase and no endpoint
- * serving one, so authoring a fixed list of jobsite areas here would be
- * putting made-up terms into a legal record. What the project record actually
- * knows is how many storeys the building has (`building_stories`,
- * backend/server.py:1472), so the floors are offered as chips and everything
- * else goes through "Somewhere else", which is free text the CP writes
- * himself. A project with no storey count set gets no floor chips at all —
- * that is the honest state, and the CP still has free text.
+ * It lives in dailyJobsiteModel.buildingLevelChips now, for the reason every
+ * other rule on this screen moved there: it can be EXECUTED by the node suite
+ * rather than grepped. Its docstring holds the argument; the short version is
+ * that there is still no invented vocabulary here, and there are now five
+ * kinds of level instead of one because a storey count cannot say whether a
+ * building has a cellar under it or a bulkhead over it.
+ *
+ * The chips read the PROJECT, so yesterday's answers and today's are the same
+ * answers whoever is filing — the levels are a fact about the building and
+ * were never a fact about the account holding the phone.
  */
-const floorChips = (stories) => {
-  const n = parseInt(stories, 10);
-  if (!Number.isFinite(n) || n <= 0) return [];
-  return Array.from({ length: Math.min(n, 60) }, (_, i) => ({
-    id: `floor_${i + 1}`, label: `Floor ${i + 1}`,
-  }));
-};
 
 const OTHER_LOCATION_ID = 'location_other';
 const OTHER_ACTIVITY_ID = 'other';
@@ -397,7 +393,10 @@ export default function DailyJobsiteLog() {
 
   // ── The record ────────────────────────────────────────────────────────
   const [projectAddress, setProjectAddress] = useState('');
-  const [buildingStories, setBuildingStories] = useState(null);
+  // EVERY LEVEL FIELD, not just the storey count — the chips need the four
+  // flags beside it and a second state variable per flag would be four ways
+  // for this screen to be half-loaded.
+  const [buildingLevels, setBuildingLevels] = useState(null);
   const [weather, setWeather] = useState('');
   const [weatherTemp, setWeatherTemp] = useState('');
   const [weatherWind, setWeatherWind] = useState('');
@@ -748,7 +747,7 @@ export default function DailyJobsiteLog() {
 
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
-      setBuildingStories(projectData?.building_stories ?? null);
+      setBuildingLevels(projectData || null);
       rosterIdsRef.current = rosterIdIndex(headcount);
 
       // A roster read that FAILED is not an empty jobsite. Null here means the
@@ -868,7 +867,11 @@ export default function DailyJobsiteLog() {
   const loadProjectShell = async () => {
     try {
       const p = await projectsAPI.getById(projectId);
-      if (p?.building_stories != null) setBuildingStories(p.building_stories);
+      // The draft path reads the same shell. Set it whenever the project
+      // came back at all: a building with a cellar and no storey count still
+      // has a cellar chip to offer, and gating on `building_stories` would
+      // have withheld it.
+      if (p) setBuildingLevels(p);
       const [headcount] = await Promise.all([
         logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
       ]);
@@ -1121,7 +1124,15 @@ export default function DailyJobsiteLog() {
     setGeneralDescription(suggestedDescription);
   }, [step, suggestedDescription, descriptionTouched]);
 
-  const locationChips = useMemo(() => floorChips(buildingStories), [buildingStories]);
+  // THE LEVELS, PLUS WHAT A CP HAS TYPED ON THIS PROJECT BEFORE. One call, so
+  // the card and the "these are defaults" line below cannot disagree about
+  // which list is on screen.
+  const locationChips = useMemo(() => locationChipsFor(buildingLevels), [buildingLevels]);
+  // NOBODY HAS ANSWERED FOR THIS BUILDING. Worth saying on the card: a CP
+  // picking "2nd Floor" should know the app is offering a default list rather
+  // than reading his drawings, and that typing the real one under "Somewhere
+  // else" is what fixes it for everyone tomorrow.
+  const locationsAreDefault = useMemo(() => levelsAreDefault(locationChips), [locationChips]);
   const locationLabels = useMemo(() => {
     const m = new Map();
     locationChips.forEach((c) => m.set(c.id, c.label));
@@ -2452,6 +2463,9 @@ export default function DailyJobsiteLog() {
 
               {/* LOCATION */}
               <Text style={s.question}>{t('locationQuestion')}</Text>
+              {locationsAreDefault && (
+                <Text style={s.lockedHint}>{t('locationsAreDefault')}</Text>
+              )}
               <View style={s.chipWrap}>
                 {locationChips.map((c) => (
                   <Chip

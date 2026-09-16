@@ -46,6 +46,12 @@ import { readCachedProjectList, cacheProjectList } from '../../src/utils/project
 import {
   filingRights, mayFile, whoFilesLabel, whoFilesTitle, whoFilesReason,
 } from '../../src/utils/csFilingRights';
+// A WEEKLY LOG IS NOT DUE EVERY DAY. See the module header: the tile asked
+// `todayLogs[type]`, which is a by-DATE question, and 588 Thomas filed 33
+// toolbox talks in 35 working days because of it.
+import {
+  logbookPeriods, cadenceStatus, cadenceLabel, periodSatisfied,
+} from '../../src/utils/logbookCadence';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -365,6 +371,7 @@ export default function LogBooksScreen() {
   // const read from above its declaration is how a later edit acquires a
   // temporal-dead-zone crash that no static sweep sees.
   const rights = filingRights(requiredLogbooks);
+  const periods = logbookPeriods(requiredLogbooks);
 
   const handleOpenLog = (logType) => {
     if (!selectedProject) {
@@ -644,10 +651,28 @@ export default function LogBooksScreen() {
   // has had longest to not fix — belongs at the top of it.
   const gapsOldestFirst = [...gaps].reverse();
   const missingToolbox = notifications?.missing_toolbox_talk || [];
+  // A WORKER ANSWERED YES TO "Injury / Incident last time?" AND NOTHING READ
+  // IT. The pre-shift sheet has asked every worker since it existed; across 53
+  // filed sheets on production there are four yes answers and `had_injury`
+  // appeared in the server twice, both times inside a comment.
+  const injuryReports = notifications?.injury_reports || [];
+  const injuryDays = notifications?.injury_lookback_days || 14;
   const unaffirmedLogbooks = notifications?.unaffirmed_logbooks || 0;
   const visibleLogs = getVisibleLogTypes();
 
   const StatusBadge = ({ status }) => {
+    // A WEEKLY LOG THAT IS DONE FOR THE WEEK IS NOT "DONE TODAY", and saying
+    // Done would claim a filing that did not happen on this date. "This week"
+    // is the smallest true statement, and it is the one that stops a CP giving
+    // the same talk five times.
+    if (status === 'period_done') {
+      return (
+        <View style={[styles.badge, styles.badgeSubmitted]}>
+          <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />
+          <Text style={[styles.badgeText, styles.badgeTextSubmitted]}>This week</Text>
+        </View>
+      );
+    }
     if (status === 'submitted') {
       return (
         <View style={[styles.badge, styles.badgeSubmitted]}>
@@ -822,6 +847,44 @@ export default function LogBooksScreen() {
           </GlassCard>
 
           {/* Missing toolbox talk alert */}
+          {/* ── A WORKER SAID HE WAS HURT ──────────────────────────────
+              ABOVE the toolbox card, and first of the notification cards,
+              because it is the only one on this screen about a person rather
+              than about a document.
+
+              IT REPORTS AND DOES NOT INTERPRET. No severity, no "recordable"
+              judgement — this is not an OSHA 300 determination and must not
+              read like one. It names the man, his company, the day he said it
+              and whether he also answered the PPE question. What it means is
+              for whoever goes and asks him.
+
+              NO BUTTON. Every other card here ends in "Open <log>", and there
+              is no log to open: the sheet is filed and locked, and the action
+              is to go and talk to him. A button that opened a read-only
+              document would turn the one card that needs a person into another
+              piece of paperwork. */}
+          {injuryReports.length > 0 && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <Bell size={16} strokeWidth={1.5} color={semantic.critical} />
+                <Text style={styles.notifTitle}>
+                  {injuryReports.length} injury or incident reported
+                  {' '}on the pre-shift sheet in the last {injuryDays} days
+                </Text>
+              </View>
+              {injuryReports.slice(0, 4).map((r, i) => (
+                <Text key={`${r.logbook_id}:${r.worker_id || i}`} style={styles.notifWorker}>
+                  • {r.worker_name || 'A worker'}
+                  {r.company ? ` (${r.company})` : ''} — {r.date}
+                  {r.inspected_ppe === 'no' ? ' · PPE not inspected' : ''}
+                </Text>
+              ))}
+              {injuryReports.length > 4 && (
+                <Text style={styles.notifMore}>+{injuryReports.length - 4} more</Text>
+              )}
+            </GlassCard>
+          )}
+
           {missingToolbox.length > 0 && (
             <GlassCard style={styles.notifCard}>
               <View style={styles.notifHeader}>
@@ -992,7 +1055,14 @@ export default function LogBooksScreen() {
               ) : (
                 visibleLogs.map((logType) => {
                   const Icon = typeof logType.icon === 'string' ? (ICON_MAP[logType.icon] || ClipboardList) : logType.icon;
-                  const status = getLogStatus(logType.key);
+                  // BY DATE FIRST, THEN BY PERIOD. A log filed TODAY reads
+                  // Done whatever the cadence says -- he did it, and the screen
+                  // must not argue. It is only the "nothing today" case the
+                  // period is allowed to speak to, which is the case the old
+                  // read got wrong six mornings out of seven.
+                  const status = cadenceStatus(
+                    periods, logType.key, getLogStatus(logType.key));
+                  const cadence = cadenceLabel(periods, logType.key);
                   const photoTarget = filedPhotoTarget(logType.key);
                   // ── A THIRD STATE, NOT A HIDDEN ROW ────────────────────
                   //
@@ -1046,7 +1116,9 @@ export default function LogBooksScreen() {
                             either. The subtitle here is "BC 3301.13.13 — the
                             superintendent's own record", which the line says
                             in words that also name him. */}
-                        <Text style={styles.logSubtitle}>{whoseLine || logType.subtitle}</Text>
+                        <Text style={styles.logSubtitle}>
+                          {whoseLine || cadence || logType.subtitle}
+                        </Text>
                       </View>
                       <View style={styles.logRight}>
                         <StatusBadge status={status} />
@@ -1119,7 +1191,14 @@ export default function LogBooksScreen() {
                   //
                   // The tile stays on the list above either way; this is only
                   // about arithmetic he is measured by.
-                  const countable = visibleLogs.filter(lt => mayFile(rights, lt.key));
+                  // AND A WEEKLY LOG LEAVES THE DENOMINATOR ONCE IT IS DONE
+                  // FOR ITS WEEK. Counting it every day gave the CP a bar that
+                  // could not reach the end through no act of his -- the same
+                  // reasoning the whose-log filter above already applies, on
+                  // the other axis.
+                  const countable = visibleLogs.filter(
+                    (lt) => mayFile(rights, lt.key)
+                      && periodSatisfied(periods, lt.key) !== true);
                   const submitted = countable.filter(lt => getLogStatus(lt.key) === 'submitted').length;
                   const total = countable.length;
                   const pct = total > 0 ? Math.round((submitted / total) * 100) : 0;

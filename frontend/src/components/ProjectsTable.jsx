@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { ChevronUp, ChevronDown, MoreVertical, Trash2, Eye } from 'lucide-react-native';
+import { ChevronUp, ChevronDown, MoreVertical, Trash2, Eye, Layers } from 'lucide-react-native';
 import apiClient from '../utils/api';
 import { semantic, chrome, border, surface, text } from '../styles/semanticColors';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -62,7 +62,9 @@ const relAge = (ms) => {
   return days < 365 ? `${days}d` : `${Math.floor(days / 365)}y`;
 };
 
-export default function ProjectsTable({ projects, onRowPress, onDelete }) {
+export default function ProjectsTable({
+  projects, onRowPress, onEditLevels, onDelete,
+}) {
   // Default: exposure-descending — open_violations, then permits_expiring, then
   // open_complaints (all desc). The "violations" comparator IS that composite,
   // so the Violations header reads as active by default.
@@ -241,6 +243,21 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
                     <Eye size={14} strokeWidth={1.5} color={semantic.neutral} />
                     <Text style={[styles.menuItemText, { color: text.primary }]}>View project</Text>
                   </Pressable>
+                  {/* WHICH LEVELS THE BUILDING HAS. The desktop table is the
+                      admin's list, and the card list's icon is not on it -- a
+                      field capturable on one surface only is a field half the
+                      office cannot fill in. Optional so an older caller that
+                      does not pass it renders the menu it always did. */}
+                  {onEditLevels ? (
+                    <Pressable
+                      onPress={() => { setMenuFor(null); onEditLevels(p); }}
+                      accessibilityRole="button"
+                      style={({ hovered }) => [styles.menuItem, hovered && { backgroundColor: surface.card }]}
+                    >
+                      <Layers size={14} strokeWidth={1.5} color={semantic.neutral} />
+                      <Text style={[styles.menuItemText, { color: text.primary }]}>Building levels</Text>
+                    </Pressable>
+                  ) : null}
                   <Pressable
                     onPress={() => { setMenuFor(null); onDelete(p); }}
                     accessibilityRole="button"

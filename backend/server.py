@@ -1673,17 +1673,83 @@ async def _verify_resend_domain_at_startup() -> None:
         )
 
 
+#: What a row says when the caller could not name an actor. A LOUD VALUE, not
+#: an empty string: "" reads as a field nobody filled in, sorts and groups with
+#: every other blank, and is exactly how four permanent company deletions came
+#: to have no author.
+UNATTRIBUTED_ACTOR = "UNATTRIBUTED"
+
+
+def actor_id(user) -> str:
+    """The acting account's id, from whichever key is actually present.
+
+    ── `_id` IS NOT THERE, AND THAT IS THE WHOLE BUG ───────────────────────
+
+    `get_current_user` returns `serialize_id(user)`, which sets `obj["id"]` and
+    then DELETES `obj["_id"]`. So `user.get("_id", "")` is "" on every request
+    that has ever been made, and three handlers wrote their audit row that way:
+
+        user_update            str(admin.get("_id", ""))
+        user_delete            str(admin.get("_id", ""))
+        company_hard_delete    str(current_user.get("_id", ""))
+
+    MEASURED: 8 of 691 audit rows carry an empty actor, and ALL FOUR
+    `company_hard_delete` rows are among them. Four companies were permanently
+    destroyed -- with every user under them -- and the log cannot say by whom.
+    Three of the four are the orphaned company ids whose projects are still in
+    the database with nothing to hang them on.
+
+    `delete_logbook` already carries this fix inline with a comment that says
+    "`_id` ALONE WAS ALWAYS EMPTY". It was never made shared, so the other
+    three kept the bug. This is that fix, in one place, with a name.
+
+    ID FIRST, because that is the key that is there. `_id` stays as a fallback
+    for a RAW Mongo document -- some callers pass one -- and neither branch can
+    produce "" without the caller genuinely having no user.
+    """
+    u = user if isinstance(user, dict) else {}
+    return str(u.get("id") or u.get("_id") or "")
+
+
 async def audit_log(action: str, user_id: str, resource_type: str, resource_id: str, details: dict = None):
-    """Record an immutable audit entry for compliance-relevant mutations."""
+    """Record an immutable audit entry for compliance-relevant mutations.
+
+    ── AN ACTOR-LESS ROW IS NOT WRITTEN QUIETLY ────────────────────────────
+
+    An empty `user_id` used to be stored as "". It is now stored as
+    `UNATTRIBUTED` and logged at ERROR, because the two facts a compliance
+    audit row exists to carry are WHAT happened and WHO did it, and a row that
+    silently drops half of that is worse than no row: it looks like evidence.
+
+    IT STILL WRITES. Refusing would mean a destructive operation with no record
+    at all, which is the worse failure -- the event happened either way and the
+    log's job is to say so. The marker is what makes the gap findable:
+    `{"user_id": "UNATTRIBUTED"}` is one query, `{"user_id": ""}` is
+    indistinguishable from every other blank field.
+
+    `timestamp` IS AND ALWAYS HAS BEEN SERVER-SIDE UTC. Reading these rows for
+    a `created_at` returns None on all 691 of them and has misled at least one
+    person into calling the log undated; the field is `timestamp`, and a second
+    date field is not being added to fix a reader's mistake.
+    """
+    actor = str(user_id or "").strip()
+    row = {
+        "action": action,
+        "user_id": actor or UNATTRIBUTED_ACTOR,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "details": details or {},
+        "timestamp": datetime.now(timezone.utc),
+    }
+    if not actor:
+        row["actor_missing"] = True
+        logger.error(
+            "[audit] NO ACTOR on %r for %s/%s -- recorded as %s. The caller "
+            "passed an empty user id; see actor_id().",
+            action, resource_type, resource_id, UNATTRIBUTED_ACTOR,
+        )
     try:
-        await db.audit_logs.insert_one({
-            "action": action,
-            "user_id": user_id,
-            "resource_type": resource_type,
-            "resource_id": resource_id,
-            "details": details or {},
-            "timestamp": datetime.now(timezone.utc),
-        })
+        await db.audit_logs.insert_one(row)
     except Exception as e:
         logger.error(f"Audit log write failed: {e}")
 
@@ -2067,6 +2133,26 @@ class Company(BaseModel):
     gc_last_verified: Optional[datetime] = None
     # MR.2: filing_reps roster (see FilingRep model above).
     filing_reps: List[FilingRep] = []
+    #: FIXTURE DATA, DECLARED. Set on the COMPANY because that is where the
+    #: boundary actually is -- one row covers its projects, its accounts, its
+    #: workers, its check-ins and every log filed under it, and a new test
+    #: project inherits it instead of being one more thing somebody has to
+    #: remember to flag.
+    #:
+    #: THE STATE THIS ENDS. A company literally named "test" holds two live
+    #: projects (587 and 857 Prescott) and four approved accounts, and NOTHING
+    #: distinguished it from BLUEVIEW CONSTRUCTION INC anywhere in the code.
+    #: Its data has been feeding the nightly compliance sweep, the report
+    #: emails, the DOB scans and the cross-project peer statistics that real
+    #: numbers are computed against -- and four injuries reported on one
+    #: afternoon in August, on a project nobody was standing on, are the kind
+    #: of thing that gets acted on.
+    #:
+    #: IT NEVER HIDES ANYTHING FROM ITS OWN USERS. A test account still sees
+    #: its own projects, files its own logs and reads its own reports. What the
+    #: flag governs is the machinery that acts WITHOUT a user: alerting,
+    #: emailing, and any statistic computed across tenants.
+    is_test: bool = False
 
     # Permit-renewal license-class taxonomy (added 2026-04-26, step 2).
     # NONE: company doesn't hold any tracked license. HIC: NYC DCWP
@@ -2085,6 +2171,9 @@ class Company(BaseModel):
 
 class CompanyCreate(BaseModel):
     name: str
+    #: See `Company.is_test`. Accepted at create so a fixture tenant can be
+    #: declared as one on the way in rather than discovered months later.
+    is_test: bool = False
     gc_license_number: Optional[str] = None
     gc_business_name: Optional[str] = None
     gc_licensee_name: Optional[str] = None
@@ -2866,6 +2955,28 @@ class ProjectCreate(BaseModel):
     footprint_sqft: Optional[int] = None  # square feet
     has_full_demolition: bool = False
     demolition_stories: Optional[int] = None
+    # ── WHICH LEVELS THIS BUILDING ACTUALLY HAS ─────────────────────────
+    #
+    # A STOREY COUNT IS NOT A LIST OF FLOORS. `building_stories` above says how
+    # many storeys the §3310 test counts; it cannot say whether there is a
+    # cellar under them or a bulkhead over them, and those are where work
+    # happens and where a CP has to say work happened. The daily jobsite log
+    # derives its location chips from this, and until these existed a CP on a
+    # building with a cellar had "Somewhere else" and free text for it.
+    #
+    # THEY ARE NOT §3310 INPUTS AND MUST NOT BECOME ONE. `classify_project`
+    # takes storeys, height, footprint and demolition storeys, and none of
+    # these four is any of those -- a cellar does not make a building major.
+    # They are deliberately absent from `classification_fields` in
+    # update_project, so setting one re-classifies nothing.
+    #
+    # None MEANS NOBODY SAID, which is not False. An unset flag offers no chip
+    # rather than asserting the building has no cellar; the CP still has free
+    # text, exactly as he does for an unset storey count.
+    has_sub_cellar: Optional[bool] = None
+    has_cellar: Optional[bool] = None
+    has_mezzanine: Optional[bool] = None
+    has_roof_bulkhead: Optional[bool] = None
     project_class: Optional[str] = None  # admin override
     # Which superstructure loop this project runs. Drives which activity chips
     # the sequence ranker offers. NEVER inferred: when this is unset the ranker
@@ -2910,6 +3021,12 @@ class ProjectUpdate(BaseModel):
     footprint_sqft: Optional[int] = None
     has_full_demolition: Optional[bool] = None
     demolition_stories: Optional[int] = None
+    # See ProjectCreate. Not §3310 inputs and not in `classification_fields`;
+    # None means nobody said, which is not False.
+    has_sub_cellar: Optional[bool] = None
+    has_cellar: Optional[bool] = None
+    has_mezzanine: Optional[bool] = None
+    has_roof_bulkhead: Optional[bool] = None
     project_class: Optional[str] = None
     # See ProjectCreate — unset means "not known", never "cast in place".
     structural_system: Optional[Literal["cast_in_place", "cfs", "unknown"]] = None
@@ -3072,6 +3189,18 @@ class ProjectResponse(BaseModel):
     footprint_sqft: Optional[int] = None
     has_full_demolition: bool = False
     demolition_stories: Optional[int] = None
+    # See ProjectCreate. Not §3310 inputs and not in `classification_fields`;
+    # None means nobody said, which is not False.
+    has_sub_cellar: Optional[bool] = None
+    has_cellar: Optional[bool] = None
+    has_mezzanine: Optional[bool] = None
+    has_roof_bulkhead: Optional[bool] = None
+    #: Free-text levels a CP typed under "Somewhere else", remembered per
+    #: project so the man who knows the building can name a level the office
+    #: never entered and have it be a chip for everybody tomorrow. Read-only
+    #: here: it is written by the logbook save, never by a project update.
+    #: See PROJECT_OTHER_LOCATIONS_FIELD.
+    remembered_other_locations: List[str] = []
     required_logbooks: List[str] = []
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
@@ -6470,6 +6599,74 @@ async def get_owner_user(current_user = Depends(get_current_user)):
 # deletion. A constant whose whole job is "every background scan agrees on this"
 # cannot live where a scan outside this file has to copy it.
 from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
+# ON ITS OWN LINE, and not folded into the import above. That line is asserted
+# verbatim by test_missing_flag_correction.TheScopeFilter -- the detectors once
+# carried a project filter of their own that was wrong on live data, and the
+# test pins that server.py takes the shared one rather than redefining it. A
+# multi-line import satisfies Python and fails that check.
+from lib.project_state import drop_fixture_rows, fixture_company_ids  # noqa: E402
+
+
+# ── FIXTURE TENANTS, AND THE ONLY PLACE THEY ARE EXCLUDED ───────────────────
+#
+# A company carrying `is_test` is fixture data. See `Company.is_test` for the
+# state this ends: a company literally named "test", two live projects and four
+# approved accounts, indistinguishable in code from a real general contractor.
+#
+# THE RULE IS NARROW AND IT IS ABOUT WHO IS ASKING. A test account still sees
+# its own projects, files its own logs and reads its own screens -- nothing here
+# is on a request path. What is excluded is the machinery that acts with NOBODY
+# ASKING: the nightly compliance sweep, the report emails, the DOB scans, and
+# any statistic computed across tenants. Those are the ones that send a real
+# person a real alert about a building that does not exist.
+#
+# WHY NOT ACTIVE_PROJECT_FILTER. That constant is also used by user-facing
+# reads, and folding this into it would hide a test company's own projects from
+# its own users -- which is not the rule and would look exactly like a bug to
+# the person it happened to.
+#
+# ONE READ PER SWEEP, NOT CACHED. There are three companies. A cache here would
+# be a staleness bug guarding a query that costs nothing, and a flag set to stop
+# an alert must take effect on the next tick rather than on the next deploy.
+
+
+async def test_company_ids() -> set:
+    """Every company id marked `is_test`, for THIS module's `db`.
+
+    THE RULE LIVES IN lib/project_state.py, not here. The statistical engine
+    builds its panels with its own handle and needs the same answer; a second
+    definition in server.py is how the compliance detectors ended up with a
+    project filter of their own that was wrong on live data for weeks.
+    """
+    return await fixture_company_ids(db)
+
+
+async def unattended_project_filter(base: Optional[dict] = None) -> dict:
+    """`base` plus the fixture-tenant exclusion. For sweeps only.
+
+    MERGES RATHER THAN SETS. A caller that already constrains `company_id`
+    keeps its own constraint and this adds nothing -- a sweep scoped to one
+    company has already answered the question, and silently replacing its
+    filter with a `$nin` would widen it to every tenant on the platform, which
+    is the opposite of what this is for.
+    """
+    query = dict(base or {})
+    if "company_id" in query:
+        return query
+    ids = await test_company_ids()
+    if ids:
+        query["company_id"] = {"$nin": sorted(ids)}
+    return query
+
+
+def drop_test_companies(companies, ids) -> list:
+    """The company rows a sweep should act on, keyed on the company's own id.
+
+    A thin name over the shared helper, kept because the call sites read better
+    for it and because the census test looks for exactly these two names.
+    """
+    return drop_fixture_rows(companies, ids, key="_id")
+
 # The ONE definition of "may these records be destroyed yet?". Imported for the
 # same reason as the filter above: the purge endpoint, the project response and
 # the owner's review screen all ask it, and three copies would drift into three
@@ -9497,7 +9694,7 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
     # Audit — especially important for role changes
     audit_details = {k: v for k, v in update_data.items() if k != "password" and k != "updated_at"}
     if audit_details:
-        await audit_log("user_update", str(admin.get("_id", "")), "user", user_id, audit_details)
+        await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**serialize_id(user))
@@ -9531,7 +9728,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
         except Exception as e:
             logger.warning(f"whatsapp_contacts cleanup failed for deleted user {user_id}: {e}")
 
-    await audit_log("user_delete", str(admin.get("_id", "")), "user", user_id)
+    await audit_log("user_delete", actor_id(admin), "user", user_id)
     return {"message": "User deleted successfully"}
 
 @api_router.post("/admin/users/{user_id}/assign-projects", dependencies=[Depends(require_approved)])
@@ -9844,7 +10041,7 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    await audit_log("company_hard_delete", str(current_user.get("_id", "")), "company", company_id)
+    await audit_log("company_hard_delete", actor_id(current_user), "company", company_id)
 
     return {"message": "Company and all users permanently deleted"}
 
@@ -12835,7 +13032,7 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
                 "project_name": project_dict.get("name"),
                 "suggested_class": suggested,
                 "override_class": override,
-                "admin_id": str(admin.get("_id", admin.get("id", ""))),
+                "admin_id": actor_id(admin),
                 "timestamp": now,
                 "resolved": False,
             })
@@ -12852,7 +13049,7 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
 
-    await audit_log("project_create", str(admin.get("_id", admin.get("id", ""))), "project", str(result.inserted_id), {
+    await audit_log("project_create", actor_id(admin), "project", str(result.inserted_id), {
         "name": project_dict.get("name"), "address": project_dict.get("address"),
         "project_class": project_dict.get("project_class"), "suggested_class": suggested,
     })
@@ -13005,7 +13202,7 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     # and the timestamps are taken from the authenticated caller and are not
     # accepted from the request body — ProjectUpdate does not declare them, so a
     # client that sends them has them dropped rather than honoured.
-    _admin_id = str(admin.get("_id", admin.get("id", "")))
+    _admin_id = actor_id(admin)
     _now = update_data["updated_at"]
     _touches_retention = (
         "job_completion_date" in update_data
@@ -13334,6 +13531,190 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     _lift_project_retention_view(project)
     return ProjectResponse(**serialize_id(project))
 
+async def _logbook_periods(project_id, required, on_date=None) -> list:
+    """WHEN a non-daily required log is next due, for the day being shown.
+
+    ── WHY THE LIST NEEDED THIS ────────────────────────────────────────────
+
+    The screen reads `todayLogs[type]` for every tile, which is a by-DATE read.
+    On a weekly log that answers "pending" on every day but the one it was
+    filed, so the tile was red six mornings out of seven and the completion bar
+    counted it against the CP. Measured: 588 Thomas filed 33 toolbox talks in
+    35 working days -- a weekly obligation performed five times over, because a
+    red tile every morning is an instruction.
+
+    The server already knew better. `daily_required_logbooks` keeps weekly and
+    as-needed types out of the nightly deficiency sweep, on the written
+    reasoning that counting them "invents a deficiency out of a frequency". The
+    screen had no equivalent, so this returns one.
+
+    ── ONE TYPE TODAY, AND THE SHAPE IS SO A SECOND NEEDS NO CLIENT CHANGE ──
+
+    Only `toolbox_talk` is weekly. `subcontractor_orientation` is as_needed and
+    is deliberately NOT here: it is due when a first-time worker arrives, which
+    `unsigned_orientations` already answers, and inventing a period for it
+    would be this function asserting a cadence nobody has defined.
+
+    ── COSTS NOTHING ON A PROJECT WITHOUT THE TYPE ─────────────────────────
+
+    Returns [] before any query when the required set has no weekly log.
+    """
+    from lib.logbook.weekly_cadence import toolbox_period, week_span
+
+    if "toolbox_talk" not in (required or []):
+        return []
+    day = on_date or eastern_today()
+    span = week_span(day)
+    if not span:
+        return []
+    try:
+        return await _toolbox_period_rows(project_id, day, span)
+    except Exception as e:  # pragma: no cover — defensive
+        # FAILURE-ISOLATED, ON THE CP'S CRITICAL PATH. This block is a cadence
+        # hint; the logbook list is the screen he files a statutory record
+        # from. An empty `periods` puts every tile back on the by-date read it
+        # used before this existed, which is worse than it was but is not a
+        # blank screen.
+        logger.warning(
+            f"[periods] could not resolve the toolbox week for "
+            f"project={project_id}: {e!r}")
+        return []
+
+
+async def _toolbox_period_rows(project_id, day, span) -> list:
+    """The reads behind `_logbook_periods`. Split out so the caller's
+    try/except wraps I/O only and cannot swallow a bug in the rule."""
+    from lib.logbook.weekly_cadence import toolbox_period
+
+    monday, sunday = span
+
+    # A TALK GIVEN ON A SATURDAY STILL SATISFIES THE MON-FRI WEEK, so the read
+    # reaches the weekend even though the period does not. See week_span.
+    talks = await db.logbooks.find({
+        "project_id": str(project_id),
+        "log_type": "toolbox_talk",
+        "date": {"$gte": monday, "$lte": sunday},
+        "is_deleted": {"$ne": True},
+    }).to_list(50)
+
+    covered = set()
+    for tb in talks:
+        for a in ((tb.get("data") or {}).get("attendees") or []):
+            if isinstance(a, dict) and a.get("worker_id"):
+                covered.add(str(a["worker_id"]))
+
+    # WHO WAS ON SITE AT THE WEEKEND. `check_in_time` is a datetime and the
+    # logbook `date` is an Eastern day string, so this range is built from the
+    # same day helper the rest of the file uses rather than from UTC midnight --
+    # which on a Saturday evening in EDT would have asked about Sunday.
+    weekend_ids = set()
+    for iso in (
+        (datetime.fromisoformat(monday).date() + timedelta(days=5)).isoformat(),
+        (datetime.fromisoformat(monday).date() + timedelta(days=6)).isoformat(),
+    ):
+        try:
+            lo, hi = get_day_range_est(iso)
+        except Exception:  # pragma: no cover — defensive
+            continue
+        async for c in db.checkins.find(
+            {"project_id": str(project_id),
+             "check_in_time": {"$gte": lo, "$lt": hi},
+             "is_deleted": {"$ne": True}},
+            {"worker_id": 1},
+        ):
+            if c.get("worker_id"):
+                weekend_ids.add(str(c["worker_id"]))
+
+    row = toolbox_period(day, [t.get("date") for t in talks],
+                         weekend_ids, covered)
+    return [row] if row else []
+
+
+@api_router.get("/projects/{project_id}/suggested-levels")
+async def get_suggested_building_levels(
+    project_id: str, current_user = Depends(get_current_user),
+):
+    """Which levels this building has, READ OFF ITS OWN INDEXED SHEETS.
+
+    A SUGGESTION. This is a GET and it writes nothing; the admin reads the
+    proposal beside the sheet numbers it came from and presses Save on the
+    form, which goes through `update_project` exactly as a typed answer does.
+    Until he does, the project is unchanged.
+
+    ── WHY IT IS WORTH AN ENDPOINT ─────────────────────────────────────────
+
+    `building_stories` was null on every project this product has, because
+    until now nothing in the app wrote it. Asking an admin to type a storey
+    count he would have to go and look up is how it stays null. The drawings
+    are already indexed -- 155 pages on 588 Thomas -- and they say what the
+    levels are on their title blocks. Reading them back is the difference
+    between a form somebody fills in and a form somebody confirms.
+
+    ── WHAT IT IS ALLOWED TO SAY, AND WHAT IT IS NOT ───────────────────────
+
+    The table in lib/plans/level_suggestion.py holds exact keys and anchored
+    patterns and nothing else: no fuzzy match, no model. A string it has not
+    seen is returned in `unmapped` for the admin to read rather than guessed
+    at. `BASE PLANE` -- the zoning datum on every setback diagram -- is
+    excluded by name, because it is a survey reference and not a storey.
+
+    `title_gaps` is reported because it BOUNDS the answer. On 588, 24 of 155
+    indexed rows carry no sheet_title at all (eleven architectural sheets are
+    indexed twice, once extracted and once empty), so the suggestion is drawn
+    from a set with known holes in it and the form says so instead of
+    presenting a complete-looking list.
+
+    READ ONLY ON THE INDEX. `document_page_index` belongs to the plan pipeline;
+    nothing here mutates it.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project_access_ok(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+
+    from lib.plans.level_suggestion import suggest_levels
+
+    # BY project_id, WITH A FALLBACK TO THE FILE IDS. The index carries both --
+    # there are indexes on (project_id, discipline) and (project_id,
+    # sheet_number) -- but the delete path's own comment records that rows are
+    # keyed by file_id, and an older row may predate the project stamp. A
+    # suggestion that silently reads zero pages looks exactly like a building
+    # with no levels.
+    rows = await db.document_page_index.find(
+        {"project_id": str(project_id)},
+        {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1,
+         "discipline": 1},
+    ).to_list(3000)
+    if not rows:
+        file_docs = await db.project_files.find(
+            {"project_id": str(project_id)}, {"_id": 1},
+        ).to_list(2000)
+        file_ids = [str(f["_id"]) for f in file_docs]
+        if file_ids:
+            rows = await db.document_page_index.find(
+                {"file_id": {"$in": file_ids}},
+                {"sheet_number": 1, "sheet_title": 1, "floor": 1, "floors": 1,
+                 "discipline": 1},
+            ).to_list(3000)
+
+    out = suggest_levels(rows)
+    out["project_id"] = str(project_id)
+    # WHAT IT WOULD REPLACE. The form shows the stored answer beside the
+    # proposal, because "apply" on a project somebody has already answered for
+    # is an overwrite and he should see what he is overwriting.
+    out["current"] = {
+        "building_stories": project.get("building_stories"),
+        "has_sub_cellar": project.get("has_sub_cellar"),
+        "has_cellar": project.get("has_cellar"),
+        "has_mezzanine": project.get("has_mezzanine"),
+        "has_roof_bulkhead": project.get("has_roof_bulkhead"),
+    }
+    return out
+
+
 @api_router.get("/projects/{project_id}/required-logbooks")
 async def get_project_required_logbooks(project_id: str, current_user = Depends(get_current_user)):
     """Return the required logbook types for this project based on its classification."""
@@ -13352,6 +13733,12 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
     # classify_project stopped making, one layer out.
     project_class = project.get("project_class")
     required = get_required_logbooks(project_class, project)
+    # ORDER MATTERS. The rights are computed against the PROJECT's full required
+    # set -- ask about the filtered one and a hidden log would have no row, the
+    # client would default it to "he may file" (csFilingRights.js), and the
+    # filter would have nothing to act on the next time round.
+    filing = await _logbook_filing_rights(project_id, required, current_user)
+    required = _visible_required_logbooks(required, filing)
     return {
         "project_id": project_id,
         "project_class": project_class,
@@ -13362,7 +13749,10 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
         "required_logbooks": required,
         # The toggles, so the screen makes one request rather than two and can
         # never show a control whose state disagrees with the set beside it.
-        "activations": logbook_activations(project),
+        # Filtered by the same answer as the list above, so a log that is not on
+        # his list cannot be named in the block underneath it.
+        "activations": _visible_activations(
+            logbook_activations(project), filing, current_user),
         # ── WHOSE LOG IT IS, FOR THE PERSON ASKING ─────────────────────────
         #
         # `required_logbooks` above is a fact about the PROJECT and has never
@@ -13379,7 +13769,11 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
         # getVisibleLogTypes renders even a type it has no label for.
         #
         # SAME READ AS THE GATE. See `_cs_filing_check`.
-        "filing": await _logbook_filing_rights(project_id, required, current_user),
+        "filing": filing,
+        # WHEN A NON-DAILY LOG IS NEXT DUE. Without this the list asks a
+        # by-date question about a weekly obligation and gets "pending" on six
+        # mornings out of seven. See `_logbook_periods`.
+        "periods": await _logbook_periods(project_id, required),
     }
 
 @api_router.delete("/projects/{project_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -13404,7 +13798,7 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     now = datetime.now(timezone.utc)
-    admin_id = str(admin.get("_id", admin.get("id", "")))
+    admin_id = actor_id(admin)
 
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
@@ -18445,7 +18839,7 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Check-in record not found")
 
-    await audit_log("checkout", str(current_user.get("_id", "")), "checkin", checkin_id)
+    await audit_log("checkout", actor_id(current_user), "checkin", checkin_id)
 
     return {"message": "Check-out successful"}
 
@@ -25392,6 +25786,101 @@ async def _logbook_filing_rights(project_id, required, current_user,
     }]
 
 
+def _withheld_log_types(filing) -> set:
+    """The log types THIS caller may not file, from the filing rows.
+
+    One reading of one list. `_logbook_filing_rights` has already made the same
+    call the write gate makes; this only names the refusals, so nothing here can
+    decide differently from the gate.
+    """
+    return {
+        str(row.get("log_type"))
+        for row in (filing or [])
+        if isinstance(row, dict) and row.get("may_file") is False
+    }
+
+
+def _visible_required_logbooks(required, filing) -> list:
+    """The required set AS THIS CALLER SEES IT.
+
+    ── WHY THE TILE IS NOW REMOVED AND NOT MERELY LABELLED ─────────────────
+
+    This block used to return the whole required set to everybody and let the
+    client print "Michael Cespedes files this one" over a padlocked tile. The
+    reasoning was written down: a CP who cannot see the log cannot learn that it
+    EXISTS or who owns it, and a required log he cannot open is worse than an
+    ugly label.
+
+    OPERATOR RULING, AND IT OVERRIDES THAT. BC 3301.13.13 is the construction
+    superintendent's OWN record; it is not the CP's document and it is not the
+    CP's business that it is being kept. Locking it left every CP on 588 Thomas
+    reading another man's name on his own logbook screen every day.
+
+    ── WHAT SURVIVES OF THE OLD ARGUMENT, AND IT IS THE IMPORTANT HALF ──────
+
+    An UNREGISTERED project withholds this log from nobody -- `cs_filing_refused`
+    refuses only NOT_REGISTERED_CS -- so `may_file` is True for everyone there
+    and nothing is hidden. Visibility follows the registration exactly as the
+    filing gate does. Hiding a log on a project that has designated nobody
+    would be the office's omission taken out on the site, which is the failure
+    direction that module chose against.
+
+    ── NOT A SECOND RULE, AND NOT A SECOND READ ────────────────────────────
+
+    It filters on `filing`, which the endpoint has already computed. So there is
+    no query here, no role test, and no way for the list to disagree with the
+    gate: a type disappears exactly when the gate would refuse this person, and
+    reappears the moment it would not.
+
+    ── IT IS THE PER-CALLER READ ONLY ──────────────────────────────────────
+
+    `get_required_logbooks` is untouched, and so is the stored
+    `required_logbooks` field it writes. The nightly deficiency detector, the
+    investor report and every compliance count read the PROJECT's set and are
+    unaffected -- a log nobody on screen can see is still required, still
+    counted, and still missing if it is not filed.
+    """
+    withheld = _withheld_log_types(filing)
+    return [t for t in (required or []) if t not in withheld]
+
+
+def _visible_activations(activations, filing, current_user) -> list:
+    """The activation toggles as this caller sees them.
+
+    THE SAME TILE, ONE CARD LOWER. `site_superintendent_log` carries
+    `conditional: superintendent_log_active`, so it also appears in the "On site
+    today" block -- where a CP who cannot file it was reading "On -- it is on
+    your logbook list" about a list it is no longer on. Removing it from
+    `required_logbooks` alone would have left the name of the log on his screen
+    and made the sentence beside it false.
+
+    THE ADMIN KEEPS HIS SWITCH, AND THAT IS NOT AN EXCEPTION TO THE RULING --
+    it is the difference between the two surfaces. The list is a set of
+    documents to file; this row is the control that turns the requirement on,
+    `activated_by: "admin"`, and the admin is refused the FILING for the same
+    reason he is granted the SWITCH: it is not his log, it is his project.
+    Filtering him out here would leave `superintendent_log_active` unsettable
+    from any screen by anybody, which is the exact defect the client comment at
+    app/logbooks/index.jsx:770 records being fixed.
+
+    The role test is the one the setter itself applies (see
+    set_logbook_activation), so a row is hidden only from somebody who could
+    neither file the log nor switch it on.
+    """
+    withheld = _withheld_log_types(filing)
+    if not withheld:
+        return list(activations or [])
+    may_set_admin_logs = (current_user or {}).get("role") in ("admin", "owner")
+    out = []
+    for act in (activations or []):
+        if not isinstance(act, dict) or act.get("log_type") not in withheld:
+            out.append(act)
+            continue
+        if act.get("activated_by") == "admin" and may_set_admin_logs:
+            out.append(act)
+    return out
+
+
 async def _refuse_if_not_the_superintendent(log_type, project_id, log_date,
                                             current_user):
     """Refuse a superintendent's log signed by somebody the project says is not
@@ -25831,6 +26320,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         if data.cp_signature is None and (updated or {}).get("status") == "submitted":
             await ensure_signature_ledger_row(updated, written_by="create_logbook")
         await _remember_other_activities(data.project_id, data.data)
+        await _remember_other_locations(data.project_id, data.data)
         return serialize_id(updated)
 
     doc = {
@@ -25896,7 +26386,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     if created is None:
         created = {**doc, "_id": result.inserted_id}
 
-    await audit_log("logbook_create", str(current_user.get("_id", current_user.get("id", ""))), "logbook", str(result.inserted_id), {
+    await audit_log("logbook_create", actor_id(current_user), "logbook", str(result.inserted_id), {
         "log_type": data.log_type, "project_id": data.project_id, "date": data.date,
     })
 
@@ -25907,6 +26397,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     )
 
     await _remember_other_activities(data.project_id, data.data)
+    await _remember_other_locations(data.project_id, data.data)
     return serialize_id(created)
 
 async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
@@ -26322,6 +26813,7 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
 
     if data.data is not None:
         await _remember_other_activities((updated or {}).get("project_id"), data.data)
+        await _remember_other_locations((updated or {}).get("project_id"), data.data)
     return serialize_id(updated)
 
 
@@ -27423,6 +27915,25 @@ OTHER_ID_PREFIX = "other:"
 PROJECT_OTHER_ACTIVITIES_FIELD = "remembered_other_activities"
 MAX_REMEMBERED_OTHER = 25
 
+#: The location half of the same idea, and it exists for a person rather than a
+#: convenience.
+#:
+#: THE SUPER IS THE ONE WHO KNOWS THE BUILDING. The levels are captured on the
+#: admin's project form, and on a live site the office has not filled it in --
+#: `building_stories` was null on every project this product has. The man
+#: standing in the cellar can say so, and this is how: he types it under
+#: "Somewhere else" once and it is a chip for everyone on that project from
+#: then on.
+#:
+#: IT RIDES THE LOG SAVE HE ALREADY MAKES. No new endpoint, no new permission,
+#: and structurally unable to reach `building_stories` or the project class --
+#: a CP cannot change what §3310 requires of the job by naming a floor. That is
+#: the whole reason it is this mechanism and not a write on the project.
+PROJECT_OTHER_LOCATIONS_FIELD = "remembered_other_locations"
+#: The row field the location chips are selected into. Mirrors
+#: ACTIVITY_IDS_FIELD; there has never been a legacy single-string form for it.
+LOCATION_IDS_FIELD = "location_ids"
+
 
 def _activity_rows(data) -> list:
     """The activity rows of a logbook payload, or []. Tolerant by design —
@@ -27501,6 +28012,53 @@ def _other_labels_in(data) -> list:
             if label and label not in out:
                 out.append(label)
     return out
+
+
+def _other_location_labels_in(data) -> list:
+    """Free-text labels the CP entered under "Somewhere else" in this payload.
+
+    THE LOCATION MIRROR OF `_other_labels_in`, AND DELIBERATELY NOT THE SAME
+    FUNCTION. That one reads `activity_ids` and a legacy pair of sibling
+    fields; locations have only ever had one shape, so sharing the reader would
+    mean passing a field name into a function whose whole body is about the
+    legacy fallback that does not apply here.
+    """
+    out = []
+    for row in _activity_rows(data):
+        ids = row.get(LOCATION_IDS_FIELD)
+        if not isinstance(ids, (list, tuple)):
+            continue
+        for chip in ids:
+            if not isinstance(chip, str) or not chip.startswith(OTHER_ID_PREFIX):
+                continue
+            label = chip[len(OTHER_ID_PREFIX):].strip()
+            if label and label not in out:
+                out.append(label)
+    return out
+
+
+async def _remember_other_locations(project_id, data) -> None:
+    """Persist this payload's "Somewhere else" labels against the project.
+
+    Same shape, same guarantees and the same failure isolation as
+    `_remember_other_activities`: a CP's log must never fail because a
+    convenience list did not update.
+    """
+    labels = _other_location_labels_in(data)
+    if not labels or not project_id:
+        return
+    try:
+        await db.projects.update_one(
+            {"_id": to_query_id(project_id)},
+            {"$addToSet": {
+                PROJECT_OTHER_LOCATIONS_FIELD: {"$each": labels[:MAX_REMEMBERED_OTHER]},
+            }},
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[location_chips] could not remember Somewhere-else labels for "
+            f"project={project_id}: {e!r}"
+        )
 
 
 async def _remember_other_activities(project_id, data) -> None:
@@ -27660,6 +28218,69 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
     })
 
     return {"message": "Logbook deleted"}
+
+#: How far back the injury card looks. TWO WEEKS, and the number is a judgement
+#: rather than a constant somebody picked: one week loses an injury reported on
+#: a Friday the moment the next Monday starts, and a month makes the card a
+#: permanent fixture that stops being read. Stated here so the next person
+#: changing it knows what it is trading.
+INJURY_LOOKBACK_DAYS = 14
+
+#: The answers that mean YES on the pre-shift sheet. The field is written by the
+#: client as the string "yes"; the others are here because this is a compliance
+#: read over data from more than one era and a truthy check would also fire on
+#: the string "no".
+_INJURY_YES = frozenset({"yes", "true", "1"})
+
+
+def _injury_rows(logs) -> list:
+    """Every worker row on these pre-shift sheets that answered YES.
+
+    ── WHAT NOTHING WAS DOING WITH THIS ────────────────────────────────────
+
+    The pre-shift sheet asks "Injury / Incident last time?" per worker and
+    stores it as `had_injury`. Across 53 filed sheets and 384 named worker rows
+    on production there are FOUR yes answers -- and `had_injury` appears twice
+    in this file, both times inside a comment. Nothing read it. A man told the
+    app he was hurt and the app filed it.
+
+    The answer is also enforced on the CLIENT ONLY: `answeredBoth` blocks the
+    submit button, and `create_logbook` checks neither field, which is why 67 of
+    those 384 rows are null.
+
+    ── IT REPORTS, IT DOES NOT INTERPRET ───────────────────────────────────
+
+    No severity, no triage, no "recordable" judgement -- this is not an OSHA 300
+    determination and must not read like one. It surfaces the row, names the
+    man and his company, says whether he also answered the PPE question, and
+    points at the document. What it means is for the person who goes and asks
+    him.
+
+    PURE, so the rule is testable without a database.
+    """
+    out = []
+    for log in logs or []:
+        if not isinstance(log, dict):
+            continue
+        for w in ((log.get("data") or {}).get("workers") or []):
+            if not isinstance(w, dict):
+                continue
+            if str(w.get("had_injury") or "").strip().lower() not in _INJURY_YES:
+                continue
+            out.append({
+                "date": log.get("date"),
+                "logbook_id": str(log.get("_id") or ""),
+                "worker_id": str(w.get("worker_id") or "") or None,
+                "worker_name": w.get("name") or None,
+                "company": w.get("company") or None,
+                # BESIDE IT, NOT INSTEAD OF IT. A man who reports an injury and
+                # also says his PPE was not inspected is a different
+                # conversation from one who says it was, and the sheet already
+                # holds both answers.
+                "inspected_ppe": w.get("inspected_ppe"),
+            })
+    return out
+
 
 @api_router.get("/logbooks/project/{project_id}/notifications")
 async def get_logbook_notifications(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
@@ -27825,6 +28446,36 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         and not _is_affirmed_signature(d.get("cp_signature"))
     ]
 
+    # ── A WORKER SAID HE WAS HURT ───────────────────────────────────────────
+    #
+    # The pre-shift sheet has asked this of every worker since it existed and
+    # NOTHING HAS EVER READ THE ANSWER. Four men on production have answered
+    # yes. See `_injury_rows` for what this does and does not claim.
+    #
+    # FAILURE-ISOLATED. This endpoint feeds the CP's home screen; a card that
+    # cannot be built must not take the unsigned-logbook counts down with it.
+    injury_reports = []
+    try:
+        # OFF THE EASTERN DAY, not off UTC now(). The logbook `date` is an
+        # Eastern calendar day string, and subtracting from a UTC clock moves
+        # the window by a day for four hours every evening.
+        _inj_from = (datetime.fromisoformat(eastern_date()).date()
+                     - timedelta(days=INJURY_LOOKBACK_DAYS)).isoformat()
+        _inj_logs = await db.logbooks.find(
+            {
+                "project_id": project_id,
+                "log_type": "preshift_signin",
+                "date": {"$gte": _inj_from},
+                "is_deleted": {"$ne": True},
+            },
+            {"date": 1, "data": 1},
+        ).sort("date", -1).to_list(100)
+        injury_reports = _injury_rows(_inj_logs)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[injury] could not read reported injuries for "
+            f"project={project_id}: {e!r}")
+
     # ── FILED WITH NO SIGNATURE AT ALL — the third selector ─────────────────
     #
     # WHY A THIRD AND NOT A WIDER SECOND. Requiring ink above removes inkless
@@ -27901,6 +28552,10 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
 
     return {
         "missing_toolbox_talk": missing_toolbox,
+        # A WORKER ANSWERED YES TO "Injury / Incident last time?". One row per
+        # answer, newest first, over the last INJURY_LOOKBACK_DAYS days.
+        "injury_reports": injury_reports,
+        "injury_lookback_days": INJURY_LOOKBACK_DAYS,
         "unsigned_orientations": unsigned_orientations,
         "unaffirmed_logbooks": len(unaffirmed_docs),
         "unaffirmed_logbook_refs": unaffirmed_refs,
@@ -28141,7 +28796,7 @@ async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = 
 
     result = await db.safety_staff_registrations.insert_one(staff_dict)
 
-    await audit_log("safety_staff_create", str(admin.get("_id", admin.get("id", ""))), "safety_staff", str(result.inserted_id), {
+    await audit_log("safety_staff_create", actor_id(admin), "safety_staff", str(result.inserted_id), {
         "role": data.role, "name": data.name, "license_number": data.license_number, "project_id": project_id,
     })
 
@@ -28175,7 +28830,7 @@ async def delete_safety_staff(staff_id: str, admin = Depends(get_admin_user)):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Safety staff not found")
 
-    await audit_log("safety_staff_delete", str(admin.get("_id", admin.get("id", ""))), "safety_staff", staff_id)
+    await audit_log("safety_staff_delete", actor_id(admin), "safety_staff", staff_id)
     return {"message": "Safety staff removed"}
 
 # ==================== GOOGLE PLACES AUTOCOMPLETE ====================
@@ -33872,11 +34527,12 @@ async def _poll_311_fast_complaints() -> None:
     """
     started = datetime.now(timezone.utc)
     try:
-        projects = await db.projects.find({
-            "track_dob_status": True,
-            "nyc_bin":          {"$exists": True, "$ne": ""},
-            **ACTIVE_PROJECT_FILTER,
-        }).to_list(500)
+        projects = await db.projects.find(
+            await unattended_project_filter({
+                "track_dob_status": True,
+                "nyc_bin":          {"$exists": True, "$ne": ""},
+                **ACTIVE_PROJECT_FILTER,
+            })).to_list(500)
     except Exception as e:
         logger.error(f"311 poll: project lookup failed: {e}")
         return
@@ -35475,9 +36131,10 @@ async def nightly_compliance_check():
         # checking the wrong day for missing logbooks every night.
         today = eastern_date(now)
 
-        projects = await db.projects.find({
-            "status": "active", **ACTIVE_PROJECT_FILTER
-        }).to_list(500)
+        projects = await db.projects.find(
+            await unattended_project_filter({
+                "status": "active", **ACTIVE_PROJECT_FILTER,
+            })).to_list(500)
 
         for project in projects:
             pid = str(project["_id"])
@@ -35835,14 +36492,15 @@ async def nightly_dob_scan():
     """
     logger.info("🏗️ DOB nightly scan starting...")
  
-    projects = await db.projects.find({
-        "track_dob_status": True,
-        "$or": [
-            {"nyc_bin": {"$ne": None, "$exists": True}},
-            {"address": {"$ne": None, "$ne": "", "$exists": True}},
-        ],
-        **ACTIVE_PROJECT_FILTER,
-    }).to_list(500)
+    projects = await db.projects.find(
+        await unattended_project_filter({
+            "track_dob_status": True,
+            "$or": [
+                {"nyc_bin": {"$ne": None, "$exists": True}},
+                {"address": {"$ne": None, "$ne": "", "$exists": True}},
+            ],
+            **ACTIVE_PROJECT_FILTER,
+        })).to_list(500)
  
     if not projects:
         logger.info("DOB nightly scan: no tracked projects")
@@ -35920,7 +36578,9 @@ async def renewal_digest_daily_cron():
     started = datetime.now(timezone.utc)
     today = started
 
-    companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(500)
+    companies = drop_test_companies(
+        await db.companies.find({"is_deleted": {"$ne": True}}).to_list(500),
+        await test_company_ids())
     sent_count = 0
     skipped_company_count = 0
 
@@ -36130,7 +36790,8 @@ async def _eligibility_shadow_sweep():
     # Fetch project + company once per permit; the dispatcher pattern
     # demands the snapshot-of-input determinism across legacy and v2.
     tracked_projects = await db.projects.find(
-        {"track_dob_status": True, "is_deleted": {"$ne": True}},
+        await unattended_project_filter(
+            {"track_dob_status": True, "is_deleted": {"$ne": True}}),
         {"_id": 1, "name": 1, "company_id": 1},
     ).to_list(500)
 
@@ -36278,7 +36939,7 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
 
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
 
-    await audit_log("dob_config_update", str(admin.get("_id", admin.get("id", ""))), "project", project_id, {
+    await audit_log("dob_config_update", actor_id(admin), "project", project_id, {
         k: v for k, v in update_fields.items() if k != "updated_at"
     })
 
@@ -36830,11 +37491,12 @@ async def check_and_send_reports():
     current_time = est_now.strftime("%H:%M")
     today = est_now.strftime("%Y-%m-%d")
 
-    projects_due = await db.projects.find({
-        "report_send_time": current_time,
-        "report_email_list": {"$exists": True, "$ne": []},
-        **ACTIVE_PROJECT_FILTER,
-    }).to_list(100)
+    projects_due = await db.projects.find(
+        await unattended_project_filter({
+            "report_send_time": current_time,
+            "report_email_list": {"$exists": True, "$ne": []},
+            **ACTIVE_PROJECT_FILTER,
+        })).to_list(100)
 
     if not projects_due:
         return

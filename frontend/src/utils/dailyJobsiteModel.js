@@ -742,6 +742,177 @@ export function resolveRosterId(company, trade, rosterIds) {
  */
 export const OTHER_CHIP_ID = 'other';
 
+/**
+ * WHERE ON THE BUILDING — chips derived from the project, never invented.
+ *
+ * ── THE STATE THIS REPLACES ─────────────────────────────────────────────────
+ *
+ * This screen derived its location chips from `building_stories` alone, and
+ * NOTHING IN THE APP HAS EVER WRITTEN THAT FIELD — it appears in the backend
+ * models and in two reads on this screen, and in no form anywhere. So it is
+ * null on every live project, `floorChips` returned [] for a null count by
+ * design, and the entire location question on the daily jobsite log was one
+ * chip: "Somewhere else". Measured on production: 588 Thomas and 857 Prescott
+ * both carry building_stories = null.
+ *
+ * The old comment called the empty list "the honest state", and it was — the
+ * dishonest fix would have been a hardcoded list of jobsite areas, which is
+ * inventing legal vocabulary. The answer is to ASK, which the project form now
+ * does. This function is the other half of that: it renders what was answered
+ * and nothing else.
+ *
+ * ── A STOREY COUNT IS NOT A LIST OF FLOORS ──────────────────────────────────
+ *
+ * Cellars, sub-cellars, mezzanines and bulkheads are not derivable from a
+ * number — a 4-storey building with a cellar and one without both say 4 — and
+ * they are where a great deal of the work is. Each is its own stored flag, so
+ * a chip appears because somebody said that level exists.
+ *
+ * ── ORDER IS BOTTOM TO TOP ──────────────────────────────────────────────────
+ *
+ * Sub-cellar, Cellar, 1st…Nth, Mezzanine, Roof. Operator's order. It is the
+ * order a person walks the building in, and a list that jumps around is one a
+ * CP has to read twice at the end of a day.
+ *
+ * ── ONLY WHAT IS SET ────────────────────────────────────────────────────────
+ *
+ * An unset flag is NOT "no cellar" — it is "nobody said", and offering no chip
+ * is the same choice the storey count already made. "Somewhere else" is
+ * rendered unconditionally by the screen, so the CP is never without a way to
+ * record a location this list does not hold.
+ */
+
+/** Hard ceiling on rendered floor chips. 60 storeys is well past anything this
+ *  product has seen; the cap exists so a typo in the stories field cannot
+ *  render a thousand chips onto a CP's phone. */
+export const MAX_FLOOR_CHIPS = 60;
+
+/**
+ * "1st", "2nd", "3rd", "4th"… "11th", "12th", "13th"… "21st".
+ *
+ * The teens are the whole reason this is a function: 11, 12 and 13 take "th"
+ * although they end in 1, 2 and 3.
+ */
+export function floorOrdinal(n) {
+  const i = Number(n);
+  if (!Number.isFinite(i)) return '';
+  const rem100 = Math.abs(i) % 100;
+  const rem10 = Math.abs(i) % 10;
+  let suffix = 'th';
+  if (rem100 < 11 || rem100 > 13) {
+    if (rem10 === 1) suffix = 'st';
+    else if (rem10 === 2) suffix = 'nd';
+    else if (rem10 === 3) suffix = 'rd';
+  }
+  return `${i}${suffix}`;
+}
+
+/**
+ * WHAT A PROJECT NOBODY HAS ANSWERED FOR OFFERS.
+ *
+ * ── WHY THERE IS A DEFAULT AT ALL ───────────────────────────────────────────
+ *
+ * The empty list was the honest answer and it was useless: on a project with no
+ * storey count the CP's only location chip was "Somewhere else", and that is
+ * every live project this product has. Operator ruling: default to these four.
+ *
+ * FOUNDATION IS FIRST BECAUSE IT IS THE FIRST THING THAT HAPPENS. A job that
+ * has not answered the question is usually a job that has just started, and
+ * footings are where the work is.
+ *
+ * ── WHAT A DEFAULT IS NOT ───────────────────────────────────────────────────
+ *
+ * THESE FEED CHIPS AND NOTHING ELSE. They are not written anywhere, they never
+ * become `building_stories`, and they never reach `classify_project` — so a
+ * building offered "3rd Floor" today does not thereby become a three-storey
+ * building, and a project an admin set to Major B by hand keeps that class. A
+ * default that leaked into the §3310 inputs would let a screen nobody filled in
+ * decide which logs the job must keep.
+ *
+ * `isDefault` rides on each chip so the screen can say so. A CP choosing "2nd
+ * Floor" on a building whose levels nobody entered should know the app is
+ * guessing at the list, not reading it off his drawings.
+ */
+export const DEFAULT_LEVEL_CHIPS = Object.freeze([
+  Object.freeze({ id: 'foundation', label: 'Foundation', isDefault: true }),
+  Object.freeze({ id: 'floor_1', label: '1st Floor', isDefault: true }),
+  Object.freeze({ id: 'floor_2', label: '2nd Floor', isDefault: true }),
+  Object.freeze({ id: 'floor_3', label: '3rd Floor', isDefault: true }),
+]);
+
+/**
+ * The location chips for one project, bottom to top. Never throws.
+ *
+ * THE LABEL KEEPS THE WORD "FLOOR". The ids are unchanged from the storey-only
+ * version (`floor_1`…), so nothing already filed is re-interpreted; the label
+ * is what reaches the record, through `work_locations`, and "Cellar, 1st, 2nd"
+ * on a signed document says less than "Cellar, 1st Floor, 2nd Floor".
+ *
+ * THE DEFAULT IDS ARE THE REAL IDS. `floor_1` from the default set and
+ * `floor_1` from a confirmed four-storey building are the same chip and mean
+ * the same floor, so answering the question later does not orphan what was
+ * already logged against it.
+ */
+export function buildingLevelChips(project) {
+  const p = project && typeof project === 'object' ? project : {};
+  const out = [];
+  if (p.has_sub_cellar) out.push({ id: 'sub_cellar', label: 'Sub-cellar' });
+  if (p.has_cellar) out.push({ id: 'cellar', label: 'Cellar' });
+  const n = parseInt(p.building_stories, 10);
+  if (Number.isFinite(n) && n > 0) {
+    const top = Math.min(n, MAX_FLOOR_CHIPS);
+    for (let i = 1; i <= top; i += 1) {
+      out.push({ id: `floor_${i}`, label: `${floorOrdinal(i)} Floor` });
+    }
+  }
+  if (p.has_mezzanine) out.push({ id: 'mezzanine', label: 'Mezzanine' });
+  if (p.has_roof_bulkhead) out.push({ id: 'roof', label: 'Roof' });
+  // NOTHING SET AT ALL -> the default four. One toggle answered is an answer:
+  // a project whose only stored level is a cellar gets a cellar and no
+  // invented floors, because somebody has been here and said so.
+  return out.length > 0 ? out : DEFAULT_LEVEL_CHIPS.map((c) => ({ ...c }));
+}
+
+/** Are these chips the fallback rather than the building's own levels? */
+export const levelsAreDefault = (chips) => (
+  Array.isArray(chips) && chips.length > 0 && chips.every((c) => c && c.isDefault)
+);
+
+/**
+ * Every location chip the card offers: the building's levels, then the levels a
+ * CP has typed on this project before.
+ *
+ * ── THE SECOND BAND IS THE SUPER'S OWN VOCABULARY ───────────────────────────
+ *
+ * `remembered_other_locations` is written by the logbook save from anything
+ * entered under "Somewhere else" — the same mechanism that already remembers
+ * free-text ACTIVITIES. The man standing in the cellar can name it once and it
+ * is a chip for everyone on that project from then on, without an admin, a new
+ * permission, or any path to `building_stories` and the §3310 class.
+ *
+ * IT IS NOT MERGED INTO THE LEVEL BAND. A level somebody typed and a level read
+ * off the project record are different kinds of claim, and the ids say so —
+ * `other:Cellar` is free text, `cellar` is an answered field.
+ */
+export function locationChipsFor(project) {
+  const p = project && typeof project === 'object' ? project : {};
+  const levels = buildingLevelChips(p);
+  const seen = new Set(levels.map((c) => c.label.toLowerCase()));
+  const remembered = [];
+  (Array.isArray(p.remembered_other_locations)
+    ? p.remembered_other_locations : []).forEach((raw) => {
+    // STRINGS ONLY, not String(raw). A number in this array is corruption, and
+    // coercing it renders a chip labelled "7" — which a CP can then select into
+    // a signed record as the place the work happened.
+    if (typeof raw !== 'string') return;
+    const label = raw.trim();
+    if (!label || seen.has(label.toLowerCase())) return;
+    seen.add(label.toLowerCase());
+    remembered.push({ id: `other:${label}`, label, remembered: true });
+  });
+  return [...levels, ...remembered];
+}
+
 export function deriveGeneralDescription(activities, tradeById) {
   const rows = Array.isArray(activities) ? activities : [];
   const counts = new Map();       // trade -> crews doing it
@@ -1254,6 +1425,12 @@ export default {
   crewsWithoutWork,
   deriveGeneralDescription,
   OTHER_CHIP_ID,
+  MAX_FLOOR_CHIPS,
+  floorOrdinal,
+  buildingLevelChips,
+  DEFAULT_LEVEL_CHIPS,
+  levelsAreDefault,
+  locationChipsFor,
   CHIP_SLOTS,
   composeChipBands,
   isUnboundCrew,

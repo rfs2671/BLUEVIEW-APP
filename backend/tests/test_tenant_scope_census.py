@@ -144,6 +144,21 @@ def _conditional_company_filters():
                 continue
             if "==" in body or "!=" in body:
                 continue
+            # ── AN EXCLUSION IS NOT A SCOPE ─────────────────────────────────
+            #
+            # `q["company_id"] = {"$nin": [...]}` cannot narrow a read TO a
+            # tenant; it can only remove rows. So it is structurally incapable
+            # of being the defect this file hunts -- a company-less caller
+            # reading every tenant's rows -- and flagging it would put a
+            # permanent hand-written exemption in `_EXEMPT` for a shape that is
+            # safe by construction.
+            #
+            # STRUCTURAL RATHER THAN NAMED, deliberately. An exemption by
+            # function name expires the moment somebody writes a second one;
+            # this covers every `$nin` exclusion ever written, and still
+            # catches a real `= company_id` scope in the same function.
+            if '{"$nin"' in body or "{'$nin'" in body:
+                continue
             hits.append(node.lineno)
         if not hits:
             continue
@@ -174,6 +189,21 @@ class EveryConditionalFilterRefusesTheCompanylessCaller(unittest.TestCase):
             missing, [],
             "a caller with no company reads every tenant's rows through: "
             + "; ".join(missing))
+
+    def test_the_exclusion_branch_is_reached_by_something(self):
+        """THE BRANCH ABOVE MUST NOT BE DEAD.
+
+        A `continue` that nothing ever hits is a hole with no test over it: the
+        next `$nin` written on `company_id` would pass through silently whether
+        or not the skip still worked. One such filter exists today —
+        `unattended_project_filter`, which removes fixture tenants from the
+        unattended sweeps — so this asserts the shape is live and, separately,
+        that it is NOT in the census it is being skipped from."""
+        src = _SRC if isinstance(_SRC, str) else _SRC.read_text(encoding="utf-8")
+        self.assertIn('query["company_id"] = {"$nin": sorted(ids)}', src)
+        self.assertNotIn(
+            "unattended_project_filter",
+            [name for name, _lns, _ok in _conditional_company_filters()])
 
     def test_the_refusal_is_id_None_and_never_company_id_None(self):
         """`company_id: None` matches precisely the orphan rows — every other
