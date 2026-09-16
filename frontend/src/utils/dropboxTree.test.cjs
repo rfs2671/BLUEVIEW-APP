@@ -57,6 +57,7 @@ const M = load('dropboxTree.js');
 const {
   UNFILED, folderPathOf, folderLabel, groupByFolder, treeCounts,
   collidingNames, isColliding, treeHeadline, formatSyncedAt, COLLISION_NOTE,
+  indexFailureNote,
 } = M;
 
 {
@@ -200,6 +201,45 @@ ok(/never synced$/.test(treeHeadline([f('/A/x.pdf')], 'not a date')),
   ok(!threw, 'null, undefined and malformed rows are survived, not thrown on');
   ok(treeCounts(null).files === 0 && treeCounts(null).folders === 0,
     'an absent list counts as nothing rather than reporting a stale number');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. A file whose indexing GAVE UP says so on the screen.
+//
+//    The queue marks a file `failed` after three attempts and writes the
+//    reason onto the job row; document-index-status has always returned it.
+//    Nothing read it, so a drawing set that failed three times looked exactly
+//    like one that worked, and the first anyone heard of it was the bot
+//    answering "not on the indexed drawings" about a sheet on this screen.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const failedRow = {
+    file_id: 'f1', queue_status: 'failed', indexed_pages: 90, total_pages: 129,
+    queue: { error: 'stopped after 3 attempts - the container restarted' },
+  };
+  const note = indexFailureNote(failedRow);
+  ok(/Indexing failed/.test(note), 'a failed file says it failed');
+  ok(/90 of 129/.test(note), 'it says how far it got, so the retry is informed');
+  ok(/container restarted/.test(note), 'it carries the reason the queue recorded');
+
+  ok(indexFailureNote({ queue_status: 'cancelled', queue: { error: 'the file no longer exists' } })
+       .startsWith('Indexing cancelled'),
+    'cancelled is reported too - the file went away under a running job');
+
+  ok(indexFailureNote({ queue_status: 'done', indexed_pages: 129, total_pages: 129 }) === null,
+    'a finished file carries no badge');
+  ok(indexFailureNote({ queue_status: 'queued' }) === null,
+    'queued is work in progress, not a failure');
+  ok(indexFailureNote({ queue_status: 'running', indexed_pages: 4 }) === null,
+    'a badge on every file during a re-index trains people to ignore it');
+  ok(indexFailureNote(null) === null && indexFailureNote(undefined) === null,
+    'a file the index has never heard of is not an error');
+
+  ok(indexFailureNote({ queue_status: 'failed' }) === 'Indexing failed',
+    'no reason recorded still says the thing failed');
+  ok(indexFailureNote({ queue_status: 'failed', indexed_pages: 129, total_pages: 129 })
+       === 'Indexing failed',
+    'no page clause when it got through them all');
 }
 
 console.log(`\n  ${passed} passed, ${failed} failed`);

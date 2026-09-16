@@ -161,3 +161,33 @@ export function treeHeadline(files, lastSynced) {
     + `${folders} folder${folders === 1 ? '' : 's'}`;
   return `${counts} · ${when ? `last synced ${when}` : 'never synced'}`;
 }
+
+/**
+ * WHAT TO SAY ON A FILE WHOSE INDEXING GAVE UP, or null when there is nothing
+ * to say.
+ *
+ * The plan-index queue marks a file `failed` after three attempts and writes
+ * the reason onto the job row; `document-index-status` has always returned it
+ * as `queue_status` plus `queue.error`. Nothing read it. A drawing set that
+ * failed three times looked, in Plans & Files, exactly like one that worked —
+ * and the first anyone heard of it was the bot answering "not on the indexed
+ * drawings" about a sheet sitting on this screen.
+ *
+ * `cancelled` is included: the queue uses it when the file went away under a
+ * running job, which is worth a line for the same reason.
+ *
+ * Everything else says nothing. Queued and running are work in progress, and a
+ * badge on every file during a re-index is noise that trains people to ignore
+ * the one that matters.
+ */
+export function indexFailureNote(row) {
+  if (!row) return null;
+  const state = row.queue_status;
+  if (state !== 'failed' && state !== 'cancelled') return null;
+  const why = (row.queue && row.queue.error) || '';
+  const head = state === 'cancelled' ? 'Indexing cancelled' : 'Indexing failed';
+  const done = Number(row.indexed_pages) || 0;
+  const total = Number(row.total_pages) || 0;
+  const pages = total && done < total ? ` after ${done} of ${total} pages` : '';
+  return why ? `${head}${pages} — ${why}` : `${head}${pages}`;
+}
