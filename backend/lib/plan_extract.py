@@ -438,6 +438,9 @@ EMPTY_FIELDS: Dict[str, Any] = {
     # "text" when notes came from the text layer, "vision" when the notes
     # fallback read them off the image, None when there are none.
     "notes_source": None,
+    # '16 OF 31' from the title block: this sheet's place in its own set. Two
+    # numbers claiming the same place are one sheet reissued.
+    "sheet_position": None,
 }
 
 
@@ -752,6 +755,7 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     title_text = pt.title_region(layout)
     title_ids = pt.sheet_ids(title_text)
     page_ids = pt.sheet_ids(layout.get("text") or "")
+    position = pt.sheet_position(title_text)
     flags: Dict[str, List[str]] = {"title_block": [], "text_layer": []}
     raw: Dict[str, str] = {"title_block": ""}
     tb: Dict[str, Any] = {}
@@ -775,7 +779,8 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     except Exception as e:
         flags["title_block"].append(f"call_failed:{type(e).__name__}")
 
-    sheet_number, sn_flag = pt.validate_sheet_number(tb.get("sheet_number"), title_ids, page_ids)
+    sheet_number, sn_flag = pt.validate_sheet_number(
+        tb.get("sheet_number"), title_ids, page_ids, drawing_index, position, title_text)
     if sn_flag:
         flags["title_block"].append(sn_flag)
     if tb.get("revision") and tb["revision"].upper() in {i.upper() for i in page_ids}:
@@ -794,6 +799,7 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     fields = merge_sections({"title_block": tb})
     fields.update(text_fields)
     fields["sheet_number"] = sheet_number
+    fields["sheet_position"] = list(position) if position else None
     fields["notes_source"] = "text" if fields.get("notes") else None
 
     calls = 1
