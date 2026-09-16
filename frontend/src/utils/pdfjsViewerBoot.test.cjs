@@ -3168,12 +3168,21 @@ async function previewFitWidth() {
     const js = viewerScript();
     ok(/var MAX_CONCURRENT_RENDERS = 1;/.test(js),
       'still one rasterisation at a time');
+    // ⚠️ THE SLICE IS THE DRAW HANDLER AND NOT THE WHOLE FUNCTION, and an
+    //    earlier draft of this case got that wrong: `renderPreview` calls
+    //    `releaseRenderSlot()` from `done()` too, which is declared near the
+    //    top, so "the first release comes before the push" was satisfied by a
+    //    call on the FAILURE path and would have stayed green with the encode
+    //    put back inside the slot. The question is narrower than that — is the
+    //    slot handed back INSIDE the render's own `then`, ahead of the queue —
+    //    so the text between the two is what has to be read.
     const rp = js.slice(js.indexOf('function renderPreview(slot){'));
-    const drawIdx = rp.indexOf('releaseRenderSlot();');
-    const encIdx = rp.indexOf('encQueue.push(');
-    ok(drawIdx > 0 && encIdx > drawIdx,
-      'and the render slot is still given back at the DRAW, before the encode is '
-      + 'even queued — the 4000 ms defect stays fixed');
+    const drawAt = rp.indexOf('return task.promise.then(function(){');
+    const encAt = rp.indexOf('encQueue.push(');
+    const inDraw = (drawAt > 0 && encAt > drawAt) ? rp.slice(drawAt, encAt) : '';
+    ok(drawAt > 0 && encAt > drawAt && /releaseRenderSlot\(\);/.test(inDraw),
+      'and the render slot is still given back inside the draw handler, before the '
+      + 'encode is even queued — the 4000 ms defect stays fixed');
   }
 }
 
