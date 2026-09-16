@@ -2675,7 +2675,25 @@ const VIEWER_SCRIPT = [
   '',
   '  function scrollLeg(label, pageNo, next){',
   '    var slot = slotFor(pageNo);',
-  '    if (!slot) { probePost("scroll", { phase: label, page: pageNo, error: "no-such-page" }); if (next) next(); return; }',
+  // ⚠️ `scrollPhase` AND NOT `phase`, AND THAT IS NOT A STYLE PREFERENCE.
+  //
+  // `backend/scripts/find_reads_without_writers.py` decides whether a Mongo
+  // field is CLIENT-FED by TEXT SEARCH over frontend/**/*.js* for
+  // `['"]?\bNAME\b['"]?\s*[:=]`. `daily_logs.phase` is the read-without-writer
+  // that sweep was built for and the one its ratchet names by hand — so a
+  // probe row with a key called `phase` reclassifies it as client-fed, drops
+  // it out of the findings, and turns the ratchet's own "did the baseline
+  // silently shrink" test red. Measured: three failures in
+  // tests/test_reads_without_writers.py off fifteen lines in this file.
+  //
+  // THE MATCH IS OVER-BROAD AND THAT IS A REAL DEFECT, but it is the sweep's
+  // and not this file's, and its baseline is a ratchet where a silent shrink
+  // reads as progress — so it is fixed on its own change, not by loosening it
+  // here. What THIS file owes is a key that cannot collide: every Mongo field
+  // in this codebase is snake_case, the search is case-sensitive, and a
+  // camelCase name therefore cannot be one. Any new probe key should be read
+  // the same way before it is typed.
+  '    if (!slot) { probePost("scroll", { scrollPhase: label, page: pageNo, error: "no-such-page" }); if (next) next(); return; }',
   '    var hadPreview = !!slot.pv, hadSharp = !!slot.done;',
   '    var s0 = rcStarted, c0 = rcCancelled, d0 = rcCompleted, p0 = pvStarted;',
   '    var y = slot.el.getBoundingClientRect().top + docScrollTop();',
@@ -2697,7 +2715,7 @@ const VIEWER_SCRIPT = [
   '      var elapsed = pnow() - t0;',
   '      if ((previewMs !== null && sharpMs !== null) || elapsed > SCROLL_PROBE_MAX_MS) {',
   '        probePost("scroll", {',
-  '          phase: label, page: pageNo,',
+  '          scrollPhase: label, page: pageNo,',
   '          previewPrebuilt: hadPreview, sharpResident: hadSharp,',
   '          previewMs: previewMs, sharpMs: sharpMs,',
   // THE QUESTION THE OPERATOR ASKED IN THOSE WORDS: "scroll back to page 1 —

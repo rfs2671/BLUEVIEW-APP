@@ -2037,9 +2037,9 @@ async function scrollProbe() {
     + `blank that is a schedule, not a defect (built ${
       setup.length ? setup[0].previewsBuilt : '?'} of ${setup.length ? setup[0].pages : '?'})`);
 
-  const jump = rows.find((r) => /^jump-to-p/.test(r.phase));
-  const back = rows.find((r) => r.phase === 'back-to-p1');
-  ok(!!jump, `there is a fast-jump leg (${rows.map((r) => r.phase).join(', ') || 'none'})`);
+  const jump = rows.find((r) => /^jump-to-p/.test(r.scrollPhase));
+  const back = rows.find((r) => r.scrollPhase === 'back-to-p1');
+  ok(!!jump, `there is a fast-jump leg (${rows.map((r) => r.scrollPhase).join(', ') || 'none'})`);
   ok(!!back, 'and a scroll-back leg');
   ok(jump && jump.page === 20,
     `the jump goes to sheet 20, the operator's own number (got ${jump && jump.page})`);
@@ -2048,15 +2048,15 @@ async function scrollProbe() {
   // because a row that carried three of them would read as an answer.
   for (const r of rows) {
     ok(r && typeof r.previewMs === 'number',
-      `${r && r.phase}: ms until the sheet shows a PREVIEW (${r && r.previewMs})`);
+      `${r && r.scrollPhase}: ms until the sheet shows a PREVIEW (${r && r.previewMs})`);
     ok(r && typeof r.sharpMs === 'number',
-      `${r && r.phase}: ms until it shows SHARP (${r && r.sharpMs})`);
+      `${r && r.scrollPhase}: ms until it shows SHARP (${r && r.sharpMs})`);
     ok(r && typeof r.reRendered === 'boolean',
-      `${r && r.phase}: whether it had to re-render (${r && r.reRendered})`);
+      `${r && r.scrollPhase}: whether it had to re-render (${r && r.reRendered})`);
     ok(r && typeof r.maxBlankOnScreen === 'number',
-      `${r && r.phase}: how many sheets were blank at any tick (${r && r.maxBlankOnScreen})`);
+      `${r && r.scrollPhase}: how many sheets were blank at any tick (${r && r.maxBlankOnScreen})`);
     ok(r && r.timedOut === false,
-      `${r && r.phase}: and the leg completed rather than running out the clock`);
+      `${r && r.scrollPhase}: and the leg completed rather than running out the clock`);
   }
 
   // THE ACCEPTANCE ITSELF, on the fake clock. Not the device's milliseconds —
@@ -2064,16 +2064,16 @@ async function scrollProbe() {
   // are supposed to demonstrate, which a harness can hold to.
   ok(rows.every((r) => r.maxBlankOnScreen === 0),
     `no sheet is blank at any point in either leg (${
-      rows.map((r) => `${r.phase}:${r.maxBlankOnScreen}`).join(' ')})`);
+      rows.map((r) => `${r.scrollPhase}:${r.maxBlankOnScreen}`).join(' ')})`);
   ok(rows.every((r) => r.previewPrebuilt === true && r.previewMs === 0),
     `and the preview is already there on arrival, both legs — instant because `
-    + `nothing has to happen (${rows.map((r) => `${r.phase}:${r.previewMs}ms`).join(' ')})`);
+    + `nothing has to happen (${rows.map((r) => `${r.scrollPhase}:${r.previewMs}ms`).join(' ')})`);
   ok(back && back.reRendered === true,
     'the scroll-back leg really did find sheet 1 evicted, so "it re-renders" is '
     + 'being measured rather than assumed');
   ok(rows.every((r) => typeof r.sharpMs === 'number' && r.sharpMs >= SETTLE_MS),
     `and the sharp render waits out the settle before it starts (${
-      rows.map((r) => `${r.phase}:${r.sharpMs}ms`).join(' ')}, settle ${SETTLE_MS} ms)`);
+      rows.map((r) => `${r.scrollPhase}:${r.sharpMs}ms`).join(' ')}, settle ${SETTLE_MS} ms)`);
 
   // ── STARTED vs CANCELLED vs COMPLETED ─────────────────────────────────
   //
