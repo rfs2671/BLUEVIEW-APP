@@ -131,15 +131,52 @@ class NotesComeStraightFromTheText(unittest.TestCase):
                       "\n".join(b["text"] for b in f["text_blocks"]))
 
 
-class StatedQuantitiesAreReadNotCounted(unittest.TestCase):
+class AnElementNeedsSomethingBehindIt(unittest.TestCase):
+    """Replaced stated_quantities on 2026-09-16. Mining '(N) SOMETHING' out of
+    prose produced nine element records on 588 Boyland, seven of them sentence
+    fragments carrying a count: 'WORKING DAYS TO PERFORM REVIEW' 10, 'OF THE
+    NEW YORK CITY BUILDING CODE' 7, 'TWO TIMES TO SIGNAL EVACUATION' 2. Every
+    one was marked verified, because verified only ever meant the digits came
+    out of the text, which they did."""
 
-    def test_a_printed_quantity(self):
-        self.assertEqual(pt.stated_quantities("(4) ROOF DRAINS\n"),
-                         [{"name": "ROOF DRAINS", "count_if_stated": 4,
-                           "location_hint": "text layer", "count_verified": True}])
+    def test_prose_is_not_mined_at_all(self):
+        self.assertFalse(hasattr(pt, "stated_quantities"))
+        d = {"blocks": [block(["SOUND (4) ALARMS TWO TIMES TO SIGNAL EVACUATION",
+                               "WITHIN (10) WORKING DAYS TO PERFORM REVIEW"],
+                              bbox=(100, 100, 900, 140))]}
+        L = pt.layout_from_dict(d, width=2592, height=1728, page_number=1)
+        self.assertEqual(pt.fields_from_layout(L)["elements"], [])
 
-    def test_a_number_ending_one_line_does_not_count_the_next(self):
-        self.assertEqual(pt.stated_quantities("720.1 (3)\nR-11.5 EPS"), [])
+    def test_a_legend_symbol_is_an_element(self):
+        out = pt.elements_from_evidence(
+            [{"symbol": "RD OD", "meaning": "ROOF DRAIN OUTLET"}], [], [])
+        self.assertEqual(out, [{"name": "ROOF DRAIN OUTLET", "tag": "RD OD",
+                                "count_if_stated": None, "count_basis": "not_stated",
+                                "location_hint": "legend"}])
+
+    def test_a_counted_tag_is_an_element_and_says_what_the_count_is(self):
+        out = pt.elements_from_evidence(
+            [{"symbol": "AD", "meaning": "AREA DRAIN"}],
+            [], [{"tag": "AD", "count": 2}])
+        tagged = [e for e in out if e["count_basis"] == "tag_occurrences"]
+        self.assertEqual(tagged, [{"name": "AREA DRAIN", "tag": "AD",
+                                   "count_if_stated": 2, "count_basis": "tag_occurrences",
+                                   "location_hint": "tags on the sheet"}])
+
+    def test_a_schedule_row_is_an_element_and_a_qty_column_is_its_count(self):
+        out = pt.elements_from_evidence([], [{
+            "name": "ROOMS PTAC UNITS SCHEDULE",
+            "columns": ["UNIT NO.", "QTY", "MAKE"],
+            "rows": [["PTAC-1", "21", "AMANA"], ["PTAC-2", "9", "AMANA"]]}], [])
+        self.assertEqual([(e["tag"], e["count_if_stated"], e["count_basis"]) for e in out],
+                         [("PTAC-1", 21, "schedule_qty"), ("PTAC-2", 9, "schedule_qty")])
+
+    def test_a_row_whose_first_cell_is_a_sentence_is_not_an_element(self):
+        out = pt.elements_from_evidence([], [{
+            "name": "SPECIAL INSPECTION CATEGORIES",
+            "columns": ["CATEGORY", "CODE"],
+            "rows": [["STRUCTURAL STEEL WELDING", "BC 1705.2"]]}], [])
+        self.assertEqual(out, [])
 
 
 class TagCountsAreLabelsOnly(unittest.TestCase):
@@ -256,8 +293,16 @@ class TheLegendIsFoundByWhereItIs(unittest.TestCase):
         self.assertIn('6" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH', meanings)
         self.assertNotIn("TOTAL OCCUPANTS PER STORY", meanings)
         self.assertNotIn("PLOT PLAN NOTES ABOVE", meanings, "above the word is not the legend")
-        self.assertNotIn(3, used, "a bare mark is not an entry")
-        self.assertNotIn(6, used)
+        # Changed 2026-09-16: a mark printed in the legend column with nothing
+        # beside it on its row IS an entry, with no meaning. The sheet did not
+        # say what it stands for, and that is the answer — the model filling it
+        # in from its own knowledge is how 'KE 1' became 'KICKER 1'. Being an
+        # entry also keeps it out of the plan's tag count, where a legend
+        # definition was never an occurrence.
+        marks = {e["symbol"]: e["meaning"] for e in entries if e["symbol"]}
+        self.assertEqual(marks, {"A": "", "W1": ""})
+        self.assertIn(3, used)
+        self.assertIn(6, used)
 
     def test_legend_entries_are_not_counted_as_tags_on_the_plan(self):
         d = {"blocks": [block(["LEGEND"], bbox=(100, 100, 130, 110)),
