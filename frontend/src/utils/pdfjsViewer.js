@@ -155,7 +155,43 @@ const STAMP_NAME = '.stamp';
 //       it — the app code would be new, the viewer would be old, and the
 //       reader would keep watching blank sheets. THIS BUMP IS THE FIX'S
 //       ENTIRE DELIVERY MECHANISM.
-const VIEWER_VERSION = '12';
+//  13 — THE FOUR SECONDS WERE `toBlob`, AND THEY WERE A SCHEDULER TIMEOUT.
+//       `12` fixed the scroll and broke the loading: 8-10 s a page on the
+//       device, with `encodeMs` reporting 4029-4061 ms on EVERY preview,
+//       constant to +/-30 ms regardless of what was on the sheet. A number
+//       that does not move with the work is not work.
+//
+//       IT IS `kIdleTaskStartTimeoutDelayMs` IN BLINK, AND ON ANDROID IT IS
+//       4000. `HTMLCanvasElement.toBlob` for image/jpeg (and image/png, but
+//       NOT image/webp) does not encode when you call it: on the main thread
+//       `CanvasAsyncBlobCreator::ScheduleAsyncBlobCreation` posts the encode
+//       as an IDLE TASK and arms a delayed task that forces it onto the main
+//       thread if no idle period has arrived by then. That delay is 1000 ms
+//       on desktop and 4000 ms on "ChromeOS, Mobile" — this WebView. A
+//       viewer whose thread is rasterising plan sheets never yields an idle
+//       period, so every preview paid the full 4000 ms and then encoded in
+//       the 29-61 ms it always took.
+//
+//       THREE THINGS FOLLOW, AND ALL THREE ARE IN THIS FILE:
+//         * the encoder is `toDataURL`, which is SYNCHRONOUS and never goes
+//           near the idle-task scheduler. `toBlob` is gone from the shipping
+//           path; so is blob storage, because the base64 third is nothing
+//           beside four seconds a sheet. OffscreenCanvas.convertToBlob is
+//           NOT the fix: on the main thread it is the same
+//           CanvasAsyncBlobCreator and the same 4000 ms.
+//         * the render slot is released WHEN THE BITMAP IS DRAWN, not when
+//           the encode finishes. With MAX_CONCURRENT_RENDERS = 1 an encode
+//           inside the slot is the reader's own sheet waiting behind it.
+//         * the scripted scroll measurement runs FIRST in the probe suite
+//           instead of last. On the device it emitted no rows at all,
+//           because everything ahead of it — nine A/B renders, a 31.7 MB
+//           byte scan and a second full parse under a second worker — has to
+//           finish first, and a reader does not hold a viewer open that long.
+//
+//       viewer.html is written to disk once per stamp, so a device already
+//       staged at `12` would keep paying 4000 ms a sheet. THIS BUMP IS THE
+//       FIX'S ENTIRE DELIVERY MECHANISM.
+const VIEWER_VERSION = '13';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -372,22 +408,47 @@ const VIEWER_SCRIPT = [
   // it, for all N pages, for the life of the document. That is only affordable
   // because of the storage decision below.
   //
-  // ── STORAGE: A COMPRESSED BLOB, NOT A RESIDENT BITMAP ──────────────────
+  // ── STORAGE: AN ENCODED DATA URL, NOT A BLOB AND NOT A BITMAP ──────────
   //
-  // The two candidates, priced on the operator's 26-sheet set at this target:
+  // The three candidates, priced on the operator's 26-sheet set at this
+  // target, with the COST OF GETTING THERE beside the resident figure —
+  // which is the column `12` did not have and the column that decided it:
   //
-  //   raw canvas / ImageBitmap   26 x 0.4 MP x 4 B  =  ~42 MB resident,
-  //                              nothing to decode on draw.
-  //   encoded blob + <img>       26 x ~35 KB        =  ~0.9 MB resident of
-  //                              encoded bytes, plus whatever Chromium
-  //                              chooses to keep decoded near the viewport;
-  //                              ~10-20 ms to decode one on the way in.
+  //   raw canvas / ImageBitmap   26 x 0.4 MP x 4 B  =  ~42 MB resident.
+  //                              Encode cost: none.
+  //   toBlob + blob: URL         26 x ~35 KB        =  ~0.9 MB resident.
+  //                              Encode cost: 4000 ms A SHEET. See below.
+  //   toDataURL + data: URL      26 x ~47 KB        =  ~1.2 MB resident of
+  //                              base64, plus whatever Chromium keeps
+  //                              decoded near the viewport.
+  //                              Encode cost: the encode, and nothing else.
   //
-  // 42 MB IS AFFORDABLE AT 26 SHEETS AND FATAL AT 200, and this viewer is
-  // documented for 200-sheet plan sets in the header of this very file. Raw
-  // is 320 MB of preview alone on that set — straight through the 250-350 MB
-  // renderer kill this page already fights. The encoded tier is ~7 MB on the
-  // same set. A tier that only works on small documents is not a tier.
+  // ⚠️ `toBlob` IS NOT AN ENCODER CALL ON THIS PLATFORM, IT IS A WAIT.
+  // Blink's `CanvasAsyncBlobCreator::ScheduleAsyncBlobCreation` runs the
+  // JPEG and PNG encoders as IDLE TASKS on the main thread, with a delayed
+  // task that forces the work through if no idle period turns up first:
+  //
+  //     #if (IS_LINUX || IS_CHROMEOS || IS_MAC || IS_WIN)
+  //     const double kIdleTaskStartTimeoutDelayMs = 1000.0;
+  //     #else
+  //     const double kIdleTaskStartTimeoutDelayMs = 4000.0;  // ChromeOS, Mobile
+  //     #endif
+  //
+  // A viewer that is rasterising plan sheets never yields the idle period,
+  // so the timeout is the path EVERY TIME. That is the 4029-4061 ms this
+  // stamp exists to remove, and the 29-61 ms residue is the encode itself —
+  // which is what a 774x516 canvas has always cost. image/webp skips the
+  // idle path entirely, and a WORKER skips it entirely; the main thread with
+  // a JPEG does not, and neither does `OffscreenCanvas.convertToBlob()`,
+  // which is the same class and the same branch.
+  //
+  // `toDataURL` IS THE SAME ENCODER WITH NO SCHEDULER IN FRONT OF IT. It
+  // encodes inline and returns the string. The base64 third is the price and
+  // it is not a real price: 0.3 MB across 26 sheets, ~2.3 MB across the
+  // 200-sheet sets this file's header documents, against 42 MB and 320 MB
+  // for the raw-bitmap design. A tier that only works on small documents is
+  // still not a tier — and one that costs four seconds a sheet is worse than
+  // either.
   //
   // THE `<img>` STAYS IN THE DOM once built, which is the other half of the
   // choice: Chromium keeps the decoded bitmap for images at or near the
@@ -431,10 +492,39 @@ const VIEWER_SCRIPT = [
   '  var SETTLE_MS = 150;',
   // A preview job that has not answered in this long has not answered. Long
   // enough that a genuinely slow sheet on a genuinely slow phone finishes —
-  // the operator's worst contended sheet was 9490 ms — and short enough that
-  // a WebView whose `toBlob` never calls back does not take the only render
-  // thread with it for the life of the document.
+  // the operator's worst contended sheet was 9490 ms.
+  //
+  // ⚠️ IT IS NO LONGER THE THING STANDING BETWEEN A STUCK ENCODER AND A DEAD
+  // VIEWER, and that is worth saying because it used to be. At `12` the
+  // encode was inside the render slot, so an encoder that never answered took
+  // the only renderer there is with it for the life of the document, and this
+  // timer was the belt. The slot now comes back at the draw, so a stuck
+  // encode costs one preview and one scratch bitmap. The timer stays as the
+  // thing that stops a failed job sitting in the census as neither built nor
+  // failed.
   '  var PREVIEW_JOB_MAX_MS = 20000;',
+  // ── HOW MANY DRAWN-BUT-UNENCODED SHEETS MAY BE WAITING ─────────────────
+  //
+  // THE SLOT IS NOW RELEASED WHEN THE BITMAP IS DRAWN, which is the whole
+  // point — but it means the fill can run ahead of the encoder and every
+  // sheet in that gap is holding a live 0.4 MP canvas, 1.6 MB apiece. The
+  // old design's "ONE TRANSIENT CANVAS, NOT N" is preserved by capping the
+  // gap instead of by serialising the encode into the render slot.
+  //
+  // 2 BACKGROUND JOBS, plus at most the one or two sheets actually on screen
+  // (rank 0 is never held back by this — the reader is looking at white and
+  // that is the one thing this tier exists to end). So the worst case is
+  // four live scratch bitmaps, ~6.4 MB, whatever the page count is.
+  //
+  // ⚠️ AND IT IS A GUARD, NOT A LIMIT ANYTHING REACHES TODAY — said out loud
+  // so nobody reads a green test as evidence that it binds. MEASURED IN THE
+  // HARNESS: the peak is ONE. `pumpQueue` offers the encoder the thread the
+  // moment both rasterisation tiers decline it, and with a cap of 1 they
+  // decline it after every single draw, so the queue is naturally one deep.
+  // What the cap is here for is the change that makes it deep — a higher
+  // render cap, a worker encode, a batched attach — where "the fill ran away
+  // from the encoder" is 26 live bitmaps and 41 MB, silently.
+  '  var PREVIEW_ENCODE_BACKLOG = 2;',
   // ── SHARPNESS IS NO LONGER ON DEMAND, BECAUSE IT NO LONGER COSTS ───────
   //
   // #413 put a PPI floor on every sheet. #542 took it off first paint and
@@ -1251,11 +1341,19 @@ const VIEWER_SCRIPT = [
   // is the whole defect. The only caller is `teardown()`, where the document
   // these previews belong to is being destroyed.
   //
-  // REVOKING THE OBJECT URL IS THE STEP THAT RETURNS THE BYTES. An unreferenced
-  // blob: URL keeps its Blob alive for the life of the document — exactly the
-  // shape of leak `releaseSlot` learned about canvases — and this page outlives
-  // every document the reader opens, so a missed revoke accumulates one whole
-  // set of previews per open.
+  // CLEARING THE `src` IS THE STEP THAT RETURNS THE BYTES, and with a data:
+  // URL that is the whole of it — the string belongs to the <img> and goes
+  // when the <img> does. This page outlives every document the reader opens,
+  // so a preview left holding its bytes accumulates one whole set per open;
+  // that is the leak, and it is the same shape `releaseSlot` learned about
+  // canvases.
+  //
+  // THE REVOKE STAYS, AND IT IS A NO-OP ON EVERY PATH THIS PAGE NOW TAKES.
+  // `pvUrl` means "this preview holds an object URL somebody has to hand
+  // back", and since the encoder moved off `toBlob` nothing sets it. It is
+  // kept rather than deleted because the field is the contract: a future
+  // storage that DOES take an object URL out has one place to declare it and
+  // one place that already gives it back.
   '  function releasePreview(slot){',
   '    if (slot.pvImg) {',
   '      try { if (slot.pvImg.parentNode) slot.pvImg.parentNode.removeChild(slot.pvImg); } catch (e) {}',
@@ -1372,6 +1470,28 @@ const VIEWER_SCRIPT = [
   // reader's position and not a property of the page.
   '  var queue = [];',
   '  var inFlight = 0;',
+  '  var sharpInFlight = 0;',
+  // ── A THIRD LINE, AND THE ONE THE LOADING BUG WAS HIDING IN ────────────
+  //
+  // A preview is TWO pieces of work with completely different costs and
+  // completely different claims on the thread:
+  //
+  //   the rasterisation   ~300-500 ms, measured. It needs the render slot,
+  //                       because it is pdf.js painting into a 2D context and
+  //                       two of those at once is what the cap of 1 forbids.
+  //   the encode          29-61 ms, measured. It needs nothing but the thread
+  //                       for as long as it runs, and it must not be inside
+  //                       the slot: `12` put it there, and with `toBlob`
+  //                       taking 4000 ms of scheduler wait to do 40 ms of
+  //                       work, the reader's own sheet sat behind an idle
+  //                       thread for four seconds a page.
+  //
+  // So a drawn preview lands here, the slot goes back immediately, and the
+  // encode is offered the thread by `pumpEncode` only when neither tier of
+  // rasterisation wants it. Bounded by PREVIEW_ENCODE_BACKLOG.
+  '  var encQueue = [];',
+  '  var encoding = false;',
+  '  var encPumpQueued = false;',
   // ── A SECOND LINE, BECAUSE THE TWO TIERS ARE SCOPED DIFFERENTLY ─────────
   //
   // NOT ONE QUEUE WITH A FLAG. `queue` is the SHARP line and the band owns it:
@@ -1573,10 +1693,26 @@ const VIEWER_SCRIPT = [
   '    var i, slot, best = null, bestD = 0, bestRank = 9, d, rank;',
   // Rank 0 and rank 3 both come out of the preview line.
   '    if (previewsArmed) {',
+  // ── TWO THINGS HOLD THE BACKGROUND FILL BACK AND NEITHER TOUCHES RANK 0 ─
+  //
+  //   THE SCROLL IS MOVING. A background preview during a flick is a
+  //   rasterisation for a sheet the reader is not going to stop on, and with
+  //   a cap of 1 the sheet he DOES stop on queues behind it. `12` let rank 3
+  //   run throughout — it had to, because the encode was inside the slot and
+  //   pausing the fill paused the encoder with it. It is not needed now.
+  //
+  //   THE ENCODER IS BEHIND. Drawn-but-unencoded sheets each hold a live
+  //   1.6 MB bitmap; see PREVIEW_ENCODE_BACKLOG.
+  //
+  // RANK 0 IS EXEMPT FROM BOTH, and that exemption is the acceptance:
+  // "maxBlankOnScreen 0". A sheet the reader can see with nothing on it gets
+  // its preview built and encoded whatever the scroll is doing.
+  '      var fillHeld = (!settled) || (encQueue.length >= PREVIEW_ENCODE_BACKLOG);',
   '      for (i = 0; i < pvQueue.length; i++) {',
   '        slot = pvQueue[i];',
   '        if (slot.pv || slot.pvBusy || slot.pvFail) continue;',
   '        rank = (onScreen(slot) && !slot.done) ? 0 : 3;',
+  '        if (rank === 3 && fillHeld) continue;',
   '        d = nearness(slot);',
   '        if (rank < bestRank || (rank === bestRank && d < bestD)) { bestRank = rank; bestD = d; best = slot; }',
   '      }',
@@ -1622,6 +1758,12 @@ const VIEWER_SCRIPT = [
   '      if (pick.tier === "preview") { dequeuePreview(pick.slot); renderPreview(pick.slot); }',
   '      else { dequeue(pick.slot); renderSlot(pick.slot); }',
   '    }',
+  // THE ENCODER IS PUMPED FROM THE SAME PLACE AND ALWAYS LAST. Every event
+  // that could change who deserves the thread already calls `pumpQueue`, so
+  // routing the encoder through here means there is exactly one place that
+  // decides what runs next — and the encode is offered the thread only after
+  // the rasterisation tiers have declined it.
+  '    pumpEncode();',
   '  }',
   '',
   '  function dequeuePreview(slot){',
@@ -1673,6 +1815,13 @@ const VIEWER_SCRIPT = [
   '    if (slot.busy) return;',
   '    slot.busy = true;',
   '    inFlight = inFlight + 1;',
+  // COUNTED SEPARATELY FROM `inFlight`, because the encoder needs a different
+  // question answered. `inFlight` is "is the one render slot taken"; this is
+  // "is the READER'S OWN SHEET being rasterised right now" — and an encode may
+  // not take a millisecond of the thread while that is true. A preview
+  // rasterisation in flight does not carry the same veto: it is background
+  // work of exactly the same standing as the encode itself.
+  '    sharpInFlight = sharpInFlight + 1;',
   '    rcStarted = rcStarted + 1;',
   // EXACTLY ONCE ON EVERY PATH OUT — resolved, cancelled, generation-stale or
   // thrown. A leaked count is a viewer that stops rendering for good, which is
@@ -1683,6 +1832,7 @@ const VIEWER_SCRIPT = [
   '      if (settled) return;',
   '      settled = true;',
   '      inFlight = inFlight - 1;',
+  '      sharpInFlight = sharpInFlight - 1;',
   '      pumpQueue();',
   '    }',
   '    var gen = slot.gen;',
@@ -1773,12 +1923,22 @@ const VIEWER_SCRIPT = [
   '    });',
   '  }',
   '',
-  // ══ BUILDING ONE PREVIEW ════════════════════════════════════════════════
+  // ══ BUILDING ONE PREVIEW: DRAW, GIVE THE SLOT BACK, THEN ENCODE ════════
+  //
+  // ⚠️ THE SLOT IS RELEASED WHEN THE BITMAP IS DRAWN, AND `12` RELEASED IT
+  // WHEN THE ENCODE FINISHED. That one difference is the loading bug. With
+  // MAX_CONCURRENT_RENDERS = 1 the slot is the whole renderer, so a preview
+  // that held it across a `toBlob` held it across 4000 ms of Blink's
+  // idle-task start timeout — during which the thread was IDLE and the sheet
+  // in front of the reader was blank. Seven previews, 4029-4061 ms apiece,
+  // constant to +/-30 ms whatever was on the sheet, because the number was a
+  // timer and not a cost.
   //
   // THE SHAPE IS DELIBERATELY NOT `renderSlot`'s. A sharp render KEEPS its
   // canvas — that is what `trim()` is bounding. A preview ENCODES its canvas
-  // and throws it away on the same turn, so the peak cost of filling a
-  // 200-sheet set is one 0.4 MP scratch bitmap, not two hundred.
+  // and throws it away, so the peak cost of filling a 200-sheet set is a
+  // handful of 0.4 MP scratch bitmaps (PREVIEW_ENCODE_BACKLOG), not two
+  // hundred.
   //
   // IT HOLDS ITS PAGE LOCALLY AND CLEANS IT UP ITSELF. `slot.page` belongs to
   // the sharp tier and `releaseSlot` nulls it; a preview that parked its page
@@ -1796,12 +1956,26 @@ const VIEWER_SCRIPT = [
   '    pvStarted = pvStarted + 1;',
   '    var pgen = slot.pgen;',
   '    var settledOut = false;',
+  '    var slotHeld = true;',
   '    var pv0 = MEASURE ? pnow() : 0;',
+  // ── GIVING THE RENDER SLOT BACK, EXACTLY ONCE ──────────────────────────
+  //
+  // Called from the draw on the happy path and from `done()` on every other
+  // one, so a job that fails, is superseded or times out before it ever drew
+  // anything still hands the slot back — the leaked-count failure `renderSlot`
+  // carries the same note about, and worse here because there are now two
+  // places it can leak from instead of one.
+  '    function releaseRenderSlot(){',
+  '      if (!slotHeld) return;',
+  '      slotHeld = false;',
+  '      inFlight = inFlight - 1;',
+  '      pumpQueue();',
+  '    }',
   '    function done(){',
   '      if (settledOut) return;',
   '      settledOut = true;',
   '      slot.pvBusy = false;',
-  '      inFlight = inFlight - 1;',
+  '      releaseRenderSlot();',
   '      pumpQueue();',
   '    }',
   // A PREVIEW THAT CANNOT BE BUILT IS RECORDED AND NOT RETRIED. A retry loop
@@ -1841,103 +2015,270 @@ const VIEWER_SCRIPT = [
   '      var r0 = MEASURE ? pnow() : 0;',
   '      return task.promise.then(function(){',
   '        var renderMs = MEASURE ? r1(pnow() - r0) : 0;',
-  '        if (slot.pgen !== pgen) { try { c.width = 0; c.height = 0; } catch (e) {} try { page.cleanup(); } catch (e) {} done(); return; }',
-  '        keepPreview(slot, c, info, rawBytes, renderMs, pv0, pgen);',
   '        try { page.cleanup(); } catch (e) {}',
+  '        if (slot.pgen !== pgen) { try { c.width = 0; c.height = 0; } catch (e) {} done(); return; }',
+  // ⚠️ THE ONE LINE THE LOADING BUG WAS ABOUT. The bitmap exists; the only
+  // thing this job still needs is a few tens of milliseconds of thread to
+  // turn it into bytes, and that does not require the renderer. Whatever the
+  // reader is waiting for goes next.
+  '        var slotHeldMs = MEASURE ? r1(pnow() - pv0) : 0;',
+  '        releaseRenderSlot();',
+  '        encQueue.push({ slot: slot, c: c, info: info, rawBytes: rawBytes,',
+  '          renderMs: renderMs, slotHeldMs: slotHeldMs, t0: pv0, pgen: pgen,',
+  '          queuedAt: MEASURE ? pnow() : 0,',
+  '          isSettled: function(){ return settledOut; }, done: done });',
+  '        pumpEncode();',
   '      });',
   '    })["catch"](function(e){',
   '      giveUp(String((e && (e.name || e.message)) || e));',
   '    });',
+  '  }',
   '',
-  // ── THE ENCODE, AND THE THREE WAYS A WEBVIEW CAN ANSWER IT ─────────────
+  // ══ THE ENCODER, AND THE ONE CALL THAT DOES NOT WAIT ═══════════════════
   //
-  // `toBlob` is what we want: it hands back the encoded bytes with a real
-  // `size` on them, which is the number the memory report is made of.
+  // ⚠️ `canvas.toBlob` IS NOT USED HERE AND MUST NOT COME BACK. On this
+  // platform it is not an encoder call, it is a four-second wait with an
+  // encode on the end of it.
   //
-  // `toDataURL` is the fallback for a WebView with no `toBlob` and no
-  // `createObjectURL`. It is a base64 STRING, so it costs about a third more
-  // than the blob and is held as a JS string rather than by the image cache —
-  // worse on both counts, and still enormously better than a raw bitmap.
+  // WHAT IT ACTUALLY DOES, from Blink's own source rather than from a guess:
+  // `CanvasAsyncBlobCreator::ScheduleAsyncBlobCreation` on the MAIN thread
+  // encodes image/jpeg and image/png inside IDLE TASKS, and arms a delayed
+  // task that forces the work through if no idle period has turned up by
+  // then —
   //
-  // AND IF NEITHER WORKS, THE RAW CANVAS IS KEPT. A device that cannot encode
-  // still gets previews, at ~1.6 MB a sheet, and the `preview-mem` row says
-  // `storage: "canvas"` so the total is never mistaken for the encoded one.
-  // Failing to a blank sheet because the encoder was missing would be the
-  // original defect with a better excuse.
-  '    function keepPreview(slot2, c, info, rawBytes, renderMs, t0, pgen2){',
-  '      var cw = c.width, ch = c.height;',
-  '      function attach(storage, url, bytes, encodeMs){',
-  // A LATE ENCODER IS NOT A SECOND PREVIEW. The watchdog above may already
-  // have given this job up and handed the thread to another sheet; if the
-  // callback then arrives, its canvas AND its object URL go back and nothing
-  // else happens — attaching here would count a completion the census has
-  // already recorded as a failure, and would leave `inFlight` one below the
-  // truth. The revoke matters as much as the canvas: this is the one path on
-  // which a blob: URL is created and never reaches a slot, so nothing else
-  // would ever give it back.
-  '        if (settledOut || slot2.pgen !== pgen2) {',
-  '          try { c.width = 0; c.height = 0; } catch (e) {}',
-  '          if (storage === "blob" && url) { try { URL.revokeObjectURL(url); } catch (e) {} }',
-  '          done();',
-  '          return;',
-  '        }',
-  '        if (storage === "canvas") {',
-  '          c.className = "pv";',
-  '          slot2.pvImg = c;',
-  '          slot2.pvUrl = "";',
-  '        } else {',
-  '          var img = document.createElement("img");',
-  '          img.className = "pv";',
-  '          img.alt = "";',
-  '          img.src = url;',
-  '          slot2.pvImg = img;',
-  '          slot2.pvUrl = (storage === "blob") ? url : "";',
-  '          try { c.width = 0; c.height = 0; } catch (e) {}',
-  '        }',
+  //     #if (IS_LINUX || IS_CHROMEOS || IS_MAC || IS_WIN)
+  //     const double kIdleTaskStartTimeoutDelayMs = 1000.0;
+  //     #else
+  //     const double kIdleTaskStartTimeoutDelayMs = 4000.0;  // ChromeOS, Mobile
+  //     #endif
+  //
+  // — and a viewer rasterising plan sheets never yields the idle period, so
+  // the timeout IS the path. Measured on the device at `12`: encodeMs 4061,
+  // 4039, 4035, 4029, 4032, 4033, 4037. Four thousand of scheduler and
+  // 29-61 ms of encoder, which is what a 774x516 JPEG has always cost.
+  //
+  // THREE ESCAPES EXIST AND ONLY ONE OF THEM IS FREE:
+  //   image/webp        skips the idle path in the same function. Rejected:
+  //                     it changes what the previews look like and what they
+  //                     weigh to dodge a scheduler, which is not a reason.
+  //   a WORKER          `convertToBlob` on a worker thread encodes directly —
+  //                     the `!IsMainThread()` branch of the same function.
+  //                     Rejected FOR NOW: pdf.js paints into a main-thread 2D
+  //                     context, so getting a sheet there means an
+  //                     ImageBitmap transfer per page, and the whole prize is
+  //                     0.3 MB across the set. `hasOffscreenCanvas` and
+  //                     `hasConvertToBlob` are reported so the option stays
+  //                     open on evidence rather than on memory.
+  //   `toDataURL`       the same encoder with no scheduler in front of it.
+  //                     Synchronous, returns the bytes, costs what the encode
+  //                     costs. TAKEN.
+  //
+  // ⚠️ `OffscreenCanvas.convertToBlob()` ON THE MAIN THREAD IS NOT AN ESCAPE.
+  // It is the same CanvasAsyncBlobCreator and the same 4000 ms. A reading of
+  // `hasOffscreenCanvas: true` says nothing about this defect.
+  '  var encoderUsed = "";',
+  '  var encoderPosted = false;',
+  '  function encodeToUrl(c, rawBytes){',
+  '    if (typeof c.toDataURL === "function") {',
+  '      var du = "";',
+  '      try { du = c.toDataURL(PREVIEW_TYPE, PREVIEW_QUALITY); } catch (e) { du = ""; }',
+  // base64 carries three bytes in four characters, so the resident cost of a
+  // data URL is about three quarters of its length. Reported as what it is.
+  '      if (du && du.length > 32) {',
+  '        encoderUsed = "toDataURL";',
+  '        return { storage: "dataurl", url: du, bytes: Math.round(du.length * 0.75) };',
+  '      }',
+  '    }',
+  // AND IF THERE IS NO ENCODER AT ALL, THE RAW CANVAS IS KEPT. A device that
+  // cannot encode still gets previews, at ~1.6 MB a sheet, and the
+  // `preview-mem` row says `storage: "canvas"` so the total is never mistaken
+  // for the encoded one. Failing to a blank sheet because the encoder was
+  // missing would be the original defect with a better excuse.
+  '    encoderUsed = "none";',
+  '    return { storage: "canvas", url: "", bytes: rawBytes };',
+  '  }',
+  '',
+  // WHICH CALL WAS USED, AND WHAT ELSE THIS WEBVIEW OFFERED. Posted once, off
+  // the first real encode, so it reports the canvas that was actually encoded
+  // rather than a feature-detect on a canvas nobody drew into.
+  '  function encoderReport(c){',
+  '    if (!MEASURE || encoderPosted) return;',
+  '    encoderPosted = true;',
+  '    var hasOff = false, hasConv = false;',
+  '    try { hasOff = (typeof OffscreenCanvas !== "undefined"); } catch (e) { hasOff = false; }',
+  '    try { hasConv = hasOff && typeof OffscreenCanvas.prototype.convertToBlob === "function"; } catch (e) { hasConv = false; }',
+  '    probePost("encoder", {',
+  '      encoder: encoderUsed,',
+  '      hasToDataURL: !!(c && typeof c.toDataURL === "function"),',
+  '      hasToBlob: !!(c && typeof c.toBlob === "function"),',
+  '      hasOffscreenCanvas: hasOff,',
+  '      hasConvertToBlob: hasConv,',
+  '      mimeType: PREVIEW_TYPE, quality: PREVIEW_QUALITY,',
+  '      encoderNote: "toBlob and main-thread convertToBlob are both CanvasAsyncBlobCreator: idle-task encode, kIdleTaskStartTimeoutDelayMs 4000 on Android"',
+  '    });',
+  '  }',
+  '',
+  // ── WHO MAY NOT BE INTERRUPTED BY AN ENCODE ────────────────────────────
+  //
+  // PRIORITY IS ABSOLUTE, AND IT IS RE-DERIVED AT THE INSTANT THE ENCODER
+  // ASKS FOR THE THREAD — the same rule, and the same reason, as `pickNext`
+  // re-deriving its rank when a slot comes free. Every term is a fact about
+  // where the reader is NOW and none of them was true when the job was queued.
+  //
+  // A SHARP RENDER IN FLIGHT vetoes it: that is the reader's own sheet being
+  // drawn and an encode is tens of milliseconds stolen out of the middle of
+  // it. A RANK 0 OR RANK 1 CANDIDATE WAITING vetoes it too — a blank sheet on
+  // screen, or the sharp render for the sheet he has stopped on. A preview
+  // rasterisation in flight does NOT veto it: that is background work of
+  // exactly the same standing as this.
+  '  function encodeVeto(){',
+  '    if (sharpInFlight > 0) return "sharp-in-flight";',
+  '    var pick = pickNext();',
+  '    if (pick && pick.rank <= 1) return "rank" + pick.rank + "-waiting";',
+  '    return "";',
+  '  }',
+  '',
+  // NEAREST THE READER FIRST, and a BACKGROUND encode waits out the scroll
+  // exactly as the background rasterisation does. A sheet he can see never
+  // waits for anything: it has a drawn bitmap and the only thing between him
+  // and seeing it is this call.
+  '  function pickEncode(){',
+  '    var i, j, best = -1, bestRank = 9, bestD = 0, rank, d;',
+  '    for (i = 0; i < encQueue.length; i++) {',
+  '      j = encQueue[i];',
+  '      rank = onScreen(j.slot) ? 0 : 3;',
+  '      if (rank === 3 && !settled) continue;',
+  '      d = nearness(j.slot);',
+  '      if (rank < bestRank || (rank === bestRank && d < bestD)) { bestRank = rank; bestD = d; best = i; }',
+  '    }',
+  '    return best;',
+  '  }',
+  '',
+  '  function pumpEncode(){',
+  '    if (encoding) return;',
+  // ── THE ABANDONED ONES GO FIRST, AND THEY GO WITHOUT THE THREAD ────────
+  //
+  // A job the watchdog gave up on, or one whose document was replaced, is
+  // still holding a live 1.6 MB bitmap and is still counted against the
+  // backlog. It cannot be encoded — `runEncode` would drop it — but it would
+  // only get there when the veto lifts, which on a busy thread may be a long
+  // time. Freeing it costs nothing and needs no priority, so it is not queued
+  // behind the reader.
+  '    var k = 0;',
+  '    while (k < encQueue.length) {',
+  '      var stale = encQueue[k];',
+  '      if (stale.isSettled() || stale.slot.pgen !== stale.pgen) {',
+  '        encQueue.splice(k, 1);',
+  '        try { stale.c.width = 0; stale.c.height = 0; } catch (e) {}',
+  '        try { stale.done(); } catch (e) {}',
+  '        continue;',
+  '      }',
+  '      k = k + 1;',
+  '    }',
+  '    if (!encQueue.length) return;',
+  '    if (PROBE && abSuspend) return;',
+  '    if (encodeVeto()) return;',
+  '    var i = pickEncode();',
+  '    if (i < 0) return;',
+  '    var job = encQueue.splice(i, 1)[0];',
+  '    encoding = true;',
+  '    try { runEncode(job); }',
+  '    catch (e) {',
+  '      try { job.c.width = 0; job.c.height = 0; } catch (e2) {}',
+  '      try { job.done(); } catch (e2) {}',
+  '    }',
+  '    encoding = false;',
+  // ── ONE ENCODE A TURN, AND THE `setTimeout` IS THE POINT ───────────────
+  //
+  // A `while` here would encode a 26-sheet fill in one uninterruptible block —
+  // 26 x ~40 ms of a thread that cannot service a scroll, a paint or a render
+  // completion in the middle of it. That is a second version of the stall this
+  // file spends its whole length avoiding, arrived at from the other side.
+  // Going through a task means the veto above is re-read before every single
+  // encode, against a reader who may have moved.
+  '    if (encQueue.length && !encPumpQueued) {',
+  '      encPumpQueued = true;',
+  '      setTimeout(function(){ encPumpQueued = false; pumpEncode(); }, 0);',
+  '    }',
+  '  }',
+  '',
+  // ── ONE ENCODE, SYNCHRONOUSLY, AND THE PREVIEW ATTACHED ────────────────
+  //
+  // A JOB GIVEN UP ON IS NOT A PREVIEW. The watchdog may already have marked
+  // this one failed and the census already counted it; attaching here would
+  // count a completion twice. The canvas goes back and nothing else happens.
+  '  function runEncode(job){',
+  '    var slot2 = job.slot, c = job.c, cw = c.width, ch = c.height;',
+  '    var waitMs = MEASURE ? r1(pnow() - job.queuedAt) : 0;',
+  '    if (job.isSettled() || slot2.pgen !== job.pgen) {',
+  '      try { c.width = 0; c.height = 0; } catch (e) {}',
+  '      job.done();',
+  '      return;',
+  '    }',
+  '    var e0 = MEASURE ? pnow() : 0;',
+  '    var enc = encodeToUrl(c, job.rawBytes);',
+  '    var encodeMs = MEASURE ? r1(pnow() - e0) : 0;',
+  '    encoderReport(c);',
+  '    if (enc.storage === "canvas") {',
+  '      c.className = "pv";',
+  '      slot2.pvImg = c;',
+  '      slot2.pvUrl = "";',
+  '    } else {',
+  '      var img = document.createElement("img");',
+  '      img.className = "pv";',
+  '      img.alt = "";',
+  '      img.src = enc.url;',
+  '      slot2.pvImg = img;',
+  // NOTHING TO REVOKE. A `data:` URL is a string the <img> owns; it goes when
+  // `releasePreview` clears the src. `pvUrl` stays as the field that means
+  // "this preview holds an object URL someone has to hand back", and it is
+  // empty on every path this page now takes — which is one fewer lifetime to
+  // get wrong than `12` had.
+  '      slot2.pvUrl = "";',
+  '      try { c.width = 0; c.height = 0; } catch (e) {}',
+  '    }',
   // UNDER THE CANVAS, ALWAYS. `insertBefore(x, firstChild)` puts the preview
   // behind a sharp canvas that is already there — which happens whenever the
   // background fill reaches a sheet the reader has already read.
-  '        try { slot2.el.insertBefore(slot2.pvImg, slot2.el.firstChild || null); }',
-  '        catch (e) { try { slot2.el.appendChild(slot2.pvImg); } catch (e2) {} }',
-  '        slot2.pv = true;',
-  '        slot2.pvBytes = bytes;',
-  '        slot2.pvRawBytes = rawBytes;',
-  '        slot2.pvStorage = storage;',
-  '        pvCompleted = pvCompleted + 1;',
-  '        probePost("preview", { page: slot2.n, storage: storage,',
-  '          scale: Math.round(info.s * 10000) / 10000, clamp: info.clamp,',
-  '          canvasW: cw, canvasH: ch,',
-  '          megapixels: Math.round((cw * ch) / 1e5) / 10,',
-  '          rawBytes: rawBytes, storedBytes: bytes,',
-  '          compressionRatio: bytes ? Math.round((rawBytes / bytes) * 10) / 10 : null,',
-  '          renderMs: renderMs, encodeMs: encodeMs, totalMs: r1(pnow() - t0) });',
-  '        maybeReportPreviewMemory();',
-  '        done();',
-  '      }',
-  '      var e0 = MEASURE ? pnow() : 0;',
-  '      var canBlobUrl = false;',
-  '      try { canBlobUrl = !!(window.URL && typeof URL.createObjectURL === "function"); } catch (e) { canBlobUrl = false; }',
-  '      if (canBlobUrl && typeof c.toBlob === "function") {',
-  '        try {',
-  '          c.toBlob(function(blob){',
-  '            if (!blob) { attach("canvas", "", rawBytes, r1(pnow() - e0)); return; }',
-  '            var url = "";',
-  '            try { url = URL.createObjectURL(blob); } catch (e) { url = ""; }',
-  '            if (!url) { attach("canvas", "", rawBytes, r1(pnow() - e0)); return; }',
-  '            attach("blob", url, blob.size || 0, r1(pnow() - e0));',
-  '          }, PREVIEW_TYPE, PREVIEW_QUALITY);',
-  '          return;',
-  '        } catch (e) {}',
-  '      }',
-  '      if (typeof c.toDataURL === "function") {',
-  '        var du = "";',
-  '        try { du = c.toDataURL(PREVIEW_TYPE, PREVIEW_QUALITY); } catch (e) { du = ""; }',
-  // base64 carries three bytes in four characters, so the resident cost of a
-  // data URL is about three quarters of its length. Reported as what it is.
-  '        if (du && du.length > 32) { attach("dataurl", du, Math.round(du.length * 0.75), r1(pnow() - e0)); return; }',
-  '      }',
-  '      attach("canvas", "", rawBytes, r1(pnow() - e0));',
-  '    }',
+  '    try { slot2.el.insertBefore(slot2.pvImg, slot2.el.firstChild || null); }',
+  '    catch (e) { try { slot2.el.appendChild(slot2.pvImg); } catch (e2) {} }',
+  '    slot2.pv = true;',
+  '    slot2.pvBytes = enc.bytes;',
+  '    slot2.pvRawBytes = job.rawBytes;',
+  '    slot2.pvStorage = enc.storage;',
+  '    pvCompleted = pvCompleted + 1;',
+  '    probePost("preview", { page: slot2.n, storage: enc.storage, encoder: encoderUsed,',
+  '      scale: Math.round(job.info.s * 10000) / 10000, clamp: job.info.clamp,',
+  '      canvasW: cw, canvasH: ch,',
+  '      megapixels: Math.round((cw * ch) / 1e5) / 10,',
+  '      rawBytes: job.rawBytes, storedBytes: enc.bytes,',
+  '      compressionRatio: enc.bytes ? Math.round((job.rawBytes / enc.bytes) * 10) / 10 : null,',
+  '      renderMs: job.renderMs,',
+  // ── THE THREE NUMBERS `12` REPORTED AS ONE ─────────────────────────────
+  //
+  // `12`'s `encodeMs` stamped `e0` before `toBlob` and read it inside the
+  // callback, so it summed the scheduler's wait, the encoder's work and this
+  // page's own bookkeeping into a single figure — and then that figure was
+  // 4000 and nobody could say which part of it was. Split three ways, each
+  // measuring a thing that can be fixed on its own:
+  //
+  //   slotHeldMs    how long this job held the ONE render slot. It contains
+  //                 the rasterisation and must contain nothing else; if an
+  //                 encode ever gets back inside the slot, this is the number
+  //                 that says so.
+  //   encodeWaitMs  drawn, queued, and waiting for the thread. This is
+  //                 PRIORITY and not a scheduler: it is only ever spent
+  //                 behind a sharp render or a blank sheet on screen, and the
+  //                 reader is better off for every millisecond of it.
+  //   encodeMs      the encoder call, and only the encoder call. Tens of
+  //                 milliseconds on a 774x516 canvas, and a reading in the
+  //                 thousands means something has put a scheduler back in
+  //                 front of it.
+  '      slotHeldMs: job.slotHeldMs, encodeWaitMs: waitMs, encodeMs: encodeMs,',
+  '      encodeBacklog: encQueue.length,',
+  '      totalMs: r1(pnow() - job.t0) });',
+  '    maybeReportPreviewMemory();',
+  '    job.done();',
   '  }',
   '',
   // ── WHAT THE PREVIEW TIER ACTUALLY COST, SUMMED OFF WHAT WAS BUILT ─────
@@ -2154,9 +2495,9 @@ const VIEWER_SCRIPT = [
   '      slots[i].near = false;',
   '      releaseSlot(slots[i]);',
   // THE ONE PLACE A PREVIEW IS EVER GIVEN BACK. The document these belong to
-  // is being destroyed; every blob: URL has to be revoked here or the page —
-  // which outlives every document the reader opens — accumulates a whole set
-  // of previews per open, with nothing holding a reference to say so.
+  // is being destroyed; every one of them has to drop its bytes here or the
+  // page — which outlives every document the reader opens — accumulates a
+  // whole set of previews per open, with nothing holding a reference to say so.
   '      releasePreview(slots[i]);',
   '    }',
   '    rendered.length = 0;',
@@ -2166,6 +2507,19 @@ const VIEWER_SCRIPT = [
   // longer has a document behind it.
   '    queue.length = 0;',
   '    pvQueue.length = 0;',
+  // ── AND THE DRAWN-BUT-UNENCODED ONES, WHICH ARE THE LIVE BITMAPS ───────
+  //
+  // These are the only raw preview canvases this page ever holds — up to
+  // PREVIEW_ENCODE_BACKLOG plus whatever is on screen, ~1.6 MB apiece. They
+  // belong to a document that is being destroyed, and each one's `done()` is
+  // what hands back the render slot its job may still be holding, so dropping
+  // the array without calling it would leak `inFlight` and the viewer would
+  // never draw another sheet.
+  '    while (encQueue.length) {',
+  '      var ej = encQueue.pop();',
+  '      try { ej.c.width = 0; ej.c.height = 0; } catch (e) {}',
+  '      try { ej.done(); } catch (e) {}',
+  '    }',
   '    focus = null;',
   // The only point at which the file bytes can go — see the note at
   // getDocument below.
@@ -2745,6 +3099,13 @@ const VIEWER_SCRIPT = [
   // when it runs out, so the rows can be discounted rather than believed.
   '    armPreviews();',
   '    var f0 = pnow();',
+  // POSTED BEFORE THE WAIT, NOT AFTER IT. `scroll-setup` comes out on the far
+  // side of a fill that can take 45 s, so its absence used to mean either "the
+  // fill is still going" or "this code never ran" and nothing could tell them
+  // apart. This row is the first thing the scroll test does.
+  '    probePost("scroll-start", { pages: slots.length, previewsPending: previewsPending(),',
+  '      fillCapMs: PREVIEW_FILL_MAX_MS, legCapMs: SCROLL_PROBE_MAX_MS,',
+  '      atMs: r1(pnow()) });',
   '    (function waitFill(){',
   '      var pending = previewsPending();',
   '      if (pending > 0 && (pnow() - f0) <= PREVIEW_FILL_MAX_MS) {',
@@ -2773,13 +3134,43 @@ const VIEWER_SCRIPT = [
   '    })();',
   '  }',
   '',
+  // ── THE SCROLL TEST RUNS FIRST NOW, AND THAT IS THE FIX FOR "NO ROWS" ──
+  //
+  // ⚠️ IT EMITTED NOTHING ON THE DEVICE. No `scroll`, no `scroll-setup`, no
+  // `render-census` on a `probe=1` run. The timeout is NOT the explanation and
+  // could not have been: `scrollLeg` posts its row on the timeout path too,
+  // carrying `timedOut: true`, so 8000 ms of blank sheets would have produced
+  // two rows saying so. Zero rows means the function was never reached.
+  //
+  // WHAT WAS AHEAD OF IT, in order, all of it serial, all of it before the
+  // first scroll: a drain of up to 60 s; NINE full-scale A/B rasterisations;
+  // a native-raster operator-list walk; a re-read of the whole 31.7 MB file
+  // followed by a seven-pattern byte scan over every one of those bytes on
+  // the UI thread; and then a SECOND read of the same file parsed into a
+  // SECOND pdf.js document under a SECOND worker, with a 60 s bail of its
+  // own. That is minutes on a good run and a renderer kill on a bad one, and
+  // either way the reader has closed the viewer.
+  //
+  // SO THE ORDER IS INVERTED. The scroll test is the acceptance; everything
+  // else is a question about pixels. It runs while the page is still the page
+  // the reader opened, before anything has been suspended, and the A/B
+  // follows it. `scroll-start` is posted before the fill wait so that "ran and
+  // did not finish" can never again look identical to "never ran".
+  //
+  // IT PUTS THE READER BACK. `back-to-p1` already ends on sheet 1, which is
+  // where the open left him — but the suite no longer runs last, so the scroll
+  // offset is captured and restored rather than assumed.
   '  function probeSuite(){',
   '    if (!PROBE) return;',
-  '    abDrain(function(waitedMs, stillInflight){',
-  '      probePost("drain", { waitedMs: waitedMs, inflightAtStart: abDrainStartInflight,',
-  '        inflightNow: stillInflight, drained: stillInflight <= 0,',
-  '        deferred: queue.length, capMs: AB_DRAIN_MAX_MS });',
-  '      probeSuiteIsolated();',
+  '    var wasAt = docScrollTop();',
+  '    probeScrollTest(function(){',
+  '      try { window.scrollTo(0, wasAt); } catch (e) {}',
+  '      abDrain(function(waitedMs, stillInflight){',
+  '        probePost("drain", { waitedMs: waitedMs, inflightAtStart: abDrainStartInflight,',
+  '          inflightNow: stillInflight, drained: stillInflight <= 0,',
+  '          deferred: queue.length, capMs: AB_DRAIN_MAX_MS });',
+  '        probeSuiteIsolated();',
+  '      });',
   '    });',
   '  }',
   '',
@@ -2865,7 +3256,7 @@ const VIEWER_SCRIPT = [
   // time out on all four numbers and report a broken viewer. It is also the
   // only measurement here that deliberately leaves the page somewhere other
   // than where the reader left it, so nothing may follow it.
-  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ abResume(); probeScrollTest(function(){ probePost("suite", { done: true }); }); }); }); }',
+  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ abResume(); probePost("suite", { done: true }); }); }); }',
   '            if (!nat) { thenWorker(); return; }',
   // Anchored to the SCAN's own pixels, then held to the same caps — the
   // "render it at what the plan actually is" case, measured rather than

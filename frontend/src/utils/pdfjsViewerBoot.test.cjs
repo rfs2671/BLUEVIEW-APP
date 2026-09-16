@@ -318,10 +318,40 @@ function bootLive({
   // fallback, and a WebView with neither leaves it holding raw canvases — a
   // real branch on a real device, so the harness can turn each one off.
   //
-  // 'blob'    toBlob + URL.createObjectURL. The shipping path.
+  // 'blob'    toBlob AND toDataURL, both present. THE DEVICE. An Android
+  //           WebView offers both; which one the page reaches for is the
+  //           page's decision and the thing under test, not a capability.
   // 'dataurl' toDataURL only.
   // 'none'    neither. The raw-canvas fallback, ~1.6 MB a sheet.
   encode = 'blob',
+  // ── WHAT `toBlob` COSTS ON ANDROID, WHICH IS NOT WHAT IT COSTS HERE ────
+  //
+  // ⚠️ A HARNESS THAT CALLS `toBlob` BACK ON THE NEXT TICK CANNOT SEE THE
+  // DEFECT THIS OPTION EXISTS FOR, AND DID NOT SEE IT. `12` shipped with
+  // `encodeMs` reading 4029-4061 ms on the operator's phone while every case
+  // in this file was green, because the stub answered instantly and so the
+  // encode appeared free — free enough to sit inside the one render slot.
+  //
+  // Blink's `CanvasAsyncBlobCreator::ScheduleAsyncBlobCreation` encodes
+  // image/jpeg inside an IDLE TASK on the main thread and arms a delayed task
+  // to force it through if no idle period arrives:
+  //
+  //     #if (IS_LINUX || IS_CHROMEOS || IS_MAC || IS_WIN)
+  //     const double kIdleTaskStartTimeoutDelayMs = 1000.0;
+  //     #else
+  //     const double kIdleTaskStartTimeoutDelayMs = 4000.0;  // ChromeOS, Mobile
+  //     #endif
+  //
+  // A viewer rasterising plan sheets never yields that idle period, so the
+  // timeout is the path every time. `encodeLatencyMs: 4000` is that timeout,
+  // and it applies to `toBlob` ALONE — `toDataURL` is synchronous and has no
+  // scheduler in front of it, which is the entire asymmetry the fix rests on.
+  // A case that sets it can therefore FAIL on a page that calls `toBlob` and
+  // pass on one that does not, which is what makes it an instrument.
+  encodeLatencyMs = 0,
+  // What the encoder itself costs once it runs, charged to the fake clock by
+  // whichever call was used. 29-61 ms on the device for a 774x516 sheet.
+  encodeCostMs = 0,
 } = {}) {
   const posted = [];
   const listeners = {};
@@ -335,7 +365,10 @@ function bootLive({
   // the only way to prove a median picks the middle value rather than the last
   // one it happened to see.
   const hooks = { renderMsFor: null };
-  const marks = { drainAt: null, readyAt: null };
+  // EVERY ENCODER CALL THE PAGE MAKES, in order, with the clock reading at the
+  // moment it was made. Which call, and when, are both assertions.
+  const encodes = [];
+  const marks = { drainAt: null, readyAt: null, scrollStartAt: null };
   let now = 0;
   let nextId = 1;
   let inFlight = 0;
@@ -402,20 +435,30 @@ function bootLive({
       addEventListener(t, f) { listeners[`el:${t}`] = f; },
     };
     Object.defineProperty(el, 'firstChild', { get: () => el.__kids[0] || null });
-    // ASYNCHRONOUS, like the real one. A `toBlob` that called back on the same
-    // turn would hide an ordering bug the device would show — the slot's
-    // generation can move between the render finishing and the encode landing.
+    // ASYNCHRONOUS, like the real one, and SLOW when the case says so. A
+    // `toBlob` that called back on the same turn would hide an ordering bug
+    // the device would show — the slot's generation can move between the
+    // render finishing and the encode landing — and, as `12` proved, it hides
+    // the four seconds as well.
     if (encode === 'blob') {
       el.toBlob = (cb, type, quality) => {
         const size = Math.round((el.width || 0) * (el.height || 0) * ENCODED_BYTES_PER_PX);
-        schedule(0, () => cb({ size, type: type || '', quality }));
+        encodes.push({ call: 'toBlob', at: now, w: el.width, h: el.height });
+        schedule(encodeLatencyMs, () => {
+          now += encodeCostMs;
+          cb({ size, type: type || '', quality });
+        });
       };
     }
     if (encode === 'blob' || encode === 'dataurl') {
       // base64 is four characters per three bytes, so the string is longer
-      // than the payload — which is exactly why the page prefers the blob.
+      // than the payload — which is the price of not waiting for an idle task.
+      // SYNCHRONOUS, and it charges the clock on the way through, because a
+      // free encode is how an encode ends up somewhere it must not be.
       el.toDataURL = () => {
         const bytes = Math.round((el.width || 0) * (el.height || 0) * ENCODED_BYTES_PER_PX);
+        encodes.push({ call: 'toDataURL', at: now, w: el.width, h: el.height });
+        now += encodeCostMs;
         return `data:image/jpeg;base64,${'A'.repeat(Math.max(64, Math.round(bytes * (4 / 3))))}`;
       };
     }
@@ -682,6 +725,12 @@ function bootLive({
       // about a MOMENT and the posts themselves carry no time.
       if (m && m.type === 'pdf-ready' && marks.readyAt === null) marks.readyAt = now;
       if (m && m.type === 'pdf-probe' && m.probe === 'drain' && marks.drainAt === null) marks.drainAt = now;
+      // THE MOMENT THE SUITE BEGINS, which is now the scroll test rather than
+      // the drain. The contention the isolation exists to isolate from is
+      // whatever is running at THIS instant.
+      if (m && m.type === 'pdf-probe' && m.probe === 'scroll-start' && marks.scrollStartAt === null) {
+        marks.scrollStartAt = now;
+      }
     },
   };
   sandbox.window.visualViewport = {
@@ -808,7 +857,7 @@ function bootLive({
 
   return { posted, listeners, renders, sandbox, pump, pumpUntil, deliverIO, deliverIOGeo,
     scrollTo, hooks, marks, workersMade, injectedScripts, residentPixels, residentPages,
-    sharpPixels, previewPages, blankOnScreen, objectUrls, els,
+    sharpPixels, previewPages, blankOnScreen, objectUrls, els, encodes,
     pageH, viewportH,
     get now() { return now; },
     get threw() { return threw; },
@@ -1163,17 +1212,35 @@ async function main() {
 
     const drain = probeData(s.posted, 'drain')[0];
     ok(!!drain, 'the suite says out loud that it drained the queue first');
-    // THERE WAS SOMETHING TO DRAIN. Without this the case would pass on a
-    // viewer that drained nothing because nothing was running.
-    // ONE IS THE MOST THERE CAN BE now that the cap is 1, and the QUEUE
-    // behind it is the other half of "there was something to drain" — six
-    // pages arrived, one was running and the rest were waiting.
-    ok(!!drain && drain.inflightAtStart >= 1,
-      `and there really was contention to drain (${drain && drain.inflightAtStart} renders in flight)`);
+    // ── THERE WAS SOMETHING TO ISOLATE FROM, AND IT MOVED ────────────────
+    //
+    // ⚠️ THIS USED TO ASSERT `drain.inflightAtStart >= 1` AND IT CANNOT ANY
+    // MORE, because the scroll test now runs FIRST and runs the queue out
+    // before the drain is ever called. That is the point of the reorder — on
+    // the device the scroll rows never emitted at all, because every step of
+    // the A/B was ahead of them — but it moves where the contention is, and a
+    // check that stayed pointed at the drain would be asserting a fact about
+    // the old order while reading green.
+    //
+    // SO THE CONTENTION IS ASSERTED AT THE MOMENT THE SUITE ACTUALLY BEGINS.
+    // A rasterisation that started before `scroll-start` and was still running
+    // when it was posted is exactly what the old check meant, read off the new
+    // first step. Without it, this whole case would pass on a viewer whose
+    // suite ran against an idle thread and measured nothing.
+    ok(s.marks.scrollStartAt !== null,
+      `the suite announces itself before it waits for anything (scroll-start at ${
+        s.marks.scrollStartAt} ms)`);
+    const busyAtStart = s.marks.scrollStartAt === null ? [] : s.renders.filter(
+      (r) => r.startedAt <= s.marks.scrollStartAt
+        && (r.endedAt === null || r.endedAt > s.marks.scrollStartAt));
+    ok(busyAtStart.length >= 1,
+      `and there really was contention when it did (${busyAtStart.length} rasterisation(s) `
+      + `in flight at ${s.marks.scrollStartAt} ms)`);
     ok(!!drain && typeof drain.deferred === 'number',
       `and says how many sheets were left waiting behind it (${drain && drain.deferred})`);
-    ok(!!drain && drain.drained === true && drain.waitedMs > 0,
-      `and it waited for them rather than measuring through them (waited ${drain && drain.waitedMs} ms)`);
+    ok(!!drain && drain.drained === true,
+      `and the drain completed rather than measuring through what was left (waited ${
+        drain && drain.waitedMs} ms, ${drain && drain.inflightNow} still in flight)`);
 
     // THE STRUCTURAL PROOF, independent of the field the page emits about
     // itself: from the moment the drain completed, no rasterisation ever
@@ -1248,6 +1315,7 @@ async function main() {
   await previewTier();
   await tierFairness();
   await scrollProbe();
+  await encodeOffSlot();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1777,24 +1845,45 @@ async function previewTier() {
       `and not one of them is a live bitmap — the tier holds encoded bytes (${
         (rawHeld * 4 / 1e6).toFixed(1)} MB of raw preview resident, raw design would be ${
         ((26 * PREVIEW_TARGET_PX * 4) / 1e6).toFixed(0)} MB)`);
-    ok(pvEls.every((el) => typeof el.src === 'string' && el.src.indexOf('blob:') === 0),
-      'each is an <img> against an object URL, which is what lets Chromium '
+    ok(pvEls.every((el) => typeof el.src === 'string' && el.src.indexOf('data:image/jpeg') === 0),
+      'each is an <img> against an encoded data: URL, which is what lets Chromium '
       + 'decide for itself which of them to keep decoded');
   }
 
-  // ── AND THEY ARE HANDED BACK WHEN THE DOCUMENT GOES ───────────────────
+  // ── AND NOT ONE OBJECT URL WAS TAKEN OUT FOR THEM ─────────────────────
   //
-  // This page outlives every document the reader opens. A blob: URL that is
-  // never revoked keeps its bytes for the life of the PAGE, so a missed revoke
-  // accumulates one whole set of previews per open — the same shape of leak
-  // `releaseSlot` was written for, one layer down.
+  // ⚠️ THIS ASSERTION IS THE OPPOSITE OF THE ONE `12` CARRIED, AND THE REASON
+  // IS THE FOUR SECONDS. `12` held each preview as a Blob behind an object
+  // URL, which is 0.3 MB cheaper across this set and cost 4000 ms a sheet to
+  // reach, because the only way to GET a Blob out of a canvas on the main
+  // thread is `toBlob` — an idle-task encode with a 4000 ms start timeout on
+  // Android. A data: URL is the same encoder with no scheduler in front of it.
+  //
+  // WHAT THIS CASE IS REALLY GUARDING is the lifetime that used to go with it:
+  // a blob: URL that is never revoked keeps its bytes for the life of the
+  // PAGE, and this page outlives every document the reader opens. The fix
+  // removes the lifetime rather than managing it, so the test is that the
+  // page took NO object URL out for a preview — one fewer thing to leak.
   {
-    const madeBefore = s.objectUrls.made.length;
+    const forPreviews = s.objectUrls.made.filter((u) => !/worker/i.test(u));
+    // The worker is built from a blob: URL and always will be; it is one URL
+    // for the life of the page and it is not a preview.
+    ok(forPreviews.length <= 1,
+      `the preview tier takes out no object URLs at all (${s.objectUrls.made.length} made in total, `
+      + 'and the one that exists is the pdf.js worker)');
+
+    // THE FIRST DOCUMENT'S PREVIEWS, CAPTURED BEFORE THE SECOND OPEN. The
+    // stub keeps every element it ever made, so filtering the whole list
+    // afterwards would count the NEW document's 26 and report a leak on a
+    // viewer that cleaned up perfectly.
+    const firstSet = s.els.filter((el) => el.className === 'pv' && el.src);
+    ok(firstSet.length === 26, `the first document really built 26 (${firstSet.length})`);
     s.listeners['doc:message']({ data: JSON.stringify({ type: 'open-document', file: 'file:///b.pdf' }) });
     await s.pump();
-    ok(madeBefore >= 26, `26 object URLs were taken out for the first document (${madeBefore})`);
-    ok(s.objectUrls.revoked.length >= 26,
-      `and opening a second document gives them back (${s.objectUrls.revoked.length} revoked)`);
+    const stale = firstSet.filter((el) => el.src);
+    ok(stale.length === 0,
+      `and opening a second document clears every one of THEIR srcs rather than `
+      + `leaking a set per open (${stale.length} still carrying bytes)`);
   }
 
   // ── THE WEBVIEW THAT CANNOT ENCODE STILL GETS PREVIEWS ────────────────
@@ -2099,7 +2188,7 @@ async function scrollProbe() {
   // the winner's figure would leave nobody able to check the choice.
   ok(mem.length === 1, `the preview memory row is emitted once (got ${mem.length})`);
   const m = mem[0] || {};
-  ok(m.storage === 'blob',
+  ok(m.storage === 'dataurl',
     `and names the storage that was actually used (got ${m.storage})`);
   ok(typeof m.previewStoredMB === 'number' && m.previewStoredMB > 0,
     `with the measured total (${m.previewStoredMB} MB for ${m.previewsBuilt} previews)`);
@@ -2134,6 +2223,287 @@ async function scrollProbe() {
       `and the probe never moved the reader's page (scrollTop ${off.sandbox.pageYOffset})`);
     ok(off.previewPages().length === 26,
       `while still building every preview (${off.previewPages().length} of 26)`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 19. THE FOUR SECONDS, AND THE SLOT THEY WERE HELD IN.
+//
+//     WHAT THE DEVICE REPORTED AT `12`, on a 10-page / 12.7 MB set:
+//
+//         preview encodeMs:  4061, 4039, 4035, 4029, 4032, 4033, 4037
+//         preview totalMs:   4.4 - 5.6 s each
+//         sharp render:      313 - 500 ms        <- fast, not the problem
+//
+//     A figure constant to +/-30 ms across sheets with completely different
+//     content is not a cost, it is a timer. The timer is Blink's
+//     `kIdleTaskStartTimeoutDelayMs`, which is 4000 on Android: `toBlob`
+//     encodes image/jpeg inside an IDLE TASK on the main thread and arms a
+//     delayed task to force it through when no idle period turns up. A viewer
+//     rasterising plan sheets never yields one. The 29-61 ms residue is the
+//     encoder, and that is all the encoder ever cost.
+//
+//     ⚠️ EVERY CASE IN THIS FILE WAS GREEN WHILE THAT SHIPPED, because the
+//     harness answered `toBlob` on the next tick. An instrument that cannot
+//     produce the reading the device produced cannot fail on it. So the stub
+//     now takes `encodeLatencyMs`, the cases below set it to the real 4000,
+//     and the assertions are about what the page does with an encoder that
+//     makes it wait — which is: not use it, and not hold the renderer for it.
+// ═══════════════════════════════════════════════════════════════════════════
+async function encodeOffSlot() {
+  console.log('\n── the encode is not a wait, and not in the render slot ──────\n');
+
+  // ── (a) THE PAGE DOES NOT CALL THE SLOW ENCODER AT ALL ────────────────
+  //
+  // Both calls are present, exactly as they are on the device. The choice is
+  // the page's, and this is the case that names it.
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 300,
+      pageH: 886, viewportH: 883, encode: 'blob',
+      encodeLatencyMs: 4000, encodeCostMs: 40,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+
+    const calls = [...new Set(s.encodes.map((e) => e.call))];
+    ok(s.encodes.length >= 26,
+      `every sheet is encoded (${s.encodes.length} encoder calls for 26 sheets)`);
+    ok(calls.length === 1 && calls[0] === 'toDataURL',
+      `and not one of them is toBlob, which on this platform is a 4000 ms wait `
+      + `with an encode on the end (calls used: ${calls.join(', ') || 'none'})`);
+
+    const enc = probeData(s.posted, 'encoder');
+    ok(enc.length === 1, `the page says which encoder it used, once (got ${enc.length})`);
+    ok(enc[0] && enc[0].encoder === 'toDataURL',
+      `and names it (${enc[0] && enc[0].encoder})`);
+    ok(enc[0] && enc[0].hasToBlob === true,
+      'having reported that toBlob was available and was passed over');
+    ok(enc[0] && typeof enc[0].hasOffscreenCanvas === 'boolean'
+      && typeof enc[0].hasConvertToBlob === 'boolean',
+      `and whether OffscreenCanvas.convertToBlob exists here, which is the other `
+      + `candidate and is the SAME Blink class on this thread (offscreen ${
+        enc[0] && enc[0].hasOffscreenCanvas}, convertToBlob ${enc[0] && enc[0].hasConvertToBlob})`);
+
+    // ── THE THREE NUMBERS, SPLIT ────────────────────────────────────────
+    //
+    // `12` reported one figure for all of it and the figure was 4000, so
+    // nobody could say which part was scheduler, which was encoder and which
+    // was this page's own bookkeeping. Each is now separately assertable, and
+    // each can fail on its own.
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length === 26, `there is a row per preview (${rows.length})`);
+    for (const k of ['slotHeldMs', 'encodeWaitMs', 'encodeMs']) {
+      ok(rows.every((r) => typeof r[k] === 'number'), `every row carries ${k}`);
+    }
+    const worstEncode = Math.max(...rows.map((r) => r.encodeMs));
+    ok(worstEncode < 100,
+      `the encode itself is under 100 ms on every sheet (worst ${worstEncode} ms; `
+      + `the acceptance is < 100, and \`12\` measured 4029-4061 on the device)`);
+    ok(rows.every((r) => r.encodeMs < 1000),
+      'and not one of them contains a 4000 ms idle-task start timeout');
+
+    // ── THE SLOT CARRIES THE RASTERISATION AND NOTHING ELSE ─────────────
+    //
+    // `slotHeldMs` is measured from the job taking the render slot to the job
+    // giving it back. If the encode is inside it, this number contains the
+    // encode — and with `toBlob` it would contain 4000 ms of nothing at all.
+    const worstHeld = Math.max(...rows.map((r) => r.slotHeldMs));
+    const worstRender = Math.max(...rows.map((r) => r.renderMs));
+    ok(rows.every((r) => r.slotHeldMs <= r.renderMs + 50),
+      `the render slot is released when the BITMAP IS DRAWN, not when the encode `
+      + `finishes (worst hold ${worstHeld} ms against a worst render of ${worstRender} ms)`);
+    ok(s.maxInFlight === 1,
+      `and splitting the job did not put two rasterisations on the thread (peak ${s.maxInFlight})`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (b) A SLOW ENCODER CANNOT DELAY THE SHEET IN FRONT OF THE READER ──
+  //
+  // ⚠️ THIS IS THE CASE THAT FAILS ON `12`. The mechanism, not the API: the
+  // encoder is made to cost 4000 ms and the reader then scrolls to a sheet
+  // that has neither tier on it. If the encode holds the one render slot, his
+  // sharp render queues behind it and he waits the full four seconds — which
+  // is the 8-10 s a page the operator reported, made of one render plus one
+  // wait. If the slot came back at the draw, he waits a settle and a render.
+  //
+  // The gap between the two readings is ~4000 ms, so this case cannot pass by
+  // accident and cannot fail by a margin.
+  {
+    const s = bootLive({
+      search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 300,
+      pageH: 886, viewportH: 883, encode: 'blob',
+      encodeLatencyMs: 4000, encodeCostMs: 40,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    // Let the fill get going but nowhere near finished — so there is always a
+    // preview mid-flight or mid-encode when the reader moves.
+    await s.pumpUntil(() => s.renders.filter(isPreviewRender).length >= 3);
+    const pending = 26 - s.previewPages().length;
+    ok(pending > 5, `the fill is genuinely outstanding when he moves (${pending} to go)`);
+
+    const mark = s.renders.length;
+    const flickAt = s.now;
+    s.scrollTo((12 - 1) * s.pageH, true);
+    s.deliverIOGeo();
+    await s.pumpUntil(() => s.renders.slice(mark).some(
+      (r) => !isPreviewRender(r) && r.page === 12));
+    const his = s.renders.slice(mark).find((r) => !isPreviewRender(r) && r.page === 12);
+    ok(!!his, 'the sheet he stopped on does get a sharp render');
+    // SETTLE + one preview rasterisation is the honest worst case: he may
+    // arrive while a background preview is mid-draw, and that one finishes.
+    // What he must NEVER wait for is an ENCODE, which is 4000 ms here.
+    const waited = his ? his.startedAt - flickAt : Infinity;
+    ok(waited < SETTLE_MS + 300 + 200,
+      `and it starts ${waited} ms after the flick — a settle and at most one `
+      + `rasterisation, never an encode (a held slot would make this ~${
+        SETTLE_MS + 300 + 4000} ms)`);
+    await s.pump();
+    ok(s.blankOnScreen().length === 0,
+      `and nothing is blank when the dust settles (${s.blankOnScreen().join(',') || 'none'})`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (c) THE BACKGROUND FILL PAUSES WHILE THE SCROLL IS MOVING ─────────
+  //
+  // `12` could not do this: the encode was inside the render slot, so pausing
+  // the fill paused the encoder with it and previews already drawn would never
+  // have attached. With the two separated, the fill can stop dead during a
+  // flick — and the ONE exemption is the sheet the reader can actually see
+  // with nothing on it, which is the whole acceptance (`maxBlankOnScreen 0`).
+  {
+    const s = bootLive({
+      search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 120,
+      pageH: 886, viewportH: 883, encodeCostMs: 40,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pumpUntil(() => s.renders.filter(isPreviewRender).length >= 3);
+
+    const mark = s.renders.length;
+    const flickAt = s.now;
+    // A flick: three scroll events inside one settle interval, to sheets whose
+    // previews are certainly not built yet.
+    s.scrollTo(6 * s.pageH, true);
+    s.scrollTo(12 * s.pageH, true);
+    s.scrollTo(18 * s.pageH, true);
+    s.deliverIOGeo();
+    await s.pump();
+
+    const during = s.renders.slice(mark).filter(
+      (r) => isPreviewRender(r) && r.startedAt < flickAt + SETTLE_MS);
+    const onScreenPages = [18, 19, 20];
+    const offScreen = during.filter((r) => onScreenPages.indexOf(r.page) < 0);
+    ok(offScreen.length === 0,
+      `no BACKGROUND preview starts inside the ${SETTLE_MS} ms the scroll is still `
+      + `moving (${offScreen.map((r) => `p${r.page}`).join(',') || 'none'})`);
+    ok(s.blankOnScreen().length === 0,
+      `and the sheet he lands on is still not blank — the pause exempts what he `
+      + `can see (${s.blankOnScreen().join(',') || 'none'})`);
+    ok(!s.threw, `without throwing${s.threw ? ` — ${String(s.threw.stack).split('\n')[0]}` : ''}`);
+  }
+
+  // ── (d) DRAWN-BUT-UNENCODED SHEETS ARE BOUNDED ───────────────────────
+  //
+  // Releasing the slot at the draw lets the fill run ahead of the encoder, and
+  // every sheet in that gap holds a live 0.4 MP bitmap at 1.6 MB. `12`'s "ONE
+  // TRANSIENT CANVAS, NOT N" was a consequence of serialising the encode into
+  // the render slot; with that gone it has to be an invariant of its own.
+  //
+  // ⚠️ WHAT THIS CASE CAN AND CANNOT FAIL ON, STATED, because a bound that
+  // nothing approaches is a bound that reads green for the wrong reason.
+  // MEASURED HERE: the peak is 1. It stays there because `pumpQueue` offers
+  // the encoder the thread the moment the rasterisation tiers decline it, and
+  // with a cap of 1 they decline it after every single draw — so the queue is
+  // naturally one deep and PREVIEW_ENCODE_BACKLOG is a guard against a future
+  // change, not a limit this run reaches.
+  //
+  // WHAT IT WOULD CATCH is the shape of failure that matters: a fill that ran
+  // ahead of the encoder at all. The peak is read off the LIVE SCRATCH
+  // BITMAPS — canvases with pixels that belong to no slot and are in no
+  // document — sampled at every step of the clock rather than off a field the
+  // page reports about itself, so a page that miscounted its own backlog
+  // could not hide in it.
+  {
+    const s = bootLive({
+      search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 20,
+      pageH: 886, viewportH: 883, encodeCostMs: 200,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    let peakScratch = 0;
+    await s.pumpUntil(() => {
+      const live = s.els.filter((el) => !el.__slot && !el.parentNode
+        && Number(el.width) > 0 && Number(el.height) > 0).length;
+      if (live > peakScratch) peakScratch = live;
+      return false;
+    });
+    ok(peakScratch <= 4,
+      `never more than a handful of live scratch bitmaps at once (peak ${peakScratch}; `
+      + `a fill that ran away from the encoder would hold 26, which is 41 MB)`);
+    ok(s.previewPages().length === 26,
+      `while still building every preview (${s.previewPages().length} of 26)`);
+  }
+
+  // ── (d2) AND THE ROW SAYS WHAT THE BACKLOG WAS ───────────────────────
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 20,
+      pageH: 886, viewportH: 883, encodeCostMs: 200,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+    const rows = probeData(s.posted, 'preview').filter((r) => !r.error);
+    ok(rows.length > 0 && rows.every((r) => typeof r.encodeBacklog === 'number'),
+      `every preview row says how many sheets were waiting to encode behind it `
+      + `(worst ${Math.max(...rows.map((r) => r.encodeBacklog))})`);
+  }
+
+  // ── (e) THE SCROLL MEASUREMENT RUNS FIRST ────────────────────────────
+  //
+  // ⚠️ IT EMITTED NOTHING ON THE DEVICE — no `scroll`, no `scroll-setup`, no
+  // `render-census` on a `probe=1` run. The 8000 ms leg cap is NOT the
+  // explanation and could not be: `scrollLeg` posts its row on the timeout
+  // path too, with `timedOut: true`. Zero rows means it was never reached, and
+  // what was ahead of it was nine full-scale rasterisations, a byte scan over
+  // the whole 31.7 MB file and a second complete parse under a second worker.
+  //
+  // So the order is inverted, and the order is now a test. A row that only
+  // appears after minutes of A/B is a row nobody on a phone will ever see.
+  {
+    const s = bootLive({
+      search: '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages: 26, slotRenderMs: 20,
+      pageH: 500, viewportH: 883,
+    });
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    s.deliverIOGeo();
+    await s.pump();
+
+    const kinds = s.posted.filter((m) => m && m.type === 'pdf-probe').map((m) => m.probe);
+    const firstScroll = kinds.indexOf('scroll-start');
+    const firstAb = kinds.indexOf('render-ab');
+    ok(firstScroll >= 0, 'the scroll test announces itself before it waits for the fill');
+    ok(firstAb >= 0, 'and the A/B still runs');
+    ok(firstScroll >= 0 && firstAb >= 0 && firstScroll < firstAb,
+      `and the scroll rows come FIRST, not behind nine renders and two full `
+      + `re-reads of the document (scroll-start at row ${firstScroll}, render-ab at ${firstAb})`);
+    ok(kinds.indexOf('scroll') < kinds.indexOf('render-ab'),
+      `so do the legs themselves (scroll at ${kinds.indexOf('scroll')})`);
+
+    const start = probeData(s.posted, 'scroll-start')[0];
+    ok(!!start && typeof start.previewsPending === 'number'
+      && start.fillCapMs > 0 && start.legCapMs > 0,
+      `and it carries what it is about to wait for, so "ran and did not finish" `
+      + `can never again look like "never ran" (${JSON.stringify(start)})`);
+
+    // AND THE READER IS PUT BACK. The suite no longer runs last, so a scroll
+    // test that left the page on sheet 1 while the reader was on sheet 9 would
+    // be a probe that moved him.
+    ok(s.sandbox.pageYOffset === 0,
+      `the page is handed back where the open left it (scrollTop ${s.sandbox.pageYOffset})`);
   }
 }
 
