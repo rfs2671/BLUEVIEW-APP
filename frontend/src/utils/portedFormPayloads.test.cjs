@@ -53,8 +53,14 @@ function loadModel(rel, extra = '') {
     return { ${[...new Set(names)].join(', ')} };
   `)();
 }
+// THE REAL dateEntry.js AS THE PREAMBLE, NOT A STUB — the rule this file
+// states a few lines down for checklistMap, applied here for the same reason.
+// The register's prefill reads a worker's stored card expiry through
+// `toStoredDate`, which decides whether that row may be FILED at all
+// (server.py SUBMIT_INVALID_DATE); a stub of that reader would be the thing
+// under test. `modelSource` is a function declaration, so it is hoisted.
 const OSHA = loadModel('oshaLogModel.js',
-  "const easternToday = () => '2026-08-12';");
+  `const easternToday = () => '2026-08-12';\n${modelSource('dateEntry.js')}`);
 const SCAF = loadModel('scaffoldMaintenanceModel.js');
 // The same stripping, returned as SOURCE rather than evaluated — so a model
 // that imports a shared helper can be handed the helper's REAL code as its

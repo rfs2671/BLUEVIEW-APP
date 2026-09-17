@@ -39,6 +39,8 @@ import {
 import { GlassCard } from './GlassCard';
 import GlassButton from './GlassButton';
 import GlassInput from './GlassInput';
+import DateInput from './DateInput';
+import { dateEntryError, toStoredDate, formatStoredDate } from '../utils/dateEntry';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from './Toast';
 import { projectsAPI } from '../utils/api';
@@ -58,7 +60,6 @@ const SOURCE_LABELS = {
   admin_attested: 'Attested',
 };
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Mirrors CO_NUMBER_MAX_LEN in backend/lib/project_retention.py. Length is the
 // ONLY bound either side applies — see co_number_problem() for why no format is
 // enforced and why inventing one here would be worse than useless.
@@ -115,7 +116,10 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
   };
 
   const saveCompletion = async () => {
-    const v = dateDraft.trim();
+    // ISO, built by the shared field's rules — '' when blank, null when the
+    // text is not a real day. The shape check that used to live here only
+    // asked for NNNN-NN-NN and would have let 2026-02-30 through to the server.
+    const v = toStoredDate(dateDraft);
     const co = coDraft.trim();
     // Checked here ONLY to give an immediate message; the server validates the
     // same rules and is the one that decides. Both halves are checked before
@@ -130,15 +134,16 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
       toast.error('That number is too long', `Up to ${CO_MAX_LEN} characters.`);
       return;
     }
-    if (!DATE_RE.test(v)) {
-      toast.error('Check the date', 'Use YYYY-MM-DD, e.g. 2026-08-15.');
+    if (!v) {
+      toast.error('Check the date',
+                  dateEntryError(dateDraft) || 'Enter the completion date as MM/DD/YYYY.');
       return;
     }
     // Sent as ONE patch. Two requests would leave a window in which half a
     // completion is on record, which is the state the pair rule exists to
     // make unreachable.
     if (await save({ job_completion_date: v, job_completion_co_number: co })) {
-      toast.success('Completion recorded', `Records retained 7 years from ${v}.`);
+      toast.success('Completion recorded', `Records retained 7 years from ${formatStoredDate(v)}.`);
     }
   };
 
@@ -198,7 +203,7 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
           <Text style={s.label}>Job completed</Text>
           {completed ? (
             <Text style={s.value}>
-              {completed}
+              {formatStoredDate(completed)}
               {project.completion_source
                 ? ` · ${labelFor(project.completion_source)}`
                 : ''}
@@ -348,11 +353,12 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
                 autoCorrect={false}
                 maxLength={CO_MAX_LEN}
               />
-              <GlassInput
+              <DateInput
+                as={GlassInput}
                 value={dateDraft}
-                onChangeText={setDateDraft}
-                placeholder="YYYY-MM-DD"
-                autoCapitalize="none"
+                onChange={setDateDraft}
+                placeholder="Completion date MM/DD/YYYY"
+                palette={{ error: colors.status.error, hint: colors.text.muted }}
               />
               {/* SAID OUT LOUD. The app ingests DOB certificate-of-occupancy
                   records but compares none of them to this field, so an admin

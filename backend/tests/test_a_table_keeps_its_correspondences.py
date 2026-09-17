@@ -77,8 +77,15 @@ _RESHAPES = frozenset({
 
 #: PRINTS WHAT IT IS GIVEN, give or take the first letter's case. A probe
 #: survives these, which is what makes the correspondence checkable.
+#:
+#: `date_as_filed` / `date_as_filed_raw` ARE HERE AND NOT IN _RESHAPES, and the
+#: distinction is the whole point of those two names: they are `text` and
+#: `raw_text` byte for byte -- a permit date is printed exactly as it was filed,
+#: because the word-level diff guarding the conversion cannot see digits -- and
+#: what they add is a DECLARATION that the field holds a calendar day, which is
+#: how the submit gate finds every date field without a hand list.
 _VERBATIM = frozenset({"text", "raw_text", "name", "raw_name", "sentence",
-                       "sub_company"})
+                       "sub_company", "date_as_filed", "date_as_filed_raw"})
 
 
 def _tables():

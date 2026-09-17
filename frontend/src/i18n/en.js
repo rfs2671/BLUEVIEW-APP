@@ -208,6 +208,41 @@ export default {
     // completeness rule: it says the record contains nothing at all, which is
     // the one thing that is true of it regardless of which form it is.
     code_SUBMIT_NO_CONTENT: 'Every row on this log is empty, so there is nothing to file. Fill in at least one before submitting.',
+    // ── A DATE THAT IS NOT A DATE, AND THE RECORD THAT KEPT IT ──────────────
+    //
+    // The field used to hand the log '' for anything that was not yet a real
+    // day, so a CP who typed 13/45/2029 or stopped at 07/2 filed a date that
+    // reads as never recorded. It now keeps what he typed, and the SUBMIT is
+    // refused instead — which only helps if the sentence says which date and
+    // what it currently says.
+    //
+    // TWO KEYS, the split csRefusalCopy established. LogbookLockBar renders
+    // this namespace from a code STORED by recordFinalizeError, with no detail
+    // beside it, so the base sentence must hold no slot — a '{field}' would be
+    // painted at him literally. The `_FIELD` variant is reached only from a
+    // call site holding the detail (src/utils/logbookDateGate.js).
+    //
+    // `_FIELD`, NOT `_NAMED`, AND THAT SUFFIX IS LOAD-BEARING. csRefusalCopy
+    // reads `code_X_NAMED` for ANY code the moment a refusal carries a
+    // `registered_name`, so a `_NAMED` key here would be served for a
+    // superintendent refusal that happens to travel with a name — a sentence
+    // about a date, over a refusal about who may file. csRefusalCopy.test.cjs
+    // caught exactly that.
+    //
+    // NO "TRY AGAIN" IN EITHER. Retrying files the same value; one correction
+    // on one field is the whole remedy, and the date format is named because
+    // that is the thing he has to type.
+    code_SUBMIT_INVALID_DATE:
+      'A date on this log is not a real date. Open the marked step, fix the '
+      + 'date shown under the field — or clear it — then submit again.',
+    code_SUBMIT_INVALID_DATE_FIELD:
+      '{field} holds "{value}", which is not a date. Enter it as MM/DD/YYYY, '
+      + 'or clear the field, then submit again.',
+    // The PRE-FLIGHT's title. "Could not finalize" is the right words for a
+    // refusal that came back from the server; this one is the device stopping
+    // him before the round trip — including offline, where there is no round
+    // trip to be refused by — so it names the thing to look at instead.
+    invalidDateTitle: 'Check the date',
     // A FILED LOG, NOT A LOCKED ONE — 409, not the 423 above. An end-of-day log
     // is submitted but not frozen until the overnight sweep, and in that window
     // both update_logbook and create_logbook refuse a write to its `data`.
@@ -740,7 +775,7 @@ export default {
     phCompany: 'Company',
     phCert: 'Tap to choose',
     phCard: 'Card number',
-    phExpiration: 'Tap to choose a date',
+    phExpiration: 'MM/DD/YYYY',
 
     certPickTitle: 'Which certification?',
     signedOnFile: 'Signature on file',
@@ -936,7 +971,7 @@ export default {
     fPlatforms: 'Number of platforms decked',
     fShedType: 'Shed type',
     phField: 'Not recorded',
-    phDate: 'Tap to choose a date',
+    phDate: 'MM/DD/YYYY',
 
     // Step 2 — the 19 checks.
     checksHint: 'Answer every item. N/A is a real answer — an item left blank is not.',

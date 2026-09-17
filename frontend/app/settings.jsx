@@ -42,6 +42,8 @@ import { bundleAgeLabel } from '../src/utils/bundleAge';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
+import DateInput from '../src/components/DateInput';
+import { dateEntryError, toStoredDate } from '../src/utils/dateEntry';
 import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
 import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
@@ -83,6 +85,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode } = useAuth();
   const { isDark, toggleTheme, colors } = useTheme();
+  const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
 
   // ── BUILD IDENTITY ──────────────────────────────────────────────────
@@ -362,12 +365,26 @@ export default function SettingsScreen() {
       toast.error('Missing dates', 'All three insurance expiry dates are required.');
       return;
     }
+    // THE SAME CHECK AS EVERY OTHER DATE FIELD, before the request. The server
+    // still decides "in the past" and "more than 5 years out" — this only
+    // refuses a date that is not on the calendar.
+    const bad = [['General Liability', insGL], ["Workers' Comp", insWC], ['Disability', insDB]]
+      .find(([, v]) => dateEntryError(v));
+    if (bad) {
+      toast.error(`Check the ${bad[0]} date`, dateEntryError(bad[1]));
+      return;
+    }
     setSavingInsurance(true);
     try {
+      // ISO ON THE WIRE, as from every date field. The endpoint parses it with
+      // dateutil (which reads YYYY-MM-DD unambiguously) and stores its own
+      // MM/DD/YYYY, which is what the BIS-scraped records it replaces carry —
+      // so the stored shape does not change. The pre-filled values are those
+      // stored MM/DD/YYYY strings, read back by the field as they are.
       const resp = await apiClient.put('/api/admin/company/insurance/manual', {
-        general_liability_expiry: insGL.trim(),
-        workers_comp_expiry:      insWC.trim(),
-        disability_expiry:        insDB.trim(),
+        general_liability_expiry: toStoredDate(insGL),
+        workers_comp_expiry:      toStoredDate(insWC),
+        disability_expiry:        toStoredDate(insDB),
       });
       setInsData(resp.data);
       setShowInsuranceForm(false);
@@ -843,39 +860,36 @@ export default function SettingsScreen() {
                         </Text>
                       </View>
                       <Text style={{ fontSize: 12, color: colors.text.muted, marginBottom: spacing.md }}>
-                        Use MM/DD/YYYY format. All three dates must be current.
+                        Type each date as MM/DD/YYYY — the slashes fill in. All three dates must be current.
                       </Text>
 
                       <View style={s.fieldGroup}>
                         <Text style={s.fieldLabel}>General Liability Expiry</Text>
-                        <GlassInput
+                        <DateInput
+                          as={GlassInput}
                           value={insGL}
-                          onChangeText={setInsGL}
-                          placeholder="MM/DD/YYYY"
-                          keyboardType="numbers-and-punctuation"
-                          autoCapitalize="none"
+                          onChange={setInsGL}
+                          palette={datePalette}
                         />
                       </View>
 
                       <View style={[s.fieldGroup, { marginTop: spacing.sm }]}>
                         <Text style={s.fieldLabel}>Workers' Comp Expiry</Text>
-                        <GlassInput
+                        <DateInput
+                          as={GlassInput}
                           value={insWC}
-                          onChangeText={setInsWC}
-                          placeholder="MM/DD/YYYY"
-                          keyboardType="numbers-and-punctuation"
-                          autoCapitalize="none"
+                          onChange={setInsWC}
+                          palette={datePalette}
                         />
                       </View>
 
                       <View style={[s.fieldGroup, { marginTop: spacing.sm }]}>
                         <Text style={s.fieldLabel}>Disability / DB Expiry</Text>
-                        <GlassInput
+                        <DateInput
+                          as={GlassInput}
                           value={insDB}
-                          onChangeText={setInsDB}
-                          placeholder="MM/DD/YYYY"
-                          keyboardType="numbers-and-punctuation"
-                          autoCapitalize="none"
+                          onChange={setInsDB}
+                          palette={datePalette}
                         />
                       </View>
 

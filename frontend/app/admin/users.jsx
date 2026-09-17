@@ -45,9 +45,10 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
   ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
-  licenceSentence, rolesAssignableBy, licenceExpiryError,
-  LICENCE_EXPIRY_FORMAT,
+  licenceSentence, rolesAssignableBy,
 } from '../../src/utils/roleVocabulary';
+import DateInput from '../../src/components/DateInput';
+import { dateEntryError, toStoredDate } from '../../src/utils/dateEntry';
 
 export default function AdminUsersScreen() {
   const { colors, isDark } = useTheme();
@@ -203,10 +204,10 @@ export default function AdminUsersScreen() {
       return;
     }
     // A DATE THE SERVER CANNOT READ IS NOT SENT. Stored, it reads back as
-    // nothing and the row reports a missing registration NUMBER — see
-    // licenceExpiryError.
-    if (roleHasLicence(formRole) && licenceExpiryError(formDobExpiry)) {
-      toast.error('Check the expiry', licenceExpiryError(formDobExpiry));
+    // nothing and the row reports a missing registration NUMBER. The check is
+    // the shared one every date field uses — src/utils/dateEntry.js.
+    if (roleHasLicence(formRole) && dateEntryError(formDobExpiry)) {
+      toast.error('Check the expiry', dateEntryError(formDobExpiry));
       return;
     }
 
@@ -223,7 +224,10 @@ export default function AdminUsersScreen() {
       // what was asked for.
       if (roleHasLicence(formRole)) {
         if (formDobNumber.trim()) payload.dob_superintendent_number = formDobNumber.trim();
-        if (formDobExpiry.trim()) payload.dob_registration_expiry = formDobExpiry.trim();
+        // ISO, ALWAYS. The field shows MM/DD/YYYY; what is stored is what the
+        // server's reader parses. A loaded '07/212029' becomes 2029-07-21 here
+        // and only here — when Save is pressed.
+        if (toStoredDate(formDobExpiry)) payload.dob_registration_expiry = toStoredDate(formDobExpiry);
       }
       await adminUsersAPI.create(payload);
 
@@ -256,9 +260,10 @@ export default function AdminUsersScreen() {
       return;
     }
     // The same refusal as the Add path, for the same reason. This is the route
-    // '07/212029' actually came through.
-    if (roleHasLicence(formRole) && licenceExpiryError(formDobExpiry)) {
-      toast.error('Check the expiry', licenceExpiryError(formDobExpiry));
+    // '07/212029' actually came through — and the route it now leaves by: the
+    // form reads it as 07/21/2029, and Save sends 2029-07-21.
+    if (roleHasLicence(formRole) && dateEntryError(formDobExpiry)) {
+      toast.error('Check the expiry', dateEntryError(formDobExpiry));
       return;
     }
 
@@ -271,7 +276,7 @@ export default function AdminUsersScreen() {
       if (formPhone.trim()) updatePayload.phone = formPhone.trim();
       if (roleHasLicence(formRole)) {
         if (formDobNumber.trim()) updatePayload.dob_superintendent_number = formDobNumber.trim();
-        if (formDobExpiry.trim()) updatePayload.dob_registration_expiry = formDobExpiry.trim();
+        if (toStoredDate(formDobExpiry)) updatePayload.dob_registration_expiry = toStoredDate(formDobExpiry);
       }
       await adminUsersAPI.update(selectedUser.id, updatePayload);
 
@@ -553,14 +558,17 @@ export default function AdminUsersScreen() {
   // From the device, a save that stores something unreadable is
   // indistinguishable from a save that failed. The operator typed it twice.
   //
-  // COMPUTED ON EVERY RENDER RATHER THAN ON BLUR OR ON SUBMIT: a message that
-  // waits for submit is a message that arrives after he has stopped looking at
-  // the field. The rule itself is in roleVocabulary.js, so the suite can ask it
-  // questions; the server refuses the same value with the same format in its
-  // 422, and that is the gate.
-  const dobExpiryError = roleHasLicence(formRole)
-    ? licenceExpiryError(formDobExpiry)
-    : null;
+  // THE FIELD IS THE SHARED DateInput NOW. He types digits on a number pad,
+  // the slashes arrive by themselves, and an impossible date is named under
+  // the field as he types it — the message comes from the component, which
+  // asks the same src/utils/dateEntry.js the Save handlers above ask. There
+  // is no second validator on this screen: PR #584's typed-ISO check would
+  // have refused every value this field can produce.
+  //
+  // A STORED VALUE IS SHOWN READ, NOT WRITTEN. Opening Michael's account
+  // shows 07/21/2029 with a note naming the stored '07/212029'. formDobExpiry
+  // still holds '07/212029' until Save converts it, so opening and closing
+  // the sheet writes nothing.
 
   // The licence block, shown only for the one role that holds a licence.
   const renderLicenceFields = () => {
@@ -574,16 +582,15 @@ export default function AdminUsersScreen() {
           autoCapitalize="characters"
           style={s.inputSpacing}
         />
-        <GlassInput
+        <DateInput
+          as={GlassInput}
           value={formDobExpiry}
-          onChangeText={setFormDobExpiry}
-          placeholder={`Registration expiry (${LICENCE_EXPIRY_FORMAT})`}
-          autoCapitalize="none"
+          onChange={setFormDobExpiry}
+          placeholder="Registration expiry (MM/DD/YYYY)"
+          accessibilityLabel="DOB registration expiry, month day year"
+          palette={{ error: colors.status.error, hint: colors.text.muted }}
           style={s.inputSpacing}
         />
-        {dobExpiryError ? (
-          <Text style={s.licenceError}>{dobExpiryError}</Text>
-        ) : null}
         {/* SAID OUT LOUD, because an admin who leaves it blank has not recorded
             "no expiry" — he has recorded nothing, and the row will read "DOB
             registration expiry not recorded" rather than looking valid. */}
@@ -1401,17 +1408,6 @@ function buildStyles(colors, isDark) {
     fontSize: 12,
     lineHeight: 17,
     color: colors.text.muted,
-    marginTop: spacing.xs,
-  },
-  // THE REFUSAL, UNDER THE FIELD IT IS ABOUT. Error colour and not the muted
-  // hint colour: this is the difference between "here is how it works" and
-  // "what you have typed will not save", and rendering them the same weight is
-  // how the second gets read as the first.
-  licenceError: {
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '600',
-    color: colors.status.error,
     marginTop: spacing.xs,
   },
   roleSelectorLabel: {

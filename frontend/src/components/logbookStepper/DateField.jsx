@@ -2,11 +2,49 @@ import React, { useMemo, useState } from 'react';
 import {
   View, Text, Pressable, Modal, ScrollView,
 } from 'react-native';
-import { ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { outdoor } from '../../styles/theme';
+import DateInput from '../DateInput';
+import {
+  DATE_DISPLAY_FORMAT, daysInMonth as calendarDaysInMonth, isoFromParts,
+  parseStoredDate,
+} from '../../utils/dateEntry';
 
 /**
- * A date field for the logbook forms — a tapped calendar, not a typed string.
+ * A date field for the logbook forms — TYPED on a number pad, with the
+ * calendar one tap away beside it.
+ *
+ * ── TYPED FIRST, BY RULING ──────────────────────────────────────────────────
+ *
+ * This was a tapped calendar only. The operator's ruling is that every date
+ * field in the app is typed on a numeric keypad as MM/DD/YYYY with the
+ * slashes inserted as he types, so the field itself is the shared DateInput
+ * (src/components/DateInput.jsx). The calendar is kept as the button beside
+ * it: a manufacture date off a harness label is quicker typed, a date "last
+ * Tuesday" is quicker tapped, and both land in the same stored value.
+ *
+ * ── THE CANVAS IS PINNED, SO THE COLOURS ARE HANDED IN ──────────────────────
+ *
+ * Every host of this field (fall_protection, osha_log, scaffold_maintenance)
+ * renders inside the stepper's pinned LIGHT card. DateInput reads no theme;
+ * this passes it `outdoor`'s ink, so its message cannot go white-on-white on
+ * a phone set to dark.
+ *
+ * ── NOTHING HALF-TYPED IS DISCARDED ─────────────────────────────────────────
+ *
+ * THIS FIELD PASSED `invalid="blank"` AND THAT BLANKED FILED RECORDS. The
+ * argument was that the steppers MARK incomplete steps and never gate them, so
+ * there is no Save here to refuse '13/45/2029' — and the conclusion drawn was
+ * to record nothing. On a legal record that is a silent loss: the CP saw his
+ * text and the reason it is not a date, and the filed document said the date
+ * was blank. A field already holding a good 2029-07-21 was blanked outright by
+ * an edit he began and left unfinished.
+ *
+ * So the value is whatever the shared field decides — ISO, or THE TEXT AS
+ * TYPED — and the refusal lives at FILING instead, where a draft becomes a
+ * legal record: server.py's SUBMIT_INVALID_DATE, anticipated on the device by
+ * src/utils/logbookDateGate.js so the CP is told on the screen that can fix
+ * it. Mid-entry he is still never blocked; that part was right.
  *
  * WHY IT IS HAND-BUILT. @react-native-community/datetimepicker and every other
  * picker package carries a NATIVE MODULE, and a native module forces a rebuild:
@@ -14,14 +52,18 @@ import { outdoor } from '../../styles/theme';
  * change. src/i18n/index.js refused expo-localization for exactly this reason
  * and says so at :15-20. Pure JS keeps this shippable as an OTA update.
  *
- * WHAT IT STORES. `YYYY-MM-DD`, always, or '' when cleared. Unambiguous on a
- * legal document: a CP typing "8/12" meant August 12 and a reader outside the
- * US reads December 8, and both of them are looking at a filed DOB record.
+ * WHAT IT STORES. `YYYY-MM-DD` for a real day, '' when cleared, and otherwise
+ * exactly what he typed. Only the ISO form may be FILED — that is the gate
+ * above — because "8/12" is August 12 to the CP who typed it and December 8 to
+ * a reader outside the US, and both of them are looking at a filed DOB record.
+ * Keeping the string is not accepting it; it is refusing to throw it away.
  *
- * WHAT IT ACCEPTS. Anything. The value is a plain string and a log filed before
- * this control existed holds whatever was typed into the old free-text field —
- * that renders as-is and is NEVER rewritten. Only a date the CP taps from here
- * is normalised. Historical records are not migrated.
+ * WHAT IT ACCEPTS. Anything, and it rewrites nothing on its own. A log from
+ * before this control holds whatever was typed into the old free-text field.
+ * A value the shared reader can read unambiguously ('07/21/2029') is SHOWN
+ * read, with a note naming what is stored; anything else leaves the field
+ * empty with a note quoting it. Either way the stored string is untouched
+ * until the CP types or taps. Historical records are not migrated.
  *
  * DECLARED AT MODULE LEVEL, like the other primitives: a component declared
  * inside a screen's render function is a new type every render, so React
@@ -29,39 +71,34 @@ import { outdoor } from '../../styles/theme';
  */
 
 const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+// The pinned card's ink, not the phone theme's. See the header.
+const PINNED_PALETTE = { error: outdoor.danger, hint: outdoor.textDim };
+// The field takes the row; the calendar button keeps its 56pt square. Top-
+// aligned so a two-line message under the field does not drag the button down.
+const ROW = { flexDirection: 'row', alignItems: 'flex-start', gap: 8 };
+const GROW = { flex: 1, minWidth: 0 };
 const MONTH_LABELS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-/** '2026-08-12' -> {y, m, d}, or null for anything else. Never throws. */
-export function parseISO(value) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
-  if (!m) return null;
-  const y = Number(m[1]); const mo = Number(m[2]); const d = Number(m[3]);
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return { y, m: mo, d };
-}
-
-export function toISO(y, m, d) {
-  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-}
-
 /**
- * What the field SHOWS. A parseable ISO date is rendered long-form; anything
- * else is echoed exactly as stored, because a value this control did not
- * produce is a value it must not reinterpret.
+ * A stored value as {y, m, d}, or null. The shared reader, so the calendar
+ * opens on the same day the typed field shows — including a stored
+ * '07/212029', which the field reads as 07/21/2029.
  */
-export function displayDate(value) {
-  const p = parseISO(value);
-  if (!p) return String(value || '');
-  return `${MONTH_LABELS[p.m - 1]} ${p.d}, ${p.y}`;
+export function parseISO(value) {
+  const p = parseStoredDate(value);
+  if (!p.iso) return null;
+  const [y, m, d] = p.iso.split('-').map(Number);
+  return { y, m, d };
 }
 
-/** Days in a month. Month is 1-indexed. */
-export function daysInMonth(y, m) {
-  return new Date(Date.UTC(y, m, 0)).getUTCDate();
-}
+export const toISO = isoFromParts;
+
+/** Days in a month. Month is 1-indexed. Arithmetic, from the shared module. */
+export const daysInMonth = calendarDaysInMonth;
 
 /** Weekday (0=Sun) the 1st of this month falls on. */
 function firstWeekday(y, m) {
@@ -79,7 +116,8 @@ export function monthGrid(y, m) {
 }
 
 export default function DateField({
-  s, value, onChange, label, placeholder, clearLabel, doneLabel, today,
+  s, value, onChange, label, placeholder = DATE_DISPLAY_FORMAT,
+  clearLabel = 'Clear', doneLabel = 'Done', today,
 }) {
   const [open, setOpen] = useState(false);
   // Where the calendar OPENS. The stored date when there is one, otherwise the
@@ -104,21 +142,31 @@ export default function DateField({
   });
 
   const selected = parseISO(value);
-  const shown = displayDate(value);
 
   return (
     <View style={s.fieldBlock}>
       <Text style={s.reviewLabel}>{label}</Text>
-      <Pressable
-        style={s.input}
-        accessibilityRole="button"
-        accessibilityLabel={`${label}. ${shown || placeholder}`}
-        onPress={openPicker}
-      >
-        <Text style={shown ? s.fieldValueText : s.fieldPlaceholderText}>
-          {shown || placeholder}
-        </Text>
-      </Pressable>
+      <View style={ROW}>
+        <DateInput
+          value={value}
+          onChange={onChange}
+          convertsOnSave={false}
+          placeholder={placeholder}
+          placeholderTextColor={outdoor.textDim}
+          accessibilityLabel={`${label}, month day year`}
+          palette={PINNED_PALETTE}
+          style={GROW}
+          fieldStyle={s.input}
+        />
+        <Pressable
+          style={s.headerBack}
+          accessibilityRole="button"
+          accessibilityLabel={`${label}: choose on a calendar`}
+          onPress={openPicker}
+        >
+          <CalendarDays size={24} strokeWidth={2} color={outdoor.text} />
+        </Pressable>
+      </View>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={s.modalOverlay}>

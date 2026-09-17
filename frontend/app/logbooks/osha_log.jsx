@@ -37,6 +37,11 @@ import {
   unnamedEntries, applyEntryEdit, entriesForFiling, sharedWorkerIds,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/oshaLogModel';
+// A DATE THAT IS NOT A DATE MAY NOT BE FILED -- the shared declaration of
+// which fields the server reads, and the sentence that names one.
+import {
+  DATE_STEP, invalidLogDates, preflightDateCopy, serverDateRefusalCopy,
+} from '../../src/utils/logbookDateGate';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
@@ -417,7 +422,13 @@ export default function OshaLogBook() {
         const code = finalizeErrorCode(pushErr);
         console.warn('OSHA register REFUSED by the server:', status, code);
         await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
-        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        // THE DATE REFUSAL NAMES THE FIELD AND QUOTES THE VALUE — see
+        // logbookDateGate.js. Every other code keeps the four-line gateCopy.
+        toast.error(
+          tFinalize('errorTitle'),
+          serverDateRefusalCopy(pushErr?.response?.data?.detail, tFinalize)
+            || gateCopy(code),
+        );
         return undefined;
       }
       if (!offline && !refused) {
@@ -562,6 +573,27 @@ export default function OshaLogBook() {
       }
       return;
     }
+
+    // ── AN EXPIRY THAT IS NOT A DATE MAY NOT BE FILED ──────────────────
+    //
+    // The server refuses this submit (SUBMIT_INVALID_DATE) and the field has
+    // been saying so under itself since he typed it. Made HERE as well so he
+    // is not asked to sign and then told — and because OFFLINE there is no
+    // refusal to catch: the push would be queued, announced as filed, and
+    // refused forever with only a banner to show for it.
+    //
+    // ON THE ROWS THAT WILL BE FILED. entriesForFiling has just dropped the
+    // nameless ones and the sheet drops them too, so an expiry left in one is
+    // not an expiry on a filed register.
+    const badDates = invalidLogDates(LOG_TYPE, draftBody(entriesForFiling(rowsNow)));
+    if (badDates.length > 0) {
+      setStep(DATE_STEP);
+      toast.warning(
+        tFinalize('invalidDateTitle'),
+        preflightDateCopy(badDates[0], tFinalize, t),
+      );
+      return;
+    }
     // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────
     // BB 2024-007 sec V.5. One consent per person, keyed on his account and
     // not on this log — if he agreed on any other screen, this never asks.
@@ -610,8 +642,16 @@ export default function OshaLogBook() {
     />
   ), [s, step, t]);
 
-  const incomplete = computeIncomplete({ entries, cpSignature })
-    .filter((n) => n !== step);
+  // MARKED, NOT BLOCKED — the steppers' own rule. A row whose expiry is not a
+  // date will be refused at filing, so the step that holds it wears the same
+  // mark an unfinished step does.
+  const dateStepBad = invalidLogDates(
+    LOG_TYPE, draftBody(entriesForFiling(entries)),
+  ).length > 0;
+  const incomplete = [...new Set([
+    ...computeIncomplete({ entries, cpSignature }),
+    ...(dateStepBad ? [DATE_STEP] : []),
+  ])].filter((n) => n !== step);
   const filledRows = entries.filter(entryHasContent).length;
   // Rows that share a worker_id are the SAME MAN's second certification, not a
   // duplicate. Labelling them is the fix for how the identity defect started:

@@ -270,6 +270,29 @@ LABEL_SETS: Dict[str, List[tuple]] = {
 }
 
 
+#: FORMATTERS THAT SAY "THIS FIELD HOLDS A CALENDAR DAY".
+#:
+#: The submit gate that refuses a filed log carrying `13/45/2029` has to know
+#: WHICH fields are dates, and the only honest source for that is the thing
+#: that already declares every field: this file. A hand list in server.py goes
+#: stale the day someone adds a fourth date field to a form -- and it goes
+#: stale silently, because a date field nobody gated looks exactly like a date
+#: field that passed.
+#:
+#: `date_long` reformats (the log's own day); the two `date_as_filed`
+#: formatters print the string verbatim, because the shed permit dates are
+#: read against a DOB permit. They are the same DECLARATION and a different
+#: RENDERING, which is exactly the split that lets one walk find all of them.
+DATE_FORMATTERS = ("date_long", "date_as_filed", "date_as_filed_raw")
+
+#: The scopes `date_fields` reads, and the reason the other two are not here:
+#: `project` and `context` fields belong to the PROJECT document and the render
+#: context, not to the record being filed, so a submit gate has nothing to say
+#: about them. A date declared there would be skipped in silence, so
+#: test_a_date_on_a_filed_log_is_a_date.py asserts that none is.
+_RECORD_SCOPES = ("first", "each", "rows")
+
+
 class SchemaError(ValueError):
     """A declaration this engine refuses to render."""
 
@@ -439,6 +462,65 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
             raise SchemaError(
                 f"{where}: scope 'rows' draws a list held INSIDE one record "
                 f"and must name the path to it")
+
+
+def date_fields(log_type: str) -> List[Dict[str, Any]]:
+    """Every place on a RECORD of this type that the sheet declares a date.
+
+    THE POPULATION FOR THE SUBMIT GATE, DERIVED. Each entry is data, not code:
+
+        {"label": "Mfg Date",              the sheet's own label for the field
+         "path": "data.activities[].manufacture_date",   what it is, for a test
+         "rows": "data.activities",        the list it repeats in, or None
+         "key": "manufacture_date",        the key inside a row, or None
+         "field": "data.general_info.installation_date",  a record path, or None
+         "row_requires": (...),            how the sheet decides a row is a row
+         "row_requires_present": (...)}
+
+    `rows` AND `field` ARE EXCLUSIVE and one of them is always set. A caller
+    walks the rows itself because it must be able to say WHICH row it refused
+    (row 3, the CP's third harness) -- a flattened list of dotted paths could
+    only tell him that something, somewhere, is not a date.
+
+    THE ROW RULES TRAVEL WITH THE FIELD for the reason the no-content gate
+    reads the renderer's rule: the editors SEED empty rows, the sheet drops
+    them, and a date on a row that will never print is not a date on a filed
+    document. Refusing a submit over a seed the CP cannot even see is a dead
+    end.
+
+    An unknown log type -- one with no declared sheet -- returns nothing, and
+    that is the default the gate wants: a type this engine does not render is
+    a type this walk has no opinion about.
+    """
+    out: List[Dict[str, Any]] = []
+    decl = SCHEMAS.get(log_type)
+    if not decl:
+        return out
+    for sec in decl.get("sections") or []:
+        scope = sec.get("scope")
+        if scope not in _RECORD_SCOPES:
+            continue
+        rows_path = sec.get("path") if scope == "rows" else None
+        # A signature section's `path` may be a LIST of paths; only a table
+        # over `rows` is walked here, and validate already refuses a list
+        # there, so a non-string path is not a row container.
+        if scope == "rows" and not isinstance(rows_path, str):
+            continue
+        for path, label, formatter in (
+                (sec.get("fields") or []) + (sec.get("columns") or [])):
+            if formatter not in DATE_FORMATTERS:
+                continue
+            out.append({
+                "label": label,
+                "path": f"{rows_path}[].{path}" if rows_path else path,
+                "rows": rows_path,
+                "key": path if rows_path else None,
+                "field": None if rows_path else path,
+                "row_requires": tuple(sec.get("row_requires") or ()),
+                "row_requires_present": tuple(
+                    sec.get("row_requires_present") or ()),
+            })
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -652,7 +734,7 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                     ("company", "Company", "raw_name"),
                     (".", "Cert Type", "osha_cert_type"),
                     ("card_number", "Card #", "raw_text"),
-                    ("expiration", "Expiration", "raw_text"),
+                    ("expiration", "Expiration", "date_as_filed_raw"),
                     ("signed", "Signed", "tick_or_blank"),
                 ],
             },
@@ -757,8 +839,9 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                     ("data.general_info.permit_number", "Permit #", "text"),
                     ("data.general_info.phone", "Phone #", "text"),
                     ("data.general_info.installation_date",
-                     "Installation Date", "text"),
-                    ("data.general_info.expiration_date", "Expiration", "text"),
+                     "Installation Date", "date_as_filed"),
+                    ("data.general_info.expiration_date", "Expiration",
+                     "date_as_filed"),
                     ("data.general_info.scaffold_height",
                      "Scaffold Height", "text"),
                     ("data.general_info.num_platforms",
@@ -1482,7 +1565,7 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                     # identifiers. Blank is blank: a row whose serial was never
                     # legible is not a row with an unrecorded field.
                     ("equipment_id", "ID / Serial", "raw_text"),
-                    ("manufacture_date", "Mfg Date", "raw_text"),
+                    ("manufacture_date", "Mfg Date", "date_as_filed_raw"),
                     # SEEDED NULL, AND A NULL IS NOT A PASS. `inspection_result`
                     # also keeps "Removed from service" as its own verdict:
                     # a failed component on the rack and one taken out of use

@@ -34,6 +34,11 @@ import {
   rowsMissingAdverseDetail, impactLoadedNotRemoved,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/fallProtectionModel';
+// A DATE THAT IS NOT A DATE MAY NOT BE FILED — the shared declaration of which
+// fields the server reads, and the sentence that names one. See the module.
+import {
+  DATE_STEP, invalidLogDates, preflightDateCopy, serverDateRefusalCopy,
+} from '../../src/utils/logbookDateGate';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
@@ -440,7 +445,15 @@ export default function FallProtectionLog() {
         const code = finalizeErrorCode(pushErr);
         console.warn('Fall protection log REFUSED by the server:', status, code);
         await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
-        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        // THE DATE REFUSAL NAMES THE FIELD AND QUOTES THE VALUE. Everything
+        // else keeps the four-line gateCopy; this one code carries facts the
+        // sentence needs (`field`, `value`) and would otherwise read as a
+        // generic "could not finalize" on a register with a dozen rows.
+        toast.error(
+          tFinalize('errorTitle'),
+          serverDateRefusalCopy(pushErr?.response?.data?.detail, tFinalize)
+            || gateCopy(code),
+        );
         return undefined;
       }
       if (!offline && !refused) {
@@ -565,6 +578,28 @@ export default function FallProtectionLog() {
       return;
     }
 
+    // ── A DATE THAT IS NOT A DATE MAY NOT BE FILED ─────────────────────
+    //
+    // The server refuses this submit (SUBMIT_INVALID_DATE) and the field has
+    // been saying so under itself since he typed it. This is the same
+    // judgement made HERE, for two reasons: he is not made to sign and then
+    // be told, and OFFLINE there is no refusal to catch at all — the push
+    // would be queued, announced as filed, and refused forever with only a
+    // banner to show for it.
+    //
+    // ON THE ROWS THAT WILL BE FILED, not on every row: rowsForFiling has
+    // just dropped the seeds, and the sheet would drop them too, so a date
+    // left in one is not a date on a filed document.
+    const badDates = invalidLogDates(LOG_TYPE, draftBody(rowsForFiling(now)));
+    if (badDates.length > 0) {
+      setStep(DATE_STEP);
+      toast.warning(
+        tFinalize('invalidDateTitle'),
+        preflightDateCopy(badDates[0], tFinalize, t),
+      );
+      return;
+    }
+
     // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────
     // BB 2024-007 sec V.5. One consent per person, keyed on his account and
     // not on this log — if he agreed on any other screen, this never asks.
@@ -611,7 +646,15 @@ export default function FallProtectionLog() {
     { render: () => renderStep2() },
   ];
 
-  const incomplete = computeIncomplete({ rows, cpSignature }).filter((n) => n !== step);
+  // MARKED, NOT BLOCKED — the steppers' own rule. A row whose manufacture
+  // date is not a date will be refused at filing, so the step that holds it
+  // carries the same mark an unfinished step does, and he meets the problem
+  // before he taps Submit rather than after he signs.
+  const dateStepBad = invalidLogDates(LOG_TYPE, draftBody(rowsForFiling(rows))).length > 0;
+  const incomplete = [...new Set([
+    ...computeIncomplete({ rows, cpSignature }),
+    ...(dateStepBad ? [DATE_STEP] : []),
+  ])].filter((n) => n !== step);
   const filedCount = rowsForFiling(rows).length;
   const impactWarnings = impactLoadedNotRemoved(rows);
 

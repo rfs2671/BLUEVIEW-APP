@@ -7584,11 +7584,14 @@ def assert_licence_expiry(raw):
     '07/212029' was stored, read back as nothing, and reported as a missing
     registration number. THREE SCREENS AGREED IT HAD SAVED because it had.
 
-    THE CLIENT REFUSES IT AT THE POINT OF TYPING TOO (roleVocabulary.js,
-    `licenceExpiryError`), and that is the half the operator sees. This is the
-    half that is a gate: the picker is not the gate, and neither is an input
-    mask -- `curl` reaches this route, and so does an app build from before the
-    validator existed.
+    THE CLIENT REFUSES IT AT THE POINT OF TYPING TOO -- the shared date field,
+    frontend/src/components/DateInput.jsx, whose rules and `dateEntryError`
+    live in frontend/src/utils/dateEntry.js -- and that is the half the
+    operator sees. The field is typed MM/DD/YYYY and the app SENDS ISO
+    (`toStoredDate`), so the format named in the 422 below is the WIRE format,
+    not what a person types; it is reached by `curl` and by an app build from
+    before the shared field. This is the half that is a gate: the picker is not
+    the gate, and neither is an input mask.
 
     IT PARSES WITH THE READER'S OWN PARSER. Not a regex that agrees with
     `strptime` today: the same call, so "what may be written" and "what can be
@@ -27876,6 +27879,191 @@ def _submit_missing_trade_detail(log_type, payload):
     }
 
 
+# ── SUBMIT_INVALID_DATE — a date on a filed log is a date, or is nothing ─────
+#
+# THE YEAR BOUND IS THE FIELD'S OWN. frontend/src/utils/dateEntry.js bounds a
+# typed year to 1900-2199 -- the bound that makes a bare run of eight digits
+# unambiguous, since YYYYMMDD read as MMDDYYYY would need a month of 19-21 --
+# and the two must agree exactly. A server that accepted '0229-07-21' would
+# refuse nothing the screen called fine, but it would ACCEPT what the screen
+# marks, which is the same disagreement seen from the other side: the CP is
+# told to fix a value the record was happy to take.
+LOGBOOK_DATE_MIN_YEAR = 1900
+LOGBOOK_DATE_MAX_YEAR = 2199
+
+#: How much of a stored value the refusal quotes. It is rendered in a toast on
+#: a 443px phone, and a date field can hold anything a legacy free-text field
+#: was given. Bounded here rather than on the client, so every reader of the
+#: detail gets the same bounded string.
+LOGBOOK_DATE_QUOTE_MAX = 64
+
+_LOGBOOK_ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def logbook_date_is_real(value) -> bool:
+    """Is this stored value `YYYY-MM-DD` naming a day that exists?
+
+    ARITHMETIC, NOT `strptime` AND NEVER A `datetime`. `parse_cert_date` reads
+    a card and answers with an instant because an expiry is compared to a
+    clock; a logbook date is a CALENDAR DAY on a jobsite and has no instant --
+    the same reason dateEntry.js constructs no Date. The two modules apply one
+    rule: ISO shape, a month of 1-12, a day inside that month's real length,
+    and the Gregorian leap rule for February.
+
+    A non-string is NOT a date. `{"iso": ...}` or a bare 20290721 reaching a
+    date field is a client sending a shape nothing here writes, and guessing at
+    it is how a wrong day gets onto a signed record.
+    """
+    if not isinstance(value, str):
+        return False
+    m = _LOGBOOK_ISO_DATE.match(value.strip())
+    if not m:
+        return False
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not LOGBOOK_DATE_MIN_YEAR <= y <= LOGBOOK_DATE_MAX_YEAR:
+        return False
+    if not 1 <= mo <= 12:
+        return False
+    leap = (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+    lengths = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return 1 <= d <= lengths[mo - 1]
+
+
+def _logbook_date_blank(value) -> bool:
+    """Nothing there. Blank is ALLOWED -- see the gate's docstring."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _logbook_date_quote(value) -> str:
+    """The stored value as the refusal quotes it: verbatim, and bounded."""
+    s = value if isinstance(value, str) else repr(value)
+    s = s.strip()
+    return s if len(s) <= LOGBOOK_DATE_QUOTE_MAX else (
+        s[:LOGBOOK_DATE_QUOTE_MAX - 1] + "…")
+
+
+def _submit_invalid_date_detail(log_type, payload, log_date=None):
+    """A FILED log's date fields hold a date, or hold nothing. Never a typo.
+
+    Returns the HTTPException detail to raise, or None to allow. Same machine-
+    code convention as SUBMIT_EMPTY_LOG / SUBMIT_NO_CONTENT -- the server names
+    the condition, the client owns the wording -- with the FIELD and the VALUE
+    riding alongside the code, the way SUBMIT_MISSING_TRADE carries the
+    worker's name: a refusal that does not say which date and what it says is a
+    dead end on a register with a dozen rows.
+
+    THE DEFECT IT CLOSES was a silent blank. The stepper's date field handed
+    the log `''` for anything that was not yet a real day, so a CP who typed
+    `13/45/2029`, or who started editing a good date and stopped at `07/2`, saw
+    his text on screen while the RECORD kept nothing -- and then filed it,
+    signed, as a date that was never recorded. The device now keeps what he
+    typed (frontend/src/utils/dateEntry.js), which is what gives this gate
+    something to refuse.
+
+    WHICH FIELDS ARE DATES IS DERIVED from the sheet's declaration --
+    `legal_render.date_fields(log_type)` -- and never listed here. A hand list
+    would go stale the day a form gains a fourth date field, silently, because
+    an ungated date field looks exactly like one that passed.
+
+    WHAT IT DOES NOT DO:
+
+      EMPTY IS ALLOWED. A manufacture date nobody could read off a harness
+      label is legitimately blank, and `finalize_logbook`'s ruling stands:
+      per-field completeness belongs to the editors, not to the lock. This is
+      about a value being WRONG, not about one being missing.
+
+      A ROW THE SHEET WOULD NOT PRINT IS NOT READ. `row_requires` drops a
+      seeded row that names nobody, so its half-typed date never reaches the
+      document -- the same rule the no-content gate borrows from the renderer.
+
+      NOTHING IS MIGRATED. An already-filed record holding free text is
+      untouched and still renders; this fires on a SUBMIT.
+
+    The type check comes BEFORE any coercion, matching the two gates above: a
+    malformed or empty body is SUBMIT_EMPTY_LOG's business and that gate runs
+    first.
+    """
+    if not isinstance(payload, dict):
+        return None
+    fields = legal_render.date_fields(log_type)
+    if not fields:
+        return None
+    # The log's own `date` is declared on every converted sheet, and it is a
+    # sibling of `data`, not a key inside it. Judged as one record so the walk
+    # has one shape.
+    record = {"data": payload, "date": log_date}
+    bad = []
+    seen = set()
+    for f in fields:
+        if f["rows"]:
+            rows = _dotted(record, f["rows"])
+            if not isinstance(rows, list):
+                continue
+            for i, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                if not _submit_row_would_print(row, f):
+                    continue
+                value = row.get(f["key"])
+                if _logbook_date_blank(value) or logbook_date_is_real(value):
+                    continue
+                path = f"{f['rows']}.{i}.{f['key']}"
+                if path in seen:
+                    continue
+                seen.add(path)
+                bad.append({"field": f["label"], "path": path,
+                            "value": _logbook_date_quote(value),
+                            "row": i + 1})
+        else:
+            path = f["field"]
+            if path in seen:
+                continue
+            value = _dotted(record, path)
+            if _logbook_date_blank(value) or logbook_date_is_real(value):
+                continue
+            seen.add(path)
+            bad.append({"field": f["label"], "path": path,
+                        "value": _logbook_date_quote(value), "row": None})
+    if not bad:
+        return None
+    # THE FIRST ONE IS NAMED AT THE TOP LEVEL and every one is listed beside
+    # it. The toast has room for one sentence; the screen that can point at a
+    # row wants them all, and a client that read only the first would send him
+    # back for the second on his next tap.
+    first = bad[0]
+    return {"code": "SUBMIT_INVALID_DATE", "log_type": log_type,
+            "field": first["field"], "path": first["path"],
+            "value": first["value"], "row": first["row"], "fields": bad}
+
+
+def _dotted(record, path):
+    """A dotted path into a record; missing is None. The engine's `_get` rule
+    (lib/legal_render/primitives.py) -- a field the record does not carry is an
+    ordinary state on a form, not an error."""
+    cur = record
+    for part in str(path).split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+        if cur is None:
+            return None
+    return cur
+
+
+def _submit_row_would_print(row, field) -> bool:
+    """Whether the sheet would print this row at all. `_row_survives`'s rule,
+    ORed across both declared tests, for the reason stated there: a row is one
+    claim about one event, and any field carrying something makes it an event
+    somebody logged."""
+    need = field.get("row_requires") or ()
+    if need and any(str(row.get(k) or "").strip() for k in need):
+        return True
+    need_p = field.get("row_requires_present") or ()
+    if need_p and any(k in row and row.get(k) is not None for k in need_p):
+        return True
+    return not (need or need_p)
+
+
 # COST-BEARING, so it carries the activation gate. Both this and PUT below
 # fire _enhance_logbook_photos, which is AI image work on the platform's bill,
 # and they were the only two spending endpoints in the codebase without
@@ -28356,6 +28544,13 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         _no_trade = _submit_missing_trade_detail(data.log_type, data.data)
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
+        # A DATE ON A FILED LOG IS A DATE, OR IT IS NOTHING. `data.date` rides
+        # along because the log's own day is declared a date field on every
+        # converted sheet and is a sibling of `data`, not a key inside it.
+        _bad_date = _submit_invalid_date_detail(
+            data.log_type, data.data, data.date)
+        if _bad_date:
+            raise HTTPException(status_code=400, detail=_bad_date)
 
         # AN ATTESTABLE ITEM MUST BE ANSWERED ONE WAY OR THE OTHER.
         #
@@ -28924,6 +29119,14 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         _no_trade = _submit_missing_trade_detail(_cur.get("log_type"), _eff_data)
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
+        # _eff_data and the STORED date, for the reason _eff_data itself is
+        # read here: the ordinary flow is create-then-submit, so a submit that
+        # patches only `status` must be judged on the content already stored.
+        # The date is never in the request -- LogbookUpdate has no such field.
+        _bad_date = _submit_invalid_date_detail(
+            _cur.get("log_type"), _eff_data, _cur.get("date"))
+        if _bad_date:
+            raise HTTPException(status_code=400, detail=_bad_date)
         # THE SAME REFUSAL ON THE PATH THE CP ACTUALLY WALKS. Save Draft then
         # Submit arrives here as a PUT, so a gate on create alone would let the
         # wrong man file by taking the ordinary two-step route -- the identical
@@ -29650,6 +29853,25 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         raise HTTPException(
             status_code=400, detail={"code": "FINALIZE_MISSING_CP_SIGNATURE"},
         )
+    # ── AND A DATE FIELD HOLDS A DATE ───────────────────────────────────────
+    #
+    # THE OTHER DOOR INTO `status: submitted`. This endpoint writes that status
+    # itself, so the gate on create/update alone would leave Finalize as the
+    # way around it -- the identical hole SUBMIT_MISSING_CP_SIGNATURE was
+    # widened to cover across both endpoints.
+    #
+    # NOT THE PER-FIELD COMPLETENESS RULE THIS DOCSTRING REFUSES. It does not
+    # ask whether a date is THERE (empty passes); it asks whether a value that
+    # IS there is a calendar day. A blank is the editors' business; `13/45/2029`
+    # frozen onto a legal record is nobody's.
+    #
+    # THE SAME CODE AS THE SUBMIT GATE, deliberately: the CP's remedy and the
+    # sentence he reads are identical whichever tap got him here, and the
+    # client already maps SUBMIT_INVALID_DATE to copy that names the field.
+    _bad_date = _submit_invalid_date_detail(
+        existing.get("log_type"), existing.get("data"), existing.get("date"))
+    if _bad_date:
+        raise HTTPException(status_code=400, detail=_bad_date)
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {

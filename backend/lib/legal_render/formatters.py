@@ -58,6 +58,36 @@ def raw_text(v: Any) -> str:
     return _html.escape(_s(v))
 
 
+def date_as_filed(v: Any) -> str:
+    """A DATE, printed EXACTLY as `text` prints it. The difference is declared.
+
+    THIS IS A DECLARATION, NOT A RENDERING. Byte for byte it is `text`, and
+    test_a_date_on_a_filed_log_is_a_date.py asserts that against both. What it
+    adds is that the schema now SAYS this field holds a calendar day, so the
+    submit gate can derive which fields are dates from the declaration instead
+    of carrying a hand list that goes stale the day a form gains a fourth one.
+
+    WHY NOT `date_long`. The shed permit's installation and expiration dates
+    are read against a DOB permit, and the word-level diff that guards the
+    whole conversion CANNOT SEE DIGITS -- a date reformatted here would be the
+    one change on the sheet that no check could catch. The scaffold section
+    says so at the declaration; this keeps that decision and names the field a
+    date anyway.
+    """
+    return text(v)
+
+
+def date_as_filed_raw(v: Any) -> str:
+    """The same declaration over `raw_text`: blank stays BLANK.
+
+    For a date in a ROW whose emptiness is the record -- a harness whose
+    manufacture date was never legible, a card with no expiry on file.
+    NOT_RECORDED in that cell would print a finding against a row that makes
+    no claim about a date at all.
+    """
+    return raw_text(v)
+
+
 def name(v: Any) -> str:
     """A person's or company's name, first letter up, rest untouched.
 
@@ -630,6 +660,11 @@ def yes_no(v: Any) -> str:
 FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "text": text,
     "raw_text": raw_text,
+    # A DATE THE PERSON TYPED, printed as filed. Same output as the two above;
+    # the name is what lets the submit gate find every date field from the
+    # declaration. See schema.DATE_FORMATTERS.
+    "date_as_filed": date_as_filed,
+    "date_as_filed_raw": date_as_filed_raw,
     "name": name,
     "sentence": sentence,
     "date_long": date_long,

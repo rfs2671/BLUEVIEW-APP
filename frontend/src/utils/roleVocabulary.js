@@ -35,6 +35,7 @@
  * the role can do, because "PM" and "CP" are three-letter words an admin is
  * expected to guess the meaning of otherwise.
  */
+import { DATE_DISPLAY_FORMAT, parseStoredDate } from './dateEntry';
 
 /** The role that holds a DOB registration, and the only one with licence fields. */
 export const ROLE_SUPERINTENDENT = 'superintendent';
@@ -154,9 +155,6 @@ export function roleHasLicence(role) {
   return String(role || '').trim().toLowerCase() === ROLE_SUPERINTENDENT;
 }
 
-/** The one format the server can read back. Printed, not implied. */
-export const LICENCE_EXPIRY_FORMAT = 'YYYY-MM-DD';
-
 /**
  * The sentence printed beside a superintendent's row about his DOB registration.
  *
@@ -210,13 +208,29 @@ export function licenceSentence(licence) {
     // THE STORED VALUE IS IN THE SENTENCE. Told only that something is
     // unreadable, an admin has to open the edit form to find out what; shown
     // '07/212029' he can see the missing slash from the list.
+    //
+    // IT NAMES THE FORMAT THE PERSON TYPES, not the one the server stores.
+    // This used to say "re-enter it as YYYY-MM-DD", which was right while the
+    // field took typed ISO. The field is the shared DateInput now and types
+    // MM/DD/YYYY; following the old sentence would put 2029-07-21 into a box
+    // that reads it as month 20.
+    //
+    // AND WHEN THE EDIT FORM CAN READ IT, IT SAYS SO. '07/212029' opens in Edit
+    // as 07/21/2029 for confirmation (dateEntry.parseStoredDate), so "re-enter"
+    // would have him retype a date the form is already showing him. This reads
+    // the stored STRING's shape; it is not a second verdict on the date — the
+    // server's `unreadable` still decides that the badge appears at all.
     const raw = String((licence || {}).expires_on || '').trim();
-    return {
-      tone: 'error',
-      text: raw
-        ? `DOB registration expiry unreadable: "${raw}" — re-enter it as ${LICENCE_EXPIRY_FORMAT}`
-        : `DOB registration expiry unreadable — re-enter it as ${LICENCE_EXPIRY_FORMAT}`,
-    };
+    const read = parseStoredDate(raw);
+    let text;
+    if (read.iso) {
+      text = `DOB registration expiry stored as "${raw}" — open Edit to confirm it as ${read.display}`;
+    } else if (raw) {
+      text = `DOB registration expiry unreadable: "${raw}" — open Edit and enter it as ${DATE_DISPLAY_FORMAT}`;
+    } else {
+      text = `DOB registration expiry unreadable — open Edit and enter it as ${DATE_DISPLAY_FORMAT}`;
+    }
+    return { tone: 'error', text };
   }
   if (state === 'expiring') {
     // "in 0 days" is not a sentence. It lapses today.
@@ -232,53 +246,6 @@ export function licenceSentence(licence) {
     // above, because it is a different missing fact — and the old wording here
     // is what made Michael's row lie.
     return { tone: 'warning', text: 'DOB registration expiry not recorded' };
-  }
-  return null;
-}
-
-/**
- * Why this expiry cannot be stored, or null if it can. Blank is not an error.
- *
- * ── REFUSED AT THE POINT OF TYPING, WHICH IS THE POINT ──────────────────────
- *
- * '07/212029' was typed into this form, posted as free text, and SAVED. The
- * reader wants ISO, so it read back as nothing at all. From the device a save
- * that stores something unreadable is indistinguishable from a save that
- * failed — which is why the operator typed it a second time.
- *
- * A form that accepts a value its own server cannot read has not validated
- * anything; it has moved the failure somewhere nobody is looking.
- *
- * ── NO `new Date()`, AND THAT IS NOT AN ACCIDENT ────────────────────────────
- *
- * This module never constructs a date and roleVocabulary.test.cjs asserts it,
- * because a second date calculation is a second answer to "has it expired" and
- * the two disagree across a timezone on the day it matters. A FORMAT CHECK
- * DOES NOT NEED ONE: the calendar is arithmetic — twelve months, a table of
- * lengths, and the Gregorian leap rule — and doing it that way means this
- * agrees with Python's `strptime` exactly, in every timezone, rather than with
- * whatever the host's Date parser does with '2029-02-30'.
- */
-export function licenceExpiryError(raw) {
-  const text = String(raw == null ? '' : raw).trim();
-  // AN EMPTY FIELD IS NOT A MISTAKE. He has recorded nothing, and the badge
-  // says so in its own words. Refusing '' would make clearing one impossible.
-  if (!text) return null;
-
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-  if (!m) {
-    return `Write the expiry as ${LICENCE_EXPIRY_FORMAT} — for example 2029-07-21.`;
-  }
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (month < 1 || month > 12) {
-    return `There is no month ${m[2]}. Write the expiry as ${LICENCE_EXPIRY_FORMAT}.`;
-  }
-  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  const lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (day < 1 || day > lengths[month - 1]) {
-    return `${text} is not a date on the calendar.`;
   }
   return null;
 }

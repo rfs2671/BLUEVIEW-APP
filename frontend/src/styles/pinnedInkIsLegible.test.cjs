@@ -186,7 +186,13 @@ for (const screen of PINNED_SCREENS) {
     }
   }
   for (const f of seen) {
-    if (f === screen || !/useTheme\s*\(/.test(read(f))) continue;
+    // CODE, NOT PROSE. src/components/DateInput.jsx explains in a comment why
+    // it takes its colours as a prop "and not useTheme()"; counting that
+    // sentence as a call flagged the one component written to obey this rule.
+    const code = read(f)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    if (f === screen || !/useTheme\s*\(/.test(code)) continue;
     if (!reach.has(f)) reach.set(f, []);
     reach.get(f).push(path.basename(screen, path.extname(screen)));
   }

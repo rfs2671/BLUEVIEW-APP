@@ -261,9 +261,16 @@ const SUBMIT_CODES = [...new Set(
 // Competent Person on the filed DOB record. The count in the message is
 // DERIVED, not typed: it read "the 4 submit codes" while asserting 5, which is
 // the same staleness this file exists to catch, one level up.
+// SEVEN since SUBMIT_INVALID_DATE, the gate on a date field that holds
+// something which is not a date. It is NOT a completeness rule either — empty
+// passes — and it exists because the stepper's date field used to record ''
+// for a value the CP had typed, so a signed log could say a date was blank
+// when it was not. The population it reads is DERIVED from the sheet's own
+// declaration (lib/legal_render/schema.py), not listed in server.py.
 const EXPECTED_SUBMIT_CODES = [
   'SUBMIT_EMPTY_LOG',
   'SUBMIT_INVALID_CP_NAME',
+  'SUBMIT_INVALID_DATE',
   'SUBMIT_MISSING_CP_SIGNATURE',
   'SUBMIT_MISSING_TRADE',
   'SUBMIT_NO_CONTENT',

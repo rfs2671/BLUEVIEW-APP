@@ -39,6 +39,8 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import DateInput from '../../src/components/DateInput';
+import { dateEntryError, toStoredDate } from '../../src/utils/dateEntry';
 import { useToast } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
@@ -410,10 +412,20 @@ export default function WorkerDetailScreen() {
   const [newCertType, setNewCertType] = useState('OSHA_10');
 
   const handleAddCertification = async () => {
+    // Refused here rather than by the server's 422: `expiration_date` is a
+    // datetime on the model, and a typed '07/21/2029' used to come back as a
+    // bare "Could not save certification" with no word about the date.
+    if (dateEntryError(newCertExpiry)) {
+      toast.error('Check the expiry date', dateEntryError(newCertExpiry));
+      return;
+    }
     const certData = {
       type: newCertType,
       card_number: newCertName.trim() || null,
-      expiration_date: newCertExpiry || null,
+      // ISO, a calendar day. Pydantic reads YYYY-MM-DD as that day at 00:00;
+      // it is never built from a Date here, which would shift it a day east
+      // of UTC.
+      expiration_date: toStoredDate(newCertExpiry) || null,
       issue_date: new Date().toISOString(),
       verified: false,
     };
@@ -975,11 +987,14 @@ export default function WorkerDetailScreen() {
                   placeholder="Card number (optional)"
                   style={s.inputSpacing}
                 />
-                <GlassInput
+                <DateInput
+                  as={GlassInput}
                   value={newCertExpiry}
-                  onChangeText={setNewCertExpiry}
-                  placeholder="Expiry date (optional)"
+                  onChange={setNewCertExpiry}
+                  placeholder="Expiry MM/DD/YYYY (optional)"
+                  accessibilityLabel="Certification expiry, month day year, optional"
                   leftIcon={<Calendar size={18} color={colors.text.subtle} />}
+                  palette={{ error: colors.status.error, hint: colors.text.muted }}
                   style={s.inputSpacing}
                 />
                 <View style={s.addFormButtons}>
