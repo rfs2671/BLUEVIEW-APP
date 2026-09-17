@@ -114,8 +114,23 @@ export function displayFromIso(iso) {
 
 const digitsOf = (text) => String(text || '').replace(/\D/g, '');
 
+/** Where the caret sits once `n` digits are behind it in `text`. */
+function caretAfterDigits(text, n) {
+  if (n <= 0) return 0;
+  let seen = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] >= '0' && text[i] <= '9') {
+      seen += 1;
+      if (seen === n) return i + 1;
+    }
+  }
+  return text.length;
+}
+
 /**
- * The field's next text, given what it showed and what the OS handed back.
+ * The field's next text, given what it showed and what the OS handed back —
+ * and, given where the caret was in what the OS handed back, where the caret
+ * belongs in the text that replaces it.
  *
  * WHY IT TAKES THE PREVIOUS TEXT. Backspace with the cursor just after a
  * slash removes the slash; the digits are unchanged, so a plain reformat puts
@@ -130,23 +145,57 @@ const digitsOf = (text) => String(text || '').replace(/\D/g, '');
  * PASTE. A pasted ISO date is turned into display order — stripped of its
  * dashes it would read as month 20. Every other paste is its digits, capped
  * at eight, the same as typing them.
+ *
+ * WHY THE CARET IS COUNTED IN DIGITS. On web the field is a real <input>:
+ * the re-formatted text is written back into it, and a browser puts the caret
+ * at the END of a value it did not see typed. Fixing the day in 07/21/2029
+ * therefore typed the corrected digit into the year. A CHARACTER offset does
+ * not survive the re-format, because the slashes move under it; a DIGIT
+ * offset does. So the caret comes back after the same digit it was after —
+ * one fewer when the edit removed a digit, which is what deleting a slash
+ * does here — and the slashes fall where they fall around it. A pasted ISO
+ * date has no such mapping, its digits being reordered, so the caret goes to
+ * the end of what landed.
+ *
+ * `rawCaret` is the caret in `rawText`, as the DOM reports it at the change.
+ * Leaving it out — native, which keeps its own caret, or a host input that
+ * does not forward the DOM event — gives the end of the text, which is what
+ * every platform did before.
  */
-export function nextEntryText(prevText, rawText) {
+export function nextEntry(prevText, rawText, rawCaret) {
   const prev = String(prevText == null ? '' : prevText);
   const raw = String(rawText == null ? '' : rawText);
+  const at = typeof rawCaret === 'number' && Number.isFinite(rawCaret)
+    ? Math.max(0, Math.min(Math.trunc(rawCaret), raw.length))
+    : null;
 
   const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
-  if (iso) return digitsToDisplay(`${iso[2]}${iso[3]}${iso[1]}`);
+  if (iso) {
+    const turned = digitsToDisplay(`${iso[2]}${iso[3]}${iso[1]}`);
+    return { text: turned, caret: turned.length };
+  }
 
   let digits = digitsOf(raw);
+  // The caret, in digits: how many of them the person left behind it.
+  let kept = at === null ? digits.length : digitsOf(raw.slice(0, at)).length;
   if (digits === digitsOf(prev) && raw.length < prev.length) {
     // A separator went. Find it, and take the digit in front of it instead.
     let i = 0;
     while (i < raw.length && raw[i] === prev[i]) i += 1;
     const before = digitsOf(prev.slice(0, i)).length;
-    if (before > 0) digits = digits.slice(0, before - 1) + digits.slice(before);
+    if (before > 0) {
+      digits = digits.slice(0, before - 1) + digits.slice(before);
+      // That digit was behind the caret, so the count behind it drops by one.
+      if (kept >= before) kept -= 1;
+    }
   }
-  return digitsToDisplay(digits.slice(0, 8));
+  const text = digitsToDisplay(digits.slice(0, 8));
+  return { text, caret: caretAfterDigits(text, Math.min(kept, 8)) };
+}
+
+/** The same, for a caller with no caret to place: native, and the tests. */
+export function nextEntryText(prevText, rawText) {
+  return nextEntry(prevText, rawText).text;
 }
 
 /**

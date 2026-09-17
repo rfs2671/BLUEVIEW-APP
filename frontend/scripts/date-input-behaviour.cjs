@@ -28,6 +28,10 @@
  *   REFUSED   02292027 types as 02/29/2027, is named ("not a leap year")
  *             under the field, and Save sends nothing
  *   PASTE     a pasted 2029-07-21 lands as 07/21/2029
+ *   CARET     an edit in the MIDDLE of 07/21/2029 -- backspace over the 1 of
+ *             the day, type a 5 -- leaves 07/25/2029 with the caret still in
+ *             the day. The node suite cannot see this: it is the browser
+ *             putting the caret at the end of a value it did not see typed.
  *   BACKSPACE three backspaces leave 07/21/2, and 029 restores it
  *   SAVED     Save sends exactly one write, carrying 2029-07-21
  *   PINNED    on the scaffold stepper — a LIGHT card pinned whatever the
@@ -211,6 +215,8 @@ const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evalua
   return {
     found: true,
     value: input.value,
+    caret: input.selectionStart,
+    focused: document.activeElement === input,
     inputMode: input.getAttribute('inputmode'),
     message: msgEl ? msgEl.innerText.trim() : '',
     contrast,
@@ -311,6 +317,50 @@ const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evalua
     await input.fill('2029-07-21');
     f = await readField(page, PLACEHOLDER);
     check('PASTE     2029-07-21 lands as 07/21/2029', f.value === '07/21/2029', `value is "${f.value}"`);
+
+    // CARET
+    //
+    // THE REPORTED DEFECT. Put the caret after the 1 of the day in
+    // 07/21/2029, backspace, type 5. Every keystroke rewrites the whole value
+    // of a real <input>, and a browser parks the caret at the end of a value
+    // it did not see typed -- so the 5 used to land in the year. The
+    // intermediate caret is asserted too: the end of 07/22/029 is 9.
+    const setCaret = (at) => page.evaluate(([ph, i]) => {
+      const el = document.querySelector(`[role="dialog"] input[placeholder="${ph}"]`);
+      if (!el) return false;
+      el.focus();
+      el.setSelectionRange(i, i);
+      return el.selectionStart === i;
+    }, [PLACEHOLDER, at]);
+    await input.click();
+    const placed = await setCaret(5);
+    if (!placed) {
+      console.error(`x HARNESS [${theme}]: could not put the caret inside the date field.`);
+      harness += 1;
+    } else {
+      await input.press('Backspace');
+      f = await readField(page, PLACEHOLDER);
+      check('CARET     backspace in the middle leaves the caret in the day',
+        f.value === '07/22/029' && f.caret === 4,
+        `value "${f.value}", caret ${f.caret} (want 4, the end would be 9)`);
+      await input.pressSequentially('5', { delay: 25 });
+      f = await readField(page, PLACEHOLDER);
+      check('CARET     and the 5 lands in the day, not in the year',
+        f.value === '07/25/2029', `value is "${f.value}"`);
+      check('CARET     with the caret still after it',
+        f.caret === 5, `caret ${f.caret} (want 5, the end would be 10)`);
+      // Typing at the END must still end at the end -- the caret is placed by
+      // digit, and a rule that only works in the middle is half a fix.
+      await input.fill('');
+      await input.pressSequentially('07212029', { delay: 25 });
+      f = await readField(page, PLACEHOLDER);
+      check('CARET     typing a whole date still ends at the end',
+        f.value === '07/21/2029' && f.caret === 10,
+        `value "${f.value}", caret ${f.caret}`);
+      check('CARET     and the field never lost focus while being typed into',
+        f.focused === true, 'the field is not the active element');
+    }
+    await input.fill('2029-07-21');
 
     // BACKSPACE
     await input.press('End');
