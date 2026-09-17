@@ -152,7 +152,8 @@ class AnElementNeedsSomethingBehindIt(unittest.TestCase):
             [{"symbol": "RD OD", "meaning": "ROOF DRAIN OUTLET"}], [], [])
         self.assertEqual(out, [{"name": "ROOF DRAIN OUTLET", "tag": "RD OD",
                                 "count_if_stated": None, "count_basis": "not_stated",
-                                "location_hint": "legend"}])
+                                "location_hint": "legend", "described_by": "",
+                                "name_is_the_mark": False}])
 
     def test_a_counted_tag_is_an_element_and_says_what_the_count_is(self):
         out = pt.elements_from_evidence(
