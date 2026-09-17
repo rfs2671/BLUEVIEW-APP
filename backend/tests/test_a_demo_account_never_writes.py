@@ -245,30 +245,89 @@ def test_no_non_safe_route_is_refused_to_a_real_account():
 
     A guard that refuses EVERY authenticated write would pass the census above
     perfectly — 153 routes refused, all green, product dead. Most of the
-    backend suite cannot catch that, because it overrides `get_current_user`
-    and sends no Authorization header at all, so the middleware never engages
-    for those tests and their green says nothing about this.
+    backend suite cannot catch that either, because it overrides
+    `get_current_user` and sends no Authorization header at all, so the
+    middleware never engages for those tests and their green says nothing
+    about this.
 
-    This is the same loop with a CP's token and a CP's document: not one of
-    the 153 may come back as a demo refusal.
+    ── WHY THIS ONE DOES NOT GO THROUGH THE APP, AND THE ONE ABOVE DOES ─────
+
+    The demo census can drive real HTTP because the guard short-circuits ABOVE
+    the router: not one of its 153 requests reaches a handler. The mirror is
+    the opposite by construction — every request it makes is meant to get
+    past the guard, so a full-stack version EXECUTES ALL 153 HANDLERS against
+    a MagicMock database.
+
+    That is not a hypothetical cost. The first draft did exactly that and it
+    broke a test in a different file
+    (test_a_filed_record_opens_without_a_login.py, whose one-second expiry
+    margin is sensitive to anything that slows the process down), reproducibly,
+    in two separate full-suite orderings, while the base branch ran clean. A
+    test that reaches into a hundred and fifty handlers with a mock db leaves
+    whatever those handlers start behind it, and conftest.py's list of
+    process-global singletons is the record of how expensive that gets.
+
+    So the sweep asks the DECISION directly — the same `evaluate` the
+    middleware calls, with the same principal reader — and the wiring is
+    proved separately by the test below, on a path that matches no route and
+    therefore runs nothing.
     """
     import server
 
-    headers = {"Authorization": f"Bearer {_token('cp', user_id='cp-user-1')}"}
+    request = MagicMock()
+    request.headers = {
+        "authorization": f"Bearer {_token('cp', user_id='cp-user-1')}"}
     refused = []
 
-    with _Patched(_db_returning_user({"_id": "cp-user-1", "role": "cp"})):
-        client = _client()
-        for method, template in _non_safe_routes():
-            path = _concrete(template)
-            rate_limits.reset_counter()
-            response = client.request(method, path, json={}, headers=headers)
-            if _refusal(response) is not None:
-                refused.append(f"{method} {template}")
+    async def _sweep():
+        with _Patched(_db_returning_user({"_id": "cp-user-1", "role": "cp"})):
+            for method, template in _non_safe_routes():
+                body = await demo_guard.evaluate(
+                    method=method, path=_concrete(template), request=request,
+                    jwt_secret=server.JWT_SECRET,
+                    jwt_algorithm=server.JWT_ALGORITHM,
+                    demo_principal_check=lambda p:
+                        server._demo_write_guard_principal(p),
+                )
+                if body is not None:
+                    refused.append(f"{method} {template}")
+
+    _run(_sweep())
 
     assert not refused, (
         "the demo write guard refused a REAL account on these writes:\n  "
         + "\n  ".join(refused))
+
+
+def test_the_middleware_is_wired_to_the_decision_in_both_directions():
+    """THE SWEEP ABOVE TESTS A FUNCTION; THIS TESTS THAT IT IS INSTALLED.
+
+    Both halves run against a path that matches NO route, which is the point:
+    the guard acts before routing, so the demo arm proves it is in the stack
+    and the CP arm proves it lets a real account through to the 404 — and
+    neither executes a line of application code.
+    """
+    import server
+
+    with _Patched(_db_returning_user({"_id": "demo-user-1", "role": "demo"})):
+        rate_limits.reset_counter()
+        demo = _client().post(
+            "/api/__no_such_route__", json={},
+            headers={"Authorization": f"Bearer {_token('demo')}"})
+
+    with _Patched(_db_returning_user({"_id": "cp-user-1", "role": "cp"})):
+        rate_limits.reset_counter()
+        real = _client().post(
+            "/api/__no_such_route__", json={},
+            headers={"Authorization":
+                     f"Bearer {_token('cp', user_id='cp-user-1')}"})
+
+    assert _refusal(demo) is not None, \
+        "the guard is not installed — a demo write reached the router"
+    assert demo.status_code == 403
+    assert real.status_code == 404, (
+        f"a real account was not let through to the router (got "
+        f"{real.status_code})")
 
 
 def test_the_exemption_list_is_exactly_the_two_auth_paths():
