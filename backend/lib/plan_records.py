@@ -140,9 +140,64 @@ BASIS_TIERS = {
     TIER_VISION: TIER_VISION,
 }
 
+# ── TIER FOLLOWS SOURCE, ALWAYS ────────────────────────────────────────────
+#
+# Found in the 2026-09-17 corpus: M-200.00 carried `PTAC-1 count 21` TWICE —
+# once at ocr_grid_cell from the OCR'd grid, and once at SCHEDULE_CELL, the
+# strongest tier in the system, derived from a schedule the VISION MODEL read
+# off the image. `elements_from_evidence` mapped every non-ocr_grid source to
+# `schedule_qty`, so a number a model saw in a picture arrived wearing the
+# badge of a cell the text layer handed over. `best_per_attribute` would then
+# have preferred the vision copy over the real one.
+#
+# The number happened to be right. That is not the point: it is the same
+# machinery that produced 41, and nothing downstream could tell.
+#
+# So each source declares the BEST tier it may ever claim. A source may sit
+# lower — a text-layer line is text_layer, not tag_legend — but never higher.
+# `emit` enforces it rather than trusting every call site to get it right,
+# because the call site is exactly what got it wrong.
+SOURCE_FLOOR = {
+    "table_finder": TIER_SCHEDULE_CELL,
+    "ocr_grid": TIER_OCR_GRID,
+    # A mark paired to its legend, or a symbol counted by its strokes. Both are
+    # an occurrence on the sheet itself, neither is a printed value.
+    "glyph_match": TIER_TAG_LEGEND,
+    "text_layer": TIER_TAG_LEGEND,
+    # The floor and the ceiling. Nothing a model read off an image may outrank
+    # anything a person could check against the page.
+    "vision": TIER_VISION,
+}
+
+# What produced an element's count, hence what its record may claim.
+BASIS_SOURCES = {
+    "schedule_qty": "table_finder",
+    "ocr_schedule_qty": "ocr_grid",
+    "tag_occurrences": "text_layer",
+    "glyph_match": "glyph_match",
+    TIER_VISION: "vision",
+}
+
 
 def _element_tier(basis: Optional[str]) -> str:
     return BASIS_TIERS.get(basis or "", TIER_TEXT_LAYER)
+
+
+def _element_source(basis: Optional[str]) -> str:
+    return BASIS_SOURCES.get(basis or "", "text_layer")
+
+
+def tier_for_source(tier: Optional[str], source: Optional[str]) -> str:
+    """The tier a record may actually carry, given where it came from.
+
+    Never raises and never silently improves anything: a tier that outranks
+    its source is pulled DOWN to what the source can support."""
+    floor = SOURCE_FLOOR.get(source or "")
+    if floor is None:
+        return tier or TIER_TEXT_LAYER
+    if tier_rank(tier) < tier_rank(floor):
+        return floor
+    return tier or floor
 
 
 def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
@@ -163,6 +218,9 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
         quote = strip_boilerplate(_clean(quote), boilerplate).strip()
         if not quote and not label:
             return
+        # A tier that outranks its source is pulled down to what the source
+        # supports. Enforced here rather than trusted at each call site.
+        tier = tier_for_source(tier, source)
         rec = dict(page)
         rec.update({
             "record_type": record_type,
@@ -232,8 +290,11 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
             name,
             f"count {el['count_if_stated']}" if el.get("count_if_stated") is not None else "",
             _clean(el.get("location_hint"))) if x)
+        # The SOURCE follows the basis too. An element counted off an OCR'd
+        # grid is not a text-layer fact, and one counted off a picture is not
+        # a schedule cell — which is exactly what M-200.00 shipped.
         emit("element", i, quote, el, _element_tier(basis),
-             "vision" if basis == TIER_VISION else "text_layer",
+             _element_source(basis),
              bbox=el.get("bbox"), verified=(basis != TIER_VISION),
              subject_terms=[x for x in (name, _clean(el.get("tag")), desc) if x])
 
@@ -286,4 +347,4 @@ def page_authority(raw_text: str, title_text: str = "", file_name: str = ""
 
 __all__ = ["build_records", "page_authority", "column_role", "tier_rank",
            "better_tier", "TIER_ORDER", "RECORD_TYPES", "RECORD_VERSION",
-           "BASIS_TIERS"]
+           "BASIS_TIERS", "BASIS_SOURCES", "SOURCE_FLOOR", "tier_for_source"]

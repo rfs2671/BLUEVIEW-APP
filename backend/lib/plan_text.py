@@ -1176,13 +1176,24 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
             if qty is not None and qty < len(row):
                 cell = str(row[qty] or "").strip()
                 n = int(cell) if re.fullmatch(r"\d{1,6}", cell) else None
-            # A quantity OCR'd out of a grid is still a printed quantity, but
-            # it is not the same evidence as one the text layer handed over.
-            # The basis says which, and plan_records tiers on the basis.
+            # ── THE BASIS IS THE SCHEDULE'S SOURCE, NOT "IT WAS A SCHEDULE" ─
+            #
+            # This read `ocr_grid -> ocr_schedule_qty, everything else ->
+            # schedule_qty`, and "everything else" includes a schedule the
+            # VISION MODEL read off the image. On M-200.00 that put
+            # `PTAC-1 count 21` at schedule_cell — the strongest tier there is
+            # — on the strength of a picture. The number was right; the badge
+            # was not, and nothing downstream could tell it from a cell the
+            # text layer handed over.
+            #
+            # "vision_read" is spelled rather than imported: plan_extract
+            # imports THIS module, so the constant cannot come back the other
+            # way. plan_records.BASIS_TIERS is where it is mapped to a tier.
             basis = "not_stated"
             if n is not None:
-                basis = ("ocr_schedule_qty" if sc.get("source") == "ocr_grid"
-                         else "schedule_qty")
+                basis = {"ocr_grid": "ocr_schedule_qty",
+                         "vision": "vision_read"}.get(sc.get("source"),
+                                                      "schedule_qty")
             out.append({"name": meaning_of.get(mark) or mark, "tag": mark,
                         "count_if_stated": n, "count_basis": basis,
                         "location_hint": (sc.get("name") or "schedule")[:120]})
