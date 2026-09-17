@@ -50,6 +50,7 @@ import InfoTooltip from '../../../src/components/InfoTooltip';
 // definition and threshold for credential expiry (it previously had none).
 import { daysUntil } from '../../../src/utils/expiry';
 import { isValidBin } from '../../../src/utils/bin';
+import { parseRecordDate, formatRecordDate } from '../../../src/utils/dates';
 
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
@@ -58,22 +59,31 @@ const getSevConfig = (severity) => {
   return { color: semantic.verified, label: 'Good' };
 };
 
-const parseAnyDate = (dateStr) => {
-  if (!dateStr) return null;
-  // Handle YYYYMMDD format (no separators)
-  if (typeof dateStr === 'string' && dateStr.length === 8 && /^\d{8}$/.test(dateStr)) {
-    return new Date(`${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T00:00:00Z`);
-  }
-  const d = new Date(dateStr);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-const formatDate = (dateStr) => {
-  if (!dateStr) return '\u2014';
-  const d = parseAnyDate(dateStr);
-  if (!d) return String(dateStr).slice(0, 10);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-};
+// ── THE DATES ON THIS SCREEN ARE DOB'S, AND MOST OF THEM ARE CALENDAR DAYS ──
+//
+// This screen had its own `parseAnyDate`, which built every date with
+// `new Date(str)` and FORCED `...T00:00:00Z` for an eight-digit one. A bare
+// calendar day parsed as UTC midnight prints the day BEFORE through
+// `toLocaleDateString` anywhere behind UTC:
+//
+//     '20260721'    -> "Jul 20, 2026"
+//     '2026-07-01'  -> "Jun 30, 2026"     <- the wrong MONTH
+//
+// The row it fed is labelled "Issue Date" on a DOB violation. `violation_date`
+// is Socrata's `issue_date` passed through raw -- YYYYMMDD for ECB -- and when
+// that is missing the server falls back to a bare 'YYYY-MM-01', so the
+// month-boundary case was the FALLBACK, not an edge.
+//
+// Both now come from src/utils/dates.js, which is already where this repo keeps
+// calendar-day handling and already argues the UTC-noon anchor for `shiftDate`.
+// A fourth private date parser on a fourth screen is how the first three
+// diverged.
+//
+// IT STILL DISTINGUISHES A DAY FROM AN INSTANT: `detected_at` and
+// `status_changed_at` are timestamps, passed to `new Date` untouched, because
+// anchoring an instant to noon would MOVE it.
+const parseAnyDate = parseRecordDate;
+const formatDate = formatRecordDate;
 
 
 export default function DOBLogsScreen() {
