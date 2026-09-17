@@ -310,11 +310,40 @@ jobs:
 
       # playwright-core is NOT a project dependency (nothing else needs a
       # browser); install it and the matching Chromium for this job only.
+      # THE BROWSER, NOT THE BUNDLE. Measured on a real run, this job is 468s:
+      # 356s of it is browser EXECUTION (mounting 78 routes in two themes, the
+      # tap-target floor, and the three 443px gates) -- the actual testing, and
+      # not compressible by caching. The cacheable setup is this step's 27s.
+      #
+      # npm IS ALREADY CACHED by `setup-node` above (`cache: "npm"`), so there
+      # is no saving there; `npm ci` at 16s is already warm.
+      #
+      # THE EXPO EXPORT IS DELIBERATELY NOT CACHED. This job only runs when
+      # `frontend/**` changed -- which is exactly when a cache keyed on frontend
+      # content is stale. A key that hits would be a key that ignored the change
+      # under test, which is worse than paying the 59s.
+      - name: Cache the Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # The pinned version is the whole key: a different playwright needs a
+          # different browser build, and nothing else in the repo changes it.
+          key: ms-playwright-chromium-1.49.1-${{ runner.os }}
+
       - name: Install Playwright Chromium
         working-directory: frontend
         run: |
           npm i --no-save playwright-core@1.49.1
-          npx --yes playwright@1.49.1 install --with-deps chromium
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            # The browser is restored; `install-deps` is the apt half and is
+            # NOT in the cache, so it still runs. `install chromium` becomes a
+            # no-op that verifies the restore rather than re-downloading.
+            npx --yes playwright@1.49.1 install-deps chromium
+            npx --yes playwright@1.49.1 install chromium
+          else
+            npx --yes playwright@1.49.1 install --with-deps chromium
+          fi
 
       - name: Build production web bundle
         working-directory: frontend
