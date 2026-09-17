@@ -1298,6 +1298,77 @@ except Exception as _demo_guard_err:
         f"DEMO ACCOUNTS CAN CURRENTLY WRITE",
     )
 
+# ── AND THE DEMO ACCOUNT READS ONLY FICTION ───────────────────────
+#
+# The read half of the same ruling: "Real admin screens, rendered from canned
+# payloads. Every other endpoint returns an empty or canned result, never real
+# data." lib/demo_provider.py holds the table, the empty shapes, the placeholder
+# plan, and the long note on why the interception is unconditional.
+#
+# THE PROPERTY THIS REGISTRATION BUYS, IN ONE SENTENCE: for a demo principal on
+# a GET, `call_next` is never called, so the router never matches, so no handler
+# runs — and a handler that does not run cannot read Mongo and cannot spend
+# money at a vision API. It is not an allow-list bolted onto the real handlers;
+# the real handlers are unreachable, and the table below only decides what is
+# served instead. A GET added next week is covered before it is written.
+#
+# ── REGISTERED SECOND, WHICH PUTS IT JUST OUTSIDE THE WRITE GUARD ─────────
+#
+# `add_middleware` PREPENDS, so the runtime order becomes
+# CORS -> X-Request-Id -> rate limit -> this -> write guard -> app. The two
+# demo layers handle DISJOINT method sets (this one GET and HEAD, the guard
+# everything non-safe), so their relative order changes no behaviour and only
+# one of them ever does the `db.users` read on a given request. What does
+# matter is that both sit INSIDE the rate limiter, for the reason the guard's
+# block states: a layer that touches Mongo must not be reachable faster than
+# the limiter permits.
+#
+# THE TWO INJECTED ACCESSORS ARE CALLABLES, NOT VALUES. `app.routes` is still
+# being appended to at this point in the file — include_router runs thousands
+# of lines below — so a snapshot taken here would be an almost empty route
+# table, and the canonical-template match that keeps /projects/dob-summary out
+# of the hands of /projects/{project_id} would silently stop working. The
+# clock is a callable for lib/demo/'s reason: every date in the dataset is an
+# offset from the day of the call, so a demo opened in March shows March.
+# THE IMPORT IS OUTSIDE THE try AND THE WIRING IS INSIDE IT, for the reason
+# the write guard's block states at length: swallowing the import would buy a
+# silently unguarded app, and there is no realistic state where it buys a
+# working one. If lib/demo_provider or the dataset it imports cannot be loaded,
+# this process must refuse to start rather than start with demo accounts
+# reading the real database.
+from lib import demo_provider  # noqa: E402  (import placed with its subject)
+
+try:
+    def _demo_get_templates():
+        """Every GET route template the app declares, /api prefix included."""
+        return [getattr(r, "path", "") for r in app.routes
+                if "GET" in (getattr(r, "methods", None) or ())]
+
+    app.add_middleware(
+        demo_provider.make_middleware(
+            jwt_secret=JWT_SECRET,
+            jwt_algorithm=JWT_ALGORITHM,
+            demo_principal_document=lambda payload: _demo_principal_document(
+                payload),
+            get_templates=_demo_get_templates,
+            get_today=lambda: eastern_today(),
+            # The static logbook registry, so a demo's logbook screens carry
+            # the product's own labels instead of title-cased keys. It holds
+            # no tenant data and reads no collection — see the note on
+            # `_logbook_types` in lib/demo_provider.py for why it is canned
+            # through an accessor rather than allowed to reach its handler.
+            get_logbook_types=lambda: _demo_logbook_type_catalog(),
+        ),
+    )
+except Exception as _demo_provider_err:
+    # NOT SWALLOWED QUIETLY, and the words say what is now true rather than
+    # what failed: without this layer a demo account's GETs reach the real
+    # handlers and read the real database.
+    logging.getLogger(__name__).error(
+        f"[demo_provider] middleware NOT installed: {_demo_provider_err!r}; "
+        f"DEMO ACCOUNTS CAN CURRENTLY READ REAL DATA",
+    )
+
 # ── Phase C2: rate limiting + abuse protection ────────────────────
 #
 # In-memory fixed-window limiter wrapping every /api/* request.
@@ -6762,7 +6833,22 @@ async def get_current_user(
         # stale install is not the person holding the phone. Fire-and-forget so
         # it can never add latency to a read, and throttled so it is not a
         # write per request.
-        if request is not None and user_oid is not None:
+        #
+        # AND NOT FOR A DEMO. "Nothing the demo user does is saved" is the
+        # ruling, and this is the one write that would have survived it: the
+        # demo guard refuses by HTTP METHOD, and this fires from inside
+        # get_current_user on a GET, below that boundary entirely. It is a
+        # telemetry stamp rather than the user's data, which is exactly why it
+        # would have been missed -- nobody auditing "what can a demo write"
+        # looks at a read path. THE TEST IS ON THE DEMO SIDE, not here: a demo
+        # GET must leave `client_version` untouched.
+        #
+        # `is_demo` reads the DOCUMENT, not the token claim, for the same
+        # reason demo_guard does: a promoted account carries "demo" in its JWT
+        # for up to 30 days because _reissue_token_if_stale copies claims
+        # forward, and a real customer's install must still be stamped.
+        if (request is not None and user_oid is not None
+                and not is_demo(user_data)):
             reported = (request.headers.get("x-client-version") or "").strip()[:32]
             if reported and _client_version_needs_stamp(user, reported):
                 asyncio.create_task(_record_client_version(user_oid, reported))
@@ -7092,6 +7178,80 @@ async def _demo_write_guard_principal(payload) -> bool:
     if not user:
         return False
     return is_demo(user)
+
+
+async def _demo_principal_document(payload):
+    """The caller's user document when the caller is a demo, else None.
+
+    The READ guard's one query, and the sibling of `_demo_write_guard_principal`
+    directly above. Same question, same predicate, same fallback — the only
+    difference is what comes back, and it is a document rather than a boolean
+    because `GET /auth/me` IS that document and lib/demo_provider.py has no
+    other way to answer it without reaching into Mongo itself.
+
+    A test asserts the two functions agree on every input, because two
+    derivations of "is a demo" that can disagree are a demo that writes
+    nothing and reads everything, or the reverse.
+
+    ── WHY THE WHOLE DOCUMENT AND NOT A PROJECTION ─────────────────────────
+
+    The write guard projects `{"role": 1}` because a boolean is all it needs.
+    This one is also the source for `/auth/me`, which serves the user document
+    minus secrets, so a projection here would silently truncate a demo's own
+    session: no name, no onboarding_step, no company_id. The cost is one
+    unprojected indexed `find_one` per authenticated GET — a user row, on a
+    request whose handler would have made several queries of its own.
+
+    ── SHAPED LIKE `get_current_user`, STRIPPED LIKE `get_me` ──────────────
+
+    `serialize_id` + `site_mode = False` is exactly what `get_current_user`
+    returns, and `_PRINCIPAL_PRIVATE_FIELDS` is exactly what `get_me` removes
+    from it. Both are the REAL names, resolved at call time — the denylist is
+    defined further down this file and is deliberately not copied up here,
+    because the copy that drifts is the one that ships a password hash to a
+    client. A secret added to that frozenset is stripped from a demo's
+    /auth/me the same day, with nobody needing to know this function exists.
+
+    `serialize_id` MUTATES, so the document is copied first. That is not
+    theoretical: the write-guard tests hand the same dict back from every
+    `find_one`, and mutating it would delete `_id` for the second caller.
+
+    ── A FAILED LOOKUP FALLS BACK TO THE CLAIM, LIKE THE WRITE SIDE ────────
+
+    And for a stronger reason here. On the write path an uncertain answer that
+    read "not a demo" would have failed at the handler anyway; on the READ
+    path it means passing a possible demo through to the router, which is the
+    one direction that leaks. So when Mongo cannot answer and the signed claim
+    says "demo", this returns the claim's own thin principal: enough for a
+    session, and the app's real rows stay unreachable.
+    """
+    user_id = (payload or {}).get("sub")
+    if not user_id:
+        return None
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}})
+    except Exception as e:
+        logger.warning(f"[demo_provider] user lookup failed, falling back to "
+                       f"the token claim: {e!r}")
+        if not is_demo({"role": (payload or {}).get("role")}):
+            return None
+        # The claim's principal. Named keys only — there is no document to
+        # copy, and inventing fields a real row would have had would put
+        # fiction on the ONE response that is supposed to be about the
+        # caller's actual account.
+        return {
+            "id": str(user_id),
+            "email": (payload or {}).get("email"),
+            "role": ROLE_DEMO,
+            "site_mode": False,
+        }
+    if not user or not is_demo(user):
+        return None
+    out = serialize_id(dict(user))
+    out["site_mode"] = False
+    return {k: v for k, v in out.items()
+            if k not in _PRINCIPAL_PRIVATE_FIELDS}
 
 
 # The roles that hard-require a company. A user in one of these without a
@@ -10375,6 +10535,27 @@ async def get_admin_users(
     current_user = Depends(get_user_admin),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
+    # ── THE OPT-IN, AND WHAT IT DOES *NOT* WIDEN ────────────────────────────
+    #
+    # Operator ruling. `ADMIN_MANAGED_ROLES` is right for User Management --
+    # admins are the platform operator's to manage -- but it narrowed all three
+    # callers of `adminUsersAPI.getAll`, and one of them is a PICKER rather
+    # than a management surface: app/admin/superintendent.jsx links the
+    # construction superintendent of a job, and its own comment records why it
+    # needs everyone ("Michael is role 'cp' and IS the construction
+    # superintendent"). A company admin who is also the CS on his own job
+    # became unlinkable.
+    #
+    # IT WIDENS WHICH ROLES, NEVER WHICH COMPANY. The tenant clause below is
+    # untouched and unreachable from here: a caller still sees his own company
+    # and nobody else's, and a caller with no company still sees nobody. That
+    # separation is the subject of the block below -- the leak this route once
+    # had was TENANCY decided by role, and nothing here reads the caller's
+    # role either.
+    #
+    # DEFAULT FALSE, so User Management keeps the ruling without asking, and
+    # only a caller that names this gets the wider list.
+    include_all_roles: bool = Query(False),
 ):
     company_id = get_user_company_id(current_user)
     
@@ -10423,7 +10604,18 @@ async def get_admin_users(
         pass                      # the cross-tenant view, on the flag alone
     elif company_id:
         query["company_id"] = company_id
-        query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
+        # THE TENANT CLAUSE ABOVE IS NOT CONDITIONAL AND MUST NEVER BECOME SO.
+        # Only the role clause is opt-out-able; see the parameter's note.
+        #
+        # `is not True`, NOT `not include_all_roles`. Called through FastAPI the
+        # default resolves to False, but called directly from Python it IS the
+        # `Query(False)` object -- and that object is truthy. `not <Query>` is
+        # False, so the role clause was silently skipped for every direct
+        # caller: the admin filter vanished with no error. Only an explicit
+        # True may widen the list; a sentinel, None, or a string keeps the
+        # ruling. Failing closed is the direction that cannot leak.
+        if include_all_roles is not True:
+            query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
     else:
         query["_id"] = None
 
@@ -30817,14 +31009,30 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
     return {"message": "Scaffold info saved"}
 # ==================== LOGBOOK TYPE REGISTRY ENDPOINT ====================
 
-@api_router.get("/logbook-types")
-async def get_logbook_types(current_user = Depends(get_current_user)):
-    """Return the full logbook type registry for UI rendering."""
+def _demo_logbook_type_catalog():
+    """The logbook type registry as this app serves it. ONE SPELLING.
+
+    Lifted out of the handler below because the demo read provider answers
+    /logbook-types from a canned payload rather than letting a demo reach a
+    handler, and it must answer with THE SAME LIST. Two comprehensions over
+    LOGBOOK_TYPE_REGISTRY would be two things that can drift, and the drift
+    would show up as a demo whose logbook labels are subtly not the product's.
+
+    The name says demo because the demo is why it was extracted, not because
+    the value is demo-specific: it holds no tenant data, reads no collection
+    and is identical for every account in the product.
+    """
     # Annotate each type with its full freeze contract (timing_class,
     # is_batchable, freeze_on_sign, freeze_on_finalize) so the client applies the
     # counsel-defined rule instead of inventing one. sign-freezes vs
     # finalize-freezes is a LEGAL distinction, so it is served, not hardcoded.
     return [{**e, **logbook_timing_meta(e["key"])} for e in LOGBOOK_TYPE_REGISTRY]
+
+
+@api_router.get("/logbook-types")
+async def get_logbook_types(current_user = Depends(get_current_user)):
+    """Return the full logbook type registry for UI rendering."""
+    return _demo_logbook_type_catalog()
 
 # ==================== SAFETY STAFF ENDPOINTS ====================
 

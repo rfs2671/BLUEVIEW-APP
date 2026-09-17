@@ -58,8 +58,14 @@ console.log('\n2. NO ROLE FILTER');
   const end = SRC.indexOf('setFetchState(regsRes.status)');
   ok(start > 0 && end > start, 'the fetch block was located at all');
   const fetchBlock = SRC.slice(start, end);
-  ok(/adminUsersAPI\.getAll\(\)/.test(fetchBlock),
-    'it asks for the company user list');
+  // RESTATED, NOT RELAXED. This read `getAll()` with empty parens, which was
+  // the whole list until the roster started filtering by role. Since then the
+  // empty call hides admins -- and an admin can be the construction
+  // superintendent on his own job. The assertion below it already says what
+  // this screen needs ("Michael is cp and IS the CS": every role); the call
+  // must now ASK for every role to get it.
+  ok(/adminUsersAPI\.getAll\(\s*\{\s*includeAllRoles:\s*true\s*\}\s*\)/.test(fetchBlock),
+    'it asks for the company user list, with every role');
   ok(!/role\s*===\s*'superintendent'/.test(SRC)
      && !/filter\(\s*\(?u\)?\s*=>\s*u\.role/.test(SRC),
   'and does NOT filter by role — Michael is cp and IS the CS');
