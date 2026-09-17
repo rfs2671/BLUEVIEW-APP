@@ -511,6 +511,57 @@ def _position_match(text: str):
     return None
 
 
+# ── WHICH FILING THIS SHEET BELONGS TO ────────────────────────────────────
+#
+# Measured on 588 Boyland: the title blocks carry NO document type and NO
+# approval status. 'ISSUED FOR', 'PAA', 'FOR FILING', 'NOT FOR CONSTRUCTION'
+# and 'PRELIMINARY' appear on zero pages. "PE'S APPROVAL" and "SEAL AND
+# SIGNATURE" are printed CAPTIONS beside empty boxes — on 43 pages the text
+# immediately after "DRAWING BY" is literally "SEAL AND SIGNATURE".
+#
+# What they do carry is the DOB job number with its filing suffix, and it
+# varies by file along exactly the axis that matters:
+#
+#   AR - 3.28.25   I1      Owners set     I1      ST   S2
+#   PL - 6.29.26   S5      MH - 7.2.26    S6      SP   S7
+#   AR - 8.18.26   P5   <- the .01 reissue is a different filing class
+#
+# dob_logs already tracks these same identifiers (raw_dob_id B01141294-P8,
+# signal_kind filing_pending), which is why APPROVAL STATUS IS NOT STORED
+# HERE: it changes without the drawing changing, and a status frozen at index
+# time is a lie with a date on it. The filing id is the join.
+_FILING_RE = re.compile(r"\b(B\d{6,9})\s*-\s*([A-Z]{1,2}\d{1,3})\b", re.I)
+_ISSUE_RE = re.compile(
+    r"DATE\s+ISSUE\s+OR\s+REVISION\s+(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})", re.I)
+# I = initial filing, S = a subsequent filing, P = a post-approval amendment.
+# Derived, never read: no sheet prints these words.
+_FILING_KIND = {"I": "initial", "S": "subsequent", "P": "post_approval_amendment"}
+
+
+def filing_id(text: str) -> Optional[str]:
+    """'B01141294-P5', or None. Seven of sixteen files on this project carry
+    none at all, and that absence is itself an authority signal."""
+    m = _FILING_RE.search(text or "")
+    return f"{m.group(1).upper()}-{m.group(2).upper()}" if m else None
+
+
+def document_type(filing: Optional[str], file_name: str = "") -> Optional[str]:
+    """Derived from the filing suffix, plus the one thing a name can say."""
+    if re.search(r"\bAS[\s_-]?BUILT\b", file_name or "", re.I):
+        return "as_built"
+    if not filing:
+        return None
+    suffix = filing.rsplit("-", 1)[-1]
+    return _FILING_KIND.get(suffix[:1].upper())
+
+
+def issue_date(text: str) -> Optional[str]:
+    """The date beside 'DATE ISSUE OR REVISION'. Cleaner than the file name's:
+    AR - 3.28.25.pdf prints 2/27/2025."""
+    m = _ISSUE_RE.search(re.sub(r"\s+", " ", text or ""))
+    return m.group(1) if m else None
+
+
 def sheet_position(text: str) -> Optional[Tuple[int, int]]:
     """'16 OF 31' -> (16, 31), or None when the title block does not say."""
     m = _position_match(text)
@@ -863,7 +914,9 @@ def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str
                 mates.append((m, k, ktext))
             if len(mates) == 1:
                 m, k, ktext = mates[0]
-                out.append({"symbol": text[:60], "meaning": ktext[:200], "pair": "row"})
+                out.append({"symbol": text[:60], "meaning": ktext[:200], "pair": "row",
+                            "bbox": [float(v) for v in bb],
+                            "meaning_bbox": [float(v) for v in kb]})
                 used.add(idx); used.add(m)
                 consumed.add(j); consumed.add(k)
             else:
@@ -880,12 +933,14 @@ def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str
                     if near is None or d < near[0]:
                         near = (d, ktext)
                 out.append({"symbol": text[:60], "meaning": "", "pair": "unpaired",
-                            "nearby": (near[1][:200] if near else "")})
+                            "nearby": (near[1][:200] if near else ""),
+                            "bbox": [float(v) for v in bb]})
                 used.add(idx); consumed.add(j)
         for idx, (j, bb, text) in enumerate(cells):
             if idx in used or not re.search(r"[A-Za-z]{3,}", text):
                 continue
-            out.append({"symbol": "", "meaning": text[:200], "pair": "unpaired"})
+            out.append({"symbol": "", "meaning": text[:200], "pair": "unpaired",
+                        "bbox": [float(v) for v in bb]})
             consumed.add(j)
     return out[:80], consumed
 
@@ -1077,7 +1132,11 @@ def schedules_from_tables(tables: List[Dict[str, Any]], width: float, height: fl
             name = next((c for c in cells if "SCHEDULE" in c.upper()), "TABLE")
             columns, body = rows[0], rows[1:]
         out.append({"name": name[:120], "columns": [c[:80] for c in columns[:30]],
-                    "rows": [[c[:160] for c in r[:30]] for r in body[:200]]})
+                    "rows": [[c[:160] for c in r[:30]] for r in body[:200]],
+                    # WHERE ON THE SHEET. The finder already knows; it was
+                    # discarded here, so an answer could name a schedule and
+                    # not say where to look on a 36-inch drawing.
+                    "bbox": [float(v) for v in (t.get("bbox") or (0, 0, 0, 0))]})
     return out[:12]
 
 
@@ -1198,7 +1257,8 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
     notes, note_blocks = notes_from_blocks(blocks)
     legend, legend_blocks = legend_from_blocks(blocks)
     used = note_blocks | legend_blocks
-    text_blocks = [{"kind": classify_block(b["text"]), "text": b["text"]}
+    text_blocks = [{"kind": classify_block(b["text"]), "text": b["text"],
+                    "bbox": [float(v) for v in (b.get("bbox") or (0, 0, 0, 0))]}
                    for i, b in enumerate(blocks) if i not in used]
     tags = count_tags({"blocks": blocks}, tag_vocab, frozenset(used))
     out = {
@@ -1320,6 +1380,7 @@ __all__ = [
     "page_layouts", "page_dict_from_chars", "drawing_list_index", "file_context", "page_layout_at",
     "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
     "sheet_position", "looks_like_a_sheet_number",
+    "filing_id", "document_type", "issue_date",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "elements_from_evidence", "dimensions_from_text", "material_lines",
     "schedules_from_tables", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
