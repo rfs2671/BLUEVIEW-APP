@@ -1,0 +1,473 @@
+{
+  "schema": 1,
+  "project": {
+    "id": "6a5f63bc147407d3261df2c7",
+    "name": "588 Thomas S Boyland Street, Brooklyn",
+    "baseline": {
+      "_note": "The corpus of the single re-index on 2026-09-17 (05:11-06:29Z), after the 26 orphaned v2 pages of AR - 3.28.25.pdf were deleted. 129 is the page count of record. Any difference means a sync or upload wrote into the project and the whole pass is re-run.",
+      "pages": 129,
+      "current_pages": 111,
+      "records": 15369,
+      "newest_page_indexed_at": "2026-09-17 06:28:32.342000",
+      "newest_record_created_at": "2026-09-17 06:29:02.230000"
+    },
+    "stale": {
+      "_note": "Measured on this corpus 2026-09-17. The junk tags and the elements with no count basis that the pre-#568 corpus carried are gone after the re-index; the 16 schedule_cell elements first reported are 13 correct text-layer counts on RCP-001.00 and 3 promoted from the vision-read PTAC schedule.",
+      "schedule_cell_count_from_a_vision_schedule": 3,
+      "element_without_a_count_basis": 0,
+      "tag_that_is_not_a_mark": 0
+    }
+  },
+  "known_limits": [
+    "Single project. What this proves about a second consultant's drawings is limited to what the case vocabulary can express without change.",
+    "Scores search_plans and the gate, not the composing model: the model's paraphrase is not reproducible run to run.",
+    "Absent-case truth is the text layer of every current page PLUS every stored record's quote. The text layer alone was wrong once: EN-001.00 prints PACKAGED TERMINAL AIR CONDITIONERS in an outlined table.",
+    "Seven current pages have no sheet number (cross-connection set, one AR gas-change page). A fact that lives only there cannot be checked by sheet, so no case depends on one."
+  ],
+  "cases": [
+    {
+      "id": "ptac-count",
+      "question": "how many PTAC units are there",
+      "subject": "PTAC units",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "values": [
+          21,
+          9,
+          11
+        ],
+        "text": [
+          "PTAC-1"
+        ],
+        "tier_at_least": "ocr_grid_cell"
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), ROOMS PTAC UNITS SCHEDULE",
+        "evidence": "PTAC-1 qty 21, PTAC-2 qty 9, PTAC-3 qty 11. Text converted to curves; the text layer prints none of it. Read off a 60 dpi render 2026-09-16 and agreed 42/42 with the grid OCR."
+      }
+    },
+    {
+      "id": "ptac-make-and-model",
+      "question": "what make and model are the PTAC units",
+      "subject": "PTAC",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00",
+          "GN-001.00",
+          "A-100.01",
+          "A-201.01"
+        ],
+        "text": [
+          "AMANA",
+          "PTH093K"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00)",
+        "evidence": "AMANA PTH093K / PTH123K / PTH153K in the PTAC schedule, outlined text."
+      }
+    },
+    {
+      "id": "wall-heater-count",
+      "question": "how many wall electric unit heaters",
+      "subject": "wall electric unit heater",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "values": [
+          9
+        ],
+        "text": [
+          "WH-1"
+        ],
+        "tier_at_least": "ocr_grid_cell"
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), WALL ELECTRIC UNIT HEATER SCHEDULE",
+        "evidence": "WH-1, PER PLANS, qty 9, MARKEL 3320 SERIES E3323TD-RP, 1.5 KW. Read off a 120 dpi render 2026-09-17."
+      }
+    },
+    {
+      "id": "duct-heater-capacity",
+      "question": "what is the capacity of the duct electric heater",
+      "subject": "duct electric heater",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "values": [
+          "15.0"
+        ],
+        "text": [
+          "DH-1"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), DUCT ELECTRIC HEATER",
+        "evidence": "DH-1, 8PD15-1812-3, qty 1, 15.0 KW, 208/3/60, 41.7 A. Read off a 110 dpi render 2026-09-17."
+      }
+    },
+    {
+      "id": "exhaust-fan-models",
+      "question": "what exhaust fans are specified",
+      "subject": "exhaust fan",
+      "intent": "identify",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "text": [
+          "AEN110",
+          "BRN503"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), EXHAUST FAN SCHEDULE",
+        "evidence": "EF-1 NUTONE AEN110 50 CFM; EF-2 BROAN BRN503 100 CFM. Read off a 110 dpi render 2026-09-17."
+      }
+    },
+    {
+      "id": "diffuser-manufacturer",
+      "question": "who makes the diffusers",
+      "subject": "diffuser",
+      "intent": "identify",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "text": [
+          "CARNES"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), DIFFUSER & REGISTER SCHEDULE",
+        "evidence": "A1 and A2, CARNES RSDB. CARNES is on no current page's text layer; this case can only pass through the grid OCR."
+      }
+    },
+    {
+      "id": "roof-drain-count",
+      "question": "how many roof drains are there",
+      "subject": "roof drain",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-105.01"
+        ],
+        "values": [
+          2
+        ],
+        "glyph_scope": "family"
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "AR - 8.18.26.pdf p7 (A-105.01), roof plan",
+        "evidence": "Two FLOOR/AREA/ROOF DRAIN glyphs at (932,1011) and (932,1737) in page space, each inside four converging SLOPE DN arrows with AD printed beside it, not inside. Crop viewed 2026-09-16. Family scope because the mark is beside the symbol."
+      }
+    },
+    {
+      "id": "parapet-height",
+      "question": "how high is the parapet",
+      "subject": "parapet",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-105.01",
+          "FA-007",
+          "M-105.00",
+          "P-105.00",
+          "P-206.00",
+          "SSP-008.00"
+        ],
+        "values": [
+          42
+        ],
+        "text": [
+          "42\" PARAPET"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "PyMuPDF text of the current pages",
+        "evidence": "42\" PARAPET on A-105.01, FA-007, M-105.00, P-105.00, P-206.00, SSP-008.00 and one page with no sheet number."
+      }
+    },
+    {
+      "id": "stucco-wall-assembly",
+      "question": "what is the stucco wall made of",
+      "subject": "stucco",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-100.01",
+          "A-101.00",
+          "A-102.00",
+          "A-103.00",
+          "A-104.00",
+          "A-105.01"
+        ],
+        "values": [
+          6
+        ],
+        "text": [
+          "STUCCO FINISH",
+          "R19"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "PyMuPDF text of the current pages",
+        "evidence": "6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH on A-100.01, A-101.00-A-104.00, A-105.01. R19 and R11.5 are ratings, not quantities: the gate reads a number with a letter in front of it as an identifier, so they are expected as printed text, not as values."
+      }
+    },
+    {
+      "id": "roof-occupancy-load",
+      "question": "what is the occupancy load on the roof",
+      "subject": "occupancy load",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-105.01"
+        ],
+        "values": [
+          10
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "AR - 8.18.26.pdf p7 (A-105.01)",
+        "evidence": "PASSIVE RECREATION 1970 SF. / 200 = 10 ... TOTAL OCCUPANTS PER STORY 10 PERSONS. OCCUPANCY LOAD is printed on six current sheets; 10 PERSONS on this one only. The OCCUPANCY LOAD table's cells carry the 10 ('/ 200 = | 10'); '10 PERSONS' is a separate text block that does not contain the subject, so it is not expected here."
+      }
+    },
+    {
+      "id": "passive-recreation-area",
+      "question": "how big is the passive recreation area",
+      "subject": "passive recreation",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-105.01"
+        ],
+        "values": [
+          1970
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "AR - 8.18.26.pdf p7 (A-105.01)",
+        "evidence": "PASSIVE RECREATION 1970 SQ. FT."
+      }
+    },
+    {
+      "id": "pile-type",
+      "question": "what piles are used on site",
+      "subject": "piles",
+      "intent": "identify",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "S-001.00"
+        ],
+        "text": [
+          "HELICAL PILES"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "ST - 7.29.26.pdf p2 (S-001.00)",
+        "evidence": "BC 1705.8 HELICAL PILES (BB # 2014-020). On no other current page."
+      }
+    },
+    {
+      "id": "elevator",
+      "question": "is there an elevator",
+      "subject": "elevator",
+      "intent": "existence",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-400.00",
+          "GN-001.00",
+          "S-002.00",
+          "SSP-002.00"
+        ],
+        "text": [
+          "ELEVATOR"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "PyMuPDF text of the current pages",
+        "evidence": "ELEVATOR on A-400.00, GN-001.00, S-002.00, SSP-002.00."
+      }
+    },
+    {
+      "id": "sprinklered",
+      "question": "is the building sprinklered",
+      "subject": "sprinkler",
+      "intent": "existence",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "FA-001",
+          "GN-001.00",
+          "SP-001.00",
+          "SP-002.00",
+          "SP-003.00",
+          "SP-004.00",
+          "T-001.00",
+          "T-001.01"
+        ],
+        "text": [
+          "SPRINKLER"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "PyMuPDF text of the current pages",
+        "evidence": "SPRINKLER on eight current sheets including the four SP sheets."
+      }
+    },
+    {
+      "id": "ac-type",
+      "question": "what type of AC units are in the building",
+      "subject": "AC units",
+      "intent": "identify",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00",
+          "EN-001.00",
+          "GN-001.00",
+          "A-100.01",
+          "A-201.01"
+        ],
+        "text": [
+          "PTAC"
+        ],
+        "forbid_text": [
+          "PACKAGE TERMINAL AIR CONDITIONER"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "PyMuPDF text of the current pages; M-200.00 and EN-001.00 by eye",
+        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said."
+      }
+    },
+    {
+      "id": "packaged-terminal-air-conditioners",
+      "question": "do we have package terminal air conditioners",
+      "subject": "package terminal air conditioner",
+      "intent": "existence",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "EN-001.00"
+        ],
+        "text": [
+          "PACKAGED TERMINAL AIR CONDITIONERS"
+        ],
+        "forbid_text": [
+          "PACKAGE TERMINAL AIR CONDITIONER"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p12 (EN-001.00), ENERGY CODE TABULAR ANALYSIS row C403.3.2",
+        "evidence": "'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS, PACKAGED TERMINAL HEAT PUMPS' beside PTAC-1/-2/-3 with their SEER/EER. Outlined text; read off a 110 dpi render 2026-09-17. This case began as an 'absent' case on the strength of the text layer, which has none of it."
+      }
+    },
+    {
+      "id": "kicker-invented",
+      "question": "what is a kicker",
+      "subject": "kicker",
+      "intent": "identify",
+      "kind": "absent",
+      "expect": {
+        "forbid_text": [
+          "KICKER"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all 111 current pages",
+        "evidence": "KICKER is on no current page. It was invented by the vision model reading a legend it could not read."
+      }
+    },
+    {
+      "id": "escalator-absent",
+      "question": "where is the escalator",
+      "subject": "escalator",
+      "intent": "location",
+      "kind": "absent",
+      "expect": {
+        "forbid_text": [
+          "ESCALATOR"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all 111 current pages",
+        "evidence": "ESCALATOR is on no current page."
+      }
+    },
+    {
+      "id": "solar-absent",
+      "question": "are there solar panels on the roof",
+      "subject": "solar panels",
+      "intent": "existence",
+      "kind": "absent",
+      "expect": {
+        "forbid_text": [
+          "SOLAR"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all 111 current pages",
+        "evidence": "SOLAR and PHOTOVOLTAIC are on no current page."
+      }
+    },
+    {
+      "id": "helipad-absent",
+      "question": "is there a helipad",
+      "subject": "helipad",
+      "intent": "existence",
+      "kind": "absent",
+      "expect": {
+        "forbid_text": [
+          "HELIPAD"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all 111 current pages",
+        "evidence": "HELIPAD and HELIPORT are on no current page."
+      }
+    }
+  ]
+}

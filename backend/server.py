@@ -46648,6 +46648,21 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         logger.warning(f"search_plans lookup failed for {subject!r}: {e}")
         return []
     ranked = plan_search.rank(rows, terms, intent)
+    # ── A LABEL MAY FIND A RECORD; IT MAY NOT MAKE ONE AN ANSWER ───────────
+    #
+    # Measured by the plan eval, 2026-09-17: 'what is a kicker' returned the
+    # two legend entries on M-104.00 whose quotes are 'KE 1' and 'KE 2' and
+    # whose only tie to the question is the vision label 'KICKER EXHAUST'.
+    # The agent is never shown a label, but it is shown the question and the
+    # marks, and 'KE 1 is a kicker' follows from nothing else. contains_label
+    # cannot catch that — the answer need not contain the label string.
+    #
+    # There is no way to offer a label-only match as an answer without
+    # asserting what the label says, so none is offered, on either path. The
+    # label still widens retrieval for a record that ALSO matches on words the
+    # sheet prints; that is the only use #568 needed it for.
+    ranked = [r for r in ranked
+              if not plan_search.matched_only_through_label(r, terms)]
     return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
 
 

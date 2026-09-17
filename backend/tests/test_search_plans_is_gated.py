@@ -176,9 +176,17 @@ class TheFallbackCanOnlySayWhatTheSheetsSay(unittest.TestCase):
         self.assertIn("PTAC-1 | 21", out)
 
     def test_it_never_renders_a_label(self):
-        out = ps.render_records([VISION_LEGEND], "air conditioner")
+        out = ps.render_records([VISION_LEGEND], "ptac")
         self.assertNotIn("PACKAGE TERMINAL", out.upper())
         self.assertIn("PTAC-1", out)
+
+    def test_a_mark_found_only_through_its_label_is_not_offered_as_the_answer(self):
+        # This used to assert the opposite: 'air conditioner' rendered PTAC-1.
+        # The label was never printed, but the header named the subject and
+        # the line under it supplied the mark, which states the label's
+        # meaning anyway. On 'kicker' that meaning was invented.
+        out = ps.render_records([VISION_LEGEND], "air conditioner")
+        self.assertEqual(out, "Not on the indexed drawings.")
 
     def test_the_renderer_reads_only_the_renderable_fields(self):
         src = inspect.getsource(ps.render_records)
