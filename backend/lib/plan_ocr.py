@@ -82,6 +82,34 @@ _engine_lock = threading.Lock()
 _engine_failed = ""
 
 
+_probe: Optional[Tuple[bool, str]] = None
+
+
+def probe() -> Tuple[bool, str]:
+    """(ok, detail) WITHOUT building the engine. For /health.
+
+    ── WHY THIS IS NOT `available()` ──────────────────────────────────────
+    #
+    # `available()` constructs RapidOCR, which loads ~15 MB of ONNX weights.
+    # /health is what the platform polls, and a probe that blocks for seconds
+    # on its first call is a restart loop, which is the one thing that
+    # endpoint is written never to cause.
+    #
+    # Importing the package is enough to catch the failure that actually
+    # happened: rapidocr imports cv2, cv2 needs libGL.so.1, and the image
+    # carried none — so pip succeeded, the deploy went green, and the reader
+    # was dead. The import is where that surfaces, and it is nearly free.
+    """
+    global _probe
+    if _probe is None:
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+            _probe = (True, "")
+        except Exception as e:          # pragma: no cover - environment
+            _probe = (False, f"{type(e).__name__}: {e}")
+    return _probe
+
+
 def available() -> bool:
     """Whether OCR can run here at all. False is a normal state, not an error:
     the indexer then writes exactly what it writes today."""
@@ -268,6 +296,6 @@ def read_grid(image_bytes: bytes, grid: Dict[str, Any], dpi: int = OCR_DPI
     return sched
 
 
-__all__ = ["available", "why_unavailable", "grid_is_readable", "place_in_grid",
+__all__ = ["available", "why_unavailable", "probe", "grid_is_readable", "place_in_grid",
            "schedule_from_table", "read_grid", "OCR_DPI", "MAX_GRID_INCHES",
            "MAX_CELLS"]
