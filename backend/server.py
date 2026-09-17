@@ -3352,6 +3352,7 @@ from lib.vision_meter import (  # noqa: E402
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_text  # noqa: E402
+from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
 
@@ -41682,6 +41683,61 @@ class BudgetExhausted(RuntimeError):
     """
 
 
+# At most this many grids per page get OCR'd. M-200.00, the densest schedule
+# sheet in the corpus, has seven. A page claiming twenty is a page where grid
+# detection has gone wrong, and the cost of finding out is a render each.
+PLAN_OCR_MAX_GRIDS = 12
+
+
+async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
+                           layout: Optional[dict], file_name: str
+                           ) -> Tuple[List[dict], List[str]]:
+    """(schedules, flags) for the ruled grids this page's text layer cannot read.
+
+    ── WHY THIS RUNS ON SOME GRIDS AND NOT EVERY PAGE ─────────────────────
+    #
+    # Measured 2026-09-16 on the 588 Boyland sets: 15 of 56 schedule-shaped
+    # grids hand the text layer zero characters, because the mechanical
+    # engineer exports with text converted to curves. OCR of those 15 grids is
+    # about two minutes for the whole corpus. OCR of every page, tiled, is
+    # 112 seconds PER PAGE — three and a half hours per re-index to re-read
+    # text we already have exactly.
+    #
+    # `layout["ocr_grids"]` is already only the grids with zero characters
+    # inside them, and that test is deterministic: ruling lines and a character
+    # count, no model and no threshold on how confident anything feels.
+    """
+    grids = (layout or {}).get("ocr_grids") or []
+    if not grids:
+        return [], []
+    if not plan_ocr.available():
+        return [], [f"ocr_engine_absent:{plan_ocr.why_unavailable()[:60]}"]
+    if not pdf_path:
+        return [], ["ocr_no_pdf_path"]
+    out: List[dict] = []
+    flags: List[str] = []
+    for g in grids[:PLAN_OCR_MAX_GRIDS]:
+        ok, why = plan_ocr.grid_is_readable(g)
+        if not ok:
+            flags.append(f"ocr_grid_skipped:{why}")
+            continue
+        png = await asyncio.to_thread(
+            _render_pdf_crop, pdf_path, page_number, g["bbox"], plan_ocr.OCR_DPI)
+        if not png:
+            flags.append("ocr_render_failed")
+            continue
+        sched = await asyncio.to_thread(plan_ocr.read_grid, png, g)
+        if sched:
+            out.append(sched)
+    if len(grids) > PLAN_OCR_MAX_GRIDS:
+        flags.append(f"ocr_grids_capped:{len(grids)}")
+    if out:
+        logger.info(
+            f"plan OCR {file_name} p{page_number}: {len(out)} of {len(grids)} "
+            f"blind grids read, rows={[len(s.get('rows') or []) for s in out]}")
+    return out, flags
+
+
 async def _index_single_page(
     *,
     project_id: str,
@@ -41697,6 +41753,7 @@ async def _index_single_page(
     layout: Optional[dict] = None,
     tag_vocab=None,
     drawing_index: Optional[dict] = None,
+    pdf_path: Optional[str] = None,
 ):
     """Index one page: text layer + sectioned Qwen extraction + chunks + R2 JPEG.
 
@@ -42023,6 +42080,39 @@ async def _index_single_page(
             boilerplate=boilerplate,
         )
     fields = result["fields"]
+
+    # 3b. THE SCHEDULES THE TEXT LAYER CANNOT READ. A grid whose ruling lines
+    # are printed and whose cells contain no characters is a schedule drawn as
+    # artwork — not a scan, a CAD export with text converted to curves. It is
+    # read here, tiered as ocr_grid_cell, and never mistaken for a cell the
+    # text layer handed over.
+    # A legend row whose glyph could not be lifted unambiguously says so here
+    # rather than nowhere: a refused template is a real gap in what this sheet
+    # can be asked, and it is the recall cost of never guessing one.
+    text_flags.extend((fields.get("glyph_flags") or [])[:6])
+    try:
+        ocr_scheds, ocr_flags = await _ocr_blind_grids(
+            pdf_path, page_number, layout, file_name)
+        text_flags.extend(ocr_flags)
+        if ocr_scheds:
+            fields["schedules"] = list(fields.get("schedules") or []) + ocr_scheds
+            # Elements are derived FROM the schedules, so they are rebuilt
+            # rather than appended to: an OCR'd quantity has to reach the
+            # element list with `ocr_schedule_qty` as its basis, and a mark
+            # that now has a quantity must stop saying "not stated".
+            #
+            # The glyph counts are NOT derived from schedules and survive the
+            # rebuild. Dropping them here would silently undo the whole
+            # symbol pass on exactly the sheets that also carry schedules.
+            drawn = [e for e in (fields.get("elements") or [])
+                     if e.get("count_basis") == "glyph_match"]
+            fields["elements"] = plan_text.elements_from_evidence(
+                fields.get("legend") or [], fields["schedules"],
+                fields.get("tag_counts") or []) + drawn
+    except Exception as e:
+        # Never fail a page over the new reader.
+        logger.warning(f"plan OCR failed {file_name} p{page_number}: {e!r}")
+
     legacy = plan_extract.legacy_fields(fields)
     bad = {k: v for k, v in result["flags"].items() if v}
     if bad or result["number_flags"]:
@@ -42159,6 +42249,56 @@ def _pdf_page_texts(pdf) -> List[str]:
             return [(p.extract_text() or "") for p in reader.pages]
         except Exception:
             return []
+
+
+def _render_pdf_crop(pdf_path: str, page_number: int, bbox, dpi: int) -> Optional[bytes]:
+    """One RECTANGLE of one page, as PNG bytes, at high resolution.
+
+    ── WHY A CROP AND NOT THE PAGE ────────────────────────────────────────
+    #
+    # A schedule has to be read at about 400 dpi before a comma stops being
+    # read as a period. The same sheet at 400 dpi whole is 14,400 x 9,600 —
+    # over 400 MB of RGB, on the container that already restarted mid-reindex
+    # over 250 dpi full pages. The PTAC schedule is 12 x 2 inches.
+    #
+    # pdf2image cannot crop, so this calls pdftoppm directly with -x -y -W -H.
+    # Same binary the rest of the indexer already depends on (poppler_utils is
+    # in nixpacks.toml), same doctrine: poppler writes the file, Python reads
+    # a few hundred KB back.
+    #
+    # -x/-y/-W/-H are DEVICE pixels at -r, and the page origin for pdftoppm is
+    # the TOP-LEFT — the same origin pdfplumber reports `top` in, which is why
+    # the bbox needs no flip.
+    """
+    import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+    exe = _shutil.which("pdftoppm")
+    if not exe or not pdf_path:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        return None
+    s = dpi / 72.0
+    x, y = int(x0 * s), int(y0 * s)
+    w, h = int((x1 - x0) * s) + 2, int((y1 - y0) * s) + 2
+    if w <= 0 or h <= 0:
+        return None
+    try:
+        with _tempfile.TemporaryDirectory(prefix="plancrop-") as tmp:
+            out = _os.path.join(tmp, "crop")
+            _subprocess.run(
+                [exe, "-r", str(dpi), "-f", str(page_number), "-l", str(page_number),
+                 "-x", str(x), "-y", str(y), "-W", str(w), "-H", str(h),
+                 "-png", "-singlefile", str(pdf_path), out],
+                check=True, capture_output=True, timeout=120)
+            with open(out + ".png", "rb") as fh:
+                return fh.read()
+    except Exception as e:
+        logger.warning(f"crop render p{page_number} {bbox} @{dpi} failed: {e}")
+        return None
 
 
 def _render_pdf_page(pdf, page_number: int, dpi: int) -> Optional[bytes]:
@@ -42805,6 +42945,7 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                     layout=layout,
                     tag_vocab=tag_vocab,
                     drawing_index=drawing_index,
+                    pdf_path=pdf_path,
                 )
 
             # Three pages at a time, progress written after each batch.
@@ -44345,6 +44486,14 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
         if r.get("tier") == plan_extract.TIER_VISION:
             line += " (read off the image — say so if you use it)"
+        elif r.get("tier") == plan_extract.TIER_OCR_GRID:
+            # A real printed cell, in the cell the ruling lines define. It is
+            # still a transcription, and the sheet is the authority.
+            line += " (transcribed from the printed schedule)"
+        elif (r.get("payload") or {}).get("glyph_scope") == "family":
+            # The shape matched; nothing was printed inside it to say WHICH
+            # member. Saying 'two W1 windows' here would be the 41 again.
+            line += " (a count of the symbol, not of any one marked type)"
         lines.append(line)
     return "\n".join(lines)
 
@@ -45574,7 +45723,10 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "the thing — never estimate, never round, never add up across sheets. "
     "A line marked vision_read was read off the image, not the text: say so if "
     "you use it, and do not repeat wording it supplied as if the sheet printed "
-    "it. An answer containing a number that is not in the returned lines is "
+    "it. A line marked 'a count of the symbol' counted a shape on the drawing "
+    "with no mark printed inside it — report it as that symbol's count and "
+    "never as a count of a particular type. "
+    "An answer containing a number that is not in the returned lines is "
     "discarded and replaced before it reaches the group.\n\n"
     "PROACTIVE NEXT-STEP DOCTRINE — this is what makes you feel human:\n"
     "After every tool call, look at the result and offer the obvious next action "

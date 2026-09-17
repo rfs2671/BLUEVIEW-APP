@@ -53,8 +53,8 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.plan_extract import (
-    TIER_SCHEDULE_CELL, TIER_TAG_LEGEND, TIER_TEXT_LAYER, TIER_VISION,
-    strip_boilerplate,
+    TIER_OCR_FREEFORM, TIER_OCR_GRID, TIER_SCHEDULE_CELL, TIER_TAG_LEGEND,
+    TIER_TEXT_LAYER, TIER_VISION, strip_boilerplate,
 )
 
 RECORD_VERSION = 1
@@ -62,7 +62,8 @@ RECORD_VERSION = 1
 # Ranked best first. Retrieval ranks on this before similarity, and an answer
 # never cites a lower tier when a higher one exists for the same attribute on
 # the same sheet.
-TIER_ORDER = (TIER_SCHEDULE_CELL, TIER_TAG_LEGEND, TIER_TEXT_LAYER, TIER_VISION)
+TIER_ORDER = (TIER_SCHEDULE_CELL, TIER_OCR_GRID, TIER_TAG_LEGEND,
+              TIER_TEXT_LAYER, TIER_OCR_FREEFORM, TIER_VISION)
 
 RECORD_TYPES = ("schedule", "element", "note", "legend_entry", "callout",
                 "dimension", "tag", "text")
@@ -128,12 +129,20 @@ def _bbox(v: Any) -> Optional[List[float]]:
     return box if len(box) == 4 and any(box) else None
 
 
+# A count is only as strong as what it rests on, and `count_basis` names that.
+# `glyph_match` sits with `tag_legend` because both are an occurrence counted
+# on the sheet itself — one by the mark's letters, one by the symbol's strokes.
+BASIS_TIERS = {
+    "schedule_qty": TIER_SCHEDULE_CELL,
+    "ocr_schedule_qty": TIER_OCR_GRID,
+    "tag_occurrences": TIER_TAG_LEGEND,
+    "glyph_match": TIER_TAG_LEGEND,
+    TIER_VISION: TIER_VISION,
+}
+
+
 def _element_tier(basis: Optional[str]) -> str:
-    return {
-        "schedule_qty": TIER_SCHEDULE_CELL,
-        "tag_occurrences": TIER_TAG_LEGEND,
-        TIER_VISION: TIER_VISION,
-    }.get(basis or "", TIER_TEXT_LAYER)
+    return BASIS_TIERS.get(basis or "", TIER_TEXT_LAYER)
 
 
 def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
@@ -175,16 +184,21 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
     # ── schedules ────────────────────────────────────────────────────────
     for i, s in enumerate(fields.get("schedules") or []):
         via_vision = (s.get("source") == "vision")
+        via_ocr = (s.get("source") == "ocr_grid")
         cols = [str(c or "") for c in (s.get("columns") or [])]
         payload = dict(s, columns=[{"header": c, "role": column_role(c)} for c in cols])
         lines = [s.get("name") or f"Schedule {i + 1}"]
         if cols:
             lines.append(" | ".join(cols))
         lines += [" | ".join(str(c or "") for c in r) for r in (s.get("rows") or [])]
-        emit("schedule", i, "\n".join(lines), payload,
-             TIER_VISION if via_vision else TIER_SCHEDULE_CELL,
-             "vision" if via_vision else "table_finder",
-             bbox=s.get("bbox"), verified=not via_vision,
+        # An OCR'd grid is NOT quotable against the page text — the page has no
+        # text there, which is why it was OCR'd at all. `_span` returns None
+        # for it; `source` says where it came from so nothing has to infer it.
+        tier = (TIER_VISION if via_vision
+                else TIER_OCR_GRID if via_ocr else TIER_SCHEDULE_CELL)
+        emit("schedule", i, "\n".join(lines), payload, tier,
+             "vision" if via_vision else "ocr_grid" if via_ocr else "table_finder",
+             bbox=s.get("bbox"), verified=not (via_vision or via_ocr),
              subject_terms=[_clean(s.get("name"))] if s.get("name") else [])
 
     # ── notes ────────────────────────────────────────────────────────────
@@ -271,4 +285,5 @@ def page_authority(raw_text: str, title_text: str = "", file_name: str = ""
 
 
 __all__ = ["build_records", "page_authority", "column_role", "tier_rank",
-           "better_tier", "TIER_ORDER", "RECORD_TYPES", "RECORD_VERSION"]
+           "better_tier", "TIER_ORDER", "RECORD_TYPES", "RECORD_VERSION",
+           "BASIS_TIERS"]

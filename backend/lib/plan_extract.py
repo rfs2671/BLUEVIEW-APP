@@ -468,10 +468,30 @@ def _legend_norm(t: str) -> str:
 # HOW A RECORD CAME TO BE, WHICH IS THE ONLY CONFIDENCE THERE IS. Never a
 # number, never the model's opinion of itself: the tier is the extraction path.
 TIER_SCHEDULE_CELL = "schedule_cell"     # a detected grid, cells from the text layer
+TIER_OCR_GRID = "ocr_grid_cell"          # cell rectangle from ruling lines, glyphs from OCR
 TIER_TAG_LEGEND = "tag_legend"           # a mark paired to a legend entry on its sheet
 TIER_TEXT_LAYER = "text_layer"           # a value printed in a note or a spec
+TIER_OCR_FREEFORM = "ocr_freeform"       # OCR of a region with no grid behind it
 TIER_VISION = "vision_read"              # read off the image; lowest, never a value
-EVIDENCE_TIERS = (TIER_SCHEDULE_CELL, TIER_TAG_LEGEND, TIER_TEXT_LAYER, TIER_VISION)
+
+# ── WHY OCR GETS TWO TIERS AND NOT ONE ─────────────────────────────────────
+#
+# Measured on M-200.00, 2026-09-16, one engine, one page, one resolution:
+#
+#   whole-schedule crop @300 dpi   ->  PTH15.3K   14.000   13.700
+#   cell rectangles from the grid  ->  PTH153K    14,000   13,700   (42/42)
+#
+# The comma read as a period is a thousand-fold error in a capacity, produced
+# with nothing to signal it. More resolution did not fix it. Scoping the read
+# to a cell the RULING LINES define fixed it completely.
+#
+# So what predicts whether an OCR'd number is right is not that OCR ran — it
+# is whether a deterministic rectangle bounded the read. TIER_OCR_GRID sits
+# directly under a text-layer schedule cell because its structure is exact and
+# only its glyphs are probabilistic. TIER_OCR_FREEFORM sits above vision only,
+# because there a transcription error has nothing to catch it.
+EVIDENCE_TIERS = (TIER_SCHEDULE_CELL, TIER_OCR_GRID, TIER_TAG_LEGEND,
+                  TIER_TEXT_LAYER, TIER_OCR_FREEFORM, TIER_VISION)
 
 
 def constrain_legend_to_page(entries: List[Dict[str, Any]], page_text: str
@@ -1913,7 +1933,8 @@ __all__ = [
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
     "validate_section", "merge_sections", "verify_numbers", "number_in_text",
     "constrain_legend_to_page", "EVIDENCE_TIERS", "TIER_SCHEDULE_CELL",
-    "TIER_TAG_LEGEND", "TIER_TEXT_LAYER", "TIER_VISION",
+    "TIER_OCR_GRID", "TIER_TAG_LEGEND", "TIER_TEXT_LAYER", "TIER_OCR_FREEFORM",
+    "TIER_VISION",
     "boilerplate_lines", "strip_boilerplate", "classify_text_source",
     "section_prompt", "extract_page", "legacy_fields", "embedding_text",
     "build_chunks", "answer_count", "answer_existence", "format_count_answer",
