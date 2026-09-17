@@ -568,11 +568,11 @@
       "cases": [
         "ac-type"
       ],
-      "status": "open",
-      "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one.",
+      "status": "partly addressed, not closed",
+      "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one. HALF OF IT WAS THE SLOTS, NOT THE RANKING: asked about the AC units, five of the eight records returned were two notes repeated, and the PTAC schedule sat at positions six to eight. A note is now one record across the sheets it is stamped on (dedupe_quotes), and the schedule reaches the lead.",
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
-      "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped.",
-      "lead_for_a_principled_fix": "boilerplate_lines strips lines repeated across a file's TEXT LAYER; vision-read notes never pass through it. A note whose quote recurs verbatim across many sheets of one discipline is the same signal, and the typed records carry enough (page, discipline, quote, source) to apply it."
+      "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped. After the collapse, 2026-09-17: ac-type's lead is M-100.00, M-101.00 and two M-200.00 schedule cells, so the case is no longer scored as a failure — it is STALE, because the schedule cells that answer it are the three known-stale PTAC elements. Whether it PASSES is not known until the re-index clears them.",
+      "lead_for_a_principled_fix": "What remains is the ranking half: one generic note still outranks one specific record when it repeats more of the question's words. The measurement to make after the re-index is whether ac-type passes on the strength of the schedule alone; if it does not, the remaining work is the same idea as a_mention_outranks_the_measurement — an intent-scoped preference for the record that STATES the answer."
     },
     {
       "class": "a_mention_outranks_the_measurement",
