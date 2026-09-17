@@ -18,16 +18,111 @@
 # value makes setdefault a no-op and those tests fail with KeyError. Letting
 # conftest own the defaults is what keeps the suite green.
 
+# ── WHY THIS NO LONGER RUNS ON PUSH TO main ─────────────────────────────────
+#
+# It used to run on the PR *and* again on the squash. 93 of the 256 runs in one
+# six-day window were that second run, at 16.4 billable minutes each -- about
+# 6,900 minutes a month re-testing a tree the PR had already tested.
+#
+# It is safe to drop ONLY because of the merge rule this repo already follows:
+# `git merge-base --is-ancestor origin/main <branch>` before every merge, so a
+# PR's green CI ran on a head that CONTAINED current main. A squash of that head
+# is the same tree. The residual risk is two PRs that are each green alone and
+# semantically conflict once both are in -- git reports no conflict and nothing
+# re-tests the combination. That is the trade the operator accepted; the
+# ancestry rule is what keeps the window to a single merge.
+#
+# ── WHY EACH SUITE ASKS WHAT CHANGED ────────────────────────────────────────
+#
+# The mount smoke is roughly half the cost of a run and cannot be affected by a
+# backend-only change; the backend suite cannot be affected by a frontend-only
+# one. The `changes` job answers both questions once, in about ten seconds, with
+# git -- NOT with a third-party paths-filter action, which would add a
+# supply-chain dependency to the gate that guards the repo.
+#
+# A WORKFLOW-LEVEL `paths:` FILTER WOULD NOT DO. It decides whether the whole
+# workflow runs, so it cannot skip the mount smoke while still running pytest,
+# and the skipped run reports nothing at all. This keeps one workflow that
+# always reports and gates the expensive jobs inside it.
+#
+# THERE IS NO BRANCH PROTECTION ON THIS REPO (it needs GitHub Pro), so a skipped
+# job cannot leave a required check pending forever. If protection is ever
+# enabled, these `if:` guards must become required-check exemptions or the
+# skips will block merges.
+
 name: tests
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
+# One run per branch. A rebase or a force-push supersedes the run it replaces,
+# and tonight's train left several superseded runs burning to completion.
+#
+# PR WORKFLOWS ONLY. `ota-update` and the post-deploy checks run on a push to
+# main and must NEVER be cancelled: cancelling an EAS publish mid-flight leaves
+# every device without the bundle, and cancelling a post-deploy check destroys
+# the only evidence the deploy was verified.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # WHAT CHANGED, ASKED ONCE. Outputs are strings 'true'/'false' because a job
+  # output is always a string -- `if: needs.changes.outputs.backend == 'true'`
+  # is the comparison that works, and `if: needs.changes.outputs.backend` is
+  # true for the literal 'false'.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.f.outputs.backend }}
+      frontend: ${{ steps.f.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The diff is against the merge base, which a shallow clone may not
+          # contain -- and "no base found" must never read as "nothing changed",
+          # so the fallback below runs everything.
+          fetch-depth: 0
+      - id: f
+        env:
+          BASE: origin/${{ github.base_ref }}
+        run: |
+          if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
+            echo "::warning::base $BASE not found — running every suite"
+            echo "backend=true"  >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$BASE"...HEAD)
+          echo "changed files:"; echo "$files" | sed 's/^/  /'
+          # requirements.txt, nixpacks.toml and the Dockerfile change what the
+          # backend RUNS ON, so they count as backend. The workflow files
+          # themselves count as both: a change to this file must prove itself.
+          be=false; fe=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              backend/*|requirements*.txt|nixpacks.toml|Dockerfile|.github/workflows/*) be=true ;;
+            esac
+            case "$f" in
+              frontend/*|.github/workflows/*) fe=true ;;
+            esac
+          done <<< "$files"
+          echo "backend=$be"  >> "$GITHUB_OUTPUT"
+          echo "frontend=$fe" >> "$GITHUB_OUTPUT"
+          echo "-> backend=$be frontend=$fe"
+
   backend-tests:
     name: backend suite (pytest)
+    needs: changes
+    # DOCS-ONLY CHANGES SKIP EVERY SUITE: neither flag is set, so all three
+    # heavy jobs are skipped and only `changes` runs. DRAFTS SKIP TOO -- a draft
+    # is work in progress by definition, and marking it ready re-runs this.
+    if: |
+      needs.changes.outputs.backend == 'true'
+      && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +147,10 @@ jobs:
 
   frontend-tests:
     name: frontend suite (node)
+    needs: changes
+    if: |
+      needs.changes.outputs.frontend == 'true'
+      && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -190,6 +289,10 @@ jobs:
   # not merge them.
   frontend-mount-smoke:
     name: frontend mount smoke (playwright)
+    needs: changes
+    if: |
+      needs.changes.outputs.frontend == 'true'
+      && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
