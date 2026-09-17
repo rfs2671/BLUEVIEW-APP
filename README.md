@@ -128,8 +128,20 @@ dev` + the Expo Router page surface.
 web: cd backend && python -m uvicorn server:app --host 0.0.0.0 --port $PORT
 ```
 
-Railway uses nixpacks (`nixpacks.toml`) which adds `poppler-utils`
-for the COI OCR path. There is no Dockerfile path in production.
+**Railway builds from the `Dockerfile`.** Railway prefers a Dockerfile when the
+repo has one, so that is the only build path in production - `python:3.12-slim`
+on Debian trixie, with every system library installed by `apt-get` in the
+Dockerfile's own `RUN` steps.
+
+This paragraph used to say the opposite: that nixpacks built the image and there
+was no Dockerfile path. That was wrong and it cost a deploy. `nixpacks.toml`
+existed, was never read by anything, and a library added to it changed nothing
+while looking exactly like a fix - `libGL.so.1` stayed missing and the plan OCR
+reader stayed dead through a green deploy. The file is gone; a system library
+belongs in the Dockerfile and nowhere else.
+`backend/tests/test_a_reader_that_cannot_load_is_visible.py` asserts the
+Dockerfile carries what the wheels link against, and that no second build file
+reappears beside it.
 
 The frontend deploys to Cloudflare Pages from `frontend/`.
 
