@@ -329,5 +329,39 @@ class TheCorpusMustBeTheOneTheSuiteWasWrittenFor(unittest.TestCase):
         self.assertIn("await server.search_plans(", src)
 
 
+class AKnownFailureIsStillAFailure(unittest.TestCase):
+    """ac-type fails because generic boilerplate ('EACH AC UNIT SHALL HAVE A
+    MINI-CONDENSATE PUMP', printed on M-100.00-M-105.00) matches more of the
+    question than the PTAC schedule does. Boyland has PTACs only. The class is
+    recorded; the case is not excused."""
+
+    def test_the_shipped_suite_records_the_class(self):
+        s = ev.load_suite(str(BACKEND / "eval" / "boyland.json"))
+        known = ev.known_failure_classes(s)
+        self.assertEqual(known.get("ac-type"), "boilerplate_outranks_specific")
+
+    def test_a_known_failure_still_counts_against_the_rate(self):
+        results = [{"outcome": "pass", "kind": "answer"},
+                   {"outcome": "fail", "kind": "answer",
+                    "known_failure": "boilerplate_outranks_specific"}]
+        s = ev.summarise(results)
+        self.assertEqual((s["scored"], s["passed"], s["failed"]), (2, 1, 1))
+        self.assertEqual(s["pass_rate"], 0.5)
+        self.assertEqual(s["failed_in_known_classes"], 1)
+
+    def test_a_known_failure_must_name_a_real_case_and_its_evidence(self):
+        s = suite(known_failures=[{"class": "x", "cases": ["nope"], "evidence": "e"}])
+        with self.assertRaises(ev.SuiteError):
+            ev.validate_suite(s)
+        s = suite(known_failures=[{"class": "x", "cases": ["c1"]}])
+        with self.assertRaises(ev.SuiteError):
+            ev.validate_suite(s)
+
+    def test_the_runner_labels_it_and_does_not_skip_it(self):
+        src = (BACKEND / "scripts" / "plan_eval.py").read_text(encoding="utf-8")
+        self.assertIn("known_failure_classes(suite)", src)
+        self.assertNotIn("if case[\"id\"] in known", src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46597,6 +46597,10 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
 # putting a second copy of it on every record is how the two drift apart.
 
 SEARCH_PLANS_MAX = 12
+# Candidates fetched before ranking. Measured on 588 Boyland: the commonest
+# single word ('floor') matches 578 records of 15,369. Ranking a few thousand
+# dicts in Python costs milliseconds; ranking an arbitrary subset costs answers.
+SEARCH_PLANS_CANDIDATES = 3000
 
 
 async def _current_record_page_ids(project_id: str, *, discipline: str = "",
@@ -46635,15 +46639,52 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # three matchable fields, including `label`, which is how a vision-read
     # word widens the search without ever becoming an answer. Ranking is the
     # part that decides what may be cited, so it happens where it is tested.
-    ors = []
+    #
+    # THE SAME WORD PATTERN THE RANKER USES. This narrowed with an unanchored
+    # regex, so 'air' fetched every row that prints STAIRS — and with the
+    # unsorted cap below, a flood of those could push the real matches out of
+    # the candidate set before ranking ever saw them.
+    per_term = []
     for t in terms:
-        rx = {"$regex": re.escape(t), "$options": "i"}
-        ors += [{"quote": rx}, {"label": rx}, {"subject_terms": rx}]
+        rx = {"$regex": plan_search.term_pattern(t), "$options": "i"}
+        per_term.append([{"quote": rx}, {"label": rx}, {"subject_terms": rx}])
+    scope = {"project_id": str(project_id), "page_id": {"$in": page_ids}}
+    proj = {"_id": 0, "embedding": 0}
+    # ── THE CAP MUST NOT DECIDE WHAT GETS RANKED ───────────────────────────
+    #
+    # This was one `$or` query with `.limit(400)` and no sort. On 588 Boyland
+    # the single word 'floor' matches 578 records, so which 400 reached the
+    # ranker was whatever order the collection returned them in — and a record
+    # that answered the WHOLE question could be among the 178 left behind.
+    #
+    # So the records that contain every term are fetched first, in full; the
+    # ones that contain any term fill the rest; and a query that still hits
+    # the ceiling says so in the log rather than ranking a silent sample.
+    rows: List[dict] = []
+    seen = set()
+
+    def _take(batch):
+        for r in batch:
+            k = (r.get("page_id"), r.get("record_type"), r.get("ordinal"))
+            if k not in seen:
+                seen.add(k)
+                rows.append(r)
+
     try:
-        rows = await db[PLAN_RECORDS].find(
-            {"project_id": str(project_id), "page_id": {"$in": page_ids}, "$or": ors},
-            {"_id": 0, "embedding": 0},
-        ).limit(400).to_list(400)
+        if len(per_term) > 1:
+            _take(await db[PLAN_RECORDS].find(
+                {**scope, "$and": [{"$or": ors} for ors in per_term]}, proj,
+            ).limit(SEARCH_PLANS_CANDIDATES).to_list(SEARCH_PLANS_CANDIDATES))
+        room = SEARCH_PLANS_CANDIDATES - len(rows)
+        if room > 0:
+            anyof = await db[PLAN_RECORDS].find(
+                {**scope, "$or": [c for ors in per_term for c in ors]}, proj,
+            ).limit(room + len(rows)).to_list(room + len(rows))
+            _take(anyof)
+            if len(anyof) >= room + len(rows):
+                logger.warning(
+                    f"search_plans candidate cap {SEARCH_PLANS_CANDIDATES} reached "
+                    f"for {subject!r}; records matching only some terms were cut")
     except Exception as e:
         logger.warning(f"search_plans lookup failed for {subject!r}: {e}")
         return []

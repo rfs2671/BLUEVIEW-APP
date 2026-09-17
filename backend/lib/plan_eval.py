@@ -219,6 +219,29 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                 raise SuiteError(f"{cid}: unknown tier {t!r}")
         if c["kind"] == "absent" and truth.get("how") != "absent":
             raise SuiteError(f"{cid}: an absent case's truth is 'absent'")
+    for k in suite.get("known_failures") or []:
+        if not k.get("class") or not k.get("evidence"):
+            raise SuiteError("a known failure names its class and its evidence")
+        missing = [cid for cid in k.get("cases") or [] if cid not in seen]
+        if missing:
+            raise SuiteError(f"known failure {k['class']} names no such case: {missing}")
+
+
+def known_failure_classes(suite: Dict[str, Any]) -> Dict[str, str]:
+    """{case id: failure class} for failures the suite already understands.
+
+    ── KNOWN IS NOT EXCUSED ───────────────────────────────────────────────
+    #
+    # A case listed here is still scored, and still counts against the rate.
+    # The label says the failure is understood and not a regression; it does
+    # not make it a pass. Taking known failures out of the rate is how a rate
+    # stops moving while the answers stay wrong.
+    """
+    out: Dict[str, str] = {}
+    for k in suite.get("known_failures") or []:
+        for cid in k.get("cases") or []:
+            out[cid] = k["class"]
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -427,6 +450,8 @@ def summarise(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                       "passed": sum(1 for r in ks if r["outcome"] == "pass")}
     return {
         "cases": len(results),
+        "failed_in_known_classes": sum(1 for r in scored if r["outcome"] == "fail"
+                                       and r.get("known_failure")),
         "scored": len(scored),
         "passed": len(passed),
         "failed": len(scored) - len(passed),
@@ -451,4 +476,5 @@ def check_baseline(baseline: Dict[str, Any], observed: Dict[str, Any]
 __all__ = ["SCHEMA", "CITE_K", "record_key", "STALE_CLASSES", "VISION_PROMOTED",
            "stale_elements_from_vision", "stale_index", "load_suite",
            "validate_suite", "SuiteError", "score_case", "summarise",
+           "known_failure_classes",
            "check_baseline"]

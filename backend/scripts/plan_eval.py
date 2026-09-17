@@ -122,11 +122,14 @@ async def run(args) -> int:
             census_drift.append(f"{cls}: expected {want}, found {got}")
         print(f"   {cls:46} {got:4}{flag}")
 
+    known = pe.known_failure_classes(suite)
     results = []
     for case in cases:
         returned = await server.search_plans(
             pid, case["subject"], intent=case.get("intent") or "")
-        results.append(pe.score_case(case, returned, stale))
+        r = pe.score_case(case, returned, stale)
+        r["known_failure"] = known.get(case["id"])
+        results.append(r)
 
     after = await observe(server, pid)
     moved = pe.check_baseline(before, after)
@@ -136,8 +139,12 @@ async def run(args) -> int:
     for r in results:
         mark = {"pass": "PASS ", "fail": "FAIL ", "stale": "STALE"}[r["outcome"]]
         lead = r["lead"][0] if r["lead"] else {}
+        tag = ""
+        if r.get("known_failure"):
+            tag = (f"  [known: {r['known_failure']}]" if r["outcome"] == "fail"
+                   else f"  [known {r['known_failure']} no longer fails]")
         print(f"{mark} {r['id']:28} {str(lead.get('sheet')):11} "
-              f"{str(lead.get('tier')):14} n={r['checks'].get('returned')}")
+              f"{str(lead.get('tier')):14} n={r['checks'].get('returned')}{tag}")
         for why in r["reasons"]:
             print(f"        - {why}")
         for s in r["stale"]:
@@ -146,6 +153,9 @@ async def run(args) -> int:
     print(json.dumps(summary, indent=2))
     for lim in suite.get("known_limits") or []:
         print(f"known limit: {lim}")
+    for k in suite.get("known_failures") or []:
+        print(f"known failure class: {k['class']} ({k.get('status', 'open')}) "
+              f"cases={k.get('cases')}")
 
     if moved:
         print("\nINVALID: the corpus moved DURING the run:")

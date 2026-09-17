@@ -375,7 +375,7 @@
       "truth": {
         "how": "text_layer",
         "source": "PyMuPDF text of the current pages; M-200.00 and EN-001.00 by eye",
-        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said."
+        "evidence": "PTAC is printed on GN-001.00, A-100.01, A-201.01, scheduled on M-200.00, and listed on EN-001.00 under 'ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS'. The vision label 'PACKAGE TERMINAL AIR CONDITIONER' (no D, singular) is printed nowhere and must not be said. Confirmed by the project team 2026-09-17: PTACs only, no split systems. The 'each AC unit ... refrigerant pipes to roof' notes on M-100.00-M-105.00 are unstripped boilerplate, not a second system."
       }
     },
     {
@@ -468,6 +468,19 @@
         "source": "PyMuPDF text of all 111 current pages",
         "evidence": "HELIPAD and HELIPORT are on no current page."
       }
+    }
+  ],
+  "known_failures": [
+    {
+      "class": "boilerplate_outranks_specific",
+      "cases": [
+        "ac-type"
+      ],
+      "status": "open",
+      "what": "Generic prose that repeats more of the question's words outranks the specific record that answers it. 'AC units' is led by the note 'EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP', which matches both words, while the PTAC schedule matches one.",
+      "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
+      "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped.",
+      "lead_for_a_principled_fix": "boilerplate_lines strips lines repeated across a file's TEXT LAYER; vision-read notes never pass through it. A note whose quote recurs verbatim across many sheets of one discipline is the same signal, and the typed records carry enough (page, discipline, quote, source) to apply it."
     }
   ]
 }
