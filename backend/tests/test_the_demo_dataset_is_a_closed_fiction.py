@@ -490,6 +490,62 @@ class TheShapesAreTheHandlersShapes(unittest.TestCase):
         for row in demo_workers(limit=500)["items"]:
             self.assertEqual(set(row) - allowed, set())
 
+    def test_the_nested_project_rows_validate_against_their_models(self):
+        """ProjectResponse declares `gates` and `trade_assignments` as bare
+        `List[Dict]`, so pydantic validates NOTHING inside them — which is
+        exactly how this demo first carried gates keyed {id, name, tag_id} while
+        the app's own `ProjectGate` is {gate_id, label, lat, lng}. A gate row
+        keyed differently is a gate /checkin/{project_id}/{gate_id} cannot open,
+        and the model that would have said so is never reached from the
+        response. So it is reached from here.
+        """
+        project = demo_project()
+        for gate in project["gates"]:
+            model = server.ProjectGate(**gate)
+            self.assertEqual(model.gate_id, gate["gate_id"])
+            self.assertEqual(set(gate), {"gate_id", "label", "lat", "lng"})
+        for row in project["trade_assignments"]:
+            server.TradeAssignment(**row)
+
+    def test_a_safety_orientation_row_is_the_shape_the_gate_writes(self):
+        """`register_and_checkin` writes {project_id, project_name, checklist,
+        completed_at}, and `completed_at` is `now.isoformat()` — a STRING. A
+        datetime there reads correctly in Python and breaks every client that
+        slices ten characters off it."""
+        for w in demo_workers(limit=500)["items"]:
+            rows = demo_worker(w["id"])["safety_orientations"]
+            self.assertTrue(rows)
+            for row in rows:
+                self.assertEqual(
+                    set(row),
+                    {"project_id", "project_name", "checklist", "completed_at"})
+                self.assertEqual(row["project_id"], DEMO_PROJECT_ID)
+                self.assertIsInstance(row["completed_at"], str)
+                self.assertIsInstance(row["checklist"], dict)
+
+    def test_the_instant_fields_that_are_datetimes_really_are(self):
+        """The other half of the same rule. These are datetimes in Mongo, and a
+        string here would be a second, quieter version of the bug above."""
+        self.assertIsInstance(demo_project()["created_at"], datetime)
+        for row in demo_dob_logs(limit=500)["logs"]:
+            self.assertIsInstance(row["detected_at"], datetime)
+        for row in demo_checkins(limit=500)["items"]:
+            self.assertIsInstance(row["check_in_time"], datetime)
+        combined = [f for f in demo_files() if f["index_status"]]
+        self.assertTrue(combined)
+        self.assertIsInstance(combined[0]["index_status"]["at"], datetime)
+
+    def test_the_orientation_sheet_and_the_roster_record_one_event(self):
+        """Devon Clarke's orientation exists twice — as his own sheet and as the
+        row on his worker document. Two copies of one attendance that disagree
+        are two answers to whether the man was oriented."""
+        sheet = [r for r in demo_logbooks(limit=500)["items"]
+                 if r["log_type"] == "subcontractor_orientation"][0]
+        worker = demo_worker(sheet["data"]["worker_id"])
+        self.assertEqual(sheet["data"]["worker_name"], worker["name"])
+        self.assertEqual(sheet["data"]["checklist"],
+                         worker["safety_orientations"][0]["checklist"])
+
     def test_checkins_validate_against_checkin_response(self):
         for c in demo_checkins(limit=500)["items"]:
             server.CheckInResponse(**c)
