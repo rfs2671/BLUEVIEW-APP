@@ -422,23 +422,158 @@ def file_context(pdf_path: str) -> Dict[str, Any]:
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# A grid the text layer cannot read
+# ══════════════════════════════════════════════════════════════════════════
+#
+# M-200.00 prints seven schedules and gives the text layer NOT ONE CHARACTER
+# from any of them. It is not a scan — the page has 8,046 vector paths and no
+# images. The mechanical engineer exports with text converted to curves, so
+# every letterform is an outline and every character code is gone.
+#
+# The RULING LINES are ordinary strokes and they survive. Measured inside the
+# PTAC schedule's box, 2026-09-16:
+#
+#     3,576 edges, 0 characters
+#     horizontal: 6 rules of width 894pt, everything else <= 100pt
+#     vertical:   2 outer edges 157pt tall, column rules at 44.9pt and 24.6pt,
+#                 everything else <= 10pt
+#
+# A rule is LONG and a letter stroke is SHORT, and on this page that is a
+# clean separation rather than a tuned one. pdfplumber's own `lines` strategy
+# drowns in the glyph edges and reports a 3x4 table where a 6x16 is printed,
+# which is why this does not just raise its tolerance.
+#
+# This function finds the RECTANGLES. It does not read anything: rendering and
+# OCR live in lib/plan_ocr.py, and the split is deliberate — the geometry is
+# exact and testable, the reading is not.
+
+_RULE_MIN_H = 150.0     # pt: a row rule spans most of a schedule
+_RULE_MIN_V = 20.0      # pt: a column rule spans at least the header band
+_RULE_TOL = 1.5         # pt: two rules this close are one rule drawn twice
+
+
+def _dedupe_rules(vals: List[float], tol: float = _RULE_TOL) -> List[float]:
+    out: List[float] = []
+    for v in sorted(vals):
+        if not out or v - out[-1] > tol:
+            out.append(v)
+    return out
+
+
+def ruled_grids(page, min_rows: int = 2, min_cols: int = 3) -> List[Dict[str, Any]]:
+    """Every ruled grid on the page, with the characters printed inside it.
+
+    A grid with `chars` of 0 is a schedule the text layer cannot read. Nothing
+    here decides what to do about that — `page_layout_at` marks them and the
+    indexer decides whether OCR is available."""
+    try:
+        edges = page.edges
+    except Exception:
+        return []
+    hs = [e for e in edges if e.get("orientation") == "h"
+          and float(e.get("width") or 0) >= _RULE_MIN_H]
+    if not hs:
+        return []
+    # Rules that share a span belong to the same table. Rounding to 5pt keeps
+    # a table whose rules differ by a hairline together without merging two
+    # tables that happen to sit in the same columns.
+    spans: Dict[Tuple[int, int], List[Any]] = {}
+    for e in hs:
+        spans.setdefault((round(float(e["x0"]) / 5), round(float(e["x1"]) / 5)),
+                         []).append(e)
+    vs_all = [e for e in edges if e.get("orientation") == "v"
+              and float(e.get("height") or 0) >= _RULE_MIN_V]
+    out: List[Dict[str, Any]] = []
+    for es in spans.values():
+        rows = _dedupe_rules([float(e["top"]) for e in es])
+        if len(rows) < min_rows + 1:
+            continue
+        x0 = min(float(e["x0"]) for e in es)
+        x1 = max(float(e["x1"]) for e in es)
+        y0, y1 = rows[0], rows[-1]
+        cols = _dedupe_rules([float(e["x0"]) for e in vs_all
+                              if x0 - 3 <= float(e["x0"]) <= x1 + 3
+                              and float(e["top"]) >= y0 - 3
+                              and float(e["bottom"]) <= y1 + 3])
+        if len(cols) < min_cols + 1:
+            continue
+        chars = sum(1 for c in page.chars
+                    if x0 <= float(c["x0"]) and float(c["x1"]) <= x1
+                    and y0 <= float(c["top"]) and float(c["bottom"]) <= y1)
+        out.append({"bbox": [x0, y0, x1, y1], "rows": rows, "cols": cols,
+                    "chars": chars})
+    # A grid that CONTAINS another is a border or a title block, not a
+    # schedule. The sheet frame encloses everything and would otherwise be
+    # reported as the biggest table on every page.
+    leaves = []
+    for g in out:
+        gx0, gy0, gx1, gy1 = g["bbox"]
+        if any(h is not g and gx0 <= h["bbox"][0] and h["bbox"][2] <= gx1
+               and gy0 <= h["bbox"][1] and h["bbox"][3] <= gy1 for h in out):
+            continue
+        leaves.append(g)
+    leaves.sort(key=lambda g: (g["bbox"][1], g["bbox"][0]))
+    return leaves
+
+
 def page_layout_at(pdf_path: str, page_number: int, with_tables: bool = True) -> Dict[str, Any]:
-    """One page's full layout, tables included, from a PDF on disk."""
+    """One page's full layout, tables included, from a PDF on disk.
+
+    `ocr_grids` are the ruled grids with no characters inside them — printed
+    schedules the text layer cannot read. They carry rectangles only; nothing
+    has been read off them yet."""
     with _open_pdf(pdf_path) as pdf:
         page = pdf.pages[page_number - 1]
         try:
             tables: List[Dict[str, Any]] = []
+            blind: List[Dict[str, Any]] = []
             if with_tables:
                 try:
                     for t in page.find_tables():
                         tables.append({"bbox": [float(x) for x in t.bbox], "rows": t.extract()})
                 except Exception:
                     tables = []
-            return layout_from_dict(page_dict_from_chars(page.chars), width=float(page.width),
-                                    height=float(page.height), page_number=page_number,
-                                    tables=tables)
+                try:
+                    blind = [g for g in ruled_grids(page) if g["chars"] == 0]
+                except Exception:
+                    blind = []
+            L = layout_from_dict(page_dict_from_chars(page.chars), width=float(page.width),
+                                 height=float(page.height), page_number=page_number,
+                                 tables=tables)
+            L["ocr_grids"] = blind
+            # The drawn symbols, described once while the page is open. The
+            # LEGEND is not known yet — fields_from_layout pairs these with it
+            # — so this carries shapes and boxes and decides nothing.
+            L["glyph_clusters"], L["mark_words"] = _glyph_inputs(page)
+            return L
         finally:
             page.close()
+
+
+def _glyph_inputs(page) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(clusters, short words). Both are what lib/plan_glyphs needs and neither
+    means anything on its own. A page with no paths — a scan — yields nothing,
+    which is how the 7 non-vector pages on this project opt out."""
+    from lib import plan_glyphs
+    try:
+        clusters = plan_glyphs.describe_page(page)
+    except Exception:
+        return [], []
+    if not clusters:
+        return [], []
+    words = []
+    try:
+        for w in page.extract_words():
+            t = str(w.get("text") or "")
+            # Only a mark can name a member, and a mark is short. Carrying the
+            # whole page's words here would be most of the text layer again.
+            if 0 < len(t) <= plan_glyphs.MEMBER_TEXT_MAX:
+                words.append({"text": t, "x0": float(w["x0"]), "x1": float(w["x1"]),
+                              "top": float(w["top"]), "bottom": float(w["bottom"])})
+    except Exception:
+        words = []
+    return clusters, words
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1041,9 +1176,15 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
             if qty is not None and qty < len(row):
                 cell = str(row[qty] or "").strip()
                 n = int(cell) if re.fullmatch(r"\d{1,6}", cell) else None
+            # A quantity OCR'd out of a grid is still a printed quantity, but
+            # it is not the same evidence as one the text layer handed over.
+            # The basis says which, and plan_records tiers on the basis.
+            basis = "not_stated"
+            if n is not None:
+                basis = ("ocr_schedule_qty" if sc.get("source") == "ocr_grid"
+                         else "schedule_qty")
             out.append({"name": meaning_of.get(mark) or mark, "tag": mark,
-                        "count_if_stated": n,
-                        "count_basis": "schedule_qty" if n is not None else "not_stated",
+                        "count_if_stated": n, "count_basis": basis,
                         "location_hint": (sc.get("name") or "schedule")[:120]})
     return out[:150]
 
@@ -1275,6 +1416,24 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
         "text_blocks": text_blocks,
     }
     out["elements"] = elements_from_evidence(legend, out["schedules"], tags)
+    # ── THINGS THE SHEET DRAWS RATHER THAN LETTERS ─────────────────────────
+    #
+    # A roof drain is a square with an X in it. Nothing above can see it: a
+    # schedule quantity covers what somebody scheduled, a tag count covers
+    # what somebody lettered. The glyph pass counts what somebody DREW, and
+    # only where the legend resolves to exactly one mark — see plan_glyphs
+    # for why an ambiguous template emits nothing at all.
+    if layout.get("glyph_clusters"):
+        from lib import plan_glyphs
+        try:
+            drawn, gflags = plan_glyphs.count_symbols(
+                layout["glyph_clusters"],
+                plan_glyphs.legend_rows_from_fields(legend),
+                layout.get("mark_words") or [])
+            out["elements"] = out["elements"] + drawn
+            out["glyph_flags"] = gflags
+        except Exception:
+            out["glyph_flags"] = ["glyph_count_failed"]
     return out
 
 
@@ -1383,6 +1542,6 @@ __all__ = [
     "filing_id", "document_type", "issue_date",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "elements_from_evidence", "dimensions_from_text", "material_lines",
-    "schedules_from_tables", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
+    "schedules_from_tables", "ruled_grids", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
     "fields_from_layout",
 ]

@@ -137,6 +137,14 @@ pypdf>=4.0.0
 # MIT. backend/lib/plan_text.py page_layouts() is the only caller.
 pdfplumber==0.11.7
 
+# Reading schedules a CAD export flattened to curves. PP-OCRv4 models in ONNX,
+# Apache-2.0, CPU only, ~15 MB of weights, no GPU and NO NETWORK — sealed
+# construction drawings never leave the container. lib/plan_ocr.py is the only
+# caller and treats it as optional: absent, the indexer writes what it writes
+# today. Measured 42/42 on M-200.00's PTAC schedule, which the text layer
+# gives zero characters of.
+rapidocr-onnxruntime==1.4.4
+
 # Fuzzy matching for WhatsApp group-name -> project auto-detect.
 # token_set_ratio is the only function used; see lib/group_match.py.
 rapidfuzz==3.9.7

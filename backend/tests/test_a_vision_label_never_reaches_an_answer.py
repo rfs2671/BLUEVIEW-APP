@@ -135,8 +135,9 @@ class AVisionCountSaysSo(unittest.TestCase):
 
     def test_the_tier_names_are_a_closed_set(self):
         self.assertEqual(pe.EVIDENCE_TIERS,
-                         (pe.TIER_SCHEDULE_CELL, pe.TIER_TAG_LEGEND,
-                          pe.TIER_TEXT_LAYER, pe.TIER_VISION))
+                         (pe.TIER_SCHEDULE_CELL, pe.TIER_OCR_GRID,
+                          pe.TIER_TAG_LEGEND, pe.TIER_TEXT_LAYER,
+                          pe.TIER_OCR_FREEFORM, pe.TIER_VISION))
         self.assertEqual(pe.TIER_VISION, "vision_read")
 
     def test_no_confidence_number_anywhere_in_the_tier_vocabulary(self):
