@@ -30,12 +30,21 @@ import {
  * this passes it `outdoor`'s ink, so its message cannot go white-on-white on
  * a phone set to dark.
  *
- * ── NOTHING HALF-TYPED IS RECORDED ──────────────────────────────────────────
+ * ── NOTHING HALF-TYPED IS DISCARDED ─────────────────────────────────────────
  *
- * `invalid="blank"`: the steppers MARK incomplete steps and never gate them,
- * so there is no Save here to refuse '13/45/2029'. Instead an unfinished or
- * impossible date reaches the log as '' — recorded as nothing — while the
- * field keeps showing what he typed and why it is not a date.
+ * THIS FIELD PASSED `invalid="blank"` AND THAT BLANKED FILED RECORDS. The
+ * argument was that the steppers MARK incomplete steps and never gate them, so
+ * there is no Save here to refuse '13/45/2029' — and the conclusion drawn was
+ * to record nothing. On a legal record that is a silent loss: the CP saw his
+ * text and the reason it is not a date, and the filed document said the date
+ * was blank. A field already holding a good 2029-07-21 was blanked outright by
+ * an edit he began and left unfinished.
+ *
+ * So the value is whatever the shared field decides — ISO, or THE TEXT AS
+ * TYPED — and the refusal lives at FILING instead, where a draft becomes a
+ * legal record: server.py's SUBMIT_INVALID_DATE, anticipated on the device by
+ * src/utils/logbookDateGate.js so the CP is told on the screen that can fix
+ * it. Mid-entry he is still never blocked; that part was right.
  *
  * WHY IT IS HAND-BUILT. @react-native-community/datetimepicker and every other
  * picker package carries a NATIVE MODULE, and a native module forces a rebuild:
@@ -43,9 +52,11 @@ import {
  * change. src/i18n/index.js refused expo-localization for exactly this reason
  * and says so at :15-20. Pure JS keeps this shippable as an OTA update.
  *
- * WHAT IT STORES. `YYYY-MM-DD`, always, or '' when cleared. Unambiguous on a
- * legal document: a CP typing "8/12" meant August 12 and a reader outside the
- * US reads December 8, and both of them are looking at a filed DOB record.
+ * WHAT IT STORES. `YYYY-MM-DD` for a real day, '' when cleared, and otherwise
+ * exactly what he typed. Only the ISO form may be FILED — that is the gate
+ * above — because "8/12" is August 12 to the CP who typed it and December 8 to
+ * a reader outside the US, and both of them are looking at a filed DOB record.
+ * Keeping the string is not accepting it; it is refusing to throw it away.
  *
  * WHAT IT ACCEPTS. Anything, and it rewrites nothing on its own. A log from
  * before this control holds whatever was typed into the old free-text field.
@@ -139,7 +150,6 @@ export default function DateField({
         <DateInput
           value={value}
           onChange={onChange}
-          invalid="blank"
           convertsOnSave={false}
           placeholder={placeholder}
           placeholderTextColor={outdoor.textDim}

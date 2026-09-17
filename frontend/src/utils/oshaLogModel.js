@@ -19,6 +19,10 @@
  */
 
 import { easternToday } from './dates';
+// THE SHARED DATE READER, so a row this module builds carries the same form of
+// a date the shared field would hand over — and the same form a filed log is
+// allowed to carry. See the expiration line in buildEntriesFromCheckins.
+import { toStoredDate } from './dateEntry';
 
 export const CERT_TYPES = [
   'OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST',
@@ -222,7 +226,21 @@ export function buildEntriesFromCheckins(checkins, date) {
           company: c.company || '',
           certification_type: certLabel(cert),
           card_number: (cert && cert.card_number) || c.osha_number || '',
-          expiration: certExpiration(cert),
+          // READ ONCE, INTO THE FORM THE REGISTER MAY BE FILED WITH.
+          //
+          // `certExpiration` is a DISPLAY accessor and echoes anything it
+          // cannot read, which is right for a badge on a worker's page. Here
+          // the value is being WRITTEN into a register row the CP will file,
+          // and a filed date must be ISO (server.py SUBMIT_INVALID_DATE). A
+          // card whose stored expiry is an unambiguous '06/01/2029' would
+          // otherwise arrive as a row he has to retype before he can submit
+          // — for every worker on site.
+          //
+          // `toStoredDate` IS THE SAME READER THE FIELD USES, so what it
+          // converts is exactly what the field would show him as read. What
+          // it CANNOT read (null) is kept verbatim: nothing is discarded, the
+          // field quotes it, and he corrects that one row.
+          expiration: toStoredDate(certExpiration(cert)) ?? certExpiration(cert),
           signed: false,
           // FROZEN AT THE GATE, NOT RESOLVED HERE. `sst_status` is written
           // onto the check-in row at the moment the card was read and never

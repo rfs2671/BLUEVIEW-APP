@@ -34,6 +34,10 @@
  *             phone's theme — a stored '07/212029' reads as 07/21/2029, and
  *             "month 13" is named in ink legible on that card in BOTH themes.
  *             This is the white-on-white failure the mount smoke cannot see.
+ *   KEPT      and the stepper's DRAFT then holds '13' — what he typed — where
+ *             it used to hold '', which is a good date erased off a legal
+ *             record by an edit he never finished. Nothing but the device's
+ *             own storage can see this: a stepper sends nothing until Submit.
  *
  * THE INSTRUMENT IS CHECKED BEFORE IT REPORTS: the harness demands the roster
  * rendered and the date field was found, and exits 2 rather than passing on a
@@ -360,6 +364,43 @@ const readField = (page, placeholder, scope = '[role="dialog"] ') => page.evalua
         `contrast ${f.contrast}`);
       check('PINNED    typing into a stepper sent nothing to the server',
         writes.length === before, JSON.stringify(writes.slice(before)));
+
+      // ── KEPT — THE OVERWRITE CASE, ON THE REAL FIELD ─────────────────
+      //
+      // The field above now holds '13': he selected the stored 07/21/2029,
+      // typed two digits and was interrupted. WHAT THE DRAFT HOLDS IS WHAT
+      // THE RECORD WOULD HOLD, and before this change it held ''. The
+      // stepper was handed '' for anything that was not yet a real calendar
+      // day, so this exact sequence ERASED a good date off a legal record
+      // while the screen still showed what he had typed.
+      //
+      // READ FROM THE DEVICE'S OWN STORAGE, not from a request: a stepper
+      // sends nothing until Submit, which is why the loss was silent and why
+      // no network assertion can see it. The autosave is debounced at 800ms.
+      await page.waitForTimeout(1500);
+      const draft = await page.evaluate(() => {
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const k = localStorage.key(i);
+          if (!k || k.indexOf('logbook_draft:') !== 0) continue;
+          if (k.indexOf('scaffold_maintenance') < 0) continue;
+          try {
+            const d = JSON.parse(localStorage.getItem(k) || '{}');
+            const gi = (d.data || {}).general_info || {};
+            return { key: k, value: gi.installation_date };
+          } catch (e) { return { key: k, value: '<unparseable>' }; }
+        }
+        return null;
+      });
+      // A MISSING DRAFT IS A HARNESS FAULT, NOT A PASS AND NOT A FAILURE.
+      // With nothing written there is nothing to measure, and "no blank
+      // found" would read as green on a run that never autosaved.
+      if (draft === null) {
+        console.error(`x HARNESS [${theme}]: no scaffold draft in localStorage; nothing was measured.`);
+        harness += 1;
+      } else {
+        check('KEPT      the draft holds what he typed, not a blank',
+          draft.value === '13', `draft ${draft.key} holds ${JSON.stringify(draft.value)}`);
+      }
     }
 
     check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));

@@ -24,10 +24,6 @@ import {
  *               paste, never on mount. See dateEntry.js for what it carries.
  *   palette     { error, hint } — REQUIRED, and read from the HOST. See below.
  *   as          the input to render: TextInput (default) or GlassInput.
- *   invalid     'text' (default): an unfinished or impossible date is handed
- *               to the host as typed, so the host's Save can refuse it with
- *               dateEntryError(). 'blank': it is handed over as '' — for the
- *               logbook steppers, which have no Save to block.
  *   convertsOnSave  true (default) when the host's Save sends
  *               toStoredDate(value); false where nothing converts an untouched
  *               stored value (the steppers), so the note does not promise it.
@@ -67,7 +63,6 @@ export default function DateInput({
   onChange,
   palette,
   as: Input = TextInput,
-  invalid = 'text',
   convertsOnSave = true,
   placeholder = DATE_DISPLAY_FORMAT,
   style,
@@ -78,10 +73,9 @@ export default function DateInput({
   const [text, setText] = useState(() => initialEntryText(stored));
   const [touched, setTouched] = useState(false);
   // THE LAST VALUE THIS FIELD HANDED UP. When the host's value comes back as
-  // exactly that, it is our own echo and the text he is typing is left alone
-  // (in 'blank' mode the echo of '07/2' is '', and resetting the text to ''
-  // would eat his keystrokes). Anything else is the host speaking — a reset,
-  // a calendar tap, a different record opened — and the field re-reads it.
+  // exactly that, it is our own echo and the text he is typing is left alone.
+  // Anything else is the host speaking — a reset, a calendar tap, a different
+  // record opened — and the field re-reads it.
   const emitted = useRef(stored);
 
   useEffect(() => {
@@ -95,7 +89,12 @@ export default function DateInput({
     const next = nextEntryText(text, raw);
     setText(next);
     setTouched(true);
-    const out = valueForHost(next, invalid);
+    // ISO, '' WHEN THE FIELD IS EMPTY, OR THE TEXT AS TYPED. There is no
+    // mode: a host that asked for a blank instead of the typed text is how a
+    // filed logbook came to record '' for a date the CP had typed, and how a
+    // good stored date was lost to an edit he never finished. See
+    // valueForHost in src/utils/dateEntry.js.
+    const out = valueForHost(next);
     emitted.current = out;
     if (out !== stored) onChange(out);
   };

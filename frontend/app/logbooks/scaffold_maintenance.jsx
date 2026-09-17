@@ -34,6 +34,11 @@ import {
   EMPTY_GENERAL_INFO, prefillFromScaffoldInfo, scaffoldInfoForSave,
   answeredCount, incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/scaffoldMaintenanceModel';
+// A DATE THAT IS NOT A DATE MAY NOT BE FILED -- the shared declaration of
+// which fields the server reads, and the sentence that names one.
+import {
+  DATE_STEP, invalidLogDates, preflightDateCopy, serverDateRefusalCopy,
+} from '../../src/utils/logbookDateGate';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
@@ -360,7 +365,13 @@ export default function ScaffoldMaintenanceLog() {
         const code = finalizeErrorCode(pushErr);
         console.warn('Scaffold inspection REFUSED by the server:', status, code);
         await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
-        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        // THE DATE REFUSAL NAMES THE FIELD AND QUOTES THE VALUE -- see
+        // logbookDateGate.js. Every other code keeps the four-line gateCopy.
+        toast.error(
+          tFinalize('errorTitle'),
+          serverDateRefusalCopy(pushErr?.response?.data?.detail, tFinalize)
+            || gateCopy(code),
+        );
         return undefined;
       }
       if (!offline && !refused) {
@@ -450,6 +461,24 @@ export default function ScaffoldMaintenanceLog() {
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
       return;
     }
+    // ── AN INSTALLATION OR EXPIRY DATE THAT IS NOT A DATE ──────────────
+    //
+    // Both are read against a DOB permit on the filed sheet. The server
+    // refuses this submit (SUBMIT_INVALID_DATE) and the field has been saying
+    // so under itself since he typed it; made HERE as well so he is not asked
+    // to sign and then told, and because OFFLINE there is no refusal to catch
+    // — the push would be queued, announced as filed, and refused forever
+    // with only a banner to show for it.
+    const badDates = invalidLogDates(LOG_TYPE, draftBody(generalInfo, answers));
+    if (badDates.length > 0) {
+      setStep(DATE_STEP);
+      toast.warning(
+        tFinalize('invalidDateTitle'),
+        preflightDateCopy(badDates[0], tFinalize, t),
+      );
+      return;
+    }
+
     // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────
     // BB 2024-007 sec V.5. One consent per person, keyed on his account and
     // not on this log — if he agreed on any other screen, this never asks.
@@ -490,8 +519,16 @@ export default function ScaffoldMaintenanceLog() {
     />
   ), [s, step, t]);
 
-  const incomplete = computeIncomplete({ generalInfo, answers, cpSignature })
-    .filter((n) => n !== step);
+  // MARKED, NOT BLOCKED — the steppers' own rule. A permit date that is not a
+  // date will be refused at filing, so step 1 wears the same mark an
+  // unfinished step does and he meets it before he taps Submit.
+  const dateStepBad = invalidLogDates(
+    LOG_TYPE, draftBody(generalInfo, answers),
+  ).length > 0;
+  const incomplete = [...new Set([
+    ...computeIncomplete({ generalInfo, answers, cpSignature }),
+    ...(dateStepBad ? [DATE_STEP] : []),
+  ])].filter((n) => n !== step);
   const answered = answeredCount(answers);
   const totalQuestions = MAINTENANCE_QUESTIONS.length;
 

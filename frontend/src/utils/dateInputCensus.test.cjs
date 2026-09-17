@@ -204,8 +204,15 @@ check('DateField, the stepper date control, is the shared field inside', () => {
   const f = FILES.find((x) => x.rel === 'src/components/logbookStepper/DateField.jsx');
   ok(f, 'DateField.jsx is gone');
   ok(elements(f.code, ['DateInput']).length === 1, 'DateField does not render DateInput');
-  ok(/invalid=["']blank["']/.test(f.code),
-    'DateField must record an unfinished date as nothing, not as typed text');
+  // THIS ASSERTED THE OPPOSITE, AND THE OPPOSITE LOST DATA. It required
+  // `invalid="blank"` — "an unfinished date is recorded as nothing" — and that
+  // is how a filed logbook came to say a date was blank when the CP had typed
+  // one, and how a good stored date was erased by an edit he never finished.
+  // The mode is gone from DateInput entirely; what he types is kept, and the
+  // refusal happens at FILING (server.py SUBMIT_INVALID_DATE, mirrored by
+  // src/utils/logbookDateGate.js).
+  ok(!/\binvalid=/.test(f.code),
+    'DateField must not ask for a mode that discards what the CP typed');
   // Nothing in a stepper runs toStoredDate() on an untouched legacy value, so
   // its note must not say saving converts it.
   ok(/convertsOnSave=\{false\}/.test(f.code),

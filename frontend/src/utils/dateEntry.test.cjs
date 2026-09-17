@@ -197,8 +197,11 @@ check('an unfinished date is not a date', () => {
     ok(st.error, `${t} has no message`);
     eq(st.partial, true, `${t} partial`);
     eq(st.iso, null, `${t} iso`);
+    // THE HOST IS HANDED THE TEXT, AND THAT IS THE WHOLE CONTRACT. There was
+    // a second mode here — `valueForHost(t, 'blank')` returned '' for the
+    // logbook steppers — and it blanked dates on filed legal records. It is
+    // gone; logbookDateGate.test.cjs asserts nothing can ask for it.
     eq(D.valueForHost(t), t, `${t} host value`);
-    eq(D.valueForHost(t, 'blank'), '', `${t} host value, blank mode`);
     ok(D.dateEntryError(t), `${t} passed the host-side check`);
   }
 });

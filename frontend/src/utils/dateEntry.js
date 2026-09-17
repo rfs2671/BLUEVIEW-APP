@@ -20,6 +20,11 @@
  * every screen. The value it SENDS is `toStoredDate(value)`, which is always
  * ISO or ''. The display string never reaches an API.
  *
+ * EVERY HOST, INCLUDING THE LOGBOOK STEPPERS. They had a second contract —
+ * "hand me '' for anything that is not a date yet" — and it blanked dates on
+ * filed legal records. See `valueForHost` for what that cost and where the
+ * refusal lives now. There is one contract.
+ *
  * A host may also hold a value it LOADED — a stored string this app did not
  * write, like '07/212029'. The component shows it read (07/21/2029) and does
  * not call the host. The host's value is unchanged, so nothing is dirty and
@@ -193,19 +198,33 @@ export function entryState(text) {
 }
 
 /**
- * What the component hands its host for this text. See the header.
+ * What the component hands its host for this text: ISO, '' when empty, or
+ * THE TEXT AS TYPED. Never anything else, and never nothing.
  *
- * `mode === 'blank'` is for a host with no Save to block — the logbook
- * steppers, whose incomplete steps MARK and never GATE. There an unfinished
- * or impossible date is recorded as nothing, rather than as a half-typed
- * string on a filed document; the field keeps showing what he typed and why
- * it is not a date.
+ * ── THERE WAS A SECOND MODE HERE, AND IT LOST DATA ──────────────────────────
+ *
+ * `valueForHost(text, 'blank')` returned '' for an unfinished or impossible
+ * date, for the logbook steppers: they MARK an incomplete step and never gate
+ * it, so the argument was that there is no Save to refuse a half-typed date
+ * with. The consequence was a SILENT LOSS on a legal record. A CP who typed
+ * `13/45/2029` saw his text and the reason it is not a date, and the log
+ * recorded '' — the filed document said the date was blank. Worse, a field
+ * already holding a good `2029-07-21` was blanked the moment he started
+ * editing it and stopped: three backspaces and the date was gone from the
+ * record while the screen still showed 07/21/2.
+ *
+ * So the mode is GONE, not merely unused: it was here for one host, and
+ * leaving it would leave the trap for the next one. What is not a date is
+ * kept as typed, and the refusal moved to FILING, where a draft becomes a
+ * legal record — server.py's SUBMIT_INVALID_DATE, mirrored on the device by
+ * src/utils/logbookDateGate.js. Mid-entry nothing blocks, which is what the
+ * steppers needed in the first place.
  */
-export function valueForHost(text, mode = 'text') {
+export function valueForHost(text) {
   const st = entryState(text);
   if (!st.digits) return '';
   if (st.iso) return st.iso;
-  return mode === 'blank' ? '' : String(text);
+  return String(text);
 }
 
 /**
