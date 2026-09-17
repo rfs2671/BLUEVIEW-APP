@@ -21,6 +21,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
@@ -33,6 +34,19 @@ sys.path.insert(0, str(_BACKEND))
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _authorised():
+    """The parsed args a real live run carries.
+
+    `main(dry_run=False)` REFUSES without them, deliberately: `args` is what
+    the audit row is built from, and a live run that cannot name a reason and a
+    session is the unattributed production write the guard exists to stop. It
+    used to be read off the module's `__main__` namespace, which raised
+    NameError the moment a test imported the module and called main() -- these
+    three tests are what caught it.
+    """
+    return SimpleNamespace(i_know=True, reason="unit test", session="test")
 
 
 class TestStaticSourceContract(unittest.TestCase):
@@ -153,6 +167,14 @@ def _build_db_mock(*, candidates_first_count, sample_docs, full_docs):
     db_mock.companies.update_one = AsyncMock(
         return_value=MagicMock(modified_count=1)
     )
+    # THE AUDIT COLLECTION, because a live run now writes a row through this
+    # same handle for every update it makes. A mock that cannot answer for
+    # `db["audit_logs"]` stopped modelling the script when the guard landed.
+    db_mock.audit_logs = MagicMock()
+    db_mock.audit_logs.insert_one = AsyncMock(
+        return_value=MagicMock(inserted_id="audit_1")
+    )
+    db_mock.__getitem__.side_effect = lambda key: getattr(db_mock, key)
     return db_mock
 
 
@@ -225,7 +247,7 @@ class TestExecutePath(unittest.TestCase):
 
         with patch.object(m, "AsyncIOMotorClient",
                           return_value={"smoke_test": db_mock}):
-            rc = _run(m.main(dry_run=False))
+            rc = _run(m.main(dry_run=False, args=_authorised()))
 
         self.assertEqual(rc, 0)
         # One update_one call per company doc with the $unset path.
@@ -234,6 +256,14 @@ class TestExecutePath(unittest.TestCase):
         args, kwargs = db_mock.companies.update_one.await_args_list[0]
         filter_, update = args
         self.assertEqual(update, {"$unset": {"filing_reps.$[].credentials": ""}})
+        # AND EVERY ONE OF THEM LEFT A ROW. The point of the whole guard is
+        # this, not the flag -- asserted at the CALL SITE rather than trusting
+        # that the wrapper is in place somewhere.
+        self.assertEqual(db_mock.audit_logs.insert_one.await_count, 2)
+        row = db_mock.audit_logs.insert_one.await_args_list[0].args[0]
+        self.assertEqual(row["user_id"], "script:migrate_clear_filing_rep_credentials")
+        self.assertEqual(row["reason"], "unit test")
+        self.assertEqual(row["session_id"], "test")
 
 
 class TestIdempotency(unittest.TestCase):
@@ -250,10 +280,13 @@ class TestIdempotency(unittest.TestCase):
 
         with patch.object(m, "AsyncIOMotorClient",
                           return_value={"smoke_test": db_mock}):
-            rc = _run(m.main(dry_run=False))
+            rc = _run(m.main(dry_run=False, args=_authorised()))
 
         self.assertEqual(rc, 0)
         db_mock.companies.update_one.assert_not_awaited()
+        # No write, so no row: the wrapper audits what EXECUTED, never the
+        # intention to run.
+        db_mock.audit_logs.insert_one.assert_not_awaited()
 
 
 if __name__ == "__main__":

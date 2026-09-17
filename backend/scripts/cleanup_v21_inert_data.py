@@ -45,6 +45,28 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:cleanup_v21_inert_data", the session and the reason.
+# Without --i-know the handle is unwrapped and nothing is written. See
+# prod_guard.
+#
+# ITS EXISTING GATE WAS A TYPED CONFIRMATION READ FROM STDIN, which stops an
+# accident and records nothing: after the run there is no row saying who typed
+# CONFIRM or why, and this script drops two collections and deletes from a
+# third. The prompt STAYS -- it is a second pair of eyes on an irreversible
+# drop -- but `--i-know` now sits in front of it, so the flag is what makes the
+# reason and the session unavoidable.
+import argparse                                                 # noqa: E402
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag, report_dry_run,
+)
+
+NAME = "cleanup_v21_inert_data"
+
 # Motor import deferred so the module can be syntax-checked /
 # imported in environments without the dep.
 try:
@@ -263,7 +285,7 @@ async def run_cleanup(db) -> Dict[str, Any]:
 # ── Main entry ───────────────────────────────────────────────────
 
 
-async def main_async(mongo_url: str, db_name: str) -> int:
+async def main_async(mongo_url: str, db_name: str, args) -> int:
     if AsyncIOMotorClient is None:
         print(
             "ERROR: motor is not installed in this environment.",
@@ -272,9 +294,18 @@ async def main_async(mongo_url: str, db_name: str) -> int:
         return 1
     client = AsyncIOMotorClient(mongo_url)
     try:
-        db = client[db_name]
+        db = audited(client[db_name], args, NAME)
         # PRE.
         pre = await print_pre_report(db)
+        # --i-know IS THE OUTER GATE. Ahead of the typed confirmation, not
+        # instead of it: without the flag this stops at the pre-report, which
+        # is the read-only half and the useful thing to run first anyway.
+        if not check_guard(args):
+            report_dry_run(
+                f"delete risk_scores rows with model_version "
+                f"{INERT_MODEL_VERSION!r}, then drop "
+                + " and ".join(V21_COLLECTIONS_TO_DROP))
+            return 0
         # CONFIRM.
         if not prompt_for_confirmation():
             print()
@@ -312,7 +343,7 @@ async def main_async(mongo_url: str, db_name: str) -> int:
         client.close()
 
 
-def main() -> int:
+def main(args) -> int:
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url:
@@ -335,7 +366,7 @@ def main() -> int:
         f"{_redact_mongo_url(mongo_url)} "
         f"(started at {datetime.now(timezone.utc).isoformat()})",
     )
-    return asyncio.run(main_async(mongo_url, db_name))
+    return asyncio.run(main_async(mongo_url, db_name, args))
 
 
 def _redact_mongo_url(url: str) -> str:
@@ -352,4 +383,15 @@ def _redact_mongo_url(url: str) -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # BEFORE THE PARSER, so a legacy write flag is refused by name rather than
+    # dying as an unrecognised argument. This script never had one, but an
+    # operator reaching for `--execute` on a delete-and-drop script should meet
+    # a sentence, not "unrecognized arguments".
+    refuse_legacy_flag()
+    _ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_guard_args(_ap)
+    _args = _ap.parse_args()
+    # VALIDATED FIRST: `--i-know` with no reason is an argument error, and it
+    # should not have to wait behind a missing MONGO_URL to be reported.
+    check_guard(_args)
+    sys.exit(main(_args))

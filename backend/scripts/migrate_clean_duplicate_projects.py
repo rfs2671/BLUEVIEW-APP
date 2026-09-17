@@ -51,6 +51,20 @@ sys.path.insert(0, str(_BACKEND))
 
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:migrate_clean_duplicate_projects", the session and the reason. Without --i-know the
+# handle is unwrapped and nothing is written. See prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "migrate_clean_duplicate_projects"
+
+
 # Hard-coded as the documented 4a/test_project_list_defaults
 # anchor name. Operator can override via --name if a different
 # duplicate cohort surfaces in the future.
@@ -62,7 +76,24 @@ async def main(
     dry_run: bool,
     keep_id: str | None,
     name: str,
+    args=None,
 ) -> int:
+    # ARGS IS A PARAMETER, NOT A `__main__` GLOBAL. It used to be read straight
+    # off the module namespace: that works when the file is run as a script,
+    # and raises NameError the moment anything IMPORTS it and calls main() --
+    # which is how this repo's tests drive these migrations. Three of them were
+    # failing on exactly that.
+    #
+    # AND THE TWO ARGUMENTS MUST AGREE. `dry_run` says whether to write; `args`
+    # carries the authorisation the audit row is built from. A live run without
+    # it would write through an UNWRAPPED handle and leave nothing behind --
+    # the precise failure this guard exists to stop -- so it is refused here
+    # rather than performed silently unaudited.
+    if not dry_run and not getattr(args, "i_know", False):
+        raise SystemExit(
+            f"{NAME}: main(dry_run=False) requires the parsed args carrying "
+            "--i-know, --reason and --session. See scripts/prod_guard.py.")
+
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
@@ -76,7 +107,7 @@ async def main(
     print(f"=== Clean duplicate '{name}' projects -- {mode_label} ===\n")
 
     client = AsyncIOMotorClient(mongo_url)
-    db = client[db_name]
+    db = audited(client[db_name], args, NAME)
 
     target_query = {
         "name": name,
@@ -219,9 +250,17 @@ if __name__ == "__main__":
             "documented 4a anchor."
         ),
     )
+    add_guard_args(parser)
     args = parser.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    # INVERTED -- see the note in the sibling migrations.
+    args.dry_run = not check_guard(args)
     raise SystemExit(
         asyncio.run(main(
             dry_run=args.dry_run, keep_id=args.keep, name=args.name,
+            args=args,
         ))
     )

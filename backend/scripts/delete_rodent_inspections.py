@@ -7,23 +7,45 @@ Reads MONGO_URL / DB_NAME from the environment; NEVER prints the connection
 string.
 
 SAFETY:
-  • DRY-RUN by default. Pass --execute to actually delete.
+  • DRY-RUN by default. `--i-know` is what actually deletes.
   • Before deleting, verifies every record_type=="inspection" row is sourced
     from p937-wjvj (or is unstamped null/absent). If ANY foreign dataset is
     found, it PRINTS the offenders and EXITS WITHOUT DELETING — so this can
     never catch a future correct DOB inspection record.
   • Deletes with deleteMany({record_type:"inspection"}); never drop().
+  • Writes an audit row: what, how many, who ran it, why.
+
+── `--execute` NO LONGER DELETES, AND THAT IS DELIBERATE ───────────────────
+
+This is the only script in the directory whose whole purpose is a mass delete,
+so it is the one where a silent change of meaning would cost the most. The old
+documented command was `--execute`; it is now refused by name, pointing at
+`--i-know`, rather than either honouring it (which would make the guard
+decoration) or quietly doing nothing (which would tell an operator a migration
+ran when it did not).
 
     # dry-run (default) — counts only, no writes
     $env:MONGO_URL = '<production Atlas URI>'; $env:DB_NAME = 'blueview'
     python delete_rodent_inspections.py
 
     # execute the delete
-    python delete_rodent_inspections.py --execute
+    python delete_rodent_inspections.py --i-know \
+        --reason 'DOHMH rodent rows mislabeled as DOB inspections' \
+        --session <session id>
 """
 import os
 import sys
 import asyncio
+import argparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from prod_guard import (  # noqa: E402
+    add_guard_args, check_guard, refuse_legacy_flag, report_dry_run,
+    script_audit,
+)
+
+NAME = "delete_rodent_inspections"
 
 INSPECTION = {"record_type": "inspection"}
 # Correct DOB inspection sources — verified untouched after the delete.
@@ -32,7 +54,7 @@ CORRECT_TYPES = ["boiler", "elevator", "facade_fisp", "cofo"]
 ALLOWED_DATASETS = {"p937-wjvj", None}
 
 
-async def main(execute: bool) -> int:
+async def main(args) -> int:
     from motor.motor_asyncio import AsyncIOMotorClient
 
     url = os.environ.get("MONGO_URL")
@@ -43,8 +65,13 @@ async def main(execute: bool) -> int:
     client = AsyncIOMotorClient(url)
     db = client[dbname]
 
-    mode = "EXECUTE" if execute else "DRY-RUN"
-    print(f"=== delete_rodent_inspections — {mode} ===")
+    # THE SAFETY SWEEP BELOW RUNS EITHER WAY. The guard decides whether
+    # anything is deleted; it must never decide whether the check that says
+    # deleting is SAFE gets to run, or a dry run would report on a rule the
+    # real run never applied.
+    execute = check_guard(args)
+    print(f"=== delete_rodent_inspections — "
+          f"{'EXECUTE' if execute else 'DRY-RUN'} ===")
 
     # ── SAFETY GUARD ─────────────────────────────────────────────────────
     # Every record_type=="inspection" row must be p937-wjvj or unstamped.
@@ -66,13 +93,31 @@ async def main(execute: bool) -> int:
     print(f"records matching {{record_type:'inspection'}} to delete: {to_delete}")
 
     if not execute:
-        print("\nDRY-RUN — no records deleted. Re-run with --execute to delete.")
+        report_dry_run(
+            f"delete {to_delete} dob_logs rows matching "
+            f"{{record_type:'inspection'}} (datasets: {datasets})")
         client.close()
         return 0
 
     # ── DELETE (never drop) ──────────────────────────────────────────────
     result = await db.dob_logs.delete_many(INSPECTION)
     print(f"\ndeleted_count: {result.deleted_count}")
+
+    # ONE ROW FOR THE RUN, not one per deleted document: nobody is ever going
+    # to ask about an individual mislabeled rodent inspection, and 500 audit
+    # rows would bury every other entry in the collection. The selector, the
+    # count and the datasets are what a person asks of a mass delete.
+    await script_audit(
+        db, "dob_logs_rodent_inspections_deleted", "collection", "dob_logs",
+        {
+            "selector": INSPECTION,
+            "datasets_present": datasets,
+            "counted_before": to_delete,
+            "deleted_count": result.deleted_count,
+        },
+        args, name=NAME,
+    )
+    print(f"audit row written, actor script:{NAME}")
 
     # ── POST-DELETE VERIFICATION ─────────────────────────────────────────
     remaining = await db.dob_logs.count_documents(INSPECTION)
@@ -87,5 +132,17 @@ async def main(execute: bool) -> int:
 
 
 if __name__ == "__main__":
-    _execute = "--execute" in sys.argv[1:]
-    sys.exit(asyncio.run(main(_execute)))
+    # BEFORE THE PARSER, so `--execute` is refused by name rather than dying as
+    # an unrecognised argument. An operator reading "unrecognized arguments:
+    # --execute" learns that the flag is gone; he does not learn what replaced
+    # it, and this script is the one where guessing is most expensive.
+    refuse_legacy_flag()
+    _ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_guard_args(_ap)
+    _args = _ap.parse_args()
+    # VALIDATED BEFORE ANYTHING ELSE. `--i-know` with no reason is an argument
+    # error, and an argument error should not have to wait behind a missing
+    # environment variable to be reported -- the operator fixing one is not the
+    # operator fixing the other.
+    check_guard(_args)
+    sys.exit(asyncio.run(main(_args)))

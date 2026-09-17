@@ -61,6 +61,20 @@ from lib.logbook.schema import (  # noqa: E402
     STATUS_NO_SITE_ACTIVITY,
 )
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:correct_missing_daily_log_flags", the session and the
+# reason. Without --i-know the handle is unwrapped and nothing is written. See
+# prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "correct_missing_daily_log_flags"
+
 REASON_FILED = "a signed daily jobsite log exists for this day"
 REASON_NO_ACTIVITY = "no site activity: no check-in, no sign-in and no log"
 
@@ -146,15 +160,20 @@ async def run(db, execute: bool) -> Counter:
     return counts
 
 
-async def main_async(execute: bool) -> int:
+async def main_async(args) -> int:
+    # THE BOOL BECAME THE NAMESPACE, because `audited` needs the reason and the
+    # session that go on the row. `execute` is still the one local `run` gates
+    # on; it is just bound from the guard now.
+    execute = args.execute
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
         print("MONGO_URL and DB_NAME must be set")
         return 2
     client = AsyncIOMotorClient(mongo_url)
+    db = audited(client[db_name], args, NAME)
     try:
-        counts = await run(client[db_name], execute)
+        counts = await run(db, execute)
     finally:
         client.close()
 
@@ -171,11 +190,20 @@ async def main_async(execute: bool) -> int:
 
 
 def main() -> int:
+    # BEFORE THE PARSER, so `--execute` is refused by name rather than being
+    # parsed into a flag that no longer means what the runbook says it means.
+    refuse_legacy_flag()
     ap = argparse.ArgumentParser()
     ap.add_argument("--execute", action="store_true",
                     help="write the corrections (default is a dry run)")
+    add_guard_args(ap)
     args = ap.parse_args()
-    return asyncio.run(main_async(args.execute))
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.execute = check_guard(args)
+    return asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":

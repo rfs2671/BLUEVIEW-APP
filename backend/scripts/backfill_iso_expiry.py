@@ -43,7 +43,13 @@ USAGE. Report is the default. There is no way to write without asking.
 
     $env:MONGO_URL='<Atlas URI>'; $env:DB_NAME='<db>'
     python backfill_iso_expiry.py             # --report (default): writes nothing
-    python backfill_iso_expiry.py --execute   # applies the plan above
+    python backfill_iso_expiry.py --i-know \
+        --reason '<why>' --session <id>       # applies the plan above
+
+`--execute` NO LONGER APPLIES ANYTHING. It is refused by name, pointing at
+`--i-know`, rather than either honouring it (which would make the guard
+decoration) or quietly doing nothing (which would tell an operator a backfill
+ran when it did not).
 
 Reads MONGO_URL / DB_NAME from env; never prints the connection string.
 """
@@ -64,10 +70,31 @@ from server import (  # noqa: E402
     SST_DEAD_CLASSES,
 )
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:backfill_iso_expiry", the session and the reason. Without
+# --i-know the handle is unwrapped and nothing is written. See prod_guard.
+#
+# A PYMONGO HANDLE, like backfill_deleted_at. `audited` decides sync-or-async
+# from what the driver hands back, so the wrap reads the same as in the motor
+# scripts.
+import argparse                                                 # noqa: E402
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "backfill_iso_expiry"
+
 
 def wants_execute(argv):
     """READ-ONLY UNLESS ASKED. `--report` is the default and also accepted
-    explicitly, so an operator can say which one he means."""
+    explicitly, so an operator can say which one he means.
+
+    NO LONGER THE GATE -- `--i-know` is (see main). Kept because it is the
+    statement of this script's default, and because a test pins it."""
     return "--execute" in list(argv or [])
 
 
@@ -202,11 +229,20 @@ def _fmt(dt):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    unknown = [a for a in argv if a not in ("--report", "--execute")]
-    if unknown:
-        print(f"unknown argument(s): {' '.join(unknown)}")
-        return 2
-    execute = wants_execute(argv)
+    # THE HAND-ROLLED PARSE IS GONE, replaced by argparse, because the guard's
+    # three arguments take VALUES (`--reason 'why'`) and the loop it replaced
+    # only recognised bare flags -- it would have rejected the reason's own text
+    # as an unknown argument. `--report` survives as the explicit way to say the
+    # default out loud.
+    refuse_legacy_flag(argv)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--report", action="store_true",
+                    help="report only; the default, accepted explicitly")
+    add_guard_args(ap)
+    args = ap.parse_args(argv)
+    # --i-know IS THE GATE NOW, bound to the same local the branches below
+    # already test, so none of them change.
+    execute = check_guard(args)
 
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
@@ -219,7 +255,7 @@ def main(argv=None):
         print("pymongo not importable -- run inside the backend venv.")
         return 1
 
-    db = MongoClient(mongo_url)[db_name]
+    db = audited(MongoClient(mongo_url)[db_name], args, NAME)
     now = datetime.now(timezone.utc)
 
     print("=" * 78)

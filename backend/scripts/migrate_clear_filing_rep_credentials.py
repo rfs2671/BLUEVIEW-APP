@@ -65,6 +65,20 @@ sys.path.insert(0, str(_BACKEND))
 
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:migrate_clear_filing_rep_credentials", the session and the reason. Without --i-know the
+# handle is unwrapped and nothing is written. See prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "migrate_clear_filing_rep_credentials"
+
+
 
 def _credentials_byte_size(creds: list) -> int:
     """Sum of len(encrypted_ciphertext) across credential entries on
@@ -77,7 +91,23 @@ def _credentials_byte_size(creds: list) -> int:
     return total
 
 
-async def main(*, dry_run: bool) -> int:
+async def main(*, dry_run: bool, args=None) -> int:
+    # ARGS IS A PARAMETER, NOT A `__main__` GLOBAL. It used to be read straight
+    # off the module namespace: that works when the file is run as a script,
+    # and raises NameError the moment anything IMPORTS it and calls main() --
+    # which is how this repo's tests drive these migrations. Three of them were
+    # failing on exactly that.
+    #
+    # AND THE TWO ARGUMENTS MUST AGREE. `dry_run` says whether to write; `args`
+    # carries the authorisation the audit row is built from. A live run without
+    # it would write through an UNWRAPPED handle and leave nothing behind --
+    # the precise failure this guard exists to stop -- so it is refused here
+    # rather than performed silently unaudited.
+    if not dry_run and not getattr(args, "i_know", False):
+        raise SystemExit(
+            f"{NAME}: main(dry_run=False) requires the parsed args carrying "
+            "--i-know, --reason and --session. See scripts/prod_guard.py.")
+
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
@@ -93,7 +123,7 @@ async def main(*, dry_run: bool) -> int:
     )
 
     client = AsyncIOMotorClient(mongo_url)
-    db = client[db_name]
+    db = audited(client[db_name], args, NAME)
 
     # Target: company docs with at least one filing_rep that still
     # has the credentials field. We use a top-level dotted-path
@@ -217,5 +247,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Perform the $unset.",
     )
+    add_guard_args(parser)
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(main(dry_run=args.dry_run)))
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    # INVERTED: this script's flag is --dry-run, so the guard saying
+    # 'yes, write' means dry_run is False. Reading it the other way
+    # round writes on every run and still looks guarded.
+    args.dry_run = not check_guard(args)
+    raise SystemExit(asyncio.run(main(dry_run=args.dry_run, args=args)))
