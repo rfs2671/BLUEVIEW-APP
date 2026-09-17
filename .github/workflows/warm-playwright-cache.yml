@@ -1,0 +1,109 @@
+# WARM THE PLAYWRIGHT CACHE ON main, SO PULL REQUESTS CAN ACTUALLY READ IT.
+#
+# ── THE DEFECT THIS EXISTS TO FIX, MEASURED ─────────────────────────────────
+#
+# #596 added an `actions/cache` step for `~/.cache/ms-playwright` to the mount
+# smoke job. It never hit. The stored entries said so:
+#
+#     251MB  ref=refs/pull/595/merge  key=ms-playwright-chromium-1.49.1-Linux
+#     250MB  ref=refs/pull/596/merge  key=ms-playwright-chromium-1.49.1-Linux
+#
+# Two pull requests each downloaded and saved their OWN copy of the same key.
+# GitHub scopes a cache written on a PR ref to that PR's branch; another PR
+# cannot read it. A cache on refs/heads/main CAN be read by every branch.
+#
+# And nothing was ever going to write one, because of #594: `tests.yml` now runs
+# on `pull_request` only, so the mount smoke job only ever executes on a PR ref.
+# The cache step was therefore net NEGATIVE -- 4s per run to save something no
+# one reads, and 250MB of the 10GB repo budget per PR.
+#
+# This job's whole purpose is to put that key on `main` once, where PRs can
+# reach it. It runs nothing else: no suites, no build, no browser driving.
+#
+# ── WHY BOTH A PUSH AND A SCHEDULE ──────────────────────────────────────────
+#
+# PUSH, PATH-FILTERED: the key is the pinned playwright version, so it only
+# needs rewriting when that pin changes -- which can only happen in tests.yml
+# or this file. Running on every merge would cost a minute a merge to re-save a
+# cache that is already correct.
+#
+# SCHEDULE: GitHub evicts a cache not READ for 7 days. The pin changes rarely,
+# so without a heartbeat the entry would expire in a quiet week and every PR
+# would pay the 25s download again until someone next touched the pin. Weekly is
+# inside that window with room to miss a run.
+#
+# ── COST ────────────────────────────────────────────────────────────────────
+#
+# About 40s per run: checkout, node, the browser download, the save. Once a week
+# plus the rare pin change, against ~19s saved on each of roughly 316 mount
+# smoke runs a month -- call it 100 minutes saved for 4 spent. Those numbers are
+# the same ones in #596's body; the difference is that now they can be realised.
+#
+# ── WHAT WOULD TELL YOU THIS IS BROKEN ──────────────────────────────────────
+#
+# `gh api repos/<owner>/<repo>/actions/caches` showing the
+# `ms-playwright-chromium-*` key on `refs/heads/main`. If it only ever appears
+# on `refs/pull/...` refs, this job is not running or not saving, and the cache
+# step in tests.yml is dead weight again.
+
+name: warm playwright cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # The pinned version lives in these two files and nowhere else.
+      - '.github/workflows/tests.yml'
+      - '.github/workflows/warm-playwright-cache.yml'
+  schedule:
+    # Sundays, 05:00 UTC — inside GitHub's 7-day eviction window.
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# NOT cancel-in-progress. Two of these can only overlap if a pin change lands
+# beside a scheduled run, and cancelling either would leave the cache unwritten
+# — the one thing this job exists to do.
+concurrency:
+  group: warm-playwright-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: warm the browser cache on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # RESTORE FIRST. If the key is already on main and still valid, there is
+      # nothing to do and the job ends in seconds. `actions/cache` will not
+      # re-save an unchanged hit, so the schedule's real job is to READ the
+      # entry — which is what resets GitHub's 7-day eviction clock.
+      - name: Cache the Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # MUST MATCH tests.yml EXACTLY, or this warms a key nothing reads.
+          # A test asserts the two strings are identical.
+          key: ms-playwright-chromium-1.49.1-${{ runner.os }}
+
+      - name: Download the browser if the cache was empty
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx --yes playwright@1.49.1 install chromium
+
+      - name: Say what happened
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "cache hit on main — read, so the 7-day clock is reset"
+          else
+            echo "cache miss — browser downloaded, and it will be saved to main"
+          fi
+          du -sh ~/.cache/ms-playwright 2>/dev/null || true
