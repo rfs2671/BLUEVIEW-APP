@@ -48,6 +48,29 @@ import apiClient from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
+import {
+  insuranceExpiryState,
+  formatInsuranceExpiryShort,
+} from '../../src/utils/insuranceExpiry';
+
+// ── THE INSURANCE BADGE'S COLOUR ─────────────────────────────────────────────
+//
+// The STATE comes from src/utils/insuranceExpiry.js, which reads the stored
+// string with the shared date reader; this screen only picks its own tokens for
+// it. What used to be here read `new Date(expiration_date)` inline, and a
+// date-only ISO string parses as UTC midnight, so every ISO expiry was a day
+// early and a policy expiring today coloured red after 20:00. See that module.
+//
+// 'unreadable' IS NOT GREY BY ACCIDENT. Grey is also what 'blank' gets, so the
+// badge says the word as well — colour alone cannot distinguish "no date" from
+// "a date nobody can read", and those need different fixes.
+const INSURANCE_STATE_COLOR = {
+  expired: semantic.criticalText,
+  soon: semantic.attention,
+  ok: semantic.verified,
+  unreadable: '#6b7280',
+  blank: '#6b7280',
+};
 
 // The client-side password gate that used to live here has been removed.
 // It compared against a constant compiled into the web bundle, so it was
@@ -812,24 +835,11 @@ export default function OwnerPortalScreen() {
                   const gcStatus = (company.gc_license_status || '').toUpperCase();
                   const gcActive = gcStatus === 'ACTIVE';
                   const insRecords = company.gc_insurance_records || [];
-                  const getInsColor = (expStr) => {
-                    if (!expStr) return '#6b7280';
-                    const d = new Date(expStr);
-                    if (isNaN(d.getTime())) return '#6b7280';
-                    const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-                    if (daysLeft < 0) return semantic.criticalText;
-                    if (daysLeft <= 60) return semantic.attention;
-                    return semantic.verified;
-                  };
                   const insGL = insRecords.find(r => r.insurance_type === 'general_liability');
                   const insWC = insRecords.find(r => r.insurance_type === 'workers_comp');
                   const insDB = insRecords.find(r => r.insurance_type === 'disability');
-                  const fmtShort = (s) => {
-                    if (!s) return '--';
-                    const d = new Date(s);
-                    if (isNaN(d.getTime())) return s.length > 10 ? s.slice(0, 10) : s;
-                    return `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
-                  };
+                  const insColor = (expStr) =>
+                    INSURANCE_STATE_COLOR[insuranceExpiryState(expStr)];
 
                   return (
                     <GlassCard key={company.id} style={styles.companyCard}>
@@ -915,16 +925,16 @@ export default function OwnerPortalScreen() {
                           </View>
                           {insRecords.length > 0 ? (
                             <View style={styles.gcInsuranceRow}>
-                              <Text style={[styles.gcInsLabel, { color: getInsColor(insGL?.expiration_date) }]}>
-                                GL: {fmtShort(insGL?.expiration_date)}
+                              <Text style={[styles.gcInsLabel, { color: insColor(insGL?.expiration_date) }]}>
+                                GL: {formatInsuranceExpiryShort(insGL?.expiration_date)}
                               </Text>
                               <Text style={styles.gcInsSep}>|</Text>
-                              <Text style={[styles.gcInsLabel, { color: getInsColor(insWC?.expiration_date) }]}>
-                                WC: {fmtShort(insWC?.expiration_date)}
+                              <Text style={[styles.gcInsLabel, { color: insColor(insWC?.expiration_date) }]}>
+                                WC: {formatInsuranceExpiryShort(insWC?.expiration_date)}
                               </Text>
                               <Text style={styles.gcInsSep}>|</Text>
-                              <Text style={[styles.gcInsLabel, { color: getInsColor(insDB?.expiration_date) }]}>
-                                DB: {fmtShort(insDB?.expiration_date)}
+                              <Text style={[styles.gcInsLabel, { color: insColor(insDB?.expiration_date) }]}>
+                                DB: {formatInsuranceExpiryShort(insDB?.expiration_date)}
                               </Text>
                             </View>
                           ) : (

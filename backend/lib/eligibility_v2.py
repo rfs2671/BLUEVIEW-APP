@@ -25,6 +25,11 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from lib.fee_schedule import get_fee
+from lib.insurance_expiry import (
+    INSURANCE_TYPES,
+    read_expiry,
+    unreadable_blocking_reason,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -87,11 +92,12 @@ def _find_insurance(company: dict, ins_type: str) -> Optional[dict]:
 
 # ── §3.1 effective expiry ───────────────────────────────────────────
 
-INSURANCE_TYPES = [
-    ("general_liability", "General Liability"),
-    ("workers_comp",      "Workers' Comp"),
-    ("disability",        "Disability"),
-]
+# INSURANCE_TYPES now comes from lib/insurance_expiry.py and is re-exported
+# here under its original name, because this module's own code and its tests
+# read it from here. ONE LIST: the digest's insurance loop, this module and
+# the blocking-reason builder were each about to hold their own copy of the
+# same three types and the same three labels, and the labels are what an
+# admin reads in the email and in the refusal.
 
 
 def compute_effective_permit_expiry(
@@ -133,9 +139,18 @@ def compute_effective_permit_expiry(
     for ins_key, label in INSURANCE_TYPES:
         rec = _find_insurance(company, ins_key)
         if rec:
-            exp = _utc(rec.get("expiration_date"))
-            if exp:
-                candidates.append((exp, label, "insurance"))
+            # AN UNREADABLE EXPIRY IS STILL DROPPED FROM THE `min()`, and it
+            # has to be: there is no date to compare. What changes is that it
+            # no longer leaves ONLY that trace. `read_expiry` logs the error,
+            # and `evaluate()` puts a blocking reason on the result, so the
+            # permit cannot come back as AUTO_EXTEND computed over the
+            # remaining candidates while a required input was silently absent.
+            read = read_expiry(
+                rec.get("expiration_date"),
+                where=f"company={(company or {}).get('_id')} {ins_key}",
+            )
+            if read.at:
+                candidates.append((read.at, label, "insurance"))
 
     if not candidates:
         return (None, "no expiry data", "unknown")
@@ -333,6 +348,28 @@ async def evaluate(
     )
 
     blocking_reasons: List[str] = []
+
+    # ── AN UNREADABLE INSURANCE EXPIRY BLOCKS, AND SAYS SO ──────────────────
+    #
+    # FIRST IN THE LIST, because it is the only reason here that an admin can
+    # fix in thirty seconds and the only one that says the input was bad rather
+    # than the answer being bad.
+    #
+    # WHY IT IS A HARD BLOCK (severity 3 via `blocking_reasons`) AND NOT THE
+    # SOFT `insurance_not_entered` PROMPT. The soft prompt means "you have not
+    # told us yet" — nothing is claimed about the permit. This means "you told
+    # us and we cannot read it", so `compute_effective_permit_expiry` dropped a
+    # required candidate out of the `min()` and whatever it returned was
+    # computed WITHOUT it. If the licence expiry or issuance+365 happened to be
+    # later, the permit read as AUTO_EXTEND with no warning at all. A confident
+    # wrong answer about a permit's expiry is worse than a refusal to answer.
+    #
+    # DERIVED FROM THE COMPANY, not from this permit: the record is the
+    # company's and the same reason appears on every one of its permits, which
+    # is correct — every one of them is uncomputable for the same reason.
+    unreadable_reason = unreadable_blocking_reason(company)
+    if unreadable_reason:
+        blocking_reasons.append(unreadable_reason)
 
     # Permits with no parseable expiration data are uncomputable.
     # Legacy hard-blocks these with "No expiration date on permit record";

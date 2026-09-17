@@ -13998,7 +13998,27 @@ async def set_admin_company_insurance_manual(
 
         parsed.append((ins_type, label, dt))
 
-    today_str = now.strftime("%m/%d/%Y")
+    # ── STORED AS ISO `YYYY-MM-DD`, AS OF THIS DEPLOY ───────────────────────
+    #
+    # This wrote `%m/%d/%Y`. ISO sorts, states its own field order, and is
+    # already what the shared date field sends up the wire (`toStoredDate` in
+    # frontend/src/utils/dateEntry.js) — so the value that arrives and the
+    # value that is stored are now the same string, rather than being
+    # round-tripped through dateutil into a different format.
+    #
+    # NO MIXED-FORMAT PERIOD IS NEEDED and that was checked rather than
+    # assumed: every active reader already accepts both. The digest and
+    # permit-expiry readers go through `lib/insurance_expiry.read_expiry`
+    # (dateutil), `permit_renewal` parses with dateutil, and both screens read
+    # with `parseStoredDate`, which takes ISO and MM/DD/YYYY. Production holds
+    # ZERO insurance records today, so this converts nothing on its own;
+    # `scripts/backfill_insurance_expiry_iso.py` exists for the records that
+    # are not there yet.
+    #
+    # THE PARSE ABOVE IS UNCHANGED — still dateutil, still whatever an admin
+    # could type before. Only the stored FORMAT moves. Narrowing what this
+    # endpoint accepts is a separate decision and it is not this one.
+    today_str = now.date().isoformat()
     records = []
     for ins_type, label, dt in parsed:
         records.append({
@@ -14006,7 +14026,7 @@ async def set_admin_company_insurance_manual(
             "carrier_name":   None,
             "policy_number":  None,
             "effective_date": today_str,
-            "expiration_date": dt.strftime("%m/%d/%Y"),
+            "expiration_date": dt.date().isoformat(),
             "is_current":     True,
             "source":         "manual_entry",
         })
@@ -14063,8 +14083,14 @@ class CoiConfirmRequest(BaseModel):
     insurance_type: str           # general_liability | workers_comp | disability
     carrier_name: Optional[str] = None
     policy_number: Optional[str] = None
-    effective_date: Optional[str] = None    # MM/DD/YYYY
-    expiration_date: Optional[str] = None   # MM/DD/YYYY
+    # ACCEPTED as ISO `YYYY-MM-DD` or `MM/DD/YYYY`; STORED as ISO. The confirm
+    # handler runs both through `lib.insurance_expiry.normalise_stored_expiry`
+    # and answers 422 with the reason. They are typed `str` rather than `date`
+    # deliberately: a Pydantic `date` would answer with FastAPI's generic
+    # validation error, and "Expiration date: \"7/2/29\" is not a date this app
+    # can read. Enter it as MM/DD/YYYY." is what the admin needs to see.
+    effective_date: Optional[str] = None
+    expiration_date: Optional[str] = None
 
 
 @api_router.post("/admin/company/insurance/upload-coi", dependencies=[Depends(require_approved)])
@@ -14280,6 +14306,48 @@ async def admin_confirm_coi(
             detail="Draft insurance_type does not match confirm body. Re-upload.",
         )
 
+    # ── THE DATES ARE VALIDATED AND NORMALISED HERE ─────────────────────────
+    #
+    # They were stored RAW: `"expiration_date": body.expiration_date`,
+    # whatever the client sent, with no parse and no shape check. This endpoint
+    # has no client in the app — nothing calls it — so no record on production
+    # came through it, which is exactly why it is being fixed NOW: the cost of
+    # a wrong format here is a record the digest cannot read and the permit
+    # expiry silently drops, and there is no data to migrate while that is
+    # still true.
+    #
+    # STRICT, unlike the readers. `normalise_stored_expiry` accepts ISO or
+    # MM/DD/YYYY and returns ISO; it refuses '7/2/29' and 02/30 rather than
+    # guessing. A writer is the last place a person can be told the date was
+    # not understood, and the OCR output it commits is a machine's reading of a
+    # photographed certificate — the value most likely in the whole system to
+    # be nonsense.
+    #
+    # BOTH DATES, not just the expiry. `effective_date` is rendered on the
+    # Settings card beside it and shifts the same way.
+    #
+    # 422, MATCHING THE MANUAL ENDPOINT, so a client can handle one status for
+    # "your date was refused" across both insurance writers.
+    from lib.insurance_expiry import normalise_stored_expiry
+
+    normalised_dates = {}
+    for field, label in (("effective_date", "Effective date"),
+                         ("expiration_date", "Expiration date")):
+        raw = getattr(body, field)
+        # BLANK STAYS BLANK. The model has both Optional with a None default
+        # and OCR legitimately fails to find an effective date on some
+        # certificates; refusing an absent value would make a COI with one
+        # unreadable field unconfirmable, which pushes the admin back to manual
+        # entry for the whole record. An expiry of None is then handled by the
+        # readers as "no date on file", which it is.
+        if raw is None or not str(raw).strip():
+            normalised_dates[field] = None
+            continue
+        try:
+            normalised_dates[field] = normalise_stored_expiry(raw)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=f"{label}: {e}")
+
     # Build the new InsuranceRecord. Pulled values from the confirm
     # request (admin may have edited the OCR output); R2 URL + OCR
     # confidence carry over from the draft so audit trail is preserved.
@@ -14289,8 +14357,8 @@ async def admin_confirm_coi(
         "insurance_type":      body.insurance_type,
         "carrier_name":        body.carrier_name,
         "policy_number":       body.policy_number,
-        "effective_date":      body.effective_date,
-        "expiration_date":     body.expiration_date,
+        "effective_date":      normalised_dates["effective_date"],
+        "expiration_date":     normalised_dates["expiration_date"],
         "is_current":          True,
         "source":              "coi_ocr",
         "coi_pdf_url":         draft.get("pdf_url"),

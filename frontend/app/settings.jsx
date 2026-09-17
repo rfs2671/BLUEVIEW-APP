@@ -57,6 +57,10 @@ import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { buildVerdict } from '../src/utils/buildVerdict';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
+import {
+  insuranceExpiryState,
+  formatInsuranceExpiryLong,
+} from '../src/utils/insuranceExpiry';
 
 const INSURANCE_LABELS = {
   general_liability: 'General Liability',
@@ -64,16 +68,51 @@ const INSURANCE_LABELS = {
   disability: 'Disability Benefits',
 };
 
-const getExpirationColor = (dateStr) => {
-  if (!dateStr) return '#6b7280';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '#6b7280';
-  const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-  if (daysLeft < 0) return semantic.critical;
-  if (daysLeft <= 60) return semantic.attention;
-  return semantic.verified;
+// ── THE INSURANCE CARD'S COLOUR ──────────────────────────────────────────────
+//
+// The STATE comes from src/utils/insuranceExpiry.js, shared with the owner
+// panel, which reads the stored string with the same reader the insurance form
+// above uses. What used to be here built `new Date(rec.expiration_date)`, and a
+// date-only ISO string parses as UTC midnight, so every expiry #590 writes
+// rendered a day early on this screen — the admin's own view of his own
+// certificates — and a policy expiring today coloured red after 20:00.
+//
+// Grey is 'blank' AND 'unreadable'; the card also prints which, because those
+// need different fixes and colour cannot say.
+const INSURANCE_STATE_COLOR = {
+  expired: semantic.critical,
+  soon: semantic.attention,
+  ok: semantic.verified,
+  unreadable: '#6b7280',
+  blank: '#6b7280',
 };
 
+const getInsuranceColor = (dateStr) =>
+  INSURANCE_STATE_COLOR[insuranceExpiryState(dateStr)];
+
+/**
+ * THE `new Date` READER, KEPT FOR THE TWO FIELDS THAT ARE NOT INSURANCE.
+ *
+ * Deliberately NOT renamed to say "timestamp", because only one of the two
+ * values it serves is one:
+ *
+ *   gc_last_verified       AN INSTANT — `str(datetime.now(timezone.utc))`.
+ *                          `new Date` is the correct reader for it, and
+ *                          `parseStoredDate` would call it unreadable.
+ *   gc_license_expiration  A CALENDAR DAY, and it shifts the same way an ISO
+ *                          insurance date does. It is NOT fixed here because
+ *                          BIS hands it over as `\d{1,2}/\d{1,2}/\d{2,4}`
+ *                          ('7/2/29') — looser than the stored-date reader
+ *                          accepts — so swapping the reader under it would
+ *                          turn a rendered date into the word "unreadable"
+ *                          rather than into the right day. It needs its own
+ *                          ruling and it is on the operator's list. BIS
+ *                          auto-fetch is disabled, so the field is None on
+ *                          both live companies today.
+ *
+ * An INSURANCE record's dates must never come back through here: they go
+ * through formatInsuranceExpiryLong, which never builds a Date.
+ */
 const formatDate = (dateStr) => {
   if (!dateStr) return '--';
   const d = new Date(dateStr);
@@ -376,11 +415,13 @@ export default function SettingsScreen() {
     }
     setSavingInsurance(true);
     try {
-      // ISO ON THE WIRE, as from every date field. The endpoint parses it with
-      // dateutil (which reads YYYY-MM-DD unambiguously) and stores its own
-      // MM/DD/YYYY, which is what the BIS-scraped records it replaces carry —
-      // so the stored shape does not change. The pre-filled values are those
-      // stored MM/DD/YYYY strings, read back by the field as they are.
+      // ISO ON THE WIRE, as from every date field — AND ISO IN THE DATABASE
+      // NOW. The endpoint used to parse this with dateutil and re-format to
+      // its own `%m/%d/%Y`, matching the BIS-scraped records it replaced; it
+      // stores `YYYY-MM-DD` as of this deploy, so the string that leaves here
+      // is the string that is stored. A record written before that is still
+      // MM/DD/YYYY and the field reads it either way (`parseStoredDate`), so
+      // the pre-filled values are unaffected.
       const resp = await apiClient.put('/api/admin/company/insurance/manual', {
         general_liability_expiry: toStoredDate(insGL),
         workers_comp_expiry:      toStoredDate(insWC),
@@ -814,7 +855,7 @@ export default function SettingsScreen() {
                     </GlassCard>
                   ) : (
                     records.map((rec, idx) => {
-                      const expColor = getExpirationColor(rec.expiration_date);
+                      const expColor = getInsuranceColor(rec.expiration_date);
                       const label    = INSURANCE_LABELS[rec.insurance_type] || rec.insurance_type;
                       const isCur    = rec.is_current;
                       return (
@@ -837,12 +878,12 @@ export default function SettingsScreen() {
                           </View>
                           <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                             <Text style={{ fontSize: 12, color: colors.text.muted }}>Effective</Text>
-                            <Text style={{ fontSize: 12, color: colors.text.primary }}>{formatDate(rec.effective_date)}</Text>
+                            <Text style={{ fontSize: 12, color: colors.text.primary }}>{formatInsuranceExpiryLong(rec.effective_date)}</Text>
                           </View>
                           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
                             <Text style={{ fontSize: 12, color: colors.text.muted }}>Expiration</Text>
                             <Text style={{ fontSize: 12, color: expColor, fontWeight: '600' }}>
-                              {formatDate(rec.expiration_date)}
+                              {formatInsuranceExpiryLong(rec.expiration_date)}
                             </Text>
                           </View>
                         </GlassCard>
