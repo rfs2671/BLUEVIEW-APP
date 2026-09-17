@@ -1,7 +1,10 @@
 """pip succeeded, the tests passed, the deploy went green, the reader was dead.
 
 `rapidocr-onnxruntime` installed cleanly on Railway. It imports `cv2`, `cv2`
-needs `libGL.so.1`, and the container carried none:
+needs `libGL.so.1`, and the container carried none. The FIRST fix for this went
+into `nixpacks.toml`, because that is what the README said built the image. It
+deployed green and changed nothing — Railway builds from the `Dockerfile`, and
+nothing has ever read `nixpacks.toml`:
 
     $ railway ssh "python -c 'from lib import plan_ocr; print(plan_ocr.available())'"
     available: False
@@ -17,8 +20,9 @@ the eval.
 
 THE TWO THINGS THIS FILE HOLDS
 
-  1. The runtime declares the system libraries its Python dependencies link
-     against. A wheel that installs is not a wheel that imports.
+  1. The DOCKERFILE declares the system libraries its Python dependencies link
+     against, because that is the file the build reads. A wheel that installs
+     is not a wheel that imports, and a config nothing reads is not a fix.
   2. /health NAMES a reader that cannot load, without moving `status` and
      without loading 15 MB of model weights to find out.
 """
@@ -41,27 +45,66 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class TheRuntimeCarriesWhatTheWheelsLinkAgainst(unittest.TestCase):
+    """THE DOCKERFILE, because that is what Railway actually builds.
 
-    def nixpkgs(self):
-        text = (REPO / "nixpacks.toml").read_text(encoding="utf-8")
-        line = [l for l in text.splitlines() if l.strip().startswith("nixPkgs")]
-        self.assertTrue(line, "nixpacks.toml declares no nixPkgs")
-        return set(re.findall(r'"([^"]+)"', line[0]))
+    The first fix for the missing libGL went into `nixpacks.toml` — a file
+    that sat in this repo for months, was read by nothing, and that the README
+    described as the production build path. It deployed green and changed
+    nothing: `libGL.so.1` was still missing and the reader was still dead. A
+    test asserting that file's contents would have passed the whole time.
+    """
 
-    def test_opencv_s_system_libraries_are_declared(self):
+    def apt_packages(self):
+        """Every package name the Dockerfile apt-get installs.
+
+        Continuations are joined first, so a package added on its own `\\` line
+        — which is how every one of them is written here — is seen."""
+        text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        joined = re.sub(r"\\\s*\n", " ", text)
+        got = set()
+        for line in joined.splitlines():
+            if "apt-get install" not in line:
+                continue
+            tail = line.split("apt-get install", 1)[1]
+            tail = re.split(r"&&|\|\||;", tail)[0]
+            for tok in tail.split():
+                if tok and not tok.startswith("-") and "=" not in tok:
+                    got.add(tok)
+        return got
+
+    def test_opencv_s_system_libraries_are_installed(self):
         # The wheel links libGL.so.1 and libglib-2.0.so.0 and bundles neither.
-        pkgs = self.nixpkgs()
-        self.assertIn("libGL", pkgs)
-        self.assertIn("glib", pkgs)
+        # Verified on the container 2026-09-17: with libgl1 extracted onto
+        # LD_LIBRARY_PATH, `import cv2` succeeded, RapidOCR constructed, and it
+        # read PTAC-1 / 21 / PTH093K / 14,000 off a rendered row.
+        pkgs = self.apt_packages()
+        self.assertIn("libgl1", pkgs)
+        self.assertIn("libglib2.0-0", pkgs)
 
     def test_poppler_is_still_there(self):
         # pdftoppm and pdfinfo. _check_poppler refuses to start the index
         # worker without both, and the schedule crops are rendered by them.
-        self.assertIn("poppler_utils", self.nixpkgs())
+        self.assertIn("poppler-utils", self.apt_packages())
 
     def test_the_ocr_dependency_is_still_the_one_that_needs_them(self):
         req = (REPO / "requirements.txt").read_text(encoding="utf-8")
         self.assertIn("rapidocr-onnxruntime", req)
+
+    def test_no_second_build_file_sits_beside_the_dockerfile(self):
+        # A build config nothing reads is worse than none: it is where a fix
+        # goes to have no effect. Railway prefers the Dockerfile whenever the
+        # repo has one, so any of these is decoration that reads as authority.
+        for dead in ("nixpacks.toml", "railpack.json", "project.toml"):
+            with self.subTest(file=dead):
+                self.assertFalse(
+                    (REPO / dead).exists(),
+                    f"{dead} is not read by the build; a system library added "
+                    f"to it changes nothing while looking like a fix")
+
+    def test_the_readme_does_not_send_the_next_person_to_the_wrong_file(self):
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Railway builds from the `Dockerfile`", readme)
+        self.assertNotIn("There is no Dockerfile path in production", readme)
 
 
 class ProbingCostsNothing(unittest.TestCase):
