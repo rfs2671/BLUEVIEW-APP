@@ -869,7 +869,19 @@ class TestSendNotificationDefaultPassInvariant(unittest.TestCase):
         # The users + preferences + digest_queue collections must
         # never have been touched. This is the byte-for-byte
         # backward-compat pin.
-        db.users.find_one.assert_not_awaited()
+        #
+        # ONE users.find_one IS EXPECTED NOW, AND IT IS NOT THE PREFERENCES
+        # PIPELINE. Every send resolves the recipient to a user to check
+        # whether the role may be emailed at all -- CP and superintendent get
+        # no email of any kind, and three of the seven mail paths carry raw
+        # addresses with no role to query on, so the check has to live at the
+        # send. See recipient_is_field_role.
+        #
+        # The claim this test exists for is untouched and is asserted by the
+        # two lines below: the PREFERENCES collection and the digest queue are
+        # never reached. Counting users.find_one was a proxy for that, and a
+        # proxy stops being one the moment a second reader appears.
+        self.assertEqual(db.users.find_one.await_count, 1)
         db.notification_preferences.find_one.assert_not_awaited()
         db.digest_queue.insert_one.assert_not_awaited()
 
@@ -889,9 +901,13 @@ class TestSendNotificationDefaultPassInvariant(unittest.TestCase):
                 text="Test",
                 metadata={"signal_kind": "violation_dob", "severity": "critical"},
             ))
-        # users.find_one was called (we tried to resolve), but no
-        # match → preferences short-circuit.
-        db.users.find_one.assert_awaited_once()
+        # TWO users.find_one calls now, and they ask different questions:
+        # the field-role check at the top of send_notification, then the
+        # preferences pipeline's own resolution. Neither finds this address --
+        # it belongs to an external filing rep, who is not a user and is
+        # therefore emailed -- so preferences still short-circuits, which the
+        # two lines below assert directly.
+        self.assertEqual(db.users.find_one.await_count, 2)
         db.notification_preferences.find_one.assert_not_awaited()
         db.digest_queue.insert_one.assert_not_awaited()
 

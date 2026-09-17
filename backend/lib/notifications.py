@@ -93,6 +93,89 @@ NOTIFICATION_STATUS_SUPPRESSED_NO_KEY = "suppressed_no_key"
 # rows with this status mean the kill switch was active when the
 # send was attempted. Audit trail of what would have gone out.
 NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH = "suppressed_kill_switch"
+# ── FIELD ROLES ARE NOT EMAILED ────────────────────────────────────────────
+#
+# OPERATOR RULING: a CP, a superintendent, and a CP who is also the
+# superintendent receive NO email of any kind. They are field roles: the app is
+# their logbook, and their in-app notifications -- the injury card, the logbook
+# alerts, the inbox -- are untouched by this. Admin, owner and the Site Manager
+# / PM role keep the DOB, permit and compliance mail.
+#
+# ENFORCED AT SEND TIME, NOT AT OPT-IN, and the difference is the whole point.
+# Three of the seven email paths do not select recipients by role at all:
+#
+#   report_email_list      raw addresses typed onto a project
+#   filing_reps[].email    raw addresses typed onto a company
+#   annotation "all"       every user id in the company, expanded
+#
+# A role filter on the QUERY cannot reach any of those, and a stale
+# `renewal_digest_opt_in: true` on a CP's account would keep emailing him after
+# the query that set it was changed. `resend.Emails.send` appears exactly once
+# in this codebase -- in this file -- so this is the one place that can be true
+# for every path at once.
+#
+# IT LOGS AND RETURNS, like every other suppression here: the notification_log
+# row says what would have gone out and why it did not, which is what makes a
+# silent non-delivery diagnosable.
+NOTIFICATION_STATUS_SUPPRESSED_FIELD_ROLE = "suppressed_field_role"
+
+#: The roles that receive no email. `superintendent` is here for the same
+#: reason as `cp`, and the dual-capacity user holds `role: cp` with a
+#: capability flag -- so he is covered by the first entry and does not need a
+#: third. See the roles mapping: role=cp + is_superintendent.
+EMAIL_EXCLUDED_ROLES = frozenset({"cp", "superintendent"})
+
+
+async def recipient_is_field_role(db, recipient: str):
+    """The role of the account this address belongs to, if it is excluded.
+
+    Returns the role string when the address resolves to a user whose role may
+    not be emailed, and None otherwise -- including when the address belongs to
+    nobody, which is the normal case for a filing rep or a typed report
+    address.
+
+    FAILS OPEN, DELIBERATELY. If this lookup raises, the send proceeds. A
+    missed exclusion is one unwanted email to a CP; a raise here would stop
+    every permit-expiry reminder on the platform, and those are the ones with a
+    deadline attached.
+    """
+    # STRIPPED, NOT FOLDED. Folding here would make both terms of the `$in`
+    # below identical and quietly delete half the query -- the "address as
+    # given" form would never reach Mongo, and a stored address with capitals
+    # could never be matched. Found by the test that tried to pin the limit.
+    address = (recipient or "").strip()
+    if not address:
+        return None
+    # EXACT EQUALITY, THE WAY EVERY OTHER LOOKUP IN THIS CODEBASE DOES IT.
+    #
+    # This was a case-insensitive `$regex` and that was wrong twice over. A
+    # case-insensitive regex on `email` CANNOT USE THE INDEX -- it is a
+    # collection scan, and this runs on EVERY SINGLE SEND. And it is the
+    # outlier: login, registration and every admin lookup match the address
+    # exactly (`{"email": credentials.email}`), because emails are stored as
+    # typed and are not folded on write.
+    #
+    # The lowercase form is included because the addresses that reach here have
+    # often already been folded on the way -- the digest lowercases its
+    # recipients, `report_email_list` is lowercased on write -- so a user whose
+    # stored address has capitals would otherwise never be matched against the
+    # folded copy. Two exact terms in an `$in`, both index-served.
+    #
+    # WHAT THIS DOES NOT CATCH: a stored `Wilson@CP.com` against a recipient
+    # string of `wilson@Cp.com`. That is the same gap `login` has, on the same
+    # field, and closing it belongs with a decision to fold emails on write --
+    # not here, on the hot path, behind a scan.
+    try:
+        user = await db.users.find_one(
+            {"email": {"$in": list({address, address.lower()})}},
+            {"role": 1},
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[notifications] role lookup failed for %s: %r", address, e)
+        return None
+    role = str((user or {}).get("role") or "").strip().lower()
+    return role if role in EMAIL_EXCLUDED_ROLES else None
 # Phase B1a — per-user preferences statuses. The preferences pipeline
 # only fires when the caller passes `signal_kind` in metadata AND
 # the recipient resolves to a users.{_id}; otherwise the legacy path
@@ -276,6 +359,30 @@ async def send_notification(
             status=NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH,
             subject=subject,
             metadata=metadata,
+            now=now,
+        )
+
+    # Step 0.5 — FIELD ROLES ARE NOT EMAILED.
+    #
+    # BEFORE IDEMPOTENCY, on purpose. The idempotency window is 23 hours per
+    # (renewal, trigger, recipient); if the refusal sat after it, the first
+    # attempt of the day would log `suppressed_idempotent` for a CP and the
+    # reason he was not emailed would be recorded as the wrong one.
+    _excluded_role = await recipient_is_field_role(db, recipient)
+    if _excluded_role:
+        logger.info(
+            "[notifications] field role %r is not emailed; suppressing "
+            "trigger=%s recipient=%s subject=%r",
+            _excluded_role, trigger_type, recipient, subject,
+        )
+        return await _write_log_entry(
+            db,
+            permit_renewal_id=permit_renewal_id,
+            trigger_type=trigger_type,
+            recipient=recipient,
+            status=NOTIFICATION_STATUS_SUPPRESSED_FIELD_ROLE,
+            subject=subject,
+            metadata={**(metadata or {}), "excluded_role": _excluded_role},
             now=now,
         )
 

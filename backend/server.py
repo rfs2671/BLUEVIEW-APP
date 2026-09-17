@@ -37003,10 +37003,22 @@ async def _resolve_renewal_digest_recipients(company: dict) -> list:
         if e:
             emails.append(e)
 
-    # Non-admin PMs / CPs: default OFF, opt-in.
+    # Non-admin PMs: default OFF, opt-in.
+    #
+    # `cp` WAS IN THIS LIST AND IS NOT ANY MORE. Operator ruling: a CP is a
+    # field role and receives no email of any kind. The send-time filter in
+    # lib/notifications.py would refuse these addresses anyway -- and it is
+    # what makes the rule true for the report list and the filing reps, which
+    # are raw addresses with no role to query on -- but building a recipient
+    # list out of people who may not be written to is how a stale
+    # `renewal_digest_opt_in: true` keeps looking like an intention.
+    #
+    # `pm` STAYS, and the Site Manager / PM role does not exist yet: this
+    # query is the reason to check before creating it, because the digest
+    # starts mailing every Site Manager the day the role does.
     pm_cursor = db.users.find({
         "company_id": company_id,
-        "role": {"$in": ["pm", "cp"]},
+        "role": {"$in": ["pm"]},
         "is_deleted": {"$ne": True},
         "renewal_digest_opt_in": True,
     }, {"email": 1})
