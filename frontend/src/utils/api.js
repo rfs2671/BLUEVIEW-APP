@@ -947,8 +947,19 @@ export const dropboxAPI = {
  * Admin User Management APIs
  */
 export const adminUsersAPI = {
-  getAll: async () => {
-    const response = await apiClient.get('/api/admin/users');
+  // `includeAllRoles` WIDENS WHICH ROLES, NEVER WHICH COMPANY. The server
+  // scopes every caller to his own company regardless; this only opts out of
+  // the ADMIN_MANAGED_ROLES row filter, and only for a caller that asks.
+  //
+  // WHO ASKS, AND WHY IT IS NOT THE DEFAULT. User Management is a MANAGEMENT
+  // surface and keeps the ruling: a company admin does not administer other
+  // admins. app/admin/superintendent.jsx is a PICKER -- it links the
+  // construction superintendent of a job, who may himself be an admin -- so it
+  // opts in. Defaulting this to true would quietly undo the ruling for the two
+  // callers that want it.
+  getAll: async ({ includeAllRoles = false } = {}) => {
+    const response = await apiClient.get(
+      `/api/admin/users${includeAllRoles ? '?include_all_roles=true' : ''}`);
     const data = response.data;
     return Array.isArray(data) ? data : (data.items || []);
   },

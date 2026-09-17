@@ -6833,7 +6833,22 @@ async def get_current_user(
         # stale install is not the person holding the phone. Fire-and-forget so
         # it can never add latency to a read, and throttled so it is not a
         # write per request.
-        if request is not None and user_oid is not None:
+        #
+        # AND NOT FOR A DEMO. "Nothing the demo user does is saved" is the
+        # ruling, and this is the one write that would have survived it: the
+        # demo guard refuses by HTTP METHOD, and this fires from inside
+        # get_current_user on a GET, below that boundary entirely. It is a
+        # telemetry stamp rather than the user's data, which is exactly why it
+        # would have been missed -- nobody auditing "what can a demo write"
+        # looks at a read path. THE TEST IS ON THE DEMO SIDE, not here: a demo
+        # GET must leave `client_version` untouched.
+        #
+        # `is_demo` reads the DOCUMENT, not the token claim, for the same
+        # reason demo_guard does: a promoted account carries "demo" in its JWT
+        # for up to 30 days because _reissue_token_if_stale copies claims
+        # forward, and a real customer's install must still be stamped.
+        if (request is not None and user_oid is not None
+                and not is_demo(user_data)):
             reported = (request.headers.get("x-client-version") or "").strip()[:32]
             if reported and _client_version_needs_stamp(user, reported):
                 asyncio.create_task(_record_client_version(user_oid, reported))
@@ -10520,6 +10535,27 @@ async def get_admin_users(
     current_user = Depends(get_user_admin),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
+    # ── THE OPT-IN, AND WHAT IT DOES *NOT* WIDEN ────────────────────────────
+    #
+    # Operator ruling. `ADMIN_MANAGED_ROLES` is right for User Management --
+    # admins are the platform operator's to manage -- but it narrowed all three
+    # callers of `adminUsersAPI.getAll`, and one of them is a PICKER rather
+    # than a management surface: app/admin/superintendent.jsx links the
+    # construction superintendent of a job, and its own comment records why it
+    # needs everyone ("Michael is role 'cp' and IS the construction
+    # superintendent"). A company admin who is also the CS on his own job
+    # became unlinkable.
+    #
+    # IT WIDENS WHICH ROLES, NEVER WHICH COMPANY. The tenant clause below is
+    # untouched and unreachable from here: a caller still sees his own company
+    # and nobody else's, and a caller with no company still sees nobody. That
+    # separation is the subject of the block below -- the leak this route once
+    # had was TENANCY decided by role, and nothing here reads the caller's
+    # role either.
+    #
+    # DEFAULT FALSE, so User Management keeps the ruling without asking, and
+    # only a caller that names this gets the wider list.
+    include_all_roles: bool = Query(False),
 ):
     company_id = get_user_company_id(current_user)
     
@@ -10568,7 +10604,10 @@ async def get_admin_users(
         pass                      # the cross-tenant view, on the flag alone
     elif company_id:
         query["company_id"] = company_id
-        query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
+        # THE TENANT CLAUSE ABOVE IS NOT CONDITIONAL AND MUST NEVER BECOME SO.
+        # Only the role clause is opt-out-able; see the parameter's note.
+        if not include_all_roles:
+            query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
     else:
         query["_id"] = None
 

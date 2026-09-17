@@ -110,7 +110,7 @@ export default function SuperintendentScreen() {
       // construction superintendent. Filtering by role would hide the one
       // person this screen exists to link — the same mistake as gating the log
       // on role == "superintendent".
-      settleFetch(() => adminUsersAPI.getAll()),
+      settleFetch(() => adminUsersAPI.getAll({ includeAllRoles: true })),
       settleFetch(() => projectsAPI.getAll()),
     ]);
 
