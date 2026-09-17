@@ -83,6 +83,30 @@ $threw = $false
 try { Get-StatusRows ([pscustomobject]@{ files = $coerced }) } catch { $threw = $true }
 Check 'Get-StatusRows refuses coerced rows' $threw 'it accepted strings and would render zeroes'
 
+# ── 3b. no rows at all, which renders exactly like the coercion ──────────
+#
+# 2026-09-17: the same blank display was reported again, and the coercion was
+# not the cause — that run used a copy of this script predating the fix. But
+# reading the loop for it found a SECOND route to the identical output that
+# nothing here covered. The endpoint filters by company and by the site-device
+# allow-list, so an authorised caller can be handed `"files": []`. Every sum
+# then starts and stays at zero, no per-file line is printed because nothing is
+# pending, and the poll runs to the stall timeout.
+#
+# An empty list is not a quiet day. It means this account cannot see the files,
+# not that there are none.
+Write-Host 'a response with an empty files array'
+$threwEmpty = $false
+$emptyMsg = ''
+try { Get-StatusRows $recorded.empty }
+catch { $threwEmpty = $true; $emptyMsg = "$_" }
+Check 'Get-StatusRows refuses an empty list' $threwEmpty 'it returned no rows and the caller renders 0/0'
+Check 'it says the account cannot see them' ($emptyMsg -match 'cannot see') "message was: $emptyMsg"
+
+# The fixture has to stay empty for that check to mean anything.
+Check 'the empty fixture is empty' (@($recorded.empty.files).Count -eq 0) `
+    "got $(@($recorded.empty.files).Count) rows"
+
 # ── 4. the script cannot reintroduce the name collision ──────────────────
 Write-Host 'the script itself'
 # Statements only. The comment above the parameter quotes the line that broke,

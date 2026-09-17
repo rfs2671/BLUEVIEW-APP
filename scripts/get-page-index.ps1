@@ -98,6 +98,14 @@ function Get-Stamp {
 # every property read came back $null. A row that is not an object is a bug in
 # this script, not a server that sent nothing, and it now says so instead of
 # rendering zeroes for ninety minutes.
+# AND AN EMPTY LIST IS NOT A QUIET DAY. The guard above catches rows that
+# arrived as [string]. It does not catch there being NO rows, and that renders
+# identically: "0/0 files finished ... 0/0 pages", no per-file lines, and an
+# exit condition ($done -eq $statusRows.Count) that 0 -eq 0 satisfies only by
+# accident — with `$statusRows.Count -gt 0` guarding it, the poll runs to the
+# stall timeout instead. The endpoint filters by company and by the
+# site-device allow-list, so a caller can be authorised for the project and
+# still be handed nothing.
 function Get-StatusRows {
     param($Status)
     $rows = @()
@@ -106,6 +114,9 @@ function Get-StatusRows {
             throw "document-index-status row is $($r.GetType().Name), not an object — the response was coerced before it was read"
         }
         $rows += $r
+    }
+    if ($rows.Count -eq 0) {
+        throw "document-index-status returned no files for this project — the account cannot see them, not that there are none to index"
     }
     return $rows
 }
