@@ -136,10 +136,26 @@ class InsuranceRecord(BaseModel):
 
     # Provenance — Literal-typed for forward writes; Optional so absent keys
     # on legacy reads don't ValidationError.
+    #
+    # `bis_scraper` IS IN THE LIST BECAUSE THE DATABASE CAN HOLD IT. server.py
+    # queries `{"gc_insurance_records.source": "bis_scraper"}` for the BIS
+    # debug dump — a value this Literal did not allow, so a record carrying it
+    # raised a ValidationError here. It is the fourth and OLDEST source:
+    # records written while DOB BIS auto-fetch still worked, before Akamai
+    # blocked it. It is not a source anything writes to any more, and it is
+    # listed last for that reason.
+    #
+    # AN UNKNOWN VALUE IS STILL A ValidationError, deliberately. The Literal is
+    # the point — it is what stops a typo becoming a fifth provenance nobody
+    # declared. What changed is the BLAST RADIUS: the caller in
+    # `check_renewal_eligibility` used to build the whole list in one
+    # comprehension inside one `try`, so one bad record dropped every record
+    # the company had. It now validates one record at a time.
     source: Optional[Literal[
         "manual_entry",
         "coi_ocr",
         "dob_now_portal",
+        "bis_scraper",
     ]] = None
 
     # ── COI OCR + portal verification fields (added 2026-04-26, step 2) ──
@@ -725,14 +741,33 @@ async def _check_renewal_eligibility_legacy_inner(
         # Soft prompt — not a hard block. Frontend shows a 'Go to Settings' CTA.
         eligibility.insurance_not_entered = True
     else:
-        try:
-            parsed_records = [InsuranceRecord(**rec) for rec in manual_records_raw]
-        except Exception as e:
-            logger.warning(
-                f"Could not parse gc_insurance_records for company "
-                f"{(company_doc or {}).get('_id')}: {e}"
-            )
-            parsed_records = []
+        # ── ONE BAD RECORD DROPS ONLY ITSELF ────────────────────────────────
+        #
+        # This was one comprehension inside one `try`, so a single record that
+        # failed validation — a `source` outside the Literal was the live case,
+        # `bis_scraper` being a value server.py's own debug dump queries for —
+        # set `parsed_records = []` and the company read as having NO insurance
+        # at all. Three valid certificates thrown away because of a fourth
+        # record's provenance string, and the only trace was one warning line
+        # that named the exception rather than the record.
+        #
+        # PER RECORD, WITH THE INDEX AND THE TYPE IN THE LOG, because "could
+        # not parse gc_insurance_records" does not say which of four, and the
+        # subdocuments have no ids of their own.
+        parsed_records = []
+        for idx, rec in enumerate(manual_records_raw):
+            try:
+                parsed_records.append(InsuranceRecord(**rec))
+            except Exception as e:
+                logger.warning(
+                    "Dropping gc_insurance_records[%s] (insurance_type=%r "
+                    "source=%r) for company %s: %r — the company's other "
+                    "records are unaffected",
+                    idx,
+                    (rec or {}).get("insurance_type") if isinstance(rec, dict) else None,
+                    (rec or {}).get("source") if isinstance(rec, dict) else None,
+                    (company_doc or {}).get("_id"), e,
+                )
 
         if gc_info is None:
             # License lookup failed but insurance data exists — don't lose it.

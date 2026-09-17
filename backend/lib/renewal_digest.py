@@ -39,6 +39,12 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.insurance_expiry import (
+    INSURANCE_DATE_UNREADABLE,
+    quote as insurance_quote,
+    read_expiry,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,11 @@ class AlertKind(str, Enum):
     GC_LICENSE = "gc_license"
     PERMIT_1YR = "permit_1yr"
     SHED_90D = "shed_90d"
+    #: An insurance record whose expiry cannot be read. NOT A THRESHOLD ALERT
+    #: — there is no date to count down from, which is the whole problem — so
+    #: it has no entry in CADENCES and does not go through
+    #: `_crossed_threshold_today`. See the insurance loop below.
+    INSURANCE_UNREADABLE = "insurance_unreadable"
 
 
 CADENCES: Dict[AlertKind, List[int]] = {
@@ -57,6 +68,9 @@ CADENCES: Dict[AlertKind, List[int]] = {
     AlertKind.GC_LICENSE: [90, 60, 30, 14],
     AlertKind.PERMIT_1YR: [30, 14, 7],
     AlertKind.SHED_90D:   [60, 30, 14, 7],
+    # INSURANCE_UNREADABLE is deliberately absent — a cadence is a list of
+    # days-until-expiry, and this alert exists precisely because days-until
+    # cannot be computed.
 }
 
 
@@ -164,7 +178,46 @@ def compute_company_alerts(
         rec = _find_insurance(company, ins_type)
         if not rec:
             continue
-        exp = _utc(rec.get("expiration_date"))
+        # ── AN EXPIRY NOBODY CAN READ IS A DIGEST ROW OF ITS OWN ────────────
+        #
+        # This used to be `exp = _utc(...)` followed by `if not exp: continue`,
+        # and `None` came back for BOTH an absent date and an unparseable one.
+        # The absent case is right to skip — there is nothing to remind anyone
+        # about. The unparseable case meant this company NEVER received a
+        # T-30/T-14/T-7/T-5/T-0 alert for that policy, for the life of the
+        # record, and the run said nothing. Silence is the one outcome a digest
+        # must not have: it is the only thing that reaches an admin who is not
+        # looking at the app.
+        #
+        # So it becomes a row, and a row with no countdown in it. `read_expiry`
+        # has already logged the error and named the record.
+        read = read_expiry(
+            rec.get("expiration_date"),
+            where=f"company={company_id} {ins_type}",
+        )
+        if read.unreadable:
+            alerts.append(RenewalAlert(
+                company_id=company_id,
+                company_name=company_name,
+                kind=AlertKind.INSURANCE_UNREADABLE,
+                # ZERO IS NOT "EXPIRED TODAY" HERE, and the two places that
+                # would read it that way — `digest_subject` and
+                # `_alert_row_html` — branch on the KIND before they look at
+                # this number. It is 0 so the alert sorts to the top of a
+                # digest, which is where "we cannot tell whether your
+                # insurance is valid" belongs.
+                threshold_days=0,
+                # THE RAW STRING IS THE IDEMPOTENCY KEY, not a date. One row
+                # per (company, kind, this value, 0, sent_date), so the alert
+                # repeats DAILY until the value is fixed and stops the day it
+                # is — and correcting one typo into another still alerts,
+                # because the key changed.
+                expiry_date=insurance_quote(read.raw),
+                expiry_label=label,
+                extra={"insurance_type": ins_type, "unreadable_raw": insurance_quote(read.raw)},
+            ))
+            continue
+        exp = read.at
         if not exp:
             continue
         days_left = _days_between(today, exp)
@@ -260,6 +313,13 @@ def digest_subject(alerts: List[RenewalAlert], company_name: str) -> str:
     if not alerts:
         return f"LeveLog renewal digest — {company_name}"
     most_urgent = min(alerts, key=lambda a: a.threshold_days)
+    # KIND BEFORE NUMBER. An unreadable-expiry alert carries threshold_days=0
+    # so it sorts first, and the line below would then put "action expired
+    # TODAY" on a policy that may well be valid for years. The subject is the
+    # only part most people read, so it must not assert an expiry we could not
+    # read in the first place.
+    if most_urgent.kind == AlertKind.INSURANCE_UNREADABLE:
+        return f"⚠ {company_name}: {INSURANCE_DATE_UNREADABLE}"
     if most_urgent.threshold_days == 0:
         return f"⚠ {company_name}: action expired TODAY"
     if most_urgent.threshold_days <= 7:
@@ -282,10 +342,20 @@ def digest_html(alerts: List[RenewalAlert], company_name: str) -> str:
         AlertKind.GC_LICENSE: "🪪 GC License",
         AlertKind.PERMIT_1YR: "🏗️ Permit 1-year ceiling",
         AlertKind.SHED_90D:   "🛠️ Sidewalk Shed (LL48)",
+        AlertKind.INSURANCE_UNREADABLE: "❓ Insurance date unreadable",
     }
 
-    for kind in [AlertKind.INSURANCE, AlertKind.GC_LICENSE,
-                 AlertKind.PERMIT_1YR, AlertKind.SHED_90D]:
+    # THE ORDER IS THE LIST, AND A KIND MISSING FROM IT IS DROPPED SILENTLY.
+    # That is how this loop is built — `by_kind` is consulted per entry, never
+    # iterated — so a new AlertKind that is not added here produces alerts
+    # that pass idempotency, count towards the total, and appear nowhere in the
+    # body. `tests/test_insurance_date_is_a_date.py` walks every member of the
+    # enum through this function and fails on any kind that renders nowhere,
+    # because the failure has no other symptom.
+    # Unreadable goes FIRST: it is the one row the reader cannot act on by
+    # renewing something.
+    for kind in [AlertKind.INSURANCE_UNREADABLE, AlertKind.INSURANCE,
+                 AlertKind.GC_LICENSE, AlertKind.PERMIT_1YR, AlertKind.SHED_90D]:
         rows = by_kind.get(kind) or []
         if not rows:
             continue
@@ -302,7 +372,11 @@ def digest_html(alerts: List[RenewalAlert], company_name: str) -> str:
         "max-width:600px;color:#0A1929;line-height:1.5'>"
         f"<h2 style='margin:0 0 8px'>Daily renewal digest — {company_name}</h2>"
         "<p style='color:#666;margin:0 0 16px;font-size:14px'>"
-        f"{len(alerts)} action{'s' if len(alerts) != 1 else ''} crossing threshold today. "
+        # "crossing threshold today" was true of every alert until the
+        # unreadable kind, which crosses nothing — it is here because a
+        # threshold could not be computed at all. "needing attention" covers
+        # both without claiming the wrong thing about either.
+        f"{len(alerts)} item{'s' if len(alerts) != 1 else ''} needing attention today. "
         "Update insurance/license at DOB NOW (use the licensee's NYC.ID) "
         "and the affected permits will auto-extend end-of-day.</p>"
         + "\n".join(sections)
@@ -311,6 +385,21 @@ def digest_html(alerts: List[RenewalAlert], company_name: str) -> str:
 
 
 def _alert_row_html(a: RenewalAlert) -> str:
+    # THE UNREADABLE ROW SAYS WHAT IT DOES NOT KNOW. Every other row in this
+    # digest counts days, and this one cannot: `expiry_date` holds the stored
+    # STRING rather than a date, and threshold_days is 0 only for sorting. It
+    # gets its own sentence, with the value quoted and the fix named, and it
+    # never claims an expiry.
+    if a.kind == AlertKind.INSURANCE_UNREADABLE:
+        return (
+            f"<li style='margin:6px 0'>"
+            f"<strong style='color:#dc2626'>{a.expiry_label}</strong>: "
+            f"<span style='color:#dc2626'>{INSURANCE_DATE_UNREADABLE}</span> "
+            f"— stored as <code>{a.expiry_date}</code>. This is NOT the same "
+            "as no insurance on file; the date is on the record and cannot be "
+            "read, so no renewal reminder can be sent for it. Re-enter it in "
+            "Settings &rarr; Insurance.</li>"
+        )
     days_phrase = (
         "EXPIRED TODAY" if a.threshold_days == 0
         else f"expires in {a.threshold_days} day{'s' if a.threshold_days != 1 else ''}"
