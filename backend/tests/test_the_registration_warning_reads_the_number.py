@@ -23,7 +23,8 @@ then reported its verdict in a sentence about the NUMBER.
      The parser wants ISO; the form posted free text; the save succeeded. FROM
      THE DEVICE THAT IS INDISTINGUISHABLE FROM THE SAVE FAILING, which is why
      the operator saved it twice. The refusal now happens at the point of
-     typing (roleVocabulary.licenceExpiryError) AND at the write, because a
+     typing (the shared date field; frontend/src/utils/dateEntry.js, which
+     replaced roleVocabulary.licenceExpiryError) AND at the write, because a
      client-side validator is a courtesy and not a gate.
 
   3. AN UNPARSEABLE DATE WAS SILENTLY IDENTICAL TO AN ABSENT ONE. The old

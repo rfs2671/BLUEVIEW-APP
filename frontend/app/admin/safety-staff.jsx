@@ -26,6 +26,8 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import DateInput from '../../src/components/DateInput';
+import { dateEntryError, toStoredDate, formatStoredDate } from '../../src/utils/dateEntry';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
@@ -61,6 +63,9 @@ function daysUntil(dateStr) {
 
 export default function SafetyStaffScreen() {
   const { colors, isDark } = useTheme();
+  // The date field reads no theme of its own (it also sits in pinned light
+  // cards elsewhere), so this screen hands it the colours it paints in.
+  const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -195,6 +200,13 @@ export default function SafetyStaffScreen() {
       toast.warning('Missing Fields', 'Name and license number are required');
       return;
     }
+    // A DATE THE READER CANNOT PARSE IS NOT SENT. The compliance scan reads
+    // this with strptime('%Y-%m-%d') and skips anything else in silence, so a
+    // stored typo is an expiry nobody is ever warned about.
+    if (dateEntryError(form.license_expiration)) {
+      toast.error('Check the expiration', dateEntryError(form.license_expiration));
+      return;
+    }
     setSaving(true);
     try {
       await safetyStaffAPI.create(selectedProjectId, {
@@ -202,7 +214,7 @@ export default function SafetyStaffScreen() {
         role: form.role,
         name: form.name.trim(),
         license_number: form.license_number.trim(),
-        license_expiration: form.license_expiration.trim() || null,
+        license_expiration: toStoredDate(form.license_expiration) || null,
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
       });
@@ -225,12 +237,16 @@ export default function SafetyStaffScreen() {
 
   const handleSaveEdit = async () => {
     if (!editingStaff) return;
+    if (dateEntryError(form.license_expiration)) {
+      toast.error('Check the expiration', dateEntryError(form.license_expiration));
+      return;
+    }
     setSaving(true);
     try {
       await safetyStaffAPI.update(editingStaff.id || editingStaff._id, {
         name: form.name.trim(),
         license_number: form.license_number.trim(),
-        license_expiration: form.license_expiration.trim() || null,
+        license_expiration: toStoredDate(form.license_expiration) || null,
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
       });
@@ -339,7 +355,7 @@ export default function SafetyStaffScreen() {
     }
     return (
       <Text style={[s.expirationText, { color }]}>
-        {prefix}Expires {dateStr}
+        {prefix}Expires {formatStoredDate(dateStr)}
       </Text>
     );
   };
@@ -634,11 +650,12 @@ export default function SafetyStaffScreen() {
 
                 <View style={s.formGroup}>
                   <Text style={s.formLabel}>LICENSE EXPIRATION</Text>
-                  <GlassInput
+                  <DateInput
+                    as={GlassInput}
                     value={form.license_expiration}
-                    onChangeText={(v) => setForm({ ...form, license_expiration: v })}
-                    placeholder="YYYY-MM-DD"
-                    autoCapitalize="none"
+                    onChange={(v) => setForm((f) => ({ ...f, license_expiration: v }))}
+                    accessibilityLabel="License expiration, month day year"
+                    palette={datePalette}
                   />
                   <Text style={s.helperText}>Used for compliance expiration alerts</Text>
                 </View>
@@ -735,11 +752,12 @@ export default function SafetyStaffScreen() {
 
                 <View style={s.formGroup}>
                   <Text style={s.formLabel}>LICENSE EXPIRATION</Text>
-                  <GlassInput
+                  <DateInput
+                    as={GlassInput}
                     value={form.license_expiration}
-                    onChangeText={(v) => setForm({ ...form, license_expiration: v })}
-                    placeholder="YYYY-MM-DD"
-                    autoCapitalize="none"
+                    onChange={(v) => setForm((f) => ({ ...f, license_expiration: v }))}
+                    accessibilityLabel="License expiration, month day year"
+                    palette={datePalette}
                   />
                 </View>
 

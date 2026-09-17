@@ -7584,11 +7584,14 @@ def assert_licence_expiry(raw):
     '07/212029' was stored, read back as nothing, and reported as a missing
     registration number. THREE SCREENS AGREED IT HAD SAVED because it had.
 
-    THE CLIENT REFUSES IT AT THE POINT OF TYPING TOO (roleVocabulary.js,
-    `licenceExpiryError`), and that is the half the operator sees. This is the
-    half that is a gate: the picker is not the gate, and neither is an input
-    mask -- `curl` reaches this route, and so does an app build from before the
-    validator existed.
+    THE CLIENT REFUSES IT AT THE POINT OF TYPING TOO -- the shared date field,
+    frontend/src/components/DateInput.jsx, whose rules and `dateEntryError`
+    live in frontend/src/utils/dateEntry.js -- and that is the half the
+    operator sees. The field is typed MM/DD/YYYY and the app SENDS ISO
+    (`toStoredDate`), so the format named in the 422 below is the WIRE format,
+    not what a person types; it is reached by `curl` and by an app build from
+    before the shared field. This is the half that is a gate: the picker is not
+    the gate, and neither is an input mask.
 
     IT PARSES WITH THE READER'S OWN PARSER. Not a regex that agrees with
     `strptime` today: the same call, so "what may be written" and "what can be

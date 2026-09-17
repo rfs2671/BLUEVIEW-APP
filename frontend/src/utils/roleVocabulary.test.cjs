@@ -292,8 +292,36 @@ check('and the unreadable date names itself, so the typo is visible', () => {
     state: 'unreadable', registered: true, expires_on: '07/212029',
   });
   ok(note.text.includes('07/212029'), note.text);
-  ok(note.text.includes('YYYY-MM-DD'), note.text);
   eq(note.tone, 'error', 'tone');
+});
+
+check('the badge no longer tells anyone to type YYYY-MM-DD', () => {
+  // THE FIELD TYPES MM/DD/YYYY NOW. "re-enter it as YYYY-MM-DD" names the
+  // storage format, which nobody types any more — following it would put
+  // 2029-07-21 into a field that reads it as month 20.
+  for (const raw of ['07/212029', 'soon', '']) {
+    const note = V.licenceSentence({ state: 'unreadable', registered: true, expires_on: raw });
+    ok(!note.text.includes('YYYY-MM-DD'), `${JSON.stringify(raw)}: ${note.text}`);
+  }
+});
+
+check('a stored value the form can read says what it will be read as', () => {
+  // Michael's '07/212029' opens in Edit as 07/21/2029 for confirmation, so
+  // the badge says that — not "re-enter", which would have him retype a date
+  // the form is already showing him.
+  const note = V.licenceSentence({
+    state: 'unreadable', registered: true, expires_on: '07/212029',
+  });
+  ok(note.text.includes('07/21/2029'), note.text);
+  ok(/\bEdit\b/.test(note.text), `does not say where to confirm it: ${note.text}`);
+});
+
+check('a stored value nobody can read asks for the date in the typed format', () => {
+  const note = V.licenceSentence({
+    state: 'unreadable', registered: true, expires_on: 'soon',
+  });
+  ok(note.text.includes('"soon"'), note.text);
+  ok(note.text.includes('MM/DD/YYYY'), note.text);
 });
 
 check('an absent expiry is a different sentence from an unreadable one', () => {
@@ -330,59 +358,60 @@ check('an older deploy sending no `registered` key does not badge everybody', ()
 });
 
 // ── 8. THE FORM REFUSES WHAT THE SERVER CANNOT READ BACK ────────────────────
+//
+// PR #584 checked this field with `licenceExpiryError`, which accepted TYPED
+// ISO and nothing else. The field is now the shared DateInput, which types
+// MM/DD/YYYY and hands the host ISO — so that validator would refuse every
+// value the admin can type. It is gone, and the screen asks the one shared
+// check in src/utils/dateEntry.js. Its calendar is dateEntry.test.cjs's.
 
-check('the real typo is refused', () => {
-  ok(V.licenceExpiryError('07/212029') !== null, "'07/212029' was accepted");
+const DE = loadEsm('src/utils/dateEntry.js');
+const SCREEN_CODE = SCREEN.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(?<!:)\/\/.*$/gm, '');
+
+check('roleVocabulary no longer carries a validator of its own', () => {
+  ok(!('licenceExpiryError' in V), 'licenceExpiryError is still exported');
+  ok(!('LICENCE_EXPIRY_FORMAT' in V), 'LICENCE_EXPIRY_FORMAT is still exported');
 });
 
-check('an ISO date is accepted', () => {
-  eq(V.licenceExpiryError('2029-07-21'), null, 'the date he meant');
-});
-
-check('blank is an absence and not an error', () => {
-  // An admin who left it empty has not made a mistake; he has recorded nothing,
-  // and the badge says so in its own words. Refusing '' would make clearing an
-  // expiry impossible.
-  for (const blank of ['', '   ', null, undefined]) {
-    eq(V.licenceExpiryError(blank), null, JSON.stringify(blank));
-  }
-});
-
-check('a date that is not on the calendar is refused', () => {
-  for (const raw of ['2029-02-30', '2029-13-01', '2029-00-10', '2029-01-32',
-    '2026-02-29']) {
-    ok(V.licenceExpiryError(raw) !== null, `${raw} was accepted`);
-  }
-});
-
-check('and a leap day in a leap year is not', () => {
-  eq(V.licenceExpiryError('2028-02-29'), null, '2028 is a leap year');
-  eq(V.licenceExpiryError('2000-02-29'), null, '2000 is a leap year');
-  ok(V.licenceExpiryError('2100-02-29') !== null, '2100 is not');
-});
-
-check('the shapes a human actually types are refused by name', () => {
-  for (const raw of ['07/21/2029', '21-07-2029', '2029/07/21', 'soon', '2029',
-    '2029-7-21', ' 2029-07-21 extra']) {
-    ok(V.licenceExpiryError(raw) !== null, `${raw} was accepted`);
-  }
-});
-
-check('the validator and the badge agree about what is readable', () => {
-  // THE IDENTITY, not two lists. Anything the form admits must not come back
-  // from the server as `unreadable`; the server asserts the same thing from
-  // its side with its own parser (test_the_registration_warning_reads_the_number).
-  for (const raw of ['2029-07-21', '2028-02-29', '2026-12-31']) {
-    eq(V.licenceExpiryError(raw), null, raw);
-  }
-});
-
-check('the screen blocks the save rather than posting it', () => {
+check('the screen blocks the save with the shared check, on both paths and the field', () => {
   // The field message is the courtesy; not sending it is what stops the value
   // reaching the database. Both handlers, because Edit is the route the real
   // typo came through.
-  const calls = (SCREEN.match(/licenceExpiryError\(formDobExpiry\)/g) || []).length;
-  ok(calls >= 3, `expected the create path, the edit path and the field, found ${calls}`);
+  const calls = (SCREEN_CODE.match(/dateEntryError\(formDobExpiry\)/g) || []).length;
+  ok(calls >= 2, `expected the create path and the edit path, found ${calls}`);
+  ok(/<DateInput\b[^>]*value=\{formDobExpiry\}/.test(SCREEN_CODE),
+    'the expiry is not a DateInput');
+});
+
+check('what the screen sends is the stored form, never the typed text', () => {
+  const sends = SCREEN_CODE.match(/dob_registration_expiry\s*=\s*([^;]+);/g) || [];
+  ok(sends.length >= 2, `expected two payload assignments, found ${sends.length}`);
+  for (const s of sends) {
+    ok(/toStoredDate\(formDobExpiry\)/.test(s), `sends something else: ${s}`);
+  }
+});
+
+check('Michael\'s stored value passes the check and is sent as ISO', () => {
+  // The ruling: parsed if unambiguous, shown for confirmation, and written
+  // only on Save — as the date he meant.
+  eq(DE.dateEntryError('07/212029'), null, 'refused');
+  eq(DE.toStoredDate('07/212029'), '2029-07-21', 'sent');
+});
+
+check('what the check admits, the server\'s reader reads', () => {
+  // THE IDENTITY, not two lists. `superintendent_licence_state` reads
+  // strptime(raw[:10], "%Y-%m-%d"); whatever the form sends must match that
+  // shape, or the badge says "unreadable" about a date the form accepted.
+  ok(/strptime\(raw\[:10\], "%Y-%m-%d"\)/.test(SERVER),
+    'the server reader changed; re-derive this identity');
+  for (const raw of ['07/21/2029', '07212029', '07/212029', '2029-07-21', '02/29/2028', '12/31/2026']) {
+    eq(DE.dateEntryError(raw), null, raw);
+    ok(/^\d{4}-\d{2}-\d{2}$/.test(DE.toStoredDate(raw)), `${raw} -> ${DE.toStoredDate(raw)}`);
+  }
+  for (const raw of ['13/45/2029', '02/30/2029', '02/29/2027', 'soon', '07/2']) {
+    ok(DE.dateEntryError(raw) !== null, `${raw} was accepted`);
+    eq(DE.toStoredDate(raw), null, raw);
+  }
 });
 
 check('the badge does not recompute the date', () => {

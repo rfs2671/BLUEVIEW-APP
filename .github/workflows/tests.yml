@@ -256,3 +256,15 @@ jobs:
       - name: The four /admin/users forms open over the viewport at 443px
         working-directory: frontend
         run: node scripts/admin-users-sheets.cjs --dist dist --port 5812
+
+      # ── THE SHARED DATE FIELD, ON THE RECORD THAT STARTED IT ──────────────
+      #
+      # Opens Michael's account (stored expiry '07/212029') at 443px in both
+      # themes: the field must read it as 07/21/2029 and send NOTHING on open
+      # or close; 02/29/2027 must be named and not sent; Save must send ISO.
+      # Then the scaffold stepper, whose LIGHT card is pinned whatever the
+      # phone's theme, must show the field's message in legible ink -- the
+      # white-on-white failure the mount smoke cannot see. Same dist/Chromium.
+      - name: Date fields read, refuse and save as ruled
+        working-directory: frontend
+        run: node scripts/date-input-behaviour.cjs --dist dist --port 5813

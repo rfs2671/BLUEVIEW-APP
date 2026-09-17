@@ -60,6 +60,8 @@ import {
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard } from '../src/components/GlassCard';
 import GlassInput from '../src/components/GlassInput';
+import DateInput from '../src/components/DateInput';
+import { dateEntryError, toStoredDate } from '../src/utils/dateEntry';
 import GlassButton from '../src/components/GlassButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
@@ -115,6 +117,7 @@ export default function OnboardingScreen() {
   const { user, isAuthenticated, isLoading: authLoading, validateSession, logout } = useAuth();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
+  const datePalette = { error: colors.status.error, hint: colors.text.muted };
 
   // ── State ────────────────────────────────────────────────────────
   const [currentStep, setCurrentStep] = useState('1');
@@ -279,13 +282,22 @@ export default function OnboardingScreen() {
       toast.error('Required', 'Please enter the project name.');
       return;
     }
+    // Both dates are optional; a date that is there must be a real one. The
+    // server stores these strings as given, so this is the only check.
+    const startError = dateEntryError(projectForm.expected_start_date);
+    const endError = dateEntryError(projectForm.expected_completion_date);
+    if (startError || endError) {
+      toast.error(startError ? 'Check the start date' : 'Check the completion date',
+        startError || endError);
+      return;
+    }
     setSubmitting(true);
     try {
       const resp = await apiClient.post('/api/onboarding/project', {
         name,
         address: (projectForm.address || '').trim() || null,
-        expected_start_date: projectForm.expected_start_date || null,
-        expected_completion_date: projectForm.expected_completion_date || null,
+        expected_start_date: toStoredDate(projectForm.expected_start_date) || null,
+        expected_completion_date: toStoredDate(projectForm.expected_completion_date) || null,
       });
       const pid = resp.data?.id || resp.data?.project_id;
       if (pid) setCreatedProjectId(pid);
@@ -457,22 +469,24 @@ export default function OnboardingScreen() {
       <View style={isMobile ? styles.dateRowMobile : styles.dateRowDesktop}>
         <View style={styles.dateField}>
           <Text style={styles.fieldLabel}>EXPECTED START</Text>
-          <GlassInput
+          <DateInput
+            as={GlassInput}
             value={projectForm.expected_start_date}
-            onChangeText={(t) =>
-              setProjectForm((s) => ({ ...s, expected_start_date: t }))
+            onChange={(v) =>
+              setProjectForm((s) => ({ ...s, expected_start_date: v }))
             }
-            placeholder="YYYY-MM-DD"
+            palette={datePalette}
           />
         </View>
         <View style={styles.dateField}>
           <Text style={styles.fieldLabel}>EXPECTED COMPLETION</Text>
-          <GlassInput
+          <DateInput
+            as={GlassInput}
             value={projectForm.expected_completion_date}
-            onChangeText={(t) =>
-              setProjectForm((s) => ({ ...s, expected_completion_date: t }))
+            onChange={(v) =>
+              setProjectForm((s) => ({ ...s, expected_completion_date: v }))
             }
-            placeholder="YYYY-MM-DD"
+            palette={datePalette}
           />
         </View>
       </View>

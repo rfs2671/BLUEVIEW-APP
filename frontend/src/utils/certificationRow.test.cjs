@@ -183,8 +183,10 @@ console.log('\n-- the write path was always correct and is untouched --');
 {
   const i = src.indexOf('const handleAddCertification');
   const body = src.slice(i, src.indexOf('const handleDeleteCertification', i));
+  // The expiry now goes through the shared date field's toStoredDate(), which
+  // sends ISO rather than whatever was typed — the KEY is what is pinned here.
   ok(/type: newCertType/.test(body) && /card_number: newCertName/.test(body)
-    && /expiration_date: newCertExpiry/.test(body),
+    && /expiration_date: (toStoredDate\()?newCertExpiry/.test(body),
     'the add form still posts type / card_number / expiration_date — it was '
     + 'never the defect, and matches WorkerCertification exactly');
 }

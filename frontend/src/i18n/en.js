@@ -740,7 +740,7 @@ export default {
     phCompany: 'Company',
     phCert: 'Tap to choose',
     phCard: 'Card number',
-    phExpiration: 'Tap to choose a date',
+    phExpiration: 'MM/DD/YYYY',
 
     certPickTitle: 'Which certification?',
     signedOnFile: 'Signature on file',
@@ -936,7 +936,7 @@ export default {
     fPlatforms: 'Number of platforms decked',
     fShedType: 'Shed type',
     phField: 'Not recorded',
-    phDate: 'Tap to choose a date',
+    phDate: 'MM/DD/YYYY',
 
     // Step 2 — the 19 checks.
     checksHint: 'Answer every item. N/A is a real answer — an item left blank is not.',
