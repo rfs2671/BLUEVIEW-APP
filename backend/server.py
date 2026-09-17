@@ -44157,6 +44157,60 @@ class BudgetExhausted(RuntimeError):
     """
 
 
+class ProviderStatus(RuntimeError):
+    """A non-200 from the vision provider, carrying the status.
+
+    The status is the difference between "ask again" and "asking again will
+    fail the same way": a 429 or a 503 is the provider being busy, a 400 is
+    this request being wrong.
+    """
+
+    def __init__(self, status: int, detail: str = ""):
+        super().__init__(f"qwen status {status}{(': ' + detail) if detail else ''}")
+        self.status = status
+
+
+# ── ONE RETRY, BECAUSE A TIMEOUT IS NOT A FACT ABOUT THE DRAWING ───────────
+#
+# Measured on the 588 Boyland corpus, 2026-09-17: 19 of 129 indexed pages —
+# one in seven — carry at least one `call_failed:` flag, 17 of them on the
+# TITLE BLOCK. Ten were ReadTimeout, seven a provider error. Eight of those
+# pages ended with no sheet number at all, and one of the eight is a real
+# drawing: the roof plan reissued in 'AR - 6.9.26 (Gas change).pdf'.
+#
+# Nothing retried, nothing re-visited, and the page was written `complete`.
+# So a call that timed out was stored as though the sheet prints no number,
+# and every reader downstream believed it: supersession could not match the
+# reissue to A-105.01, both stayed current, and the same roof-drain count was
+# carried twice. THAT is the "supersession gap" — supersession was handed a
+# page with no identity and did the only thing it could.
+#
+# One retry, inside the page budget, on the failures that are worth asking
+# again: a timeout, a dropped connection, a 429 or a 5xx. Not on a 4xx, which
+# will fail identically, and never on BudgetExhausted, which IS the ceiling.
+PLAN_INDEX_CALL_ATTEMPTS = 2
+
+
+def _sections_lost(flags: dict) -> List[str]:
+    """The sections whose call never came back, after every attempt.
+
+    `unparseable` is NOT one of them: the model answered and we could not read
+    it, which is a different repair. This names only silence."""
+    out = []
+    for section, fl in (flags or {}).items():
+        if any(str(f).startswith("call_failed") for f in (fl or [])):
+            out.append(section)
+    return sorted(out)
+
+
+def _worth_asking_again(exc: Exception) -> bool:
+    if isinstance(exc, BudgetExhausted):
+        return False
+    if isinstance(exc, ProviderStatus):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
 # At most this many grids per page get OCR'd. M-200.00, the densest schedule
 # sheet in the corpus, has seven. A page claiming twenty is a page where grid
 # detection has gone wrong, and the cost of finding out is a render each.
@@ -44472,8 +44526,25 @@ async def _index_single_page(
     # `call_failed:BudgetExhausted` on the section and keeps the rest of the
     # page, which is the same degrade path a provider error already takes.
     _page_deadline = _time.monotonic() + PLAN_INDEX_PAGE_BUDGET
+    _page_retries: List[str] = []
 
     async def _section_call(image_b64: str, prompt: str, max_tokens: int):
+        for attempt in range(1, PLAN_INDEX_CALL_ATTEMPTS + 1):
+            try:
+                return await _one_section_call(image_b64, prompt, max_tokens)
+            except Exception as exc:
+                if attempt >= PLAN_INDEX_CALL_ATTEMPTS or not _worth_asking_again(exc):
+                    raise
+                _page_retries.append(type(exc).__name__)
+                logger.warning(
+                    "[plan-index] retrying section for %s p%s after %r "
+                    "(attempt %d of %d, %.0fs of page budget left)",
+                    file_name, page_number, exc, attempt,
+                    PLAN_INDEX_CALL_ATTEMPTS,
+                    _page_deadline - _time.monotonic(),
+                )
+
+    async def _one_section_call(image_b64: str, prompt: str, max_tokens: int):
         remaining = _page_deadline - _time.monotonic()
         if remaining < PLAN_INDEX_MIN_CALL_SECONDS:
             logger.warning(
@@ -44532,7 +44603,7 @@ async def _index_single_page(
                 f"Qwen index returned {resp.status_code} for "
                 f"{file_name} page {page_number} [model={QWEN_MODEL}]"
             )
-            raise RuntimeError(f"qwen status {resp.status_code}")
+            raise ProviderStatus(resp.status_code)
         choice = resp.json()["choices"][0]
         return (choice["message"].get("content") or ""), choice.get("finish_reason")
 
@@ -44630,6 +44701,16 @@ async def _index_single_page(
         "revision_date":      fields.get("revision_date"),
         "extraction":         fields,
         "extraction_flags":   result["flags"],
+        # ── A SECTION THAT NEVER CAME BACK IS NOT AN EMPTY SECTION ─────────
+        #
+        # `extraction_flags` has carried `call_failed:` since the beginning
+        # and nothing ever read it, so a page that lost its title block was
+        # indistinguishable from a sheet that prints no number — 17 pages of
+        # 129 on 588 Boyland, and one of them a drawing. These two fields are
+        # the same fact in a form a query can find: how many calls had to be
+        # asked twice, and which sections never answered at all.
+        "extraction_retries": len(_page_retries),
+        "sections_lost":      _sections_lost(result["flags"]),
         "number_flags":       result["number_flags"],
         "text_source":        text_source,
         "text_flags":         text_flags,
@@ -44656,10 +44737,33 @@ async def _index_single_page(
             file_hash=file_hash, page_number=page_number, fields=fields,
             boilerplate=boilerplate, discipline=discipline, file_name=file_name,
         )
+        # ── COMPLETE MEANS COMPLETE ────────────────────────────────────────
+        #
+        # `page_complete` is what a resume skips on. A page whose title-block
+        # call failed and which ended with NO sheet number has no identity:
+        # supersession cannot match it, a named-sheet lookup cannot find it,
+        # and a citation cannot name it. Marking that complete is how the
+        # gas-change roof plan sat unnumbered beside the sheet it reissued
+        # from 2026-09-16 until it was measured. It is left incomplete so the
+        # next pass asks again rather than inheriting the failure.
+        lost = _sections_lost(result["flags"])
+        unidentified = "title_block" in lost and not fields.get("sheet_number")
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
-            {"$set": {"page_complete": True}},
+            {"$set": {"page_complete": not unidentified}},
         )
+        if unidentified:
+            logger.warning(
+                "[plan-index] %s p%s kept INCOMPLETE: the title block never "
+                "answered (%s) and the page has no sheet number. A resume "
+                "will index it again.",
+                file_name, page_number, ",".join(lost),
+            )
+        elif lost or _page_retries:
+            logger.warning(
+                "[plan-index] %s p%s indexed with sections_lost=%s retries=%s",
+                file_name, page_number, lost or "-", _page_retries or "-",
+            )
     except Exception as e:
         # The page row stands without its chunks: retrieval falls back to the
         # version 2 path for it. Logged, because a count cannot be answered.
@@ -51907,6 +52011,41 @@ async def get_document_index_status(
         ).to_list(len(file_ids) + 1):
             jobs[str(j["_id"])] = j
 
+    # ── WHAT THE PAGES LOST, PER FILE ─────────────────────────────────────
+    #
+    # Measured on 588 Boyland 2026-09-17: 19 of 129 indexed pages carried a
+    # `call_failed:` flag — one in seven — and every one of them was written
+    # `page_complete: True`. The flags had been on the rows since the first
+    # index and nothing read them, so a set that lost seventeen title blocks
+    # looked on this screen exactly like a set that indexed cleanly. It stayed
+    # that way for two weeks.
+    #
+    # ONE aggregation for every file, not a query per file: the comment above
+    # is about this route being the expensive thing on the container that is
+    # also doing the indexing, and a polling screen must not undo that.
+    gaps: Dict[str, dict] = {}
+    if file_ids:
+        try:
+            cursor = db.document_page_index.aggregate([
+                {"$match": {"file_id": {"$in": file_ids}}},
+                {"$group": {
+                    "_id": "$file_id",
+                    "pages_missing_sections": {"$sum": {"$cond": [
+                        {"$gt": [{"$size": {"$ifNull": ["$sections_lost", []]}}, 0]},
+                        1, 0]}},
+                    "pages_unfinished": {"$sum": {"$cond": [
+                        {"$eq": [{"$ifNull": ["$page_complete", False]}, True]},
+                        0, 1]}},
+                    "section_retries": {"$sum": {"$ifNull": ["$extraction_retries", 0]}},
+                }},
+            ])
+            async for row in cursor:
+                gaps[str(row["_id"])] = row
+        except Exception as e:
+            # A count is not worth failing the screen the crew opens to find a
+            # drawing. The note simply does not render.
+            logger.warning(f"index gap rollup failed for {project_id}: {e!r}")
+
     for fr in files:
         file_id = str(fr.get("_id"))
         job = jobs.get(file_id)
@@ -51933,6 +52072,14 @@ async def get_document_index_status(
             "indexed_pages": indexed,
             "last_indexed_at": (most_recent or {}).get("indexed_at"),
             "index_status": _public_index_status(fr.get("index_status")),
+            # A page can be indexed and still have lost a section to a timeout.
+            # These say so without anyone thinking to query for it.
+            "pages_missing_sections": int(
+                (gaps.get(file_id) or {}).get("pages_missing_sections") or 0),
+            "pages_unfinished": int(
+                (gaps.get(file_id) or {}).get("pages_unfinished") or 0),
+            "section_retries": int(
+                (gaps.get(file_id) or {}).get("section_retries") or 0),
             "queue_status": queue_status,
             "queue": ({k: job.get(k) for k in (
                 "status", "pages_done", "pages_total", "attempts", "deferrals",
