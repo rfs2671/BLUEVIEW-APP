@@ -47974,15 +47974,15 @@ _AGENT_TOOLS = [
         "function": {
             "name": "query_plan",
             "description": (
-                "Look up a construction drawing. Use for requests about PLANS, DRAWINGS, "
-                "ELEVATIONS, SECTIONS, DETAILS, SCHEDULES, or SHEETS — typically phrased "
-                "'show me...', 'pull up...', 'find the...', 'what does the X sheet say', "
-                "or naming a sheet number like 'A-101' / 'ME-401' / 'S-2'. Do NOT use this "
-                "for checklist/punch items (that's open_items), for people (that's "
-                "who_on_site), or for materials (that's material_status). Pass the user's "
-                "original question so the plan pages can be visually analyzed (e.g. "
-                "'what's the thickness of the exterior wall?'). If the user just wants the "
-                "sheet shown, pass question=null."
+                "SEND a construction drawing to the group. Use when the user wants to "
+                "SEE a sheet — 'show me...', 'pull up...', 'send the...', or naming a "
+                "sheet like 'A-101' / 'ME-401' / 'S-2'. Do NOT use this for "
+                "checklist/punch items (that's open_items), for people (that's "
+                "who_on_site), or for materials (that's material_status). "
+                "To ANSWER a question about what a drawing says, use search_plans — "
+                "that is the only thing that reads the drawings. If the user wants "
+                "both the sheet and an answer, pass `question` as well: the image is "
+                "sent and the drawings' own lines come back for you to answer from."
             ),
             "parameters": {
                 "type": "object",
@@ -48129,7 +48129,7 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • Crew roster + who's on site (list_workers, who_on_site)\n"
     "  • Project metadata — address/BIN/BBL (project_info)\n"
     "  • What the drawings SAY, quoted from the sheet (search_plans)\n"
-    "  • Construction drawings visual Q&A + image send (query_plan)\n"
+    "  • Sending a drawing sheet to the group (query_plan)\n"
     "  • Checklist assignment flow (start_checklist)\n\n"
     "ROUTING (pick based on the current message, not history):\n"
     "  • 'permit', 'active permits', 'PL/ME/EL/SP permit', 'which permits expire' → "
@@ -48147,7 +48147,9 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "    search_plans FIRST, then answer from the lines it returns.\n"
     "  • 'show me', 'pull up', 'send the', 'plan', 'drawing', 'sheet', "
     "    elevation/section/detail/schedule, 'show me A-101/ME-401' — the user "
-    "    wants to SEE the sheet → query_plan. ONLY for visual drawings.\n"
+    "    wants to SEE the sheet → query_plan. ONLY for visual drawings. It "
+    "    SENDS a sheet; it does not read one. Wanting both is fine: pass "
+    "    `question` as well and answer from the lines it returns.\n"
     "  • 'daily log', 'OSHA log', 'jobsite log', 'log for <date>', 'what was "
     "    filed', 'sign-ins' → daily_log. NEVER query_plan.\n"
     "  • 'create checklist' → start_checklist.\n\n"
@@ -49151,8 +49153,27 @@ async def _run_group_agent(
                 # more LLM rounds after calling them just wastes tokens and risks
                 # double-replies. Stop here and let the async work speak.
                 async_dispatch_tools = {"query_plan", "start_checklist"}
-                _async_calls = [tc for tc in tool_calls
-                                if tc["function"]["name"] in async_dispatch_tools]
+
+                def _speaks_for_itself(tc) -> bool:
+                    """Whether this call's own handler sends the user's reply.
+
+                    query_plan WITH a question no longer does: it answers from
+                    records and returns them for the agent to compose under the
+                    gate, and only the sheet image is sent on its own. Treating
+                    it as fire-and-forget here would end the turn before the
+                    answer was written."""
+                    if tc["function"]["name"] not in async_dispatch_tools:
+                        return False
+                    if tc["function"]["name"] != "query_plan":
+                        return True
+                    import json as _j
+                    try:
+                        return not (_j.loads(tc["function"].get("arguments")
+                                             or "{}").get("question") or "").strip()
+                    except Exception:
+                        return True
+
+                _async_calls = [tc for tc in tool_calls if _speaks_for_itself(tc)]
                 if _async_calls:
                     # ── ONE, NOT ALL OF THEM ───────────────────────────────
                     #
@@ -49289,9 +49310,20 @@ async def _dispatch_agent_tool(
         if name == "material_status":
             return await _handle_material_status(project_id)
         if name == "query_plan":
-            # Sprint 5: visual question answering. If `question` is given we
-            # dispatch in VQA mode (Qwen answers from the drawing). Else we
-            # just send the matching sheet image(s).
+            # ── ONE READER, AND IT READS RECORDS ───────────────────────────
+            #
+            # A question asked through this tool used to run the keyword
+            # matcher over chunks and then, failing that, put a picture of a
+            # 36-inch sheet in front of a vision model. The plan eval
+            # (eval/results/) scores the record reader at 17 of 18 against a
+            # corpus where that pipeline is what produced `41 PTAC units`.
+            #
+            # So this tool no longer answers anything. With a question it
+            # fetches records, hands them to the agent to compose under the
+            # gate — the same path `search_plans` uses, so there is one reader
+            # and one place a number is checked — and sends the sheet image
+            # alongside. Without a question it is what it always was: the way
+            # a crew gets the drawing on their phone.
             question = args.get("question") or ""
             sheet_number = args.get("sheet_number") or ""
             bits = []
@@ -49312,18 +49344,32 @@ async def _dispatch_agent_tool(
                 "keywords":     args.get("keywords") or [],
                 "question":     question or None,
             }
+            # The sheet still goes to the group either way; the image is what
+            # this tool is for. `question=None` so the handler sends and does
+            # not try to answer.
             asyncio.create_task(
                 _handle_plan_query(
                     project_id, group_id, synth,
-                    question=question or None,
-                    parsed_override=parsed_override,
+                    question=None,
+                    parsed_override=dict(parsed_override, question=None),
                     reply_to=reply_to,
                     user_body=user_body,
                 )
             )
-            if question:
-                return f"(Plan VQA initiated for '{synth[:60]}' — question: '{question[:80]}'. Qwen will answer from the drawing.)"
-            return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
+            if not question:
+                return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
+            found = await search_plans(
+                project_id, question,
+                discipline=args.get("discipline") or "",
+                floor=args.get("floor") or "",
+                sheet_number=sheet_number)
+            if record_sink is not None:
+                record_sink.append({"subject": question, "records": found})
+            logger.info(
+                f"query_plan answered from records subject={question[:40]!r} "
+                f"hits={len(found)} (sheet image sent separately)")
+            return ("(The sheet image is on its way to the group.)\n"
+                    + _render_records_for_model(found, question))
         if name == "start_permit_renewal":
             return await _handle_start_permit_renewal(
                 project_id, group_id, sender,
