@@ -973,6 +973,30 @@ export const adminUsersAPI = {
     return response.data;
   },
 
+  // ── A SUPERINTENDENT'S CS REGISTRATIONS ───────────────────────────────
+  //
+  // THE LICENCE IS NOT SENT. `setCsRegistrations` carries project ids and
+  // nothing else; the server reads the DOB number off the user record. That is
+  // the whole point of moving this off the old superintendent tab, where the
+  // number was retyped for every project with nothing reconciling the copies.
+  //
+  // `getCsRegistrations` MUST BE CALLED BEFORE THE SELECTION IS SHOWN. The
+  // multi-select is seeded from `registered_project_ids`; seeding it from
+  // anything the client already has -- `assigned_projects`, say -- would make
+  // the first save write a guess, and a wrong guess in the de-select direction
+  // soft-deletes a live statutory registration.
+  getCsRegistrations: async (userId) => {
+    const response = await apiClient.get(`/api/admin/users/${userId}/cs-registrations`);
+    return response.data;
+  },
+
+  setCsRegistrations: async (userId, projectIds) => {
+    const response = await apiClient.put(`/api/admin/users/${userId}/cs-registrations`, {
+      project_ids: projectIds,
+    });
+    return response.data;
+  },
+
   assignProjects: async (userId, projectIds) => {
     const response = await apiClient.post(`/api/admin/users/${userId}/assign-projects`, {
       project_ids: projectIds,

@@ -388,9 +388,32 @@ export default function SuperintendentScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* ── WHAT THIS SCREEN IS FOR NOW ──────────────────────────────
+              A SUPERINTENDENT WHO HOLDS A LeveLog ACCOUNT IS REGISTERED FROM
+              USER MANAGEMENT. His DOB number, expiry and card live on his own
+              record there, and "Registration" on his row writes the
+              cs_registrations rows from them — one place for one man's licence
+              instead of a retype per jobsite.
+
+              THIS SCREEN IS KEPT FOR THE ONE CASE THAT CANNOT GO THERE: a
+              superintendent with NO ACCOUNT, which on a joint site is another
+              company's super. The operator's ruling was to move that entry onto
+              the project screen and retire this tab; that is a new section on a
+              2,360-line screen with its own fetch, form, conflict display and
+              offline handling, and it was ruled better to say so than to ship
+              half of it on a statutory gate. Retiring this tab is owed, and it
+              is owed AFTER that section exists — not before.
+
+              The copy is narrowed so an admin is not offered two places to do
+              the same thing. */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>ADMIN</Text>
-            <Text style={s.titleText}>Superintendents</Text>
+            <Text style={s.titleText}>Outside superintendents</Text>
+            <Text style={s.subtitle}>
+              For a superintendent with no LeveLog account — another company's
+              super on a joint site. One who has an account is registered from
+              User Management, on his own row.
+            </Text>
             <Text style={s.subtitle}>
               NYC DOB one-job rule — one CS license per active job (eff. Jan 2026)
             </Text>

@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   FolderOpen,
   CheckCircle,
+  HardHat,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -92,6 +93,18 @@ export default function AdminUsersScreen() {
   // from is never stored.
   const [formDobNumber, setFormDobNumber] = useState('');
   const [formDobExpiry, setFormDobExpiry] = useState('');
+  // ── THE CS REGISTRATION, MOVED OFF ITS OWN TAB ──────────────────────────
+  //
+  // `csState` is null until the server answers. IT IS NEVER SEEDED FROM
+  // `assigned_projects` OR FROM ANYTHING ELSE THE CLIENT ALREADY HAS: the
+  // multi-select's initial value decides what the save DE-SELECTS, and a
+  // de-selection soft-deletes the row that governs who may file BC 3301.13.13
+  // on that project. A guess here is a guess about a statutory record.
+  const [showCsModal, setShowCsModal] = useState(false);
+  const [csState, setCsState] = useState(null);
+  const [csLoading, setCsLoading] = useState(false);
+  const [csSelected, setCsSelected] = useState([]);
+  const [csSaving, setCsSaving] = useState(false);
 
   const isAdmin = user?.role === 'admin';
 
@@ -355,6 +368,67 @@ export default function AdminUsersScreen() {
     setShowEditModal(true);
   };
 
+  // Read what he is registered on TODAY, then show the picker. The modal
+  // opens on a spinner rather than on an empty selection, because an empty
+  // selection that the admin then saves is the delete-everything case.
+  const openCsModal = async (userItem) => {
+    setSelectedUser(userItem);
+    setShowCsModal(true);
+    setCsLoading(true);
+    setCsState(null);
+    setCsSelected([]);
+    try {
+      const data = await adminUsersAPI.getCsRegistrations(userItem.id);
+      setCsState(data);
+      setCsSelected(data.registered_project_ids || []);
+    } catch (error) {
+      console.error('Failed to load CS registrations:', error);
+      toast.error(
+        isOfflineError(error) ? 'Offline' : 'Error',
+        'Could not read the current registrations. Nothing was changed.',
+      );
+      setShowCsModal(false);
+    } finally {
+      setCsLoading(false);
+    }
+  };
+
+  const toggleCsProject = (projectId) => {
+    setCsSelected((prev) => (prev.includes(projectId)
+      ? prev.filter((id) => id !== projectId)
+      : [...prev, projectId]));
+  };
+
+  const handleSaveCsRegistrations = async () => {
+    if (!selectedUser || !csState) return;
+    setCsSaving(true);
+    try {
+      const result = await adminUsersAPI.setCsRegistrations(selectedUser.id, csSelected);
+      // THE ONE-JOB WARNING IS SHOWN, NOT SWALLOWED. The server does not refuse
+      // a second active job — NYC DOB limits a CS to one, and the system's job
+      // is to make the breach visible to the office rather than to block a
+      // registration an admin may be making because the other job has ended.
+      const warnings = result.conflict_warnings || [];
+      if (warnings.length) {
+        toast.error('One-job rule', warnings[0]);
+      } else {
+        toast.success('Saved', 'Registrations updated');
+      }
+      setShowCsModal(false);
+      setCsState(null);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to save CS registrations:', error);
+      toast.error(
+        isOfflineError(error) ? 'Offline' : 'Error',
+        error.response?.data?.detail
+          || 'Could not save the registrations. Nothing was changed.',
+      );
+    } finally {
+      setCsSaving(false);
+    }
+  };
+
   const openAssignModal = (userItem) => {
     setSelectedUser(userItem);
     setAssignedProjects(userItem.assigned_projects || []);
@@ -608,6 +682,17 @@ export default function AdminUsersScreen() {
                         onPress={() => openAssignModal(userItem)}
                         style={s.actionBtn}
                       />
+                      {/* ONLY FOR THE ROLE THAT HOLDS A REGISTRATION. An
+                          admin or a CP has no DOB licence, so there is nothing
+                          for this button to write. */}
+                      {roleHasLicence(userItem.role) ? (
+                        <GlassButton
+                          title="Registration"
+                          icon={<HardHat size={14} color={colors.text.primary} />}
+                          onPress={() => openCsModal(userItem)}
+                          style={s.actionBtn}
+                        />
+                      ) : null}
                       <GlassButton
                         title="Edit"
                         icon={<Edit3 size={14} color={colors.text.primary} />}
@@ -729,6 +814,107 @@ export default function AdminUsersScreen() {
                 <GlassButton
                   title="Save"
                   onPress={handleEditUser}
+                />
+              </View>
+            </GlassCard>
+          )}
+
+          {/* ── CS REGISTRATION MODAL ─────────────────────────────────
+              WHERE A SUPERINTENDENT IS REGISTERED NOW. It used to be its own
+              admin tab, which asked for his name and DOB licence number again
+              for every project — the same two facts retyped per jobsite, with
+              nothing reconciling the copies. They are facts about a PERSON and
+              they live on his record; this picks the jobsites. */}
+          {showCsModal && (
+            <GlassCard variant="modal" style={s.modal}>
+              <Text style={s.modalTitle}>CS Registration</Text>
+              <Text style={s.modalSubtitle}>
+                {selectedUser?.name} — BC 3301.13.13 construction superintendent
+              </Text>
+
+              {csLoading || !csState ? (
+                <ActivityIndicator size="large" color={colors.text.primary} />
+              ) : (
+                <>
+                  {/* THE LICENCE THAT WILL BE WRITTEN, SHOWN BEFORE IT IS.
+                      The server refuses without one, because
+                      `license_number_normalized` is what the one-job conflict
+                      query joins on — a registration with no number is
+                      invisible to the check that exists to catch double-
+                      jobbing. Saying so here beats a 422 the admin has to
+                      decode. */}
+                  {csState.licence_number ? (
+                    <Text style={s.csLicence}>
+                      DOB registration {csState.licence_number}
+                    </Text>
+                  ) : (
+                    <Text style={s.csBlocked}>
+                      No DOB registration number on this account. Add it under
+                      Edit before registering him on a project — the one-job
+                      rule is checked on the licence number.
+                    </Text>
+                  )}
+
+                  <Text style={s.csSectionLabel}>REGISTERED ON</Text>
+                  {(csState.selectable || []).length === 0 ? (
+                    <Text style={s.csEmpty}>
+                      He is not assigned to any project yet. Assign him first —
+                      a superintendent can only be registered on a job he is
+                      assigned to.
+                    </Text>
+                  ) : (
+                    (csState.selectable || []).map((prj) => {
+                      const on = csSelected.includes(prj.project_id);
+                      return (
+                        <Pressable
+                          key={prj.project_id}
+                          onPress={() => toggleCsProject(prj.project_id)}
+                          style={[s.projectItem, on && s.projectItemSelected]}
+                        >
+                          <Text style={s.projectItemName}>
+                            {prj.name || prj.project_id}
+                          </Text>
+                          {on ? <CheckCircle size={18} color={semantic.verified} /> : null}
+                        </Pressable>
+                      );
+                    })
+                  )}
+
+                  {/* ROWS THIS SCREEN CANNOT TOUCH, NAMED RATHER THAN HIDDEN.
+                      A registration on a project he is not assigned to cannot
+                      appear in the list above, and the server deliberately
+                      leaves it alone on save. Without this line the list would
+                      silently omit a live registration and read as the whole
+                      truth. */}
+                  {(csState.registered_elsewhere || []).length > 0 && (
+                    <Text style={s.csElsewhere}>
+                      Also registered on{' '}
+                      {(csState.registered_elsewhere || [])
+                        .map((r) => r.name || r.project_id).join(', ')}
+                      {' '}— not assigned to him, so this screen leaves those
+                      registrations alone.
+                    </Text>
+                  )}
+
+                  {/* THE DELETE SIDE, SAID OUT LOUD. A removed project is
+                      soft-deleted and never hard-deleted: the row is the
+                      provenance of every log filed under it. */}
+                  <Text style={s.csHint}>
+                    Unticking a project retires that registration. The record is
+                    kept — logs already filed under it stay attributable.
+                  </Text>
+                </>
+              )}
+
+              <View style={s.modalActions}>
+                <GlassButton
+                  title="Cancel"
+                  onPress={() => { setShowCsModal(false); setCsState(null); }}
+                />
+                <GlassButton
+                  title={csSaving ? 'Saving…' : 'Save'}
+                  onPress={handleSaveCsRegistrations}
+                  disabled={csSaving || csLoading || !csState?.licence_number}
                 />
               </View>
             </GlassCard>
@@ -942,6 +1128,43 @@ function buildStyles(colors, isDark) {
     fontWeight: '700',
     color: colors.status.error,
     marginTop: 2,
+  },
+  csLicence: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    marginTop: spacing.sm,
+  },
+  csBlocked: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+    color: semantic.attention,
+    marginTop: spacing.sm,
+  },
+  csSectionLabel: {
+    fontSize: 11,
+    letterSpacing: 1,
+    color: colors.text.muted,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  csEmpty: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text.muted,
+  },
+  csElsewhere: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: semantic.attention,
+    marginTop: spacing.md,
+  },
+  csHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.text.muted,
+    marginTop: spacing.md,
   },
   roleBadge: {
     paddingHorizontal: spacing.sm,

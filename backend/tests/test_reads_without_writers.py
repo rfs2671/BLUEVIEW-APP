@@ -91,7 +91,13 @@ BASELINE = {
     ("socrata_permits_historical", "bin"),
     ("socrata_permits_historical", "filing_reason"),
     ("socrata_permits_historical", "issued_date"),
-    ("users", "renewal_digest_opt_in"),
+    # renewal_digest_opt_in LEFT THIS LIST with the roles work. It was the
+    # filter on the company digest's opt-in cursor -- `{"role": {"$in": ["pm",
+    # "cp"]}, "renewal_digest_opt_in": True}` -- and that cursor is gone: a CP
+    # receives no email at all, and a Site Manager receives his OWN digest from
+    # _pm_digest_audiences rather than the company-wide body. Nothing has ever
+    # written the field, so deleting the read ends a filter that could not
+    # match a row in either direction.
     ("users", "renewal_digest_opt_out"),
     # Read by the two company-migration update_many filters at
     # server.py:10967 and :10971. No writer, so neither filter can ever match

@@ -10264,6 +10264,270 @@ async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
     await audit_log("user_delete", actor_id(admin), "user", user_id)
     return {"message": "User deleted successfully"}
 
+# ==================== A SUPERINTENDENT'S CS REGISTRATIONS =================
+#
+# WHERE A REGISTRATION IS MADE, AND WHY IT MOVED HERE.
+#
+# It used to be its own admin tab. That screen asked an admin to type the man's
+# NAME and his DOB LICENCE NUMBER again for every project he is on -- the same
+# two facts, re-entered per jobsite, with nothing reconciling the copies. They
+# are facts about a PERSON, they now live on his user document, and this pair of
+# routes is how they reach `cs_registrations`.
+#
+# THE REGISTRATION ROW ITSELF IS UNCHANGED AND STILL GOVERNS. It is the FILING
+# GATE for BC 3301.13.13 -- lib/logbook/superintendent_log.py explains at length
+# why that gate keys on the registration and never on `role` -- and nothing here
+# alters what a row means, who may file, or the one-job rule. What changed is
+# the DATA ENTRY, not the decision.
+#
+# THE LICENCE IS READ, NEVER SENT. The request body carries project ids and
+# nothing else. If the number came off the wire, this would be the old screen
+# with a different URL: two places to type one licence, and no answer to which
+# is right.
+
+
+class UserCSRegistrationsSet(BaseModel):
+    """The projects this superintendent is the registered CS on."""
+    project_ids: List[str] = []
+
+
+def _cs_rows_are_for(user_id: str) -> dict:
+    """The selector for one account's registrations.
+
+    TWO SPELLINGS OF THE ID, DELIBERATELY. `user_id` is written as a string by
+    `_register_cs_on_project`, but rows created before that was true -- and rows
+    written by any path that handed an ObjectId through -- can hold either. A
+    selector that matched only one spelling would silently treat a live
+    registration as absent, and "absent" on this screen means the soft-delete
+    pass below does not protect it.
+    """
+    return {
+        "$or": [{"user_id": str(user_id)}, {"user_id": user_id}],
+        "is_deleted": {"$ne": True},
+    }
+
+
+async def _assert_superintendent_under_admin(user_id: str, admin: dict) -> dict:
+    """The target account, or a refusal. Three questions, asked separately."""
+    target = await db.users.find_one(
+        {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    # SAME TENANT. `get_user_admin` proved a rank, not a company -- the same
+    # split documented on update_admin_user, where conflating the two was a
+    # SEV-0.
+    if not is_platform_operator(admin) and not _same_company(admin, target):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to modify this user",
+        )
+    if str(target.get("role") or "").strip().lower() != ROLE_SUPERINTENDENT:
+        raise HTTPException(
+            status_code=422,
+            detail="Only a superintendent holds CS registrations. Change the "
+                   "role first, or register an unaccounted superintendent from "
+                   "the project.",
+        )
+    return target
+
+
+@api_router.get("/admin/users/{user_id}/cs-registrations")
+async def get_user_cs_registrations(user_id: str, admin=Depends(get_user_admin)):
+    """What this superintendent is registered on today, and what he COULD be.
+
+    THE SCREEN CANNOT BE DRAWN FROM THE USER DOCUMENT ALONE, and that is the
+    whole reason this route exists rather than the client deriving it. The
+    multi-select is seeded from `registered_project_ids`; if the client guessed
+    -- from `assigned_projects`, say -- the first save would write the guess,
+    and a guess that is wrong in the DELETE direction soft-deletes a live
+    statutory registration.
+
+    `selectable` IS HIS ASSIGNED PROJECTS, per the ruling. `registered_elsewhere`
+    is the set this screen must NOT touch: rows on projects he is not assigned
+    to. They are returned so the screen can SAY they exist rather than leaving
+    an admin looking at a list that silently omits a registration.
+    """
+    target = await _assert_superintendent_under_admin(user_id, admin)
+
+    assigned = [str(pid) for pid in (target.get("assigned_projects") or [])]
+    rows = await db.cs_registrations.find(
+        {**_cs_rows_are_for(user_id), "is_active": True},
+    ).to_list(200)
+
+    names = {}
+    if assigned or rows:
+        ids = {*assigned, *[str(r.get("project_id")) for r in rows]}
+        for prj in await db.projects.find(
+            {"_id": {"$in": [to_query_id(i) for i in ids if i]}},
+            {"name": 1},
+        ).to_list(400):
+            names[str(prj["_id"])] = prj.get("name") or ""
+
+    registered = [str(r.get("project_id")) for r in rows]
+    return {
+        "user_id": str(user_id),
+        "licence_number": target.get("dob_superintendent_number") or None,
+        "licence": superintendent_licence_state(target),
+        "selectable": [{"project_id": pid, "name": names.get(pid, "")}
+                       for pid in assigned],
+        "registered_project_ids": registered,
+        "registered_elsewhere": [
+            {"project_id": pid, "name": names.get(pid, "")}
+            for pid in registered if pid not in set(assigned)
+        ],
+    }
+
+
+@api_router.put("/admin/users/{user_id}/cs-registrations",
+                dependencies=[Depends(require_approved)])
+async def set_user_cs_registrations(
+    user_id: str,
+    data: UserCSRegistrationsSet,
+    admin=Depends(get_user_admin),
+):
+    """Make this superintendent's registrations match the selection.
+
+    ── THE DELETE SIDE IS THE DANGEROUS HALF ───────────────────────────────
+
+    A removed project is SOFT-deleted and never hard-deleted. The row is the
+    provenance of every superintendent's log filed under it: `attribute_signer`
+    reads `created_at`, `deactivated_at` and `deleted_at` to decide what a
+    document signed months ago can say about who signed it. Removing the row
+    outright would not un-register him going forward, it would make a FILED
+    STATUTORY RECORD unable to account for itself.
+
+    ── AND IT IS SCOPED TO WHAT THE SCREEN CAN SEE ─────────────────────────
+
+    The de-selection pass touches ONLY rows on projects in his
+    `assigned_projects`. A registration on a project he is not assigned to
+    cannot appear in the multi-select, so a save that dropped it would be this
+    endpoint deleting something the admin was never shown. That is the exact
+    shape of Michael Cespedes's row on 588 Thomas if he were ever unassigned
+    from it: invisible to the screen, and destroyed by the next save.
+
+    ── THE LICENCE COMES OFF THE USER RECORD ───────────────────────────────
+
+    Refused if he has none. A cs_registration with no licence number cannot
+    answer the one-job rule -- `license_number_normalized` is what the conflict
+    query joins on -- so writing one would create a registration that is
+    invisible to the check that exists to catch double-jobbing.
+
+    ── WHAT IS NOT TOUCHED ─────────────────────────────────────────────────
+
+    A project already registered to him is LEFT ALONE. Re-running
+    `_register_cs_on_project` for it would supersede his own row with an
+    identical one, moving `created_at` forward -- and `attribute_signer` returns
+    REGISTERED_LATER for a registration that postdates the log, so a no-op save
+    on this screen would make every log he has already filed stop being
+    attributable to him.
+    """
+    target = await _assert_superintendent_under_admin(user_id, admin)
+
+    licence = str(target.get("dob_superintendent_number") or "").strip()
+    if not licence:
+        raise HTTPException(
+            status_code=422,
+            detail="Record this superintendent's DOB registration number "
+                   "before registering him on a project. The one-job rule is "
+                   "checked on the licence number.",
+        )
+
+    full_name = str(
+        target.get("name") or target.get("full_name") or target.get("email") or "",
+    ).strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=422,
+            detail="This account has no name to register under.",
+        )
+
+    assigned = {str(pid) for pid in (target.get("assigned_projects") or [])}
+    wanted = {str(pid).strip() for pid in (data.project_ids or []) if str(pid).strip()}
+
+    # HIS ASSIGNMENTS ONLY, per the ruling — and it is also the tenant check for
+    # the ids in this body. `validate_assignable_projects` already refused any
+    # foreign project before it could reach `assigned_projects`, so intersecting
+    # with that list inherits the check rather than restating it.
+    foreign = wanted - assigned
+    if foreign:
+        raise HTTPException(
+            status_code=422,
+            detail=("A superintendent can only be registered on projects he is "
+                    "assigned to. Not assigned: " + ", ".join(sorted(foreign))),
+        )
+
+    current_rows = await db.cs_registrations.find(
+        {**_cs_rows_are_for(user_id), "is_active": True},
+    ).to_list(200)
+    current = {str(r.get("project_id")) for r in current_rows}
+
+    now = datetime.now(timezone.utc)
+    added, warnings = [], []
+
+    for pid in sorted(wanted - current):
+        project = await db.projects.find_one(
+            {"_id": to_query_id(pid), "is_deleted": {"$ne": True}},
+        )
+        if not project:
+            raise HTTPException(
+                status_code=404, detail=f"Project {pid} not found",
+            )
+        if not project_access_ok(project, pid, admin):
+            raise HTTPException(
+                status_code=403, detail=f"Access denied to project {pid}",
+            )
+        out = await _register_cs_on_project(
+            project=project,
+            project_id=pid,
+            full_name=full_name,
+            license_number=licence,
+            admin=admin,
+            nyc_id_email=target.get("email"),
+            phone=target.get("phone"),
+            user_id=str(user_id),
+        )
+        added.append(out)
+        if out.get("conflict_warning"):
+            warnings.append(out["conflict_warning"])
+
+    removed = []
+    for pid in sorted((current - wanted) & assigned):
+        res = await db.cs_registrations.update_many(
+            {**_cs_rows_are_for(user_id), "project_id": pid, "is_active": True},
+            {"$set": {
+                "is_active": False,
+                "is_deleted": True,
+                "deactivated_at": now,
+                "deleted_at": now,
+                "updated_at": now,
+            }},
+        )
+        if getattr(res, "modified_count", 0):
+            removed.append(pid)
+
+    if added or removed:
+        await audit_log(
+            "user_cs_registrations_set", actor_id(admin), "user", str(user_id),
+            {
+                "added": [a["project_id"] for a in added],
+                "removed": removed,
+                "licence": licence,
+                # THE ROWS THIS SCREEN COULD NOT SEE, recorded on the same line
+                # as what it changed. If one is ever lost, the audit says
+                # whether this endpoint was even looking at it.
+                "left_alone_unassigned": sorted(current - assigned),
+            },
+        )
+
+    return {
+        "user_id": str(user_id),
+        "registered_project_ids": sorted((current | wanted) - set(removed)),
+        "added": added,
+        "removed": removed,
+        "conflict_warnings": warnings,
+    }
+
+
 @api_router.post("/admin/users/{user_id}/assign-projects", dependencies=[Depends(require_approved)])
 async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_user_admin)):
     """SEV-0 before this fix. get_admin_user checks ROLE ONLY, and `owner` is
@@ -21553,22 +21817,149 @@ async def verify_signature_integrity(
  
 # ==================== CONSTRUCTION SUPERINTENDENT ENDPOINTS ====================
  
+async def _register_cs_on_project(
+    *,
+    project: dict,
+    project_id: str,
+    full_name: str,
+    license_number: str,
+    admin: dict,
+    nyc_id_email: Optional[str] = None,
+    sst_number: Optional[str] = None,
+    phone: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> dict:
+    """WRITE ONE cs_registrations ROW, WITH THE ONE-JOB RULE AND ITS ALERT.
+
+    EXTRACTED, NOT REWRITTEN. Every line of this was the body of
+    POST /admin/cs-registrations, and the User Management path now calls the
+    same function rather than a second implementation of it. The operator's
+    ruling is that the one-job rule and the conflict alert are UNCHANGED, and
+    the only way to mean that is for there to go on being one of each.
+
+    WHAT IT DOES, in the order that matters:
+
+      1. SUPERSEDES the project's current CS, if it has one. A project has one
+         construction superintendent, so registering a second is a replacement
+         -- and the old row is DEACTIVATED, never removed. `cs_attribution`
+         reads `deactivated_at` to decide whether a log signed last month was
+         signed by the CS of that day.
+      2. THE ONE-JOB RULE. The same licence active on another project raises a
+         `cs_one_job_conflict` compliance alert and returns a warning. It does
+         NOT refuse, and that is deliberate: NYC DOB limits a CS to one active
+         job, and this system's job is to make the breach visible to the
+         office, not to block a registration an admin may be making precisely
+         because the other job has finished and the record has not caught up.
+      3. inserts the new row.
+
+    THE CALLER OWNS THE TENANT CHECK. This is handed a project document the
+    caller has already authorised. Its two callers reach the project by
+    different routes -- one from an id in the request body, one from a user's
+    assignment list -- so a check written in here would have to guess which,
+    and a guess in an authorisation path is the defect this codebase keeps
+    closing.
+    """
+    now = datetime.now(timezone.utc)
+    company_id = get_user_company_id(admin)
+
+    existing_for_project = await db.cs_registrations.find_one({
+        "project_id": project_id,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+    })
+    if existing_for_project:
+        await db.cs_registrations.update_one(
+            {"_id": existing_for_project["_id"]},
+            {"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}
+        )
+
+    conflict_warning = None
+    license_clean = license_number.strip().upper()
+
+    conflicting = await db.cs_registrations.find({
+        "license_number_normalized": license_clean,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+        "project_id": {"$ne": project_id},
+    }).to_list(50)
+
+    if conflicting:
+        conflict_projects = []
+        for c in conflicting:
+            cp = await db.projects.find_one({"_id": to_query_id(c["project_id"])})
+            conflict_projects.append(cp.get("name", "Unknown") if cp else "Unknown")
+
+        conflict_warning = (
+            f"WARNING: License {license_clean} is already registered as active CS on: "
+            + ", ".join(conflict_projects)
+            + ". NYC DOB one-job rule (eff. Jan 2026) limits CS to one active job."
+        )
+
+        await db.compliance_alerts.insert_one({
+            "alert_type": "cs_one_job_conflict",
+            "severity": "high",
+            "license_number": license_clean,
+            "cs_name": full_name,
+            "conflicting_projects": [c["project_id"] for c in conflicting],
+            "new_project_id": project_id,
+            "company_id": company_id,
+            "message": conflict_warning,
+            "resolved": False,
+            "created_at": now,
+            "created_by": admin.get("id"),
+        })
+
+    reg_doc = {
+        "project_id": project_id,
+        "full_name": full_name.strip(),
+        "license_number": license_number.strip(),
+        "license_number_normalized": license_clean,
+        "nyc_id_email": (nyc_id_email or "").strip().lower() or None,
+        "sst_number": (sst_number or "").strip() or None,
+        "phone": (phone or "").strip() or None,
+        "user_id": (str(user_id).strip() or None) if user_id else None,
+        "is_active": True,
+        "company_id": company_id,
+        "created_by": admin.get("id"),
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+
+    result = await db.cs_registrations.insert_one(reg_doc)
+
+    return {
+        "id": str(result.inserted_id),
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "full_name": full_name,
+        "license_number": license_number,
+        "nyc_id_email": nyc_id_email,
+        "is_active": True,
+        "conflict_warning": conflict_warning,
+    }
+
+
 @api_router.post("/admin/cs-registrations")
 async def register_construction_superintendent(
     data: CSRegistrationCreate,
     admin=Depends(get_admin_user),
 ):
     """Register a Construction Superintendent to a project.
-    Checks for license conflicts across active projects (one-job rule)."""
-    
-    company_id = get_user_company_id(admin)
-    now = datetime.now(timezone.utc)
-    
+    Checks for license conflicts across active projects (one-job rule).
+
+    THE ROUTE FOR A SUPERINTENDENT WITH NO ACCOUNT -- another company's super
+    on a joint site being the case it is kept for. A superintendent who DOES
+    hold an account is registered from User Management instead, where the
+    licence is read off his own record rather than retyped onto every project;
+    see PUT /admin/users/{user_id}/cs-registrations.
+    """
+
     # Verify project
     project = await db.projects.find_one({"_id": to_query_id(data.project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     # Same bypass, same fix as the site-device route above: the project id is in
     # the BODY, the conditional could not fire for a company-less caller, and
     # get_admin_user is a role gate rather than a tenant one. A Construction
@@ -21577,91 +21968,23 @@ async def register_construction_superintendent(
     # DOB-facing role.
     if not project_access_ok(project, str(data.project_id), admin):
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    
-    # Check if this project already has an active CS
-    existing_for_project = await db.cs_registrations.find_one({
-        "project_id": data.project_id,
-        "is_active": True,
-        "is_deleted": {"$ne": True},
-    })
-    if existing_for_project:
-        # Deactivate previous CS for this project
-        await db.cs_registrations.update_one(
-            {"_id": existing_for_project["_id"]},
-            {"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}
-        )
-    
-    # ONE-JOB RULE CHECK: Look for same license on other active projects
-    conflict_warning = None
-    license_clean = data.license_number.strip().upper()
-    
-    conflicting = await db.cs_registrations.find({
-        "license_number_normalized": license_clean,
-        "is_active": True,
-        "is_deleted": {"$ne": True},
-        "project_id": {"$ne": data.project_id},
-    }).to_list(50)
-    
-    if conflicting:
-        conflict_projects = []
-        for c in conflicting:
-            cp = await db.projects.find_one({"_id": to_query_id(c["project_id"])})
-            conflict_projects.append(cp.get("name", "Unknown") if cp else "Unknown")
-        
-        conflict_warning = (
-            f"WARNING: License {license_clean} is already registered as active CS on: "
-            + ", ".join(conflict_projects)
-            + ". NYC DOB one-job rule (eff. Jan 2026) limits CS to one active job."
-        )
-        
-        # Log compliance alert
-        await db.compliance_alerts.insert_one({
-            "alert_type": "cs_one_job_conflict",
-            "severity": "high",
-            "license_number": license_clean,
-            "cs_name": data.full_name,
-            "conflicting_projects": [c["project_id"] for c in conflicting],
-            "new_project_id": data.project_id,
-            "company_id": company_id,
-            "message": conflict_warning,
-            "resolved": False,
-            "created_at": now,
-            "created_by": admin.get("id"),
-        })
-    
-    # Create registration
-    reg_doc = {
-        "project_id": data.project_id,
-        "full_name": data.full_name.strip(),
-        "license_number": data.license_number.strip(),
-        "license_number_normalized": license_clean,
-        "nyc_id_email": (data.nyc_id_email or "").strip().lower() or None,
-        "sst_number": (data.sst_number or "").strip() or None,
-        "phone": (data.phone or "").strip() or None,
-        "user_id": (str(data.user_id).strip() or None) if data.user_id else None,
-        "is_active": True,
-        "company_id": company_id,
-        "created_by": admin.get("id"),
-        "created_at": now,
-        "updated_at": now,
-        "is_deleted": False,
-    }
-    
-    result = await db.cs_registrations.insert_one(reg_doc)
-    
-    return {
-        "id": str(result.inserted_id),
-        "project_id": data.project_id,
-        "project_name": project.get("name"),
-        "full_name": data.full_name,
-        "license_number": data.license_number,
-        "nyc_id_email": data.nyc_id_email,
-        "is_active": True,
-        "conflict_warning": conflict_warning,
-        "message": "CS registered successfully" + (" — with conflict warning" if conflict_warning else ""),
-    }
- 
- 
+
+    out = await _register_cs_on_project(
+        project=project,
+        project_id=data.project_id,
+        full_name=data.full_name,
+        license_number=data.license_number,
+        admin=admin,
+        nyc_id_email=data.nyc_id_email,
+        sst_number=data.sst_number,
+        phone=data.phone,
+        user_id=data.user_id,
+    )
+    out["message"] = ("CS registered successfully"
+                      + (" — with conflict warning" if out.get("conflict_warning") else ""))
+    return out
+
+
 @api_router.get("/admin/cs-registrations")
 async def list_cs_registrations(
     project_id: Optional[str] = None,
@@ -37435,9 +37758,28 @@ async def renewal_digest_daily_cron():
       4. If any new alerts: build HTML, resolve recipients, send via
          Resend, log success per-alert into renewal_alert_sent.
 
-    Recipients per spec §4.1:
-      - Company admins with notifications_enabled != False (default ON)
-      - Non-admin PMs with renewal_digest_opt_in == True (default OFF)
+    TWO PASSES, AND THE SECOND ONE IS NOT THE FIRST ONE'S CC LIST.
+
+      THE COMPANY DIGEST goes to admins and the shared alias. It covers every
+      project the company runs. UNCHANGED by the roles work -- an admin
+      receives exactly what he received before.
+
+      THE PER-PM DIGEST is a SEPARATE EMAIL WITH A DIFFERENT BODY, one per Site
+      Manager, listing only the projects he is assigned to. It is sent only if
+      one of HIS projects has an item.
+
+    WHY A SECOND PASS AND NOT A WIDER RECIPIENT LIST. This function sends ONE
+    body to N addresses, so putting a PM on the company list would mail him a
+    digest naming every job the company runs -- and `require_project_access`
+    scopes him to his assignments, so most of those links 404 for him. The
+    operator's rule is that no PM may ever receive an email naming a project he
+    cannot open, and a shared body cannot satisfy it. Narrowing the body for
+    everybody was not an option either: that would change what an admin gets.
+
+    Recipients per spec §4.1, as amended:
+      - Company admins, default ON, suppressed by renewal_digest_opt_out
+      - Site Managers / PMs, default ON, suppressed by the same flag, each in
+        his own email scoped to his own projects
       - Optional shared mailbox alias on companies.renewal_digest_alias_email
     """
     from lib.renewal_digest import (
@@ -37502,29 +37844,88 @@ async def renewal_digest_daily_cron():
             skipped_company_count += 1
             continue
 
-        # Resolve recipients.
+        # ── PASS 1: THE COMPANY DIGEST — admins and the alias ───────────────
+        #
+        # Unchanged. Every alert, one body, the recipients this company has
+        # always had.
+        company_name = company.get("name") or ""
         recipients = await _resolve_renewal_digest_recipients(company)
-        if not recipients:
+        alerts_only = [a for a, _ in new_alerts]
+        sent_to: list = []
+        send_failed = False
+
+        if recipients:
+            subject = digest_subject(alerts_only, company_name)
+            html = digest_html(alerts_only, company_name)
+            try:
+                await _send_renewal_digest_email(
+                    recipients, subject, html, company_id=str(company_id),
+                )
+                sent_to.extend(recipients)
+            except Exception as e:
+                logger.error(
+                    f"[renewal_digest] send failed for company={company_id}: {e!r}"
+                )
+                send_failed = True
+
+        # ── PASS 2: ONE DIGEST PER SITE MANAGER, HIS PROJECTS ONLY ──────────
+        #
+        # A SEPARATE EMAIL WITH A DIFFERENT BODY, not a second address on the
+        # one above. Operator ruling: no PM may ever receive an email naming a
+        # project he cannot open, and this function sends one body to N
+        # addresses, so the only way to honour that is a body of his own.
+        #
+        # IT RUNS EVEN WHEN PASS 1 SENT NOTHING. The old code `continue`d on an
+        # empty recipient list, which was correct when there was one audience
+        # and would now silence every Site Manager at a company whose admins
+        # have all opted out.
+        #
+        # AN ALERT WITH NO PROJECT IS NOT HIS. Insurance and GC-licence alerts
+        # are COMPANY-level and carry `project_id = None`
+        # (lib/renewal_digest.py sets it only for permit alerts). They name no
+        # project, so including them would not break the rule above -- but the
+        # ruling says his digest lists his assigned projects, and a company
+        # certificate of insurance is the office's item, not the jobsite's.
+        # Excluded, and REPORTED as a judgement call rather than buried: if the
+        # operator wants a PM to learn the company insurance is lapsing, this
+        # is the line that changes.
+        if not send_failed:
+            for audience in await _pm_digest_audiences(
+                str(company_id), set(project_id_to_name.keys()),
+            ):
+                his = [a for a in alerts_only
+                       if a.project_id and str(a.project_id) in audience["project_ids"]]
+                # NO DIGEST AT ALL IF NONE OF HIS PROJECTS HAS AN ITEM. An
+                # empty digest is a daily email that says nothing, which is how
+                # a real one stops being read.
+                if not his:
+                    continue
+                try:
+                    await _send_renewal_digest_email(
+                        [audience["email"]],
+                        digest_subject(his, company_name),
+                        digest_html(his, company_name),
+                        company_id=str(company_id),
+                    )
+                    sent_to.append(audience["email"])
+                except Exception as e:
+                    # ONE PM'S FAILURE IS NOT THE COMPANY'S. The admin digest
+                    # has already gone; abandoning the loop here would drop the
+                    # idempotency rows for alerts that were genuinely delivered
+                    # and re-send the whole thing tomorrow.
+                    logger.error(
+                        f"[renewal_digest] pm send failed for "
+                        f"company={company_id} user={audience['user_id']}: {e!r}"
+                    )
+
+        if not sent_to:
             logger.info(
                 f"[renewal_digest] company={company_id} has "
-                f"{len(new_alerts)} new alerts but zero opted-in recipients; "
-                f"skipping send (alerts will retry tomorrow)."
+                f"{len(new_alerts)} new alerts and nothing was delivered "
+                f"(no recipients, or every send failed); "
+                f"skipping idempotency (alerts will retry tomorrow)."
             )
             continue
-
-        subject = digest_subject([a for a, _ in new_alerts], company.get("name") or "")
-        html = digest_html([a for a, _ in new_alerts], company.get("name") or "")
-
-        # Send via Resend (or no-op if env unset).
-        try:
-            await _send_renewal_digest_email(
-                recipients, subject, html, company_id=str(company_id),
-            )
-        except Exception as e:
-            logger.error(
-                f"[renewal_digest] send failed for company={company_id}: {e!r}"
-            )
-            continue  # don't mark idempotency on send failure
 
         # Mark idempotency: insert a row per alert.
         for _, key in new_alerts:
@@ -37532,7 +37933,18 @@ async def renewal_digest_daily_cron():
                 await db.renewal_alert_sent.insert_one({
                     **key,
                     "sent_at": started,
-                    "recipients": recipients,
+                    # EVERYONE WHO RECEIVED A DIGEST FOR THIS COMPANY TODAY,
+                    # across both passes. This used to be the company recipient
+                    # list alone, which is now only half the answer.
+                    #
+                    # IT IS NOT A PER-ALERT DELIVERY RECORD AND NEVER WAS. The
+                    # same union is stamped on every alert row for the company,
+                    # so a Site Manager's address appearing here does NOT mean
+                    # he was told about THIS alert -- his body was filtered to
+                    # his own projects. Saying so, because the field's name
+                    # invites the stronger reading and the second pass makes
+                    # that reading wrong for the first time.
+                    "recipients": sent_to,
                 })
                 sent_count += 1
             except Exception as e:
@@ -37548,13 +37960,49 @@ async def renewal_digest_daily_cron():
 
 
 async def _resolve_renewal_digest_recipients(company: dict) -> list:
-    """Per spec §4.1:
+    """WHO RECEIVES THE COMPANY-WIDE DIGEST — the body that names every
+    project the company runs.
+
       - admins of this company: opt-OUT (default ON, suppressed if
         user.renewal_digest_opt_out == True)
-      - non-admin PMs: opt-IN (default OFF, included only if
-        user.renewal_digest_opt_in == True)
       - optional shared alias on companies.renewal_digest_alias_email
+
     Returns deduplicated list of email addresses.
+
+    ── THE OPT-IN CURSOR IS GONE, AND TWO CHANGES AGREED ON THAT ───────────
+
+    It read `{"role": {"$in": ["pm", "cp"]}, "renewal_digest_opt_in": True}`,
+    and BOTH of those roles have since been ruled off this list, for different
+    reasons and by different changes:
+
+      cp   receives no email of any kind (#571). That change took `cp` out of
+           this `$in` and left the note that is now above: the send-time filter
+           in lib/notifications.py would refuse the address anyway, but a
+           recipient list made of people who may not be written to is how a
+           stale `renewal_digest_opt_in: true` keeps looking like an intention.
+           THAT REASONING IS THE REASON THE WHOLE CURSOR GOES, not just its cp
+           entry.
+
+      pm   receives a digest, but NOT THIS ONE. This body names every project
+           in the company and he can open only the ones he is assigned to.
+           `_pm_digest_audiences` sends him his own, filtered to his
+           assignments, as a separate email.
+
+    #571 ALSO LEFT A WARNING HERE, AND THIS IS IT BEING ACTED ON: "`pm` stays,
+    and the Site Manager / PM role does not exist yet: this query is the reason
+    to check before creating it, because the digest starts mailing every Site
+    Manager the day the role does." The role now exists. Had this cursor been
+    left standing, the first Site Manager created would have received the
+    company-wide body -- every job the company runs, most of which
+    `require_project_access` refuses him.
+
+    So the cursor selects nobody who may still be here, and leaving it would
+    have been a door standing open for the next role somebody adds to it.
+
+    `renewal_digest_opt_in` IS NOW READ BY NOTHING. It was already written by
+    nothing -- tests/test_reads_without_writers.py carried it as a read with no
+    writer -- so the flag was inert in both directions and the baseline line
+    goes with it. `renewal_digest_opt_out` is live and now governs PMs too.
     """
     company_id = str(company["_id"])
     emails: list = []
@@ -37571,30 +38019,6 @@ async def _resolve_renewal_digest_recipients(company: dict) -> list:
         if e:
             emails.append(e)
 
-    # Non-admin PMs: default OFF, opt-in.
-    #
-    # `cp` WAS IN THIS LIST AND IS NOT ANY MORE. Operator ruling: a CP is a
-    # field role and receives no email of any kind. The send-time filter in
-    # lib/notifications.py would refuse these addresses anyway -- and it is
-    # what makes the rule true for the report list and the filing reps, which
-    # are raw addresses with no role to query on -- but building a recipient
-    # list out of people who may not be written to is how a stale
-    # `renewal_digest_opt_in: true` keeps looking like an intention.
-    #
-    # `pm` STAYS, and the Site Manager / PM role does not exist yet: this
-    # query is the reason to check before creating it, because the digest
-    # starts mailing every Site Manager the day the role does.
-    pm_cursor = db.users.find({
-        "company_id": company_id,
-        "role": {"$in": ["pm"]},
-        "is_deleted": {"$ne": True},
-        "renewal_digest_opt_in": True,
-    }, {"email": 1})
-    async for u in pm_cursor:
-        e = (u.get("email") or "").strip().lower()
-        if e:
-            emails.append(e)
-
     # Optional shared mailbox alias.
     alias = (company.get("renewal_digest_alias_email") or "").strip().lower()
     if alias:
@@ -37607,6 +38031,58 @@ async def _resolve_renewal_digest_recipients(company: dict) -> list:
         if e and e not in seen:
             seen.add(e)
             out.append(e)
+    return out
+
+
+async def _pm_digest_audiences(company_id: str, company_project_ids: set) -> list:
+    """One entry per Site Manager who should get his OWN digest this morning.
+
+        [{"email": str, "user_id": str, "project_ids": set}, ...]
+
+    ── DEFAULT ON, SAME FLAG AS AN ADMIN ───────────────────────────────────
+
+    The operator's ruling is "a PM gets the same emails as an admin, but only
+    for projects he is assigned to". SAME therefore includes the way he stops
+    getting them: `renewal_digest_opt_out`, the flag the admin cursor already
+    honours, rather than a second flag meaning the same thing for one role.
+
+    ── THE INTERSECTION IS TAKEN HERE AND NOWHERE ELSE ─────────────────────
+
+    `assigned_projects` is a list on the user document and it is not
+    self-cleaning: it can name a project that has been deleted, or -- for a user
+    moved between companies -- one belonging to a tenant he is no longer in.
+    Neither is exotic; `validate_assignable_projects` exists because the same
+    list is an authorization grant elsewhere.
+
+    So his set is intersected with THIS COMPANY'S live project ids before it
+    ever reaches an alert filter. Without that, a stale id would be compared
+    against alerts from a company he is not in -- and an alert carries the
+    project NAME, so a match would put another tenant's jobsite in his inbox.
+
+    A PM WHOSE INTERSECTION IS EMPTY IS NOT RETURNED. He has nothing this
+    digest could tell him about, and an entry with an empty set is an email
+    waiting for a filter bug to fill it.
+    """
+    out = []
+    cursor = db.users.find({
+        "company_id": company_id,
+        "role": ROLE_PM,
+        "is_deleted": {"$ne": True},
+        "renewal_digest_opt_out": {"$ne": True},
+    }, {"email": 1, "assigned_projects": 1})
+    async for u in cursor:
+        email = (u.get("email") or "").strip().lower()
+        if not email:
+            continue
+        mine = {str(pid) for pid in (u.get("assigned_projects") or [])}
+        mine &= company_project_ids
+        if not mine:
+            continue
+        out.append({
+            "email": email,
+            "user_id": str(u.get("_id") or ""),
+            "project_ids": mine,
+        })
     return out
 
 

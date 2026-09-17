@@ -136,10 +136,40 @@ class OnlyASuperintendentHasOne(unittest.TestCase):
     def test_the_verdict_is_derived_on_read_and_never_stored(self):
         """A stored verdict is only ever the state of the world on the day
         somebody wrote it. A licence that lapsed while nobody opened the screen
-        must still read as expired."""
-        self.assertNotIn("licence", server.SUPERINTENDENT_LICENCE_FIELDS)
+        must still read as expired.
+
+        THIS ASSERTION WAS MEASURING THE WRONG THING, and the CS-registration
+        work found it. It banned the literal `"licence":
+        superintendent_licence_state` ANYWHERE in server.py -- which catches a
+        RESPONSE FIELD as readily as a database write, and
+        GET /admin/users/{id}/cs-registrations returns exactly that key so the
+        screen can show the state. Computing the verdict into a response is the
+        thing this test WANTS; computing it into a `$set` is the thing it
+        forbids. It now asks about the write.
+        """
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertNotIn('"licence": superintendent_licence_state', src)
+        # THE STORED FIELDS ARE THE LICENCE FACTS. The verdict is not one of
+        # them, and naming the whole set means a fifth field cannot be added
+        # without somebody deciding whether it is a fact or an opinion.
+        self.assertEqual(
+            set(server.SUPERINTENDENT_LICENCE_FIELDS),
+            {"dob_superintendent_number", "dob_registration_expiry",
+             "dob_card_r2_key", "dob_card_r2_url"},
+        )
+        # NO WRITER STAMPS A VERDICT ONTO THE DOCUMENT.
+        self.assertNotIn('"$set": {"licence"', src)
+        self.assertNotIn('"licence": 1', src)      # nor into a projection
+
+    def test_the_created_user_is_INSERTED_before_the_verdict_is_attached(self):
+        """create_admin_user sets `user_dict["licence"]` for the response, and
+        `user_dict` is the same object that was handed to insert_one. The
+        ordering is what keeps the verdict out of the document: attach it
+        before the insert and Mongo stores a dated opinion about a credential.
+        """
+        import inspect
+        code = inspect.getsource(server.create_admin_user)
+        self.assertLess(code.index("insert_one(user_dict)"),
+                        code.index('user_dict["licence"]'))
 
 
 class TheListScreenCanBadgeIt(unittest.TestCase):

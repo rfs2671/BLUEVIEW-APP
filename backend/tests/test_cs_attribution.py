@@ -295,8 +295,40 @@ class TheRegistrationCarriesTheLink(unittest.TestCase):
             server.CSRegistrationCreate.model_fields["user_id"].default)
 
     def test_it_is_stored(self):
+        """THE ACCOUNT LINK IS WRITTEN ONTO THE ROW, wherever the row is made.
+
+        THE LITERAL THIS PINNED MOVED, and the move is the reason to say so
+        here. It read `"user_id": (str(data.user_id).strip() or None)` --
+        `data.` because the whole registration was inline in
+        POST /admin/cs-registrations. There are two callers now: that route,
+        and PUT /admin/users/{id}/cs-registrations, which registers a
+        superintendent from his own user record. Both go through
+        `_register_cs_on_project`, so the write is in one place and the
+        parameter is a plain `user_id`.
+
+        THE FACT BEING PINNED IS UNCHANGED: without this link
+        `attribute_signer` can only reach MATCHED_LICENCE -- which that module
+        calls "corroboration, not binding", two humans having typed the same
+        string -- instead of MATCHED_ACCOUNT.
+
+        `assertTrue` WITH A MESSAGE, NOT `assertIn` AGAINST 2.3MB. See
+        tests/test_an_assertion_may_not_print_a_source_file.py.
+        """
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertIn('"user_id": (str(data.user_id).strip() or None)', src)
+        self.assertTrue(
+            '"user_id": (str(user_id).strip() or None) if user_id else None' in src,
+            "the cs_registrations row no longer stores the account link; "
+            "attribute_signer can then only reach MATCHED_LICENCE",
+        )
+        # AND THE ROW IS STILL MINTED IN ONE PLACE. Two writers would be two
+        # answers to "is this registration bound to an account".
+        #
+        # ASSERTED ON THE DEFINITION, NOT ON A FIELD LITERAL. The first
+        # attempt counted `"license_number_normalized": license_clean` and
+        # expected 1; there are 2, because the one-job CONFLICT QUERY filters
+        # on the same key that the row carries. Counting a field name cannot
+        # tell a read from a write, which is the distinction being made here.
+        self.assertEqual(src.count("async def _register_cs_on_project("), 1)
 
 
 class ItemTwoSaysWhereItCameFrom(unittest.TestCase):
