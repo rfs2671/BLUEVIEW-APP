@@ -180,6 +180,30 @@ export function treeHeadline(files, lastSynced) {
  * badge on every file during a re-index is noise that trains people to ignore
  * the one that matters.
  */
+/**
+ * What a file LOST while indexing, for a file that otherwise looks fine.
+ *
+ * MEASURED ON 588 BOYLAND, 2026-09-17: 19 of 129 indexed pages carried a
+ * failed section call — one in seven — ten of them a timeout on the title
+ * block. Every one was written complete. The flags were on the rows from the
+ * first index and nothing read them, so a set that lost seventeen title blocks
+ * rendered here identically to one that indexed cleanly, and it stayed that
+ * way for two weeks. A silent failure rate is one nobody budgets for.
+ *
+ * Deliberately NOT an error: the pages are indexed and the drawings open. It
+ * says what is thin, so a re-index is a decision rather than a discovery.
+ */
+export function indexGapNote(row) {
+  if (!row) return null;
+  const lost = Number(row.pages_missing_sections) || 0;
+  const unfinished = Number(row.pages_unfinished) || 0;
+  if (!lost && !unfinished) return null;
+  const parts = [];
+  if (lost) parts.push(`${lost} page${lost === 1 ? '' : 's'} missing part of what was read`);
+  if (unfinished) parts.push(`${unfinished} unfinished`);
+  return `Indexed with gaps — ${parts.join(', ')}. Re-index to fill them.`;
+}
+
 export function indexFailureNote(row) {
   if (!row) return null;
   const state = row.queue_status;

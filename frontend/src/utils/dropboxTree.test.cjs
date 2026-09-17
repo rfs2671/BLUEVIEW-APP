@@ -57,7 +57,7 @@ const M = load('dropboxTree.js');
 const {
   UNFILED, folderPathOf, folderLabel, groupByFolder, treeCounts,
   collidingNames, isColliding, treeHeadline, formatSyncedAt, COLLISION_NOTE,
-  indexFailureNote,
+  indexFailureNote, indexGapNote,
 } = M;
 
 {
@@ -240,6 +240,38 @@ ok(/never synced$/.test(treeHeadline([f('/A/x.pdf')], 'not a date')),
   ok(indexFailureNote({ queue_status: 'failed', indexed_pages: 129, total_pages: 129 })
        === 'Indexing failed',
     'no page clause when it got through them all');
+}
+
+// ── A FILE THAT INDEXED AND STILL LOST SOMETHING ──────────────────────────
+//
+// Measured on 588 Boyland, 2026-09-17: 19 of 129 pages carried a failed
+// section call, ten of them a timeout on the title block, and every one was
+// written `page_complete: True`. This screen showed nothing about it for two
+// weeks, because the only badge it had was for a file that failed OUTRIGHT.
+{
+  const gappy = {
+    file_id: 'f1', queue_status: 'done', indexed_pages: 44, total_pages: 44,
+    pages_missing_sections: 9, pages_unfinished: 1,
+  };
+  const note = indexGapNote(gappy);
+  ok(/9 pages/.test(note), 'it says how many pages lost part of the read');
+  ok(/1 unfinished/.test(note), 'and how many never finished');
+  ok(/Re-index/.test(note), 'and what to do about it, which is the point');
+
+  ok(indexGapNote({ pages_missing_sections: 1, pages_unfinished: 0 })
+       .includes('1 page missing'),
+    'one page is singular — a badge that cannot count reads as a bug');
+
+  ok(indexGapNote({ pages_missing_sections: 0, pages_unfinished: 0 }) === null,
+    'a clean file carries no note');
+  ok(indexGapNote({ queue_status: 'done' }) === null,
+    'a file indexed before these counts existed says nothing, not zero');
+  ok(indexGapNote(null) === null && indexGapNote(undefined) === null,
+    'a file the index has never heard of is not a gap');
+
+  ok(indexGapNote({ pages_missing_sections: 0, pages_unfinished: 2 })
+       .includes('2 unfinished'),
+    'unfinished alone is worth saying: a resume will pick those pages up');
 }
 
 console.log(`\n  ${passed} passed, ${failed} failed`);

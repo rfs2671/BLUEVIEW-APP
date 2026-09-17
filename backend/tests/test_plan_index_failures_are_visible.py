@@ -14,6 +14,7 @@ without anyone learning.
 """
 
 import asyncio
+import inspect
 import os
 import sys
 import unittest
@@ -143,6 +144,143 @@ class WhatTheFailedListShows(unittest.TestCase):
     def test_newest_first(self):
         out = self._list([_job("f1", "failed"), _job("f3", "failed")])
         self.assertEqual([j["file_id"] for j in out["jobs"]], ["f1", "f3"])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# A page can be indexed and still have lost part of what was read
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class _RegexColl(_Coll):
+    """_Coll, plus the one operator this route's file query uses."""
+
+    def _match(self, r, q):
+        for k, v in (q or {}).items():
+            if isinstance(v, dict) and "$regex" in v:
+                import re as _re
+                if not _re.search(v["$regex"], str(r.get(k) or ""), _re.I):
+                    return False
+            elif isinstance(v, dict) and "$ne" in v:
+                if r.get(k) == v["$ne"]:
+                    return False
+            elif r.get(k) != v:
+                return False
+        return True
+
+
+class _PageColl(_RegexColl):
+    """document_page_index, with just enough aggregate for the gap rollup."""
+
+    async def count_documents(self, q=None):
+        return len([r for r in self.rows if self._match(r, q)])
+
+    async def find_one(self, q=None, proj=None, sort=None):
+        rows = [r for r in self.rows if self._match(r, q)]
+        return dict(rows[0]) if rows else None
+
+    def aggregate(self, pipeline):
+        ids = pipeline[0]["$match"]["file_id"]["$in"]
+        by_file = {}
+        for r in self.rows:
+            if r.get("file_id") not in ids:
+                continue
+            g = by_file.setdefault(r["file_id"], {
+                "_id": r["file_id"], "pages_missing_sections": 0,
+                "pages_unfinished": 0, "section_retries": 0})
+            if r.get("sections_lost"):
+                g["pages_missing_sections"] += 1
+            if not r.get("page_complete"):
+                g["pages_unfinished"] += 1
+            g["section_retries"] += int(r.get("extraction_retries") or 0)
+
+        class _AsyncRows:
+            def __aiter__(self_inner):
+                self_inner._it = iter(list(by_file.values()))
+                return self_inner
+
+            async def __anext__(self_inner):
+                try:
+                    return next(self_inner._it)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        return _AsyncRows()
+
+
+class WhatAFileLostIsOnTheScreen(unittest.TestCase):
+    """MEASURED: 19 of 129 pages on 588 Boyland carried a failed section call —
+    ten a timeout on the title block — and every one was written complete. The
+    flags were on the rows from the first index and nothing read them, so the
+    file list showed a clean set for two weeks.
+
+    A count nobody can see is a count nobody budgets for."""
+
+    FILES = [{"_id": "f1", "project_id": "p1", "company_id": ACME,
+              "name": "AR - 3.28.25.pdf", "page_count": 3}]
+    PAGES = [
+        {"file_id": "f1", "page_number": 1, "page_complete": True,
+         "sections_lost": ["title_block"], "extraction_retries": 1},
+        {"file_id": "f1", "page_number": 2, "page_complete": True,
+         "sections_lost": [], "extraction_retries": 0},
+        {"file_id": "f1", "page_number": 3, "page_complete": False,
+         "sections_lost": ["title_block", "notes"], "extraction_retries": 2},
+    ]
+
+    def _status(self, pages=None):
+        db = _Db(files=self.FILES)
+        db.project_files = _RegexColl(self.FILES)
+        db._c["document_page_index"] = _PageColl(
+            self.PAGES if pages is None else pages)
+        db.document_page_index = db._c["document_page_index"]
+        with mock.patch.object(server, "db", db), \
+                mock.patch.object(server, "QWEN_API_KEY", "k"):
+            out = _run(server.get_document_index_status("p1", current_user=ADMIN))
+        return out["files"][0]
+
+    def test_the_pages_that_lost_a_section_are_counted(self):
+        self.assertEqual(self._status()["pages_missing_sections"], 2)
+
+    def test_and_the_pages_that_never_finished(self):
+        self.assertEqual(self._status()["pages_unfinished"], 1)
+
+    def test_and_how_often_a_call_had_to_be_asked_twice(self):
+        """The retry rate is the early warning: it climbs before the losses
+        do, because a retry is a failure that was caught."""
+        self.assertEqual(self._status()["section_retries"], 3)
+
+    def test_a_clean_file_reports_zero_rather_than_nothing(self):
+        clean = [{"file_id": "f1", "page_number": n, "page_complete": True,
+                  "sections_lost": [], "extraction_retries": 0}
+                 for n in (1, 2, 3)]
+        row = self._status(clean)
+        self.assertEqual((row["pages_missing_sections"], row["pages_unfinished"],
+                          row["section_retries"]), (0, 0, 0))
+
+    def test_a_file_indexed_before_these_fields_existed_is_not_a_gap(self):
+        """Every page on 588 Boyland predates them. A missing field must read
+        as 'unknown', not as 'lost' — a screen that cries wolf over the whole
+        corpus is one nobody reads twice."""
+        old = [{"file_id": "f1", "page_number": n, "page_complete": True}
+               for n in (1, 2, 3)]
+        row = self._status(old)
+        self.assertEqual(row["pages_missing_sections"], 0)
+        self.assertEqual(row["section_retries"], 0)
+
+    def test_the_rollup_is_one_query_for_every_file(self):
+        """This route used to download every PDF on the project on every call,
+        on the container doing the indexing, and a polling screen made it
+        continuous. A per-file count query would walk back toward that."""
+        src = inspect.getsource(server.get_document_index_status)
+        self.assertEqual(src.count("document_page_index.aggregate("), 1)
+        i = src.index("document_page_index.aggregate(")
+        self.assertLess(i, src.index("for fr in files:"),
+                        "the rollup runs inside the per-file loop")
+
+    def test_a_failed_rollup_does_not_fail_the_screen(self):
+        """The crew opens this to find a drawing. A count is not worth a 500."""
+        src = inspect.getsource(server.get_document_index_status)
+        i = src.index("document_page_index.aggregate(")
+        self.assertIn("except Exception", src[i:i + 1200])
 
 
 class RetryPutsItBackOnTheQueue(unittest.TestCase):

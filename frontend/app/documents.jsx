@@ -42,7 +42,7 @@ import {
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import {
   UNFILED, folderLabel, groupByFolder, collidingNames, isColliding, indexFailureNote,
-  treeHeadline, COLLISION_NOTE,
+  indexGapNote, treeHeadline, COLLISION_NOTE,
 } from '../src/utils/dropboxTree';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
@@ -601,6 +601,16 @@ export default function DocumentsScreen() {
                             {indexFailureNote(indexState[file.id])}
                           </Text>
                         )}
+                        {/* A file can index every page and still have lost a
+                            section on some of them. Shown under the failure
+                            note and never instead of it: a file that FAILED
+                            says so first. */}
+                        {!indexFailureNote(indexState[file.id]) &&
+                          indexGapNote(indexState[file.id]) && (
+                          <Text style={s.indexGapNote} numberOfLines={2}>
+                            {indexGapNote(indexState[file.id])}
+                          </Text>
+                        )}
                       </View>
                       <ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />
                     </Pressable>
@@ -668,6 +678,15 @@ function buildStyles(colors, isDark) {
     fontSize: 12,
     lineHeight: 16,
     color: colors.text.muted,
+    marginTop: 4,
+  },
+  indexGapNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    // attention, not criticalText: the file indexed and the drawings open.
+    // It is worth noticing, not an error, and the amber token is the one that
+    // clears AA on both themes (8.61:1 dark, 4.77:1 light).
+    color: colors.state.attention,
     marginTop: 4,
   },
   indexFailureNote: {
