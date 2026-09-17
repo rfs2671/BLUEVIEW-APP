@@ -28,12 +28,25 @@
 const { loadEsm } = require('./esmHarness.cjs');
 
 const offsetMinutes = new Date().getTimezoneOffset();   // > 0 means behind UTC
+if (offsetMinutes <= 0 && !process.env.RECORD_DATE_TEST_REEXEC) {
+  // BEHIND UTC OR NOTHING. Re-exec once; the env marker stops it recursing if
+  // the child's zone is still not behind UTC (a machine with no tzdata), in
+  // which case the child's own message is the report.
+  const { spawnSync } = require('child_process');
+  console.log('  runner is at/ahead of UTC — re-running in America/New_York,'
+    + ' where this defect is observable');
+  const r = spawnSync(process.execPath, [__filename], {
+    stdio: 'inherit',
+    env: { ...process.env, TZ: 'America/New_York', RECORD_DATE_TEST_REEXEC: '1' },
+  });
+  process.exit(r.status === null ? 1 : r.status);
+}
 if (offsetMinutes <= 0) {
   console.error(
-    'REFUSING TO RUN: this runner is at or ahead of UTC (offset '
-    + `${-offsetMinutes} min). Every assertion here passes against the broken`
-    + ' code in such a zone, so a pass would prove nothing.\n'
-    + 'Run with TZ=America/New_York (CI sets it for this file).');
+    'REFUSING TO RUN: re-exec with TZ=America/New_York still reports a zone at'
+    + ` or ahead of UTC (offset ${-offsetMinutes} min). Every assertion here`
+    + ' passes against the broken code in such a zone, so a pass would prove'
+    + ' nothing. This machine is probably missing tzdata.');
   process.exit(2);
 }
 
