@@ -20,6 +20,7 @@ OR FROM THE SHEET'S OWN PRINTED TEXT. If KICKER can reach an answer, so can
 every other thing the model supplied for a mark it could not read.
 """
 
+import inspect
 import os
 import sys
 import unittest
@@ -124,6 +125,114 @@ class NoLabelReachesAnAnswer(unittest.TestCase):
         a = pe.answer_question(self._chunks(), "are there ptac units", None)
         self.assertIsNotNone(a)
         self.assertIn("PTAC-1", a["text"].upper())
+
+
+class NoLabelReachesTheFallbackRender(unittest.TestCase):
+    """The typed-record path's fallback, held to the same rule.
+
+    Measured by the plan eval on 2026-09-17. Asked 'what is a kicker', search
+    returned the two legend entries on M-104.00 — quotes 'KE 1' and 'KE 2',
+    labels 'KICKER EXHAUST 1' and 'KICKER EXHAUST 2', both matched ONLY
+    through the label. render_records printed no label and still replied
+
+        Kicker — on the drawings:
+        M-104.00 (legend_entry): KE 1 — read from the drawing image ...
+
+    The header supplied the word, the line supplied the mark, and together they
+    said the mark is a kicker. KICKER is printed on no page of this project.
+    A rule that only checks whether the label string appears would pass this.
+    """
+
+    def records(self):
+        from lib import plan_records as pr
+        entries, _f = pe.constrain_legend_to_page(
+            [{"symbol": "KE 1", "meaning": "KICKER EXHAUST 1"},
+             {"symbol": "PTAC-1", "meaning": "PACKAGE TERMINAL AIR CONDITIONER"}],
+            PAGE_TEXT)
+        fields = dict(pe.EMPTY_FIELDS, sheet_number="M-104.00", legend=entries)
+        return pr.build_records(fields, page={"sheet_number": "M-104.00",
+                                              "page_number": 6},
+                                raw_text=PAGE_TEXT)
+
+    ASKED = ("what is a kicker", "kicker", "kicker exhaust",
+             "air conditioner", "package terminal air conditioner")
+    BANNED = ("KICKER", "PACKAGE TERMINAL", "AIR CONDITIONER")
+
+    def test_the_ranker_still_sees_the_label(self):
+        # rank() still matches on labels. What changed is that search_plans
+        # then declines to OFFER a record whose only tie is the label — see
+        # NoLabelOnlyMatchReachesTheComposingModel.
+        from lib import plan_search as ps
+        for q in ("kicker", "air conditioner"):
+            with self.subTest(q=q):
+                self.assertTrue(ps.rank(self.records(), ps.search_terms(q)))
+
+    def test_no_label_is_said_in_any_form(self):
+        from lib import plan_search as ps
+        recs = self.records()
+        for q in self.ASKED:
+            found = ps.rank(recs, ps.search_terms(q))
+            out = ps.render_records(found, q)
+            for banned in self.BANNED:
+                with self.subTest(q=q, banned=banned):
+                    self.assertNotIn(banned, out.upper(),
+                                     f"the fallback said {banned!r} for {q!r}: {out!r}")
+
+    def test_a_mark_found_only_through_a_label_is_not_offered_as_the_answer(self):
+        from lib import plan_search as ps
+        found = ps.rank(self.records(), ps.search_terms("kicker"))
+        self.assertTrue(found)
+        self.assertEqual(ps.render_records(found, "kicker"),
+                         "Not on the indexed drawings.")
+
+    def test_the_mark_is_still_said_when_the_question_names_the_mark(self):
+        # KE 1 is printed. Asked about KE 1, it may be shown — as a mark.
+        from lib import plan_search as ps
+        found = ps.rank(self.records(), ps.search_terms("KE 1"))
+        out = ps.render_records(found, "KE 1")
+        self.assertIn("KE 1", out)
+        for banned in self.BANNED:
+            with self.subTest(banned=banned):
+                self.assertNotIn(banned, out.upper())
+
+
+class NoLabelOnlyMatchReachesTheComposingModel(unittest.TestCase):
+    """The composed path, which was believed to hold this rule and did not.
+
+    The model is never shown a label. It IS shown the question and whatever
+    search_plans returns, and for 'what is a kicker' that was 'KE 1' and
+    'KE 2' — records whose only tie to the question is the label. The gate's
+    contains_label looks for the label string ('KICKER EXHAUST 1') and would
+    pass 'KE 1 is a kicker'. So the rule is applied where both paths draw from.
+    """
+
+    def test_search_plans_drops_label_only_matches_before_anything_sees_them(self):
+        import server
+        src = inspect.getsource(server.search_plans)
+        self.assertIn("matched_only_through_label(", src)
+        i = src.index("matched_only_through_label(")
+        # After ranking, before the attribute dedupe and the limit.
+        self.assertLess(src.index("plan_search.rank("), i)
+        self.assertLess(i, src.index("best_per_attribute("))
+
+    def test_what_the_model_is_shown_comes_only_from_search_plans(self):
+        import server
+        src = inspect.getsource(server._dispatch_agent_tool)
+        i = src.index('if name == "search_plans"')
+        block = src[i:i + 1500]
+        self.assertIn("await search_plans(", block)
+        self.assertIn("_render_records_for_model(found", block)
+
+    def test_the_rule_itself(self):
+        from lib import plan_search as ps
+        ke = {"quote": "KE 1", "label": "KICKER EXHAUST 1",
+              "subject_terms": ["KE 1"], "tier": pe.TIER_VISION}
+        self.assertTrue(ps.matched_only_through_label(ke, ps.search_terms("kicker")))
+        # Asked about the mark itself, it is a printed match.
+        self.assertFalse(ps.matched_only_through_label(ke, ps.search_terms("KE 1")))
+        # A record that matches on printed words is kept, whatever its label.
+        both = dict(ke, quote="KE 1 KICKER")
+        self.assertFalse(ps.matched_only_through_label(both, ps.search_terms("kicker")))
 
 
 class AVisionCountSaysSo(unittest.TestCase):

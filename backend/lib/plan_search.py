@@ -253,12 +253,42 @@ def contains_label(text: str, records: Sequence[Dict[str, Any]]) -> List[str]:
     return sorted(out)
 
 
+def matched_only_through_label(record: Dict[str, Any], terms: Sequence[str]) -> bool:
+    """True when the ONLY thing tying this record to the subject is a label —
+    words a vision model supplied for a mark the sheet does not explain."""
+    return (match_score(record, terms) > 0
+            and match_score(dict(record, label=None), terms) == 0)
+
+
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
                    limit: int = 4) -> str:
     """What the records say, and nothing else. The fallback when the gate
     refuses a composed answer, and the only renderer that exists.
 
-    Reads `quote`. Has never read `label`."""
+    Reads `quote`. Has never read `label`.
+
+    ── NOT READING THE LABEL WAS NOT ENOUGH ───────────────────────────────
+    #
+    # Measured by the eval, 2026-09-17. Asked 'what is a kicker', search
+    # returned two legend entries on M-104.00 whose quotes are 'KE 1' and
+    # 'KE 2', matched ONLY through the vision label 'KICKER EXHAUST 1'. This
+    # printed no label, and replied:
+    #
+    #     Kicker — on the drawings:
+    #     M-104.00 (legend_entry): KE 1 — read from the drawing image ...
+    #
+    # which states the invented meaning outright. The header names the
+    # subject; the line under it supplies a mark; together they say the mark
+    # IS the subject, and nothing on the sheet says so.
+    #
+    # So a record that matches the subject only through a label is not listed
+    # under that subject at all. The label may still widen what a search
+    # FINDS — that is what #568 kept it for — but it is never the reason a
+    # reader is shown something as an answer.
+    """
+    terms = search_terms(subject)
+    if terms:
+        records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
         return "Not on the indexed drawings."
     label = (subject or "That").strip()
@@ -282,4 +312,5 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records",
+           "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]
