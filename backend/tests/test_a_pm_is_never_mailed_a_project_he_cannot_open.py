@@ -226,7 +226,12 @@ class HeGetsHisOwnEmail(unittest.TestCase):
         self.assertIn("MY JOB", theirs)
         self.assertIn("NOT MY JOB", theirs)
 
-    def test_no_digest_at_all_when_none_of_his_projects_has_an_item(self):
+    def test_no_digest_at_all_when_there_is_nothing_he_may_be_told(self):
+        """"None of his projects has an item" was the rule while company-level
+        alerts were excluded. With those included the rule is "nothing he may
+        be told", which is the same sentence about a wider set — so the case
+        has to be built from an alert on SOMEBODY ELSE'S job, not from any
+        alert at all. See ACompanyLevelAlertIsHisToo."""
         sends, _ = _run([_admin(), _pm()], [_Alert(THEIRS, "NOT MY JOB")])
         self.assertEqual([r for r, _, _ in sends], [["admin@acme.test"]])
 
@@ -341,28 +346,129 @@ async def _audiences(users):
         return await server._pm_digest_audiences(COMPANY, {MINE, THEIRS})
 
 
-class ACompanyLevelAlertIsNotHis(unittest.TestCase):
+class ACompanyLevelAlertIsHisToo(unittest.TestCase):
     """Insurance and GC-licence alerts carry `project_id = None`
-    (lib/renewal_digest sets it only for permit alerts). They name no project,
-    so including them would not break the operator's rule — the ruling says his
-    digest lists his assigned projects, and this is the line that changes if
-    the operator wants him told about the company's insurance."""
+    (lib/renewal_digest sets the field only for permit alerts).
 
-    def test_a_project_less_alert_does_not_reach_him(self):
+    OPERATOR RULING, AND IT REVERSED THE FIRST VERSION OF THIS CLASS. These
+    were excluded, on the reasoning that a company certificate of insurance is
+    the office's item and not the jobsite's. That reasoning is not wrong and it
+    is not the decision: an expired certificate STOPS HIS JOB, and a Site
+    Manager who learns that when the site shuts was told by the wrong person.
+
+    THE RULE IS NOT WEAKENED BY IT. A project-less alert NAMES NO PROJECT, so
+    it cannot put a job he may not open in front of him — which is the one
+    thing this pass exists to prevent, and is asserted again below on the same
+    bodies.
+    """
+
+    def test_a_project_less_alert_reaches_him(self):
         sends, _ = _run([_admin(), _pm()],
                         [_Alert(None, ""), _Alert(MINE, "MY JOB")])
         his = next(h for r, _, h in sends if r == ["pm@acme.test"])
-        self.assertNotIn("COMPANY-LEVEL", his)
+        self.assertIn("COMPANY-LEVEL", his)
         self.assertIn("MY JOB", his)
 
-    def test_and_it_does_not_by_itself_earn_him_a_digest(self):
+    def test_it_earns_him_a_digest_WITH_NO_PROJECT_ITEM_AT_ALL(self):
+        """The case the ruling named. The old code sent him nothing here."""
         sends, _ = _run([_admin(), _pm()], [_Alert(None, "")])
+        to = [r for r, _, _ in sends]
+        self.assertIn(["pm@acme.test"], to)
+        his = next(h for r, _, h in sends if r == ["pm@acme.test"])
+        self.assertIn("COMPANY-LEVEL", his)
+
+    def test_and_that_digest_still_names_no_project_he_cannot_open(self):
+        """THE HALF THAT MUST NOT MOVE. A company-level alert arriving beside
+        another jobsite's permit alert must not carry the jobsite with it."""
+        sends, _ = _run([_admin(), _pm()],
+                        [_Alert(None, ""), _Alert(THEIRS, "NOT MY JOB")])
+        his = next(h for r, _, h in sends if r == ["pm@acme.test"])
+        self.assertIn("COMPANY-LEVEL", his)
+        self.assertNotIn("NOT MY JOB", his)
+
+    def test_an_alert_on_somebody_elses_job_alone_still_sends_him_nothing(self):
+        sends, _ = _run([_admin(), _pm()], [_Alert(THEIRS, "NOT MY JOB")])
         self.assertEqual([r for r, _, _ in sends], [["admin@acme.test"]])
 
     def test_the_admin_still_gets_it(self):
         sends, _ = _run([_admin()], [_Alert(None, "")])
         self.assertIn("COMPANY-LEVEL",
                       next(h for r, _, h in sends if r == ["admin@acme.test"]))
+
+    def test_the_admin_body_is_still_UNCHANGED_by_any_of_this(self):
+        sends, _ = _run(
+            [_admin(), _pm()],
+            [_Alert(None, ""), _Alert(MINE, "MY JOB"), _Alert(THEIRS, "NOT MY JOB")],
+        )
+        theirs = next(h for r, _, h in sends if r == ["admin@acme.test"])
+        for expected in ("COMPANY-LEVEL", "MY JOB", "NOT MY JOB"):
+            self.assertIn(expected, theirs)
+
+
+class ThePassCannotResolveAnAddressTheSendWillRefuse(unittest.TestCase):
+    """A pass that mails nobody and reports nothing.
+
+    `lib/notifications.send_notification` refuses at SEND TIME to email any
+    address belonging to a role in `EMAIL_EXCLUDED_ROLES` (#571). If this pass
+    resolved one of those, everything would look right — recipients found, a
+    body built, a send called — and the row would be logged
+    `suppressed_field_role`. Built, correct, and mails nobody.
+
+    THE ASSERTION IS THE DISJOINTNESS, AGAINST THAT FROZENSET. Restating its
+    two members here would pass unchanged on the day a third is added, which is
+    exactly when this pass needs re-checking.
+    """
+
+    def test_the_role_this_pass_selects_is_one_the_send_will_accept(self):
+        from lib.notifications import EMAIL_EXCLUDED_ROLES
+        self.assertNotIn(server.ROLE_PM, EMAIL_EXCLUDED_ROLES)
+
+    def test_the_two_field_roles_are_still_the_ones_excluded(self):
+        """Not a copy of the rule — a check that the set this test reasons
+        about is the set it thinks it is. If it grows, the test above starts
+        deciding something new and this one says so."""
+        from lib.notifications import EMAIL_EXCLUDED_ROLES
+        self.assertEqual(set(EMAIL_EXCLUDED_ROLES), {"cp", "superintendent"})
+
+    def test_a_superintendent_on_the_same_job_is_not_resolved(self):
+        """He shares the project, so any assigned-projects query would find
+        him. The pass selects on ROLE EQUALITY, which is why it does not."""
+        sup = {"_id": "u-sup", "company_id": COMPANY,
+               "role": server.ROLE_SUPERINTENDENT, "email": "sup@acme.test",
+               "is_deleted": False, "assigned_projects": [MINE]}
+        self.assertEqual(asyncio.run(_audiences([sup])), [])
+
+    def test_a_cp_on_the_same_job_is_not_resolved(self):
+        cp = {"_id": "u-cp", "company_id": COMPANY, "role": "cp",
+              "email": "cp@acme.test", "is_deleted": False,
+              "assigned_projects": [MINE]}
+        self.assertEqual(asyncio.run(_audiences([cp])), [])
+
+    def test_no_excluded_role_can_be_resolved_at_all(self):
+        """Derived from the frozenset, so a third field role is covered the day
+        it is added rather than the day somebody remembers this test."""
+        from lib.notifications import EMAIL_EXCLUDED_ROLES
+        for role in EMAIL_EXCLUDED_ROLES:
+            user = {"_id": f"u-{role}", "company_id": COMPANY, "role": role,
+                    "email": f"{role}@acme.test", "is_deleted": False,
+                    "assigned_projects": [MINE]}
+            self.assertEqual(asyncio.run(_audiences([user])), [], role)
+
+    def test_the_selector_is_an_equality_and_not_a_membership(self):
+        """An `$in` here is one edit away from carrying a role the send
+        refuses, and the refusal is silent."""
+        from tests.source_text import strip_python
+        import inspect
+        code = strip_python(inspect.getsource(server._pm_digest_audiences))
+        self.assertIn('"role": ROLE_PM', code)
+        self.assertNotIn("$in", code)
+        # A THIRD ASSERTION WAS TRIED AND WITHDRAWN: `assertNotIn
+        # ('assigned_projects":', code)`, meaning "this is not an
+        # assigned-projects query". It is red on the PROJECTION -- the function
+        # legitimately reads that field to intersect it -- so it could not tell
+        # a selector from a field being fetched, which is the one distinction
+        # it existed to make. The two lines above carry the claim: one role,
+        # by equality.
 
 
 class TheIdempotencyRowRecordsBothPasses(unittest.TestCase):

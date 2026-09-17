@@ -37880,24 +37880,48 @@ async def renewal_digest_daily_cron():
         # and would now silence every Site Manager at a company whose admins
         # have all opted out.
         #
-        # AN ALERT WITH NO PROJECT IS NOT HIS. Insurance and GC-licence alerts
-        # are COMPANY-level and carry `project_id = None`
-        # (lib/renewal_digest.py sets it only for permit alerts). They name no
-        # project, so including them would not break the rule above -- but the
-        # ruling says his digest lists his assigned projects, and a company
-        # certificate of insurance is the office's item, not the jobsite's.
-        # Excluded, and REPORTED as a judgement call rather than buried: if the
-        # operator wants a PM to learn the company insurance is lapsing, this
-        # is the line that changes.
+        # AN ALERT WITH NO PROJECT IS THE COMPANY'S, AND IT REACHES HIM.
+        #
+        # Insurance and GC-licence alerts are COMPANY-level and carry
+        # `project_id = None` -- lib/renewal_digest.py sets the field only for
+        # permit alerts. They name NO PROJECT, so they cannot break the rule
+        # this whole pass exists for: he never receives an email naming a job
+        # he cannot open.
+        #
+        # OPERATOR RULING, AND IT REVERSED THE FIRST VERSION OF THIS LINE.
+        # These were excluded on the reasoning that a company certificate of
+        # insurance is the office's item and not the jobsite's. That reasoning
+        # is not wrong and it is not the decision: an expired certificate of
+        # insurance stops HIS job, and a Site Manager who finds that out when
+        # the site shuts was told by the wrong person. He gets them.
+        #
+        # SO A COMPANY-LEVEL ALERT ALONE EARNS HIM A DIGEST. "No digest unless
+        # one of his projects has an item" was the rule while these were
+        # excluded; with them in, the rule is "no digest unless there is
+        # something he may be told", which is the same sentence about a wider
+        # set.
+        #
+        # ONE EDGE IS DELIBERATELY LEFT WHERE IT WAS: a PM with NO assigned
+        # projects is not returned by `_pm_digest_audiences` at all, so he gets
+        # nothing -- not even a company-level alert. That is an account
+        # mid-setup, and the alternative is audience entries with empty project
+        # sets, which is an email waiting for a filter bug to fill it. Reported
+        # rather than decided quietly; the change, if wanted, is in that
+        # function and not here.
         if not send_failed:
             for audience in await _pm_digest_audiences(
                 str(company_id), set(project_id_to_name.keys()),
             ):
-                his = [a for a in alerts_only
-                       if a.project_id and str(a.project_id) in audience["project_ids"]]
-                # NO DIGEST AT ALL IF NONE OF HIS PROJECTS HAS AN ITEM. An
-                # empty digest is a daily email that says nothing, which is how
-                # a real one stops being read.
+                his = [
+                    a for a in alerts_only
+                    # A COMPANY-LEVEL ALERT (no project), OR one of his own
+                    # jobs. Nothing else -- and "nothing else" is the assertion
+                    # that matters, not this one being non-empty.
+                    if (not a.project_id)
+                    or str(a.project_id) in audience["project_ids"]
+                ]
+                # An empty digest is a daily email that says nothing, which is
+                # how a real one stops being read.
                 if not his:
                     continue
                 try:
@@ -38061,7 +38085,25 @@ async def _pm_digest_audiences(company_id: str, company_project_ids: set) -> lis
 
     A PM WHOSE INTERSECTION IS EMPTY IS NOT RETURNED. He has nothing this
     digest could tell him about, and an entry with an empty set is an email
-    waiting for a filter bug to fill it.
+    waiting for a filter bug to fill it. That also means a PM with NO
+    assignments receives nothing at all, including the company-level alerts
+    pass 2 now forwards -- see the note at that call site.
+
+    ── IT SELECTS ONE ROLE BY EQUALITY, AND THAT IS LOAD-BEARING ───────────
+
+    `lib/notifications.send_notification` refuses at SEND TIME to email any
+    address belonging to a role in `EMAIL_EXCLUDED_ROLES` (#571) -- `cp` and
+    `superintendent`. A pass that resolved one of those would look like it
+    worked: recipients found, a body built, a send called, and the row logged
+    as `suppressed_field_role`. It would mail nobody and report nothing.
+
+    `"role": ROLE_PM` IS AN EQUALITY, not an `$in` and not an assigned-projects
+    query, so no other role can arrive here however his projects are shared. A
+    superintendent assigned to the same job as a Site Manager is not selected
+    by this at all. `test_a_pm_is_never_mailed_a_project_he_cannot_open`
+    asserts the DISJOINTNESS against that frozenset rather than restating its
+    two members, so the day a third role is added to it this pass is checked
+    against the new list and not against a copy of the old one.
     """
     out = []
     cursor = db.users.find({
