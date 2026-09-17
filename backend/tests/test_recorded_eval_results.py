@@ -55,13 +55,33 @@ class EveryRecordedResultIsAValidRun(unittest.TestCase):
                 r = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(ev.summarise(r["results"]), r["summary"])
 
-    def test_every_case_in_the_suite_was_scored(self):
+    def test_every_case_the_run_carried_was_scored(self):
+        # `suite_cases` is the case set the run itself carried. A result
+        # written before that field existed is checked against the suite as it
+        # stands, minus cases added since — which is what a subset means here.
         for path in recorded():
             with self.subTest(result=path.name):
                 r = json.loads(path.read_text(encoding="utf-8"))
-                suite = ev.load_suite(str(BACKEND / r["suite"]))
-                self.assertEqual({c["id"] for c in suite["cases"]},
-                                 {x["id"] for x in r["results"]})
+                scored = {x["id"] for x in r["results"]}
+                if "suite_cases" in r:
+                    self.assertEqual(set(r["suite_cases"]), scored)
+                else:
+                    current = {c["id"] for c in
+                               ev.load_suite(str(BACKEND / r["suite"]))["cases"]}
+                    self.assertTrue(scored <= current,
+                                    f"scored cases the suite no longer has: "
+                                    f"{sorted(scored - current)}")
+
+    def test_the_suite_as_it_stands_has_been_run(self):
+        """THE GATE. Cases are added when a failure is observed; a suite with a
+        case no recorded run has answered is a suite that has not been run."""
+        current = {c["id"] for c in ev.load_suite(str(BACKEND / "eval/boyland.json"))["cases"]}
+        covered = [p.name for p in recorded()
+                   if {x["id"] for x in
+                       json.loads(p.read_text(encoding="utf-8"))["results"]} == current]
+        self.assertTrue(covered,
+                        "no recorded result covers every case in eval/boyland.json; "
+                        "re-run scripts/plan_eval and record it")
 
     def test_the_boyland_record_is_the_one_reported(self):
         r = json.loads((RESULTS / "boyland-2026-09-17-d3e80a43.json")

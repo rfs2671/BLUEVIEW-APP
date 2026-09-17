@@ -67,8 +67,9 @@ class WhatSurvivesTheCheck(unittest.TestCase):
         self.assertNotIn("label", out[0])
 
 
-class NoLabelReachesAnAnswer(unittest.TestCase):
-    """The composed answer, for every shape of question the dispatch makes."""
+class NoLabelIsWrittenIntoTheTextThatIsSearched(unittest.TestCase):
+    """The mechanism, at the writer: a chunk's text renders `meaning`, never
+    `label`, so there is nothing for a reader to find and quote."""
 
     def _chunks(self):
         entries, _f = pe.constrain_legend_to_page(RAW_LEGEND, PAGE_TEXT)
@@ -99,32 +100,10 @@ class NoLabelReachesAnAnswer(unittest.TestCase):
         labels = [e.get("label") for e in legend[0]["payload"]]
         self.assertIn("PACKAGE TERMINAL AIR CONDITIONER", labels)
 
-    def test_no_question_shape_can_quote_it(self):
-        chunks = self._chunks()
-        asked = [
-            "what type of AC units are in the building",
-            "how many ptac units",
-            "are there ptac units",
-            "Whats the PTAC-1",
-            "what is KE 1",
-            "how many KE 1",
-            "kicker",
-            "air conditioner",
-        ]
-        for q in asked:
-            a = pe.answer_question(chunks, q, None)
-            text = (a or {}).get("text", "")
-            for banned in self.BANNED:
-                with self.subTest(q=q, banned=banned):
-                    self.assertNotIn(banned, text.upper(),
-                                     f"a vision label reached the answer to {q!r}: {text!r}")
-
-    def test_the_mark_itself_is_still_answerable(self):
-        # The point is not to make the record unreachable — it is to make the
-        # WORDS unquotable. PTAC-1 is printed on the sheet and may be said.
-        a = pe.answer_question(self._chunks(), "are there ptac units", None)
-        self.assertIsNotNone(a)
-        self.assertIn("PTAC-1", a["text"].upper())
+    # The two tests that asked this of every question shape went with the
+    # matcher. What they held — that no shape of question can quote a label,
+    # and that the printed mark is still sayable — is held below against the
+    # reader that answers now, over the same legend.
 
 
 class NoLabelReachesTheFallbackRender(unittest.TestCase):

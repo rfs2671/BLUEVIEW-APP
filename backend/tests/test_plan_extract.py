@@ -279,14 +279,6 @@ class ACountIsOnlyACountIfItIsPrinted(unittest.TestCase):
         self.assertIsNone(f["elements"][0]["count_verified"])
         self.assertIn("numbers_unverifiable:no_page_text", flags)
 
-    def test_an_unverified_count_is_never_answered(self):
-        chunks = [{"chunk_type": "elements", "sheet_number": "P-100.00", "payload": [
-            {"name": "ROOF DRAIN", "count_if_stated": 17, "count_verified": False},
-            {"name": "ROOF DRAIN", "count_if_stated": 4, "count_verified": True},
-        ]}]
-        hits = pe.answer_count(chunks, ["roof", "drains"])
-        self.assertEqual([h["count"] for h in hits], [4])
-
     def test_curly_quotes_do_not_break_dimension_matching(self):
         f = pe.merge_sections({"elements": {"dimensions": ['7/8"']}})
         flags = pe.verify_numbers(f, "STUCCO 7/8″ THICK")
@@ -382,54 +374,24 @@ class ChunksAreTheUnitOfRetrieval(unittest.TestCase):
         self.assertEqual(texts, ["1. 18 GA POST"])
 
 
-class CountsAndExistenceAnswerWithoutAVisionModel(unittest.TestCase):
-
-    def _chunks(self, fields, sheet="S-100.00"):
-        pe.verify_numbers(fields, PAGE_TEXT)
-        chunks = pe.build_chunks(fields)
-        for c in chunks:
-            c["sheet_number"] = sheet
-        return chunks
-
-    def test_a_schedule_with_a_quantity_column_is_summed(self):
-        f = pe.merge_sections({"schedules": json.loads(GOOD_SCHED)})
-        hits = pe.answer_count(self._chunks(f), ["piles"])
-        self.assertEqual(hits[0]["count"], 42)
-        self.assertEqual(hits[0]["source"], "schedule_qty")
-        self.assertEqual(hits[0]["sheet"], "S-100.00")
-
-    def test_a_schedule_without_one_reports_rows_as_rows(self):
-        """Three pile types listed is not three piles, and must not be
-        reported as if it were."""
-        f = pe.merge_sections({"schedules": {"schedules": [{
-            "name": "PILE SCHEDULE", "columns": ["MARK", "TYPE"],
-            "rows": [["P1", "HELICAL"], ["P2", "HELICAL"], ["P3", "DRIVEN"]]}]}})
-        hits = pe.answer_count(self._chunks(f), ["pile"])
-        self.assertEqual(hits[0]["source"], "schedule_rows")
-        answer = pe.format_count_answer("piles", hits)
-        self.assertIn("lists 3 row(s)", answer)
-
-    def test_a_printed_element_count_is_answered_with_its_sheet(self):
-        f = pe.merge_sections({"elements": {"elements": [
-            {"name": "ROOF DRAIN", "count_if_stated": 4, "location_hint": "roof plan"}]}})
-        hits = pe.answer_count(self._chunks(f, sheet="P-100.00"), ["roof", "drains"])
-        self.assertEqual((hits[0]["sheet"], hits[0]["count"]), ("P-100.00", 4))
-
-    def test_nothing_printed_is_no_answer(self):
-        f = pe.merge_sections({"elements": {"elements": [{"name": "PTAC UNIT"}]}})
-        self.assertEqual(pe.answer_count(self._chunks(f), ["ptac"]), [])
-        self.assertIsNone(pe.format_count_answer("PTAC units", []))
-
-    def test_existence_is_found_in_notes_with_the_line_that_matched(self):
-        f = pe.merge_sections({"notes": json.loads(GOOD_NOTES)})
-        hits = pe.answer_existence(self._chunks(f), ["chase", "walls"])
-        self.assertTrue(hits)
-        self.assertIn("CHASE WALL", hits[0]["line"])
-        self.assertIn("S-100.00", pe.format_existence_answer("chase walls", hits))
-
-    def test_every_term_must_match(self):
-        f = pe.merge_sections({"notes": json.loads(GOOD_NOTES)})
-        self.assertEqual(pe.answer_existence(self._chunks(f), ["roof", "chase"]), [])
+# ── WHERE FOUR CLASSES WENT ────────────────────────────────────────────────
+#
+# CountsAndExistenceAnswerWithoutAVisionModel, AttributeQuestionsFindThe
+# LineThatCarriesTheValue, TagCountsAreNeverATotal and AValueBelongsToThe
+# NounNextToIt tested answer_count / answer_existence / answer_attribute /
+# answer_tag_count over chunks. Those functions are deleted; questions are
+# answered from typed records by search_plans, under the gate.
+#
+# The behaviours they held are now eval cases measured against the real
+# corpus rather than a hand-built chunk list — a schedule quantity
+# (ptac-count), a printed element count (roof-drain-count), an attribute on
+# the line that carries it (duct-heater-capacity, stud-gauge), an existence
+# question (sprinklered, roof-protection), and a thing nothing prints
+# (chase-walls-absent). One of them asserted an answer that was WRONG:
+# summing a quantity column to a total no cell prints is what produced
+# "41 PTAC units", and the gate now refuses it.
+#
+# eval/migrated-from-the-matcher.md maps each one.
 
 
 class VersionTwoReadersKeepWorking(unittest.TestCase):
@@ -452,64 +414,6 @@ class VersionTwoReadersKeepWorking(unittest.TestCase):
         self.assertIn("PER LL 126/21", legacy["notes"])
         self.assertEqual(legacy["summary"], "Foundation plan with pile layout and pile schedule.")
         self.assertIn("STUCCO", legacy["keywords"])
-
-
-class AttributeQuestionsFindTheLineThatCarriesTheValue(unittest.TestCase):
-    """'stucco thickness', 'post gauge', 'pile type' — the three acceptance
-    questions that are neither a count nor a yes/no."""
-
-    CHUNKS = [
-        {"chunk_type": "specs", "sheet_number": "A-500.00",
-         "text": 'STUCCO SYSTEM PER SPEC\n7/8" CEMENT STUCCO ON LATH\n3 5/8" 20 GA STUD'},
-        {"chunk_type": "notes", "sheet_number": "S-001.00",
-         "text": "1. POSTS SHALL BE 16 GA COLD FORMED STEEL.\n2. PILES SHALL BE TYPE HP 12x53."},
-        {"chunk_type": "notes", "sheet_number": "S-001.00",
-         "text": "3. POST INSTALLATION PER MANUFACTURER."},
-    ]
-
-    def test_the_kind_of_each_acceptance_question(self):
-        cases = {
-            "how many piles": ("count", None),
-            "roof drain count": ("count", None),
-            "PTAC count": ("count", None),
-            "pile type": ("attribute", "type"),
-            "stucco thickness": ("attribute", "thickness"),
-            "post gauge": ("attribute", "gauge"),
-            "are there chase walls": ("exists", None),
-            "chase walls?": (None, None),
-        }
-        for q, want in cases.items():
-            with self.subTest(q=q):
-                self.assertEqual(pe.question_kind(q), want)
-
-    def test_the_attribute_word_is_not_a_search_term(self):
-        self.assertEqual(pe.question_terms("stucco thickness"), ["stucco"])
-        self.assertEqual(pe.question_terms("what gauge are the posts"), ["posts"])
-        self.assertEqual(pe.question_terms("x", ["pile type"]), ["pile"])
-
-    def test_the_line_with_a_value_wins_and_the_bare_mention_does_not(self):
-        hits = pe.answer_attribute(self.CHUNKS, ["stucco"], "thickness")
-        self.assertEqual([h["line"] for h in hits], ['7/8" CEMENT STUCCO ON LATH'])
-        self.assertEqual(hits[0]["sheet"], "A-500.00")
-
-    def test_gauge_and_type(self):
-        gauge = pe.answer_attribute(self.CHUNKS, ["posts"], "gauge")
-        self.assertEqual(len(gauge), 1)
-        self.assertIn("16 GA", gauge[0]["line"])
-        kind = pe.answer_attribute(self.CHUNKS, ["piles"], "type")
-        self.assertIn("HP 12x53", kind[0]["line"])
-
-    def test_a_mention_without_a_value_is_no_answer(self):
-        chunks = [{"chunk_type": "notes", "sheet_number": "A-1",
-                   "text": "STUCCO SYSTEM PER SPEC"}]
-        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
-        self.assertIsNone(pe.format_attribute_answer("stucco", "thickness", []))
-
-    def test_not_stated_names_where_it_is_mentioned(self):
-        self.assertEqual(
-            pe.format_not_stated([{"sheet": "S-100"}, {"sheet": "S-100"}, {"sheet": "S-101"}]),
-            "Not stated on the indexed drawings. Mentioned on S-100, S-101.")
-        self.assertEqual(pe.format_not_stated([]), "Not stated on the indexed drawings.")
 
 
 class AVectorPageMakesOneCall(unittest.TestCase):
@@ -622,63 +526,6 @@ class AVectorPageMakesOneCall(unittest.TestCase):
         self.assertEqual(out["fields"]["sheet_number"], "S-001.00")
         self.assertEqual(len(out["fields"]["notes"]), 1)
         self.assertIn("call_failed:TimeoutError", out["flags"]["title_block"])
-
-
-class TagCountsAreNeverATotal(unittest.TestCase):
-
-    CHUNKS = [
-        {"chunk_type": "tag_counts", "sheet_number": "A-100.00",
-         "payload": [{"tag": "PTAC", "count": 10, "source": "text-layer tag count"}]},
-        {"chunk_type": "tag_counts", "sheet_number": "A-201.00",
-         "payload": [{"tag": "PTAC", "count": 8, "source": "text-layer tag count"}]},
-        {"chunk_type": "tag_counts", "sheet_number": "A-102.00",
-         "payload": [{"tag": "PTAC", "count": 6, "source": "text-layer tag count"}]},
-    ]
-
-    def test_the_wording(self):
-        ans = pe.answer_question(self.CHUNKS, "how many PTAC units")
-        self.assertEqual(ans["outcome"], "chunk_tag_count")
-        self.assertEqual(ans["text"],
-                         "PTAC tag appears 24 times on A-100.00..A-201.00 (not a stated total).")
-
-    def test_a_printed_count_wins_over_a_tag_count(self):
-        chunks = self.CHUNKS + [{"chunk_type": "elements", "sheet_number": "M-001.00", "payload": [
-            {"name": "PTAC UNITS", "count_if_stated": 22, "count_verified": True}]}]
-        ans = pe.answer_question(chunks, "how many PTAC units")
-        self.assertEqual(ans["outcome"], "chunk_count")
-        self.assertIn("M-001.00: 22", ans["text"])
-
-    def test_a_synonym_finds_the_tag(self):
-        chunks = [{"chunk_type": "tag_counts", "sheet_number": "P-104.00",
-                   "payload": [{"tag": "RD", "count": 4, "source": "text-layer tag count"}]}]
-        ans = pe.answer_question(chunks, "how many roof drains")
-        self.assertEqual(ans["text"], "RD tag appears 4 times on P-104.00 (not a stated total).")
-
-
-class AValueBelongsToTheNounNextToIt(unittest.TestCase):
-    """Measured on A-100.00 and A-500.00."""
-
-    def test_a_value_owned_by_concrete_is_not_a_stucco_thickness(self):
-        chunks = [{"chunk_type": "text", "sheet_number": "A-100.00",
-                   "text": '6" STUD, R19 BATT-R11.5 RIGID INSU.,\nSTUCCO FINISH 12" CONCRETE'}]
-        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
-
-    def test_a_value_across_another_assembly_is_not_it_either(self):
-        chunks = [{"chunk_type": "schedule", "sheet_number": "A-500.00",
-                   "text": 'STUCCO FINISH BOARD 1 LAYERS OF 5/8" EXTERIOR DENS GLASS BOARD'}]
-        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
-
-    def test_a_row_count_needs_a_schedule_named_for_the_thing(self):
-        chunks = [{"chunk_type": "schedule", "sheet_number": "S-001.00", "text": "x", "payload": {
-            "name": "SPECIAL INSPECTION CATEGORIES", "columns": ["", "CATEGORY", "CODE"],
-            "rows": [["", "HELICAL PILES", "BC 1705.8"], ["", "WELDING", "BC 1705.2"]]}}]
-        self.assertEqual(pe.answer_count(chunks, ["piles"]), [])
-
-    def test_the_value_on_the_next_line_of_the_same_label(self):
-        chunks = [{"chunk_type": "text", "sheet_number": "A-500.00",
-                   "text": '3 1/2" METAL STUD 16"\nO.C. 20 GAUGE MIN.'}]
-        hits = pe.answer_attribute(chunks, ["stud"], "gauge")
-        self.assertEqual(hits[0]["line"], '3 1/2" METAL STUD 16" O.C. 20 GAUGE MIN.')
 
 
 class ItReachesNeitherADatabaseNorTheNetwork(unittest.TestCase):

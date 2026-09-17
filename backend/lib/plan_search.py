@@ -464,6 +464,28 @@ def contains_label(text: str, records: Sequence[Dict[str, Any]]) -> List[str]:
     return sorted(out)
 
 
+def cite(r: Dict[str, Any]) -> Optional[str]:
+    """Where a record is, in the words a person can act on: its sheet number,
+    else the file and page it came from, else the page alone. None when it can
+    say none of those — and a record that cannot say where it is is not quoted.
+
+    Live on 588 Boyland, 2026-09-16: an answer cited '?' for a page whose
+    title block could not be read. Seven of the 111 current pages have no
+    sheet number, so this runs every day. A blank or whitespace sheet number
+    is the same case as a missing one; it printed as an empty citation.
+    """
+    sheet = (r.get("sheet_number") or "").strip()
+    if sheet:
+        return sheet
+    page = r.get("page_number")
+    name = (r.get("file_name") or "").strip()
+    if name and page is not None:
+        return f"{name} p{page}"
+    if page is not None:
+        return f"page {page}"
+    return None
+
+
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
                    limit: int = 4) -> str:
     """What the records say, and nothing else. The fallback when the gate
@@ -499,9 +521,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
     lines = [f"{label} — on the drawings:"]
     for r in records[:limit]:
-        where = r.get("sheet_number") or (
-            f"{r.get('file_name')} p{r.get('page_number')}" if r.get("file_name")
-            else f"page {r.get('page_number')}" if r.get("page_number") else None)
+        where = cite(r)
         if not where:
             continue
         quote = re.sub(r"\s+", " ", r.get("quote") or "").strip()
@@ -515,6 +535,6 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 
 
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
-           "answer_is_grounded", "contains_label", "render_records",
+           "answer_is_grounded", "contains_label", "render_records", "cite",
            "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]

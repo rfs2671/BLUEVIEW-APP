@@ -170,7 +170,13 @@ async def run(args) -> int:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({
-            "suite": args.suite, "project": pid,
+            # The suite file MOVES — cases were migrated into it when the
+            # matcher was deleted, and more will be. A result names the case
+            # set it actually scored, so an old record stays a record of its
+            # own run instead of being read against a suite it never saw.
+            "suite": args.suite,
+            "suite_cases": [c["id"] for c in suite["cases"]],
+            "project": pid,
             "ran_at": datetime.now(timezone.utc).isoformat(),
             "corpus_before": before, "corpus_after": after,
             "valid": not moved,

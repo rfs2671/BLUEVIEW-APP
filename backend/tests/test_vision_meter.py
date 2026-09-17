@@ -262,25 +262,18 @@ def test_plan_indexing_counts_per_page_not_per_upload():
     assert lines["record_vision_call"] < lines["client_http.post"]
 
 
-def test_whatsapp_vqa_counts_per_sheet_not_per_question():
-    """_handle_plan_query walks its candidate sheets until one answers, so a
-    question about something the set does not show costs the whole list. The
-    count is inside the per-sheet function for that reason."""
-    import server
-    lines = _call_lines(server._qwen_visual_qa, "client_http.post")
-    assert "record_vision_call" in lines, "WhatsApp VQA is not metered"
-    assert lines["record_vision_call"] < lines["client_http.post"]
-
-
-def test_vqa_does_not_count_a_call_it_never_makes():
-    """The guard clause returns before the meter. An unconfigured key or an
-    empty buffer is not spend, and counting it would put a number in the row
-    that no invoice will ever match."""
-    src = textwrap.dedent(inspect.getsource(__import__("server")._qwen_visual_qa))
-    tree = ast.parse(src)
-    guard = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Return))
-    meter = min(n.lineno for n in ast.walk(tree)
-                if isinstance(n, ast.Call)
-                and ast.unparse(n.func) == "record_vision_call")
-    assert guard < meter, "the meter fires before the no-key guard returns"
+# -- THE WHATSAPP VQA COUNTER IS GONE, AND SO IS THE SPEND ----------------
+#
+# Two tests here metered _qwen_visual_qa: one holding that the count sits
+# per SHEET rather than per question, because the handler walked its
+# candidates until one answered, and one holding that the no-key guard
+# returns before the meter fires.
+#
+# That function is deleted. Plan questions are answered from typed
+# records, so the per-question vision spend is zero and there is no
+# counter left to hold. Indexing is still metered, per page, above — and
+# test_every_qwen_call_site_is_metered is written against the POST rather
+# than a list of names, so a new call site cannot go quiet.
+#
+# eval/migrated-from-the-matcher.md records the move.
 

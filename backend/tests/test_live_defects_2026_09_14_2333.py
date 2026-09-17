@@ -43,11 +43,24 @@ def _code_only(fn):
 # 0. Route on the sentence, not on the agent's bag of keywords
 # ══════════════════════════════════════════════════════════════════
 
-class TheUsersWordsReachTheRouter(unittest.TestCase):
+class TheUsersWordsReachTheHandler(unittest.TestCase):
     """`query` is not the user's message. _dispatch_agent_tool builds it from
     structured args — discipline, floor, sheet_type, sheet_number, keywords —
     so it arrives as "structural pile". Every routing test was being run
-    against that, and against that they all say False."""
+    against that, and against that they all say False.
+
+    ── WHAT ROUTING IS LEFT ───────────────────────────────────────────────
+
+    Nothing routes on phrasing any more. _handle_plan_query does one thing:
+    it sends a sheet. Whether a question is a count, a yes/no or an open
+    question is the agent's business, and it answers from search_plans.
+
+    So the tests below that asked which branch a sentence took are gone —
+    a count beating a show verb, a show verb with no sheet reaching the
+    element path, the synth standing in as the vision prompt. What survives
+    is the part that still matters: the real message reaches the handler, and
+    every exit says which one it was.
+    """
 
     def test_the_handler_takes_the_body(self):
         self.assertIn("user_body",
@@ -64,54 +77,27 @@ class TheUsersWordsReachTheRouter(unittest.TestCase):
         self.assertEqual(code.count("user_body=body"), 2,
                          "both dispatch branches must pass the real message")
 
-    def test_the_router_prefers_the_body_over_the_synth(self):
-        code = _code_only(server._handle_plan_query)
-        self.assertIn("route_text = (user_body or \"\").strip() or query", code)
-
-    def test_a_count_beats_a_show_verb(self):
-        """"show me how many piles" is a question with a one-word answer, not
-        a request for a picture — the same ordering _classify_plan_question
-        already uses."""
-        code = _code_only(server._handle_plan_query)
-        i = code.index("asks_for_a_value")
-        self.assertIn("_is_count_or_yes_no", code[i:i + 200])
-        self.assertIn("not asks_for_a_value", code)
-
-    def test_a_show_verb_with_no_sheet_reaches_the_element_path(self):
-        """The case that fell through to images when the agent supplied no
-        question. offer_only could only be set inside the wants_image branch,
-        which needed a show verb the synth can never contain."""
-        code = _code_only(server._handle_plan_query)
-        tail = code[code.index("else:", code.index("wants_image")):]
-        self.assertIn("_looks_like_show_verb(route_text)", tail)
-        self.assertIn("offer_only = True", tail)
-
-    def test_the_fallback_question_is_the_sentence_not_the_synth(self):
-        """A bag of keywords put to a vision model is a worse prompt than the
-        thing the person actually asked."""
-        code = _code_only(server._handle_plan_query)
-        self.assertIn("effective_question = route_text", code)
-        self.assertNotIn("effective_question = query.strip()", code)
-
-    def test_the_route_decision_is_logged(self):
-        code = _code_only(server._handle_plan_query)
-        self.assertIn("plan route", code)
-
-    def test_the_image_branch_finally_logs_its_exit(self):
-        """Both reported failures ended on this branch and left no line
-        anywhere, so "which path handled it" was unanswerable."""
-        code = _code_only(server._handle_plan_query)
-        self.assertIn('_log_plan_timing(group_id, query, _stage, "image_sent")',
-                      code)
-
     def test_every_exit_from_the_pipeline_logs(self):
         """A path that logs on three of four exits reports nothing about the
-        fourth, which is where the bugs were."""
+        fourth, which is where the bugs were. The outcomes are the ones the
+        path now has."""
         code = _code_only(server._handle_plan_query)
-        for outcome in ('"answered"', '"not_found"', '"element_answered"',
-                        '"element_not_found"', '"image_sent"'):
+        for outcome in ('"named_sheet_not_found"', '"no_match"', '"sent"',
+                        '"send_failed"'):
             with self.subTest(outcome=outcome):
                 self.assertIn(outcome, code)
+
+    def test_and_there_are_no_other_exits(self):
+        """Counted, not listed: a return that logs nothing is exactly the bug
+        this class was opened for."""
+        code = _code_only(server._handle_plan_query)
+        # Two early returns, each logging first, and one fall-through exit at
+        # the end that logs last. A new branch that returns without logging
+        # breaks the equality rather than passing quietly.
+        self.assertEqual(code.count("_log_plan_timing("),
+                         code.count("        return") + 1)
+        self.assertIn("_log_plan_timing", code[code.rindex("\n    "):]
+                      or code[-400:])
 
 
 # ══════════════════════════════════════════════════════════════════

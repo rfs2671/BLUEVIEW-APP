@@ -26,6 +26,7 @@ os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
 from lib import plan_extract as pe  # noqa: E402
+from lib import plan_search as ps  # noqa: E402
 from lib import plan_text as pt  # noqa: E402
 
 
@@ -119,20 +120,11 @@ class _PlanQuery:
         async def never(*a, **k):
             raise AssertionError("a named sheet must not fall through to the search")
 
-        async def no_cap(project_id):
-            return False
-
-        async def no_chunks(*a, **k):
-            return True, None
-
         db = _Db(FILES, PAGES)
         with mock.patch.object(server, "db", db), \
-                mock.patch.object(server, "QWEN_API_KEY", "k"), \
                 mock.patch.object(server, "send_whatsapp_message", send), \
                 mock.patch.object(server, "_send_plan_image", send_image), \
-                mock.patch.object(server, "_retrieve_plan_candidates", never), \
-                mock.patch.object(server, "_vision_budget_exceeded", no_cap), \
-                mock.patch.object(server, "_answer_plan_from_chunks", no_chunks):
+                mock.patch.object(server, "search_plans", never):
             _run(server._handle_plan_query("p1", "g1", parsed.get("synth", "plan"),
                                            parsed_override=parsed, user_body=body))
         return sent, images
@@ -204,49 +196,40 @@ class D3_GeneralKnowledgeIsTwoSentences(unittest.TestCase):
 
 
 class D5_WhatAPersonSaysMatchesWhatTheDrawingPrints(unittest.TestCase):
+    """Live, "What type of AC units in this project?" was answered off a note.
 
-    CHUNKS = [
-        {"chunk_type": "text", "sheet_number": "M-200.00", "sheet_title": "HVAC SCHEDULES",
-         "text": "PTAC UNIT TYPE: THROUGH-WALL, AMANA"},
-        {"chunk_type": "text", "sheet_number": "A-100.00", "sheet_title": "FIRST FLOOR PLAN",
-         "text": "CROWN MOLDING IN PLACE\nOPEN SPACE"},
-    ]
+    The matcher mapped `ac` to `ptac` with a hand-written synonym table, and
+    two of its tests pinned that table. There is no table now, and the eval
+    measures the cost precisely: `ac-type` is the suite's one failing case and
+    its known failure class is `boilerplate_outranks_specific` — a generic
+    note matching more of the question's words than the schedule that answers
+    it. See eval/boyland.json and eval/migrated-from-the-matcher.md.
 
-    def test_the_subject_of_the_question(self):
-        self.assertEqual(pe.question_terms("What type of AC units in this project?"), ["ac"])
-        self.assertEqual(pe.question_terms("what kind of air conditioning"), ["ac"])
-        self.assertEqual(pe.question_terms("how many PTAC units"), ["ptac"])
+    What is kept here is the half that was never about synonyms: a short word
+    a person types must not match inside a longer one.
+    """
 
-    def test_ac_finds_ptac_and_never_matches_place_or_space(self):
-        ans = pe.answer_question(self.CHUNKS, "What type of AC units in this project?")
-        self.assertEqual(ans["outcome"], "chunk_attribute")
-        self.assertIn("M-200.00: PTAC UNIT TYPE", ans["text"])
-        self.assertNotIn("A-100.00", ans["text"])
+    def test_ac_never_matches_place_or_space(self):
+        for hay in ("CROWN MOLDING IN PLACE", "OPEN SPACE", "EACH UNIT"):
+            with self.subTest(hay=hay):
+                self.assertFalse(re.search(ps.term_pattern("ac"), hay, re.I))
+
+    def test_and_still_finds_the_word_itself(self):
+        self.assertTrue(re.search(ps.term_pattern("ac"), "AC UNIT TYPE", re.I))
+        self.assertTrue(re.search(ps.term_pattern("ptac"), "PTAC-1", re.I))
 
 
 class D6_AHeadingIsNotAValue(unittest.TestCase):
+    """Live, "What's the stucco thickness?" was answered with a scale bar.
 
-    CHUNKS = [{"chunk_type": "text", "sheet_number": "A-302.00", "sheet_title": "SECTION DETAILS",
-               "text": "1 FOUNDATION DETAIL STUCCO (UNEXCEVATED) Scale: 3/4\"=1'-0\"\n"
-                       "R-11.5 EPS INSULATION WITH STUCCO FINISH"}]
+    The three tests that asked answer_attribute for a thickness are eval case
+    `stucco-wall-assembly` now: the drawings print the assembly — 6" STUD, R19
+    BATT-R11.5 RIGID INSU., STUCCO FINISH — and no thickness at all, so the
+    case checks that what comes back is the assembly on the sheets that carry
+    it rather than a number lifted off a nearby line.
 
-    def test_the_regression_stucco_thickness(self):
-        ans = pe.answer_question(self.CHUNKS, "What's the stucco thickness?")
-        self.assertEqual(ans["outcome"], "chunk_attribute_not_stated")
-        self.assertEqual(ans["text"], "Not stated on the indexed drawings. Mentioned on A-302.00.")
-        self.assertNotIn("Scale", ans["text"])
-
-    def test_a_scale_anywhere_on_a_line_is_not_a_thickness(self):
-        chunks = [{"chunk_type": "text", "sheet_number": "A-500.00",
-                   "text": "STUCCO FINISH SCALE: 1/2\"=1'-0\""}]
-        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
-
-    def test_a_real_value_is_still_answered(self):
-        chunks = [{"chunk_type": "text", "sheet_number": "A-500.00",
-                   "text": "7/8\" CEMENT STUCCO ON LATH"}]
-        ans = pe.answer_question(chunks, "stucco thickness")
-        self.assertEqual(ans["outcome"], "chunk_attribute")
-        self.assertIn('7/8" CEMENT STUCCO', ans["text"])
+    The scale reading itself is not the matcher's and stays here.
+    """
 
     def test_scales_are_not_dimensions(self):
         self.assertEqual(pt.dimensions_from_text("DETAIL Scale: 3/4\"=1'-0\"  WALL 6\" STUD"), ['6"'])
@@ -263,80 +246,81 @@ class D8_RoofDrains(unittest.TestCase):
         L = pt.layout_from_dict(d, width=2592, height=1728, page_number=1)
         self.assertEqual({t["tag"]: t["count"] for t in pt.count_tags(L, pt.SEED_TAGS)}, {"RD": 1})
 
-    def test_a_printed_rd_count_is_given_as_a_tag_count(self):
-        chunks = [{"chunk_type": "tag_counts", "sheet_number": "A-105.00",
-                   "payload": [{"tag": "RD", "count": 4, "source": "text-layer tag count"}]}]
-        ans = pe.answer_question(chunks, "How many roof drains?")
-        self.assertEqual(ans["text"], "RD tag appears 4 times on A-105.00 (not a stated total).")
-
-    def test_symbols_only_says_where_they_are_shown_and_how_to_get_the_sheet(self):
-        chunks = [
-            {"chunk_type": "legend", "sheet_number": "A-100.00", "sheet_title": "FIRST FLOOR PLAN",
-             "text": "= FLOOR/AREA/ROOF DRAIN"},
-            {"chunk_type": "legend", "sheet_number": "A-105.00",
-             "sheet_title": "ROOF AND BULKHEAD PLAN", "text": "= FLOOR/AREA/ROOF DRAIN"},
-        ]
-        ans = pe.answer_question(chunks, "How many roof drains?")
-        self.assertEqual(ans["outcome"], "chunk_count_not_stated")
-        self.assertEqual(ans["text"],
-                         'Roof drains: shown on A-105.00 (roof and bulkhead plan) — count not '
-                         'stated. Reply "show me A-105.00" for the sheet.')
+    # The two tests that asked the matcher to WORD a roof-drain answer are
+    # eval case `roof-drain-count`. What they were protecting — that a count
+    # of printed RD tags is never presented as a stated total — is a property
+    # of the record now: it carries count_basis `tag_legend`, which is tiered
+    # below a schedule cell and says on its face what it is. The eval checks
+    # the answer against the sheets rather than against a sentence.
 
 
 class D4_SidewalkShedAndRoofProtection(unittest.TestCase):
-    """SSP-003/004 print "8' HIGH SHED"; SSP-013 prints "8' HIGH SIDE WALK
+    """SSP-003/004/005 print "8' HIGH SHED"; SSP-013 prints "8' HIGH SIDE WALK
     SHED"; the legend prints "ADJACENT BLDG. ROOF PROTECTION". Live, both
-    questions went to the vision model on one sheet and found nothing."""
+    questions went to the vision model on one sheet and found nothing.
 
-    CHUNKS = [
-        {"chunk_type": "text", "sheet_number": "SSP-003.00", "sheet_title": "SITE SAFETY PLAN",
-         "text": "CONCRETE SIDEWALK\n8' HIGH SHED"},
-        {"chunk_type": "legend", "sheet_number": "SSP-003.00", "sheet_title": "SITE SAFETY PLAN",
-         "text": "= ADJACENT BLDG. ROOF PROTECTION\n= EXISTING TREE PROTECTION FENCE"},
-        {"chunk_type": "text", "sheet_number": "SSP-013.00", "sheet_title": "SIDEWALK SHED DETAILS",
-         "text": "8' HIGH SIDE WALK SHED"},
-    ]
+    ── BOTH QUESTIONS ARE EVAL CASES NOW ──────────────────────────────────
 
-    def test_the_questions_as_typed(self):
-        self.assertEqual(pe.question_kind("What's the hight of the sidewalk shed?"),
-                         ("attribute", "height"))
-        self.assertEqual(pe.question_kind("What about roof protection?"), ("exists", None))
-        self.assertEqual(pe.question_terms("What's the hight of the sidewalk shed?"),
-                         ["sidewalk", "shed"])
+    `sidewalk-shed-height` and `roof-protection`, asked of the real corpus.
+    Seven tests here asked the matcher instead, over three hand-written
+    chunks, and three of them pinned machinery that is deliberately gone:
 
-    def test_one_typo_is_tolerated_and_a_real_word_is_not_a_typo(self):
-        self.assertEqual(pe.question_kind("post guage"), ("attribute", "gauge"))
-        self.assertEqual(pe.question_kind("stucco thicknes"), ("attribute", "thickness"))
-        self.assertEqual(pe.question_kind("what is the weight of the unit"), (None, None))
+      * `question_kind` — the shape of an answer is the agent's business.
+      * `_one_edit_apart` — "hight", "guage", "thicknes" were forgiven one
+        edit against a small vocabulary. NOTHING REPLACES THIS. A misspelt
+        question now returns less, or nothing. The eval asks both questions
+        as they are spelt, so it does not paper over the loss either.
+      * the head-noun retry — "sidewalk shed" falling back to "shed" when the
+        phrase found nothing. Coverage ranking is what does that job now: a
+        record matching both words outranks one matching either, and the one
+        matching only "shed" is still returned, below it.
 
-    def test_side_walk_is_sidewalk(self):
-        self.assertTrue(pe._matches("8' HIGH SIDE WALK SHED", ["sidewalk", "shed"]))
-        self.assertTrue(pe._matches("SIDE-WALK SHED", ["sidewalk"]))
+    One thing that is genuinely lost with the retry: SIDE WALK, written apart
+    on SSP-013, is not the word "sidewalk" to a matcher that reads words as
+    the sheet prints them. The height is printed on SSP-003/004/005 as well,
+    so the eval case can still pass on the sheets that spell it — but if it
+    does not, that is the finding, not a bug in the case.
 
-    def test_sidewalk_shed_height_is_answered(self):
-        ans = pe.answer_question(self.CHUNKS, "What's the hight of the sidewalk shed?")
-        self.assertEqual(ans["outcome"], "chunk_attribute")
-        self.assertIn("SSP-013.00: 8' HIGH SIDE WALK SHED", ans["text"])
+    eval/migrated-from-the-matcher.md records all of it.
+    """
 
-    def test_the_head_noun_finds_the_shed_when_the_phrase_does_not(self):
-        chunks = [self.CHUNKS[0]]
-        ans = pe.answer_question(chunks, "sidewalk shed height")
-        self.assertEqual(ans["outcome"], "chunk_attribute")
-        self.assertIn("SSP-003.00: 8' HIGH SHED", ans["text"])
+    def test_a_count_does_not_fall_back_to_a_different_element(self):
+        """Live: "how many roof drains" was answered with a count of FD, the
+        FLOOR drain. The head-noun retry did that — dropping "roof" and asking
+        for "drains". Coverage keeps both words in play."""
+        fd = {"quote": "FD", "subject_terms": ["FD", "FLOOR DRAIN"],
+              "tier": "tag_legend", "payload": {"tag": "FD", "count": 6}}
+        rd = {"quote": "ROOF DRAIN", "subject_terms": ["RD", "ROOF DRAIN"],
+              "tier": "text_layer"}
+        ranked = ps.rank([fd, rd], ps.search_terms("roof drains"))
+        self.assertEqual(ranked[0]["quote"], "ROOF DRAIN")
 
-    def test_what_about_roof_protection(self):
-        ans = pe.answer_question(self.CHUNKS, "What about roof protection?")
-        self.assertEqual(ans["outcome"], "chunk_exists")
-        self.assertIn("SSP-003.00", ans["text"])
-        self.assertIn("ROOF PROTECTION", ans["text"])
+    def test_the_phrase_leads_and_the_height_ranks_below_it(self):
+        """No head-noun retry: the record matching both words leads, and the
+        line carrying the height ranks under it rather than being dropped.
 
-    def test_a_count_does_not_fall_back_to_the_head_noun(self):
-        chunks = [{"chunk_type": "tag_counts", "sheet_number": "P-101.00",
-                   "payload": [{"tag": "FD", "count": 6, "source": "text-layer tag count"}]},
-                  {"chunk_type": "legend", "sheet_number": "P-101.00", "sheet_title": "FLOOR PLAN",
-                   "text": "= FLOOR DRAIN"}]
-        ans = pe.answer_question(chunks, "how many roof drains")
-        self.assertNotIn("FD", ans["text"])
+        RANKING is not RETURNING. Measured on the real corpus the same day
+        (eval `sidewalk-shed-height`), five sheets print the phrase and the
+        limit of 8 cut the height line off before the crew ever saw it —
+        known failure class `a_mention_outranks_the_measurement`. This holds
+        the ordering; the eval holds the outcome."""
+        phrase = {"quote": "SIDEWALK SHED PARAPET PANEL LAYOUT", "tier": "text_layer"}
+        height = {"quote": "8' HIGH SHED", "tier": "text_layer"}
+        walk = {"quote": "CONCRETE SIDEWALK", "tier": "text_layer"}
+        ranked = ps.rank([walk, height, phrase], ps.search_terms("sidewalk shed"))
+        self.assertEqual(ranked[0]["quote"], "SIDEWALK SHED PARAPET PANEL LAYOUT")
+        self.assertIn(height, ranked, "the line with the height was dropped")
+        ok, missing = ps.answer_is_grounded("The shed is 8 feet high.", ranked)
+        self.assertTrue(ok, missing)
+
+    def test_side_walk_written_apart_is_not_the_word_sidewalk(self):
+        """THE LOSS, ASSERTED RATHER THAN ASSUMED. The matcher normalised it;
+        nothing does now. It is written this way on exactly one sheet of this
+        set, and the same fact is printed on three others."""
+        self.assertFalse(re.search(ps.term_pattern("sidewalk"),
+                                   "8' HIGH SIDE WALK SHED", re.I))
+        self.assertTrue(re.search(ps.term_pattern("shed"),
+                                  "8' HIGH SIDE WALK SHED", re.I))
 
 
 def _m200_layout():
@@ -391,16 +375,35 @@ class D5b_SchedulesDrawnAsShapesAreReadFromTheImage(unittest.TestCase):
         self.assertEqual(out["fields"]["schedules"][0]["source"], "vision")
         self.assertEqual(out["fields"]["notes_source"], "vision")
 
-        chunks = pe.build_chunks(out["fields"])
-        for c in chunks:
-            c["sheet_number"] = "M-200.00"
-        ans = pe.answer_question(chunks, "how many PTAC units")
-        # The caveat grew a second half on 2026-09-16. This page has no text
-        # chunk at all, so nothing printed confirms 21, 9 or 11 — see
-        # schedule_needs_verifying.
-        self.assertEqual(ans["text"], "PTAC:\nM-200.00: 41 (ROOMS PTAC UNITS SCHEDULE, qty "
-                                      "column, read from the drawing image — verify "
-                                      "against the sheet)")
+        # ── AND 41 IS WHERE THIS WHOLE ARC STARTED ────────────────────────
+        #
+        # This test used to end by asking the matcher how many PTAC units
+        # there are, and asserting the answer "M-200.00: 41" — the sum of a
+        # quantity column, read off a picture, with a caveat after it. It is
+        # the exact sentence that went to the group. 41 is printed nowhere.
+        #
+        # The same fields, as records: three quantities the schedule states,
+        # each one vision-read and saying so, and a gate that refuses the sum.
+        from lib import plan_records as pr
+        records = pr.build_records(out["fields"],
+                                   page={"sheet_number": "M-200.00", "page_number": 9},
+                                   raw_text=_m200_layout()["text"])
+        sched = [r for r in records if r.get("record_type") == "schedule"]
+        self.assertEqual(len(sched), 1)
+        # Read off the image, and the record says so rather than wearing the
+        # badge of a cell the text layer handed over.
+        self.assertEqual((sched[0]["tier"], sched[0]["source"]),
+                         (pe.TIER_VISION, "vision"))
+        for stated in ("21", "9", "11"):
+            with self.subTest(qty=stated):
+                self.assertIn(stated, sched[0]["quote"])
+
+        ok, missing = ps.answer_is_grounded("There are 41 PTAC units.", records)
+        self.assertFalse(ok, "the gate allowed a total no cell prints")
+        self.assertIn("41", missing)
+        ok, _ = ps.answer_is_grounded(
+            "The schedule lists 21 PTAC-1, 9 PTAC-2 and 11 PTAC-3.", records)
+        self.assertTrue(ok, "the gate refused the numbers the schedule states")
 
     def test_no_empty_grid_and_not_a_thin_plan_is_one_call(self):
         calls = []

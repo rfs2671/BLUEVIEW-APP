@@ -402,6 +402,81 @@
       }
     },
     {
+      "id": "stud-gauge",
+      "question": "what gauge are the metal studs",
+      "subject": "metal stud gauge",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-500.00"
+        ],
+        "values": [
+          20
+        ],
+        "text": [
+          "20 GAUGE"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "AR - 3.28.25.pdf p24 (A-500.00), partition and wall type table",
+        "evidence": "P1. 3 1/2\" METAL STUD 16\" O.C. 20 GAUGE MIN., and 2 1/2\" CH STUDS 16\" O.C. 20 GA. A-500.00 is the only current page whose text layer prints a stud gauge; S-001.00 and S-002.00 print the words LIGHT GAUGE STEEL with no gauge. Asked live on 2026-09-15 as 'post guage' and not found — the matcher's one-edit tolerance is gone, so the case asks it as it is spelt."
+      }
+    },
+    {
+      "id": "sidewalk-shed-height",
+      "question": "how high is the sidewalk shed",
+      "subject": "sidewalk shed",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "SSP-003.00",
+          "SSP-004.00",
+          "SSP-005.00",
+          "SSP-009.00",
+          "SSP-010.00",
+          "SSP-013.00"
+        ],
+        "values": [
+          8
+        ],
+        "text": [
+          "HIGH SHED"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "SSP - 6.18.25.pdf p3-p5 (SSP-003.00, SSP-004.00, SSP-005.00)",
+        "evidence": "8' HIGH SHED on all three site-safety plans. SIDEWALK SHED is printed on five current pages including the standalone shed letter, which carries no sheet number."
+      }
+    },
+    {
+      "id": "roof-protection",
+      "question": "what roof protection is on the drawings",
+      "subject": "roof protection",
+      "intent": "existence",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "SSP-003.00",
+          "SSP-004.00",
+          "SSP-005.00",
+          "SSP-009.00",
+          "SSP-011.00"
+        ],
+        "text": [
+          "ROOF PROTECTION"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "SSP - 6.18.25.pdf p3-p5, p9, p11",
+        "evidence": "ADJACENT BLDG. ROOF PROTECTION on SSP-003.00/004.00/005.00; TYPICAL ROOF PROTECTION and ROOF PROTECTION (TYP) on SSP-011.00; ROOF PROTECTION on SSP-009.00."
+      }
+    },
+    {
       "id": "kicker-invented",
       "question": "what is a kicker",
       "subject": "kicker",
@@ -468,6 +543,23 @@
         "source": "PyMuPDF text of all 111 current pages",
         "evidence": "HELIPAD and HELIPORT are on no current page."
       }
+    },
+    {
+      "id": "chase-walls-absent",
+      "question": "are there chase walls",
+      "subject": "chase wall",
+      "intent": "existence",
+      "kind": "absent",
+      "expect": {
+        "forbid_text": [
+          "CHASE"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all 111 current pages, plus every stored record quote",
+        "evidence": "CHASE is on no current page and in no record quote of the 12,040 on those pages. Asked live on 2026-09-16 the matcher replied 'Yes — chase walls is on T-001.01, Z-001.01, A-100.01, A-105.01' over a quote of 'CONC. WALL', and cited a page whose sheet number could not be read as '?'."
+      }
     }
   ],
   "known_failures": [
@@ -481,6 +573,17 @@
       "why_it_is_not_tuned_away": "Ranking is similarity-first by design (#589). Special-casing this question would teach the ranker the suite rather than fix the class.",
       "evidence": "The note is printed identically on M-100.00 through M-105.00 and is vision-read (the M-sheet notes are outlined). The project team confirmed on 2026-09-17 that 588 Boyland has PTACs only and no split systems: it is engineer boilerplate that was not stripped.",
       "lead_for_a_principled_fix": "boilerplate_lines strips lines repeated across a file's TEXT LAYER; vision-read notes never pass through it. A note whose quote recurs verbatim across many sheets of one discipline is the same signal, and the typed records carry enough (page, discipline, quote, source) to apply it."
+    },
+    {
+      "class": "a_mention_outranks_the_measurement",
+      "cases": [
+        "sidewalk-shed-height"
+      ],
+      "status": "open",
+      "what": "For an attribute question, records that repeat the subject phrase outrank the record that states its value, and with a limit of 8 the value never comes back. Asked how high the sidewalk shed is, the reader returned SIDEWALK SHED, SIDEWALK SHED PARAPET PANEL LAYOUT, TYPICAL SIDEWALK SHED ELEVATION and a permit note — four mentions, no dimension. 8' HIGH SHED is printed on SSP-003.00, SSP-004.00 and SSP-005.00.",
+      "why_it_is_not_tuned_away": "Coverage counts WORDS, which is the rule that fixed the boilerplate cases and is not being special-cased for this one. Nothing in the ranker knows that a record carries a measurement, and teaching it the word 'height' is the attribute table again in a longer coat.",
+      "evidence": "Measured 2026-09-17 on the post-deletion run. The matcher answered this question by looking for a value NEAR the term (answer_attribute, with a hand-written attribute vocabulary that also forgave the live typo 'hight'). Both halves went; this is the half worth rebuilding.",
+      "lead_for_a_principled_fix": "The records already carry the shape of the answer: a quote with a number and a unit in it is a measurement, and an attribute-intent query wants one. Ranking is (coverage, tier, density, type prior); an intent-scoped preference for a record that STATES a value, applied at the same point as best_per_attribute, would order these correctly without a vocabulary of attribute words. It needs its own cases before it ships — a measurement is not always the answer."
     }
   ]
 }

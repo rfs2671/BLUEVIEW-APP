@@ -29,6 +29,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
+from lib import plan_search as ps  # noqa: E402
 
 SRC = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
 
@@ -117,30 +118,29 @@ class ShowMeAnElementIsNotAShowMeASheet(unittest.TestCase):
             with self.subTest(q=q):
                 self.assertFalse(server._names_a_sheet(q))
 
-    def test_the_image_branch_is_gated_on_the_sheet_not_the_verb(self):
-        """The reported defect exactly: the branch used to turn on
-        _looks_like_show_verb alone."""
+    def test_a_named_sheet_is_an_exact_lookup_and_nothing_else(self):
+        """The reported defect exactly: the image branch used to turn on
+        _looks_like_show_verb alone, and a miss fell through to the nearest
+        neighbours. A named sheet goes to _find_named_sheet, and when that
+        finds nothing the handler SAYS so instead of sending something close.
+        """
         code = _code_only(server._handle_plan_query)
-        i = code.index("wants_image")
-        window = code[i:i + 400]
-        self.assertIn("_names_a_sheet", window)
-        self.assertIn("sheet_number", window)
-        self.assertIn("offer_only", window)
+        i = code.index("if named:")
+        window = code[i:i + 500]
+        self.assertIn("_find_named_sheet(project_id, named)", window)
+        self.assertIn("isn't in the indexed drawings", window)
+        self.assertIn("return", window)
 
-    def test_the_element_path_sends_no_ranked_guess(self):
-        """Bounded by CODE landmarks; _code_only has already stripped the
-        comments, so a boundary that lives in one cannot be found.
-
-        The image sent on this path comes from _pages_with_element, never from
-        the RRF candidate list — that list is always populated and therefore
-        can never say the thing is not there."""
+    def test_the_sheet_sent_is_the_sheet_the_records_are_on(self):
+        """Never a ranked guess. The RRF candidate list is gone — it was
+        always populated, so it could never say the thing is not there. The
+        pages come from the records search_plans returned, which quote the
+        thing or are not returned at all."""
         code = _code_only(server._handle_plan_query)
-        start = code.index("if offer_only:")
-        end = code.index("if not effective_question:", start)
-        block = code[start:end]
-        self.assertIn("_pages_with_element", block)
-        self.assertNotIn("candidates[", block,
-                         "the element path is reaching into the ranked list again")
+        start = code.index("else:")
+        self.assertIn("await search_plans(", code[start:])
+        self.assertIn("_pages_for_records(project_id, found)", code[start:])
+        self.assertNotIn("_retrieve_plan_candidates", code)
 
     def test_it_answers_rather_than_asking_back(self):
         """A superintendent who typed "show me the roof drains" has already
@@ -151,8 +151,10 @@ class ShowMeAnElementIsNotAShowMeASheet(unittest.TestCase):
         self.assertIn("_send_plan_image", code)
 
     def test_nothing_found_says_so(self):
-        self.assertIn("Not found on indexed drawings.",
-                      _code_only(server._handle_plan_query))
+        """One question back, and only when there is nothing to send at all —
+        which is the one case where the crew has to narrow it."""
+        code = _code_only(server._handle_plan_query)
+        self.assertIn("Nothing to show for that", code)
 
     def test_the_offer_machinery_is_gone(self):
         """Removed with the behaviour it served, rather than left dormant."""
@@ -174,14 +176,22 @@ class ShowMeAnElementIsNotAShowMeASheet(unittest.TestCase):
 class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
     """The hard rule: never a best-keyword guess.
 
-    _retrieve_plan_candidates fuses a vector rank and a keyword rank and
-    returns its top three. Its top three are ALWAYS populated, so it cannot
-    return nothing — which makes it incapable of saying "not on the drawings".
-    _pages_with_element asks the literal question instead."""
+    _retrieve_plan_candidates fused a vector rank and a keyword rank and
+    returned its top three. Its top three were ALWAYS populated, so it could
+    not return nothing — which made it incapable of saying "not on the
+    drawings". _pages_with_element asked the literal question instead.
 
-    def test_the_search_runs_over_extracted_text_only(self):
+    Both are gone. A record is returned when its own printed words match, and
+    the sheet that is sent is a sheet those records are on, so "nothing" is
+    now an ordinary outcome rather than an impossible one. What the literal
+    search had to get right, the ranker still has to get right, and it is
+    tested here against plan_search rather than against a source string.
+    """
+
+    def test_the_debug_view_still_searches_extracted_text_only(self):
         """`embedding` is a guess by construction and `file_name` is about the
-        upload, not the drawing."""
+        upload, not the drawing. _ELEMENT_TEXT_FIELDS outlived the retriever:
+        whatsapp_debug_page_index uses it to show what a page carries."""
         for f in ("keywords", "summary", "materials", "spaces", "notes"):
             with self.subTest(field=f):
                 self.assertIn(f, server._ELEMENT_TEXT_FIELDS)
@@ -196,31 +206,35 @@ class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
         self.assertEqual(stray, [],
                          f"searching fields nothing writes: {stray}")
 
-    def test_every_term_has_to_appear(self):
-        """An OR over the terms would match a page that mentions "roof" and
-        knows nothing about drains."""
-        code = _code_only(server._pages_with_element)
-        self.assertIn('"$and"', code)
+    def test_every_term_has_to_appear_first(self):
+        """An OR over the terms matches a page that mentions "roof" and knows
+        nothing about drains. The records that contain EVERY term are fetched
+        in full before any record that contains only some."""
+        code = _code_only(server.search_plans)
+        i = code.index('"$and": [{"$or": ors} for ors in per_term]')
+        j = code.index('"$or": [c for ors in per_term for c in ors]')
+        self.assertLess(i, j, "the any-term query runs before the all-term one")
 
-    def test_stopwords_are_stripped_from_the_element(self):
+    def test_and_coverage_is_the_first_thing_the_ranker_sorts_on(self):
+        drains = {"quote": "ROOF DRAIN LEADERS", "tier": "text_layer"}
+        roof = {"quote": "ROOF PLAN", "tier": "schedule_cell"}
+        ranked = ps.rank([roof, drains], ps.search_terms("roof drains"))
+        self.assertEqual(ranked[0]["quote"], "ROOF DRAIN LEADERS",
+                         "a higher tier that matches fewer words came first")
+
+    def test_stopwords_are_stripped_from_the_subject(self):
         """"the" is on every page ever indexed."""
-        terms = server._element_terms("show me the roof drains", {})
+        terms = ps.search_terms("show me the roof drains")
         self.assertNotIn("the", terms)
         self.assertNotIn("show", terms)
         self.assertIn("roof", terms)
 
-    def test_the_parsers_keywords_win_when_it_has_them(self):
-        """It has already read the sentence and pulled out the subject."""
-        terms = server._element_terms("show me the thing",
-                                      {"keywords": ["roof drain"]})
-        self.assertEqual(terms, ["roof drain"])
-
-    def test_an_empty_element_finds_nothing_rather_than_everything(self):
+    def test_an_empty_subject_finds_nothing_rather_than_everything(self):
         """A query that reduces to no terms must not turn into an unfiltered
-        scan that matches every page in the project."""
-        import asyncio
-        self.assertEqual(asyncio.run(server._pages_with_element("p1", [])), [])
-        self.assertEqual(asyncio.run(server._pages_with_element("", ["roof"])), [])
+        scan that matches every record in the project."""
+        self.assertEqual(ps.search_terms("the a of"), [])
+        code = _code_only(server.search_plans)
+        self.assertIn("if not (project_id and terms):", code)
 
     def test_a_plural_finds_the_singular(self):
         """MEASURED, not assumed. Against a stubbed index, "show me the roof
@@ -228,28 +242,27 @@ class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
         reads "roof drain leaders to riser" — so the answer said one sheet when
         the truth was two. A literal search that cannot see past an "s" is a
         literal search that lies by omission."""
-        code = _code_only(server._pages_with_element)
-        self.assertIn('endswith("s")', code)
-        self.assertIn('endswith("es")', code)
+        rx = re.compile(ps.term_pattern("drains"), re.I)
+        self.assertTrue(rx.search("ROOF DRAIN LEADERS TO RISER"))
+        self.assertTrue(re.search(ps.term_pattern("box"), "MEP BOXES", re.I))
 
     def test_the_stem_is_not_a_stemmer(self):
         """A real stemmer turns "gas" into "ga" and matches everything. The
         length guard is what keeps short words whole."""
-        code = _code_only(server._pages_with_element)
-        self.assertIn("len(needle) > 3", code)
+        self.assertEqual(ps.term_forms("gas"), ["gas"])
+        self.assertNotIn("pil", ps.term_forms("piles"))
 
-    def test_a_page_the_indexer_thought_was_about_it_is_sent_first(self):
-        """The difference between sending the riser diagram and sending a page
-        that says "see riser diagram"."""
-        code = _code_only(server._pages_with_element)
-        self.assertIn("keywords", code)
-        self.assertIn("rows.sort", code)
+    def test_and_a_term_is_a_word_rather_than_a_run_of_letters(self):
+        """The same search that could not see past an "s" could see STAIRS
+        inside a question about air."""
+        self.assertFalse(re.search(ps.term_pattern("air"), "STAIRS", re.I))
+        self.assertTrue(re.search(ps.term_pattern("ptac"), "PTAC-1", re.I))
 
     def test_the_lookup_is_timed_like_every_other_stage(self):
         code = _code_only(server._handle_plan_query)
-        self.assertIn('_mark("element_lookup")', code)
-        self.assertIn('"element_not_found"', code)
-        self.assertIn('"element_answered"', code)
+        self.assertIn('_stage["records"]', code)
+        self.assertIn('"no_match"', code)
+        self.assertIn('"sent"', code)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -317,18 +330,24 @@ class TheGenericOfferIsStrippedNotRequested(unittest.TestCase):
 class ThePlanPathIsTimed(unittest.TestCase):
 
     def test_every_stage_is_marked(self):
+        """The stages are what the path now has: which sheet was named, how
+        many records answered, how many pages they pointed at, how many images
+        went out. The vision stages went with the vision calls."""
         code = _code_only(server._handle_plan_query)
-        for stage in ('"parse"', '"retrieval"', '"candidates"',
-                      'f"fetch{_vqa_n}"', 'f"vqa{_vqa_n}"'):
+        for stage in ('"named"', '"records"', '"candidates"', '"sent"',
+                      '"total"'):
             with self.subTest(stage=stage):
-                self.assertIn(stage, code)
+                self.assertIn(f"_stage[{stage}]", code)
 
-    def test_both_outcomes_log(self):
-        """A path that only logs when it answers reports nothing about the
-        slowest case, which is the one that runs every candidate."""
+    def test_every_outcome_logs(self):
+        """A path that only logs when it sends something reports nothing about
+        the cases worth knowing about."""
         code = _code_only(server._handle_plan_query)
-        self.assertIn('_log_plan_timing(group_id, query, _stage, "answered")', code)
-        self.assertIn('_log_plan_timing(group_id, query, _stage, "not_found")', code)
+        for outcome in ('"named_sheet_not_found"', '"no_match"',
+                        '"sent" if sent else "send_failed"'):
+            with self.subTest(outcome=outcome):
+                self.assertIn(f"_log_plan_timing(group_id, query, _stage, "
+                              f"{outcome})", code)
 
     def test_the_line_is_greppable_and_carries_a_total(self):
         code = _code_only(server._log_plan_timing)
@@ -341,15 +360,29 @@ class ThePlanPathIsTimed(unittest.TestCase):
         self.assertIn("logger.warning", _code_only(server._log_plan_timing))
 
 
-class ThePoolStopsCarryingItsVectors(unittest.TestCase):
+class ThePageRowIsFetchedWithoutItsVectors(unittest.TestCase):
+    """_PAGE_FIELDS outlived the pool it was written for. Two readers still
+    load page rows — the named-sheet lookup and the pages behind the records —
+    and both send an image from what they load."""
 
-    def test_both_pool_loads_are_projected(self):
-        code = _code_only(server._retrieve_plan_candidates)
-        self.assertEqual(code.count("_PAGE_FIELDS"), 2,
-                         "a pool load without a projection is back")
+    READERS = ("_find_named_sheet", "_pages_for_records")
+
+    def test_both_page_loads_are_projected(self):
+        for name in self.READERS:
+            with self.subTest(fn=name):
+                code = _code_only(getattr(server, name))
+                self.assertIn("_PAGE_FIELDS", code,
+                              "a page load without a projection is back")
 
     def test_the_projection_excludes_the_embedding(self):
         self.assertNotIn("embedding", server._PAGE_FIELDS)
+
+    def test_no_embedding_is_loaded_anywhere_on_this_path(self):
+        """The vector pass is gone with the RRF fusion that needed it."""
+        for name in self.READERS + ("search_plans",):
+            with self.subTest(fn=name):
+                self.assertNotIn('{"embedding": 1}',
+                                 _code_only(getattr(server, name)))
 
     def test_it_covers_every_field_the_pipeline_reads(self):
         """A projection typo does not raise. It silently drops a field and
@@ -358,7 +391,7 @@ class ThePoolStopsCarryingItsVectors(unittest.TestCase):
         (MATERIALS_AND_SPECS) rather than from what the writer stores
         (`materials`)."""
         used = set()
-        for fn in (server._retrieve_plan_candidates, server._handle_plan_query,
+        for fn in (server._pages_for_records, server._handle_plan_query,
                    server._fetch_page_jpeg, server._send_plan_image):
             src = inspect.getsource(fn)
             used |= set(re.findall(
@@ -379,15 +412,6 @@ class ThePoolStopsCarryingItsVectors(unittest.TestCase):
                            "is_spec_page"})
         self.assertEqual(stray, [],
                          f"projected fields nothing writes: {stray}")
-
-    def test_the_vectors_are_fetched_for_the_pass_that_needs_them(self):
-        code = _code_only(server._retrieve_plan_candidates)
-        self.assertIn('{"embedding": 1}', code)
-
-    def test_a_failed_vector_fetch_costs_the_rank_not_the_answer(self):
-        code = _code_only(server._retrieve_plan_candidates)
-        i = code.index('{"embedding": 1}')
-        self.assertIn("except Exception", code[i:i + 500])
 
 
 if __name__ == "__main__":
