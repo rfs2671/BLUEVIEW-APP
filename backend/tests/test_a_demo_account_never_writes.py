@@ -240,6 +240,37 @@ def test_no_non_safe_route_is_reachable_by_a_demo_principal():
         + "\n  ".join(reached))
 
 
+def test_no_non_safe_route_is_refused_to_a_real_account():
+    """THE MIRROR, AND THE CENSUS IS NOT EVIDENCE WITHOUT IT.
+
+    A guard that refuses EVERY authenticated write would pass the census above
+    perfectly — 153 routes refused, all green, product dead. Most of the
+    backend suite cannot catch that, because it overrides `get_current_user`
+    and sends no Authorization header at all, so the middleware never engages
+    for those tests and their green says nothing about this.
+
+    This is the same loop with a CP's token and a CP's document: not one of
+    the 153 may come back as a demo refusal.
+    """
+    import server
+
+    headers = {"Authorization": f"Bearer {_token('cp', user_id='cp-user-1')}"}
+    refused = []
+
+    with _Patched(_db_returning_user({"_id": "cp-user-1", "role": "cp"})):
+        client = _client()
+        for method, template in _non_safe_routes():
+            path = _concrete(template)
+            rate_limits.reset_counter()
+            response = client.request(method, path, json={}, headers=headers)
+            if _refusal(response) is not None:
+                refused.append(f"{method} {template}")
+
+    assert not refused, (
+        "the demo write guard refused a REAL account on these writes:\n  "
+        + "\n  ".join(refused))
+
+
 def test_the_exemption_list_is_exactly_the_two_auth_paths():
     """The list is short and it is checked, because every entry is a hole.
 
