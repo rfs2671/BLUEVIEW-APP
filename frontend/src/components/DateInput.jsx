@@ -3,9 +3,11 @@ import {
   View, Text, TextInput, StyleSheet, Platform,
 } from 'react-native';
 import {
-  DATE_DISPLAY_FORMAT, entryState, initialEntryText, nextEntryText,
+  DATE_DISPLAY_FORMAT, entryState, initialEntryText, nextEntry,
   storedDateNote, valueForHost,
 } from '../utils/dateEntry';
+
+const IS_WEB = Platform.OS === 'web';
 
 /**
  * THE date field. Every date a person types in this app is typed here.
@@ -49,6 +51,25 @@ import {
  * native module turns an over-the-air fix into a store build (the reason
  * DateField and TimeField were hand-built). This is a TextInput.
  *
+ * ── THE CARET, AND WHY ONLY ON WEB ─────────────────────────────────────────
+ *
+ * On web the field is a real <input>, and every keystroke replaces its whole
+ * value with the re-formatted text. A browser puts the caret at the END of a
+ * value it did not see typed, so editing the MIDDLE of a date — fixing the
+ * day in 07/21/2029 — threw the caret into the year and the corrected digit
+ * was typed there. dateEntry's nextEntry() says where the caret belongs,
+ * counted in DIGITS so it survives the slashes moving; this passes that back
+ * as RN-Web's `selection` prop, which RN-Web applies in a layout effect —
+ * after React has written the new text into the input and before the browser
+ * paints, the only moment that holds. A NEW object per keystroke is what
+ * re-runs that effect; a re-render for any other reason passes the same
+ * object and the person's own caret is left where they put it.
+ *
+ * NATIVE IS NOT GIVEN ONE. RN keeps the caret itself there and the defect was
+ * never reported on a phone; a controlled `selection` on Android fights the
+ * IME on fast input. So the prop is web-only, and nextEntry() without a caret
+ * returns exactly the text nextEntryText() always did.
+ *
  * NOT A WRITER. Opening a form that holds '07/212029' shows 07/21/2029 with a
  * note, and does not call onChange: the host's value is untouched, so nothing
  * is dirty and nothing is saved. The value reaches the database only through
@@ -77,6 +98,10 @@ export default function DateInput({
   // Anything else is the host speaking — a reset, a calendar tap, a different
   // record opened — and the field re-reads it.
   const emitted = useRef(stored);
+  // WEB: the caret to restore after the re-format, and the DOM's caret at the
+  // moment of the change. Both are inert on native.
+  const [selection, setSelection] = useState(null);
+  const rawCaret = useRef(null);
 
   useEffect(() => {
     if (stored === emitted.current) return;
@@ -85,9 +110,21 @@ export default function DateInput({
     setTouched(false);
   }, [stored]);
 
+  // RN-Web calls onChange with the host <input> as the event's target, then
+  // onChangeText with its value. This reads the caret out of the DOM while it
+  // still holds what the person typed, before React writes the format back.
+  const readCaret = (e) => {
+    const node = e && (e.target || (e.nativeEvent && e.nativeEvent.target));
+    rawCaret.current = node && typeof node.selectionStart === 'number'
+      ? node.selectionStart
+      : null;
+  };
+
   const handleChange = (raw) => {
-    const next = nextEntryText(text, raw);
+    const { text: next, caret } = nextEntry(text, raw, rawCaret.current);
+    rawCaret.current = null;
     setText(next);
+    if (IS_WEB) setSelection({ start: caret, end: caret });
     setTouched(true);
     // ISO, '' WHEN THE FIELD IS EMPTY, OR THE TEXT AS TYPED. There is no
     // mode: a host that asked for a blank instead of the typed text is how a
@@ -121,8 +158,9 @@ export default function DateInput({
         placeholder={placeholder}
         keyboardType="number-pad"
         // RN-web renders keyboardType as nothing a phone browser honours;
-        // inputMode is what brings up the digit pad there.
-        {...(Platform.OS === 'web' ? { inputMode: 'numeric' } : {})}
+        // inputMode is what brings up the digit pad there. `selection` and
+        // `onChange` are the caret; see the header for why they are web-only.
+        {...(IS_WEB ? { inputMode: 'numeric', selection, onChange: readCaret } : {})}
         autoCapitalize="none"
         autoCorrect={false}
       />

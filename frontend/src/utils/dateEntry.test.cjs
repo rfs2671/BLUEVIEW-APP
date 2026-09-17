@@ -352,5 +352,152 @@ check('no 8-digit string is a valid date both as MMDDYYYY and as YYYYMMDD', () =
   }
 });
 
+// ── 7. THE CARET, WHEN THE FIELD RE-FORMATS UNDER THE PERSON TYPING ─────────
+//
+// On web the field is a real <input>. Every keystroke is re-formatted and the
+// new text written back into it, and a browser puts the caret at the END of a
+// value it did not see typed. So fixing the day in 07/21/2029 — backspace,
+// type — sent the caret to the year, and the corrected day was typed there.
+//
+// nextEntry() answers where the caret goes, in the units the formatter works
+// in: DIGITS, not characters. The caret sits after the SAME DIGIT it was
+// after — one fewer when the edit removed a digit — whatever the slashes did
+// around it. `.text` is exactly what nextEntryText() has always returned, so
+// native, which keeps its own caret and is handed no selection, is unmoved.
+
+/** How many digits sit before `caret` in `text` — the only unit that maps. */
+const digitsBefore = (text, caret) => (String(text).slice(0, caret).match(/\d/g) || []).length;
+
+check('the caret follows the slash the formatter inserted', () => {
+  // '07' plus a '2' is re-written as '07/2': one character was typed and the
+  // caret must move two, or the next digit lands before the slash.
+  eq(D.nextEntry('07', '072', 3), { text: '07/2', caret: 4 }, 'third digit');
+  eq(D.nextEntry('07/21', '07/212', 6), { text: '07/21/2', caret: 7 }, 'fifth digit');
+  eq(D.nextEntry('07/2', '07/21', 5), { text: '07/21', caret: 5 }, 'no slash due');
+  // And in the middle, where the end of the field is the wrong answer:
+  eq(D.nextEntry('07/2', '075/2', 3), { text: '07/52', caret: 4 }, 'mid-field');
+});
+
+check('fixing the day in 07/21/2029 leaves the caret in the day', () => {
+  // THE REPORTED DEFECT, end to end. Caret after the 1 of 21; backspace; 5.
+  // The day must read 25 — not 07/22/0295, with the 5 typed into the year.
+  const gone = D.nextEntry('07/21/2029', '07/2/2029', 4);
+  eq(gone, { text: '07/22/029', caret: 4 }, 'after the backspace');
+  const typed = D.nextEntry(gone.text, '07/252/029', 5);
+  eq(typed, { text: '07/25/2029', caret: 5 }, 'after the 5');
+  eq(digitsBefore(typed.text, typed.caret), 4, 'digits before the caret');
+});
+
+check('backspace over a slash puts the caret where the digit it ate was', () => {
+  // The OS removed the slash; the formatter takes the digit in front of it
+  // instead (section 2). The caret must follow that digit, not the slash.
+  eq(D.nextEntry('07/21/2029', '07/212029', 5), { text: '07/22/029', caret: 4 },
+    'second slash');
+  eq(D.nextEntry('07/21/2029', '0721/2029', 2), { text: '02/12/029', caret: 1 },
+    'first slash');
+  eq(D.nextEntry('/', '', 0), { text: '', caret: 0 }, 'a slash with no digit before it');
+});
+
+check('a paste lands the caret after what was pasted', () => {
+  eq(D.nextEntry('', '07212029', 8), { text: '07/21/2029', caret: 10 }, 'bare digits');
+  eq(D.nextEntry('', '07/21/2029', 10), { text: '07/21/2029', caret: 10 }, 'US');
+  // A pasted ISO date is turned around; no position in '2029-07-21' maps to a
+  // position in '07/21/2029', so the caret goes to the end of what landed.
+  eq(D.nextEntry('', '2029-07-21', 10), { text: '07/21/2029', caret: 10 }, 'ISO');
+  eq(D.nextEntry('', '2029-07-21', 4), { text: '07/21/2029', caret: 10 }, 'ISO, caret anywhere');
+  // Pasted over a selected day: the caret stays at the end of the paste.
+  eq(D.nextEntry('07/21/2029', '07/15/2029', 5), { text: '07/15/2029', caret: 5 }, 'over the day');
+  // Pasted in front of a full date: the tail is capped off, the caret is not.
+  eq(D.nextEntry('07/21/2029', '1207/21/2029', 2), { text: '12/07/2120', caret: 2 }, 'at the front');
+});
+
+check('the ends are the ends', () => {
+  eq(D.nextEntry('07/21/2029', '', 0), { text: '', caret: 0 }, 'cleared');
+  eq(D.nextEntry('07/21/2029', '5', 1), { text: '5', caret: 1 }, 'select all, then a digit');
+  eq(D.nextEntry('07/21/2029', '7/21/2029', 0), { text: '72/12/029', caret: 0 }, 'first digit gone');
+  eq(D.nextEntry('07/21/2029', '07/21/20299', 11), { text: '07/21/2029', caret: 10 },
+    'a ninth digit at the end');
+});
+
+check('a caret that is missing, out of range or not a number falls back safely', () => {
+  // Native never reports one, and a host input that does not forward the DOM
+  // event cannot. The old behaviour — the caret at the end — is what happens.
+  for (const c of [undefined, null, NaN, '4', {}]) {
+    const out = D.nextEntry('07', '072', c);
+    eq(out.text, '07/2', `text for ${String(c)}`);
+    eq(out.caret, 4, `caret for ${String(c)}`);
+  }
+  eq(D.nextEntry('07', '072').caret, 4, 'omitted entirely');
+  eq(D.nextEntry('07/21/2029', '0721/2029', -1).caret, 0, 'clamped low');
+  eq(D.nextEntry('07/21/2029', '07/212029', 99).caret, 9, 'clamped high');
+});
+
+check('inserting a digit anywhere leaves the caret just after that digit', () => {
+  // Exhaustive over every position in a full date: the caret lands on the
+  // digit the person just typed, never at the end of the field.
+  const prev = '07/21/2029';
+  for (let p = 0; p <= prev.length; p += 1) {
+    const raw = `${prev.slice(0, p)}5${prev.slice(p)}`;
+    const out = D.nextEntry(prev, raw, p + 1);
+    eq(out.text, D.nextEntryText(prev, raw), `text at ${p}`);
+    const want = Math.min(digitsBefore(raw, p + 1), 8);
+    eq(digitsBefore(out.text, out.caret), want, `digits before the caret at ${p}`);
+    if (digitsBefore(raw, p + 1) <= 8) {
+      eq(out.text[out.caret - 1], '5', `the caret sits after the typed digit at ${p}`);
+    }
+  }
+});
+
+check('deleting anything anywhere leaves the caret where the deletion was', () => {
+  // Backspace at every position. Deleting a SLASH deletes the digit in front
+  // of it instead, so one fewer digit sits before the caret; deleting a digit
+  // leaves the count alone. Nothing here may send the caret to the end.
+  const prev = '07/21/2029';
+  for (let p = 0; p < prev.length; p += 1) {
+    const raw = prev.slice(0, p) + prev.slice(p + 1);
+    const out = D.nextEntry(prev, raw, p);
+    eq(out.text, D.nextEntryText(prev, raw), `text at ${p}`);
+    const ate = prev[p] === '/' && digitsBefore(prev, p) > 0 ? 1 : 0;
+    eq(digitsBefore(out.text, out.caret), digitsBefore(raw, p) - ate,
+      `digits before the caret after deleting "${prev[p]}" at ${p}`);
+  }
+});
+
+check('a caret changes where it lands, never what the field says', () => {
+  // nextEntryText() is nextEntry() with no caret, and every check above runs
+  // through it — so those are what prove the FORMATTER is untouched, and
+  // native, which passes no caret, reads the field it always did. This is
+  // the other half: a caret must not move a slash. Every pair this file
+  // exercises, at every caret the raw text allows.
+  const pairs = [
+    ['', '0'], ['07', '072'], ['07/21/2029', '07/212029'], ['07/21/2029', '0721/2029'],
+    ['07/21/2029', '07/2/2029'], ['', '2029-07-21'], ['', '0721202912345'],
+    ['07/', '2029-07-21'], ['/', ''], ['07/21/2029', ''], ['', '0a7-2.1'],
+    ['07/21/2029', '07/21/20299'], ['07/21/202', '07/21/2029'],
+  ];
+  for (const [prev, raw] of pairs) {
+    for (let c = 0; c <= raw.length; c += 1) {
+      eq(D.nextEntry(prev, raw, c).text, D.nextEntry(prev, raw).text, `${prev} -> ${raw} @${c}`);
+    }
+  }
+});
+
+check('the caret is always a real position in the text it is given', () => {
+  // A caret past the end is a thrown setSelectionRange in the browser, and a
+  // field that eats the keystroke. Every shape, every caret, both bounds.
+  const raws = ['', '0', '072', '07/212029', '0721/2029', '07/2/2029', '2029-07-21',
+    '0721202912345', '07/21/20299', '1207/21/2029', '5', '07//212029'];
+  for (const prev of ['', '07', '07/21/2029']) {
+    for (const raw of raws) {
+      for (let c = 0; c <= raw.length; c += 1) {
+        const out = D.nextEntry(prev, raw, c);
+        ok(Number.isInteger(out.caret), `not an integer: ${prev} -> ${raw} @${c}`);
+        ok(out.caret >= 0 && out.caret <= out.text.length,
+          `caret ${out.caret} outside "${out.text}" for ${prev} -> ${raw} @${c}`);
+      }
+    }
+  }
+});
+
 console.log(`\n${failures === 0 ? 'all passed' : `${failures} FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);
