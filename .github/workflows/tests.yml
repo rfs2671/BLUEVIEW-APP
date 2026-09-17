@@ -239,3 +239,20 @@ jobs:
       - name: The user-card action row fits, and holds the right buttons
         working-directory: frontend
         run: node scripts/admin-users-card-actions.cjs --dist dist --port 5812
+      # ── THE ONE SCREEN THE MOUNT SMOKE REPORTS ON WITHOUT SEEING ──────────
+      #
+      # '/admin/users' is in smoke-mount's ROUTES and has always been green
+      # there, and that green was worth nothing: the job signs in as an OWNER
+      # and the screen gates on `role === 'admin'`, so what mounted was the
+      # "Admin Access Required" panel. The user list, the four openers and all
+      # four forms were executed by NOTHING in CI -- which is how four forms
+      # named `show*Modal` that were never modals rendered below the fold on a
+      # phone for as long as they did.
+      #
+      # This step signs in as an admin, at the 443px width the report came
+      # from, and measures where each form actually lands. It refuses (exit 2)
+      # rather than reporting if it finds itself on the access-denied panel.
+      # Reuses the same dist and Chromium as the two steps above.
+      - name: The four /admin/users forms open over the viewport at 443px
+        working-directory: frontend
+        run: node scripts/admin-users-sheets.cjs --dist dist --port 5812
