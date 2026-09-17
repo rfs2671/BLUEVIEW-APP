@@ -3352,6 +3352,7 @@ from lib.vision_meter import (  # noqa: E402
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_text  # noqa: E402
+from lib import plan_records  # noqa: E402
 
 
 
@@ -41234,17 +41235,86 @@ async def _ocr_page_text(project_id: str, jpeg_bytes: bytes) -> Tuple[str, Optio
         return "", f"ocr_failed:{type(e).__name__}"
 
 
+PLAN_RECORDS = "plan_records"
+
+
+async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
+                              file_hash: str, page_number: int, fields: dict,
+                              boilerplate, page_id: str, discipline=None,
+                              file_name=None, raw_text: str = "",
+                              title_text: str = "") -> int:
+    """Replace this page's typed records.
+
+    ── WHY THESE EXIST BESIDE THE CHUNKS, FOR NOW ─────────────────────────
+    #
+    # document_page_chunks stores strings, and every fix for "the letters did
+    # not line up" has widened the match. Records store what the sheet says
+    # with HOW WE CAME TO KNOW IT, so retrieval can rank evidence before
+    # similarity and an answer can point at the region it came from.
+    #
+    # The chunk writer stays until search_plans reads records and the eval
+    # says the records answer better. Two writers is the transition, not the
+    # destination: the chunks go when the reader does.
+    """
+    await db[PLAN_RECORDS].delete_many({"file_id": file_id, "page_number": page_number})
+    authority = plan_records.page_authority(raw_text, title_text, file_name or "")
+    page_ctx = {
+        "project_id": project_id, "company_id": company_id,
+        "file_id": file_id, "file_hash": file_hash, "file_name": file_name,
+        "page_id": page_id, "page_number": page_number,
+        "sheet_number": fields.get("sheet_number"),
+        "sheet_title": fields.get("sheet_title"),
+        "discipline": discipline or fields.get("discipline"),
+        "floors": fields.get("floors") or [],
+        # Read off the title block. approval_status is deliberately absent:
+        # it changes without the drawing changing, so dob_logs is the join.
+        **authority,
+        "index_version": PLAN_INDEX_VERSION,
+    }
+    try:
+        records = plan_records.build_records(
+            fields, page=page_ctx, raw_text=raw_text, boilerplate=boilerplate)
+    except Exception as e:
+        logger.exception("record build failed %s p%s: %r", file_name, page_number, e)
+        return 0
+    if not records:
+        return 0
+    now = datetime.now(timezone.utc)
+    for r in records:
+        r["created_at"] = now
+    try:
+        await db[PLAN_RECORDS].insert_many(records)
+    except Exception as e:
+        logger.exception("record write failed %s p%s: %r", file_name, page_number, e)
+        return 0
+    return len(records)
+
+
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
                              file_hash: str, page_number: int, fields: dict,
                              boilerplate, discipline: Optional[str] = None,
                              file_name: Optional[str] = None) -> int:
-    """Replace this page's chunks. The page row must already exist."""
+    """Replace this page's chunks AND its typed records.
+
+    One call site, deliberately: records and chunks describe the same page and
+    must not be able to disagree about which pages exist."""
     page = await db.document_page_index.find_one(
-        {"file_id": file_id, "page_number": page_number}, {"_id": 1})
+        {"file_id": file_id, "page_number": page_number}, {"_id": 1, "raw_text": 1})
     await db.document_page_chunks.delete_many(
         {"file_id": file_id, "page_number": page_number})
     if not page:
         return 0
+    try:
+        await _write_page_records(
+            project_id=project_id, company_id=company_id, file_id=file_id,
+            file_hash=file_hash, page_number=page_number, fields=fields,
+            boilerplate=boilerplate, page_id=str(page["_id"]),
+            discipline=discipline, file_name=file_name,
+            raw_text=page.get("raw_text") or "")
+    except Exception as e:
+        # Never fail the page over the new writer while the old one is what
+        # answers questions.
+        logger.exception("typed records failed %s p%s: %r", file_name, page_number, e)
     chunks = plan_extract.build_chunks(fields, boilerplate)
     if not chunks:
         return 0
