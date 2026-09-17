@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -31,6 +31,7 @@ import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import FloatingNav from '../../src/components/FloatingNav';
+import FormSheet from '../../src/components/FormSheet';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
@@ -74,12 +75,36 @@ export default function AdminUsersScreen() {
   const [fetchState, setFetchState] = useState('ok');
   const [projectsState, setProjectsState] = useState('ok');
 
-  // Modal states
+  // ── THE FOUR SHEETS ────────────────────────────────────────────────────
+  //
+  // THESE NAMES USED TO BE A LIE, and it is worth recording because the next
+  // person will read `showEditModal` and believe it. Until this change the
+  // file opened no React Native Modal at all — a grep for the opening tag
+  // returned zero, and it is spelled that way here on purpose, because
+  // src/utils/modalHasAnExit.test.cjs counts opening tags in SOURCE TEXT and
+  // would have counted this sentence as a fifth modal with no exit — and
+  // all four of these flags gated a plain `{cond && <GlassCard>}` block
+  // appended to the TAIL of the page's ScrollView, below the user list.
+  //
+  // On a laptop with three users that lands near the fold, which is why it
+  // read as working for a year. On a phone the list is a screen-height of
+  // cards and the form opened somewhere beneath all of them: the admin tapped
+  // Edit, Registration or Assign and nothing appeared to happen. They are
+  // FormSheets now — presented over the viewport, see
+  // src/components/FormSheet.jsx.
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
-  
+
+  // The field each sheet puts the caret in when it opens. A ref rather than
+  // `autoFocus` because the sheet is a Modal: the input does not exist on the
+  // render that sets `visible`, so the focus has to happen after the
+  // presentation — FormSheet owns that timing for all of them.
+  const addNameRef = useRef(null);
+  const editNameRef = useRef(null);
+  const firstProjectRef = useRef(null);
+
   // Form fields
   const [formName, setFormName] = useState('');
   const [formEmail, setFormEmail] = useState('');
@@ -812,243 +837,289 @@ export default function AdminUsersScreen() {
               )}
             </View>
           )}
-
-          {/* Add User Modal */}
-          {showAddModal && (
-            <GlassCard variant="modal" style={s.modal}>
-              <Text style={s.modalTitle}>Add New User</Text>
-              <GlassInput
-                value={formName}
-                onChangeText={setFormName}
-                placeholder="Full Name"
-              />
-              <GlassInput
-                value={formEmail}
-                onChangeText={setFormEmail}
-                placeholder="Email"
-                keyboardType="email-address"
-                leftIcon={<Mail size={18} color={colors.text.subtle} />}
-                style={s.inputSpacing}
-              />
-              <GlassInput
-                value={formPhone}
-                onChangeText={setFormPhone}
-                placeholder="Phone Number (optional)"
-                keyboardType="phone-pad"
-                style={s.inputSpacing}
-              />
-              <GlassInput
-                value={formPassword}
-                onChangeText={setFormPassword}
-                placeholder="Password"
-                secureTextEntry
-                style={s.inputSpacing}
-              />
-              {renderRolePicker()}
-              {renderLicenceFields()}
-              <View style={s.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => { setShowAddModal(false); resetForm(); }}
-                />
-                <GlassButton
-                  title="Add User"
-                  onPress={handleAddUser}
-                />
-              </View>
-            </GlassCard>
-          )}
-
-          {/* Edit User Modal */}
-          {showEditModal && (
-            <GlassCard variant="modal" style={s.modal}>
-              <Text style={s.modalTitle}>Edit User</Text>
-              <GlassInput
-                value={formName}
-                onChangeText={setFormName}
-                placeholder="Full Name"
-              />
-              <GlassInput
-                value={formEmail}
-                onChangeText={setFormEmail}
-                placeholder="Email"
-                keyboardType="email-address"
-                style={s.inputSpacing}
-              />
-              <GlassInput
-                value={formPhone}
-                onChangeText={setFormPhone}
-                placeholder="Phone Number (optional)"
-                keyboardType="phone-pad"
-                style={s.inputSpacing}
-              />
-              {renderRolePicker()}
-              {renderLicenceFields()}
-              <View style={s.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => { setShowEditModal(false); resetForm(); }}
-                />
-                <GlassButton
-                  title="Save"
-                  onPress={handleEditUser}
-                />
-              </View>
-            </GlassCard>
-          )}
-
-          {/* ── CS REGISTRATION MODAL ─────────────────────────────────
-              WHERE A SUPERINTENDENT IS REGISTERED NOW. It used to be its own
-              admin tab, which asked for his name and DOB licence number again
-              for every project — the same two facts retyped per jobsite, with
-              nothing reconciling the copies. They are facts about a PERSON and
-              they live on his record; this picks the jobsites. */}
-          {showCsModal && (
-            <GlassCard variant="modal" style={s.modal}>
-              <Text style={s.modalTitle}>CS Registration</Text>
-              <Text style={s.modalSubtitle}>
-                {selectedUser?.name} — BC 3301.13.13 construction superintendent
-              </Text>
-
-              {csLoading || !csState ? (
-                <ActivityIndicator size="large" color={colors.text.primary} />
-              ) : (
-                <>
-                  {/* THE LICENCE THAT WILL BE WRITTEN, SHOWN BEFORE IT IS.
-                      The server refuses without one, because
-                      `license_number_normalized` is what the one-job conflict
-                      query joins on — a registration with no number is
-                      invisible to the check that exists to catch double-
-                      jobbing. Saying so here beats a 422 the admin has to
-                      decode. */}
-                  {csState.licence_number ? (
-                    <Text style={s.csLicence}>
-                      DOB registration {csState.licence_number}
-                    </Text>
-                  ) : (
-                    <Text style={s.csBlocked}>
-                      No DOB registration number on this account. Add it under
-                      Edit before registering him on a project — the one-job
-                      rule is checked on the licence number.
-                    </Text>
-                  )}
-
-                  <Text style={s.csSectionLabel}>REGISTERED ON</Text>
-                  {(csState.selectable || []).length === 0 ? (
-                    /* THE SENTENCE HAD TO CHANGE WITH THE RULING. It read
-                       "Assign him first" — advice for a button that is no
-                       longer on his card, pointing at a prerequisite that no
-                       longer exists. The picker now offers the company's
-                       projects, so an empty list means the COMPANY has none. */
-                    <Text style={s.csEmpty}>
-                      This company has no projects yet. Create one first —
-                      registering him on a job is also what assigns it to him.
-                    </Text>
-                  ) : (
-                    (csState.selectable || []).map((prj) => {
-                      const on = csSelected.includes(prj.project_id);
-                      return (
-                        <Pressable
-                          key={prj.project_id}
-                          onPress={() => toggleCsProject(prj.project_id)}
-                          style={[s.projectItem, on && s.projectItemSelected]}
-                        >
-                          <Text style={s.projectItemName}>
-                            {prj.name || prj.project_id}
-                          </Text>
-                          {on ? <CheckCircle size={18} color={semantic.verified} /> : null}
-                        </Pressable>
-                      );
-                    })
-                  )}
-
-                  {/* ROWS THIS SCREEN CANNOT TOUCH, NAMED RATHER THAN HIDDEN.
-                      A registration on a project he is not assigned to cannot
-                      appear in the list above, and the server deliberately
-                      leaves it alone on save. Without this line the list would
-                      silently omit a live registration and read as the whole
-                      truth. */}
-                  {(csState.registered_elsewhere || []).length > 0 && (
-                    <Text style={s.csElsewhere}>
-                      Also registered on{' '}
-                      {(csState.registered_elsewhere || [])
-                        .map((r) => r.name || r.project_id).join(', ')}
-                      {' '}— outside this company's projects, so this screen
-                      leaves those registrations alone.
-                    </Text>
-                  )}
-
-                  {/* BOTH SIDES OF THE ACT, SAID OUT LOUD. Ticking a project
-                      registers him AND assigns it; unticking retires the
-                      registration AND removes the assignment. The row itself
-                      is soft-deleted and never hard-deleted — it is the
-                      provenance of every log filed under it. */}
-                  <Text style={s.csHint}>
-                    Ticking a project registers him on it and assigns it to him.
-                    Unticking retires that registration and removes the
-                    assignment. The record is kept — logs already filed under it
-                    stay attributable.
-                  </Text>
-                </>
-              )}
-
-              <View style={s.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => { setShowCsModal(false); setCsState(null); }}
-                />
-                <GlassButton
-                  title={csSaving ? 'Saving…' : 'Save'}
-                  onPress={handleSaveCsRegistrations}
-                  disabled={csSaving || csLoading || !csState?.licence_number}
-                />
-              </View>
-            </GlassCard>
-          )}
-
-          {/* Assign Projects Modal */}
-          {showAssignModal && (
-            <GlassCard variant="modal" style={s.modal}>
-              <Text style={s.modalTitle}>Assign Projects</Text>
-              <Text style={s.modalSubtitle}>Select projects for {selectedUser?.name}</Text>
-              {projectsState !== 'ok' && (
-                <OfflineNotice
-                  mode={projectsState}
-                  detail={projectsState === 'offline'
-                    ? 'The project list could not be loaded, so it may be incomplete. Saving an assignment also needs a connection.'
-                    : 'The project list could not be loaded, so it may be incomplete.'}
-                />
-              )}
-              <View style={s.projectsList}>
-                {projects.map((proj) => (
-                  <Pressable
-                    key={proj.id}
-                    onPress={() => toggleProjectAssignment(proj.id)}
-                    style={[
-                      s.projectItem,
-                      assignedProjects.includes(proj.id) && s.projectItemSelected,
-                    ]}
-                  >
-                    <Text style={s.projectItemName}>{proj.name}</Text>
-                    {assignedProjects.includes(proj.id) && (
-                      <CheckCircle size={18} color={semantic.verified} />
-                    )}
-                  </Pressable>
-                ))}
-              </View>
-              <View style={s.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => setShowAssignModal(false)}
-                />
-                <GlassButton
-                  title="Save"
-                  onPress={handleAssignProjects}
-                />
-              </View>
-            </GlassCard>
-          )}
         </ScrollView>
+
+        {/* ── THE FOUR SHEETS, AND WHY THEY SIT OUT HERE ────────────────────
+            Siblings of the ScrollView, not children of it. That is not
+            tidiness. Every one of these used to be the LAST CHILD of the
+            scrolling list above, which is precisely what put them below the
+            fold: a form whose mount point scrolls is a form the reader has to
+            go and find. admin/safety-staff.jsx, admin/superintendent.jsx,
+            admin/site-devices.jsx and admin/checklists/index.jsx all open
+            theirs here too, after </ScrollView>.
+
+            The role picker and the licence block below are CALLED as plain
+            functions returning elements — deliberately, and the two call
+            sites are counted by roleVocabulary.test.cjs, which is why this
+            paragraph does not spell either name out. They are NOT components
+            used as element types. That distinction is de2b330
+            (#388): a component declared in a render body is a new function
+            object every render, React compares element types by reference,
+            and the whole subtree — TextInputs included — is destroyed and
+            rebuilt on every keystroke. Calling a function that returns
+            elements has no element type of its own and cannot do that. If
+            either of these ever becomes a component, it moves to module
+            scope and its captures become props. */}
+
+        {/* Add User */}
+        <FormSheet
+          visible={showAddModal}
+          title="Add New User"
+          onClose={() => { setShowAddModal(false); resetForm(); }}
+          initialFocusRef={addNameRef}
+          footer={(
+            <>
+              <GlassButton
+                title="Cancel"
+                onPress={() => { setShowAddModal(false); resetForm(); }}
+              />
+              <GlassButton
+                title="Add User"
+                onPress={handleAddUser}
+              />
+            </>
+          )}
+        >
+          <GlassInput
+            ref={addNameRef}
+            value={formName}
+            onChangeText={setFormName}
+            placeholder="Full Name"
+          />
+          <GlassInput
+            value={formEmail}
+            onChangeText={setFormEmail}
+            placeholder="Email"
+            keyboardType="email-address"
+            leftIcon={<Mail size={18} color={colors.text.subtle} />}
+            style={s.inputSpacing}
+          />
+          <GlassInput
+            value={formPhone}
+            onChangeText={setFormPhone}
+            placeholder="Phone Number (optional)"
+            keyboardType="phone-pad"
+            style={s.inputSpacing}
+          />
+          <GlassInput
+            value={formPassword}
+            onChangeText={setFormPassword}
+            placeholder="Password"
+            secureTextEntry
+            style={s.inputSpacing}
+          />
+          {renderRolePicker()}
+          {renderLicenceFields()}
+        </FormSheet>
+
+        {/* Edit User */}
+        <FormSheet
+          visible={showEditModal}
+          title="Edit User"
+          onClose={() => { setShowEditModal(false); resetForm(); }}
+          initialFocusRef={editNameRef}
+          footer={(
+            <>
+              <GlassButton
+                title="Cancel"
+                onPress={() => { setShowEditModal(false); resetForm(); }}
+              />
+              <GlassButton
+                title="Save"
+                onPress={handleEditUser}
+              />
+            </>
+          )}
+        >
+          <GlassInput
+            ref={editNameRef}
+            value={formName}
+            onChangeText={setFormName}
+            placeholder="Full Name"
+          />
+          <GlassInput
+            value={formEmail}
+            onChangeText={setFormEmail}
+            placeholder="Email"
+            keyboardType="email-address"
+            style={s.inputSpacing}
+          />
+          <GlassInput
+            value={formPhone}
+            onChangeText={setFormPhone}
+            placeholder="Phone Number (optional)"
+            keyboardType="phone-pad"
+            style={s.inputSpacing}
+          />
+          {renderRolePicker()}
+          {renderLicenceFields()}
+        </FormSheet>
+
+        {/* ── CS REGISTRATION ───────────────────────────────────────
+            WHERE A SUPERINTENDENT IS REGISTERED NOW. It used to be its own
+            admin tab, which asked for his name and DOB licence number again
+            for every project — the same two facts retyped per jobsite, with
+            nothing reconciling the copies. They are facts about a PERSON and
+            they live on his record; this picks the jobsites.
+
+            NO initialFocusRef. This sheet deliberately opens on a spinner —
+            the selection may not be seeded from anything the client already
+            has — so at focus time there is no field to focus and the sheet
+            itself takes it. */}
+        <FormSheet
+          visible={showCsModal}
+          title="CS Registration"
+          subtitle={`${selectedUser?.name || ''} — BC 3301.13.13 construction superintendent`}
+          onClose={() => { setShowCsModal(false); setCsState(null); }}
+          footer={(
+            <>
+              <GlassButton
+                title="Cancel"
+                onPress={() => { setShowCsModal(false); setCsState(null); }}
+              />
+              <GlassButton
+                title={csSaving ? 'Saving…' : 'Save'}
+                onPress={handleSaveCsRegistrations}
+                disabled={csSaving || csLoading || !csState?.licence_number}
+              />
+            </>
+          )}
+        >
+          {csLoading || !csState ? (
+            <ActivityIndicator size="large" color={colors.text.primary} />
+          ) : (
+            <>
+              {/* THE LICENCE THAT WILL BE WRITTEN, SHOWN BEFORE IT IS.
+                  The server refuses without one, because
+                  `license_number_normalized` is what the one-job conflict
+                  query joins on — a registration with no number is
+                  invisible to the check that exists to catch double-
+                  jobbing. Saying so here beats a 422 the admin has to
+                  decode. */}
+              {csState.licence_number ? (
+                <Text style={s.csLicence}>
+                  DOB registration {csState.licence_number}
+                </Text>
+              ) : (
+                <Text style={s.csBlocked}>
+                  No DOB registration number on this account. Add it under
+                  Edit before registering him on a project — the one-job
+                  rule is checked on the licence number.
+                </Text>
+              )}
+
+              <Text style={s.csSectionLabel}>REGISTERED ON</Text>
+              {(csState.selectable || []).length === 0 ? (
+                /* THE SENTENCE HAD TO CHANGE WITH THE RULING. It read
+                   "Assign him first" — advice for a button that is no longer
+                   on his card, pointing at a prerequisite that no longer
+                   exists. The picker now offers the company's projects, so an
+                   empty list means the COMPANY has none. */
+                <Text style={s.csEmpty}>
+                  This company has no projects yet. Create one first —
+                  registering him on a job is also what assigns it to him.
+                </Text>
+              ) : (
+                (csState.selectable || []).map((prj) => {
+                  const on = csSelected.includes(prj.project_id);
+                  return (
+                    <Pressable
+                      key={prj.project_id}
+                      onPress={() => toggleCsProject(prj.project_id)}
+                      style={[s.projectItem, s.projectItemSpacing, on && s.projectItemSelected]}
+                    >
+                      <Text style={s.projectItemName}>
+                        {prj.name || prj.project_id}
+                      </Text>
+                      {on ? <CheckCircle size={18} color={semantic.verified} /> : null}
+                    </Pressable>
+                  );
+                })
+              )}
+
+              {/* ROWS THIS SCREEN CANNOT TOUCH, NAMED RATHER THAN HIDDEN.
+                  A registration on a project he is not assigned to cannot
+                  appear in the list above, and the server deliberately
+                  leaves it alone on save. Without this line the list would
+                  silently omit a live registration and read as the whole
+                  truth. */}
+              {(csState.registered_elsewhere || []).length > 0 && (
+                <Text style={s.csElsewhere}>
+                  Also registered on{' '}
+                  {(csState.registered_elsewhere || [])
+                    .map((r) => r.name || r.project_id).join(', ')}
+                  {' '}— outside this company's projects, so this screen
+                  leaves those registrations alone.
+                </Text>
+              )}
+
+              {/* BOTH SIDES OF THE ACT, SAID OUT LOUD. Ticking a project
+                  registers him AND assigns it; unticking retires the
+                  registration AND removes the assignment. The row itself is
+                  soft-deleted and never hard-deleted — it is the provenance of
+                  every log filed under it. */}
+              <Text style={s.csHint}>
+                Ticking a project registers him on it and assigns it to him.
+                Unticking retires that registration and removes the
+                assignment. The record is kept — logs already filed under it
+                stay attributable.
+              </Text>
+            </>
+          )}
+        </FormSheet>
+
+        {/* Assign Projects */}
+        <FormSheet
+          visible={showAssignModal}
+          title="Assign Projects"
+          subtitle={`Select projects for ${selectedUser?.name || ''}`}
+          onClose={() => setShowAssignModal(false)}
+          // THE FIRST ROW IS THE FIRST FIELD ON THIS ONE. There is no text
+          // input here, so "focus the first field" means the first project
+          // in the picker; with no projects to show the ref is null and
+          // FormSheet falls back to the sheet itself.
+          initialFocusRef={firstProjectRef}
+          footer={(
+            <>
+              <GlassButton
+                title="Cancel"
+                onPress={() => setShowAssignModal(false)}
+              />
+              <GlassButton
+                title="Save"
+                onPress={handleAssignProjects}
+              />
+            </>
+          )}
+        >
+          {projectsState !== 'ok' && (
+            <OfflineNotice
+              mode={projectsState}
+              detail={projectsState === 'offline'
+                ? 'The project list could not be loaded, so it may be incomplete. Saving an assignment also needs a connection.'
+                : 'The project list could not be loaded, so it may be incomplete.'}
+            />
+          )}
+          <View style={s.projectsList}>
+            {projects.map((proj, i) => (
+              <Pressable
+                key={proj.id}
+                ref={i === 0 ? firstProjectRef : null}
+                onPress={() => toggleProjectAssignment(proj.id)}
+                style={[
+                  s.projectItem,
+                  assignedProjects.includes(proj.id) && s.projectItemSelected,
+                ]}
+              >
+                <Text style={s.projectItemName}>{proj.name}</Text>
+                {assignedProjects.includes(proj.id) && (
+                  <CheckCircle size={18} color={semantic.verified} />
+                )}
+              </Pressable>
+            ))}
+          </View>
+        </FormSheet>
+
         <FloatingNav />
       </SafeAreaView>
     </AnimatedBackground>
@@ -1299,20 +1370,12 @@ function buildStyles(colors, isDark) {
     fontSize: 16,
     color: colors.text.muted,
   },
-  modal: {
-    marginTop: spacing.xl,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginBottom: spacing.lg,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: colors.text.muted,
-    marginBottom: spacing.md,
-  },
+  // `modal`, `modalTitle`, `modalSubtitle` and `modalActions` are GONE, not
+  // left behind. `modal` was `marginTop: spacing.xl` — the entire presentation
+  // those four forms had, which is to say a gap above a block in a list. The
+  // title, the subtitle and the action row now belong to FormSheet, and a dead
+  // style named `modal` sitting in this file is the next person's evidence
+  // that something here is a modal.
   inputSpacing: {
     marginTop: spacing.sm,
   },
@@ -1375,12 +1438,6 @@ function buildStyles(colors, isDark) {
     color: '#60a5fa',
     fontWeight: '500',
   },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: spacing.sm,
-    marginTop: spacing.lg,
-  },
   projectsList: {
     gap: spacing.sm,
     marginBottom: spacing.md,
@@ -1394,6 +1451,12 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: colors.glass.border,
+  },
+  // The CS picker's rows are not inside a gapped wrapper the way the Assign
+  // picker's are — they sit between the section label and the elsewhere note —
+  // so they carry their own separation rather than touching edge to edge.
+  projectItemSpacing: {
+    marginTop: spacing.sm,
   },
   projectItemSelected: {
     backgroundColor: semantic.verifiedBg,
