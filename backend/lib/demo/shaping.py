@@ -113,14 +113,28 @@ def _as_date(today) -> date:
     raise TypeError(f"today must be a date, an ISO string or None, not {type(today)!r}")
 
 
+#: Instant fields the real writers store as an ISO STRING rather than as a
+#: datetime, so the demo stores them that way too.
+#:
+#: Both are `completed_at`: `register_and_checkin` writes a worker's
+#: safety_orientations row with `now.isoformat()`, and the orientation editor
+#: sends an ISO instant in `data.completed_at`. Everything else that ends in
+#: `_at` — detected_at, created_at, status_changed_at, an index_status `at` —
+#: is a real datetime in Mongo.
+#:
+#: THE DISTINCTION IS NOT COSMETIC. A renderer or a client that slices ten
+#: characters off a date gets a sensible day from a string and a TypeError from
+#: a datetime; one that formats a datetime gets a day from the object and the
+#: raw text from the string. Either way the mismatch surfaces as a wrong date on
+#: a filed document, which is the class of defect this repo keeps paying for.
+_STRING_INSTANT_FIELDS = frozenset({"completed_at"})
+
+
 def _is_instant_field(name: str) -> bool:
     """Does this field hold a moment rather than a calendar day?
 
-    `at` and `*_at` do — `detected_at`, `created_at`, `completed_at` — and the
-    real documents store those as datetimes while storing `date`,
-    `expiration_date` and friends as strings. Rendering a datetime where the
-    real row holds a string is how a client-side `.slice(0, 10)` starts
-    printing a timezone.
+    `at` and `*_at` do; `date`, `expiration_date` and friends do not — the real
+    documents store those as plain `YYYY-MM-DD` strings.
     """
     return name == "at" or name.endswith("_at")
 
@@ -130,7 +144,8 @@ def _render_offset(field: str, days: int, today: date, *, forward: bool):
     if _is_instant_field(field):
         # Midday UTC. A nine-a.m. would be a claim about the hour something
         # happened, and these offsets only ever encoded a day.
-        return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
+        moment = datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
+        return moment.isoformat() if field in _STRING_INSTANT_FIELDS else moment
     return day.isoformat()
 
 

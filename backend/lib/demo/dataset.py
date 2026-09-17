@@ -222,8 +222,14 @@ DEMO_PROJECT = {
     "lat": None,
     "lng": None,
     "geofence_radius_m": 150,
-    "gates": [{"id": "demo-gate-01", "name": "Main gate",
-               "tag_id": "demo-tag-main-gate"}],
+    # `ProjectGate`'s fields — {gate_id, label, lat, lng} — and NOT {id, name}.
+    # A gate row is what /checkin/{project_id}/{gate_id} is built from, so a row
+    # keyed differently is a gate the check-in page cannot open. No coordinates,
+    # for the same reason the project carries none.
+    "gates": [{"gate_id": "demo-gate-01", "label": "Main gate",
+               "lat": None, "lng": None},
+              {"gate_id": "demo-gate-02", "label": "Hoist landing",
+               "lat": None, "lng": None}],
     "job_completion_date": None,
     "job_completion_co_number": None,
     "completed_by": None,
@@ -294,6 +300,22 @@ DEMO_PROJECT = {
 # NO CARD IMAGES. `osha_card_image` is None on every worker. A base64 photograph
 # is a real artefact of a real person; there is no such person here, and
 # fabricating one would be fabricating an identity document.
+
+#: The fifteen canonical orientation items, from LABEL_SETS["orientation_items"].
+#: A worker's `safety_orientations` row stores the CHECKLIST HE WAS TAKEN
+#: THROUGH — `register_and_checkin` writes {project_id, project_name, checklist,
+#: completed_at} — so the same map backs both the worker document and the
+#: orientation sheet. Two copies of one attendance would be two answers to
+#: "was this man oriented".
+_ORIENTATION_CHECKLIST = {
+    "hard_hats": True, "safety_boots": True, "safety_glasses": True,
+    "high_vis": True, "no_horseplay": True, "report_hazards": True,
+    "fall_protection_required": True, "harness_inspection": True,
+    "ladder_safety": True, "scaffold_rules": True, "emergency_exits": True,
+    "first_aid": True, "emergency_contact": True, "incident_reporting": True,
+    "no_drugs_alcohol": True,
+}
+
 DEMO_WORKERS = [
     {
         "id": "demo-worker-01",
@@ -307,8 +329,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 30", "card_holder": "Luis Ferreira"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 41,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 41},
         ],
         "certifications": [
             {"type": "SST_FULL", "card_number": "DEMOSST001",
@@ -332,8 +356,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 10", "card_holder": "Andre Whitfield"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 38,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 38},
         ],
         "certifications": [
             # THE ONE THAT EXPIRES SOON, and it is the type most likely to. A
@@ -362,8 +388,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 30", "card_holder": "Kwame Boateng"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 30,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 30},
         ],
         "certifications": [
             {"type": "SST_SUPERVISOR", "card_number": "DEMOSST003",
@@ -387,8 +415,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 30", "card_holder": "Ana Sotelo"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 96,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 96},
         ],
         "certifications": [
             {"type": "SST_SUPERVISOR", "card_number": "DEMOSST004",
@@ -412,8 +442,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 30", "card_holder": "Piotr Nowak"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 41,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 41},
         ],
         "certifications": [
             {"type": "SST_FULL", "card_number": "DEMOSST005",
@@ -440,8 +472,10 @@ DEMO_WORKERS = [
         "osha_data": {"card_class": "OSHA 10", "card_holder": "Devon Clarke"},
         "osha_card_image": None,
         "safety_orientations": [
-            {"project_id": DEMO_PROJECT_ID, "_date_days_ago": 3,
-             "conducted_by": DEMO_CP_NAME},
+            {"project_id": DEMO_PROJECT_ID,
+             "project_name": "Sample Project — 852 East 176th Street",
+             "checklist": _ORIENTATION_CHECKLIST,
+             "_completed_at_days_ago": 3},
         ],
         "certifications": [
             {"type": "SST_FULL", "card_number": "DEMOSST006",
@@ -824,14 +858,9 @@ DEMO_LOGBOOK_DATA = {
         "worker_trade": "Carpentry",
         "osha_number": "DEMOOSHA06",
         "orientation_number": "DEMO-ORI-0001",
-        "checklist": {
-            "hard_hats": True, "safety_boots": True, "safety_glasses": True,
-            "high_vis": True, "no_horseplay": True, "report_hazards": True,
-            "fall_protection_required": True, "harness_inspection": True,
-            "ladder_safety": True, "scaffold_rules": True, "emergency_exits": True,
-            "first_aid": True, "emergency_contact": True, "incident_reporting": True,
-            "no_drugs_alcohol": True,
-        },
+        # The SAME map the worker document's own orientation row carries — see
+        # _ORIENTATION_CHECKLIST. The sheet and the roster are one event.
+        "checklist": _ORIENTATION_CHECKLIST,
         "_completed_at_days_ago": 3,
         "worker_signature": None,
         "language_provided": "en",
