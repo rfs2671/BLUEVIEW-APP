@@ -243,9 +243,9 @@ def _page_of(record: Dict[str, Any]) -> str:
 
 
 def dedupe_quotes(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """One record per (page, printed words).
+    """One record per (page, printed words) — and for a NOTE, one per project.
 
-    ── WHY ───────────────────────────────────────────────────────────────
+    ── WHY, ON ONE PAGE ──────────────────────────────────────────────────
     #
     # A roof plan prints 42" PARAPET at every parapet run, and each is its own
     # text record. They all match, they all tie, and six of them fill a result
@@ -254,24 +254,61 @@ def dedupe_quotes(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # no evidence; it only takes a place.
     #
     # Kept: the strongest tier, then the most structured type, then the first.
-    # Different pages are never merged — the same words on two sheets are two
-    # citations.
+    #
+    # ── AND WHY A GENERAL NOTE IS DIFFERENT ────────────────────────────────
+    #
+    # This said, deliberately, that the same words on two sheets are two
+    # citations. That is right for a parapet height measured on two different
+    # plans: two sheets, two facts, and a reader wants both.
+    #
+    # A general note is not that. It is one paragraph the engineer stamps on
+    # every sheet of a discipline, and the vision model reads it again on each
+    # one because it sees each page alone. MEASURED ON 588 BOYLAND, 2026-09-17:
+    #
+    #   'refrigerant piping'  8 records, 2 distinct quotes — 6 slots repeated
+    #   'AC units'            8 records, 5 distinct quotes — 3 slots repeated
+    #   'condensate pump'     8 records, 5 distinct quotes — 3 slots repeated
+    #
+    # Asked about the AC units, the reader answered with one sentence said
+    # five times, and the PTAC schedule — the thing that answers the question —
+    # sat at positions six, seven and eight. 230 of the 323 repeated note rows
+    # on this project are vision-read, which is exactly the population that
+    # never passes through `boilerplate_lines`: that strips lines repeated
+    # across a file's TEXT LAYER, and a note read off an image is not in it.
+    #
+    # So a note's copies collapse to ONE record, across pages, and the survivor
+    # carries the sheets the others were on. NOTHING IS DROPPED AND NOTHING IS
+    # HIDDEN — the reader is told 'M-100.00 (+4 sheets)'. Deletion would have
+    # been wrong: 'COLD & HOT WATER SHALL BE COPPER TYPE L' is stamped on six
+    # plumbing sheets and is the answer to what the hot water pipe is made of.
     """
     best: Dict[Tuple[str, str], Dict[str, Any]] = {}
     order: List[Tuple[str, str]] = []
+    seen_on: Dict[Tuple[str, str], List[str]] = {}
     for r in records:
         quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip().upper()
         if not quote:
             continue
-        k = (_page_of(r), quote)
+        # A note is the same document reproduced; everything else is a fact
+        # about the sheet it is on.
+        k = ("", quote) if r.get("record_type") == "note" else (_page_of(r), quote)
+        where = (r.get("sheet_number") or "").strip()
         cur = best.get(k)
         if cur is None:
             best[k] = r
             order.append(k)
+            seen_on[k] = [where] if where else []
             continue
+        if where and where not in seen_on[k]:
+            seen_on[k].append(where)
         if _keep_rank(r) < _keep_rank(cur):
             best[k] = r
-    return [best[k] for k in order]
+    out = []
+    for k in order:
+        r = best[k]
+        others = [w for w in seen_on.get(k, []) if w != (r.get("sheet_number") or "").strip()]
+        out.append(dict(r, also_on=others) if others else r)
+    return out
 
 
 def _keep_rank(r: Dict[str, Any]) -> Tuple[int, int]:
@@ -527,7 +564,12 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         quote = re.sub(r"\s+", " ", r.get("quote") or "").strip()
         if not quote:
             continue
-        line = f"{where} ({r.get('record_type')}): {quote[:200]}"
+        # A note collapsed across sheets says so. The crew asked what the
+        # drawings say; "on six sheets" is part of the answer, and hiding the
+        # merge would make one stamping look like the only one.
+        more = [w for w in (r.get("also_on") or []) if w]
+        where_all = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})" if more else where
+        line = f"{where_all} ({r.get('record_type')}): {quote[:200]}"
         if r.get("tier") == TIER_ORDER[-1]:
             line += " — read from the drawing image, verify against the sheet"
         lines.append(line)

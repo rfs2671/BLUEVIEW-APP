@@ -46448,6 +46448,13 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         where = plan_search.cite(r)
         if not where:
             continue
+        # A general note stamped on every sheet of a discipline is ONE fact.
+        # The model is told how many sheets carry it, so "on all six mechanical
+        # plans" stays available to it and one citation is not mistaken for the
+        # only place it appears.
+        more = [w for w in (r.get("also_on") or []) if w]
+        if more:
+            where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
         quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip()[:400]
         line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
         if r.get("tier") == plan_extract.TIER_VISION:
