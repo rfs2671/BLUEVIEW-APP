@@ -60,7 +60,7 @@ import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast, ToastHost } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
@@ -219,12 +219,17 @@ export default function ProjectDetailScreen() {
   // deferred to a future commit — see Q7 in inventory.)
   const [notificationsUnreadCount, setNotificationsUnreadCount] = useState(0);
 
-  const isAdmin = user?.role === 'admin';
-  // NOT `isAdmin`. That flag is role === "admin" exactly, so it excludes the
-  // OWNER — who is the only role that can purge, and therefore the one who
-  // most needs to be able to place a legal hold. This matches the server gate
-  // on PUT /projects/{id}, which is get_admin_user: role in {admin, owner}.
-  const canEditRetention = user?.role === 'admin' || user?.role === 'owner';
+  // BOTH ARE `isCompanyAdmin` NOW, AND THAT COLLAPSE IS THE POINT.
+  //
+  // They were two different predicates: `role === 'admin'` exactly, and
+  // `admin || owner`. The second existed because the "owner" role could purge
+  // a project and therefore most needed to be able to place a legal hold —
+  // true at the time, and it stopped being true when the role was retired.
+  // Purging is now the platform operator's, by flag, and `isCompanyAdmin`
+  // admits him. Keeping two spellings of "is an admin" in one screen is how
+  // they drifted apart in the first place.
+  const isAdmin = isCompanyAdmin(user);
+  const canEditRetention = isAdmin;
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {

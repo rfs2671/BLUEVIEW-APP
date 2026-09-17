@@ -137,11 +137,17 @@ async def _resolve_eligible_recipients(
     if not company_id:
         return []
     try:
+        # THE ROLE BRANCH SAID ["admin", "owner"]. "owner" is retired — it
+        # was what every self-serve signup received, not a rank. This is a
+        # RECIPIENT LIST, not a gate: nobody is refused by it, somebody just
+        # stops being told, so the operator flag is named beside the role
+        # rather than trusted to arrive with the account migration.
         cursor = db.users.find({
             "company_id": company_id,
             "is_deleted": {"$ne": True},
             "$or": [
-                {"role": {"$in": ["admin", "owner"]}},
+                {"role": "admin"},
+                {"is_platform_operator": True},
                 {"assigned_projects": project_id},
             ],
         })

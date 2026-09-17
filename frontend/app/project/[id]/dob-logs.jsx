@@ -37,7 +37,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import FloatingNav from '../../../src/components/FloatingNav';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
@@ -202,7 +202,7 @@ export default function DOBLogsScreen() {
       }
     } finally { setSavingConfig(false); }
   };
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
 
   // Tile numbers = standing OPEN exposure from GET /projects/dob-summary
   // (status-based, deduped by raw_dob_id, NO detected_at window — so they do

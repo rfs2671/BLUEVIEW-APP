@@ -45,9 +45,23 @@ def _async_iter(items):
     return gen
 
 
-def _setup_client(*, role="owner"):
+def _setup_client(*, role="admin", operator=False):
+    """The principal these tests act as.
+
+    THE PRINCIPAL THESE ROUTES WANT IS THE PLATFORM OPERATOR, NOT A ROLE.
+    They gated on `role != "owner"` until the role was retired -- and "owner"
+    was what EVERY self-serve signup received, so the gate on a cross-tenant
+    surface was satisfied by having registered. `operator=True` sets the flag
+    `is_platform_operator`, which no API path can write.
+
+    THE KEY IS ABSENT WHEN operator IS FALSE, not written as False. That is
+    the shape production has: one row carries the field and every other
+    account simply does not have it.
+    """
     import server
     user = {"id": "u1", "_id": "u1", "role": role, "company_id": "co_a"}
+    if operator:
+        user["is_platform_operator"] = True
 
     async def _fake_user():
         return user
@@ -94,9 +108,20 @@ class TestAdminListAuth(unittest.TestCase):
         finally:
             restore()
 
-    def test_owner_role_accepted(self):
-        import server
+    def test_the_retired_role_alone_is_rejected(self):
+        """role "owner" WITHOUT the flag is a customer, and this is the half
+        of the gate that would still pass if the role had been left in it.
+        The key is ABSENT on this fixture, which is the production shape."""
         client, restore = _setup_client(role="owner")
+        try:
+            resp = client.get("/api/admin/notifications")
+            self.assertEqual(resp.status_code, 403)
+        finally:
+            restore()
+
+    def test_the_platform_operator_is_accepted(self):
+        import server
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
         mock_db.notification_log.find = MagicMock(return_value=_make_cursor([]))
@@ -113,7 +138,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_filter_by_trigger_type(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
         mock_db.notification_log.find = MagicMock(return_value=_make_cursor([]))
@@ -131,7 +156,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_trigger_type_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -144,7 +169,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_status_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -155,7 +180,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_filter_by_renewal_id(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
         mock_db.notification_log.find = MagicMock(return_value=_make_cursor([]))
@@ -173,7 +198,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_date_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -189,7 +214,7 @@ class TestAdminListPagination(unittest.TestCase):
 
     def test_envelope_shape(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         items = [_log_entry(_id=f"n_{i}") for i in range(3)]
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
@@ -223,7 +248,7 @@ class TestAdminResend(unittest.TestCase):
 
     def test_404_when_notification_missing(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
         mock_db.notification_log.find_one = AsyncMock(return_value=None)
@@ -237,7 +262,7 @@ class TestAdminResend(unittest.TestCase):
 
     def test_404_when_underlying_renewal_missing(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.notification_log = MagicMock()
         mock_db.notification_log.find_one = AsyncMock(
@@ -255,7 +280,7 @@ class TestAdminResend(unittest.TestCase):
 
     def test_happy_path_writes_new_log_entry(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         original = _log_entry(_id="n1", trigger_type="renewal_t_minus_30",
                               status="failed")
         mock_db = MagicMock()

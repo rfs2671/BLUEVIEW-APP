@@ -37,9 +37,24 @@ sys.path.insert(0, str(_BACKEND))
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-def _setup_client(*, role: str = "owner", company_id: str = "co_a"):
+def _setup_client(*, role: str = "admin", operator: bool = False,
+                  company_id: str = "co_a"):
+    """The principal these tests act as.
+
+    THE PRINCIPAL THESE ROUTES WANT IS THE PLATFORM OPERATOR, NOT A ROLE.
+    They gated on `role != "owner"` until the role was retired -- and "owner"
+    was what EVERY self-serve signup received, so the gate on a cross-tenant
+    surface was satisfied by having registered. `operator=True` sets the flag
+    `is_platform_operator`, which no API path can write.
+
+    THE KEY IS ABSENT WHEN operator IS FALSE, not written as False. That is
+    the shape production has: one row carries the field and every other
+    account simply does not have it.
+    """
     import server
     user = {"id": "u1", "_id": "u1", "role": role, "company_id": company_id}
+    if operator:
+        user["is_platform_operator"] = True
 
     async def _fake_user():
         return user
@@ -93,9 +108,20 @@ class TestAdminListAuth(unittest.TestCase):
         finally:
             restore()
 
-    def test_owner_role_accepted(self):
-        import server
+    def test_the_retired_role_alone_is_rejected(self):
+        """role "owner" WITHOUT the flag is a customer, and this is the half
+        of the gate that would still pass if the role had been left in it.
+        The key is ABSENT on this fixture, which is the production shape."""
         client, restore = _setup_client(role="owner")
+        try:
+            resp = client.get("/api/admin/filing-jobs")
+            self.assertEqual(resp.status_code, 403)
+        finally:
+            restore()
+
+    def test_the_platform_operator_is_accepted(self):
+        import server
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.filing_jobs = MagicMock()
         mock_db.filing_jobs.find = MagicMock(return_value=_make_mongo_cursor([]))
@@ -112,7 +138,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_filter_by_status(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         jobs = [_job(_id="fj_1", status="queued")]
         mock_db = MagicMock()
         mock_db.filing_jobs = MagicMock()
@@ -130,7 +156,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_status_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -141,7 +167,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_filter_by_company_id(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.filing_jobs = MagicMock()
         mock_db.filing_jobs.find = MagicMock(return_value=_make_mongo_cursor([]))
@@ -157,7 +183,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_filter_by_date_range(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.filing_jobs = MagicMock()
         mock_db.filing_jobs.find = MagicMock(return_value=_make_mongo_cursor([]))
@@ -179,7 +205,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_date_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -192,7 +218,7 @@ class TestAdminListFilters(unittest.TestCase):
 
     def test_invalid_sort_by_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db):
@@ -206,7 +232,7 @@ class TestAdminListResponseShape(unittest.TestCase):
 
     def test_pagination_envelope(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         jobs = [_job(_id=f"fj_{i}") for i in range(3)]
         mock_db = MagicMock()
         mock_db.filing_jobs = MagicMock()
@@ -230,7 +256,7 @@ class TestAdminListResponseShape(unittest.TestCase):
         a future migration ever attaches one, the admin response must
         strip it. This is belt-and-suspenders."""
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         leaky_job = _job()
         leaky_job["encrypted_ciphertext"] = "should-not-leak"
         mock_db = MagicMock()

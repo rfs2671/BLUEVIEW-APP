@@ -308,9 +308,14 @@ class ThePageIndexIsInspectable(unittest.TestCase):
         paths = {r.path for r in server.app.routes if hasattr(r, "path")}
         self.assertIn("/api/whatsapp/debug/page-index", paths)
 
-    def test_it_is_owner_or_admin_only(self):
+    def test_it_is_company_admin_only(self):
+        """It read `role not in ("admin", "owner")` inline. The role is
+        retired -- every self-serve signup received it -- and the named rule
+        `is_company_admin` replaced it, which also admits the platform
+        operator on his flag rather than on any role string."""
         code = _code_only(server.whatsapp_debug_page_index)
-        self.assertIn('("admin", "owner")', code)
+        self.assertIn("is_company_admin(current_user)", code)
+        self.assertNotIn('"owner"', code)
         self.assertIn("403", code)
 
     def test_it_is_scoped_to_the_callers_company(self):

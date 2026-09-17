@@ -194,10 +194,22 @@ class TestDashboardEmptyStateAndBanner(unittest.TestCase):
         # CTA button title.
         self.assertIn('title="Add Project"', self.text)
 
-    def test_empty_state_renders_only_for_admin_owner(self):
-        """Workers shouldn't see an Add Project CTA they can't act on."""
-        self.assertIn("'admin'", self.text)
-        self.assertIn("'owner'", self.text)
+    def test_empty_state_renders_only_for_a_company_admin(self):
+        """Workers shouldn't see an Add Project CTA they can't act on.
+
+        IT LOOKED FOR THE TWO ROLE LITERALS, `'admin'` and `'owner'`, because
+        the screen compared against both inline. The role "owner" is retired
+        and the screen now asks `isCompanyAdmin(user)` -- one shared
+        predicate, matching the server's `is_company_admin`, which admits role
+        'admin' and the platform operator by his flag. So the pin moves to the
+        predicate: a literal is not what makes this correct, asking the same
+        question the server asks is.
+        """
+        self.assertIn("isCompanyAdmin(user)", self.text)
+        self.assertIn("isCompanyAdmin } from '../src/context/AuthContext'",
+                      self.text)
+        self.assertNotIn("'owner'", self.text,
+                         "the retired role is compared nowhere on this screen")
         self.assertIn("showProjectsEmptyState", self.text)
 
     def test_first_poll_banner_uses_project_fields(self):

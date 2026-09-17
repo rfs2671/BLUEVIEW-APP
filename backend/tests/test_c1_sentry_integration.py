@@ -321,11 +321,21 @@ class TestSentryTestEndpoint(unittest.TestCase):
         import server
         server.app.dependency_overrides.clear()
 
-    def _login_as(self, role):
+    def _login_as(self, role, operator=False):
+        """`operator=True` sets the flag and leaves `role` alone.
+
+        The platform operator's account still carries role "owner" -- the
+        retired string -- until the account migration runs, so that pairing is
+        the real shape rather than a contrivance. The key is ABSENT otherwise,
+        which is what every other row looks like.
+        """
         import server
 
         async def _fake_user():
-            return {"id": "u1", "_id": "u1", "role": role, "company_id": "co_a"}
+            u = {"id": "u1", "_id": "u1", "role": role, "company_id": "co_a"}
+            if operator:
+                u["is_platform_operator"] = True
+            return u
 
         server.app.dependency_overrides[server.get_current_user] = _fake_user
 
@@ -334,10 +344,21 @@ class TestSentryTestEndpoint(unittest.TestCase):
         resp = self.client.get("/api/admin/_sentry_test")
         self.assertEqual(resp.status_code, 500)
 
-    def test_owner_can_hit_endpoint(self):
-        self._login_as("owner")
+    def test_the_platform_operator_can_hit_endpoint(self):
+        """It read `self._login_as("owner")`, and role "owner" was what every
+        self-serve signup received -- so "an owner can reach the admin
+        diagnostic" meant "anybody who registered can". The role is retired;
+        the operator reaches it on his flag."""
+        self._login_as("owner", operator=True)
         resp = self.client.get("/api/admin/_sentry_test")
         self.assertEqual(resp.status_code, 500)
+
+    def test_the_retired_role_alone_is_rejected(self):
+        """Same account, no flag. Without this the test above would pass just
+        as well if the role had been left in the gate."""
+        self._login_as("owner")
+        resp = self.client.get("/api/admin/_sentry_test")
+        self.assertEqual(resp.status_code, 403)
 
     def test_non_admin_rejected(self):
         self._login_as("worker")

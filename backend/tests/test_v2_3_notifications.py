@@ -244,14 +244,21 @@ def _project(_id="P1", company_id="co_a", name="Test Project"):
 
 
 def _user(_id, *, company_id="co_a", role="member",
-          assigned_projects=None, is_deleted=False):
-    return {
+          assigned_projects=None, is_deleted=False, operator=False):
+    doc = {
         "_id": _id,
         "company_id": company_id,
         "role": role,
         "assigned_projects": list(assigned_projects or []),
         "is_deleted": is_deleted,
     }
+    # THE KEY IS ABSENT UNLESS ASKED FOR, and that is the production shape:
+    # exactly one row in the database carries `is_platform_operator`, and on
+    # every other account the field does not exist rather than being False. A
+    # fixture that always wrote False would be testing a document nobody has.
+    if operator:
+        doc["is_platform_operator"] = True
+    return doc
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -262,12 +269,22 @@ def _user(_id, *, company_id="co_a", role="member",
 class TestDispatchNotification(unittest.TestCase):
 
     def test_inserts_one_doc_per_eligible_recipient(self):
-        # Two admins + one assigned member = 3 recipients
+        """Admin + platform operator + one assigned member = 3 recipients.
+
+        THE ROLE "owner" USED TO BE THE SECOND BRANCH and it is retired: it
+        was what every self-serve signup received, so a recipient list keyed on
+        it mailed prospects. U_OPERATOR still CARRIES that role string -- the
+        real operator's account does, until the migration runs -- and is
+        selected on the FLAG. U_STALE_OWNER holds the identical role and no
+        flag, and must not be selected; without him this test would pass just
+        as well if the role had been left in the query.
+        """
         db = _StubDb(users=[
             _user("U_ADMIN", role="admin"),
-            _user("U_OWNER", role="owner"),
+            _user("U_OPERATOR", role="owner", operator=True),
             _user("U_ASSIGNED", role="member", assigned_projects=["P1"]),
-            _user("U_OTHER", role="member"),  # NOT eligible
+            _user("U_STALE_OWNER", role="owner"),   # NOT eligible
+            _user("U_OTHER", role="member"),        # NOT eligible
         ])
         ids = _run(dispatch_notification(
             db, project=_project(), kind="inspection_prediction",
@@ -279,7 +296,7 @@ class TestDispatchNotification(unittest.TestCase):
         self.assertEqual(len(inbox_coll.docs), 3)
         recipient_ids = {d["user_id"] for d in inbox_coll.docs}
         self.assertEqual(
-            recipient_ids, {"U_ADMIN", "U_OWNER", "U_ASSIGNED"},
+            recipient_ids, {"U_ADMIN", "U_OPERATOR", "U_ASSIGNED"},
         )
 
     def test_dedups_on_user_source_pair(self):

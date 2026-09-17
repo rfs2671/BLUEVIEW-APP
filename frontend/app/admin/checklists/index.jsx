@@ -31,7 +31,7 @@ import FloatingNav from '../../../src/components/FloatingNav';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
@@ -91,14 +91,14 @@ export default function AdminChecklistsScreen() {
     if (!authLoading) {
       if (!isAuthenticated) {
         router.replace('/login');
-      } else if (user?.role !== 'admin' && user?.role !== 'owner') {
+      } else if (!isCompanyAdmin(user)) {
         router.replace('/');
       }
     }
   }, [isAuthenticated, authLoading, user]);
 
   useEffect(() => {
-    if (isAuthenticated && (user?.role === 'admin' || user?.role === 'owner')) {
+    if (isAuthenticated && isCompanyAdmin(user)) {
       fetchData();
     }
   }, [isAuthenticated, user]);
@@ -125,7 +125,13 @@ export default function AdminChecklistsScreen() {
     }
     if (usersRes.status === 'ok') {
       const list = Array.isArray(usersRes.data) ? usersRes.data : [];
-      setUsers(list.filter(u => u.role !== 'owner'));
+      // THE SELF-SERVE SIGNUP IS NOT AN ASSIGNEE. This filtered `role !==
+      // 'owner'`, which was the role every registration minted — the intent
+      // was "hide the account somebody made by pressing Sign Up", not "hide
+      // an owner". Registration produces 'demo' now, so that is what the
+      // filter names. A legacy 'owner' row IS a company admin and belongs in
+      // the list; it will read as 'admin' once the accounts are migrated.
+      setUsers(list.filter(u => String(u.role || '').toLowerCase() !== 'demo'));
     }
 
     const failure = [checklistsRes, projectsRes, usersRes].find(r => r.status !== 'ok');

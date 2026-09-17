@@ -37,9 +37,23 @@ sys.path.insert(0, str(_BACKEND))
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-def _setup_client(*, role="owner"):
+def _setup_client(*, role="admin", operator=False):
+    """The principal these tests act as.
+
+    THESE ROUTES ARE PLATFORM-OPERATOR ONLY. They gated on `role != "owner"`
+    until the role was retired, and "owner" was what EVERY self-serve signup
+    received -- so "the owner accepts DOB authorization for this company" was
+    satisfied by having registered. Per the ruling the operator configures DOB
+    authorization on a client's behalf, so a company admin is refused too.
+
+    `operator=True` sets the flag `is_platform_operator`, which no API path
+    can write. THE KEY IS ABSENT OTHERWISE, not written as False: one row in
+    the database carries it and every other account simply does not have it.
+    """
     import server
     user = {"id": "u1", "_id": "u1", "role": role, "company_id": "co_a"}
+    if operator:
+        user["is_platform_operator"] = True
 
     async def _fake_user():
         return user
@@ -60,9 +74,19 @@ class TestGetAuthorization(unittest.TestCase):
         finally:
             restore()
 
+    def test_the_retired_role_alone_is_rejected(self):
+        """role "owner" with no flag is a customer -- the shape every legacy
+        self-serve row has."""
+        client, restore = _setup_client(role="owner")
+        try:
+            resp = client.get("/api/owner/companies/co_a/authorization")
+            self.assertEqual(resp.status_code, 403)
+        finally:
+            restore()
+
     def test_returns_text_and_unaccepted_when_no_auth(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -84,7 +108,7 @@ class TestGetAuthorization(unittest.TestCase):
 
     def test_returns_accepted_when_version_matches(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -109,7 +133,7 @@ class TestGetAuthorization(unittest.TestCase):
         """Stored authorization with an OLD version → accepted=false.
         Forces re-acceptance after a text bump."""
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -146,9 +170,20 @@ class TestPostAuthorization(unittest.TestCase):
         finally:
             restore()
 
+    def test_the_retired_role_alone_is_rejected(self):
+        client, restore = _setup_client(role="owner")
+        try:
+            resp = client.post(
+                "/api/owner/companies/co_a/authorization",
+                json={"licensee_name_typed": "anyone"},
+            )
+            self.assertEqual(resp.status_code, 403)
+        finally:
+            restore()
+
     def test_happy_path_persists_authorization(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -175,7 +210,7 @@ class TestPostAuthorization(unittest.TestCase):
         """Operator's typed name should match case-insensitively
         against any of the company name forms."""
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -195,7 +230,7 @@ class TestPostAuthorization(unittest.TestCase):
 
     def test_typed_name_mismatch_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value={
@@ -215,7 +250,7 @@ class TestPostAuthorization(unittest.TestCase):
 
     def test_empty_typed_name_400(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         try:
             with patch.object(server, "db", mock_db), \

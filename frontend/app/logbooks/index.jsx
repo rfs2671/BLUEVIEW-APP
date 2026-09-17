@@ -36,7 +36,7 @@ import GlassButton from '../../src/components/GlassButton';
 import CpNav from '../../src/components/CpNav';
 import { CP_NAV_CLEARANCE } from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, logbookActivationAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
@@ -105,13 +105,13 @@ function flaggedReasonSummary({ expired = 0, unknown = 0, needsTrade = 0 } = {})
 export default function LogBooksScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
-  // Mirrors get_admin_user on the server, which admits ["admin", "owner"] —
-  // the same predicate the activation endpoint itself enforces. Asking the
-  // same question the server asks is what stops the control and the endpoint
-  // disagreeing about who may press it.
-  const isAdminUser = ['admin', 'owner'].includes(
-    String(user?.role || '').toLowerCase(),
-  );
+  // Mirrors get_admin_user on the server — now `holds_rank(user,
+  // COMPANY_ADMIN_ROLES)`, the same predicate the activation endpoint itself
+  // enforces. Asking the same question the server asks is what stops the
+  // control and the endpoint disagreeing about who may press it. It USED to
+  // read ["admin", "owner"] on both sides; the role is retired and the
+  // platform operator now arrives on the flag instead, here and there.
+  const isAdminUser = isCompanyAdmin(user);
   const { isDark, colors } = useTheme();
   const toast = useToast();
   // The `finalize` namespace — the one that owns the wording of every refusal

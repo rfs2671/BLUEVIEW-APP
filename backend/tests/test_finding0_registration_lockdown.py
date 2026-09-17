@@ -62,12 +62,20 @@ class TestRegistrationLockdown(unittest.TestCase):
         return inserted
 
     def test_client_cannot_self_assign_owner(self):
+        import server
         doc = self._register(role="owner")
         # The forced role is server-chosen; what matters is the CLIENT did not
         # decide it. Assert on provenance, not on the literal value.
-        self.assertEqual(doc["role"], "owner",
+        #
+        # IT WAS "owner" AND IT IS ROLE_DEMO NOW. The role is retired: it was
+        # what every self-serve signup received, which is exactly why forty
+        # checks reading it as a rank were satisfied by registering. Named by
+        # constant rather than spelled, so the next rename moves this with it.
+        self.assertEqual(doc["role"], server.ROLE_DEMO,
                          "server-forced role changed — update this test AND "
                          "verify the signup/onboarding flow still works")
+        self.assertNotEqual(doc["role"], "owner",
+                            "the retired role came back through registration")
 
     def test_client_cannot_self_assign_admin(self):
         doc = self._register(role="admin")

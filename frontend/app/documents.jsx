@@ -29,7 +29,7 @@ import CpNav from '../src/components/CpNav';
 import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { useToast } from '../src/components/Toast';
-import { useAuth } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI, documentsAPI } from '../src/utils/api';
 import { settleFetch } from '../src/utils/offlineState';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
@@ -507,7 +507,7 @@ export default function DocumentsScreen() {
                   {/* Never a bare count under an ambiguous label. */}
                   <Text style={s.fileCount}>{headline}</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-                    {(user?.role === 'admin' || user?.role === 'owner') && (
+                    {isCompanyAdmin(user) && (
                       <Pressable
                         style={[s.refreshBtn, { backgroundColor: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.3)', borderWidth: 1 }]}
                         onPress={handleUploadFile}

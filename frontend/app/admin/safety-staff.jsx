@@ -31,7 +31,7 @@ import FloatingNav from '../../src/components/FloatingNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { projectsAPI, safetyStaffAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -92,7 +92,7 @@ export default function SafetyStaffScreen() {
     email: '',
   });
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
 
   useEffect(() => {
     if (!authLoading) {

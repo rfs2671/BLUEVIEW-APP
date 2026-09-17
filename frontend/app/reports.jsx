@@ -41,7 +41,7 @@ import GlassButton from '../src/components/GlassButton';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
-import { useAuth } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI, reportsAPI, logbookTypesAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
 import OfflineNotice from '../src/components/OfflineNotice';
@@ -121,7 +121,7 @@ export default function ReportsScreen() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyState, setHistoryState] = useState('ok');
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {

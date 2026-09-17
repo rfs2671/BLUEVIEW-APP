@@ -14,7 +14,7 @@ function documentKeyFor(file) {
   return id ? `file:${id}` : '';
 }
 import { useTheme } from '../context/ThemeContext';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../context/AuthContext';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
@@ -411,7 +411,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const canDelete = (annotation) => {
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
-    return creatorId === currentUserId || user?.role === 'admin' || user?.role === 'owner';
+    return creatorId === currentUserId || isCompanyAdmin(user);
   };
 
   if (!visible) return null;

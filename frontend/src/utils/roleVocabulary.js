@@ -74,16 +74,38 @@ export const ASSIGNABLE_ROLE_VALUES = ASSIGNABLE_ROLES.map((r) => r.value);
  * The label for a stored role — including roles this picker does NOT offer.
  *
  * A LIST SCREEN RENDERS WHAT THE DATABASE HOLDS, not what the picker can write.
- * `owner` exists on every self-serve signup and `worker` exists on accounts
- * created before the ruling; a lookup that returned '' for them would print an
- * empty badge on a real row. The role string itself is the fallback, upper-
- * cased, which is what the badge did before this module existed.
+ * `worker` exists on accounts created before the ruling; a lookup that returned
+ * '' for them would print an empty badge on a real row. The role string itself
+ * is the fallback, upper-cased, which is what the badge did before this module
+ * existed.
+ *
+ * ── 'owner' STAYS HERE, AND IT IS THE ONE PLACE IN THE APP IT DOES ─────────
+ *
+ * The role is retired: no writer mints it, no gate reads it, and the platform
+ * operator is `is_platform_operator` and never a role string. But RETIRING A
+ * ROLE DOES NOT REWRITE THE ROWS THAT HOLD IT. Every account created by
+ * self-serve signup before this change still carries it — including, right
+ * now, the operator's own — and a user list renders the database rather than
+ * the vocabulary.
+ *
+ * Deleting this line would not make those rows disappear. It would make them
+ * fall through to the upper-cased fallback and print "OWNER", which is the
+ * same fact rendered worse. IT COMES OUT WHEN THE ACCOUNTS ARE MIGRATED, not
+ * before, and a test that finds no user holding the role is what says so.
+ *
+ * THAT IS ALSO WHY THIS IS NOT THE GATE, and never was: `ASSIGNABLE_ROLES`
+ * above governs what may be WRITTEN, this governs what may be READ, and the
+ * two lists are allowed to disagree for exactly as long as old rows exist.
  */
 export function roleLabel(role) {
   const v = String(role || '').trim().toLowerCase();
   const known = ASSIGNABLE_ROLES.find((r) => r.value === v);
   if (known) return known.label;
   if (v === 'owner') return 'Owner';
+  // What self-serve signup produces now. Not assignable, so it is not in the
+  // picker — but it IS what most new rows will hold, so a list screen needs a
+  // label for it or every prospect reads as "DEMO".
+  if (v === 'demo') return 'Demo';
   if (v === 'site_device') return 'Site Device';
   return v ? v.toUpperCase() : 'UNKNOWN';
 }

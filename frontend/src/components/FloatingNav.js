@@ -30,7 +30,7 @@ import {
   Check,
 } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { authAPI } from '../utils/api';
@@ -59,7 +59,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
   const [saving, setSaving] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
 
   const handleSaveName = async () => {
     if (!name.trim()) {

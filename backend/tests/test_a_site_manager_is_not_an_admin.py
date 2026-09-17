@@ -106,7 +106,13 @@ class HeIsHisAssignmentsAndNothingMore(unittest.TestCase):
     def test_nobody_else_is_moved_by_this_branch(self):
         """cp and superintendent still reach the company branch. Production
         holds zero pm accounts, so this change must be a no-op on every account
-        that exists (admin 4, owner 3, cp 3, superintendent 0)."""
+        that exists (admin 4, owner 3, cp 3, superintendent 0).
+
+        "owner" STAYS IN THIS LIST AND IS NOT A CONTRADICTION. The role is
+        retired -- no writer mints it and no gate reads it -- but three live
+        accounts still HOLD it until they are migrated, and
+        `project_access_ok` is the company-scope branch, not a rank gate: it
+        must keep serving those rows their own company's projects."""
         for role in ("cp", server.ROLE_SUPERINTENDENT, "admin", "owner"):
             user = {"role": role, "company_id": COMPANY,
                     "assigned_projects": []}
@@ -122,10 +128,18 @@ class TheThreeAdminGates(unittest.TestCase):
         self.assertNotIn(PM, server.USER_MANAGEMENT_ROLES)
         self.assertNotIn(PM, server.COMPANY_ADMIN_ROLES)
 
-    def test_the_company_gate_membership_did_not_move(self):
-        """get_admin_user guards roughly a hundred routes. Naming its list was
-        the edit; widening it was not."""
-        self.assertEqual(server.COMPANY_ADMIN_ROLES, ("admin", "owner"))
+    def test_the_company_gate_membership_only_ever_narrowed(self):
+        """get_admin_user guards roughly a hundred routes, and the thing to
+        watch is a role ARRIVING in this tuple.
+
+        It pinned ("admin", "owner") exactly. "owner" left when the role was
+        retired -- it was what every self-serve signup received, so the tuple
+        said "an admin, or anybody who registered" -- and the platform
+        operator now passes `holds_rank` on his flag instead. The assertion
+        follows that rather than being deleted: admin is still in, the Site
+        Manager is still out, and nothing else has appeared."""
+        self.assertEqual(server.COMPANY_ADMIN_ROLES, ("admin",))
+        self.assertNotIn("owner", server.COMPANY_ADMIN_ROLES)
 
     def test_user_management_is_a_SEPARATE_constant(self):
         """Same members as COMPANY_ADMIN_ROLES today and a different question.
@@ -139,8 +153,8 @@ class TheThreeAdminGates(unittest.TestCase):
         instrument at all. Two declarations is the fact being pinned.
         """
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertIn('USER_MANAGEMENT_ROLES = ("admin", "owner")', src)
-        self.assertIn('COMPANY_ADMIN_ROLES = ("admin", "owner")', src)
+        self.assertIn('USER_MANAGEMENT_ROLES = ("admin",)', src)
+        self.assertIn('COMPANY_ADMIN_ROLES = ("admin",)', src)
         self.assertNotIn("USER_MANAGEMENT_ROLES = COMPANY_ADMIN_ROLES", src)
 
     def test_project_admin_is_wider_by_exactly_one_role(self):

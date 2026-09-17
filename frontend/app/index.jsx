@@ -28,7 +28,7 @@ import FloatingNav from '../src/components/FloatingNav';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { useToast } from '../src/components/Toast';
-import { useAuth } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
@@ -583,12 +583,12 @@ export default function DashboardScreen() {
 
   // ── Phase B3: empty state for owners/admins with no projects ────────
   // Surfaces a CTA + welcome copy when the dashboard has nothing to
-  // show. Triggers when the user has admin/owner role AND projects
+  // show. Triggers when the user may act as a company admin AND projects
   // length is 0 AND we've finished loading. Skip-onboarding path
   // lands here (so does any authed user with zero projects).
   const showProjectsEmptyState =
     !loading &&
-    (user?.role === 'admin' || user?.role === 'owner') &&
+    isCompanyAdmin(user) &&
     Array.isArray(projects) &&
     projects.length === 0;
 
@@ -613,7 +613,7 @@ export default function DashboardScreen() {
     // field on purpose; the two are different questions.
     const neverSyncedProjects = projects.filter(p => !p.last_dob_sync_at);
     const neverSynced = neverSyncedProjects.length;
-    const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+    const isAdmin = isCompanyAdmin(user);
 
     const pidOf = (p) => p._id || p.id;
     const addrOf = (p) => p.address || p.name || 'Untitled project';
@@ -802,7 +802,7 @@ export default function DashboardScreen() {
 
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
-    if (user?.role !== 'admin' && user?.role !== 'owner') return null;
+    if (!isCompanyAdmin(user)) return null;
     return (
       <>
         <Text style={[s.sectionLabel, { color: colors.text.muted }]}>ADMIN TOOLS</Text>
