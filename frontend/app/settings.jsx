@@ -48,7 +48,7 @@ import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
-import { useAuth } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
@@ -216,7 +216,7 @@ export default function SettingsScreen() {
     setTimeout(() => setBuildCopied(false), 2000);
   };
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
   const isCp    = user?.role === 'cp';
   const insets  = useSafeAreaInsets();
 

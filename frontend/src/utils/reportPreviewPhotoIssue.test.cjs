@@ -133,7 +133,11 @@ ok(!/failed_photo_count|enhance_error/.test(editorSrc),
   'the CP editor does not surface it either');
 
 // ── The gate is the backend 403, and only the backend 403 ──────────────────
-ok(/const isAdmin = user\?\.role === 'admin' \|\| user\?\.role === 'owner';/.test(reportsSrc)
+// The declaration moved from an inline `role === 'admin' || role === 'owner'`
+// to the shared `isCompanyAdmin` - the role "owner" is retired. What this
+// assertion RECORDS is unchanged and is the point: the variable is declared
+// and never read, so nothing on this screen is role-gated in the client.
+ok(/const isAdmin = isCompanyAdmin\(user\);/.test(reportsSrc)
   && (reportsSrc.match(/isAdmin/g) || []).length === 1,
   'RECORDED: reports.jsx declares isAdmin and never uses it — the client does not role-gate this screen');
 ok(/\{ path: '\/reports'/.test(navSrc) && !/role/.test(navSrc.slice(navSrc.indexOf('const navItems'), navSrc.indexOf('];', navSrc.indexOf('const navItems')))),

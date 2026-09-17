@@ -8,23 +8,26 @@
  *   per-row delete       ['owner','admin']   — wide
  *   Upload / Sync bar    role === 'admin'    — the SAFE controls, narrow
  *
- * So an `owner` could delete a file and could not upload one. The narrow guard
- * sat on the harmless controls and the wide guard on the irreversible one.
+ * So one principal could delete a file and could not upload one. The narrow
+ * guard sat on the harmless controls and the wide guard on the irreversible
+ * one.
  *
- * WHICH ONE IS RIGHT IS NOT A STYLE QUESTION — it is set by the server:
+ * WHICH ONE IS RIGHT IS NOT A STYLE QUESTION — it is set by the server, and
+ * the screen has to ask the same question `get_admin_user` asks.
  *
- *     async def get_admin_user(current_user = Depends(get_current_user)):
- *         if current_user.get("role") not in ["admin", "owner"]:
- *             raise HTTPException(status_code=403, ...)
+ * ── WHAT CHANGED, AND WHY THE PROPERTY DID NOT ──────────────────────────
  *
- * `owner` is a role, admitted wherever a company admin is admitted, and
- * `is_platform_operator` is documented as "never inferred from role" — so this
- * is not a superuser flag leaking into the UI. The narrow predicate hides
- * controls the server would have served.
+ * The wide form used to be spelled `['owner', 'admin']`, and the role "owner"
+ * is retired — it was what every self-serve signup received, never a rank.
+ * The screen now calls `isCompanyAdmin(user)`, which is the client half of
+ * the server's `is_company_admin`: role 'admin', or the platform operator by
+ * his flag.
  *
- * This test exists because the split PREDATED the one-screen redesign and was
- * carried, unnoticed, into a renamed file. A grep-shaped guard is what stops
- * the next edit reintroducing it.
+ * So this file no longer looks for a role LIST. It asserts something stronger
+ * and simpler: THIS SCREEN READS NO ROLE AT ALL. One shared predicate, called
+ * once, gating both the destructive and the safe controls. A second predicate
+ * of any shape — a role list, a role comparison, an inline `user?.role` — is
+ * the regression this file exists to catch.
  *
  * Run:  node src/utils/filesScreenOnePredicate.test.cjs
  */
@@ -66,17 +69,23 @@ function walk(node, fn, seen = new Set()) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. The role list appears exactly once — at the single definition.
 // ═══════════════════════════════════════════════════════════════════════════
-const roleListHits = (code.match(/\['owner',\s*'admin'\]/g) || []).length;
-ok(roleListHits === 1,
-  `the ['owner','admin'] list appears once, at the definition (found ${roleListHits})`);
+// THE SHARED PREDICATE IS IMPORTED. Without this the two checks below could
+// both pass on a screen that had simply deleted its role gate entirely.
+ok(/import \{[^}]*\bisCompanyAdmin\b[^}]*\} from ['"][^'"]*AuthContext['"]/.test(code),
+  'isCompanyAdmin is imported from AuthContext — the same rule the server asks');
+
+// NO ROLE LIST OF ANY KIND, including the retired one this used to require.
+const retiredRole = (code.match(/'owner'/g) || []).length;
+ok(retiredRole === 0,
+  `the retired role 'owner' appears nowhere in the code (found ${retiredRole})`);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. The NARROW form appears nowhere. This is the actual regression.
 // ═══════════════════════════════════════════════════════════════════════════
-const narrow = (code.match(/role\s*===\s*'admin'/g) || []).length;
+const narrow = (code.match(/role\s*[=!]==\s*'/g) || []).length;
 ok(narrow === 0,
-  `no \`role === 'admin'\` survives — it locks an owner out of controls the `
-  + `server serves (found ${narrow})`);
+  `no inline role comparison survives — a second predicate is how the three `
+  + `disagreed in the first place (found ${narrow})`);
 
 // A role read of any other shape is equally a second predicate.
 const otherRoleReads = [];
@@ -90,22 +99,25 @@ walk(tree, (n) => {
   if (line.trimStart().startsWith(('*')) || line.trimStart().startsWith('//')) return;
   otherRoleReads.push(line.trim().slice(0, 80));
 });
-ok(otherRoleReads.length === 1,
-  `\`user.role\` is read exactly once, inside isAdmin (found ${otherRoleReads.length}`
-  + `${otherRoleReads.length > 1 ? ': ' + otherRoleReads.join(' | ') : ''})`);
+ok(otherRoleReads.length === 0,
+  `\`user.role\` is never read on this screen — the shared predicate reads it `
+  + `(found ${otherRoleReads.length}`
+  + `${otherRoleReads.length ? ': ' + otherRoleReads.join(' | ') : ''})`);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. isAdmin is defined, and it is the wide form.
+// 3. isAdmin is defined, and it is the SHARED predicate — not a local
+//    re-derivation that happens to agree with it today.
 // ═══════════════════════════════════════════════════════════════════════════
-let isAdminIsWide = false;
+let isAdminIsShared = false;
 walk(tree, (n) => {
   if (n.type !== 'VariableDeclarator') return;
   if (!n.id || n.id.name !== 'isAdmin' || !n.init) return;
-  const seen = [];
-  walk(n.init, (c) => { if (c.type === 'StringLiteral') seen.push(c.value); });
-  isAdminIsWide = seen.includes('owner') && seen.includes('admin');
+  isAdminIsShared = n.init.type === 'CallExpression'
+    && n.init.callee.type === 'Identifier'
+    && n.init.callee.name === 'isCompanyAdmin';
 });
-ok(isAdminIsWide, 'isAdmin admits both owner and admin, matching get_admin_user');
+ok(isAdminIsShared,
+  'isAdmin is isCompanyAdmin(user) — the same rule the server enforces');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. THE ASYMMETRY THAT MADE THIS DANGEROUS. Whatever gates the destructive

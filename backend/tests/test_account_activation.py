@@ -195,8 +195,12 @@ def test_admin_approve_flips_status():
     db = MagicMock()
     db.users.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
     db.users.find_one = AsyncMock(return_value={"_id": "target", "account_status": "approved", "company_id": "c1"})
+    # THE ACTOR IS AN ADMIN NOW, not role "owner". Approve is a company-admin
+    # power and the retired role is not one -- it was what every self-serve
+    # signup received. What this test is about is the TENANT scoping, which is
+    # unchanged: same company_id on actor and target.
     client, restore = _client_with_user(
-        {"_id": "owner1", "id": "owner1", "role": "owner", "account_status": "approved", "company_id": "c1"}, db=db)
+        {"_id": "admin1", "id": "admin1", "role": "admin", "account_status": "approved", "company_id": "c1"}, db=db)
     try:
         r = client.patch("/api/admin/users/target/approve")
         assert r.status_code == 200, r.text

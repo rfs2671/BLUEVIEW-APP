@@ -1,11 +1,18 @@
 """Two-tier project delete.
 
-TIER 1 (admin or owner) — mark_for_deletion: flags the project, hides it from
+TIER 1 (a company admin) — mark_for_deletion: flags the project, hides it from
 every admin surface, deactivates its NFC tags, removes NOTHING.
 
-TIER 2 (owner ONLY) — hard delete: physically purges the project and all owned
-data, storage objects and config keys. delete_many/delete_one only, never
-drop().
+TIER 2 (the PLATFORM OPERATOR only) — hard delete: physically purges the
+project and all owned data, storage objects and config keys.
+delete_many/delete_one only, never drop().
+
+THE SECOND TIER USED TO BE role == "owner", AND THAT WAS THE DEFECT. Every
+self-serve signup received that role, so the irreversible purge — and the
+pending-deletion list that hands out the ids to purge — were reachable by any
+customer who had registered. The role is retired. The operator is
+`is_platform_operator`, a flag no API path can write, and the fixtures below
+say so by setting the flag rather than by naming a role.
 
 Landmines under test (from the cascade audit):
   1. workers span projects — never deleted; only this project's
@@ -142,12 +149,18 @@ def _reset_rate_limiter():
         pass
 
 
-def _client(role="admin", company_id="co_a", uid="u1"):
-    """Build a TestClient acting as `role`.
+def _client(role="admin", company_id="co_a", uid="u1", operator=False):
+    """Build a TestClient acting as `role`, optionally as the operator.
 
     Only `get_current_user` is overridden, so `get_admin_user` /
-    `get_owner_user` still execute their REAL role checks — that is what the
-    gating tests assert. All pre-existing overrides are cleared first: several
+    `get_platform_operator_user` still execute their REAL checks — that is
+    what the gating tests assert.
+
+    `operator=True` SETS THE FLAG AND LEAVES `role` ALONE. That combination is
+    not a contrivance: the real operator's account carries role "owner" to
+    this day, so a fixture that renamed his role would test a world that does
+    not exist and would pass whether or not the flag was honoured. The key is
+    ABSENT when operator is False, which is what every other row looks like. All pre-existing overrides are cleared first: several
     other suites override `server.get_admin_user` DIRECTLY
     (test_activity_feed_endpoint, test_coi_endpoints,
     test_dob_logs_seed_suppression, test_project_list_defaults), and under
@@ -159,6 +172,8 @@ def _client(role="admin", company_id="co_a", uid="u1"):
 
     user = {"_id": uid, "id": uid, "role": role,
             "company_id": company_id, "full_name": "Test User"}
+    if operator:
+        user["is_platform_operator"] = True
 
     async def _fake():
         return user
@@ -201,8 +216,8 @@ def _db_with_project(marked=False, **over):
 
 class MarkDeleteTest(unittest.TestCase):
 
-    def _mark(self, db, role="admin"):
-        c, cleanup = _client(role=role)
+    def _mark(self, db, role="admin", operator=False):
+        c, cleanup = _client(role=role, operator=operator)
         try:
             with patch.object(server, "db", db):
                 return c.delete(f"/api/projects/{_PID}")
@@ -238,9 +253,22 @@ class MarkDeleteTest(unittest.TestCase):
                 f"{coll} must not be deleted by a Tier 1 mark",
             )
 
-    def test_owner_can_also_mark(self):
+    def test_the_platform_operator_can_also_mark(self):
+        """Tier 1 is a company-admin power and the operator holds every one.
+
+        He arrives carrying role "owner" — the retired string, which matches
+        no tuple — so this is the assertion that the mark gate reads the flag
+        rather than the role. Before the sweep it passed on the role and said
+        nothing."""
         db = _db_with_project()
-        self.assertEqual(self._mark(db, role="owner").status_code, 200)
+        self.assertEqual(
+            self._mark(db, role="owner", operator=True).status_code, 200)
+
+    def test_the_retired_role_alone_cannot_mark(self):
+        """A legacy customer row: role "owner", no flag. Tier 1 is an ADMIN
+        power and this account is not an admin any more."""
+        db = _db_with_project()
+        self.assertEqual(self._mark(db, role="owner").status_code, 403)
 
     def test_already_marked_project_is_404(self):
         db = _Db()
@@ -292,24 +320,30 @@ class HidingTest(unittest.TestCase):
 
 class OwnerGateTest(unittest.TestCase):
 
-    def test_pending_list_owner_only(self):
+    def test_pending_list_platform_operator_only(self):
+        """"owner" IS IN THIS TABLE AS A REFUSAL NOW, and that row is the
+        whole point: it is the same role string the operator himself carries,
+        without the flag."""
         db = _Db()
-        for role, expect in (("admin", 403), ("cp", 403), ("owner", 200)):
-            c, cleanup = _client(role=role)
+        cases = (("admin", False, 403), ("cp", False, 403),
+                 ("owner", False, 403), ("owner", True, 200))
+        for role, operator, expect in cases:
+            c, cleanup = _client(role=role, operator=operator)
             try:
                 with patch.object(server, "db", db):
                     r = c.get("/api/projects/pending-deletion")
             finally:
                 cleanup()
-            self.assertEqual(r.status_code, expect, f"role={role}")
+            self.assertEqual(r.status_code, expect,
+                             f"role={role} operator={operator}")
 
-    def test_hard_delete_owner_only(self):
-        for role in ("admin", "cp"):
+    def test_hard_delete_platform_operator_only(self):
+        for role in ("admin", "cp", "owner"):
             db = _db_with_project(marked=True)
             c, cleanup = _client(role=role)
             try:
                 with patch.object(server, "db", db):
-                    # No confirm_name needed: this asserts the ROLE gate,
+                    # No confirm_name needed: this asserts the RANK gate,
                     # which must refuse before the name is ever read.
                     r = c.delete(f"/api/projects/{_PID}/hard-delete")
             finally:
@@ -339,7 +373,7 @@ def _db_for_hard_delete():
 
 
 def _hard_delete(db):
-    c, cleanup = _client(role="owner")
+    c, cleanup = _client(role="owner", operator=True)
     try:
         with patch.object(server, "db", db), \
              patch.object(server, "_r2_client", None):   # no storage in tests

@@ -1,15 +1,23 @@
 /**
- * Owner-ONLY "Pending Deletion" review screen.
+ * PLATFORM-OPERATOR-ONLY "Pending Deletion" review screen.
  *
  * A company admin's "delete" only MARKS a project (Tier 1): the project
  * disappears from their list and its NFC tags are deactivated, but nothing is
- * removed. This screen is the owner's review queue and the only place the
+ * removed. This screen is the operator's review queue and the only place the
  * irreversible purge (Tier 2) can be triggered.
  *
  * Company admins never see this screen and cannot reach the endpoints behind
  * it — both GET /projects/pending-deletion and
- * DELETE /projects/{id}/hard-delete are gated to role:"owner" and return 403
- * for everyone else.
+ * DELETE /projects/{id}/hard-delete carry `get_platform_operator_user` and
+ * return 403 for everyone else.
+ *
+ * ── IT USED TO ASK FOR role === 'owner', AND THAT WAS THE WHOLE DEFECT ─────
+ *
+ * "owner" was what EVERY self-serve signup received, so this screen opened
+ * for any customer who had registered, and the endpoints behind it agreed —
+ * which is how the cross-tenant purge got built. The role is retired. The
+ * only thing that means "platform operator" is `is_platform_operator`, a flag
+ * no API path can write, and this screen reads exactly that and nothing else.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -40,7 +48,7 @@ import GlassButton from '../../src/components/GlassButton';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isPlatformOperator } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -63,7 +71,13 @@ export default function PendingDeletionScreen() {
   // rendered off a failed read.
   const [fetchState, setFetchState] = useState('ok');
 
-  const isOwner = user?.role === 'owner';
+  // THE FLAG, AND `=== true`. /auth/me is not a response model — it returns
+  // the principal document minus secrets — so this key is present because the
+  // server computes it on the way out, and a client running off a principal
+  // cached before that deploy may not have it at all. ABSENT MUST READ AS NO:
+  // a `!== false` test would hand the purge queue to everyone whose cached
+  // user object predates the field. `isPlatformOperator` is that check, named.
+  const isOperator = isPlatformOperator(user);
   const s = useMemo(() => buildStyles(colors), [colors]);
 
   useEffect(() => {
@@ -72,7 +86,7 @@ export default function PendingDeletionScreen() {
   }, [isAuthenticated, authLoading]);
 
   const fetchItems = useCallback(async () => {
-    if (!isOwner) { setLoading(false); return; }
+    if (!isOperator) { setLoading(false); return; }
     const res = await settleFetch(() => projectsAPI.pendingDeletion());
     setFetchState(res.status);
     if (res.status === 'ok') {
@@ -85,7 +99,7 @@ export default function PendingDeletionScreen() {
     }
     setLoading(false);
     setRefreshing(false);
-  }, [isOwner]);
+  }, [isOperator]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
 
@@ -130,9 +144,9 @@ export default function PendingDeletionScreen() {
     return isNaN(d.getTime()) ? '' : d.toLocaleString();
   };
 
-  // Non-owners get a plain refusal rather than an empty list, so the gate is
-  // obvious rather than looking like "nothing pending".
-  if (!authLoading && isAuthenticated && !isOwner) {
+  // A non-operator gets a plain refusal rather than an empty list, so the
+  // gate is obvious rather than looking like "nothing pending".
+  if (!authLoading && isAuthenticated && !isOperator) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={s.container} edges={['top']}>
@@ -146,7 +160,7 @@ export default function PendingDeletionScreen() {
           </View>
           <GlassCard style={s.emptyCard}>
             <ShieldAlert size={28} strokeWidth={1.5} color="#f87171" />
-            <Text style={s.emptyText}>Owner access required</Text>
+            <Text style={s.emptyText}>Platform operator access required</Text>
           </GlassCard>
         </SafeAreaView>
       </AnimatedBackground>

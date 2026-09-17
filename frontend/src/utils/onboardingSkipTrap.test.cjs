@@ -32,10 +32,30 @@ const SETTINGS = fs.readFileSync(path.join(FRONTEND, 'app', 'settings.jsx'), 'ut
 /** Source with comments stripped — assertions must read CODE, not prose that
  *  describes the defect. This file explains the old behaviour at length, and a
  *  bare search would match the explanation and pass for the wrong reason. */
+// LINE COMMENTS FIRST, AND THAT ORDER IS THE WHOLE FIX.
+//
+// It was block-comments-first, and a LINE comment in AuthContext.js reading
+//     ... keeps its site mode and its project, and every /site/[star]
+// opened a block comment for the naive non-greedy block pattern. It ran
+// harmlessly to the end of the file only because nothing after it closed the
+// comment; the day a JSDoc block was added below, a hundred and eighty lines
+// of live code - `const logout` among them - silently disappeared from what
+// this file reads. The ANCHOR assertion below is what caught it.
+//
+// That is this project's documented trap, and backend/tests/source_text.py
+// carries the scanner-based cure with the same story in its docstring
+// (CpNav.js, thirty lines of JSX eaten by a line comment containing a glob).
+// Stripping line comments FIRST is the cheap correct version for one file:
+// a block delimiter inside a line comment is gone before anything looks for
+// block delimiters.
+//
+// The `(?<!:)` is still load-bearing - it keeps `https://` from reading as a
+// comment - and it is applied to the untouched source, so reordering does not
+// weaken it.
 function code(src) {
   return src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(?<!:)\/\/.*$/gm, '');
+    .replace(/(?<!:)\/\/.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
 }
 const ONB_CODE = code(ONB);
 const SETTINGS_CODE = code(SETTINGS);

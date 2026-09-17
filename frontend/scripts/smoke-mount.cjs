@@ -387,7 +387,57 @@ const server = http.createServer((req, res) => {
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 'u1' })}.x`;
-const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
+// ── THE PRINCIPAL EVERY ROUTE-MOUNT RUNS AS, AND WHY IT IS THIS SHAPE ───────
+//
+// IT WAS `role: 'owner'`, AND THAT HAD ALREADY STOPPED BEING TRUE ONCE.
+// /admin/users gates on `role === 'admin'` exactly, so what this job mounted
+// there for months was the "Admin Access Required" panel rather than the
+// screen -- and it reported green, because MOUNTING A DENIAL PANEL IS A
+// SUCCESSFUL MOUNT. /owner was the same: it reads `is_platform_operator ===
+// true`, which this stub did not carry, so that entry mounted "Operator
+// access required".
+//
+// Retiring the "owner" role would have turned one lying route into an unknown
+// number of them. That role was what every self-serve signup received, it is
+// now in no gate anywhere, and a stub holding it would match NOTHING -- while
+// this job went on printing 78/78.
+//
+// `role: 'admin'` PLUS THE OPERATOR FLAG, and that pairing is honest rather
+// than convenient: it is exactly the shape the real operator's account has
+// once its role is migrated. He IS a company admin of his own company, and
+// the operator portal is his. One principal reaches every route in ROUTES for
+// a reason, not because the flags were chosen to keep the number up.
+//
+// `is_platform_operator` IS SET EXPLICITLY, not left to a default. /auth/me
+// returns the principal document minus secrets -- it is not a response model
+// -- so on a non-operator the key is ABSENT rather than false, and the
+// screens test `=== true`. A stub that omitted it would be a non-operator.
+//
+// THE NUMBER IS NOT THE GATE, and DENIAL_PANELS below is what makes that so:
+// if a screen refuses this principal, the mount now FAILS instead of being
+// counted clean. Do not widen this object to silence that -- the answer is
+// either the gate is wrong or this principal is, and both are findings.
+const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'admin', is_platform_operator: true, company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
+
+// ── A REFUSAL IS NOT A MOUNT ────────────────────────────────────────────────
+//
+// The on-screen TITLE of every access-denied panel a route in ROUTES can
+// render. Each is a distinctive full sentence, so a screen cannot trip this
+// by happening to contain the word "admin".
+//
+// This list exists because "did anything throw" is a question a denial panel
+// answers cleanly: it renders, nothing errors, and the route is counted. Every
+// assertion this job makes about a screen is then an assertion about a page
+// that was never reached.
+//
+// IF ONE OF THESE FIRES, THE FIX IS NOT TO DELETE THE STRING. Either the
+// principal above is wrong for that route, or the route's gate is. Adding an
+// exception here would restore precisely the blindness it was written to end.
+const DENIAL_PANELS = [
+  'Admin Access Required',
+  'Operator access required',
+  'Platform operator access required',
+];
 // job_completion_date / purge_eligible_at are present so the retention card on
 // /project/p1 mounts its POPULATED branch. Its empty branch is the default
 // everywhere else in this file, so both get executed across the run.
@@ -597,6 +647,16 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
           return hit || null;
         });
         if (boundary) errors.push(`error-boundary/undefined-ref: "${boundary}"`);
+        // A REFUSAL IS NOT A MOUNT. See DENIAL_PANELS.
+        const denied = await page.evaluate((panels) => {
+          const body = document.body.innerText || '';
+          return panels.find((s) => body.includes(s)) || null;
+        }, DENIAL_PANELS);
+        if (denied) {
+          errors.push(`access-denied panel: "${denied}" — this route mounted a`
+            + ' refusal, not the screen. The principal is wrong for this route,'
+            + ' or the route\'s gate is. Do not remove the string.');
+        }
       } catch (e) {
         errors.push(`navigation: ${e.message.split('\n')[0]}`);
       }

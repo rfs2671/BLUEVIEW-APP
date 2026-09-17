@@ -274,4 +274,46 @@ export const useAuth = () => {
   return context;
 };
 
+/**
+ * IS THE PLATFORM OPERATOR? One human, one account, and never a role.
+ *
+ * `=== true`, NOT TRUTHINESS AND NOT `!== false`. GET /auth/me is deliberately
+ * not a response model — it serves a user and a gate tablet through one
+ * handler and a model would 500 every device on boot — so it returns the
+ * principal document minus secrets. The server computes this key on the way
+ * out, but a client running against an older deploy, a cached principal from
+ * disk, or a site-device shape may not carry it at all. ABSENT MUST READ AS
+ * NO. `!== false` would make every one of those cases the operator.
+ */
+export function isPlatformOperator(user) {
+  return (user || {}).is_platform_operator === true;
+}
+
+/**
+ * MAY THIS PRINCIPAL ACT AS A COMPANY ADMIN? The screen half of the server's
+ * `is_company_admin`.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT `role === 'admin'` INLINE ───────────────
+ *
+ * It was inline, fifteen times, as `user?.role === 'admin' || user?.role ===
+ * 'owner'`. The second clause was not a rank: every self-serve signup was
+ * minted role "owner", so the check said "an admin, or anybody who registered".
+ * Retiring the role meant editing fifteen copies of one rule, which is the
+ * argument for the rule having a name.
+ *
+ * THE OPERATOR IS ADMITTED BY THE FLAG, AND THAT IS THE LOAD-BEARING HALF.
+ * His account still literally carries `role: "owner"` — the migration to
+ * "admin" is a separate step — so a screen that asked only for 'admin' would
+ * blank every admin control in his own product between the two changes. The
+ * server admits him the same way, on the same flag, so the screen and the API
+ * cannot disagree about what he may do.
+ *
+ * NOT A SECURITY BOUNDARY. Hiding a button is a courtesy; the boundary is the
+ * gate on the endpoint, and a client that ignores this still gets 403s.
+ */
+export function isCompanyAdmin(user) {
+  const role = String((user || {}).role || '').trim().toLowerCase();
+  return role === 'admin' || isPlatformOperator(user);
+}
+
 export default AuthContext;

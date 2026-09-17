@@ -110,10 +110,19 @@ class APendingAccountIsAlwaysCompanyLess(unittest.TestCase):
         reg = reg[:reg.index("result = await db.users.insert_one(user_dict)")]
         self.assertIn('user_dict["account_status"] = "pending"', reg)
 
-    def test_and_that_same_path_forces_owner_with_no_company(self):
+    def test_and_that_same_path_forces_demo_with_no_company(self):
+        """THE ROLE IT FORCES IS ROLE_DEMO NOW, not "owner".
+
+        What this test is actually about is unchanged and is the company: a
+        self-serve signup lands with company_id None, so the pending account
+        the gate refuses is always a company-less one. The role moved because
+        "owner" was retired -- it was never a rank, it was what pressing Sign
+        Up produced -- and the assertion follows it rather than being deleted.
+        """
         reg = SRC[SRC.index("async def register("):]
         reg = reg[:reg.index("result = await db.users.insert_one(user_dict)")]
-        self.assertIn('user_dict["role"] = "owner"', reg)
+        self.assertIn('user_dict["role"] = ROLE_DEMO', reg)
+        self.assertNotIn('user_dict["role"] = "owner"', reg)
         self.assertIn('user_dict["company_id"] = None', reg)
 
     def test_an_admin_cannot_set_an_existing_user_pending(self):

@@ -249,11 +249,22 @@ async def collect_notification_recipients(db, company_id: str) -> List[str]:
 
     # Primary admin email — first matching user. We don't enforce
     # a "primary" flag since the user model doesn't carry one
-    # explicitly; the first admin/owner is good enough for MR.9.
+    # explicitly; the first admin is good enough for MR.9.
+    #
+    # THIS SELECTED role IN ["admin", "owner"]. "owner" is retired: it was
+    # what every self-serve signup received, never a rank. A RECIPIENT LIST
+    # IS NOT A GATE, so the failure it can produce is the quiet one — nobody
+    # is refused, somebody simply stops being told — which is why the
+    # operator flag is named beside the role rather than left to the account
+    # migration. `is_platform_operator` is the only thing that means operator;
+    # the row still has to be in this company for the $or to select it.
     try:
         admin_user = await db.users.find_one({
             "company_id": company_id,
-            "role": {"$in": ["admin", "owner"]},
+            "$or": [
+                {"role": "admin"},
+                {"is_platform_operator": True},
+            ],
         })
         if admin_user:
             email = (admin_user.get("email") or "").strip().lower()

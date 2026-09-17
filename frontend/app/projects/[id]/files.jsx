@@ -51,7 +51,7 @@ import GlassInput from '../../../src/components/GlassInput';
 import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { settleFetch } from '../../../src/utils/offlineState';
 import { mayCacheList } from '../../../src/utils/dropboxSyncState';
@@ -261,15 +261,15 @@ export default function ProjectFilesScreen() {
    * THE ONE ROLE PREDICATE ON THIS SCREEN. Every admin-gated control below
    * uses this and nothing else.
    *
-   * WIDE, because it has to match `get_admin_user`, which is what actually
-   * authorises the endpoints these controls call:
+   * IT MATCHES `get_admin_user`, which is what actually authorises the
+   * endpoints these controls call. That gate used to read
    *
    *     if current_user.get("role") not in ["admin", "owner"]:
-   *         raise HTTPException(403, "Admin access required")
    *
-   * An `owner` is a role, not a platform-operator flag — `is_platform_operator`
-   * is explicitly "never inferred from role" — and the server admits it
-   * everywhere a company admin is admitted.
+   * and the second member was not a rank: every self-serve signup received it.
+   * The role is retired on both sides. `isCompanyAdmin` is the same question
+   * the server's `is_company_admin` asks, including the part that admits the
+   * platform operator on his flag rather than on any role string.
    *
    * THREE PREDICATES USED TO LIVE IN THIS FILE and they disagreed in the worst
    * possible direction. `canDelete` and the per-row delete button were the wide
@@ -278,7 +278,7 @@ export default function ProjectFilesScreen() {
    * controls and the wide guard on the destructive one. That split predates the
    * one-screen redesign; it is closed here rather than carried forward.
    */
-  const isAdmin = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
+  const isAdmin = isCompanyAdmin(user);
   const linkedFolder = project?.dropbox_folder_path || null;
 
   const scopeKey = `plans:${projectId}`;

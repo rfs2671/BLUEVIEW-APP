@@ -91,6 +91,16 @@ BASELINE = {
     ("socrata_permits_historical", "bin"),
     ("socrata_permits_historical", "filing_reason"),
     ("socrata_permits_historical", "issued_date"),
+    # THE ONE CANDIDATE THAT IS UNWRITABLE ON PURPOSE. The two notification
+    # recipient queries select `{"is_platform_operator": True}` (2026-09-17,
+    # with the retirement of role "owner"), and NOTHING in this codebase
+    # writes it -- deliberately. It is the platform-operator trust anchor: it
+    # appears in NO field allow-list (ALLOWED_USER_FIELDS / _SUB_ / _WORKER_ /
+    # _FIELDS all drop it, which test_flag_is_in_no_allowlist asserts), so no
+    # API path can set it. A human sets it on the row, and the sweep is right
+    # that it will never find a writer. The day one appears is the day the
+    # anchor stops being one.
+    ("users", "is_platform_operator"),
     # renewal_digest_opt_in LEFT THIS LIST with the roles work. It was the
     # filter on the company digest's opt-in cursor -- `{"role": {"$in": ["pm",
     # "cp"]}, "renewal_digest_opt_in": True}` -- and that cursor is gone: a CP

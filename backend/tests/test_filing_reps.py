@@ -147,18 +147,31 @@ class TestDemoteOtherPrimaries(unittest.TestCase):
 
 # ── Endpoint smoke (TestClient + dependency overrides) ─────────────
 
-def _setup_client(*, role: str = "owner", company_doc=None, company_id="co_a"):
+def _setup_client(*, role: str = "admin", operator: bool = False,
+                  company_doc=None, company_id="co_a"):
     """TestClient with auth + db overrides. Returns (client, restore_fn).
 
     company_id defaults to "co_a" — the company these tests address in their
-    URLs. The filing-reps routes are tenant-scoped now (require_company_scope):
-    a customer owner manages THEIR OWN company's reps, and the platform
-    operator manages any. A user carrying no company_id can no longer act on
-    an arbitrary company, so the fixture must say which company this owner
-    owns. Pass company_id=... to exercise the cross-company denial."""
+    URLs. The filing-reps routes are tenant-scoped (require_company_scope) AND
+    platform-operator-only: the operator configures DOB authorization on a
+    client's behalf, so a company admin is refused. Pass company_id=... to
+    exercise the cross-company denial.
+
+    THE PRINCIPAL THESE ROUTES WANT IS THE PLATFORM OPERATOR, NOT A ROLE.
+    They gated on `role != "owner"` until the role was retired -- and "owner"
+    was what EVERY self-serve signup received, so the gate on a cross-tenant
+    surface was satisfied by having registered. `operator=True` sets the flag
+    `is_platform_operator`, which no API path can write.
+
+    THE KEY IS ABSENT WHEN operator IS FALSE, not written as False. That is
+    the shape production has: one row carries the field and every other
+    account simply does not have it.
+    """
     import server
 
     user = {"id": "u1", "role": role, "_id": "u1", "company_id": company_id}
+    if operator:
+        user["is_platform_operator"] = True
 
     async def _fake_user():
         return user
@@ -168,7 +181,25 @@ def _setup_client(*, role: str = "owner", company_doc=None, company_id="co_a"):
 
 
 class TestEndpointAuthGate(unittest.TestCase):
-    """Non-owner roles rejected with 403 on every CRUD endpoint."""
+    """Everyone but the platform operator is rejected with 403 on every CRUD
+    endpoint.
+
+    IT USED TO BE role == "owner", which every self-serve signup received, so
+    any customer who had registered could edit any company's filing
+    representatives. The operator configures DOB authorization on a client's
+    behalf; a company admin never does.
+    """
+
+    def test_the_retired_role_alone_is_rejected_on_list(self):
+        """The half that matters. This account carries role "owner" and NO
+        flag -- exactly what a legacy customer row looks like -- and if the
+        role had been left in the gate it would still be admitted here."""
+        client, restore = _setup_client(role="owner")
+        try:
+            resp = client.get("/api/owner/companies/co_a/filing-reps")
+            self.assertEqual(resp.status_code, 403)
+        finally:
+            restore()
 
     def test_admin_role_rejected_on_list(self):
         client, restore = _setup_client(role="admin")
@@ -227,7 +258,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_post_creates_rep_with_uuid_id(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         company = {"_id": "co_a", "name": "Acme GC", "filing_reps": []}
         mock_db = self._stub_db_with_company(company)
         try:
@@ -256,7 +287,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_post_rejects_unknown_license_class(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         company = {"_id": "co_a", "name": "Acme GC", "filing_reps": []}
         mock_db = self._stub_db_with_company(company)
         try:
@@ -280,7 +311,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
         import server
         # Owner OF co_missing: passes the tenant gate, so the handler's
         # "company not found" 404 is what is actually exercised here.
-        client, restore = _setup_client(role="owner", company_id="co_missing")
+        client, restore = _setup_client(operator=True, company_id="co_missing")
         mock_db = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value=None)
         try:
@@ -300,7 +331,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
         _demote_other_primaries fires immediately afterward. Verified
         via call-count on update_one (push + demote = 2 calls)."""
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         company = {"_id": "co_a", "name": "Acme GC", "filing_reps": [
             {"id": "rep_existing", "name": "Old Pri", "license_class": "GC",
              "license_number": "X", "email": "o@example.com", "is_primary": True,
@@ -324,7 +355,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_list_returns_filing_reps_array(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         reps = [
             {"id": "r1", "name": "A", "license_class": "GC",
              "license_number": "1", "email": "a@example.com", "is_primary": True,
@@ -344,7 +375,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_delete_removes_rep(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies.update_one = AsyncMock(return_value=MagicMock(
             matched_count=1, modified_count=1,
@@ -363,7 +394,7 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_delete_404_when_rep_not_found(self):
         import server
-        client, restore = _setup_client(role="owner")
+        client, restore = _setup_client(operator=True)
         mock_db = MagicMock()
         mock_db.companies.update_one = AsyncMock(return_value=MagicMock(
             matched_count=1, modified_count=0,

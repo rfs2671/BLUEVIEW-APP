@@ -2810,7 +2810,7 @@ class UserCreate(BaseModel):
     name: str
     # THE DEFAULT IS STILL "worker" AND IT IS NO LONGER ASSIGNABLE. The two
     # facts do not conflict: `register` (self-serve signup) overwrites `role`
-    # with "owner" before it writes and never reads this default, and
+    # with ROLE_DEMO before it writes and never reads this default, and
     # create_admin_user now runs every value through `assert_assignable_role`,
     # so a POST /admin/users that omits the field is refused by name instead of
     # quietly minting the role the ruling withdrew. Removing the default would
@@ -6685,17 +6685,36 @@ async def get_admin_user(current_user = Depends(get_current_user)):
     route carries, and user administration can never acquire a new role by
     somebody editing a list that also governs a hundred other things.
     """
-    if current_user.get("role") not in COMPANY_ADMIN_ROLES:
+    if not holds_rank(current_user, COMPANY_ADMIN_ROLES):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-async def get_owner_user(current_user = Depends(get_current_user)):
-    """Owner-ONLY gate. Formalises the `role != "owner" -> 403` idiom already
-    inlined across the owner-portal endpoints, for operations a company admin
-    must never reach — currently the irreversible project hard-delete and the
-    pending-deletion review list."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+async def get_platform_operator_user(current_user = Depends(get_current_user)):
+    """PLATFORM OPERATOR ONLY, AND IT IS NOT IN SHADOW MODE.
+
+    THIS WAS `get_owner_user`, AND IT COMPARED A ROLE STRING. It formalised
+    the `role != "owner" -> 403` idiom copied across the owner-portal
+    endpoints, and every self-serve signup received exactly that role — so the
+    gate on the irreversible project hard-delete and on the cross-company
+    pending-deletion list was satisfied by having registered. It now asks
+    `is_platform_operator`, the flag no API path can write.
+
+    ── WHY THIS EXISTS BESIDE `require_platform_operator` ──────────────────
+
+    They answer the same question and behave differently on the way to it.
+    `require_platform_operator` is SHADOWED: while PLATFORM_GATES_ENFORCED is
+    unset it LOGS the non-operator and returns them, so that the gates could
+    ship before the flag was bootstrapped without locking the operator out.
+    That shadow is correct for a gate being rolled out and wrong for the two
+    routes here, which destroy things.
+
+    So this one is strict, unconditionally, and a gate built on it cannot pass
+    its own tests while protecting nothing — which is the failure
+    test_pending_deletion_and_purge_scope.py was written to hold shut.
+    """
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
     return current_user
 
 # MOVED TO lib/project_state.py, and imported rather than redefined. The
@@ -6863,6 +6882,41 @@ ROLE_SUPERINTENDENT = "superintendent"
 # send-time filter gets reverted.
 ROLE_PM = "pm"
 
+# ── The self-serve signup, and the role it now receives ─────────────────────
+#
+# "demo". Every self-serve registration used to be minted `role = "owner"`,
+# and that one line is why this file had forty checks reading the word: a
+# string that EVERY signup carried was being used as though it meant something
+# rare. It meant "this person pressed Sign Up".
+#
+# OWNER IS NOT A ROLE ANYBODY HOLDS. It is the platform operator — one human,
+# one account — and `is_platform_operator` is the only function that means it.
+# A role string cannot be that, because `role` is API-mutable and a value a
+# customer can set is not a trust anchor. See the block on
+# PLATFORM_OPERATOR_EMAILS.
+#
+# WHAT THIS ROLE DOES IS NOT BUILT HERE, AND SAYING SO IS THE POINT. This
+# change mints the constant and the predicate and nothing else: no demo data,
+# no demo guard, no read-only enforcement. `is_demo` exists so the work that
+# follows imports one answer rather than writing `== "demo"` in six places,
+# which is exactly the mistake being undone above.
+#
+# NOT IN ASSIGNABLE_ROLES. An admin cannot hand somebody a demo account; it is
+# what registration produces, the same way "site_device" is provisioned rather
+# than assigned.
+ROLE_DEMO = "demo"
+
+
+def is_demo(user) -> bool:
+    """True for a self-serve demo account.
+
+    NORMALISES, like every other role comparison in this file: `role` arrives
+    off documents written by several code paths over two years, and " Demo "
+    is not a role nobody holds — it is this one, with whitespace.
+    """
+    return str((user or {}).get("role") or "").strip().lower() == ROLE_DEMO
+
+
 # The roles that hard-require a company. A user in one of these without a
 # company_id 403s on every company-gated endpoint and their session merely
 # looks broken, so creation is refused up front instead.
@@ -6901,10 +6955,8 @@ def is_superintendent(user) -> bool:
 #
 # THIS IS A SERVER-SIDE ALLOW-LIST BECAUSE THE PICKER IS NOT A GATE. Before
 # this, POST/PUT /admin/users took `role` straight off the body into the user
-# document -- any string at all, including "owner" (which `is_platform_operator`
-# does not grant but `get_admin_user` does admit) and including typos, which
-# produce an account that matches no gate and reads as broken rather than as
-# refused.
+# document -- any string at all, and including typos, which produce an account
+# that matches no gate and reads as broken rather than as refused.
 #
 # WHAT IS ABSENT, AND WHY EACH ONE IS ABSENT:
 #
@@ -6913,11 +6965,13 @@ def is_superintendent(user) -> bool:
 #                  db.workers with a roster entry and a check-in history; it was
 #                  never an account that logs in and does anything, and the
 #                  accounts holding it could reach no screen of their own.
-#   "owner"        MINTED BY SELF-SERVE REGISTRATION ONLY. `register` sets it on
-#                  every signup; it means "this person created the company", not
-#                  a rank an admin hands out. Admitting it here would let an
-#                  admin mint the role that skips the tenant filter on
-#                  GET /admin/users.
+#   "owner"        RETIRED. It is not a rank, it was never assignable, and no
+#                  writer in this file mints it any more -- self-serve signup
+#                  now produces ROLE_DEMO. The platform operator is
+#                  `is_platform_operator`, a flag in no allow-list, and never
+#                  a role string.
+#   ROLE_DEMO      WHAT SELF-SERVE REGISTRATION PRODUCES, never something an
+#                  admin hands out. See the block on ROLE_DEMO.
 #   "site_device"  PROVISIONED, never assigned: it is created by
 #                  POST /admin/site-devices and authenticates as a device.
 #
@@ -7078,20 +7132,32 @@ def superintendent_licence_state(user, today=None) -> dict:
 # membership lives here, beside the role vocabulary, so that the answer to
 # "which roles is this" is in one screenful rather than spread over the routes.
 #
-# COMPANY_ADMIN_ROLES IS UNCHANGED FROM THE LITERAL IT REPLACES -- it was
-# `["admin", "owner"]` inline and it is ("admin", "owner") now. Naming it is the
-# whole edit: an unnamed list cannot be compared against the two beside it.
-COMPANY_ADMIN_ROLES = ("admin", "owner")
+# ── THE RETIRED SECOND MEMBER, AND WHAT REPLACED IT ─────────────────────────
+#
+# All three of these read ("admin", "owner") until the role was retired. The
+# second member was never a rank: `register` minted "owner" on EVERY
+# self-serve signup, so what these tuples actually said was "an admin, or
+# anybody who ever pressed Sign Up".
+#
+# DROPPING IT IS NOT THE WHOLE EDIT, AND THE OTHER HALF IS THE DANGEROUS ONE.
+# The platform operator's own account still literally carries `role: "owner"`
+# -- his migration to "admin" is a separate step -- so a bare membership test
+# against these tuples would lock him out of his own product the day this
+# merged. Every gate below therefore asks `is_company_admin`, which admits the
+# operator on the FLAG. Re-adding "owner" here to solve that would restore the
+# defect: the flag is in no allow-list and cannot be written through the API;
+# the role string is in ALLOWED_USER_FIELDS and can.
+COMPANY_ADMIN_ROLES = ("admin",)
 
 # WHO MAY TOUCH AN ACCOUNT. Identical membership to COMPANY_ADMIN_ROLES today
 # and that is not an argument for collapsing them -- the same argument the
 # ROLES_SCOPED_TO_ASSIGNED_PROJECTS comment makes two screens up. These answer
 # different questions, and the question this one answers is the one the
 # operator ruled on: a Site Manager must never manage users.
-USER_MANAGEMENT_ROLES = ("admin", "owner")
+USER_MANAGEMENT_ROLES = ("admin",)
 
 # ADMIN POWERS THE SITE MANAGER HOLDS. Wider by exactly one role.
-PROJECT_ADMIN_ROLES = ("admin", "owner", ROLE_PM)
+PROJECT_ADMIN_ROLES = ("admin", ROLE_PM)
 
 
 async def get_user_admin(current_user = Depends(get_current_user)):
@@ -7110,7 +7176,7 @@ async def get_user_admin(current_user = Depends(get_current_user)):
     Three questions, three checks; collapsing any pair of them is how the SEV-0
     documented on update_admin_user happened.
     """
-    if current_user.get("role") not in USER_MANAGEMENT_ROLES:
+    if not holds_rank(current_user, USER_MANAGEMENT_ROLES):
         raise HTTPException(status_code=403, detail="User administration requires an admin")
     return current_user
 
@@ -7130,7 +7196,7 @@ async def get_project_admin_user(current_user = Depends(get_current_user)):
     project-shaped name. That is the failure mode `get_admin_user` had for a
     hundred routes and the reason this file now has three gates.
     """
-    if current_user.get("role") not in PROJECT_ADMIN_ROLES:
+    if not holds_rank(current_user, PROJECT_ADMIN_ROLES):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
@@ -7531,6 +7597,51 @@ async def require_platform_operator(current_user = Depends(get_current_user)):
     raise HTTPException(
         status_code=403, detail="Platform operator access required",
     )
+
+
+# ── RANK, WITH THE OPERATOR ALWAYS ADMITTED ─────────────────────────────────
+#
+# THE HAZARD THESE TWO EXIST TO CLOSE. The platform operator's account carries
+# `role: "owner"`, the string this codebase just retired. Between the sweep and
+# the account migration that follows it, a bare `role in (...)` test matches
+# him against NOTHING: not "admin", not "cp", not anything. He would hold a
+# login and reach no admin surface in his own product.
+#
+# So rank is never asked as a bare membership test any more. It is asked here,
+# once, and the operator passes every one of them on the flag -- which is the
+# right answer permanently, not a bridge until the migration runs: the operator
+# outranks a company admin by definition, and a product where he has to be
+# listed in each tuple is one where somebody eventually forgets a tuple.
+#
+# THE FLAG AND NOT THE ROLE, for the reason the PLATFORM_OPERATOR_EMAILS block
+# gives at length: `role` is in ALLOWED_USER_FIELDS and an admin can write it,
+# `is_platform_operator` is in no allow-list and no API path can.
+def holds_rank(user, roles) -> bool:
+    """Is this principal one of `roles` -- or the platform operator?
+
+    NORMALISES THE ROLE, like every other comparison in this file. The role
+    strings on live documents were written by several code paths over two
+    years and " CP " is not a role nobody holds.
+    """
+    if is_platform_operator(user):
+        return True
+    return str((user or {}).get("role") or "").strip().lower() in roles
+
+
+def is_company_admin(user) -> bool:
+    """THE COMPANY-WIDE ADMIN QUESTION, asked in one place.
+
+    Replaces ~20 inline `role in ("admin", "owner")` tests written across the
+    routes. They were not twenty rules; they were one rule copied twenty
+    times, which is why retiring a single role string meant editing twenty
+    lines -- and why the twenty-first would have been missed.
+
+    IT IS A RANK TEST AND NOTHING ELSE. It does not scope to a company, a
+    project or a tenant, and a route that carries only this is only as scoped
+    as the separate check it also carries. That is the same warning
+    `get_project_admin_user` prints, for the same reason.
+    """
+    return holds_rank(user, COMPANY_ADMIN_ROLES)
 
 
 async def require_company_scope(
@@ -8128,21 +8239,25 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # not validated-then-accepted. Discarding is the point: a validator that
     # accepts a value the client chose is still trusting the client.
     #
-    # Why the forced role is "owner" and not something lower: a self-serve
-    # registrant is the first user of their OWN new organisation. The intended
-    # model (POST /onboarding/company, which 409s if the user already has a
-    # company) is register -> create your own company -> you own it. Forcing a
-    # lower role here would make the company-required check below reject every
-    # self-signup, and no new organisation could ever be created — an outage in
-    # the signup path, not a hardening.
+    # ── THE FORCED ROLE, AND WHAT IT USED TO BE ─────────────────────────────
     #
-    # NOTE this does NOT by itself stop an owner reaching the platform-ish
-    # routes (DELETE /owner/companies/{id}, /projects/{id}/hard-delete), which
-    # gate on role == "owner" alone. New accounts are blocked there because they
-    # are 'pending' and those routes now carry require_approved. An EXISTING
-    # approved owner of company A can still reach company B's — that is a
-    # tenant-scoping defect on those routes, tracked separately; it is not
-    # closed here and must not be described as closed.
+    # THIS LINE WROTE "owner", AND IT WAS THE ONLY WRITER OF THAT ROLE. Forty
+    # checks across this file read it as though it meant something — a rank, a
+    # trust level, the platform operator — when what it actually meant was
+    # "this person pressed Sign Up". Any of them could be satisfied by
+    # registering, including the cross-tenant ones.
+    #
+    # IT IS ROLE_DEMO NOW. A self-serve registrant is a prospect with no
+    # company and no relationship; naming that is the entire fix, because a
+    # name nobody can mistake for a rank cannot be read as one.
+    #
+    # THE DEMO BEHAVIOUR IS NOT HERE. This mints the role and stops. What a
+    # demo account may see and may not do is built separately, and writing a
+    # guard here would put half the answer in the signup path.
+    #
+    # ROLE_DEMO IS NOT IN ROLES_REQUIRING_COMPANY, deliberately: registration
+    # leaves company_id None (below) and /onboarding/company is what creates
+    # one, so a role that hard-required a company would refuse every signup.
     _client_role = user_dict.pop("role", None)
     _client_company = user_dict.pop("company_id", None)
     if _client_role not in (None, "", "worker"):
@@ -8155,7 +8270,7 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
             "register: ignoring client-supplied company_id=%r for %s",
             _client_company, user_data.email,
         )
-    user_dict["role"] = "owner"
+    user_dict["role"] = ROLE_DEMO
     # No company yet — /onboarding/company creates one and links this user.
     # Self-registration can NEVER join an existing company; that path is
     # POST /admin/users, where company_id is inherited from the acting admin.
@@ -8232,6 +8347,24 @@ async def get_me(current_user = Depends(get_current_user)):
         k: v for k, v in dict(current_user).items()
         if k not in _PRINCIPAL_PRIVATE_FIELDS
     }
+
+    # ── ANSWERED, NOT ECHOED ────────────────────────────────────────────────
+    #
+    # This endpoint returns the user DOCUMENT minus secrets, so the flag
+    # reached the client only when a human had written it to that row. The
+    # BOOTSTRAP operator — the one `is_platform_operator` recognises by
+    # PLATFORM_OPERATOR_EMAILS, which exists precisely for the case where the
+    # flag has not been written — carried no such key, so /auth/me told the
+    # client `undefined` for exactly the account the field is for.
+    #
+    # That matters now that the "owner" role is retired: the client can no
+    # longer infer the operator from `role`, so this is the ONLY thing the
+    # owner portal has to read. It is computed, like superintendent_projects
+    # below, so the two ways of being the operator give one answer.
+    #
+    # STILL NOT A SECURITY BOUNDARY. Hiding a door is a courtesy; the boundary
+    # is get_platform_operator_user / require_platform_operator on the routes.
+    out["is_platform_operator"] = is_platform_operator(current_user)
 
     # ── A CAPABILITY, NOT A STORED FIELD ────────────────────────────────────
     #
@@ -8824,15 +8957,16 @@ async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_cu
 async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_current_user)):
     """
     Change the authenticated user's own password.
-    Restricted to admin and owner roles only.
+    Restricted to company admins (and the platform operator).
     Verifies current password before accepting the new one.
     """
-    # Role guard — only admin / owner can use this endpoint
-    role = current_user.get("role")
-    if role not in ("admin", "owner"):
+    # Rank guard. This read ("admin", "owner") and the second member was not a
+    # rank: every self-serve signup carried it. A company admin power, so it is
+    # `is_company_admin`, which admits the operator on the flag.
+    if not is_company_admin(current_user):
         raise HTTPException(
             status_code=403,
-            detail="Only admins and owners can change passwords through this endpoint"
+            detail="Only admins can change passwords through this endpoint"
         )
 
     # Fetch the stored hash — get_current_user already stripped the password
@@ -8860,7 +8994,9 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
         }}
     )
 
-    logger.info(f"User {current_user['id']} (role={role}) changed their password")
+    logger.info(
+        f"User {current_user['id']} (role={current_user.get('role')}) "
+        f"changed their password")
     return {"message": "Password updated successfully"}
 
 # ==================== ADMIN — SENTRY HEALTH CHECK ====================
@@ -10904,8 +11040,12 @@ async def link_gc_license_to_company(
     Link an existing company to an NYC DOB GC license number, then fetch
     insurance records from BIS. Owner only.
     """
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
     if not company:
@@ -11121,8 +11261,12 @@ async def _demote_other_primaries(company_id: str, except_rep_id: str):
 @api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def list_filing_reps(company_id: str, current_user=Depends(get_current_user)):
     """List filing_reps for a company (owner only)."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
@@ -11143,8 +11287,12 @@ async def add_filing_rep(
     (uuid4 hex). If is_primary=True is sent, any other primary on
     this company is demoted in the same transaction so exactly one
     primary holds across the array."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     if body.license_class not in FILING_REP_LICENSE_CLASSES:
         raise HTTPException(
@@ -11199,8 +11347,12 @@ async def update_filing_rep(
     """Patch fields on an existing filing_rep. Same is_primary
     uniqueness rule as the create endpoint — flipping a rep TO
     primary demotes any other primary on the same company."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     if body.license_class is not None and body.license_class not in FILING_REP_LICENSE_CLASSES:
         raise HTTPException(
@@ -11260,8 +11412,12 @@ async def delete_filing_rep(
     current_user=Depends(get_current_user),
 ):
     """Remove a filing_rep from a company by rep_id."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     result = await db.companies.update_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}},
@@ -11325,8 +11481,12 @@ async def admin_list_filing_jobs(
     surface. Owner-only. Filters: status, company_id, date range
     (ISO-8601 strings; parsed via fromisoformat). Pagination uses the
     same skip/limit/total/has_more shape as paginated_query()."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     # Validate sort_by — refuse arbitrary fields so a typo doesn't
     # silently sort by a field that doesn't exist (Mongo returns
@@ -11435,8 +11595,12 @@ async def admin_list_notifications(
     to answer "did the operator actually get the email?" — filters by
     trigger_type, status, permit_renewal_id, and ISO-8601 date range.
     Returns the paginated_query envelope shape."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     if sort_dir not in (-1, 1):
         raise HTTPException(status_code=400, detail="sort_dir must be -1 or 1")
@@ -11522,8 +11686,12 @@ async def admin_resend_notification(
     last 23h, send_notification will short-circuit with
     `suppressed_idempotent`. To force a real send, the operator can
     call this endpoint again after the dedup window passes."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     from lib.notifications import send_notification
     from lib.email_templates import render_for_trigger
@@ -12497,8 +12665,12 @@ async def get_company_authorization(
     the operator must accept. Always returns 200 — `accepted` field
     indicates whether a non-null record exists matching the current
     version."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
@@ -12539,8 +12711,12 @@ async def post_company_authorization(
     Re-posting overwrites the existing record — operators can re-
     accept after a text version bump or after revoking + re-granting.
     The new record gets a fresh accepted_at and version stamp."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
 
     typed = (body.licensee_name_typed or "").strip()
     if not typed:
@@ -13493,8 +13669,12 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
 @api_router.post("/admin/migrate-company-data")
 async def migrate_company_data(data: dict, current_user = Depends(get_current_user)):
     """Migrate admin data to companies (owner only)"""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
+    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
+    # being a role test. It read `role != "owner"`, which every self-serve
+    # signup satisfied.
+    if not is_platform_operator(current_user):
+        raise HTTPException(
+            status_code=403, detail="Platform operator access required")
     
     assignments = data.get("assignments", [])
     results = []
@@ -14131,24 +14311,30 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     return ProjectResponse(**project_dict)
 
 @api_router.get("/projects/pending-deletion")
-async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
+async def list_pending_deletion_projects(owner = Depends(get_platform_operator_user)):
     """Review list of projects an admin has marked for deletion.
 
     MUST stay registered ABOVE GET /projects/{project_id} — FastAPI matches
     in registration order, so declaring it after would make the literal
     "pending-deletion" bind to {project_id} and 404.
 
-    THIS LISTED EVERY COMPANY'S. `get_owner_user` is role == "owner", which is
-    what EVERY self-serve signup receives — a company owner, i.e. a customer —
-    so any customer could read the ids of every other company's projects
-    awaiting purge. Together with the hard-delete gate below, that was the
-    discovery half of a working cross-tenant purge.
+    THIS LISTED EVERY COMPANY'S. The gate was `get_owner_user`, i.e.
+    role == "owner", which is what EVERY self-serve signup received — a
+    company owner, i.e. a customer — so any customer could read the ids of
+    every other company's projects awaiting purge. Together with the
+    hard-delete gate below, that was the discovery half of a working
+    cross-tenant purge.
 
-    SCOPED THE SAME WAY GET /projects IS: the platform operator sees across
-    companies, everyone else sees their own. `is_platform_operator` is the
-    PURE FUNCTION, deliberately — `require_platform_operator` is in shadow
-    mode until PLATFORM_GATES_ENFORCED is set, so a gate written on the
-    dependency would log, allow, and pass its tests while protecting nothing.
+    THE ROLE IS RETIRED AND THIS IS NOW PLATFORM-OPERATOR ONLY. The dependency
+    is the STRICT gate, not the shadowed `require_platform_operator` — see
+    `get_platform_operator_user` for why there are two.
+
+    THE COMPANY SCOPING BELOW IS KEPT ANYWAY, and that is deliberate rather
+    than leftover. It is the same shape GET /projects uses, it is what makes
+    this function answerable without a dependency injector (every test in
+    test_pending_deletion_and_purge_scope.py calls it directly), and if the
+    dependency is ever widened back to company admins the scoping is already
+    here rather than being a thing somebody has to remember to re-add.
     """
     _q = {
         "marked_for_deletion": True,
@@ -15028,7 +15214,7 @@ async def hard_delete_project(
     project_id: str,
     confirm_name: str = Query(
         "", description="The project's name, typed by the operator."),
-    owner = Depends(get_owner_user),
+    owner = Depends(get_platform_operator_user),
 ):
     """TIER 2 — irreversible purge. OWNER ONLY.
 
@@ -15092,16 +15278,17 @@ async def hard_delete_project(
     # SHADOW MODE while PLATFORM_GATES_ENFORCED is unset — it logs the
     # non-operator and lets them through — so the only live gate was
     # `get_owner_user`, i.e. role == "owner", which is what every self-serve
-    # signup receives. Any customer owner could physically purge any company's
+    # signup received. Any customer owner could physically purge any company's
     # project, and GET /projects/pending-deletion handed them the ids.
     #
     # is_platform_operator is the PURE FUNCTION on purpose. Writing this on
-    # the dependency would inherit the shadow and gate nothing, while passing
-    # its own tests. That is asserted with the flag unset.
+    # the shadowed dependency would inherit the shadow and gate nothing, while
+    # passing its own tests. That is asserted with the flag unset.
     #
-    # Not narrowed to operator-only: that would lock the real operator out
-    # until is_platform_operator is bootstrapped on their account, which is
-    # the very hazard shadow mode exists to avoid. Operator purges anything;
+    # THE ROLE IS RETIRED AND `get_platform_operator_user` IS NOW STRICT, so
+    # the route's own dependency already refuses a non-operator. This stays as
+    # the check that is readable without an injector and that survives the
+    # dependency list being edited. Operator purges anything;
     # anyone else is confined to their own company.
     if not is_platform_operator(owner):
         _caller_company = str(get_user_company_id(owner) or "")
@@ -15574,8 +15761,11 @@ async def bootstrap_checkin_point(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    role = current_user.get("role")
-    if role not in ("admin", "owner", "cp"):
+    role = str(current_user.get("role") or "").strip().lower()
+    # A COMPANY ADMIN OR A CP. The retired "owner" is gone from the tuple and
+    # the operator arrives through is_company_admin instead — his account
+    # still literally carries that role string until the migration runs.
+    if not is_company_admin(current_user) and role != "cp":
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # -- THE RULE IS "ZERO ACTIVE TAGS", NOT "NO EXISTING ROWS" -------------
@@ -15697,8 +15887,11 @@ async def remove_cp_checkin_point(
     if not tag:
         raise HTTPException(status_code=404, detail="Check-in point not found")
 
-    role = current_user.get("role")
-    if role not in ("admin", "owner", "cp"):
+    role = str(current_user.get("role") or "").strip().lower()
+    # A COMPANY ADMIN OR A CP. The retired "owner" is gone from the tuple and
+    # the operator arrives through is_company_admin instead — his account
+    # still literally carries that role string until the migration runs.
+    if not is_company_admin(current_user) and role != "cp":
         raise HTTPException(status_code=403, detail="Not authorized")
 
     if role == "cp":
@@ -29388,8 +29581,8 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
     # project, may delete a log they did not write.
     logbook = await _authorize_logbook_write(logbook_id, current_user)
 
-    # Authorization: admin/owner can delete any on this project, others only their own
-    user_role = current_user.get("role", "")
+    # Authorization: a company admin deletes any on this project, others only
+    # their own.
     # `_id` ALONE WAS ALWAYS EMPTY. get_current_user returns serialize_id(user),
     # which does `obj['id'] = str(obj['_id']); del obj['_id']` — so the key this
     # read for does not exist on current_user and `user_id` was "" on every
@@ -29400,7 +29593,9 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
     # This is the file's own accessor (9489, 14437, 15459, 30884, 36822, ...),
     # id first because that is the key that is actually there.
     user_id = str(current_user.get("id") or current_user.get("_id") or "")
-    if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
+    # A COMPANY ADMIN, OR THE AUTHOR. This read ("admin", "owner") and the
+    # second member was every self-serve signup, not a rank.
+    if not is_company_admin(current_user) and logbook.get("created_by") != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this logbook")
 
     await db.logbooks.update_one(
@@ -47018,7 +47213,15 @@ async def _get_checklist_candidates(
             # make him the one person on site who cannot be given one. The
             # roles are named by constant where one exists, so this list moves
             # when the vocabulary does.
-            if role not in ("admin", "owner", "cp", ROLE_SUPERINTENDENT, ROLE_PM):
+            #
+            # THE RETIRED "owner" LEFT IT AND `is_company_admin` TOOK ITS
+            # PLACE, which is not the same thing said twice. Omission is this
+            # list's failure mode, and the platform operator's account still
+            # carries that role string until the migration runs -- dropping
+            # the word alone would have quietly removed him from every
+            # assignee picker in the product.
+            if not is_company_admin(u) and role not in (
+                    "cp", ROLE_SUPERINTENDENT, ROLE_PM):
                 continue
             out.append({
                 "id":      str(u.get("_id")),
@@ -48671,16 +48874,20 @@ async def _process_whatsapp_message(payload: dict):
                     if not bot_config.get("checklist_extraction_enabled", False):
                         # Silent — do not respond per spec
                         return
-                    # Condition 2: sender must be a registered admin/owner/cp
+                    # Condition 2: sender must be a registered admin or cp.
+                    # The retired "owner" is gone from the tuple; the operator
+                    # is admitted by `is_company_admin` on the user document,
+                    # because his role string is still the retired one.
                     contact = await _find_whatsapp_contact(sender)
                     sender_role = None
+                    user_doc = None
                     if contact and contact.get("user_id"):
                         user_doc = await db.users.find_one(
                             {"_id": to_query_id(contact["user_id"])}
                         )
                         if user_doc:
                             sender_role = (user_doc.get("role") or "").lower()
-                    if sender_role not in ("admin", "owner", "cp"):
+                    if not is_company_admin(user_doc) and sender_role != "cp":
                         await send_whatsapp_message(
                             group_id,
                             "You need admin or manager access to request a checklist. "
@@ -49041,8 +49248,7 @@ async def whatsapp_debug_audio_probe(
 ):
     """Recent download-audio probe traces — which WaAPI endpoints were
     tried and what each returned."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     try:
         rows = await db.whatsapp_audio_probe.find().sort(
@@ -49062,8 +49268,7 @@ async def whatsapp_debug_audio_diag(
     current_user=Depends(get_current_user), limit: int = 10
 ):
     """Recent voicenote download/transcription outcomes."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     try:
         rows = await db.whatsapp_audio_diag.find().sort(
@@ -49087,8 +49292,7 @@ async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
     list this returns. A missing LID here = env var isn't loaded, or has
     whitespace/quote corruption.
     """
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     env_phone_raw = os.environ.get("WAAPI_DISPLAY_NUMBER", "")
     env_lid_raw = os.environ.get("WAAPI_BOT_LID", "")
@@ -49142,8 +49346,7 @@ async def whatsapp_debug_page_index(
     # NO EMBEDDING. It is 1536 floats that no human reads, and it would bury
     # the text this is here to show.
     """
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     # SCOPED TO THE CALLER'S COMPANY. A project id in a query string is the
@@ -49246,8 +49449,7 @@ async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_us
     Asked of production and unanswerable: the old unique-on-group_id index is
     what silently ate every bot session, the drop runs at boot inside a try,
     and "did it go?" had no answer short of a database shell."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     try:
         info = await db.whatsapp_conversation_state.index_information()
@@ -49264,8 +49466,7 @@ async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_us
 @api_router.get("/whatsapp/debug/webhook-log")
 async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
     """Return the last 20 raw webhook hits so we can see what WaAPI is sending."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     rows = await db.whatsapp_webhook_log.find().sort("received_at", -1).limit(20).to_list(20)
     total = await db.whatsapp_webhook_log.estimated_document_count()
@@ -49321,8 +49522,7 @@ async def whatsapp_group_link_initiate(
 async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
     """Return which WaAPI instance the backend is actually pointing at.
     Helps diagnose mismatches between the dashboard and the env vars."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     # Probe WaAPI for instance status
@@ -49356,8 +49556,7 @@ async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
 async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user)):
     """Owner/admin: show the last 20 whatsapp_messages stored. Confirms whether
     the webhook is actually delivering events into the DB."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     msgs = await db.whatsapp_messages.find().sort("created_at", -1).limit(20).to_list(20)
     return {
@@ -49378,8 +49577,7 @@ async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user))
 async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
     """Owner/admin only: list un-verified codes for this company so we can
     see what the webhook actually stored vs what the user is typing."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
     if not company_id and not is_platform_operator(current_user):
@@ -49547,10 +49745,9 @@ async def whatsapp_update_group_config(
     or full config object. Unknown keys rejected. Time fields validated HH:MM.
     Days list validated 1-7.
     """
-    # Role gate — only admins/owners can modify bot config
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
-        raise HTTPException(status_code=403, detail="Admin or owner access required")
+    # Rank gate — company admins only, and the platform operator.
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
 
     group = await db.whatsapp_groups.find_one({"_id": to_query_id(group_doc_id)})
     if not group:
@@ -51054,8 +51251,7 @@ async def debug_indexed_pages(
     """Admin diagnostic — show what v2 indexing actually stored for this
     project's pages. Returns the interesting fields only (no raw summaries
     over 400 chars, no full embedding array)."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("admin", "owner"):
+    if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
     q: Dict[str, Any] = {"project_id": project_id}
@@ -53195,30 +53391,46 @@ async def startup_event():
     )
     await db[PENDING_GROUPS].create_index([("company_id", 1), ("status", 1)])
 
-    # Create owner account if doesn't exist
-    owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
+    # ── THE OPERATOR'S ACCOUNT, ON A DATABASE THAT HAS NONE ─────────────────
+    #
+    # A BOOTSTRAP, not a role assignment. It runs only when the account is
+    # absent AND OWNER_DEFAULT_PASSWORD is set, which is a fresh database or a
+    # restored one.
+    #
+    # THE ROLE IT WRITES IS "admin" NOW, and the block that used to follow it
+    # is GONE. That block read
+    #
+    #     elif owner and owner.get("role") == "admin":
+    #         ... {"$set": {"role": "owner"}}
+    #
+    # i.e. it rewrote this account's role back to the retired string on EVERY
+    # BOOT. It was written when "owner" was believed to be a rank, and left in
+    # place it would have silently undone the operator's account migration on
+    # the first deploy after it ran — a writer of the role nobody had counted,
+    # in the one file the census reads.
+    #
+    # BEING THE OPERATOR IS NOT WHAT THIS ROLE SAYS. `is_platform_operator`
+    # decides that, from the flag on the row or from PLATFORM_OPERATOR_EMAILS,
+    # and this code deliberately writes NEITHER: the flag is in no allow-list
+    # and is set by a human on purpose, and the email list is an env var that
+    # needs a redeploy to change. A seed that granted operator would be an API
+    # path to the trust anchor wearing a startup hook's clothes.
+    operator_account = await db.users.find_one({"email": "rfs2671@gmail.com"})
     owner_default_pw = os.environ.get("OWNER_DEFAULT_PASSWORD")
-    if not owner and owner_default_pw:
+    if not operator_account and owner_default_pw:
         now = datetime.now(timezone.utc)
         await db.users.insert_one({
             "email": "rfs2671@gmail.com",
             "password": hash_password(owner_default_pw),
             "name": "Roy Fishman",
-            "role": "owner",
+            "role": "admin",
             "registration_source": REG_SEED,
             "created_at": now,
             "updated_at": now,
             "assigned_projects": [],
             "is_deleted": False
         })
-        logger.info("Created default owner user")
-    elif owner and owner.get("role") == "admin":
-        # Upgrade existing admin to owner
-        await db.users.update_one(
-            {"email": "rfs2671@gmail.com"},
-            {"$set": {"role": "owner", "updated_at": datetime.now(timezone.utc)}}
-        )
-        logger.info("Upgraded existing admin to owner role")
+        logger.info("Created default operator account (role=admin)")
 
     # ── TEST DATA SEED (creates test accounts + project if missing) ──
     # ENV-GATED, AND IT FAILS CLOSED.
@@ -53268,13 +53480,16 @@ async def startup_event():
         else:
             test_company_id = str(test_company["_id"])
 
-        # 2. Create test@test.com as owner
+        # 2. Create test@test.com as the fixture company's admin.
+        # IT SAID "owner", and the role is retired — a fixture that mints a
+        # role no writer produces any more is a fixture that stops resembling
+        # the product it is standing in for.
         result = await db.users.insert_one({
             "email": "test@test.com",
             "password": hash_password("test"),
             "name": "Test Owner",
             "full_name": "Test Owner",
-            "role": "owner",
+            "role": "admin",
             "registration_source": REG_SEED,
             "company_id": test_company_id,
             "phone": "+15163018154",

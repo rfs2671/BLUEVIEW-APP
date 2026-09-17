@@ -40,7 +40,7 @@ import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import OfflineNotice from '../../src/components/OfflineNotice';
@@ -174,7 +174,7 @@ export default function WorkerDetailScreen() {
   const [detailState, setDetailState] = useState('ok');
   const [oshaState, setOshaState] = useState('ok');
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  const isAdmin = isCompanyAdmin(user);
 
   // Credential expiry tone. Both the certification list and the OSHA/SST card
   // route through this: fixing only one of them leaves the other silently

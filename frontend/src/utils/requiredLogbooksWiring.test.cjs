@@ -230,8 +230,16 @@ console.log('\n-- who owns which switch --');
     'no client-side list of log types decides who owns a switch');
   ok(/const mine = act\.activated_by !== 'admin' \|\| isAdminUser;/.test(block),
     'an admin can activate an admin-activated log');
-  ok(/\['admin', 'owner'\]\.includes\(/.test(SCREEN),
-    'isAdminUser mirrors get_admin_user, which admits admin and owner');
+  // IT USED TO BE `['admin', 'owner'].includes(...)`. The role "owner" is
+  // retired -- it was what every self-serve signup received, never a rank --
+  // and the server's gate is now `holds_rank(user, COMPANY_ADMIN_ROLES)`,
+  // which admits role 'admin' and the platform operator by his flag.
+  // `isCompanyAdmin` is the client half of exactly that, so this still asks
+  // the one question it always asked: does the screen mirror the server?
+  ok(/const isAdminUser = isCompanyAdmin\(user\);/.test(SCREEN),
+    'isAdminUser mirrors the server gate - one shared predicate, not a list');
+  ok(!/'owner'/.test(SCREEN),
+    'and the retired role is named nowhere on the screen');
   ok(/mine\s*\?\s*handleToggleLogbook\(act\)/.test(block.replace(/\s+/g, ' ')),
     'a CP-owned switch flips');
   ok(block.includes('An admin sets this one'),
