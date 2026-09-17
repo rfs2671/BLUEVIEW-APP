@@ -62,8 +62,10 @@ VISION_LEGEND = rec(record_type="legend_entry", tier=pe.TIER_VISION, source="vis
 class TierBeforeSimilarity(unittest.TestCase):
 
     def test_a_schedule_cell_outranks_a_perfect_match_read_off_the_image(self):
-        # The vision record matches the words far better — it IS the words.
-        # It still sorts last, because how we came to know it is weaker.
+        # The vision record matches the words far better — but only through
+        # its LABEL. Ranking counts printed words, on which the two tie at
+        # 'ptac', and a tie goes to the stronger evidence. See
+        # test_plan_search_ranks_on_what_the_sheet_says for the rule itself.
         terms = ps.search_terms("package terminal air conditioner ptac")
         ranked = ps.rank([VISION_LEGEND, SCHEDULE], terms)
         self.assertGreater(ps.match_score(VISION_LEGEND, terms),

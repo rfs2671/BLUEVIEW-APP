@@ -79,34 +79,140 @@ def search_terms(subject: str) -> List[str]:
     return out
 
 
-def _haystacks(record: Dict[str, Any]) -> List[str]:
-    """Everything a record may be MATCHED on — quote, label and subject terms.
+# ══════════════════════════════════════════════════════════════════════════
+# Matching
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── A TERM IS A WORD, NOT A RUN OF LETTERS ─────────────────────────────────
+#
+# This matched with `term in haystack`, and the database narrowed with an
+# unanchored regex of the same term. So 'air' matched STAIRS, 'unit' matched
+# COMMUNITY, 'ac' matched SPACE and EACH — and every one of those rows was a
+# candidate, and could win. On a 36-inch sheet set the short words a person
+# actually types are exactly the ones that sit inside longer ones.
+#
+# A term now has to stand on its own: nothing alphanumeric immediately before
+# it or after it. A hyphen, a slash, a quote mark or a space is a boundary, so
+# 'ptac' still matches PTAC-1 and '42"' still matches 42" PARAPET.
+#
+# ── AND A PLURAL IS THE SAME WORD ──────────────────────────────────────────
+#
+# Substring matching found 'drain' inside DRAINS for free. A boundary would
+# lose that, and a person asks 'how many roof drains' of a sheet that prints
+# ROOF DRAIN. So a term also matches its own form with or without a trailing
+# S or ES. That is the whole of it — the same rule _find_elements has used
+# since the plural defect, not a stemmer, and not a synonym table. The shorter
+# form must be at least three letters, or 'gas' would match GA (gauge).
+#
+# The SAME pattern narrows the database query and decides the match here, so
+# the two cannot disagree about what a candidate is.
 
-    The label is here and nowhere in the render. That asymmetry is the point:
-    it widens what is found without ever becoming what is said."""
-    parts = [record.get("quote") or "", record.get("label") or ""]
+_ALNUM_BEFORE = r"(?<![A-Za-z0-9])"
+_ALNUM_AFTER = r"(?![A-Za-z0-9])"
+_MIN_STEM = 3
+
+
+def term_forms(term: str) -> List[str]:
+    """The term, and the one plural or singular form it may also be written in."""
+    t = (term or "").lower()
+    if not t:
+        return []
+    forms = [t]
+    if t[-1].isalpha():
+        # -ES is only a plural after a sibilant: BOXES, SWITCHES. PILES is
+        # PILE + S, and stripping ES from it would invent PIL.
+        if (t.endswith("es") and len(t) - 2 >= _MIN_STEM
+                and t[:-2].endswith(("s", "x", "z", "ch", "sh"))):
+            forms.append(t[:-2])
+        if t.endswith("s") and len(t) - 1 >= _MIN_STEM:
+            forms.append(t[:-1])
+        if len(t) >= _MIN_STEM and not t.endswith("s"):
+            forms.append(t + "s")
+            if t.endswith(("x", "z", "ch", "sh")):
+                forms.append(t + "es")
+    out: List[str] = []
+    for f in forms:
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def term_pattern(term: str) -> str:
+    """A regular expression that matches `term` as a word, in either number.
+
+    Written to mean the same thing to Python's `re` and to MongoDB's PCRE, and
+    used by both — search_plans narrows with it, rank() matches with it."""
+    alts = "|".join(re.escape(f) for f in sorted(term_forms(term), key=len, reverse=True))
+    return f"{_ALNUM_BEFORE}(?:{alts}){_ALNUM_AFTER}"
+
+
+_PATTERNS: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _rx(term: str) -> "re.Pattern[str]":
+    p = _PATTERNS.get(term)
+    if p is None:
+        p = _PATTERNS[term] = re.compile(term_pattern(term), re.I)
+    return p
+
+
+def _printed(record: Dict[str, Any]) -> List[str]:
+    """What the sheet actually says about this record: the quote, the terms the
+    writer derived from printed text, and a payload name. NOT the label."""
+    parts = [record.get("quote") or ""]
     parts += [str(t) for t in (record.get("subject_terms") or [])]
     payload = record.get("payload")
     if isinstance(payload, dict):
         parts.append(str(payload.get("name") or ""))
-    return [p.lower() for p in parts if p]
+    return [p for p in parts if p]
+
+
+def _haystacks(record: Dict[str, Any]) -> List[str]:
+    """Everything a record may be FOUND by — the printed words and the label.
+
+    The label is here and nowhere in the render, and nowhere in how the record
+    RANKS: it widens what is found without ever deciding what comes first."""
+    return _printed(record) + ([record["label"]] if record.get("label") else [])
+
+
+def _hits(hay: str, terms: Sequence[str]) -> List[str]:
+    return [t for t in terms if _rx(t).search(hay)]
+
+
+def _score(parts: Sequence[str], terms: Sequence[str]) -> Tuple[float, float]:
+    """(coverage, density). Coverage is the share of the question's words the
+    record contains; density is how much of the record those words are."""
+    if not terms or not parts:
+        return 0.0, 0.0
+    hay = " | ".join(parts)
+    hit = _hits(hay, terms)
+    if not hit:
+        return 0.0, 0.0
+    density = min(1.0, sum(len(t) for t in hit) / max(len(hay), 1) * 8)
+    return len(hit) / len(terms), density
 
 
 def match_score(record: Dict[str, Any], terms: Sequence[str]) -> float:
-    """How much of what was asked for this record actually contains."""
-    if not terms:
-        return 0.0
-    hay = " | ".join(_haystacks(record))
-    if not hay:
-        return 0.0
-    hit = sum(1 for t in terms if t in hay)
-    if not hit:
-        return 0.0
-    # A record whose own words are mostly the thing asked for beats one that
-    # mentions it in passing, so a long note does not outrank a legend entry.
-    density = min(1.0, sum(len(t) for t in terms if t in hay) / max(len(hay), 1) * 8)
-    return hit / len(terms) + 0.25 * density
+    """Whether — and how well — a record can be FOUND for these terms, label
+    included. This admits a record to ranking; it does not order it."""
+    coverage, density = _score(_haystacks(record), terms)
+    return coverage + 0.25 * density if coverage else 0.0
 
+
+def printed_score(record: Dict[str, Any], terms: Sequence[str]) -> Tuple[float, float]:
+    """(coverage, density) on the words the sheet prints. This ORDERS records."""
+    return _score(_printed(record), terms)
+
+
+def matched_only_through_label(record: Dict[str, Any], terms: Sequence[str]) -> bool:
+    """True when the ONLY thing tying this record to the subject is a label —
+    words a vision model supplied for a mark the sheet does not explain."""
+    return match_score(record, terms) > 0 and printed_score(record, terms)[0] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Ranking
+# ══════════════════════════════════════════════════════════════════════════
 
 # Which record types answer which intent first. Advisory: this orders, it never
 # filters, because a wrong guess about intent must cost ranking and not the
@@ -120,45 +226,150 @@ _INTENT_PRIOR: Dict[str, Tuple[str, ...]] = {
     GEOMETRY_INTENT: ("callout", "text"),
 }
 
+# When one page prints the same words more than once, the record kept is the
+# most structured one: a schedule row says more than a loose line of the same
+# text, and its payload carries the columns.
+_TYPE_PREFERENCE = ("schedule", "element", "legend_entry", "note", "tag",
+                    "dimension", "callout", "text")
+
+
+def _page_of(record: Dict[str, Any]) -> str:
+    """Which page a record is on. `page_id` when there is one — a sheet NUMBER
+    is not an identity: seven current pages on 588 Boyland have none, and
+    'no sheet number' is not one page."""
+    return str(record.get("page_id") or
+               f"{record.get('file_name')}#{record.get('page_number')}#"
+               f"{record.get('sheet_number')}")
+
+
+def dedupe_quotes(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One record per (page, printed words).
+
+    ── WHY ───────────────────────────────────────────────────────────────
+    #
+    # A roof plan prints 42" PARAPET at every parapet run, and each is its own
+    # text record. They all match, they all tie, and six of them fill a result
+    # list that has room for eight — so every other sheet is pushed down by
+    # one page saying the same thing six times. A second copy of a line adds
+    # no evidence; it only takes a place.
+    #
+    # Kept: the strongest tier, then the most structured type, then the first.
+    # Different pages are never merged — the same words on two sheets are two
+    # citations.
+    """
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    order: List[Tuple[str, str]] = []
+    for r in records:
+        quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip().upper()
+        if not quote:
+            continue
+        k = (_page_of(r), quote)
+        cur = best.get(k)
+        if cur is None:
+            best[k] = r
+            order.append(k)
+            continue
+        if _keep_rank(r) < _keep_rank(cur):
+            best[k] = r
+    return [best[k] for k in order]
+
+
+def _keep_rank(r: Dict[str, Any]) -> Tuple[int, int]:
+    rt = r.get("record_type")
+    return (tier_rank(r.get("tier")),
+            _TYPE_PREFERENCE.index(rt) if rt in _TYPE_PREFERENCE else len(_TYPE_PREFERENCE))
+
 
 def rank(records: Iterable[Dict[str, Any]], terms: Sequence[str],
          intent: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Tier first, then how well it matches, then the intent's preference."""
+    """What answers the question best, first.
+
+    ── SIMILARITY FIRST, TIER BREAKS TIES ─────────────────────────────────
+    #
+    # This sorted on tier before anything else. The intent was that a schedule
+    # cell should beat a vision read of the same thing — and it did, but it
+    # also let ANY schedule cell beat ANY lower-tier record, however little of
+    # the question it shared. Asked about a wall heater, a schedule cell that
+    # shared only the word 'unit' came before the heater's own schedule.
+    #
+    # So the order is now:
+    #
+    #   1. coverage — how much of the question the PRINTED words contain
+    #   2. tier     — among records that answer as much of it, the stronger
+    #                 evidence first
+    #   3. density  — among those, the record that is mostly the answer
+    #   4. the intent's preferred record type, then page and ordinal, for a
+    #      stable order
+    #
+    # Coverage is measured on printed words only. A label may admit a record;
+    # it may not lift one above a record the sheet actually answers with.
+    #
+    # The narrower job the old rule was meant to do — never cite a vision read
+    # when a schedule cell says the same thing — is best_per_attribute's, and
+    # it still does it.
+    """
     prior = _INTENT_PRIOR.get(intent or "", ())
-
-    def key(r: Dict[str, Any]):
-        score = match_score(r, terms)
+    scored = []
+    for r in dedupe_quotes(records):
+        if match_score(r, terms) <= 0:
+            continue
+        coverage, density = printed_score(r, terms)
         rt = r.get("record_type")
-        return (
-            tier_rank(r.get("tier")),              # evidence, before anything
-            -round(score, 4),                      # then what it actually says
+        scored.append(((
+            -round(coverage, 4),
+            tier_rank(r.get("tier")),
+            -round(density, 4),
             prior.index(rt) if rt in prior else len(prior),
-            r.get("sheet_number") or "",
+            r.get("sheet_number") or "~",
+            _page_of(r),
             r.get("ordinal") or 0,
-        )
+        ), r))
+    scored.sort(key=lambda kr: kr[0])
+    return [r for _k, r in scored]
 
-    return sorted([r for r in records if match_score(r, terms) > 0], key=key)
 
+def _attribute_key(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """WHICH THING a record is about — or None when it does not say.
 
-def _attribute_key(record: Dict[str, Any]) -> Tuple[str, str, str]:
-    """What this record is ABOUT, for the purpose of not citing it twice."""
+    A schedule is about the schedule it names; an element, a tag or a legend
+    entry is about its mark. A note, a dimension, a callout or a loose line of
+    text names no thing, and returning an empty key for them — as this did —
+    made every such record on a sheet 'the same attribute', so a vision-read
+    note was dropped whenever the sheet had any text-layer note at all,
+    whatever either one said."""
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
-    subject = (record.get("subject_terms") or [""])[0]
-    return (str(record.get("sheet_number") or ""),
-            str(record.get("record_type") or ""),
-            str(payload.get("tag") or payload.get("symbol") or subject or "").upper())
+    rt = str(record.get("record_type") or "")
+    if rt == "schedule":
+        ident = payload.get("name") or (record.get("subject_terms") or [""])[0]
+    elif rt in ("element", "tag", "legend_entry"):
+        ident = (payload.get("tag") or payload.get("symbol")
+                 or (record.get("subject_terms") or [""])[0])
+    else:
+        ident = ""
+    ident = re.sub(r"\s+", " ", str(ident or "")).strip().upper()
+    if not ident:
+        return None
+    return (_page_of(record), rt, ident)
 
 
 def best_per_attribute(ranked: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Never a lower tier when a higher one says the same thing on the same
-    sheet. `ranked` must already be tier-ordered."""
-    seen: Dict[Tuple[str, str, str], str] = {}
-    out: List[Dict[str, Any]] = []
+    """Drop a record when a STRONGER tier on the same page answers the SAME
+    attribute — the same schedule, the same mark. Nothing else is dropped, and
+    the order `rank` chose is kept.
+
+    `ranked` is no longer tier-ordered, so the strongest tier per attribute is
+    found first and then applied."""
+    strongest: Dict[Tuple[str, str, str], int] = {}
     for r in ranked:
         k = _attribute_key(r)
-        if k in seen and tier_rank(r.get("tier")) > tier_rank(seen[k]):
+        if k is not None:
+            t = tier_rank(r.get("tier"))
+            strongest[k] = min(t, strongest.get(k, t))
+    out = []
+    for r in ranked:
+        k = _attribute_key(r)
+        if k is not None and tier_rank(r.get("tier")) > strongest[k]:
             continue
-        seen.setdefault(k, r.get("tier"))
         out.append(r)
     return out
 
@@ -251,13 +462,6 @@ def contains_label(text: str, records: Sequence[Dict[str, Any]]) -> List[str]:
         if len(lab) >= 4 and lab in low and lab not in printed:
             out.add(r["label"].strip())
     return sorted(out)
-
-
-def matched_only_through_label(record: Dict[str, Any], terms: Sequence[str]) -> bool:
-    """True when the ONLY thing tying this record to the subject is a label —
-    words a vision model supplied for a mark the sheet does not explain."""
-    return (match_score(record, terms) > 0
-            and match_score(dict(record, label=None), terms) == 0)
 
 
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
