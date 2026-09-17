@@ -36,6 +36,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:backfill_trade_source", the session and the reason.
+# Without --i-know the handle is unwrapped and nothing is written. See
+# prod_guard.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "backfill_trade_source"
+
 
 def _roster_key(value) -> str:
     """Mirrors server._roster_key. Duplicated here ON PURPOSE: importing server
@@ -44,7 +58,12 @@ def _roster_key(value) -> str:
     return str(value or "").strip().casefold()
 
 
-async def main(apply: bool) -> int:
+async def main(args) -> int:
+    # THE BOOL BECAME THE NAMESPACE, because `audited` needs the reason and the
+    # session that go on the row, and a bare `apply` carries neither. The gate
+    # itself is unchanged: `apply` is still the one local every branch below
+    # tests, it is just bound from the guard now.
+    apply = args.apply
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
@@ -65,7 +84,7 @@ async def main(apply: bool) -> int:
     print(f"vocabulary: {len(vocabulary)} active + {len(deprecated)} deprecated")
 
     client = AsyncIOMotorClient(mongo_url)
-    db = client[db_name]
+    db = audited(client[db_name], args, NAME)
 
     seen = Counter()
     custom_values = Counter()
@@ -112,6 +131,16 @@ async def main(apply: bool) -> int:
 
 
 if __name__ == "__main__":
+    # BEFORE THE PARSER, so `--apply` is refused by name rather than being
+    # parsed into a flag that no longer means what the runbook says it means.
+    refuse_legacy_flag()
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="write the annotations")
-    sys.exit(asyncio.run(main(ap.parse_args().apply)))
+    add_guard_args(ap)
+    args = ap.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.apply = check_guard(args)
+    sys.exit(asyncio.run(main(args)))

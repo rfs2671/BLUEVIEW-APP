@@ -24,22 +24,53 @@ project tile (project-scoped count, checked_in) — and asserts the record is
 counted by BOTH (neither drops it on date handling); it prints both numbers.
 
 Finally it DELETES only the two records it created (by their exact ids, guarded
-on the marker). Nothing else is touched. Safe against production.
+on the marker). Nothing else is touched.
+
+IT WRITES TO PRODUCTION, so it carries the `--i-know` guard like every other
+writer in this directory. Without the flag it reports the fixture it would
+create and changes nothing; with it, every insert and delete leaves an audit
+row naming the session and the reason. "It cleans up after itself" is the
+argument AGAINST leaving it ungated: the rows are gone afterwards, so without
+the audit trail there is no evidence the run ever happened.
 
   $env:MONGO_URL='<Atlas URI>'; $env:DB_NAME='blueview'
-  python checkin_tz_verify.py                     # inject 2 -> report -> delete 2
-  python checkin_tz_verify.py --project-id <id>   # attach to a specific project
-  python checkin_tz_verify.py --keep              # leave both for UI inspection
-  python checkin_tz_verify.py --cleanup           # ONLY remove left-behind test records
+  python checkin_tz_verify.py                     # DRY RUN: says what it would do
+  python checkin_tz_verify.py --i-know \
+      --reason '<why>' --session <id>             # inject 2 -> report -> delete 2
+  ... --project-id <id>                           # attach to a specific project
+  ... --keep                                      # leave both for UI inspection
+  ... --cleanup                                   # ONLY remove left-behind records
 
 Reads MONGO_URL / DB_NAME from env; never prints the connection string.
 """
 import os
-import sys
 import uuid
 import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:checkin_tz_verify", the session and the reason. Without
+# --i-know the handle is unwrapped and nothing is written. See prod_guard.
+#
+# THIS ONE HAD NO WRITE GATE AT ALL, and it is the one in the directory that
+# most needed one: it INSERTS two check-in rows into the production `checkins`
+# collection and then deletes them again. Every previous run wrote to a
+# statutory collection and left nothing behind saying who ran it or why -- the
+# rows were removed, so afterwards there is no evidence it happened at all.
+# There was no existing flag to bind the guard to, so `--i-know` becomes the
+# gate outright: without it the script reports the fixture it WOULD create and
+# exits.
+import argparse                                                 # noqa: E402
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag, report_dry_run,
+)
+
+NAME = "checkin_tz_verify"
 
 EASTERN = ZoneInfo("America/New_York")
 MARKER = "CHECKIN_TZ_VERIFY"  # unique field; cleanup is guarded on this
@@ -63,18 +94,31 @@ async def cleanup_marker(db):
     print(f"[cleanup] deleted {res.deleted_count} test check-in(s) carrying marker {MARKER!r}.")
 
 
-async def main():
+async def main(args):
     from motor.motor_asyncio import AsyncIOMotorClient
-    argv = sys.argv[1:]
-    keep = "--keep" in argv
-    cleanup = "--cleanup" in argv
-    project_id = argv[argv.index("--project-id") + 1] if "--project-id" in argv else None
+    keep, cleanup, project_id = args.keep, args.cleanup, args.project_id
 
     url, dbname = os.environ.get("MONGO_URL"), os.environ.get("DB_NAME")
     if not url or not dbname:
         raise SystemExit("Set MONGO_URL and DB_NAME in the environment first.")
+
+    # THE GATE, AHEAD OF THE CONNECTION. Everything this script does to the
+    # database is a write or a read of its own writes, so there is no useful
+    # half-run: without --i-know it says what it would inject and stops. A
+    # verification harness that writes to production is still a production
+    # write.
+    if not check_guard(args):
+        report_dry_run(
+            (f"delete test check-ins carrying the marker {MARKER!r} "
+             "from `checkins`")
+            if cleanup else
+            ("insert 2 marker-tagged test check-in rows into `checkins` on a "
+             "live project, read them back to verify Eastern-day bucketing, "
+             f"then delete them again (marker {MARKER!r})"))
+        return
+
     client = AsyncIOMotorClient(url)
-    db = client[dbname]
+    db = audited(client[dbname], args, NAME)
 
     if cleanup:
         await cleanup_marker(db)
@@ -192,4 +236,22 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # BEFORE THE PARSER, so a legacy write flag is refused by name rather than
+    # dying as an unrecognised argument.
+    refuse_legacy_flag()
+    # ARGPARSE REPLACES THE ARGV SLICING. The guard's arguments take values
+    # (`--reason 'why'`), and `argv[argv.index("--project-id") + 1]` cannot see
+    # the difference between a value and the next flag.
+    _ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    _ap.add_argument("--keep", action="store_true",
+                     help="leave both test records for UI inspection")
+    _ap.add_argument("--cleanup", action="store_true",
+                     help="ONLY remove left-behind test records")
+    _ap.add_argument("--project-id", dest="project_id", default=None,
+                     help="attach the fixture to a specific project")
+    add_guard_args(_ap)
+    _args = _ap.parse_args()
+    # VALIDATED FIRST: `--i-know` with no reason is an argument error, and it
+    # should not have to wait behind a missing MONGO_URL to be reported.
+    check_guard(_args)
+    asyncio.run(main(_args))

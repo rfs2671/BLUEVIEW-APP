@@ -136,7 +136,23 @@ PROJECT_LIST_DEFAULT_FIELDS = (
 )
 
 
-async def main(*, dry_run: bool) -> int:
+async def main(*, dry_run: bool, args=None) -> int:
+    # ARGS IS A PARAMETER, NOT A `__main__` GLOBAL. It used to be read straight
+    # off the module namespace: that works when the file is run as a script,
+    # and raises NameError the moment anything IMPORTS it and calls main() --
+    # which is how this repo's tests drive these migrations. Three of them were
+    # failing on exactly that.
+    #
+    # AND THE TWO ARGUMENTS MUST AGREE. `dry_run` says whether to write; `args`
+    # carries the authorisation the audit row is built from. A live run without
+    # it would write through an UNWRAPPED handle and leave nothing behind --
+    # the precise failure this guard exists to stop -- so it is refused here
+    # rather than performed silently unaudited.
+    if not dry_run and not getattr(args, "i_know", False):
+        raise SystemExit(
+            f"{NAME}: main(dry_run=False) requires the parsed args carrying "
+            "--i-know, --reason and --session. See scripts/prod_guard.py.")
+
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
@@ -311,4 +327,4 @@ if __name__ == "__main__":
     # 'yes, write' means dry_run is False. Reading it the other way
     # round writes on every run and still looks guarded.
     args.dry_run = not check_guard(args)
-    raise SystemExit(asyncio.run(main(dry_run=args.dry_run)))
+    raise SystemExit(asyncio.run(main(dry_run=args.dry_run, args=args)))

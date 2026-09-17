@@ -26,6 +26,23 @@ import os
 import sys
 from datetime import datetime, timezone
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:backfill_deleted_at", the session and the reason. Without
+# --i-know the handle is unwrapped and nothing is written. See prod_guard.
+#
+# A PYMONGO HANDLE. `audited` decides sync-or-async from what the driver hands
+# back, so the wrap reads identically here and in the motor scripts.
+import argparse                                                 # noqa: E402
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "backfill_deleted_at"
+
 try:
     from pymongo import MongoClient
 except ImportError:
@@ -40,16 +57,20 @@ PURGE_COLLECTIONS = [
 ]
 
 
-def main():
+def main(args):
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
         print("Set MONGO_URL and DB_NAME in the environment first.")
         sys.exit(1)
-    execute = "--execute" in sys.argv[1:]
+    # --i-know IS THE GATE NOW. This script used to read its own argv for
+    # "--execute"; that string no longer authorises anything (refuse_legacy_flag
+    # has already stopped an operator who typed it). Binding the guard to the
+    # SAME local the branches below already test means none of them change.
+    execute = check_guard(args)
 
     client = MongoClient(mongo_url)
-    db = client[db_name]
+    db = audited(client[db_name], args, NAME)
     now = datetime.now(timezone.utc)
 
     q = {"is_deleted": True, "deleted_at": {"$exists": False}}
@@ -80,4 +101,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # BEFORE THE PARSER, so `--execute` is refused by name rather than dying as
+    # an unrecognised argument. An operator reading "unrecognized arguments:
+    # --execute" learns the flag is gone; he does not learn what replaced it.
+    refuse_legacy_flag()
+    _ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_guard_args(_ap)
+    _args = _ap.parse_args()
+    # VALIDATED FIRST. `--i-know` with no reason is an argument error, and an
+    # argument error should not have to wait behind a missing MONGO_URL to be
+    # reported -- the operator fixing one is not the operator fixing the other.
+    check_guard(_args)
+    main(_args)

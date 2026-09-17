@@ -92,6 +92,27 @@ def _writes_in(tree):
     return out
 
 
+def _raw_handle_bindings(tree):
+    """(lineno, statement) for every `<name> = <client>[<db>]` -- a database
+    taken straight off a client and bound to a name, with nothing in between.
+
+    The SUBSCRIPT is what identifies it, and it is why `audited(...)` does not
+    match: `db = audited(client[name], args, NAME)` binds the result of a CALL,
+    so the subscript is an argument rather than the value being assigned. There
+    is no way to write the wrapped form that looks like the raw one.
+    """
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        if not isinstance(node.value, ast.Subscript):
+            continue
+        src = ast.unparse(node.value)
+        if "Client(" in src or src.split("[")[0].endswith("client"):
+            out.append((node.lineno, ast.unparse(node)))
+    return out
+
+
 def _scripts_that_write():
     out = {}
     for path in sorted(SCRIPTS.glob("*.py")):
@@ -129,6 +150,22 @@ class TheCensusIsReal(unittest.TestCase):
         self.assertEqual([s for _, s in _writes_in(tree)],
                          ["db.projects.delete_one"])
 
+    def test_the_walk_can_SEE_a_handle_taken_off_the_client(self):
+        """The second instrument, against the line the 19:07:45Z session ran."""
+        tree = ast.parse("client = MongoClient(url)\ndb = client[dbname]\n")
+        self.assertEqual([s for _, s in _raw_handle_bindings(tree)],
+                         ["db = client[dbname]"])
+        tree = ast.parse("db = AsyncIOMotorClient(url)[dbname]\n")
+        self.assertEqual(len(_raw_handle_bindings(tree)), 1)
+
+    def test_the_wrapped_form_is_not_reported(self):
+        """AND IT MUST NOT BE, or the check fires on every correct script and
+        gets deleted by the next person who touches this file."""
+        self.assertEqual(_raw_handle_bindings(ast.parse(
+            "db = audited(client[dbname], args, NAME)\n")), [])
+        self.assertEqual(_raw_handle_bindings(ast.parse(
+            "db = audited(MongoClient(url)[dbname], args, NAME)\n")), [])
+
     def test_it_does_not_fire_on_a_string_literal(self):
         """The static analysers list these method names as DATA. Reporting them
         as writers is a mistake this repo has already made once."""
@@ -157,26 +194,74 @@ class EveryWriterIsGuarded(unittest.TestCase):
 
     def test_each_one_WRITES_AN_AUDIT_ROW(self):
         """THE POINT OF THE WHOLE EXERCISE. The flag only stops an accident;
-        the row is what makes an intended write traceable afterwards."""
-        missing = [n for n in self.writers
-                   if "script_audit(" not in (SCRIPTS / n).read_text(encoding="utf-8")]
+        the row is what makes an intended write traceable afterwards.
+
+        TWO WAYS TO SATISFY IT, AND THE SECOND IS THE ONE TO PREFER. This
+        assertion originally looked only for a hand-placed `script_audit(` call.
+        The design moved to the `audited()` handle wrapper, and the reason is
+        the reason this assertion is weak: a source test can only prove a call
+        EXISTS, never that it RUNS when the write runs, so a hand-placed
+        `script_audit(` sitting after an early return or on the dry-run branch
+        reads here exactly like one that fires. Wrapping the handle makes the
+        row a property of the WRITE -- `db.dob_logs.delete_many(...)` audits
+        because it executed, not because somebody remembered -- which is the
+        only version of this that control flow cannot get around.
+
+        `= audited(` and not `audited(`: the guard block every retrofitted
+        script carries says "goes through `audited(...)`" in a COMMENT, and
+        matching that would pass a file that describes the wrapper without
+        using it. Measured -- it was true of strip_inline_worker_image, which
+        imported `audited`, never called it, and gated perfectly while
+        recording nothing.
+        """
+        missing = []
+        for n in self.writers:
+            src = (SCRIPTS / n).read_text(encoding="utf-8")
+            if "script_audit(" not in src and "= audited(" not in src:
+                missing.append(n)
         self.assertEqual(missing, [], "no audit row written by: "
                          + ", ".join(missing))
 
-    def test_the_gate_is_reached_before_the_write(self):
-        """Ordering, not presence. A `check_guard` call that sits AFTER the
-        write reads exactly like one that protects it."""
-        late = []
-        for name, hits in self.writers.items():
+    def test_no_handle_is_TAKEN_OFF_THE_CLIENT_UNWRAPPED(self):
+        """The gate reaches the write, asserted structurally rather than by
+        line number.
+
+        WHAT THIS REPLACED, AND WHY IT HAD TO. This was a position check: find
+        `check_guard(`, find the first write, fail if the gate came later. That
+        premise died with the design. Nine of these scripts build their parser
+        in `if __name__ == "__main__":` deliberately, so that `--i-know` with no
+        reason is an argument error BEFORE main() runs rather than something the
+        operator discovers behind a missing environment variable -- which puts
+        `check_guard(` at the bottom of the file, textually after every write.
+        And the writes themselves frequently sit in a helper defined ABOVE the
+        function that builds the handle (`cleanup_marker(db)`, `run(db,
+        execute)`), so even measuring from `db = audited(...)` reports the
+        correct files as broken. A source position cannot express "this handle
+        was wrapped before that call ran".
+
+        WHAT IS CHECKABLE, AND IS THE ACTUAL FAILURE. `db = client[db_name]`
+        followed by a write is the unguarded shape -- it is literally the line
+        the 19:07:45Z session ran. So: in a script that writes, a database must
+        never be taken off a client and bound to a name without passing through
+        `audited(...)` on the way. Where the handle is built is then the only
+        place it can be built, and every write in the file is reached through
+        it, however many helpers deep.
+
+        THE TWO EXEMPTED ARE THE TWO THAT AUDIT BY HAND. delete_rodent_
+        inspections and reparent_project predate the wrapper and place their own
+        `script_audit(` calls; they are asserted by the audit-row test above and
+        by TheTwoWritersBuiltOnItStayBuiltOnIt below. A file cannot buy the
+        exemption by accident -- it has to contain a real audit call.
+        """
+        bad = []
+        for name in self.writers:
             src = (SCRIPTS / name).read_text(encoding="utf-8")
-            if "check_guard(" not in src:
-                continue
-            gate_line = src[:src.index("check_guard(")].count("\n") + 1
-            first_write = min(ln for ln, _ in hits)
-            if gate_line > first_write:
-                late.append(f"{name}: gate at {gate_line}, write at {first_write}")
-        self.assertEqual(late, [], "guard called after the write in: "
-                         + "; ".join(late))
+            if "script_audit(" in src:
+                continue            # audits by hand; asserted separately
+            for lineno, stmt in _raw_handle_bindings(ast.parse(src)):
+                bad.append(f"{name}:{lineno}  {stmt}")
+        self.assertEqual(bad, [], "a database handle reaches a write without "
+                         "audited(): " + "; ".join(bad))
 
 
 class TheTwoWritersBuiltOnItStayBuiltOnIt(unittest.TestCase):
@@ -238,6 +323,118 @@ class TheGuardItself(unittest.TestCase):
         project", rather than a second log nobody remembers to check."""
         from prod_guard import AUDIT_COLLECTION
         self.assertEqual(AUDIT_COLLECTION, "audit_logs")
+
+
+class _Result:
+    modified_count = 2
+
+
+class _FakeColl:
+    def __init__(self, name, log):
+        self.name, self.log = name, log
+
+    def find_one(self, *a, **kw):        # what marks this as a collection
+        return None
+
+    def update_many(self, *a, **kw):
+        self.log.append(("update_many", self.name))
+        return _Result()
+
+    def insert_one(self, doc):
+        self.log.append(("insert_one", self.name, doc))
+        return _Result()
+
+
+class _FakeAsyncColl(_FakeColl):
+    async def update_many(self, *a, **kw):
+        return _FakeColl.update_many(self, *a, **kw)
+
+    async def insert_one(self, doc):
+        return _FakeColl.insert_one(self, doc)
+
+
+class _FakeDb:
+    COLL = _FakeColl
+
+    def __init__(self):
+        self.log = []
+
+    def __getattr__(self, name):
+        return type(self).COLL(name, self.log)
+
+    def __getitem__(self, name):
+        return type(self).COLL(name, self.log)
+
+    def list_collection_names(self):
+        return ["a", "b"]
+
+
+class _FakeAsyncDb(_FakeDb):
+    COLL = _FakeAsyncColl
+
+
+class TheWrappedHandleActUALLYWrites(unittest.TestCase):
+    """THE WRAPPER IS THE GUARD NOW, so it needs an instrument of its own.
+
+    A source test can see that `audited(` is on the line. It cannot see that the
+    wrapped call still performs the write, and that is the failure mode with the
+    worst shape available: a wrapper that hands a sync caller back a coroutine
+    it never awaits makes the WRITE SILENTLY NOT HAPPEN while the run reports
+    success and the census test reads green. Three of the twenty scripts here
+    drive PyMongo, so that is not hypothetical.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        self.args = type("A", (), {"i_know": True, "reason": "why",
+                                   "session": "sess"})()
+
+    def test_a_PYMONGO_handle_writes_and_audits(self):
+        from prod_guard import audited
+        db = _FakeDb()
+        result = audited(db, self.args, "probe").workers.update_many({}, {})
+        self.assertEqual(result.modified_count, 2, "the write did not run")
+        self.assertEqual([e[:2] for e in db.log],
+                         [("update_many", "workers"), ("insert_one", "audit_logs")])
+
+    def test_a_MOTOR_handle_writes_and_audits(self):
+        import asyncio
+        from prod_guard import audited
+        db = _FakeAsyncDb()
+        result = asyncio.run(
+            audited(db, self.args, "probe").workers.update_many({}, {}))
+        self.assertEqual(result.modified_count, 2, "the write did not run")
+        self.assertEqual([e[:2] for e in db.log],
+                         [("update_many", "workers"), ("insert_one", "audit_logs")])
+
+    def test_the_row_carries_the_reason_and_the_session(self):
+        """Without these the row is a write nobody can trace, which is the
+        thing the flag exists to make impossible."""
+        from prod_guard import audited
+        db = _FakeDb()
+        audited(db, self.args, "probe").workers.update_many({}, {})
+        row = db.log[1][2]
+        self.assertEqual(row["user_id"], "script:probe")
+        self.assertEqual(row["reason"], "why")
+        self.assertEqual(row["session_id"], "sess")
+        self.assertEqual(row["details"]["modified_count"], "2")
+
+    def test_a_DATABASE_METHOD_is_not_wrapped_into_a_collection(self):
+        """`db.list_collection_names()` is a method, not a collection. Wrapping
+        one returns an object that is not callable, so the script dies on a READ
+        it was never meant to touch -- cleanup_v21_inert_data calls exactly this
+        before it drops anything."""
+        from prod_guard import audited
+        self.assertEqual(
+            audited(_FakeDb(), self.args, "probe").list_collection_names(),
+            ["a", "b"])
+
+    def test_a_dry_run_is_handed_the_BARE_handle(self):
+        """Nothing to audit when nothing is written, and a layer to step through
+        while debugging a dry run is a cost with no purchase."""
+        from prod_guard import audited
+        db = _FakeDb()
+        self.assertIs(audited(db, type("A", (), {"i_know": False})(), "p"), db)
 
 
 if __name__ == "__main__":

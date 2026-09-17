@@ -45,6 +45,7 @@ they are about to do to a database holding filed statutory records.
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import sys
 from datetime import datetime, timezone
@@ -174,7 +175,30 @@ async def script_audit(db, action: str, resource_type: str, resource_id: str,
     cannot be written, the operator would rather the script stopped than have
     it continue leaving untraceable changes.
     """
-    await db[AUDIT_COLLECTION].insert_one({
+    await db[AUDIT_COLLECTION].insert_one(
+        _audit_row(action, resource_type, resource_id, details, args, name))
+
+
+def script_audit_sync(db, action: str, resource_type: str, resource_id: str,
+                      details: dict, args, name: Optional[str] = None) -> None:
+    """`script_audit` for a PyMongo handle.
+
+    Three of the twenty scripts here -- backfill_deleted_at, backfill_iso_expiry
+    and strip_inline_worker_image -- connect with `pymongo.MongoClient`, not
+    motor, because they were written as one-shot synchronous reports. Their
+    writes are production writes like any other, so they need the same row; the
+    only thing that differs is that `insert_one` returns a result rather than a
+    coroutine. SAME COLLECTION, SAME SHAPE, SAME actor -- a reader asking what
+    happened to a document must not have to know which driver touched it.
+    """
+    db[AUDIT_COLLECTION].insert_one(
+        _audit_row(action, resource_type, resource_id, details, args, name))
+
+
+def _audit_row(action, resource_type, resource_id, details, args, name) -> dict:
+    """The row itself, built in ONE place so the sync and async paths cannot
+    drift into writing two different shapes into the same collection."""
+    return {
         "action": action,
         "user_id": SCRIPT_ACTOR_PREFIX + (name or script_name()),
         "resource_type": resource_type,
@@ -183,7 +207,7 @@ async def script_audit(db, action: str, resource_type: str, resource_id: str,
         "timestamp": datetime.now(timezone.utc),
         "session_id": str(getattr(args, "session", "") or ""),
         "reason": str(getattr(args, "reason", "") or ""),
-    })
+    }
 
 
 def report_dry_run(what: str) -> None:
@@ -235,37 +259,61 @@ class _AuditedCollection:
     def __init__(self, coll, parent, cname):
         self._coll, self._parent, self._cname = coll, parent, cname
 
+    def _details(self, attr, a, result) -> dict:
+        # Built AFTER the write, and deliberately: a row claiming a change that
+        # then failed is worse than no row. The counts below only exist once the
+        # driver has answered.
+        details = {
+            "method": attr,
+            "collection": self._cname,
+            "args": [_short(x) for x in a][:3],
+        }
+        for field in ("matched_count", "modified_count", "deleted_count",
+                      "upserted_id", "inserted_id"):
+            got = getattr(result, field, None)
+            if got is not None:
+                details[field] = str(got)
+        return details
+
     def __getattr__(self, attr):
         target = getattr(self._coll, attr)
         if attr not in _WRITE_METHODS or self._cname in _NEVER_AUDITED:
             return target
 
-        async def _wrapped(*a, **kw):
-            result = await target(*a, **kw)
-            # AFTER the write, and deliberately: a row claiming a change that
-            # then failed is worse than no row. The counts below only exist
-            # once the driver has answered.
-            details = {
-                "method": attr,
-                "collection": self._cname,
-                "args": [_short(x) for x in a][:3],
-            }
-            for field in ("matched_count", "modified_count", "deleted_count",
-                          "upserted_id", "inserted_id"):
-                got = getattr(result, field, None)
-                if got is not None:
-                    details[field] = str(got)
-            await script_audit(
+        # NOT an `async def`, and that is the whole point. Three of these
+        # scripts drive PyMongo and the rest drive Motor. An `async def` wrapper
+        # over PyMongo is the worst available failure: the sync caller gets back
+        # a coroutine it never awaits, so the WRITE SILENTLY DOES NOT HAPPEN and
+        # the run reports success -- a script that looks guarded and is in fact
+        # inert. So the driver decides, by what it actually returned.
+        def _wrapped(*a, **kw):
+            result = target(*a, **kw)
+            if inspect.isawaitable(result):
+                return _finish_async(self, attr, a, result)
+            script_audit_sync(
                 self._parent._db, f"script_{attr}", "collection", self._cname,
-                details, self._parent._args, name=self._parent._name,
+                self._details(attr, a, result), self._parent._args,
+                name=self._parent._name,
             )
             return result
 
         return _wrapped
 
 
+async def _finish_async(coll, attr, a, pending):
+    """Await the driver's write, then write the row. Separate from `_wrapped`
+    so the sync path never constructs a coroutine at all."""
+    result = await pending
+    await script_audit(
+        coll._parent._db, f"script_{attr}", "collection", coll._cname,
+        coll._details(attr, a, result), coll._parent._args,
+        name=coll._parent._name,
+    )
+    return result
+
+
 class _AuditedDb:
-    """A Motor database whose writes record themselves.
+    """A database handle -- Motor or PyMongo -- whose writes record themselves.
 
     READS ARE UNTOUCHED and cost nothing: `__getattr__` only wraps a collection,
     and the collection only wraps the eleven write methods.
@@ -275,7 +323,16 @@ class _AuditedDb:
         self._db, self._args, self._name = db, args, name
 
     def __getattr__(self, attr):
-        return _AuditedCollection(getattr(self._db, attr), self, attr)
+        target = getattr(self._db, attr)
+        # A DATABASE METHOD IS NOT A COLLECTION. `db.list_collection_names()`,
+        # `db.command(...)` and friends resolve to bound methods; wrapping one
+        # in _AuditedCollection returns an object that is not callable, so the
+        # script dies on a READ it was never meant to touch. Both drivers hand
+        # back a real Collection for an unknown name, so `find_one` is what
+        # distinguishes the two.
+        if not hasattr(target, "find_one"):
+            return target
+        return _AuditedCollection(target, self, attr)
 
     def __getitem__(self, key):
         return _AuditedCollection(self._db[key], self, str(key))

@@ -162,8 +162,12 @@ def main() -> int:
     F = FIELDS[args.field]
     INLINE, KEY, URL = F["inline"], F["key"], F["url"]
 
-    db = MongoClient(os.environ["MONGO_URL"])[
-        os.environ.get("DB_NAME", "test_database")]
+    # WRAPPED, LIKE THE OTHERS. It was left unwrapped when the rest of the
+    # directory was retrofitted because `audited` could only drive motor, and
+    # this is one of the three PyMongo scripts -- so it gated correctly and
+    # recorded nothing, which is the half of the guard that does not matter.
+    db = audited(MongoClient(os.environ["MONGO_URL"])[
+        os.environ.get("DB_NAME", "test_database")], args, NAME)
 
     if not _wire_r2():
         print("ABORT: R2 is not configured in this environment. Nothing read "

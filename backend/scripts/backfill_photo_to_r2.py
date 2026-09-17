@@ -69,6 +69,29 @@ sys.path.insert(0, str(_BACKEND))
 
 import server  # noqa: E402
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:backfill_photo_to_r2", the session and the reason. Without
+# --i-know the handle is unwrapped and nothing is written. See prod_guard.
+#
+# IT WRITES THROUGH `server.db`, NOT ITS OWN CLIENT, so the wrap goes on the
+# module attribute (in main) rather than on a local. Half of this script's
+# writes are not its own: the reclaim delegates to
+# `server._purge_finalized_photo_base64`, which writes through server's
+# module-level `db` and never sees the handle passed in here. Wrapping only the
+# argument would audit the upload stamp and leave the $unset that DROPS the
+# inline copy of a signed record unrecorded -- the more consequential of the
+# two. One handle, one database, both halves audited, which is the property the
+# file already claims for itself below.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "backfill_photo_to_r2"
+
 logger = logging.getLogger(__name__)
 
 
@@ -226,6 +249,9 @@ async def run_backfill(db, execute: bool = False, project_id: Optional[str] = No
 
 
 def main():
+    # BEFORE THE PARSER, so `--execute` is refused by name rather than being
+    # parsed into a flag that no longer means what the runbook says it means.
+    refuse_legacy_flag()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--execute", action="store_true",
@@ -237,7 +263,13 @@ def main():
         "--limit", type=int, default=0, help="Stop after N logbooks (0 = all)",
     )
     parser.add_argument("--verbose", action="store_true", help="DEBUG logging")
+    add_guard_args(parser)
     args = parser.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.execute = check_guard(args)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -253,6 +285,13 @@ def main():
         # The module-level R2 client is created in server's startup event,
         # which does not run for a script. Built the same way, same config.
         server._r2_client = server._get_r2_client()
+
+    # THE MODULE ATTRIBUTE, for the reason in the guard block at the top: the
+    # reclaim writes through `server.db` directly and would otherwise go
+    # unrecorded. Rebinding a module global is what this function already does
+    # one line above for `_r2_client`, and this is a one-shot process -- nothing
+    # else in `server` is serving requests here.
+    server.db = audited(server.db, args, NAME)
 
     print(asyncio.run(run_backfill(
         server.db, execute=args.execute, project_id=args.project_id,

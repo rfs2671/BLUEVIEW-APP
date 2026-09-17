@@ -95,6 +95,24 @@ from lib.statistical_engine.socrata_client import (  # noqa: E402
     SocrataQueryError,
 )
 
+# ── PRODUCTION WRITE GUARD ──────────────────────────────────────────────────
+# Every write below goes through `audited(...)`, which records it in audit_logs
+# with actor "script:socrata_3year_backfill", the session and the reason.
+# Without --i-know the handle is unwrapped and nothing is written. See
+# prod_guard.
+#
+# THE HANDLE COMES FROM `_build_db()`, which is the only place this script
+# connects, so that is where the wrap goes -- one site, and a future caller of
+# `_build_db` inherits it instead of having to remember.
+import os as _g_os                                              # noqa: E402
+import sys as _g_sys                                            # noqa: E402
+_g_sys.path.insert(0, _g_os.path.dirname(_g_os.path.abspath(__file__)))
+from prod_guard import (  # noqa: E402
+    add_guard_args, audited, check_guard, refuse_legacy_flag,
+)
+
+NAME = "socrata_3year_backfill"
+
 
 # ── Paths + constants ─────────────────────────────────────────────
 
@@ -746,9 +764,13 @@ def _configure_logging(verbose: bool) -> logging.Logger:
     return logging.getLogger("socrata_3year_backfill")
 
 
-def _build_db():
+def _build_db(args):
     """Lazily import + connect motor. Mirrors the pattern used by
-    the existing migration scripts."""
+    the existing migration scripts.
+
+    RETURNS AN AUDITED HANDLE. It takes `args` for no other reason: the row
+    needs the reason and the session, and this is the only place the handle is
+    made, so a caller cannot obtain an unaudited one by accident."""
     from motor.motor_asyncio import AsyncIOMotorClient  # noqa: WPS433
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
@@ -757,7 +779,8 @@ def _build_db():
             "MONGO_URL and DB_NAME environment variables are required."
         )
     client = AsyncIOMotorClient(mongo_url)
-    return client[db_name]
+    db = audited(client[db_name], args, NAME)
+    return db
 
 
 async def _amain(args: argparse.Namespace) -> int:
@@ -775,7 +798,7 @@ async def _amain(args: argparse.Namespace) -> int:
         )
 
     # --execute path: real Socrata + Mongo.
-    db = _build_db()
+    db = _build_db(args)
     async with ServerHttpClient(timeout=30.0) as http:
         socrata = SocrataClient(http)
         return await run(
@@ -785,6 +808,11 @@ async def _amain(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # BEFORE THE PARSER, so `--execute` is refused by name rather than being
+    # parsed into a flag that no longer means what the runbook says it means.
+    # It also lands ahead of argparse's own complaint about the required
+    # `--dataset`, which is the more useful of the two things to be told.
+    refuse_legacy_flag()
     parser = argparse.ArgumentParser(
         description="3-year Socrata historical backfill driver.",
     )
@@ -805,7 +833,13 @@ def main() -> int:
     parser.add_argument(
         "--verbose", action="store_true", help="DEBUG-level logging.",
     )
+    add_guard_args(parser)
     args = parser.parse_args()
+    # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
+    # runbook reaches a message rather than an argparse error -- refuse_legacy_flag
+    # has already stopped him if he typed one -- and this line is what makes the
+    # rest of the script obey the guard without rewriting any of its branches.
+    args.execute = check_guard(args)
     try:
         return asyncio.run(_amain(args))
     except RuntimeError as e:
