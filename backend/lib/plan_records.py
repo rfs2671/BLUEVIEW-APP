@@ -31,6 +31,14 @@ THE FOUR RULES THE SHAPE ENFORCES
 4. PROVENANCE TO THE REGION. `bbox` is where on the sheet, in the page's own
    coordinates, so an answer can say where to look on a 36-inch drawing.
 
+   KNOWN GAP: notes and callouts carry no bbox today. They come back from the
+   VLM sections as text with no coordinates, and the page's line boxes are not
+   matched to them. Those records store null rather than the page corner or
+   the whole page — a box that says "somewhere on this sheet" is worse than no
+   box, because it renders as a location and points at nothing. The next
+   extraction pass closes it by matching each note line to the line_bboxes
+   layout_from_dict already produces.
+
 WHAT IS NOT HERE
 ================
 

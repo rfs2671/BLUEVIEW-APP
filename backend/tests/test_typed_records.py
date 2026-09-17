@@ -122,6 +122,17 @@ class WhereTheWordsAre(unittest.TestCase):
                                 "rows": [["P1"]], "bbox": [10, 20, 300, 120]}])[0]
         self.assertEqual(r["bbox"], [10.0, 20.0, 300.0, 120.0])
 
+    def test_a_note_with_no_coordinates_gets_null_and_not_the_page_corner(self):
+        # KNOWN GAP, deliberately left open: the VLM sections return notes and
+        # callouts as text with no coordinates. A fabricated box renders as a
+        # location and points at nothing, which is worse than admitting we do
+        # not know. The next extraction pass matches note lines to line_bboxes.
+        note = records(notes=[{"number": "3", "text": "PROVIDE WALL SLEEVE"}])[0]
+        call = records(callouts=[{"text": "SEE", "detail_number": "2",
+                                  "target_sheet": "A-301.00"}])[0]
+        self.assertIsNone(note["bbox"])
+        self.assertIsNone(call["bbox"])
+
     def test_an_empty_box_is_no_box_rather_than_a_corner(self):
         r = records(schedules=[{"name": "S", "columns": ["A"], "rows": [["1"]],
                                 "bbox": [0, 0, 0, 0]}])[0]
