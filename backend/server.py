@@ -30124,9 +30124,34 @@ async def health_check():
     _vision["ok"] = VISION_MODEL_PROBE.get("ok")
     _status = "degraded" if VISION_MODEL_PROBE.get("ok") is False else "healthy"
 
+    # ── A READER THAT IS INSTALLED AND CANNOT LOAD ─────────────────────────
+    #
+    # `pip install` reported success, every test passed, the deploy went
+    # green, and `import cv2` raised ImportError on the container because the
+    # image carries no libGL.so.1. plan_ocr is written to treat an absent
+    # engine as a NORMAL state — which is right, and is exactly why nothing
+    # failed loudly. A re-index would have run to completion and written zero
+    # schedule records for the sheets the reader exists to read, and the only
+    # way to know was an SSH session.
+    #
+    # It does NOT move `status`. A missing OCR engine degrades what the plan
+    # index can answer; it does not make the API unwell, and restarting the
+    # process cannot install a system library. Same rule as
+    # failed_unique_builds: name it, do not cycle the container over it.
+    _ocr_ok, _ocr_why = plan_ocr.probe()
+
     return {
         "status": _status,
         "vision": _vision,
+        "plan_ocr": {
+            "importable": _ocr_ok,
+            "detail": "" if _ocr_ok else _ocr_why[:200],
+            # What an unavailable engine costs, in the words of the thing it
+            # stops doing, so this is readable without reading plan_ocr.
+            "effect": "" if _ocr_ok else
+                      "schedules printed as vector outlines are not read; "
+                      "those pages index with no schedule records",
+        },
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indexes": {
             "complete": not _failed,
