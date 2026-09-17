@@ -349,6 +349,52 @@ async def _store_worker_osha_card(worker_id: str, card_image: str) -> dict:
     return {"osha_card_r2_key": key, "osha_card_r2_url": url}
 
 
+def _superintendent_card_r2_key(user_id: str) -> str:
+    return f"superintendent-cards/{_logbook_photo_key_segment(user_id)}/card.jpg"
+
+
+async def _store_superintendent_card(user_id: str, card_image: str) -> dict:
+    """Put a superintendent's DOB registration card in R2 and return the fields.
+
+    THE THIRD MIRROR OF `_store_worker_selfie`, and deliberately not a
+    generalisation of the other two -- the reasoning is written out on
+    `_store_worker_osha_card` and it applies unchanged: the shape is copied, the
+    decisions are made once per subject. This subject differs from both: the
+    image is of a LICENCE HELD BY AN ACCOUNT, not by a roster row, so it is
+    keyed on the user id and lives under its own prefix.
+
+    SAME REFUSALS, FOR THE SAME REASONS:
+      * a failed upload NEVER fails the user write. An admin recording a
+        superintendent's licence number must not lose the number because object
+        storage was unreachable.
+      * NO POINTER IS EVER INVENTED. No key, no URL, no empty string on
+        failure -- `""` is a value and reads as a fact about the image.
+      * `dob_card_upload_failed: True` records the EVENT, not a claim about
+        where the image is.
+    """
+    if not card_image:
+        return {}
+    raw = _decode_image_data_url(card_image)
+    if not raw:
+        logger.warning(
+            "[superintendent-card] user=%s: payload was not decodable base64; "
+            "not stored", user_id,
+        )
+        return {"dob_card_upload_failed": True}
+    key = _superintendent_card_r2_key(user_id)
+    try:
+        url = await asyncio.to_thread(_upload_to_r2, raw, key, "image/jpeg")
+    except Exception as e:
+        logger.error("[superintendent-card] user=%s: R2 upload failed key=%s: %r",
+                     user_id, key, e)
+        return {"dob_card_upload_failed": True}
+    if not url:
+        logger.warning("[superintendent-card] user=%s: R2 not configured; "
+                       "not stored", user_id)
+        return {"dob_card_upload_failed": True}
+    return {"dob_card_r2_key": key, "dob_card_r2_url": url}
+
+
 def _logbook_capture_photo_r2_key(project_id: str, activity_id: str, photo_id: str) -> str:
     """logbook-photos/{project_id}/{activity_id}/{photo_id}.jpg
 
@@ -2762,11 +2808,27 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     name: str
+    # THE DEFAULT IS STILL "worker" AND IT IS NO LONGER ASSIGNABLE. The two
+    # facts do not conflict: `register` (self-serve signup) overwrites `role`
+    # with "owner" before it writes and never reads this default, and
+    # create_admin_user now runs every value through `assert_assignable_role`,
+    # so a POST /admin/users that omits the field is refused by name instead of
+    # quietly minting the role the ruling withdrew. Removing the default would
+    # make `role` required on the REGISTER body too, which is a public contract
+    # change for no gain.
     role: str = "worker"
     company_name: Optional[str] = None
     company_id: Optional[str] = None
     phone: Optional[str] = None
     trade: Optional[str] = None
+    # ── The superintendent's DOB registration ───────────────────────────────
+    # Accepted on create for a `superintendent` and REFUSED for every other
+    # role — see create_admin_user. `dob_card_image` is a base64 data URL and
+    # is never stored on the user document: it goes to R2 and the document
+    # keeps the key and the URL.
+    dob_superintendent_number: Optional[str] = None
+    dob_registration_expiry: Optional[str] = None
+    dob_card_image: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: str
@@ -2797,6 +2859,18 @@ class UserResponse(BaseModel):
     # is require_platform_operator on the endpoints themselves. A client that
     # ignores this field still gets 403s.
     is_platform_operator: bool = False
+    # ── The superintendent's DOB registration ───────────────────────────────
+    # Present on a superintendent and None on everybody else. `dob_card_r2_url`
+    # is the pointer to the card photograph; the image bytes never ride this
+    # model, for the same reason USER_LIST_FIELDS is an inclusion projection.
+    dob_superintendent_number: Optional[str] = None
+    dob_registration_expiry: Optional[str] = None
+    dob_card_r2_url: Optional[str] = None
+    # DERIVED, NEVER STORED. {state, expires_on, days_remaining} from
+    # `superintendent_licence_state`. Computed on read so that a licence which
+    # lapsed while nobody opened the screen still reads as expired -- a stored
+    # verdict would be the state of the world on the day it was written.
+    licence: Optional[Dict[str, Any]] = None
 
 class TokenResponse(BaseModel):
     token: str
@@ -6583,7 +6657,35 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid token")
 		
 async def get_admin_user(current_user = Depends(get_current_user)):
-    if current_user.get("role") not in ["admin", "owner"]:
+    """THE COMPANY-WIDE ADMIN GATE. admin and owner, and nobody else.
+
+    ── IT IS ONE OF THREE NOW, AND THAT IS THE POINT ───────────────────────
+
+    This dependency guards roughly a hundred routes: user administration,
+    project creation and deletion, site devices, feature flags, CS
+    registrations, company insurance, checklists. They have exactly one thing
+    in common -- somebody once decided each was "for an admin" -- and for as
+    long as that was the only admin gate in the file, WIDENING IT BY ONE ROLE
+    WOULD HAVE HANDED THAT ROLE ALL HUNDRED AT ONCE, including the account
+    table and the irreversible project delete.
+
+    The Site Manager / PM is the role that made that a live risk: the ruling
+    gives him "admin powers scoped to assigned projects", and the obvious way
+    to deliver that is to add `ROLE_PM` to the list on the line below. That is
+    the change this split exists to make impossible to do by accident.
+
+        get_admin_user          company-wide admin. UNCHANGED MEMBERSHIP.
+        get_user_admin          may create, edit, delete and re-assign
+                                ACCOUNTS. The PM is refused here forever.
+        get_project_admin_user  admin powers a PM holds, on projects he is
+                                assigned to. Scoping is NOT this gate's job --
+                                see its docstring.
+
+    So the answer to "may a PM do this" is now a property of WHICH GATE the
+    route carries, and user administration can never acquire a new role by
+    somebody editing a list that also governs a hundred other things.
+    """
+    if current_user.get("role") not in COMPANY_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
@@ -6747,10 +6849,29 @@ from lib.esra_consent import (  # noqa: E402
 # signature event says "Construction Superintendent" too.
 ROLE_SUPERINTENDENT = "superintendent"
 
+# ── The Site Manager / PM ───────────────────────────────────────────────────
+#
+# "pm". One role, two names on screen -- "Site Manager / PM" -- because the
+# operator's customers use both words for the same person.
+#
+# THE STRING IS NOT NEW TO THIS FILE. The renewal-digest recipient query
+# already selects `"pm"`, and it was written before any account could hold the
+# role. CREATING THE ROLE THEREFORE STARTS MAILING SITE MANAGERS THE DAY THE
+# FIRST ONE IS CREATED. That query is deliberately NOT touched here -- the
+# notifications change owns it -- and the fact is reported rather than silently
+# patched, because a fix applied from two branches to one line is how the
+# send-time filter gets reverted.
+ROLE_PM = "pm"
+
 # The roles that hard-require a company. A user in one of these without a
 # company_id 403s on every company-gated endpoint and their session merely
 # looks broken, so creation is refused up front instead.
-ROLES_REQUIRING_COMPANY = ("cp", ROLE_SUPERINTENDENT)
+#
+# ROLE_PM JOINS THEM FOR THE SAME REASON AND NOT BY ANALOGY: every power the
+# Site Manager has is scoped through a project, every project is owned by a
+# company, and `get_user_company_id` is what resolves it. A company-less PM
+# reaches nothing at all.
+ROLES_REQUIRING_COMPANY = ("cp", ROLE_SUPERINTENDENT, ROLE_PM)
 
 # THE ROLES SCOPED TO THEIR ASSIGNED PROJECTS — a DIFFERENT question from the
 # one above, and it gets its own name despite the identical membership.
@@ -6771,6 +6892,247 @@ ROLES_SCOPED_TO_ASSIGNED_PROJECTS = ("cp", ROLE_SUPERINTENDENT)
 
 def is_superintendent(user) -> bool:
     return str((user or {}).get("role") or "").strip().lower() == ROLE_SUPERINTENDENT
+
+
+# ── THE ROLES AN ADMIN MAY ASSIGN, AND THE ONLY ONES ────────────────────────
+#
+# OPERATOR RULING: User Management offers Admin, Site Manager / PM,
+# Superintendent, CP. Nothing else.
+#
+# THIS IS A SERVER-SIDE ALLOW-LIST BECAUSE THE PICKER IS NOT A GATE. Before
+# this, POST/PUT /admin/users took `role` straight off the body into the user
+# document -- any string at all, including "owner" (which `is_platform_operator`
+# does not grant but `get_admin_user` does admit) and including typos, which
+# produce an account that matches no gate and reads as broken rather than as
+# refused.
+#
+# WHAT IS ABSENT, AND WHY EACH ONE IS ABSENT:
+#
+#   "worker"       WITHDRAWN BY THE RULING. It was the model default and the
+#                  second button on both role pickers. A worker is a row in
+#                  db.workers with a roster entry and a check-in history; it was
+#                  never an account that logs in and does anything, and the
+#                  accounts holding it could reach no screen of their own.
+#   "owner"        MINTED BY SELF-SERVE REGISTRATION ONLY. `register` sets it on
+#                  every signup; it means "this person created the company", not
+#                  a rank an admin hands out. Admitting it here would let an
+#                  admin mint the role that skips the tenant filter on
+#                  GET /admin/users.
+#   "site_device"  PROVISIONED, never assigned: it is created by
+#                  POST /admin/site-devices and authenticates as a device.
+#
+# A TUPLE AND NOT A SET so the order is the order the picker shows, most
+# privileged first, and the 422 can print the list back in that order.
+ASSIGNABLE_ROLES = ("admin", ROLE_PM, ROLE_SUPERINTENDENT, "cp")
+
+
+def assert_assignable_role(role) -> str:
+    """The normalised role, or 422 naming what may be assigned.
+
+    NORMALISES BEFORE IT CHECKS, for the same reason every role comparison in
+    this file does: `role` arrives off a JSON body typed by a human, and
+    " CP " must be refused for being a role nobody holds only if it really is
+    one -- it is not, it is "cp" with whitespace.
+    """
+    normalised = str(role or "").strip().lower()
+    if normalised not in ASSIGNABLE_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"role must be one of {', '.join(ASSIGNABLE_ROLES)}. "
+                f"Received {str(role or '')!r}."
+            ),
+        )
+    return normalised
+
+
+# ── WHAT A SITE MANAGER / PM MAY NOT DO ─────────────────────────────────────
+#
+# The ruling states the role in terms of what it LACKS, so the code does too.
+# Each of these is a refusal applied at the write site; none of them is a
+# capability flag on the user document, because a flag is a second place the
+# answer lives and the role string is already the first.
+#
+#   NO SIGNING. A signature is an attestation by a named person in a named
+#   capacity; the PM holds neither a DOB licence nor the competent-person
+#   designation, so there is no capacity for him to sign in. Enforced in
+#   record_signature_event.
+#
+#   DAILY LOGS ARE VIEW-ONLY. He may read a log and append a PHOTOGRAPH to it
+#   -- append_activity_photo already stamps `added_by`, `added_by_name` and
+#   `added_at` on every photo row, which is exactly the record the ruling asks
+#   for -- and he may not create, edit, finalize, amend or delete one.
+#
+#   NO PROJECT CREATION. POST /projects keeps `get_admin_user`, which does not
+#   admit him. Stated here as well because "cannot create projects" is a rule
+#   about the role and not a property of one route's dependency list.
+ROLES_WITHOUT_SIGNING_AUTHORITY = (ROLE_PM,)
+ROLES_WITH_READ_ONLY_LOGBOOKS = (ROLE_PM,)
+
+
+def refuse_if_logbooks_are_read_only(current_user) -> None:
+    """403 if this role may read a log and not change it.
+
+    APPLIED AT THE FOUR WRITE GATES, NOT AT THE PROJECT GATE. A Site Manager is
+    assigned to the project precisely so that he CAN see its logs, append a
+    photograph and receive its alerts; the restriction is on the ACT, so it is
+    checked where the act is.
+
+    THE PHOTOGRAPH ROUTE MUST NOT CALL THIS. `append_activity_photo` is guarded
+    by `_authorize_logbook_view` on a ruling of its own -- anyone who can see
+    the log may add a photograph to it -- and it already stamps `added_by`,
+    `added_by_name` and `added_at` on the row, which is exactly the record the
+    Site Manager ruling asks for. Adding this refusal there would take away the
+    one write the ruling grants him.
+    """
+    if str((current_user or {}).get("role") or "").strip().lower() in ROLES_WITH_READ_ONLY_LOGBOOKS:
+        raise HTTPException(
+            status_code=403,
+            detail="A Site Manager may read a log and add photographs to it, "
+                   "but may not create, edit, finalize, amend or delete one.",
+        )
+
+
+# ── THE SUPERINTENDENT'S LICENCE, ON HIS OWN ACCOUNT ────────────────────────
+#
+# A construction superintendent holds a DOB registration; it expires; an expired
+# one makes every log he signs afterwards an attestation by an unregistered
+# person. These three fields record it ON THE USER DOCUMENT:
+#
+#   dob_superintendent_number   the DOB registration number
+#   dob_registration_expiry     "YYYY-MM-DD", the date it lapses
+#   dob_card_r2_key / _url      the photograph of the card, in R2
+#
+# WHY THE USER RECORD AND NOT `cs_registrations`. The registration row is
+# PER PROJECT and it is the FILING GATE -- "who is the CS on 588 Thomas". The
+# licence is per PERSON: one man, one number, one expiry, however many jobs. It
+# was being retyped into every registration, which is a second copy of a fact
+# that can go stale in one place and not the other, and there is no third place
+# to ask. The gate is untouched by this and must stay untouched: see
+# lib/logbook/superintendent_log.py, which explains why it keys on the
+# registration and never on `role`.
+SUPERINTENDENT_LICENCE_FIELDS = (
+    "dob_superintendent_number",
+    "dob_registration_expiry",
+    "dob_card_r2_key",
+    "dob_card_r2_url",
+)
+
+# THIRTY DAYS, THE OPERATOR'S NUMBER. Not a guess and not tunable per company:
+# a DOB registration renewal takes weeks, and an alert on the day it lapses is
+# an alert about a job that has already stopped.
+SUPERINTENDENT_LICENCE_WARNING_DAYS = 30
+
+# The three answers, named. An UNKNOWN is not an OK: a superintendent account
+# with no expiry recorded is a licence nobody has checked, and printing that as
+# "valid" is the failure this vocabulary exists to prevent.
+LICENCE_OK = "ok"
+LICENCE_EXPIRING = "expiring"
+LICENCE_EXPIRED = "expired"
+LICENCE_UNKNOWN = "unknown"
+
+
+def superintendent_licence_state(user, today=None) -> dict:
+    """{state, expires_on, days_remaining} for a superintendent's registration.
+
+    TAKES `today` AND DEFAULTS IT, rather than reading the clock inside a
+    branch. Every statutory gate in this codebase resolves against a date it was
+    handed -- `item_applies(key, log_date)` is the same shape -- and a helper
+    that reads `datetime.now()` internally is one a test can only observe, never
+    drive.
+
+    RETURNS A DICT, NOT A BOOLEAN. "Is it expiring" cannot be answered yes/no
+    without also saying WHEN, and every caller (the admin list badge, the
+    scan endpoint, a future email) needs the date it would print.
+
+    UNKNOWN IS RETURNED FOR AN UNPARSEABLE DATE AS WELL AS A MISSING ONE. A
+    field holding "2027" or "soon" is a licence nobody has checked, which is the
+    same fact as an empty one, and guessing at it would make the badge assert
+    something no person asserted.
+    """
+    raw = str((user or {}).get("dob_registration_expiry") or "").strip()
+    out = {"state": LICENCE_UNKNOWN, "expires_on": raw or None,
+           "days_remaining": None}
+    if not raw:
+        return out
+    try:
+        expires = datetime.strptime(raw[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return out
+    ref = today or datetime.now(timezone.utc).date()
+    days = (expires - ref).days
+    out["expires_on"] = expires.isoformat()
+    out["days_remaining"] = days
+    if days < 0:
+        out["state"] = LICENCE_EXPIRED
+    elif days <= SUPERINTENDENT_LICENCE_WARNING_DAYS:
+        out["state"] = LICENCE_EXPIRING
+    else:
+        out["state"] = LICENCE_OK
+    return out
+
+
+# ── THE THREE ADMIN GATES ───────────────────────────────────────────────────
+#
+# Read get_admin_user's docstring for why there are three rather than one. The
+# membership lives here, beside the role vocabulary, so that the answer to
+# "which roles is this" is in one screenful rather than spread over the routes.
+#
+# COMPANY_ADMIN_ROLES IS UNCHANGED FROM THE LITERAL IT REPLACES -- it was
+# `["admin", "owner"]` inline and it is ("admin", "owner") now. Naming it is the
+# whole edit: an unnamed list cannot be compared against the two beside it.
+COMPANY_ADMIN_ROLES = ("admin", "owner")
+
+# WHO MAY TOUCH AN ACCOUNT. Identical membership to COMPANY_ADMIN_ROLES today
+# and that is not an argument for collapsing them -- the same argument the
+# ROLES_SCOPED_TO_ASSIGNED_PROJECTS comment makes two screens up. These answer
+# different questions, and the question this one answers is the one the
+# operator ruled on: a Site Manager must never manage users.
+USER_MANAGEMENT_ROLES = ("admin", "owner")
+
+# ADMIN POWERS THE SITE MANAGER HOLDS. Wider by exactly one role.
+PROJECT_ADMIN_ROLES = ("admin", "owner", ROLE_PM)
+
+
+async def get_user_admin(current_user = Depends(get_current_user)):
+    """MAY ADMINISTER ACCOUNTS: create, edit, delete, re-assign projects.
+
+    THE NARROW HALF OF THE SPLIT. A Site Manager / PM is refused here and the
+    refusal is not incidental -- account administration is how any other
+    restriction on him would be undone. A PM who could edit users could set his
+    own role to admin, or hand himself another company's projects through
+    `assigned_projects`, which `require_project_access` honours as an
+    authorization grant.
+
+    The tenant scoping on these routes is SEPARATE and stays where it is: this
+    gate answers "what rank", `is_platform_operator` / `_same_company` answer
+    "whose users", and `validate_assignable_projects` answers "whose projects".
+    Three questions, three checks; collapsing any pair of them is how the SEV-0
+    documented on update_admin_user happened.
+    """
+    if current_user.get("role") not in USER_MANAGEMENT_ROLES:
+        raise HTTPException(status_code=403, detail="User administration requires an admin")
+    return current_user
+
+
+async def get_project_admin_user(current_user = Depends(get_current_user)):
+    """ADMIN POWERS A SITE MANAGER / PM HOLDS — admin, owner, pm.
+
+    THIS GATE DOES NOT SCOPE ANYTHING, AND SAYING SO IS THE ENTIRE WARNING.
+    It answers "is this rank allowed to perform this class of act" and nothing
+    else. "Scoped to assigned projects" is delivered by `project_access_ok`,
+    which now returns a PM's assigned list and nothing wider (see its PM
+    branch) -- so a route carrying this dependency is only as scoped as the
+    project check it ALSO carries.
+
+    A ROUTE THAT TAKES NO PROJECT MUST NOT CARRY THIS. There is no project to
+    scope it through, so this would be a company-wide grant wearing a
+    project-shaped name. That is the failure mode `get_admin_user` had for a
+    hundred routes and the reason this file now has three gates.
+    """
+    if current_user.get("role") not in PROJECT_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
 
 
 # ── Account activation gating ────────────────────────────────────────
@@ -7273,6 +7635,29 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
     """
     if current_user.get("site_mode") or current_user.get("role") == "site_device":
         return str(current_user.get("project_id") or "") == str(project_id)
+
+    # ── BRANCH 1b: THE SITE MANAGER / PM IS HIS ASSIGNMENTS AND NOTHING MORE ─
+    #
+    # AHEAD OF THE COMPANY BRANCH, AND THAT ORDERING IS THE WHOLE RULE. The
+    # ruling gives a PM "admin powers SCOPED TO ASSIGNED PROJECTS". Branch 2
+    # below admits anyone in the project's company, so a PM who reached it would
+    # hold those powers on every job the company runs -- which is the ruling
+    # with its one qualifying clause deleted.
+    #
+    # IT RETURNS, IT DOES NOT FALL THROUGH. A PM not on the list is refused
+    # here; letting him continue to branch 3 would be the same test written
+    # twice, and letting him continue to branch 2 is the defect above.
+    #
+    # NOTHING EXISTING MOVES. Production holds zero `pm` accounts (admin 4,
+    # owner 3, cp 3, superintendent 0 as measured 2026-09-16), so this branch
+    # cannot change the answer for a single account that exists today. cp and
+    # superintendent are deliberately NOT routed through it: they still reach
+    # branch 2, and their assigned-projects restriction is applied by the five
+    # write gates that name ROLES_SCOPED_TO_ASSIGNED_PROJECTS. Moving them here
+    # would be a real behaviour change on live accounts, and it is a separate
+    # decision from creating a role nobody holds.
+    if str(current_user.get("role") or "").strip().lower() == ROLE_PM:
+        return str(project_id) in (current_user.get("assigned_projects") or [])
 
     user_company = get_user_company_id(current_user)
     if user_company and str(project.get("company_id") or "") == str(user_company):
@@ -9423,7 +9808,7 @@ async def post_admin_risk_score_weights(
 
 @api_router.get("/admin/users")
 async def get_admin_users(
-    current_user = Depends(get_admin_user),
+    current_user = Depends(get_user_admin),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
 ):
@@ -9509,14 +9894,28 @@ async def get_admin_users(
         "deletion_requested_at": 1, "client_version": 1,
         "is_active": 1, "status": 1, "is_deleted": 1,
         "created_at": 1, "updated_at": 1,
+        # ── THE SUPERINTENDENT'S LICENCE ────────────────────────────────────
+        # THREE SHORT SCALARS AND NO IMAGE. The card photograph is an R2
+        # OBJECT and only its URL rides this list; putting bytes here would
+        # reproduce the blocking-sort defect this projection exists to fix,
+        # one collection over. The list screen badges an expiring registration,
+        # so it needs the expiry in the SAME call that draws the row -- a
+        # per-user follow-up request would be a badge that appears late or not
+        # at all, which on a lapsed licence is the wrong direction to fail.
+        "dob_superintendent_number": 1, "dob_registration_expiry": 1,
+        "dob_card_r2_url": 1,
     }
     result = await paginated_query(
         db.users, query, sort_field="name", sort_dir=1,
         limit=limit, skip=skip, projection=USER_LIST_FIELDS,
     )
+    # DERIVED PER ROW, by the same helper the single-user reads use, so the
+    # badge on the list and the panel on the detail screen can never disagree.
+    for _row in result.get("items") or []:
+        _with_licence(_row)
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
-async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
+async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admin)):
     # SECURITY REGRESSION (intentional, temporary): password complexity
     # removed for demo-day testing. Restore before production rollout.
     pwd = user_data.password
@@ -9528,6 +9927,44 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_dict = user_data.model_dump()
+
+    # -- THE ROLE ALLOW-LIST -------------------------------------------------
+    #
+    # BEFORE THE PASSWORD HASH AND BEFORE THE INSERT, so a refused role costs
+    # no bcrypt round and leaves no document. `role` went from the body into
+    # the user record untouched until now: any string at all, including the
+    # "owner" that skips the tenant filter on GET /admin/users, and including a
+    # typo, which produces an account matching no gate -- an account that reads
+    # as broken rather than as refused.
+    #
+    # THE PICKER IS NOT THE GATE. Both role pickers in admin/users.jsx offered
+    # "Worker" and the ruling withdraws it; deleting the buttons stops the app
+    # sending it and stops nothing else.
+    user_dict["role"] = assert_assignable_role(user_dict.get("role"))
+
+    # -- THE LICENCE BELONGS TO ONE ROLE -------------------------------------
+    #
+    # DROPPED FOR EVERY OTHER ROLE RATHER THAN REFUSED. A CP created by an
+    # admin who left a number in the form is a mistake in the form, not an
+    # attack, and 422-ing him would be a worse answer than not recording a
+    # licence he does not hold. What must never happen is the field LANDING on
+    # a non-superintendent: `superintendent_licence_state` reads it, so a stray
+    # expiry would badge a CP's account with a warning about a registration
+    # nobody holds.
+    _card_image = user_dict.pop("dob_card_image", None)
+    if user_dict["role"] != ROLE_SUPERINTENDENT:
+        user_dict.pop("dob_superintendent_number", None)
+        user_dict.pop("dob_registration_expiry", None)
+        _card_image = None
+    else:
+        # AN EMPTY STRING IS NOT A LICENCE NUMBER. The form sends "" for a
+        # field the admin did not fill, and storing that would make
+        # `superintendent_licence_state` read a present-but-blank expiry -- the
+        # same absent/null/"" collapse `_same_company_or_403` documents.
+        for _f in ("dob_superintendent_number", "dob_registration_expiry"):
+            if not str(user_dict.get(_f) or "").strip():
+                user_dict.pop(_f, None)
+
     user_dict["password"] = hash_password(user_dict["password"])
     now = datetime.now(timezone.utc)
     user_dict["created_at"] = now
@@ -9582,6 +10019,26 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
 
+    # ── THE CARD, AFTER THE DOCUMENT EXISTS ─────────────────────────────────
+    #
+    # The R2 key is a function of the user id, so it cannot be computed before
+    # the insert. A SECOND WRITE IS THEREFORE UNAVOIDABLE, and the ordering is
+    # chosen so the failure that matters cannot happen: an upload that dies
+    # leaves an account with no card, which an admin can fix by re-uploading.
+    # The reverse ordering would leave an object in a bucket nothing names, and
+    # nothing in this system ever reclaims an orphaned R2 object
+    # (docs/audits/photo-window-rule.md).
+    if _card_image:
+        _card_fields = await _store_superintendent_card(
+            user_dict["id"], _card_image)
+        if _card_fields:
+            await db.users.update_one(
+                {"_id": result.inserted_id}, {"$set": _card_fields})
+            user_dict.update(_card_fields)
+
+    if user_dict["role"] == ROLE_SUPERINTENDENT:
+        user_dict["licence"] = superintendent_licence_state(user_dict)
+
     # Sync to whatsapp_contacts if phone provided
     if user_dict.get("phone") and user_dict.get("company_id"):
         try:
@@ -9602,20 +10059,55 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
 
     return UserResponse(**user_dict)
 
+def _with_licence(doc: dict) -> dict:
+    """The user document plus its DERIVED licence verdict, for the response.
+
+    ONE PLACE, because two read routes return a single user and a third
+    returns a page of them. The verdict is computed on every read rather than
+    stored: a licence that lapsed while nobody opened the screen must read as
+    expired, and a stored verdict is only ever the state of the world on the
+    day somebody wrote it.
+
+    NON-SUPERINTENDENTS GET `licence: None`, NOT an "ok". They hold no DOB
+    registration, so there is no state to report, and an "ok" would be this
+    server asserting something about a credential nobody claims.
+    """
+    if str((doc or {}).get("role") or "").strip().lower() == ROLE_SUPERINTENDENT:
+        doc["licence"] = superintendent_licence_state(doc)
+    return doc
+
+
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
-async def get_admin_user_by_id(user_id: str, current_user = Depends(get_admin_user)):
+async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserResponse(**serialize_id(user))
+    return UserResponse(**_with_licence(serialize_id(user)))
 
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
-async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_admin_user)):
+async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_user_admin)):
     # Field whitelist — prevent privilege escalation via arbitrary field injection
-    ALLOWED_USER_FIELDS = {"name", "full_name", "email", "role", "phone", "assigned_projects", "password"}
+    #
+    # THE LICENCE FIELDS JOIN IT AND `dob_card_image` DOES NOT. The number and
+    # the expiry are stored on the document and belong here; the card IMAGE is a
+    # base64 data URL that must go to R2 and never to Mongo, so it is read off
+    # the body separately below and is deliberately absent from this set — a
+    # field in this set is a field that gets $set verbatim.
+    ALLOWED_USER_FIELDS = {"name", "full_name", "email", "role", "phone", "assigned_projects", "password",
+                           "dob_superintendent_number", "dob_registration_expiry"}
     update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
+
+    # ── THE ROLE ALLOW-LIST, ON THE EDIT PATH TOO ───────────────────────────
+    #
+    # THE SECOND DOOR TO THE SAME ROOM. `role` has been in ALLOWED_USER_FIELDS
+    # since it was written, so an allow-list on create alone would refuse
+    # "owner" at the door and admit it through the window: create a cp, PUT a
+    # role of "owner", and the account now skips the tenant filter on
+    # GET /admin/users. Both writers or neither.
+    if "role" in update_data:
+        update_data["role"] = assert_assignable_role(update_data["role"])
 
     # Normalize phone to E.164 if provided
     if "phone" in update_data and update_data["phone"]:
@@ -9650,16 +10142,54 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
             admin, update_data["assigned_projects"],
         )
 
+    # ── THE LICENCE FOLLOWS THE ROLE, AND IT FOLLOWS IT DOWNWARD ────────────
+    #
+    # THE DEMOTION IS THE CASE THAT MATTERS AND IT IS THE ONE THAT GETS
+    # FORGOTTEN. Setting the fields when the role becomes superintendent is
+    # obvious; CLEARING them when it stops being superintendent is what stops a
+    # demoted account keeping a DOB registration number, an expiry that goes on
+    # ticking, and a photograph of a licence in R2 that nothing on any screen
+    # explains. `superintendent_licence_state` would keep answering about it.
+    #
+    # `$unset`, NOT `$set: None`. A null is a value and reads as "checked, and
+    # there is none"; the fact here is that the account has no licence at all.
+    _resulting_role = str(
+        update_data.get("role") or existing_user.get("role") or "",
+    ).strip().lower()
+    _card_image = user_data.get("dob_card_image")
+    _unset_licence = {}
+    if _resulting_role != ROLE_SUPERINTENDENT:
+        update_data.pop("dob_superintendent_number", None)
+        update_data.pop("dob_registration_expiry", None)
+        _card_image = None
+        _unset_licence = {
+            f: "" for f in SUPERINTENDENT_LICENCE_FIELDS
+            if existing_user.get(f) is not None
+        }
+
     old_phone = existing_user.get("phone", "")
     company_id = existing_user.get("company_id")
 
+    _write = {"$set": update_data}
+    if _unset_licence:
+        _write["$unset"] = _unset_licence
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
-        {"$set": update_data}
+        _write,
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # AFTER the document write, for the ordering reason create_admin_user
+    # states: an upload that dies leaves an account with no card, which is
+    # fixable, and nothing in this system ever reclaims an orphaned R2 object.
+    if _card_image:
+        _card_fields = await _store_superintendent_card(user_id, _card_image)
+        if _card_fields:
+            await db.users.update_one(
+                {"_id": to_query_id(user_id)}, {"$set": _card_fields})
+            update_data.update(_card_fields)
 
     # Sync whatsapp_contacts on phone change
     new_phone = update_data.get("phone", old_phone)
@@ -9700,10 +10230,10 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
         await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
-    return UserResponse(**serialize_id(user))
+    return UserResponse(**_with_licence(serialize_id(user)))
 
 @api_router.delete("/admin/users/{user_id}")
-async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
+async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
     # Fetch user before delete to get phone for whatsapp_contacts cleanup
     user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
 
@@ -9735,7 +10265,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     return {"message": "User deleted successfully"}
 
 @api_router.post("/admin/users/{user_id}/assign-projects", dependencies=[Depends(require_approved)])
-async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_admin_user)):
+async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_user_admin)):
     """SEV-0 before this fix. get_admin_user checks ROLE ONLY, and `owner` is
     what every self-serve signup receives, so any customer could write an
     arbitrary project list onto an arbitrary user id — including their own.
@@ -19877,6 +20407,11 @@ async def get_daily_logs(
 
 @api_router.post("/daily-logs", response_model=DailyLogResponse)
 async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_current_user)):
+    # THE V2 DAILY LOG IS A DAILY LOG. It lives in a different collection from
+    # `logbooks` and is reached by a different route, which is exactly why the
+    # refusal has to be repeated here: a rule enforced on one of two writers of
+    # the same document class is not enforced.
+    refuse_if_logbooks_are_read_only(current_user)
     log_dict = log_data.model_dump()
     now = datetime.now(timezone.utc)
     log_dict["created_at"] = now
@@ -19933,6 +20468,7 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
 @api_router.put("/daily-logs/{log_id}")
 async def update_daily_log(log_id: str, update_data: dict, current_user = Depends(get_current_user)):
     """Update an existing daily log"""
+    refuse_if_logbooks_are_read_only(current_user)
     existing = await db.daily_logs.find_one({"_id": to_query_id(log_id)})
     
     if not existing:
@@ -20184,7 +20720,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     return {"message": "Site device deleted successfully"}
 
 @api_router.get("/projects/{project_id}/site-devices")
-async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user), _proj = Depends(require_project_access)):
+async def get_project_site_devices(project_id: str, admin = Depends(get_project_admin_user), _proj = Depends(require_project_access)):
     """Get all site devices for a specific project"""
     devices = await db.site_devices.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
@@ -20704,7 +21240,26 @@ async def record_signature_event(
 ):
     """Record a signature event from any frontend signature capture.
     Returns the event_id to be stored as a reference on the parent document."""
-    
+
+    # ── A SITE MANAGER SIGNS NOTHING ────────────────────────────────────────
+    #
+    # OPERATOR RULING, AND IT IS ABOUT CAPACITY RATHER THAN TRUST. Every
+    # signature in this system is an attestation by a named person IN A NAMED
+    # CAPACITY -- "Competent Person", "Construction Superintendent", "Site
+    # Safety Coordinator/Manager". The Site Manager holds neither a DOB
+    # registration nor a competent-person designation, so there is no capacity
+    # for him to sign in, and `acting_capacity` would have to be invented for
+    # him. An invented capacity on a statutory record is a false statement.
+    #
+    # ON THE SERVER, NOT ON THE SCREEN. The editors would not offer him the
+    # button, but this is the one endpoint that writes the ledger, and a signed
+    # record produced by a caller with no capacity is the failure this refuses.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_WITHOUT_SIGNING_AUTHORITY:
+        raise HTTPException(
+            status_code=403,
+            detail="A Site Manager has no signing capacity on this record.",
+        )
+
     user_id = current_user.get("id")
     ip_address = request.client.host if request.client else None
 
@@ -26310,6 +26865,11 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         if data.project_id not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
 
+    # DAILY LOGS ARE VIEW-ONLY FOR A SITE MANAGER, and creating one is the
+    # write the other four gates cannot see: `_authorize_logbook_write` takes a
+    # logbook id, and this route takes a project id in the body.
+    refuse_if_logbooks_are_read_only(current_user)
+
     company_id = get_user_company_id(current_user)
     now = datetime.now(timezone.utc)
 
@@ -26746,6 +27306,13 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
     Reads the ACTIVE doc only, matching every call site's existing find_one —
     a soft-deleted logbook was already a 404 on all four.
     """
+    # THE READ-ONLY ROLE IS REFUSED FIRST, BEFORE THE TWO READS. This guard has
+    # four call sites -- update, finalize, amend, delete -- and every one of
+    # them changes or destroys the statutory content of a compliance record.
+    # A Site Manager passes `user_can_act_on_project` on an assigned project
+    # (its second branch is the assignment list), so without this he would hold
+    # all four.
+    refuse_if_logbooks_are_read_only(current_user)
     logbook = await db.logbooks.find_one({
         "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
     })
@@ -45899,7 +46466,16 @@ async def _get_checklist_candidates(
         users = await db.users.find(uq, {"password": 0}).to_list(200)
         for u in users:
             role = (u.get("role") or "").lower()
-            if role not in ("admin", "owner", "cp", "superintendent"):
+            # WHO CAN BE HANDED A CHECKLIST ITEM. Not a permission gate -- a
+            # MENU -- so the failure it must avoid is omission: a person who
+            # works the job and cannot be assigned anything on it.
+            #
+            # ROLE_PM JOINS IT. The Site Manager is the role most likely to own
+            # a checklist item on his own project, and leaving him out would
+            # make him the one person on site who cannot be given one. The
+            # roles are named by constant where one exists, so this list moves
+            # when the vocabulary does.
+            if role not in ("admin", "owner", "cp", ROLE_SUPERINTENDENT, ROLE_PM):
                 continue
             out.append({
                 "id":      str(u.get("_id")),

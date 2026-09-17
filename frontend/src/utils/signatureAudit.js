@@ -77,7 +77,15 @@ export async function buildDeviceInfo(user) {
 // Derived from the sign context so §3301.13.13 "signed as Superintendent" is
 // recorded on every event even without per-editor changes; an explicit
 // actingCapacity (e.g. "Competent Person - Excavation") always wins.
-function deriveActingCapacity(eventType, signerRole) {
+//
+// EXPORTED SO IT CAN BE ASKED, not because anything else calls it. The rule it
+// encodes -- the CAPACITY COMES FROM THE EVENT TYPE AND NEVER FROM THE ROLE --
+// is load-bearing on exactly one account: the registered construction
+// superintendent on 588 Thomas holds `role: cp` and signs BC 3301.13.13. If the
+// role decided, his own statutory log would be attributed to a Competent
+// Person. It stayed correct while it was unreachable from any test, which is
+// the state this export ends. See actingCapacityIsTheEventType.test.cjs.
+export function deriveActingCapacity(eventType, signerRole) {
   if (eventType === 'superintendent_sign') return 'Construction Superintendent';
   if (eventType === 'ssc_sign') return 'Site Safety Coordinator/Manager';
   if (eventType === 'cp_sign') return 'Competent Person';

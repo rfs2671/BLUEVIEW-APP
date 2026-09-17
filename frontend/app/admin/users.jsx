@@ -41,6 +41,10 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../../src/utils/retentionCopy';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import {
+  ASSIGNABLE_ROLES, ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
+  licenceSentence,
+} from '../../src/utils/roleVocabulary';
 
 export default function AdminUsersScreen() {
   const { colors, isDark } = useTheme();
@@ -81,6 +85,13 @@ export default function AdminUsersScreen() {
   const [formRole, setFormRole] = useState('cp');
   const [formPassword, setFormPassword] = useState('');
   const [assignedProjects, setAssignedProjects] = useState([]);
+  // THE SUPERINTENDENT'S DOB REGISTRATION, on his own account rather than
+  // retyped into every project's CS registration. Shown only while the picker
+  // says `superintendent`; the server drops these fields for every other role
+  // and $unsets them on a demotion, so a value typed and then switched away
+  // from is never stored.
+  const [formDobNumber, setFormDobNumber] = useState('');
+  const [formDobExpiry, setFormDobExpiry] = useState('');
 
   const isAdmin = user?.role === 'admin';
 
@@ -106,10 +117,19 @@ export default function AdminUsersScreen() {
 
     setFetchState(usersRes.status);
     if (usersRes.status === 'ok') {
-      // FILTER: Only show CPs and workers, exclude admins
-      const filteredUsers = Array.isArray(usersRes.data)
-        ? usersRes.data.filter(u => u.role !== 'admin')
-        : [];
+      // ── EVERY ACCOUNT THIS SCREEN CAN CREATE, IT MUST ALSO SHOW ────────
+      //
+      // THIS READ `.filter(u => u.role !== 'admin')`, under a comment saying
+      // "Only show CPs and workers". That was survivable while the picker
+      // offered cp and worker. It is not now that "Admin" is one of the four
+      // roles the picker offers: an admin created here VANISHED the moment the
+      // list refreshed, and could then be neither edited, assigned a project,
+      // nor deleted from any screen in the app.
+      //
+      // The self-edit guard is separate and stays -- `isSelf` disables Edit on
+      // the caller's own row, which is the protection this filter was
+      // accidentally providing for exactly one account.
+      const filteredUsers = Array.isArray(usersRes.data) ? usersRes.data : [];
       setUsers(filteredUsers);
     } else {
       console.error('Failed to fetch users:', usersRes.error);
@@ -152,6 +172,13 @@ export default function AdminUsersScreen() {
         password: formPassword,
       };
       if (formPhone.trim()) payload.phone = formPhone.trim();
+      // ONLY FOR THE ROLE THAT HOLDS ONE. The server drops them for every
+      // other role anyway; not sending them keeps the request honest about
+      // what was asked for.
+      if (roleHasLicence(formRole)) {
+        if (formDobNumber.trim()) payload.dob_superintendent_number = formDobNumber.trim();
+        if (formDobExpiry.trim()) payload.dob_registration_expiry = formDobExpiry.trim();
+      }
       const newUser = await adminUsersAPI.create(payload);
       
       setUsers([...users, newUser]);
@@ -185,6 +212,10 @@ export default function AdminUsersScreen() {
         role: formRole,
       };
       if (formPhone.trim()) updatePayload.phone = formPhone.trim();
+      if (roleHasLicence(formRole)) {
+        if (formDobNumber.trim()) updatePayload.dob_superintendent_number = formDobNumber.trim();
+        if (formDobExpiry.trim()) updatePayload.dob_registration_expiry = formDobExpiry.trim();
+      }
       await adminUsersAPI.update(selectedUser.id, updatePayload);
 
       const updated = users.map(u =>
@@ -319,6 +350,8 @@ export default function AdminUsersScreen() {
     setFormEmail(userItem.email);
     setFormPhone(userItem.phone || '');
     setFormRole(userItem.role);
+    setFormDobNumber(userItem.dob_superintendent_number || '');
+    setFormDobExpiry(userItem.dob_registration_expiry || '');
     setShowEditModal(true);
   };
 
@@ -334,7 +367,71 @@ export default function AdminUsersScreen() {
     setFormPhone('');
     setFormRole('cp');
     setFormPassword('');
+    setFormDobNumber('');
+    setFormDobExpiry('');
     setSelectedUser(null);
+  };
+
+  // ONE PICKER, RENDERED TWICE. The Add and Edit modals each carried their own
+  // hand-written pair of role buttons — the same roles, the same labels, two
+  // copies. That is why "Worker" had to be deleted in two places and why
+  // nothing could enumerate what the screen offers. The list is
+  // src/utils/roleVocabulary.js now, and roleVocabulary.test.cjs holds it in
+  // step with the server's allow-list.
+  const renderRolePicker = () => {
+    const chosen = ASSIGNABLE_ROLES.find((r) => r.value === formRole);
+    return (
+      <View style={s.roleSelectorBlock}>
+        <Text style={s.roleSelectorLabel}>Role:</Text>
+        <View style={s.roleSelector}>
+          {ASSIGNABLE_ROLES.map((role) => (
+            <Pressable
+              key={role.value}
+              onPress={() => setFormRole(role.value)}
+              style={[s.roleOption, formRole === role.value && s.roleOptionActive]}
+            >
+              <Text style={[s.roleOptionText, formRole === role.value && s.roleOptionTextActive]}>
+                {role.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {/* WHAT THE ROLE ACTUALLY DOES, under the buttons. "PM" and "CP" are
+            three-letter words, and an admin picking between four of them from
+            the words alone is guessing at a permission grant. */}
+        {chosen ? <Text style={s.roleBlurb}>{chosen.blurb}</Text> : null}
+      </View>
+    );
+  };
+
+  // The licence block, shown only for the one role that holds a licence.
+  const renderLicenceFields = () => {
+    if (!roleHasLicence(formRole)) return null;
+    return (
+      <>
+        <GlassInput
+          value={formDobNumber}
+          onChangeText={setFormDobNumber}
+          placeholder="DOB registration number"
+          autoCapitalize="characters"
+          style={s.inputSpacing}
+        />
+        <GlassInput
+          value={formDobExpiry}
+          onChangeText={setFormDobExpiry}
+          placeholder="Registration expiry (YYYY-MM-DD)"
+          autoCapitalize="none"
+          style={s.inputSpacing}
+        />
+        {/* SAID OUT LOUD, because an admin who leaves it blank has not recorded
+            "no expiry" — he has recorded nothing, and the row will read "No DOB
+            registration recorded" rather than looking valid. */}
+        <Text style={s.licenceHint}>
+          Warns {'≥'}30 days before expiry. Left blank, this account shows as
+          unchecked rather than as valid.
+        </Text>
+      </>
+    );
   };
 
   const formatPhoneDisplay = (phone) => {
@@ -353,6 +450,11 @@ export default function AdminUsersScreen() {
     switch (role) {
       case 'admin': return { bg: semantic.neutralBg, color: semantic.neutralStrong };
       case 'cp': return { bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' };
+      // The two roles this screen can now create. Distinct colours, because a
+      // list where three of four roles share one grey badge is a list where the
+      // badge answers nothing.
+      case ROLE_SUPERINTENDENT: return { bg: 'rgba(168, 85, 247, 0.2)', color: '#c084fc' };
+      case 'pm': return { bg: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' };
       default: return { bg: withAlpha('#9ca3af', 0.2), color: '#9ca3af' };
     }
   };
@@ -454,6 +556,22 @@ export default function AdminUsersScreen() {
                             App v{userItem.client_version} — out of date, receives no updates
                           </Text>
                         ) : null}
+                        {/* THE 30-DAY DOB REGISTRATION WARNING, ON THE ROW THE
+                            ADMIN ALREADY READS. The verdict comes from the
+                            server (`licence.state`) and is not recomputed here:
+                            a second date calculation is a second answer to "has
+                            it expired", and the two disagree on the day it
+                            matters. Silent for a licence with months left, and
+                            LOUD for one nobody has recorded — an unchecked
+                            registration must not render like a valid one. */}
+                        {(() => {
+                          const note = licenceSentence(userItem.licence);
+                          return note ? (
+                            <Text style={note.tone === 'error' ? s.licenceExpired : s.licenceWarning}>
+                              {note.text}
+                            </Text>
+                          ) : null;
+                        })()}
                         {/* The request, where the admin already looks. It is a
                             field on the user's own row rather than a queue on
                             a screen nobody opens — an unread queue is the
@@ -469,7 +587,7 @@ export default function AdminUsersScreen() {
                       </View>
                       <View style={[s.roleBadge, { backgroundColor: roleStyle.bg }]}>
                         <Text style={[s.roleText, { color: roleStyle.color }]}>
-                          {userItem.role.toUpperCase()}
+                          {roleLabel(userItem.role)}
                         </Text>
                       </View>
                     </View>
@@ -563,25 +681,8 @@ export default function AdminUsersScreen() {
                 secureTextEntry
                 style={s.inputSpacing}
               />
-              <View style={s.roleSelector}>
-                <Text style={s.roleSelectorLabel}>Role:</Text>
-                <Pressable
-                  onPress={() => setFormRole('cp')}
-                  style={[s.roleOption, formRole === 'cp' && s.roleOptionActive]}
-                >
-                  <Text style={[s.roleOptionText, formRole === 'cp' && s.roleOptionTextActive]}>
-                    CP Manager
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setFormRole('worker')}
-                  style={[s.roleOption, formRole === 'worker' && s.roleOptionActive]}
-                >
-                  <Text style={[s.roleOptionText, formRole === 'worker' && s.roleOptionTextActive]}>
-                    Worker
-                  </Text>
-                </Pressable>
-              </View>
+              {renderRolePicker()}
+              {renderLicenceFields()}
               <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
@@ -618,25 +719,8 @@ export default function AdminUsersScreen() {
                 keyboardType="phone-pad"
                 style={s.inputSpacing}
               />
-              <View style={s.roleSelector}>
-                <Text style={s.roleSelectorLabel}>Role:</Text>
-                <Pressable
-                  onPress={() => setFormRole('cp')}
-                  style={[s.roleOption, formRole === 'cp' && s.roleOptionActive]}
-                >
-                  <Text style={[s.roleOptionText, formRole === 'cp' && s.roleOptionTextActive]}>
-                    CP Manager
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setFormRole('worker')}
-                  style={[s.roleOption, formRole === 'worker' && s.roleOptionActive]}
-                >
-                  <Text style={[s.roleOptionText, formRole === 'worker' && s.roleOptionTextActive]}>
-                    Worker
-                  </Text>
-                </Pressable>
-              </View>
+              {renderRolePicker()}
+              {renderLicenceFields()}
               <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
@@ -843,6 +927,22 @@ function buildStyles(colors, isDark) {
     color: semantic.attention,
     marginTop: 2,
   },
+  // TWO TONES, because "expires in 12 days" and "EXPIRED" are not the same
+  // fact. An expired DOB registration makes every log signed after it an
+  // attestation by an unregistered person; that is an error state, not a
+  // reminder.
+  licenceWarning: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: semantic.attention,
+    marginTop: 2,
+  },
+  licenceExpired: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.status.error,
+    marginTop: 2,
+  },
   roleBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
@@ -907,11 +1007,29 @@ function buildStyles(colors, isDark) {
   inputSpacing: {
     marginTop: spacing.sm,
   },
+  roleSelectorBlock: {
+    marginTop: spacing.md,
+  },
+  // WRAPS. Two roles fitted on one line; four do not, and on a phone the
+  // fourth silently left the screen rather than moving to a second row.
   roleSelector: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.sm,
-    marginTop: spacing.md,
+    marginTop: spacing.xs,
+  },
+  roleBlurb: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.text.muted,
+    marginTop: spacing.sm,
+  },
+  licenceHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
   },
   roleSelectorLabel: {
     fontSize: 14,

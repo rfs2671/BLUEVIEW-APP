@@ -95,9 +95,26 @@ class WhatMustNotChange(unittest.TestCase):
         of."""
         self.assertNotIn("site_device", server.ROLES_SCOPED_TO_ASSIGNED_PROJECTS)
 
-    def test_project_access_ok_is_untouched(self):
-        """This fix narrows ONE branch of create_logbook. It does not widen the
-        three-branch rule, which is a security decision and gets its own PR."""
+    def test_project_access_ok_does_not_scope_cp_or_superintendent(self):
+        """NEITHER OF THESE TWO ROLES IS SCOPED BY project_access_ok, and that
+        is still true.
+
+        THE DOCSTRING THIS REPLACES SAID "project_access_ok is untouched", and
+        it is not any more: the roles change added a branch for the Site
+        Manager / PM, ahead of the company branch, because a role whose whole
+        definition is "admin powers SCOPED TO ASSIGNED PROJECTS" cannot reach a
+        branch that admits anyone in the company. That branch names ROLE_PM
+        alone.
+
+        A SENTENCE SAYING A FUNCTION IS UNTOUCHED IS FALSE THE FIRST TIME
+        ANYBODY TOUCHES IT, and a test whose name is that sentence goes on
+        passing while its name lies -- the two identifiers it banned are still
+        absent. So the name and the claim are narrowed to the thing that
+        actually matters here: cp and superintendent are held to their
+        assignments by the five WRITE gates that name
+        ROLES_SCOPED_TO_ASSIGNED_PROJECTS, not by this function, and moving
+        them would be a live behaviour change on real accounts.
+        """
         import ast
         import inspect
         import textwrap
@@ -105,6 +122,10 @@ class WhatMustNotChange(unittest.TestCase):
             inspect.getsource(server.project_access_ok))))
         self.assertNotIn("ROLES_SCOPED_TO_ASSIGNED_PROJECTS", code)
         self.assertNotIn("is_superintendent", code)
+        # The PM branch that IS there. Asserted so its absence is a failure
+        # too: without it he inherits the company branch and the scoping in his
+        # own definition silently does not exist.
+        self.assertIn("ROLE_PM", code)
 
 
 if __name__ == "__main__":
