@@ -8,7 +8,7 @@ lib/plan_extract.py and lib/plan_text.py and takes its model call as an
 argument. This script supplies one and points it at a local file, so a drawing
 set can be checked BEFORE a merge and before a production re-index — the same
 text-layer rebuild, the same one-call vector path, the same scanned-page path,
-the same chunking, and the same question dispatch WhatsApp uses.
+the same typed records, and the same retrieval WhatsApp answers from.
 
 It deliberately does NOT import server.py and does NOT open a database.
 
@@ -54,6 +54,8 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from lib import plan_extract as pe  # noqa: E402
+from lib import plan_records as pr  # noqa: E402
+from lib import plan_search as ps  # noqa: E402
 from lib import plan_text as pt  # noqa: E402
 
 DPI = 250
@@ -143,40 +145,58 @@ def _make_vlm_call(base: str, model: str, key: str, counter: dict):
     return call
 
 
-VLM_FALLBACK = ("(no text answer - WhatsApp sends this to the vision model "
-                "on the single best sheet)")
+def _answers(asks, records, model, out_root: Path) -> str:
+    """What the drawings would return for these questions.
 
+    THE SAME TWO FUNCTIONS WHATSAPP USES. `plan_search.rank` orders the typed
+    records and `render_records` prints them — the identical pure path
+    `server.search_plans` runs after its database query, so an answer here and
+    an answer in the group differ only by which records the project holds.
 
-def _answers(asks, chunks, model, out_root: Path) -> str:
-    """pe.answer_question is the function _answer_plan_from_chunks calls, so
-    these are the answers WhatsApp would give from this extraction."""
+    It used to call `pe.answer_question`, the keyword matcher, which is gone.
+    A question is not classified any more and nothing is sent to a vision
+    model: the records either say it or they do not.
+    """
     answers = []
     for q in asks:
-        kind, attribute = pe.question_kind(q)
-        ans = pe.answer_question(chunks, q, None)
-        text = ans["text"] if ans else VLM_FALLBACK
-        answers.append({"question": q, "kind": kind, "attribute": attribute,
-                        "terms": pe.question_terms(q), "answer": text,
-                        "outcome": ans["outcome"] if ans else "vlm_fallback",
-                        "model": model})
-        print(f"\nQ: {q}\n   [{kind or 'none'}{'/' + attribute if attribute else ''}]"
-              f" terms={pe.question_terms(q)}\nA: {text}")
+        terms = ps.search_terms(q)
+        found = ps.best_per_attribute(ps.rank(records, terms))
+        found = [r for r in found if not ps.matched_only_through_label(r, terms)][:8]
+        text = ps.render_records(found, q)
+        answers.append({
+            "question": q, "terms": terms, "answer": text, "model": model,
+            "records": [{"sheet": r.get("sheet_number"), "tier": r.get("tier"),
+                         "type": r.get("record_type"), "source": r.get("source"),
+                         "quote": (r.get("quote") or "")[:160]} for r in found],
+        })
+        print(f"\nQ: {q}\n   terms={terms}  records={len(found)}\nA: {text}")
     out_root.mkdir(parents=True, exist_ok=True)
     apath = out_root / "answers.json"
     apath.write_text(json.dumps(answers, indent=2, ensure_ascii=False), encoding="utf-8")
     return str(apath)
 
 
-def _chunks_from_saved(folder: Path) -> list:
-    chunks = []
+def _page_records(fields: dict, rec: dict, boiler=frozenset()) -> list:
+    """The typed records one page yields — what the indexer would store."""
+    page = {
+        "sheet_number": fields.get("sheet_number"),
+        "sheet_title": fields.get("sheet_title"),
+        "page_number": rec.get("page_number"),
+        "file_name": rec.get("file"),
+        "page_id": f"{rec.get('file')}#{rec.get('page_number')}",
+        "discipline": fields.get("discipline"),
+    }
+    return pr.build_records(fields, page=page,
+                            raw_text=rec.get("raw_text") or "",
+                            boilerplate=boiler)
+
+
+def _records_from_saved(folder: Path) -> list:
+    records = []
     for f in sorted(folder.glob("*/*.json")):
         rec = json.loads(f.read_text(encoding="utf-8"))
-        for c in pe.build_chunks(rec["fields"]):
-            c["sheet_number"] = rec["fields"].get("sheet_number")
-            c["page_number"] = rec.get("page_number")
-            c["file"] = rec.get("file")
-            chunks.append(c)
-    return chunks
+        records.extend(_page_records(rec["fields"], rec))
+    return records
 
 
 def _selection(args, pdf: str, total: int) -> set:
@@ -197,9 +217,10 @@ def _selection(args, pdf: str, total: int) -> set:
 async def main_async(args) -> int:
     if args.answers_from:
         folder = Path(args.answers_from)
-        chunks = _chunks_from_saved(folder)
-        print(f"answering from saved extraction in {folder}: {len(chunks)} chunks, no model calls")
-        print(_answers(args.ask, chunks, "(saved extraction)", folder))
+        records = _records_from_saved(folder)
+        print(f"answering from saved extraction in {folder}: "
+              f"{len(records)} records, no model calls")
+        print(_answers(args.ask, records, "(saved extraction)", folder))
         return 0
 
     base = os.environ.get("QWEN_API_BASE") or os.environ.get("QWEN_BASE_URL") or ""
@@ -255,7 +276,7 @@ async def main_async(args) -> int:
 
     counter = {"calls": 0}
     vlm_call = _make_vlm_call(base, model, key, counter)
-    all_chunks: list = []
+    all_records: list = []
     written: list = []
     sem = asyncio.Semaphore(max(1, args.concurrency))
 
@@ -293,12 +314,12 @@ async def main_async(args) -> int:
                     result = await pe.extract_page(
                         image_b64=b64, page_text=text, vlm_call=vlm_call, boilerplate=boiler)
                 fields = result["fields"]
-                chunks = pe.build_chunks(fields, boiler)
-                for c in chunks:
-                    c["sheet_number"] = fields.get("sheet_number")
-                    c["page_number"] = page_num
-                    c["file"] = Path(pdf).name
-                all_chunks.extend(chunks)
+                page_records = _page_records(
+                    fields,
+                    {"page_number": page_num, "file": Path(pdf).name,
+                     "raw_text": text},
+                    boiler)
+                all_records.extend(page_records)
                 sheet = fields.get("sheet_number") or f"p{page_num:03d}"
                 record = {
                     "file": Path(pdf).name, "page_number": page_num,
@@ -312,7 +333,8 @@ async def main_async(args) -> int:
                     "number_flags": result["number_flags"],
                     "prompt_text_chars": result["prompt_text_chars"],
                     "prompt_text_truncated": result["prompt_text_truncated"],
-                    "chunks": [{k: v for k, v in c.items() if k != "payload"} for c in chunks],
+                    "records": [{k: v for k, v in r.items() if k != "payload"}
+                                for r in page_records],
                     "legacy_fields": pe.legacy_fields(fields),
                 }
                 if args.raw:
@@ -331,7 +353,7 @@ async def main_async(args) -> int:
         await asyncio.gather(*[one(p) for p in selected])
 
     if args.ask:
-        written.append(_answers(args.ask, all_chunks, model, out_root))
+        written.append(_answers(args.ask, all_records, model, out_root))
 
     print(f"\nvision calls made: {counter['calls']} "
           f"(notes fallback on {counter.get('fallback', 0)} page(s))")

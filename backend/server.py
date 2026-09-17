@@ -17346,9 +17346,10 @@ async def upload_osha_card(file_data: dict, request: Request):
     the device fingerprint the gate already collects, or as a global circuit
     breaker on spend, neither of which can single out a busy turnstile.
 
-    Mirrors the httpx+Together shape used by _qwen_visual_qa(). Input is
-    a base64 image + content_type; output is the same {name, sst_number,
-    issued, expiration, box_2d} JSON the frontend already consumes.
+    Mirrors the httpx+Together shape the plan VQA path used before it was
+    deleted. Input is a base64 image + content_type; output is the same
+    {name, sst_number, issued, expiration, box_2d} JSON the frontend already
+    consumes.
     """
     import httpx
     import json as json_mod
@@ -43343,8 +43344,9 @@ def _default_bot_config() -> dict:
             # message that trips a trigger without being meant for the bot
             # reaches the agent, which answers NOREPLY and stays silent. So the
             # cost of a false trigger is one gpt-4o-mini call, not an
-            # interruption — and the cap in _vision_budget_exceeded is what
-            # keeps that from being unbounded.
+            # interruption. It used to also risk a vision call per candidate
+            # sheet; plan questions are answered from records now, so the
+            # ceiling on a false trigger is that one small call.
             #
             # "strict" is still there and still works, per group, for anyone
             # who wants it.
@@ -45931,216 +45933,6 @@ _PAGE_FIELDS = {
 }
 
 
-async def _retrieve_plan_candidates(
-    project_id: str,
-    parsed: dict,
-    original_query: str,
-    limit: int = 3,
-) -> list:
-    """Retrieve top plan-page candidates for a query.
-
-    Priority order:
-      1. If parser returned a sheet_number, do an exact (case-insensitive)
-         match on the sheet_number field and return it directly.
-      2. Otherwise, run two parallel searches:
-           a. Vector similarity against the summary embedding.
-           b. Keyword match on sheet_title + keywords + materials.
-         Merge via Reciprocal Rank Fusion and return top `limit`.
-
-    Hard filters: discipline + floor (if extracted), and always exclude
-    spec pages (is_spec_page=True or sheet_title='[SPECIFICATION PAGE]').
-
-    AND ALWAYS EXCLUDE A PAGE WHOSE FILE NO LONGER EXISTS. See
-    `_live_plan_file_ids` below — a citation to a deleted drawing is a
-    well-formed answer with nothing behind it.
-    """
-    base_filter: Dict[str, Any] = {
-        "project_id":   project_id,
-        "is_spec_page": {"$ne": True},
-        "sheet_title":  {"$ne": "[SPECIFICATION PAGE]"},
-    }
-    # None means the lookup failed; filtering on it would answer "no matching
-    # sheet" for a healthy project. Absent filter == today's behaviour.
-    live_ids = await _live_plan_file_ids(project_id)
-    # And not an older copy of a sheet a newer upload carries.
-    base_filter.update(_current_page_filter(live_ids))
-
-    # Hard filters — normalize discipline to the 2-letter code stored in the
-    # index ('ME', 'AR', 'ST', etc). The agent sometimes passes the full
-    # word ('Mechanical') or alternate casing; match tolerantly.
-    _DISC_ALIASES = {
-        "AR": "AR", "A": "AR", "ARCH": "AR", "ARCHITECTURAL": "AR",
-        "ST": "ST", "S": "ST", "STR": "ST", "STRUCTURAL": "ST",
-        "ME": "ME", "M": "ME", "MECH": "ME", "MECHANICAL": "ME", "HVAC": "ME", "MH": "ME",
-        "EL": "EL", "E": "EL", "ELEC": "EL", "ELECTRICAL": "EL",
-        "PL": "PL", "P": "PL", "PLMB": "PL", "PLUMBING": "PL",
-        "SP": "SP", "SPRK": "SP", "SPRINKLER": "SP", "FP": "SP",
-        "GN": "GN", "GEN": "GN", "GENERAL": "GN", "CIVIL": "GN", "SITE": "GN",
-    }
-    raw_disc = (parsed.get("discipline") or "").strip().upper()
-    disc = _DISC_ALIASES.get(raw_disc) or (raw_disc if len(raw_disc) == 2 else None)
-    if disc:
-        base_filter["discipline"] = disc
-    floor = parsed.get("floor")
-    if isinstance(floor, (int, float)):
-        floor = str(int(floor))
-
-    # ── 1. Sheet-number exact match ───────────────────────────────────────
-    # Sheet numbers are often stamped with decimal subsheet suffixes
-    # (M-200, M-200.00, A-301.1). If the user types the base id we want
-    # all variants to hit. Pattern: start ^, optional trailing .digits, end.
-    sheet_q = (parsed.get("sheet_number") or "").strip()
-    if not sheet_q:
-        for tok in re.findall(r"[A-Za-z]{1,3}-?\d{1,4}[A-Za-z]?", original_query or ""):
-            if _is_sheet_number_query(tok):
-                sheet_q = tok
-                break
-    if sheet_q:
-        q_upper = sheet_q.upper()
-        # Build up the set of prefixes to accept
-        prefixes = {q_upper}
-        m = re.match(r"^([A-Z]{1,3})-?(\d{1,4}[A-Z]?)(\.\d+)?$", q_upper)
-        if m:
-            prefixes.add(f"{m.group(1)}-{m.group(2)}")
-            prefixes.add(f"{m.group(1)}{m.group(2)}")
-            # Also accept the exact decimal form the user gave us
-            if m.group(3):
-                prefixes.add(f"{m.group(1)}-{m.group(2)}{m.group(3)}")
-        # Regex: ^(PFX1|PFX2)(\.\d+)?$  — tolerate decimal subsheet
-        pattern = (
-            f"^({'|'.join(re.escape(p) for p in prefixes)})"
-            r"(\.\d+)?$"
-        )
-        fq = dict(base_filter)
-        # A NAMED SHEET IS FOUND EVEN WHEN IT IS A NOTES SHEET. The spec-page
-        # exclusion keeps a wall of notes out of a broad "which sheet is like
-        # this" search; it must not make "show me S-001" answer that S-001
-        # does not exist.
-        fq.pop("is_spec_page", None)
-        fq.pop("sheet_title", None)
-        fq["sheet_number"] = {"$regex": pattern, "$options": "i"}
-        # Multiple hits possible when a family shares a base (M-200, M-200.1…);
-        # prefer the shortest — it's the "most canonical" base sheet.
-        hits = await db.document_page_index.find(fq).to_list(10)
-        if hits:
-            hits.sort(key=lambda p: len(p.get("sheet_number") or ""))
-            return [hits[0]]
-        # Fall through to full search if no exact match
-
-    # ── 2. Load candidate pool + parallel search ──────────────────────────
-    # ── THE EMBEDDING RODE ALONG WITH EVERY DOCUMENT ───────────────────────
-    #
-    # This find carried NO projection, so all 400 pages shipped their full
-    # `embedding` field — 1536 floats each, roughly 2.4 MB of vectors per
-    # question — and then carried them through the keyword rank, the fusion,
-    # the sort and the candidate slice, none of which look at a vector.
-    #
-    # The cosine pass genuinely needs them, so this is not a saving of bytes
-    # off the wire: it is the same vectors fetched once, used, and dropped,
-    # instead of held on 400 dicts for the rest of the function. What it buys
-    # is that the large field is now visible as a cost with a name, next to the
-    # timer that will say whether it matters. `_PAGE_FIELDS` also stops a
-    # future field from joining the ride silently.
-    #
-    # NO OTHER LATENCY CHANGE IS MADE HERE. The timers come first; this one is
-    # in because the projection is what makes the retrieval timing readable at
-    # all — an unprojected find times as one number covering both.
-    pool = await db.document_page_index.find(
-        base_filter, _PAGE_FIELDS,
-    ).limit(400).to_list(400)
-    if not pool and base_filter.get("discipline"):
-        # Discipline filter was too strict (e.g. user asked about "drains in
-        # backyard" — parser tagged it PL, but the drainage is actually on
-        # a site/GN sheet). Retry without discipline; floor/spec filters
-        # stay in place.
-        logger.info(
-            f"plan retrieval: discipline={base_filter['discipline']} filter "
-            f"returned empty pool, retrying without discipline filter"
-        )
-        relaxed = {k: v for k, v in base_filter.items() if k != "discipline"}
-        pool = await db.document_page_index.find(
-            relaxed, _PAGE_FIELDS,
-        ).limit(400).to_list(400)
-    if not pool:
-        return []
-
-    # Optional floor filter (soft — use regex on floor field + sheet_title)
-    if floor:
-        fr = _floor_regex(str(floor))
-        if fr:
-            pat = re.compile(fr, re.I)
-            filtered = [
-                p for p in pool
-                if pat.search(str(p.get("floor") or ""))
-                or pat.search(str(p.get("sheet_title") or ""))
-            ]
-            if filtered:
-                pool = filtered
-
-    # 2a. Vector similarity
-    query_embedding = await _generate_embedding(original_query)
-    vector_ranked = []
-    if query_embedding:
-        # Vectors are fetched HERE, for the pass that needs them, keyed by id
-        # and dropped when it ends. Nothing downstream sees them.
-        vec_by_id = {}
-        try:
-            async for row in db.document_page_index.find(
-                {"_id": {"$in": [p["_id"] for p in pool]}},
-                {"embedding": 1},
-            ):
-                vec_by_id[row["_id"]] = row.get("embedding") or []
-        except Exception as e:
-            # A failed vector fetch costs the cosine rank, not the answer: the
-            # keyword rank below still runs and RRF still fuses what it has.
-            logger.warning(f"plan retrieval: embedding fetch failed: {e}")
-        scored = []
-        for p in pool:
-            emb = vec_by_id.get(p["_id"]) or []
-            sim = _cosine_similarity(query_embedding, emb)
-            scored.append((sim, p))
-        scored.sort(key=lambda x: -x[0])
-        vector_ranked = [p for _s, p in scored if _s > 0.05]
-
-    # 2b. Keyword match
-    keywords = [str(k).upper() for k in (parsed.get("keywords") or []) if k]
-    # Also split the raw query into keywords as a safety net
-    extra_kws = re.findall(r"[A-Z][A-Z0-9\-]{2,}", (original_query or "").upper())
-    keywords = list({*keywords, *extra_kws})
-    keyword_ranked = []
-    if keywords:
-        scored_kw = []
-        for p in pool:
-            bag = " ".join(filter(None, [
-                (p.get("sheet_number") or "").upper(),
-                (p.get("sheet_title") or "").upper(),
-                " ".join(p.get("keywords") or []).upper(),
-                (p.get("materials") or "").upper(),
-                (p.get("spaces") or "").upper(),
-            ]))
-            score = sum(1 for k in keywords if k in bag)
-            if score > 0:
-                scored_kw.append((score, p))
-        scored_kw.sort(key=lambda x: -x[0])
-        keyword_ranked = [p for _s, p in scored_kw]
-
-    # ── 3. Reciprocal Rank Fusion ─────────────────────────────────────────
-    # RRF constant k=60 (standard choice). Score = sum(1 / (k + rank)).
-    K = 60
-    rrf: Dict[str, dict] = {}
-    scores: Dict[str, float] = {}
-    for rank, p in enumerate(vector_ranked[:50], start=1):
-        pid = str(p["_id"])
-        rrf[pid] = p
-        scores[pid] = scores.get(pid, 0) + 1.0 / (K + rank)
-    for rank, p in enumerate(keyword_ranked[:50], start=1):
-        pid = str(p["_id"])
-        rrf[pid] = p
-        scores[pid] = scores.get(pid, 0) + 1.0 / (K + rank)
-    ordered = sorted(rrf.values(), key=lambda p: -scores[str(p["_id"])])
-    return ordered[:limit]
-
-
 def _floor_regex(val: str) -> str:
     """Build a safe regex for floor matching. Numeric floors require a word
     boundary + FLOOR context so '4' doesn't match '14TH FLOOR' or 'BASEMENT 4'.
@@ -46259,85 +46051,6 @@ def _names_a_sheet(text: str) -> bool:
     return False
 
 
-# A question whose answer is a number or a yes. These beat the show-verbs,
-# which is the whole fix — see the note in _classify_plan_question.
-_COUNT_PHRASING = re.compile(
-    r"\b(how many|how much|number of|count (of |the )?|total (number )?of)\b", re.I)
-# Existence words, which mean the same wherever they sit in the sentence.
-_YES_NO_ANYWHERE = re.compile(
-    r"\b(is there|are there|anywhere|do any|does any|any of)\b", re.I)
-
-# Bare auxiliaries, which only make a yes/no question when they OPEN it.
-#
-# "is the" ANYWHERE was the first draft and it was wrong. It fires inside
-# "what is the ceiling height on 2" — an open question whose answer is a
-# measurement, and the one kind of question the reference drawing most helps
-# with — so it suppressed exactly the image it should have sent. An auxiliary
-# in the middle of a sentence is grammar; at the front it is a yes/no.
-_YES_NO_LEADING = re.compile(
-    r"^(is|are|was|were|does|do|did|has|have|can|could|should|will|any)\b", re.I)
-
-
-def _is_count_or_yes_no(query: str) -> bool:
-    """True when the answer is a number or a yes/no, wherever it sits."""
-    if not query:
-        return False
-    low = re.sub(r"^@?levelog\s*[:,-]?\s*", "", query.strip().lower())
-    return bool(
-        _COUNT_PHRASING.search(low)
-        or _YES_NO_ANYWHERE.search(low)
-        or _YES_NO_LEADING.match(low)
-    )
-
-
-def _classify_plan_question(query: str) -> bool:
-    """Return True if the user is asking a visual question about a drawing
-    (VQA), False if they just want the image sent.
-
-    ── THE SHOW-VERB USED TO WIN, AND IT SHOULD NEVER WIN OVER A COUNT ──────
-    #
-    Live test, 2026-09-14: "show me how many outlets are on the roof plan"
-    came back as a drawing. So did "count the risers on ST-201". The first
-    lost because the show-verb check ran first and returned before the
-    question words were ever looked at; the second lost because "count" was
-    not in the starter list and the sentence carried no question mark.
-    Both are questions with a one-word answer, and a sheet is not an answer
-    to either.
-    #
-    "Show me" in front of a count is not a request for a picture. It is how
-    people ask for anything — "show me how many guys are on site" is not a
-    request for a photograph of the crew. So count and yes/no phrasing is
-    tested FIRST and anywhere in the sentence, not only at the front.
-    #
-    A bare show-verb with no question in it still sends the image, which is
-    the behaviour that was right all along: "show me A-101" wants A-101.
-    """
-    if not query:
-        return False
-    low = query.strip().lower()
-
-    # FIRST, and deliberately before the show-verbs.
-    if _is_count_or_yes_no(low):
-        return True
-
-    # Explicit show-me requests with no question in them → image send
-    for v in SHOW_VERBS:
-        if low.startswith(v):
-            return False
-    # Question words at start or after "@levelog"
-    stripped = re.sub(r"^@?levelog\s*[:,-]?\s*", "", low)
-    question_starters = (
-        "what", "how", "where", "why", "which", "when",
-        "is ", "are ", "does ", "do ", "can ", "could ", "would ",
-    )
-    for q in question_starters:
-        if stripped.startswith(q):
-            return True
-    if "?" in low:
-        return True
-    return False
-
-
 async def _fetch_page_base(page_rec: dict) -> Optional[bytes]:
     """The viewer's base layer for a page, down the same three rungs the
     thumbnail uses: the stored 2048px derivative; else the full page JPEG
@@ -46438,28 +46151,6 @@ async def _fetch_page_jpeg(page_rec: dict) -> Optional[bytes]:
     return await asyncio.to_thread(_render_pdf_page, pdf_bytes, page_num, dpi)
 
 
-_VQA_PROMPT = (
-    "You are answering a field question about a NYC construction drawing for "
-    "a crew member on site with a phone in hand. They need a fast, specific answer.\n\n"
-    "Sheet: {sheet_number} — {sheet_title}\n\n"
-    "Question: {user_question}\n\n"
-    "Answer format — follow exactly:\n"
-    "- If the question is yes/no, START with 'Yes.' or 'No.' then the specifics.\n"
-    "- If the question is 'how many / where / what size / how far', START with "
-    "the count or value, THEN the dimension/location quoted from the drawing.\n"
-    "- Quote dimensions, pipe sizes, materials, note numbers EXACTLY as shown "
-    "(e.g. '2 floor drains, 4\\\" trap, 2'-10\\\" from building line', "
-    "'3/4\\\" CW line per Note 4').\n"
-    "- Maximum 40 words. No preamble. No 'based on the drawing' or 'according "
-    "to this sheet'. Just the answer.\n"
-    "- If multiple instances exist in different rooms/zones, list each with a "
-    "1-word location tag (e.g. 'Kitchen: FD-1 at 3'-2\\\". Bath: FD-2 at wall.').\n"
-    "- NEVER invent dimensions. Only quote what is literally printed on the sheet.\n"
-    "- If this specific information is not shown on this sheet, reply with "
-    "exactly this single word and nothing else: NOT_SHOWN_ON_SHEET"
-)
-
-
 # ── THE CEILING THE METER WAS BUILT TO MAKE POSSIBLE ───────────────────────
 #
 # lib/vision_meter.py shipped the count first and attached no limit, on the
@@ -46481,117 +46172,11 @@ _VQA_PROMPT = (
 #
 # AND IT REFUSES OUT LOUD. A silent cap would read as the bot being broken,
 # which is the failure this whole change set exists to stop.
-VISION_DAILY_CAP_PER_PROJECT = 300
-
-
-async def _vision_budget_exceeded(project_id: Optional[str]) -> bool:
-    """True when this project has already spent its day's vision calls.
-
-    Reads the meter's own rows — there is no second counter to drift. Never
-    raises: a budget check that fails open costs money, and a budget check that
-    fails closed costs a superintendent his answer. Money is the cheaper one to
-    be wrong about here, and the meter still records every call either way."""
-    try:
-        from lib.vision_meter import eastern_day, COLLECTION
-        day = eastern_day()
-        total = 0
-        cursor = db[COLLECTION].find({
-            "date": day,
-            "project_id": str(project_id) if project_id else None,
-            # WHATSAPP QUESTIONS ONLY. Indexing used to count here too, and at
-            # four section calls a page a single re-index of an 80-sheet set
-            # would spend the day's cap and refuse every plan question the
-            # crew asked afterwards. Indexing is still metered, under its own
-            # endpoint names; it just no longer locks the group out.
-            "endpoint": {"$in": [VISION_WHATSAPP_VQA]},
-        })
-        async for row in cursor:
-            total += int(row.get("calls") or 0)
-        return total >= VISION_DAILY_CAP_PER_PROJECT
-    except Exception as e:
-        logger.warning(f"vision budget check failed (allowing): {e}")
-        return False
-
-
-# WHAT A PERSON WILL WAIT FOR, STANDING ON A SITE. The budget was 90 seconds,
-# and on 2026-09-16 two questions spent all of it and returned nothing: 98 s
-# and 92 s end to end, for "Not found on the indexed drawings." The model
-# either reads a plan page well inside this or it is not going to, and the
-# candidate loop in _handle_plan_query moves to the next sheet when it does
-# not — so a slow sheet now costs a retry rather than the whole reply.
-PLAN_VQA_TIMEOUT_SECONDS = 30.0
-
-
-async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
-                           sheet_number: str, sheet_title: str,
-                           project_id: Optional[str] = None) -> Optional[str]:
-    """Ask Qwen2.5-VL a question about a single rendered plan page.
-    Returns plain-text answer (possibly 'NOT_SHOWN_ON_SHEET'), or None on failure.
-
-    `project_id` is metering only — it never reaches the model. It is optional
-    so an existing caller cannot break by omitting it; those calls count under
-    "unknown" rather than not at all."""
-    if not QWEN_API_KEY or not jpeg_bytes:
-        return None
-
-    # COUNTED PER SHEET, NOT PER QUESTION. _handle_plan_query walks its
-    # candidate list and calls this once for each until one answers, so a
-    # question about something the set does not show costs the length of the
-    # list. A per-question count would hide exactly that case.
-    #
-    # After the QWEN_API_KEY guard, because a call that was never made is not
-    # spend; before the post, because a call that 500s has still been billed.
-    await record_vision_call(
-        db, endpoint=VISION_WHATSAPP_VQA, project_id=project_id,
-    )
-    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-    prompt = _VQA_PROMPT.format(
-        sheet_number=sheet_number or "(unknown)",
-        sheet_title=sheet_title or "(unknown)",
-        user_question=question.strip(),
-    )
-    try:
-        async with ServerHttpClient(timeout=PLAN_VQA_TIMEOUT_SECONDS) as client_http:
-            resp = await client_http.post(
-                f"{QWEN_API_BASE}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {QWEN_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": QWEN_MODEL,
-                    "max_tokens": 300,
-                    "temperature": 0,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url",
-                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }],
-                },
-            )
-            if resp.status_code != 200:
-                logger.warning(f"Qwen VQA returned {resp.status_code}")
-                return None
-            return (resp.json()["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        # SITE 3 OF 5, AND IT CARRIED THE EXACT DEFECT THE GATE DID. `{e}` is
-        # `str(e)`, and `str(httpx.ReadTimeout())` is the empty string — this
-        # line logged `Qwen VQA failed: ` for every timeout, on a 90 s budget,
-        # against the same unbounded-tail model. WhatsApp plan QA had no live
-        # traffic during the 09-11 -> 09-15 window, so it cost nothing; it was
-        # the same trap, unsprung.
-        if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
-            # Not worth a stack trace: it is the budget doing its job, and the
-            # caller has another candidate to try. Named explicitly because
-            # str(httpx.ReadTimeout()) is the empty string.
-            logger.warning("Qwen VQA timed out after %ss sheet=%s (model=%s)",
-                           PLAN_VQA_TIMEOUT_SECONDS, sheet_number, QWEN_MODEL)
-            return None
-        logger.exception("Qwen VQA failed: %r (model=%s)", e, QWEN_MODEL)
-        return None
+# The WhatsApp vision budget went with the vision answer path. It capped
+# _qwen_visual_qa at 300 calls per project per day; there is no such call
+# now. Indexing has always been metered separately and is untouched, and
+# lib/vision_meter keeps the VISION_WHATSAPP_VQA endpoint name so the rows
+# already written can still be read.
 
 
 def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 4800,
@@ -46714,32 +46299,6 @@ async def _send_plan_image(
         return False
 
 
-# Words that carry no element. Stripped before a literal text search, because
-# "the" appears on every page ever indexed and would make every sheet a match.
-_ELEMENT_STOPWORDS = frozenset({
-    "show", "me", "the", "a", "an", "of", "on", "in", "at", "for", "to",
-    "please", "pull", "up", "send", "find", "get", "display", "open",
-    "levelog", "plan", "plans", "drawing", "drawings", "sheet", "sheets",
-    "where", "is", "are", "what", "which", "any",
-})
-
-
-def _element_terms(query: str, parsed: dict) -> list:
-    """The thing being asked about, as words to look for in a page's text.
-
-    The parser's `keywords` are preferred — it has already read the sentence
-    and pulled out the subject. The raw query minus stopwords is the fallback
-    for when it returns nothing, which it does on short requests."""
-    kws = parsed.get("keywords") or []
-    terms = [str(k).strip().lower() for k in kws if str(k).strip()]
-    if not terms:
-        terms = [w for w in re.findall(r"[a-z0-9]+", (query or "").lower())
-                 if w not in _ELEMENT_STOPWORDS and len(w) > 2]
-    # Two terms is enough to be specific and few enough that an AND over them
-    # still matches a page that phrases it differently.
-    return terms[:2]
-
-
 # The fields the indexer fills from what it read off the page. A literal search
 # runs over THESE and nothing else: `embedding` is a guess by construction and
 # file_name is about the upload, not the drawing.
@@ -46749,132 +46308,6 @@ _ELEMENT_TEXT_FIELDS = (
 )
 
 
-async def _pages_with_element(project_id: str, terms: list, limit: int = 8) -> list:
-    """Pages whose EXTRACTED TEXT actually mentions the element.
-
-    ── WHY THIS IS NOT THE RETRIEVAL ABOVE ────────────────────────────────
-    #
-    # _retrieve_plan_candidates fuses a vector rank and a keyword rank and
-    # returns its top three. That is the right instrument for "which sheet is
-    # most like this question" and the wrong one for "which sheets mention
-    # roof drains", because its top three are ALWAYS populated — it cannot
-    # return nothing, so it can never say the thing is not there.
-    #
-    # This asks the literal question. Every term has to appear, somewhere in
-    # what the indexer extracted from that page. No match is a real answer.
-    #
-    # ORDERING PUTS THE STRONGEST EVIDENCE FIRST. A page whose `keywords` name
-    # the element is a page the indexer thought the element was ABOUT; a page
-    # that merely mentions it in a note is weaker. The primary sheet sent to
-    # the group is the first of these, so the ordering is the difference
-    # between sending the riser diagram and sending a page that says "see
-    # riser diagram"."""
-    if not (project_id and terms):
-        return []
-    clauses = []
-    for t in terms:
-        # ── A PLURAL MUST FIND THE SINGULAR ────────────────────────────────
-        #
-        # Measured against a stubbed index: "show me the roof drains" found the
-        # roof plan and MISSED the riser diagram, whose summary reads "roof
-        # drain leaders to riser". A literal search is the right instrument
-        # here and a literal search that cannot see past an "s" answers "on one
-        # sheet" when the truth is two.
-        #
-        # The stem, not a stemmer. Dropping a trailing s (and the e of "es")
-        # covers how these words actually differ on a drawing — drain/drains,
-        # riser/risers, box/boxes — and a real stemmer would turn "gas" into
-        # "ga" and match everything.
-        needle = t
-        if len(needle) > 3 and needle.endswith("es"):
-            needle = needle[:-2]
-        elif len(needle) > 3 and needle.endswith("s"):
-            needle = needle[:-1]
-        rx = {"$regex": re.escape(needle), "$options": "i"}
-        clauses.append({"$or": [{f: rx} for f in _ELEMENT_TEXT_FIELDS]})
-    live_ids = await _live_plan_file_ids(project_id)
-    q = {"project_id": str(project_id), "$and": clauses}
-    q.update(_current_page_filter(live_ids))
-    try:
-        rows = await db.document_page_index.find(
-            q, _PAGE_FIELDS,
-        ).limit(max(limit * 4, 32)).to_list(max(limit * 4, 32))
-    except Exception as e:
-        logger.warning(f"element lookup failed for {terms}: {e}")
-        return []
-
-    def _rank(rec):
-        kws = " ".join(str(k).lower() for k in (rec.get("keywords") or []))
-        in_keywords = sum(1 for t in terms if t in kws)
-        title = (rec.get("sheet_title") or "").lower()
-        in_title = sum(1 for t in terms if t in title)
-        # Negated so a plain ascending sort puts the strongest first.
-        return (-in_keywords, -in_title, str(rec.get("sheet_number") or "~"))
-
-    rows.sort(key=_rank)
-    return rows[:limit]
-
-
-async def _current_v3_chunks(project_id: str) -> list:
-    """Every chunk on a current (live, not superseded) version 3 page. Empty
-    for a project that has not been indexed at version 3 — the caller then
-    keeps the version 2 path, unchanged."""
-    live_ids = await _live_plan_file_ids(str(project_id))
-    pages = await db.document_page_index.find(
-        # Spec pages included: their notes are chunks too (S-001.00).
-        {"project_id": str(project_id), "index_version": {"$gte": 3},
-         **_current_page_filter(live_ids)},
-        {"_id": 1},
-    ).to_list(5000)
-    if not pages:
-        return []
-    return await db.document_page_chunks.find(
-        {"project_id": str(project_id),
-         "page_id": {"$in": [str(p["_id"]) for p in pages]}},
-        {"embedding": 0},
-    ).to_list(20000)
-
-
-async def _answer_plan_from_chunks(project_id: str, route_text: str,
-                                   parsed: dict) -> Tuple[bool, Optional[dict]]:
-    """(project_has_v3, answer). Answer is {"text", "outcome"} or None.
-
-    ── A NUMBER IS READ, NEVER LOOKED AT ──────────────────────────────────
-    #
-    # "how many piles" used to go to a vision model with a picture of a sheet,
-    # and a vision model asked to count symbols on a 36-inch drawing produces a
-    # number with nothing behind it. On a version 3 project the answer comes
-    # from what is PRINTED: a quantity in a schedule, or a tag the page text
-    # confirms. No printed quantity is "not stated", with the sheets that
-    # mention the thing — never an estimate.
-    #
-    # Existence ("are there chase walls") and attributes ("stucco thickness",
-    # "post gauge", "pile type") are answered from the note, legend, schedule
-    # and spec lines, quoting the line. An attribute with no line carrying a
-    # value is answered by a schedule named for the thing if the set has one,
-    # then by naming the sheets that mention it; only a subject the drawings
-    # never name at all falls through to the vision model.
-    """
-    # THE TEXT IS READ BEFORE ANY PICTURE IS LOOKED AT. This used to ask
-    # question_kind() first and skip the chunk lookup entirely when it came
-    # back None — so "Whats the helical piles" and "What piles used on site?"
-    # never touched the index and went to the vision model, which spent 90
-    # seconds and answered nothing, while S-001.00 had HELICAL PILES printed
-    # on it. Classification chooses the SHAPE of the answer, never whether to
-    # look at all. A question that reaches the vision model without the
-    # drawings' own text having been searched is a bug;
-    # tests/test_plan_chunks_first.py asserts the order.
-    chunks = await _current_v3_chunks(project_id)
-    if not chunks:
-        # Cheap existence probe for the caller's top-1 decision.
-        has_v3 = bool(await db.document_page_chunks.find_one(
-            {"project_id": str(project_id)}, {"_id": 1}))
-        return has_v3, None
-    # The same function the local harness calls, so a before-merge run answers
-    # exactly what WhatsApp would.
-    return True, plan_extract.answer_question(chunks, route_text, parsed.get("keywords"))
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # search_plans — the agent asks, the records answer, the gate checks
 # ══════════════════════════════════════════════════════════════════════════
@@ -46882,7 +46315,7 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
 # The DB half lives here and the ranking half lives in lib/plan_search.py, so
 # the ordering that decides what an answer may cite is testable without Mongo.
 #
-# Supersession is resolved the same way _current_v3_chunks resolves it — via
+# Supersession is resolved via
 # document_page_index — because `superseded_by` is a property of a PAGE and
 # putting a second copy of it on every record is how the two drift apart.
 
@@ -47009,7 +46442,12 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
              f"Use ONLY numbers that appear below; an answer containing any "
              f"other number will be discarded and replaced."]
     for r in records:
-        where = r.get("sheet_number") or f"p{r.get('page_number')}"
+        # The same citation the crew is shown, for the same reason: a model
+        # given '?' or 'pNone' will write one into the answer. A record that
+        # cannot say where it is is not offered as evidence at all.
+        where = plan_search.cite(r)
+        if not where:
+            continue
         quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip()[:400]
         line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
         if r.get("tier") == plan_extract.TIER_VISION:
@@ -47058,214 +46496,114 @@ def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> No
     Read it with: grep 'plan timing' on the app log. The shape is deliberately
     flat and greppable rather than JSON — this exists to survive one live test,
     not to feed a dashboard."""
-    total = round(sum(v for k, v in stage.items() if k != "candidates"), 2)
-    parts = " ".join(f"{k}={v}" for k, v in stage.items())
+    # THE STAGES ARE NO LONGER ALL DURATIONS. The path used to be a chain of
+    # timed calls, so the total was their sum; it is one search and one send
+    # now, and what is worth logging beside the elapsed total is what each
+    # step FOUND — the sheet named, the records returned, the images sent.
+    total = stage.get("total", 0)
+    parts = " ".join(f"{k}={v}" for k, v in stage.items() if k != "total")
     logger.warning(
         f"plan timing outcome={outcome} total={total}s {parts} "
         f"group={group_id[-10:] if group_id else '?'} q={query[:60]!r}"
     )
 
+async def _pages_for_records(project_id: str, records: List[dict],
+                             limit: int = 2) -> list:
+    """The page rows behind the highest-ranked records, in that order.
+
+    ── ONE RETRIEVAL, FOR THE ANSWER AND FOR THE PICTURE ──────────────────
+    #
+    # Choosing which sheet to SEND used to be its own retrieval: an embedding
+    # search and a keyword search fused with reciprocal rank, 208 lines, tuned
+    # separately from the thing that answered questions. Two retrievals over
+    # one corpus disagree, and when they did, the crew got a sheet that did not
+    # match the answer they were reading.
+    #
+    # The records already say which page each line is on, and search_plans
+    # already ranks them on the evidence behind them. The sheet worth sending
+    # is the sheet the best lines are on.
+    """
+    seen: List[str] = []
+    for record in records:
+        pid = str(record.get("page_id") or "")
+        if pid and pid not in seen:
+            seen.append(pid)
+        if len(seen) >= limit:
+            break
+    if not seen:
+        return []
+    try:
+        rows = await db.document_page_index.find(
+            {"_id": {"$in": [to_query_id(p) for p in seen]}}, _PAGE_FIELDS,
+        ).to_list(len(seen))
+    except Exception as e:
+        logger.warning(f"page lookup for records failed: {e!r}")
+        return []
+    order = {p: i for i, p in enumerate(seen)}
+    rows.sort(key=lambda r: order.get(str(r.get("_id")), 99))
+    return rows
+
 
 async def _handle_plan_query(project_id: str, group_id: str, query: str,
-                              question: Optional[str] = None,
-                              parsed_override: Optional[dict] = None,
-                              reply_to: Optional[str] = None,
-                              user_body: Optional[str] = None) -> None:
-    """End-to-end plan-query pipeline (spec-compliant v2).
+                             question: Optional[str] = None,
+                             parsed_override: Optional[dict] = None,
+                             reply_to: Optional[str] = None,
+                             user_body: Optional[str] = None) -> None:
+    """Send the sheet someone asked to see. It does not answer anything.
 
-    Flow:
-      1. Immediate ack.
-      2. Parse → structured spec (sheet_number, discipline, floor, keywords,
-         question, dob_route). Bail to DOB handler if dob_route.
-      3. Retrieve: sheet-number exact match first; else vector + keyword
-         with Reciprocal Rank Fusion. Top 3 candidates.
-      4. If parser says no question (show-me verb) → send top 1 or 2 images.
-      5. If parser extracted a question → VQA loop through candidates.
+    ── WHAT THIS USED TO BE ───────────────────────────────────────────────
+    #
+    # 394 lines: parse, classify the question's shape, search chunks with the
+    # keyword matcher, fuse two retrievals with reciprocal rank, then walk a
+    # list of candidate sheets putting each one in front of a vision model
+    # until something came back. That is where `41 PTAC units` came from — a
+    # number summed off a picture, indistinguishable from a measured one.
+    #
+    # Questions are answered from records now, by search_plans, under a gate
+    # that refuses a number no record prints. This is only the picture, which
+    # is the other half of what a crew asks for and the half a record cannot
+    # give them.
+    #
+    # `question` is accepted and ignored: the caller in _dispatch_agent_tool
+    # passes None, and a stale caller passing one must still get the sheet
+    # rather than an error.
     """
-    if not QWEN_API_KEY:
-        await send_whatsapp_message(group_id, "Plan queries are not configured.",
-                                    reply_to=reply_to)
-        return
+    _t0 = perf_counter()
+    _stage: Dict[str, Any] = {}
+    spec = parsed_override or {}
 
-    # THE CEILING, CHECKED BEFORE THE ACK. Checking it after would promise to go
-    # look and then refuse, which reads worse than a straight no. See
-    # VISION_DAILY_CAP_PER_PROJECT for why the cap exists and why it speaks.
-    if await _vision_budget_exceeded(project_id):
-        await send_whatsapp_message(
-            group_id,
-            "I've hit today's limit on drawing lookups for this project. "
-            "Open the sheet in the app, or ask me again tomorrow.",
-            reply_to=reply_to,
-        )
-        logger.warning(f"vision daily cap hit for project {project_id}")
-        return
-
-    # NOTHING TO SHOW. Checked on the user's own words, before the "checking
-    # the drawings" ack — there is nothing to check — and before anything the
-    # agent put in the query, because for a bare "show me" that is a guess.
+    # NOTHING TO SHOW. Checked on the user's OWN words, before anything the
+    # agent put in the query: for a bare "show me" the sheet number in there
+    # is a guess, and on 2026-09-15 that guess sent S-402.
     if _is_bare_show_request(user_body):
         await send_whatsapp_message(group_id, "Nothing to show for that — which sheet?",
                                     reply_to=reply_to)
-        logger.info(f"plan route group={group_id[-10:] if group_id else '?'} bare show request")
+        _log_plan_timing(group_id, query, _stage, "bare_show_request")
         return
 
-    # ── THE NUMBERS THE LATENCY FIX WILL BE BUILT FROM ─────────────────────
-    #
-    # Reported: plan Q&A takes about sixty seconds. There is no instrumentation
-    # anywhere on this path, so every explanation available today is arithmetic
-    # off the call chain rather than a measurement, and optimising against
-    # arithmetic is how the wrong stage gets cut.
-    #
-    # One log line per answered question, with each stage named. Deliberately
-    # not a metrics backend: this has to survive one live test in one group
-    # next week, and a log line does that with nothing to stand up.
-    #
-    # NOTHING BELOW CHANGES BEHAVIOUR. The stages are timed where they already
-    # happen, in the order they already happen.
-    _t0 = perf_counter()
-    _stage = {}
-
-    def _mark(name):
-        nonlocal _t0
-        now = perf_counter()
-        _stage[name] = round(now - _t0, 2)
-        _t0 = now
-
-    # 1. Immediate ack (needs to be fast — construction sites have poor signal)
-    try:
-        await send_whatsapp_message(group_id, "🔎 Checking the drawings…",
-                                    reply_to=reply_to)
-    except Exception:
-        pass
-
-    # 2. Parse — prefer the structured spec from the agent router if it's
-    # available (avoids a second gpt-4o-mini call and a lossy re-parse of
-    # the synth string).
-    if isinstance(parsed_override, dict) and parsed_override:
-        parsed = dict(parsed_override)
-    else:
-        parsed = await _parse_plan_query(query)
-    _mark("parse")
-    if parsed.get("dob_route"):
-        # Parser flagged this as a DOB/permits question — route to dob_status.
-        txt = await _handle_dob_status(project_id)
-        await send_whatsapp_message(group_id, txt, reply_to=reply_to)
-        return
-
-    # `question` param from the agent-router overrides parser's question —
-    # except the agent often hallucinates a question for "show me" phrases
-    # where the user clearly wants the image, not an answer. Check for
-    # show-verb prefix in BOTH the synth query AND the agent's question
-    # (agent frequently echoes the user's full "show me..." utterance into
-    # the question slot). If either looks like a show-verb request, force
-    # image-send mode.
-    def _looks_like_show_verb(s: str) -> bool:
-        s = (s or "").strip().lower()
-        return any(s.startswith(v) for v in SHOW_VERBS)
-
-    # ── THE DECISION IS MADE ON WHAT THE USER TYPED ────────────────────────
-    #
-    # Live test, 2026-09-14 23:33: "how many piles" came back as two drawings
-    # and "show me roof drains" came back with no text at all. Same cause.
-    #
-    # `query` here is NOT the user's message. _dispatch_agent_tool builds it
-    # from the agent's STRUCTURED arguments —
-    #
-    #     bits = [discipline, floor, sheet_type, sheet_number, *keywords]
-    #     synth = " ".join(bits) or question or "plan"
-    #
-    # — so it arrives as something like "structural pile". No show verb, no
-    # question mark, no question word. Every routing test below was therefore
-    # being run against a bag of keywords rather than a sentence:
-    #
-    #   _looks_like_show_verb("structural pile")     -> False, always
-    #   _classify_plan_question("structural pile")   -> False, always
-    #
-    # With `question` empty — which the agent leaves empty whenever it reads
-    # the request as a search — effective_question stayed None and control fell
-    # into the image-send branch, which ships up to two sheets with captions
-    # and NO TEXT LINE. That is both reported symptoms, from one fault.
-    #
-    # It also made the element path unreachable: offer_only can only be set
-    # when wants_image is true, and wants_image needed a show verb that the
-    # synth can never contain.
-    #
-    # `user_body` is the message as sent. The synth stays as the RETRIEVAL
-    # input, which is what it is good at — structured bits make a better
-    # search than a sentence — and the routing now reads the sentence.
     route_text = (user_body or "").strip() or query
-    offer_only = False
 
-    # A count or a yes/no beats a show verb, exactly as _classify_plan_question
-    # already orders them. "show me how many piles" is a question with a
-    # one-word answer, not a request for a picture.
-    asks_for_a_value = _is_count_or_yes_no(route_text)
-    wants_image = (not asks_for_a_value) and (
-        _looks_like_show_verb(route_text) or _looks_like_show_verb(question or "")
-    )
-
-    if wants_image:
-        effective_question = None
-        if not (parsed.get("sheet_number") or _names_a_sheet(route_text)
-                or _names_a_sheet(question or "")):
-            offer_only = True
-    else:
-        effective_question = (question or "").strip() or parsed.get("question")
-        if effective_question and effective_question.strip().lower() in ("null", "none", ""):
-            effective_question = None
-        # The user's own sentence is the fallback question, not the synth. A
-        # bag of keywords put to a vision model is a worse prompt than the
-        # thing the person actually asked.
-        if not effective_question and _classify_plan_question(route_text):
-            effective_question = route_text
-        # A show-verb request with no sheet named is an ELEMENT request even
-        # when the agent supplied no question, which is the case that fell
-        # through to images.
-        if (not effective_question
-                and _looks_like_show_verb(route_text)
-                and not (parsed.get("sheet_number") or _names_a_sheet(route_text))):
-            offer_only = True
-
-    logger.info(
-        f"plan route group={group_id[-10:] if group_id else '?'} "
-        f"offer_only={offer_only} vqa={bool(effective_question)} "
-        f"synth={query[:40]!r} body={route_text[:60]!r}"
-    )
-
-    # 2b. Version 3: counts, existence and attributes from the extracted text,
-    # with no vision call. A request for a picture keeps the paths below.
-    has_v3 = False
-    if not wants_image and not offer_only:
-        try:
-            has_v3, chunk_answer = await _answer_plan_from_chunks(
-                project_id, route_text, parsed)
-        except Exception as e:
-            logger.warning(f"chunk answer failed, using v2 path: {e!r}")
-            chunk_answer = None
-        _mark("chunks")
-        if chunk_answer:
-            await send_whatsapp_message(group_id, chunk_answer["text"],
-                                        reply_to=reply_to)
-            _log_plan_timing(group_id, query, _stage, chunk_answer["outcome"])
-            return
-
-    # 3. Retrieve. A NAMED SHEET IS AN EXACT LOOKUP, NEVER A SEARCH: the sheet
-    # the person typed, or the one the agent mapped their words to. See
-    # _find_named_sheet — neighbours are never sent in its place.
-    named_sheet = (_requested_sheet_id(route_text) or _requested_sheet_id(question or "")
-                   or (parsed.get("sheet_number") or "").strip() or None)
-    if named_sheet:
-        candidates = await _find_named_sheet(project_id, named_sheet)
-        _mark("retrieval")
+    # A NAMED SHEET IS AN EXACT LOOKUP, NEVER A SEARCH: the sheet the person
+    # typed, or the one the agent mapped their words to. "show me s-001" sent
+    # S-002 and M-001 on 2026-09-15, because an exact miss fell through to the
+    # nearest neighbours.
+    named = (_requested_sheet_id(route_text)
+             or (spec.get("sheet_number") or "").strip() or None)
+    candidates: list = []
+    if named:
+        _stage["named"] = named
+        candidates = await _find_named_sheet(project_id, named)
         _stage["candidates"] = len(candidates)
         if not candidates:
             await send_whatsapp_message(
-                group_id, f"{named_sheet.upper()} isn't in the indexed drawings.",
+                group_id, f"{named.upper()} isn't in the indexed drawings.",
                 reply_to=reply_to)
             _log_plan_timing(group_id, query, _stage, "named_sheet_not_found")
             return
         if not candidates[0].get("page_jpeg_r2_key"):
-            label = candidates[0].get("sheet_number") or named_sheet.upper()
+            # INDEXED IS NOT THE SAME AS RENDERABLE, and saying "here it is"
+            # with no picture is worse than saying which of the two it is.
+            label = candidates[0].get("sheet_number") or named.upper()
             await send_whatsapp_message(
                 group_id,
                 (f"{label} is a notes sheet — indexed, can't render yet."
@@ -47275,191 +46613,43 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             _log_plan_timing(group_id, query, _stage, "named_sheet_no_image")
             return
     else:
-        candidates = await _retrieve_plan_candidates(
-            project_id, parsed, query, limit=3
-        )
-        _mark("retrieval")
+        # ── THE PICTURE COMES FROM THE SAME RECORDS AS THE ANSWER ──────────
+        #
+        # Choosing which sheet to send used to be its own retrieval, tuned
+        # separately from the thing that answered questions. Two retrievals
+        # over one corpus disagree, and when they did, the crew got a sheet
+        # that did not match the answer they were reading.
+        subject = " ".join(
+            [str(x) for x in (spec.get("keywords") or [])]
+            + [spec.get("floor") or "", spec.get("sheet_type") or ""]).strip()
+        found = await search_plans(project_id, subject or route_text,
+                                   discipline=spec.get("discipline") or "",
+                                   floor=spec.get("floor") or "")
+        _stage["records"] = len(found)
+        candidates = await _pages_for_records(project_id, found)
         _stage["candidates"] = len(candidates)
-    # A version 3 project sends a spatial question to the vision model on the
-    # two best sheets. Three tripled the latency and the spend for an answer
-    # the first sheet either has or does not; one left nothing to fall back on
-    # when the first call timed out, which is what "Whats the helical piles"
-    # did on 2026-09-16 — candidates=1, one 90-second timeout, 98 seconds to
-    # "not found". At PLAN_VQA_TIMEOUT_SECONDS the pair still costs less than
-    # the single call used to.
-    if has_v3 and effective_question:
-        candidates = candidates[:2]
-    if not candidates:
-        await send_whatsapp_message(
-            group_id,
-            # "Try a sheet number (A-301, ME-401)" was the old copy, and it is
-            # the exact thing the stance forbids: it hands the problem back to
-            # a superintendent who does not carry the drawing list in his head.
-            # The agent now has the full sheet index in its context, so it can
-            # map a description onto a sheet itself — and when retrieval finds
-            # nothing, the honest report is that nothing matched, not homework.
-            "Nothing in the indexed drawings matched that. If the plans were "
-            "uploaded recently, they may still be indexing.",
-            reply_to=reply_to,
-        )
-        return
-
-    # 4a-offer. A show-verb with no sheet named: say where it is, do not
-    # assert that it is there by sending the page.
-    if offer_only:
-        # ── AN ANSWER, NOT A QUESTION BACK ─────────────────────────────────
-        #
-        # The first version of this named the sheets and asked "Want them?".
-        # That is still a round trip: a superintendent who typed "show me the
-        # roof drains" has already said what he wants, and answering a request
-        # with a request is the thing the sixty-second latency makes
-        # unbearable. He gets the answer and the sheet, in one turn.
-        #
-        # AND THE SHEETS ARE FOUND BY TEXT, NOT BY RANK. The retrieval above
-        # is a fused vector-plus-keyword guess, which is the right instrument
-        # for "which sheet is most like this question" and the wrong one for
-        # "which sheets actually mention roof drains" — its top three are
-        # always populated, so it can never say no. `_pages_with_element` asks
-        # the second question literally: the element's words have to appear in
-        # what the indexer extracted from that page. A sheet that does not
-        # mention the thing is not sent, and when nothing mentions it the
-        # answer is that nothing does.
-        terms = _element_terms(query, parsed)
-        matches = await _pages_with_element(project_id, terms)
-        _mark("element_lookup")
-        _stage["matches"] = len(matches)
-        if not matches:
-            _log_plan_timing(group_id, query, _stage, "element_not_found")
+        if not candidates:
             await send_whatsapp_message(
-                group_id, "Not found on indexed drawings.", reply_to=reply_to,
-            )
+                group_id, "Nothing to show for that — which sheet?",
+                reply_to=reply_to)
+            _log_plan_timing(group_id, query, _stage, "no_match")
             return
 
-        subject = " ".join(terms).strip() or "That"
-        where = []
-        for rec in matches[:4]:
-            sn = rec.get("sheet_number") or "?"
-            title = (rec.get("sheet_title") or "").strip()
-            where.append(f"{sn} ({title})" if title else sn)
+    sent = 0
+    for page in candidates[:2]:
+        label = page.get("sheet_number") or page.get("sheet_title") or "drawing"
+        caption = f"{label} — {page.get('sheet_title') or ''}".strip(" —")
+        if await _send_plan_image(group_id, page, caption):
+            sent += 1
+    _stage["sent"] = sent
+    if not sent:
         await send_whatsapp_message(
             group_id,
-            f"{subject[:1].upper()}{subject[1:]}: {', '.join(where)}.",
-            reply_to=reply_to,
-        )
+            "I found the sheet but couldn't send the image. "
+            "It may still be rendering.", reply_to=reply_to)
+    _stage["total"] = round(perf_counter() - _t0, 2)
+    _log_plan_timing(group_id, query, _stage, "sent" if sent else "send_failed")
 
-        # The primary sheet, in the same turn. First is the best-matching one
-        # that actually mentions the element — see _pages_with_element for the
-        # ordering — so this is never a guess dressed as an answer.
-        primary = matches[0]
-        caption = (f"{primary.get('sheet_number') or 'Sheet'} — "
-                   f"{primary.get('sheet_title') or ''}").strip(" —")
-        try:
-            await _send_plan_image(group_id, primary, caption)
-        except Exception as e:
-            logger.warning(f"primary sheet send failed for {caption}: {e}")
-        _log_plan_timing(group_id, query, _stage, "element_answered")
-        return
-
-    # 4a. Image-send path (parser said user wants the image, no question)
-    if not effective_question:
-        # Send top 1-2 candidates.
-        sent_any = False
-        for i, rec in enumerate(candidates[:2]):
-            sheet_number = rec.get("sheet_number") or "Sheet"
-            sheet_title  = rec.get("sheet_title")  or "Construction Drawing"
-            caption = f"{sheet_number} — {sheet_title}"
-            ok = await _send_plan_image(group_id, rec, caption)
-            if ok:
-                sent_any = True
-            else:
-                # Text fallback if image send fails
-                await send_whatsapp_message(
-                    group_id,
-                    f"Found: {caption}. Open it in the Levelog app under Plans & Files.",
-                    reply_to=reply_to,
-                )
-            if i + 1 < min(2, len(candidates)):
-                await asyncio.sleep(1.2)
-        if not sent_any:
-            logger.info(
-                f"plan query image send: all {len(candidates[:2])} candidates failed"
-            )
-        # THE EXIT THAT LOGGED NOTHING. Both reported failures ended here and
-        # left no line in the log, so "which path handled it" could not be
-        # answered from production at all.
-        _log_plan_timing(group_id, query, _stage, "image_sent")
-        return
-
-    _vqa_n = 1
-
-    # 4b. VQA path — iterate candidates, stop on first real answer.
-    # On success we send BOTH the short text answer AND the sheet image so
-    # the crew can verify the answer against the drawing in one message.
-    for rec in candidates:
-        try:
-            sheet_number = rec.get("sheet_number") or "Sheet"
-            sheet_title  = rec.get("sheet_title")  or "Construction Drawing"
-            jpeg = await _fetch_page_jpeg(rec)
-            _mark(f"fetch{_vqa_n}")
-            if not jpeg:
-                continue
-            answer = await _qwen_visual_qa(
-                jpeg, effective_question, sheet_number, sheet_title,
-                project_id=project_id,
-            )
-            _mark(f"vqa{_vqa_n}")
-            _vqa_n += 1
-            if not answer or "NOT_SHOWN_ON_SHEET" in answer.upper():
-                continue
-            # Got an answer — format with sheet citation per spec.
-            reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
-            await send_whatsapp_message(group_id, reply_text,
-                                        reply_to=reply_to)
-            # A DRAWING AFTER A NUMBER IS NOISE. The follow-up image is real
-            # help for an open question — "what is the ceiling height here"
-            # is better with the section in front of you. It is the opposite
-            # for "how many outlets" and "is there a skylight": the answer is
-            # one word, it has already been sent, and a full sheet after it is
-            # a scroll the superintendent did not ask for.
-            _log_plan_timing(group_id, query, _stage, "answered")
-            if not _is_count_or_yes_no(effective_question):
-                try:
-                    await asyncio.sleep(0.6)
-                    await _send_plan_image(
-                        group_id, rec, f"{sheet_number} — {sheet_title}",
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"plan image send after VQA failed sheet={sheet_number}: {e}"
-                    )
-            return
-        except Exception as e:
-            logger.warning(f"VQA attempt failed for {rec.get('sheet_number')}: {e}")
-            continue
-
-    # ── NO IMAGE FALLBACK FOR A QUESTION ───────────────────────────────────
-    #
-    # This used to send the top sheet as a picture. Every candidate had just
-    # answered NOT_SHOWN_ON_SHEET — the model looked at that exact drawing and
-    # said the thing is not on it — and the handler sent it anyway.
-    #
-    # For a yes/no or a count that is worse than saying nothing. The user asked
-    # "are there sprinklers on 4", the drawings do not show sprinklers on 4, and
-    # what arrives is a drawing of floor 4. It reads as an answer. It is not
-    # one, and the reader has no way to tell.
-    #
-    # The sheet NUMBERS are still worth sending: they say where we looked, which
-    # is what turns "I don't know" into something a person can act on — open
-    # those three in the app, or tell us the set is missing a sheet.
-    top_sheets = [
-        (r.get("sheet_number") or "?") for r in candidates[:3]
-    ]
-    checked = ", ".join(dict.fromkeys(s for s in top_sheets if s != "?"))
-    _log_plan_timing(group_id, query, _stage, "not_found")
-    msg = "Not found on the indexed drawings."
-    if checked:
-        msg += f"\nClosest sheets: {checked}."
-    await send_whatsapp_message(group_id, msg, reply_to=reply_to)
 
 
 # ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
@@ -50689,7 +49879,7 @@ async def whatsapp_debug_page_index(
             if isinstance(v, datetime):
                 r[k] = v.isoformat()
         # What a literal element search would actually see for this page —
-        # the same fields _pages_with_element looks in, concatenated. This is
+        # the fields a literal element search looks in, concatenated. This is
         # the string that decides whether "stucco" is findable.
         searchable = []
         for f in _ELEMENT_TEXT_FIELDS:

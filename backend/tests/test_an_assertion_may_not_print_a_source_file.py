@@ -134,7 +134,12 @@ def unreadable_failure_sites():
 #: the print CSS that renderer emitted, and the renderer is gone -- and the
 #: branch-side claims in test_the_legal_render_engine.py went the same way.
 #: Each carried an assertion whose failure would have printed all of server.py.
-EXPECTED_TOTAL = 59
+#: 59 -> 58 on 2026-09-17, when the keyword matcher was deleted. One of the
+#: tests that read server.py by source went with it; the questions it asked are
+#: eval cases against the real corpus now, which is a stronger claim and prints
+#: a record rather than a file. Side effect of a deletion made for another
+#: reason, which is the only direction this number is allowed to move.
+EXPECTED_TOTAL = 58
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):

@@ -177,105 +177,23 @@ class TheToolsSayTheCardDataIsThere(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 2. Plan questions
+# 2. Plan questions — where this section went
 # ══════════════════════════════════════════════════════════════════
-
-class ACountIsAQuestionNotAPicture(unittest.TestCase):
-    """The show-verb check used to run first and return before the question
-    words were looked at, so "show me how many" lost."""
-
-    ROUTES_TO_QA = [
-        "show me how many outlets are on the roof plan",
-        "count the risers on ST-201",
-        "are there sprinklers on 4",
-        "is there a skylight on the roof plan",
-        "how many bathrooms on 3",
-        "any outlets in the cellar",
-        "total number of parking spaces",
-        "what is the ceiling height on 2",
-        "levelog is the stair pressurized",
-    ]
-    SENDS_THE_IMAGE = [
-        "show me A-101",
-        "pull up the roof plan",
-        "send me ST-201",
-        "the roof plan",
-    ]
-
-    def test_questions_route_to_the_qa_path(self):
-        for q in self.ROUTES_TO_QA:
-            with self.subTest(q=q):
-                self.assertTrue(server._classify_plan_question(q))
-
-    def test_a_bare_request_for_a_sheet_still_sends_the_sheet(self):
-        """The behaviour that was right all along: "show me A-101" wants
-        A-101, and breaking that to fix the count case would be a trade, not a
-        fix."""
-        for q in self.SENDS_THE_IMAGE:
-            with self.subTest(q=q):
-                self.assertFalse(server._classify_plan_question(q))
-
-    def test_the_count_test_runs_before_the_show_verbs(self):
-        """Ordering IS the fix. Asserted against the source because the
-        behaviour is only visible when both would match."""
-        src = inspect.getsource(server._classify_plan_question)
-        self.assertLess(src.index("_is_count_or_yes_no"), src.index("SHOW_VERBS"))
-
-
-class AnAuxiliaryInTheMiddleIsGrammar(unittest.TestCase):
-    """The first draft matched "is the" anywhere, which fires inside "what is
-    the ceiling height" — an open question whose answer is a measurement, and
-    the one kind that most wants the drawing alongside it."""
-
-    def test_a_yes_no_suppresses_the_follow_up_drawing(self):
-        for q in ("how many outlets", "are there sprinklers on 4",
-                  "is the stair pressurized", "count the risers"):
-            with self.subTest(q=q):
-                self.assertTrue(server._is_count_or_yes_no(q))
-
-    def test_an_open_question_still_gets_its_drawing(self):
-        for q in ("what is the ceiling height on 2",
-                  "where is the electrical room",
-                  "what is the slab thickness"):
-            with self.subTest(q=q):
-                self.assertFalse(server._is_count_or_yes_no(q))
-
-    def test_the_bot_name_is_stripped_before_the_test(self):
-        self.assertTrue(server._is_count_or_yes_no("levelog how many outlets"))
-
-
-class NotShownMeansNotShown(unittest.TestCase):
-    """Every candidate answered NOT_SHOWN_ON_SHEET — the model looked at that
-    exact drawing and said the thing is not on it — and the handler sent it
-    anyway. For a yes/no that is worse than silence: it reads as an answer and
-    the reader cannot tell that it isn't one."""
-
-    def setUp(self):
-        self.src = inspect.getsource(server._handle_plan_query)
-        i = self.src.index("NO IMAGE FALLBACK FOR A QUESTION")
-        self.tail = self.src[i:]
-
-    def test_the_exhausted_path_says_not_found(self):
-        self.assertIn("Not found on the indexed drawings.", self.tail)
-
-    def test_it_names_where_it_looked(self):
-        """"I don't know" is not actionable; "I don't know, I checked these
-        three" is — open them, or tell us the set is missing a sheet."""
-        self.assertIn("Closest sheets", self.tail)
-
-    def test_it_sends_no_image(self):
-        self.assertNotIn("_send_plan_image", self.tail,
-                         "the image fallback is back on the exhausted path")
-
-    def test_the_old_fallback_copy_is_gone(self):
-        self.assertNotIn("Sending the closest match", self.src)
-
-    def test_the_success_path_still_offers_a_drawing_for_open_questions(self):
-        """Only the fallback lost its image. An open question still gets the
-        sheet alongside the answer, gated on the phrasing."""
-        head = self.src[:self.src.index("NO IMAGE FALLBACK FOR A QUESTION")]
-        self.assertIn("_send_plan_image", head)
-        self.assertIn("_is_count_or_yes_no", head)
+#
+# Three classes lived here: a count must not be answered with a picture,
+# an auxiliary in the middle of a sentence is grammar and not a yes/no,
+# and a vision model that said NOT_SHOWN_ON_SHEET must not have its sheet
+# sent anyway. All three tested _classify_plan_question and the vision
+# fallback inside _handle_plan_query, and both are deleted.
+#
+# Nothing routes on phrasing now. The agent calls search_plans to answer
+# and query_plan to send a sheet, and may call both; query_plan answers
+# nothing at all, so a count cannot be answered with a picture because a
+# picture is not an answer to anything. Held by
+# test_one_reader_reads_the_drawings.py. The third class is moot: there
+# is no vision model on the answer path to say NOT_SHOWN_ON_SHEET.
+#
+# eval/migrated-from-the-matcher.md records the move.
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -348,14 +348,18 @@ class ADocumentIsNotADrawing(unittest.TestCase):
         self.assertIn('"is_document": {"$ne": True}', src)
 
     def test_their_text_is_still_searched(self):
-        # _current_v3_chunks reads the page rows through _current_page_filter,
-        # which knows nothing about is_document. A backflow-prevention form is
-        # still the answer to a question about backflow prevention.
+        # The reader collects its pages through _current_record_page_ids, which
+        # knows nothing about is_document. A backflow-prevention form is still
+        # the answer to a question about backflow prevention — it is only kept
+        # out of the SHEET list and out of sheet lookup, where it reads as a
+        # drawing that exists.
         import inspect
         # Anchored: the field only ever appears in a query as a quoted key, and
         # a bare word would be satisfied by any line that merely contains it.
         self.assertNotIn('"is_document"', inspect.getsource(server._current_page_filter))
-        self.assertNotIn('"is_document"', inspect.getsource(server._current_v3_chunks))
+        self.assertNotIn('"is_document"',
+                         inspect.getsource(server._current_record_page_ids))
+        self.assertNotIn('"is_document"', inspect.getsource(server.search_plans))
 
 
 if __name__ == "__main__":

@@ -326,70 +326,41 @@ class OneCurrentRowPerSheet(unittest.TestCase):
 class TheReadersExcludeSupersededRows(unittest.TestCase):
 
     def test_each_reader_applies_the_current_page_filter(self):
-        for fn in (server._retrieve_plan_candidates, server._pages_with_element,
-                   server._sheet_index_lines, server._current_v3_chunks):
+        """Three reads of the page index, and all three must exclude a page a
+        newer set replaced. The list shrank when the matcher went: the two
+        readers that answered questions are one helper now, and everything
+        that answers goes through it."""
+        for fn in (server._find_named_sheet, server._sheet_index_lines,
+                   server._current_record_page_ids):
             with self.subTest(fn=fn.__name__):
                 self.assertIn("_current_page_filter(", inspect.getsource(fn),
                               f"{fn.__name__} does not exclude superseded rows")
 
+    def test_the_sheet_the_records_point_at_is_looked_up_by_id(self):
+        """_pages_for_records is the fourth read of the page index and the one
+        that does not filter — because it is handed page ids that came from
+        records search_plans already filtered. Looking those up by anything
+        other than id would be a way back in for a superseded page."""
+        src = inspect.getsource(server._pages_for_records)
+        self.assertIn('{"$in": [to_query_id(p) for p in seen]}', src)
+        # ANCHORED as a query key: the projection names sheet_number too, and
+        # a bare word would ban reading it as well as filtering on it.
+        self.assertNotIn('"sheet_number":', src)
 
-CHUNKS = [
-    {"chunk_type": "schedule", "sheet_number": "S-100.00", "text": "PILE SCHEDULE",
-     "payload": {"name": "PILE SCHEDULE", "columns": ["MARK", "TYPE", "QTY"],
-                 "rows": [["P1", "HP 12x53", "18"], ["P2", "HP 14x73", "6"]]}},
-    {"chunk_type": "specs", "sheet_number": "A-500.00",
-     "text": '7/8" CEMENT STUCCO ON LATH\nSTUCCO PER SPEC'},
-    {"chunk_type": "notes", "sheet_number": "P-100.00",
-     "text": "4. ROOF DRAINS SEE RISER DIAGRAM"},
-]
 
-
-class CountsAndAttributesComeFromTheText(unittest.TestCase):
-
-    def _ask(self, text, keywords=None, chunks=CHUNKS):
-        async def fake_chunks(pid):
-            return chunks
-        with mock.patch.object(server, "_current_v3_chunks", fake_chunks):
-            return _run(server._answer_plan_from_chunks(
-                "p1", text, {"keywords": keywords or []}))
-
-    def test_how_many_piles_sums_the_schedule(self):
-        has_v3, ans = self._ask("how many piles", ["piles"])
-        self.assertTrue(has_v3)
-        self.assertEqual(ans["outcome"], "chunk_count")
-        self.assertIn("S-100.00: 24", ans["text"])
-
-    def test_a_count_nobody_printed_is_not_stated_and_not_guessed(self):
-        _, ans = self._ask("how many roof drains", ["roof drains"])
-        self.assertEqual(ans["outcome"], "chunk_count_not_stated")
-        self.assertEqual(ans["text"],
-                         "Not stated on the indexed drawings. Mentioned on P-100.00.")
-
-    def test_stucco_thickness_quotes_the_line_with_the_value(self):
-        _, ans = self._ask("what's the stucco thickness")
-        self.assertEqual(ans["outcome"], "chunk_attribute")
-        self.assertIn('A-500.00: 7/8" CEMENT STUCCO ON LATH', ans["text"])
-        self.assertNotIn("PER SPEC", ans["text"])
-
-    def test_an_attribute_with_no_value_line_falls_to_the_vision_model(self):
-        has_v3, ans = self._ask("post gauge")
-        self.assertTrue(has_v3)
-        self.assertIsNone(ans)
-
-    def test_the_handler_asks_before_retrieving(self):
-        src = inspect.getsource(server._handle_plan_query)
-        self.assertLess(src.index("_answer_plan_from_chunks("),
-                        src.index("_retrieve_plan_candidates("))
-
-    def test_a_v3_spatial_question_goes_to_at_most_two_sheets(self):
-        # Was [:1]. Changed 2026-09-16: with one candidate a single timed-out
-        # vision call was the whole answer — "Whats the helical piles" spent
-        # 98 seconds to say "not found". Two sheets at
-        # PLAN_VQA_TIMEOUT_SECONDS still cost less than the one call did, and
-        # the point of the cap — not walking the whole set — is unchanged.
-        src = inspect.getsource(server._handle_plan_query)
-        self.assertIn("candidates = candidates[:2]", src)
-        self.assertLessEqual(server.PLAN_VQA_TIMEOUT_SECONDS * 2, 90.0)
+# ── WHERE THE COUNT AND ATTRIBUTE TESTS WENT ───────────────────────────────
+#
+# CountsAndAttributesComeFromTheText asked _answer_plan_from_chunks for a pile
+# count, a roof-drain count, a stucco thickness and a post gauge over a
+# hand-built chunk list. That function and the matcher under it are deleted.
+#
+# The same four questions are eval cases against the real corpus — pile-type,
+# roof-drain-count, stucco-wall-assembly and stud-gauge — where the answer is
+# checked against what the sheets print rather than against three chunks
+# written to agree with the code. One of them asserted an answer the gate now
+# refuses: "S-100.00: 24" is a sum of two schedule rows, and no cell prints it.
+#
+# eval/migrated-from-the-matcher.md maps each one.
 
 
 class ThePageRowAndItsChunks(unittest.TestCase):
@@ -587,14 +558,15 @@ class AVectorPageIsOneCallAndItsSpecPageIsStillChunked(unittest.TestCase):
         self.assertEqual(row["page_jpeg_r2_key"], "key")
 
     def test_a_spec_page_is_found_by_its_sheet_number(self):
+        """A spec page carries no sheet title and is kept out of the sheet
+        index the agent is shown — but "show me S-001" must still find it."""
         db = _Db()
         db.project_files.rows.append({"_id": "f1", "project_id": "p1"})
         db.document_page_index.rows.append({
             "_id": "s1", "project_id": "p1", "file_id": "f1", "sheet_number": "S-001.00",
             "is_spec_page": True, "sheet_title": None, "superseded_by": None})
         with mock.patch.object(server, "db", db):
-            hits = _run(server._retrieve_plan_candidates("p1", {"sheet_number": "S-001"},
-                                                         "show me S-001"))
+            hits = _run(server._find_named_sheet("p1", "S-001"))
         self.assertEqual([h["_id"] for h in hits], ["s1"])
 
 
@@ -697,9 +669,16 @@ class TheSkipThresholdDidNotMove(unittest.TestCase):
 
 class IndexingDoesNotLockOutWhatsApp(unittest.TestCase):
 
-    def test_the_daily_cap_counts_questions_only(self):
-        src = inspect.getsource(server._vision_budget_exceeded)
-        self.assertIn('"endpoint": {"$in": [VISION_WHATSAPP_VQA]}', src)
+    def test_there_is_no_per_question_vision_spend_left_to_cap(self):
+        """The daily cap existed because one question could cost a vision call
+        per candidate sheet, and indexing was deliberately kept out of it so a
+        big upload could not lock the crew out. Questions are answered from
+        records now: the cap and the call it capped are both gone, and
+        indexing is still metered on its own."""
+        self.assertFalse(hasattr(server, "_vision_budget_exceeded"))
+        self.assertFalse(hasattr(server, "VISION_DAILY_CAP_PER_PROJECT"))
+        self.assertIn("record_vision_call",
+                      inspect.getsource(server._index_single_page))
 
 
 class ChunksAreDeletedWithTheirPages(unittest.TestCase):

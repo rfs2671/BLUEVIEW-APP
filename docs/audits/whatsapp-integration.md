@@ -215,9 +215,9 @@ See surprise §7.4 for why most of those rows do not work.
 | voice transcription | Whisper | a DM voice note (`lib/voice_ingest.py`) | per-call USD in telemetry |
 | voice translation | gpt-4o-mini | a non-English transcript | per-call USD in telemetry |
 | plan indexing | Qwen2.5-VL-7B | **each page** of an uploaded PDF (`_index_single_page`, `server.py:39972`) | yes — `plan_index_page` |
-| plan visual Q&A | Qwen2.5-VL-7B | **each candidate sheet** while answering (`_qwen_visual_qa`, `server.py:40934`) | yes — `whatsapp_visual_qa` |
+| ~~plan visual Q&A~~ | ~~Qwen2.5-VL-7B~~ | **deleted 2026-09-17** — questions are answered from records, so a question costs no vision call | the `whatsapp_visual_qa` endpoint name is kept so the rows already written can still be read |
 
-The two Qwen rows are counted by `lib/vision_meter.py`, whose frozenset
+The remaining Qwen row is counted by `lib/vision_meter.py`, whose frozenset
 (`vision_meter.py:99`) names all four paid vision endpoints in the system. The
 units matter more than the coverage: a forty-sheet plan set is forty calls from
 one upload, and a plan question about something the drawings do not show costs
@@ -246,6 +246,29 @@ bug rather than a stale comment.
 ---
 
 ## 6. The plan pipeline
+
+> **Superseded, 2026-09-17.** Section 6's "Answering, on a question" describes
+> a pipeline that no longer exists. `_classify_plan_question`, the RRF fusion
+> of a vector rank and a keyword rank, `_pages_with_element`, the keyword
+> matcher in `lib/plan_extract.py` and `_qwen_visual_qa` are all deleted.
+>
+> A question is answered from typed records by `search_plans`
+> (`lib/plan_search.py`), ranked by the evidence behind them, and every
+> composed answer passes `gate_plan_answer`: a number that no returned record
+> prints is refused and replaced. The vision model is not asked questions at
+> all — it is used during indexing and nowhere else. `query_plan` sends the
+> sheet and answers nothing.
+>
+> The record of why, and what was lost with it, is
+> `backend/eval/migrated-from-the-matcher.md`. What the reader scores is
+> `backend/eval/boyland.json` and the runs in `backend/eval/results/`.
+>
+> Section 6's "There is no version awareness" is also out of date:
+> supersession by revision date and file-name date shipped 2026-09-15
+> (`_supersede_plan_pages`), and every read excludes superseded and deleted
+> pages through `_current_record_page_ids`.
+>
+> Indexing, below, still stands.
 
 ### Indexing, on upload
 
