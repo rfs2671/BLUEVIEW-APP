@@ -28,6 +28,17 @@ on:
     branches: [main]
   pull_request:
 
+# One run per branch: a rebase or force-push supersedes the run it replaces.
+# PR-triggered only -- see the note in tests.yml on why the OTA publish and the
+# post-deploy checks must never be cancellable.
+concurrency:
+  group: backend-import-smoke-${{ github.ref }}
+  # CANCEL A SUPERSEDED PR RUN, NEVER A MAIN-PUSH RUN. This workflow also
+  # runs on a push to main, and since tests.yml no longer does, these are
+  # the only post-merge verification left -- a second merge landing quickly
+  # must not cancel the first merge's check and leave it unverified.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   import-check:
     runs-on: ubuntu-latest
