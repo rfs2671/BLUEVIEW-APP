@@ -206,19 +206,59 @@ class TheSendPathEnforcesIt(unittest.TestCase):
 
 
 class TheDigestStopsBuildingTheList(unittest.TestCase):
-    """Belt and braces on the chokepoint: the one query that selected CPs by
-    role no longer does. The send-time filter would refuse them anyway; a list
-    of people who may not be written to is how a stale opt-in keeps looking
-    like an intention."""
+    """Belt and braces on the chokepoint: no query that feeds an email selects
+    a field role. The send-time filter would refuse them anyway; a list of
+    people who may not be written to is how a stale opt-in keeps looking like
+    an intention.
+
+    ── BOTH CHECKS BELOW READ CODE, NOT PROSE ──────────────────────────────
+
+    They read `server.py` off disk, and this file's subjects explain
+    themselves at length -- the resolver's own docstring now QUOTES the query
+    that was removed, in order to record why. Matched raw, the census counted
+    that explanation as an offender and the whole suite went red over a
+    paragraph saying the thing had been fixed.
+
+    That is the shape tests/source_text.py exists to end, and it had been found
+    five times before this one. `strip_python` removes docstrings and comments
+    and leaves the code, so these now measure what they are about.
+    """
 
     def setUp(self):
-        self.src = (_BACKEND / "server.py").read_text(encoding="utf-8")
+        from tests.source_text import strip_python
+        raw = (_BACKEND / "server.py").read_text(encoding="utf-8")
+        self.src = strip_python(raw)
         start = self.src.index("async def _resolve_renewal_digest_recipients")
         self.body = self.src[start:self.src.index("\nasync def", start + 10)]
 
-    def test_cp_is_gone_from_the_digest_query(self):
-        self.assertNotIn('"role": {"$in": ["pm", "cp"]}', self.body)
-        self.assertIn('"role": {"$in": ["pm"]}', self.body)
+    def test_no_field_role_is_selected_by_the_company_digest_query(self):
+        """STRONGER THAN WHEN THIS WAS WRITTEN, AND THE ASSERTION MOVED WITH IT.
+
+        #571 narrowed the opt-in cursor from `["pm", "cp"]` to `["pm"]`, and
+        this test pinned both halves of that. The roles work then removed the
+        cursor ENTIRELY: a Site Manager receives his own digest, scoped to his
+        assigned projects, from `_pm_digest_audiences` -- because this body
+        names every project the company runs and `require_project_access`
+        refuses him most of them.
+
+        So the `["pm"]` half was asserting the CURSOR'S EXISTENCE, which was
+        never the fact this file is about. The fact -- no field role is built
+        into this recipient list -- is now true of a query that does not exist
+        rather than of one that was narrowed, and is asserted that way.
+        """
+        self.assertNotIn('"$in"', self.body)
+        self.assertNotIn("renewal_digest_opt_in", self.body)
+        # AND IT STILL SELECTS THE PEOPLE IT IS FOR. Without this, an empty
+        # function passes every assertion above.
+        self.assertIn('"role": "admin"', self.body)
+        self.assertIn("renewal_digest_alias_email", self.body)
+
+    def test_the_pm_did_not_lose_his_digest_when_the_cursor_went(self):
+        """The removal above must not read as "Site Managers were dropped".
+        They were moved to a pass that can scope the BODY, which the shared one
+        cannot."""
+        self.assertIn("async def _pm_digest_audiences", self.src)
+        self.assertIn("_pm_digest_audiences(", self.src)
 
     def test_no_email_recipient_query_anywhere_selects_a_field_role(self):
         """THE CENSUS. Every users query that feeds an email must not name a
@@ -231,13 +271,24 @@ class TheDigestStopsBuildingTheList(unittest.TestCase):
             if roles & {"cp", "superintendent"}:
                 line = self.src[:m.start()].count("\n") + 1
                 # The in-app inbox and the permission checks legitimately name
-                # these roles; only EMAIL recipient queries are in scope, and
-                # they all live in the digest resolver.
+                # these roles; only EMAIL recipient queries are in scope.
                 window = self.src[max(0, m.start() - 2000):m.start()]
                 if "email" in window.lower() or "digest" in window.lower():
                     offenders.append(f"server.py:{line} {m.group(0)[:60]}")
         self.assertEqual(offenders, [], "email recipient query names a field "
                          "role: " + "; ".join(offenders))
+
+    def test_the_census_can_still_fail(self):
+        """A regex over a file it can no longer match is a check that passes
+        forever. The pattern is driven against a line of the shape it hunts, so
+        a refactor that breaks the regex is loud rather than green."""
+        import re
+        sample = '        "role": {"$in": ["pm", "cp"]},'
+        m = re.search(r'"role":\s*\{"\$in":\s*\[([^\]]*)\]', sample)
+        self.assertIsNotNone(m, "the census regex no longer matches its own "
+                                "subject")
+        roles = {r.strip().strip('"\'') for r in m.group(1).split(",")}
+        self.assertTrue(roles & {"cp", "superintendent"})
 
 
 if __name__ == "__main__":

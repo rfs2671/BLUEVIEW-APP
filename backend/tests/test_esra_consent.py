@@ -359,7 +359,28 @@ class TheSuperintendentRole(unittest.TestCase):
         spelling would be the fifth name for a thing already over-named here."""
         self.assertEqual(server.ROLE_SUPERINTENDENT, "superintendent")
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertIn('"cp", "superintendent"', src)
+        # ── THIS ASSERTION WAS PASSING ON A NEIGHBOUR ───────────────────────
+        #
+        # It used to read `self.assertIn('"cp", "superintendent"', src)`, and
+        # the only thing in server.py that matched was the CHECKLIST-CANDIDATE
+        # role list -- `("admin", "owner", "cp", "superintendent")` -- which has
+        # nothing to do with this test's subject. The role-split change pointed
+        # that list at the constants, the literal pair disappeared, and this
+        # went red while the fact it names was more true than before.
+        #
+        # WHAT IT MEANS IS THAT THIS FILE HAS ONE SPELLING OF THE ROLE, so that
+        # is what is asserted: the declaration, by name, and the absence of the
+        # abbreviation that would have been the fifth name for it.
+        self.assertIn('ROLE_SUPERINTENDENT = "superintendent"', src)
+        # AND ONE SPELLING ONLY: every role tuple names the CONSTANT. A bare
+        # `assertNotIn('"super"', src)` was tried here and is the shape
+        # test_absence_literals_are_specific.py exists to ban -- it matched the
+        # word inside the declaration's own comment, which says "superintendent",
+        # NOT "super".
+        self.assertIn('ROLES_REQUIRING_COMPANY = ("cp", ROLE_SUPERINTENDENT',
+                      src)
+        self.assertIn('ROLES_SCOPED_TO_ASSIGNED_PROJECTS = ("cp", ROLE_SUPERINTENDENT)',
+                      src)
 
     def test_it_is_recognised(self):
         self.assertTrue(server.is_superintendent({"role": "superintendent"}))

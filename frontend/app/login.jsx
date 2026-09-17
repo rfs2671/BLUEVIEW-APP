@@ -51,7 +51,15 @@ export default function LoginScreen() {
     if (isAuthenticated && !authLoading) {
       if (siteMode) {
         router.replace('/site');
-      } else if (user?.role === 'cp') {
+      } else if (LOGBOOK_LIST_ROLES.includes(user?.role)) {
+        // THE SAME LIST getRedirectPath USES, AND IT WAS NOT. This branch —
+        // the one that runs when an ALREADY-authenticated session lands on the
+        // login screen, which is every cold start with a live token — named
+        // only 'cp'. So the superintendent fix above applied on the day he
+        // typed his password and never again: the next launch dropped him on
+        // '/', the admin dashboard, which renders neither the logbook list nor
+        // the CP nav. Two spellings of one rule, and only one of them was
+        // fixed.
         router.replace('/logbooks');
       } else {
         router.replace('/');

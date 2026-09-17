@@ -46,7 +46,12 @@ const adminActions = [
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
-  { title: 'Superintendents', subtitle: 'CS one-job rule', path: '/admin/superintendent', icon: HardHat },
+  // NARROWED, NOT REMOVED. A superintendent who holds an account is
+  // registered from User Management now; this tile is what is left for the
+  // one case that cannot go there — a super with no account, i.e. another
+  // company's on a joint site. See the header of app/admin/superintendent.jsx
+  // for why the tab is not retired yet.
+  { title: 'Outside supers', subtitle: 'No-account CS registration', path: '/admin/superintendent', icon: HardHat },
   { title: 'Safety Staff', subtitle: 'SSC / SSM registry', path: '/admin/safety-staff', icon: Shield },
   // A ROUTE WITH NO LINK IS NOT SHIPPED. `app/admin/device-capabilities.jsx`
   // has existed and worked since the viewer probe landed, and NOTHING

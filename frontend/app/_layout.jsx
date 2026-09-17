@@ -256,7 +256,13 @@ function RouteGuard() {
     // CP user exists but has no company assignment — authenticated but every
     // company-gated API endpoint will 403. Contain them to safe paths and surface
     // a clear action instead of a cascade of silent errors.
-    if (user?.role === 'cp' && !user?.company_id) {
+    // `isCp` AND NOT `role === 'cp'`. Both roles hard-require a company
+    // server-side (ROLES_REQUIRING_COMPANY), so a superintendent without one is
+    // in exactly the state this containment exists for — every company-gated
+    // endpoint 403s and the session merely looks broken — and he was reaching
+    // none of it, because the fix that widened the line above was not applied
+    // to this one. Same rule, second spelling.
+    if (isCp && !user?.company_id) {
       if (!cpNoCompanyPathAllowed(pathname)) {
         router.replace(CP_HOME);
         if (toast && typeof toast.error === 'function') {
