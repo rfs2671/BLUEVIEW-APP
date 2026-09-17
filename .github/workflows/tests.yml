@@ -228,3 +228,14 @@ jobs:
       - name: Every tap target clears the 56pt floor
         working-directory: frontend
         run: node scripts/touch-targets.cjs --dist dist --port 5811
+
+      # WHICH BUTTONS A ROLE GETS, AND WHETHER THEIR LABELS FIT. A
+      # superintendent's card carries Registration and no Assign — his projects
+      # ARE his active registrations, so Assign would be a second writer of a
+      # set that now has one owner. "Registration" is twelve characters where
+      # "Assign" was six, and whether that wraps at the operator's 443px window
+      # is the product of the font, the icon, the gap and the card width: not a
+      # fact any source-text check can reach. Reuses the same dist and Chromium.
+      - name: The user-card action row fits, and holds the right buttons
+        working-directory: frontend
+        run: node scripts/admin-users-card-actions.cjs --dist dist --port 5812

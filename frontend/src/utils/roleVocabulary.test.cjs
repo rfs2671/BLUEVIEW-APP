@@ -116,7 +116,72 @@ check('the Add and Edit modals render the same picker', () => {
 });
 
 check('the picker is driven by the module and not by a second inline list', () => {
-  ok(SCREEN.includes('ASSIGNABLE_ROLES.map('), 'users.jsx no longer maps the shared list');
+  // It maps `rolesAssignableBy(...)` rather than the raw list now — the module
+  // is still the single source, and WHICH of its entries appear is the module's
+  // answer too. What must never come back is a hand-written list of roles in
+  // the JSX.
+  ok(/rolesAssignableBy\(/.test(SCREEN),
+    'users.jsx no longer asks the module which roles this principal may assign');
+  ok(SCREEN.includes('rolePickerOptions.map('),
+    'users.jsx no longer maps the module-derived list');
+  ok(!/value:\s*'(admin|cp|pm|superintendent)'/.test(SCREEN),
+    'a second inline role list is back in users.jsx');
+});
+
+// ── 3b. AND WHAT IT OFFERS DEPENDS ON WHO IS LOOKING ────────────────────────
+//
+// Operator ruling: a company admin manages PM, Superintendent and CP. Admin
+// accounts are created by the platform operator in the owner panel.
+//
+// THE TWO HALVES OF THIS RULING ARE ONE CHANGE. `GET /admin/users` hides admin
+// rows from a company admin; if the picker still offered "Admin" he could
+// create an account and watch it vanish on the next refresh — the #576 defect
+// ("created users don't vanish") arriving from the server end. A product may
+// refuse an act or hide its result. Doing both is the bug.
+
+check('a company admin is offered the three he manages, in order', () => {
+  eq(V.rolesAssignableBy(false).map((r) => r.value),
+    ['pm', 'superintendent', 'cp'], 'company admin picker');
+});
+
+check('and Admin is not among them', () => {
+  ok(!V.rolesAssignableBy(false).some((r) => r.value === 'admin'),
+    'a company admin is still offered Admin');
+});
+
+check('the platform operator keeps all four', () => {
+  eq(V.rolesAssignableBy(true).map((r) => r.value),
+    V.ASSIGNABLE_ROLE_VALUES, 'operator picker');
+});
+
+check('absent must not read as operator', () => {
+  // `isPlatformOperator` returns `=== true` for exactly this reason: a cached
+  // principal from disk, an older deploy or a site-device shape may carry no
+  // flag at all, and `!== false` would make every one of those the operator.
+  for (const notTrue of [undefined, null, 0, '', 'true', {}]) {
+    ok(!V.rolesAssignableBy(notTrue).some((r) => r.value === 'admin'),
+      `${JSON.stringify(notTrue)} was treated as the operator`);
+  }
+});
+
+check('the three it offers are the three the server scopes the list to', () => {
+  // THE IDENTITY, read out of both files. The picker and `ADMIN_MANAGED_ROLES`
+  // are one list: a role the picker can write but the list filter hides is an
+  // account that vanishes, and a role the filter shows but the picker cannot
+  // write is a row nobody can create.
+  const at = SERVER.indexOf('ADMIN_MANAGED_ROLES = (');
+  ok(at >= 0, 'backend/server.py no longer declares ADMIN_MANAGED_ROLES');
+  const body = SERVER.slice(at + 'ADMIN_MANAGED_ROLES = ('.length,
+    SERVER.indexOf(')', at));
+  const constant = (name) => {
+    const m = SERVER.match(new RegExp(`^${name} = "([a-z_]+)"`, 'm'));
+    ok(m, `backend/server.py no longer declares ${name}`);
+    return m[1];
+  };
+  const server = body.split(',').map((t) => t.trim()).filter(Boolean)
+    .map((t) => ((t.startsWith('"') || t.startsWith("'")) ? t.slice(1, -1) : constant(t)));
+  eq(V.rolesAssignableBy(false).map((r) => r.value), server,
+    'picker vs the server\'s managed-role scope');
 });
 
 // ── 4. EVERY ROLE IS EXPLAINED ──────────────────────────────────────────────
@@ -202,6 +267,122 @@ check('an unrecorded registration gets a badge and a valid one does not', () => 
   eq(V.licenceSentence({ state: 'ok', days_remaining: 400 }), null, 'ok is silent');
   eq(V.licenceSentence(null), null, 'no licence block at all');
   eq(V.licenceSentence(undefined), null, 'undefined');
+});
+
+// ── 7b. THE SENTENCE IS ABOUT THE FACT IT MEASURED ──────────────────────────
+//
+// WHAT PRODUCTION HELD. `dob_superintendent_number: '32299'` — the operator
+// typed it and the save landed — and `dob_registration_expiry: '07/212029'`,
+// which is '07/21/2029' with a slash missing. The old verdict was derived from
+// the EXPIRY alone, so it came back `unknown`, and this function rendered
+// `unknown` as "No DOB registration recorded". A sentence about the NUMBER,
+// drawn from a measurement of the DATE, three feet from the number.
+
+check('a recorded number never reads as "no registration recorded"', () => {
+  const note = V.licenceSentence({
+    state: 'unreadable', registered: true, number: '32299',
+    expires_on: '07/212029',
+  });
+  ok(note !== null, 'silent about an unreadable date');
+  ok(!/No DOB registration recorded/.test(note.text), note.text);
+});
+
+check('and the unreadable date names itself, so the typo is visible', () => {
+  const note = V.licenceSentence({
+    state: 'unreadable', registered: true, expires_on: '07/212029',
+  });
+  ok(note.text.includes('07/212029'), note.text);
+  ok(note.text.includes('YYYY-MM-DD'), note.text);
+  eq(note.tone, 'error', 'tone');
+});
+
+check('an absent expiry is a different sentence from an unreadable one', () => {
+  const missing = V.licenceSentence({ state: 'unknown', registered: true });
+  const garbled = V.licenceSentence({
+    state: 'unreadable', registered: true, expires_on: 'soon',
+  });
+  ok(missing.text !== garbled.text,
+    'a typo and an empty field still render identically');
+  ok(!/No DOB registration recorded/.test(missing.text), missing.text);
+});
+
+check('no number at all is the one case that says so', () => {
+  const note = V.licenceSentence({ state: 'unknown', registered: false });
+  eq(note.text, 'No DOB registration recorded', 'unregistered');
+});
+
+check('and it wins over every date verdict', () => {
+  // Without a number there is no registration for a date to be about, so
+  // "expires in 9 days" would be the screen asserting one nobody recorded.
+  eq(V.licenceSentence({ state: 'expiring', days_remaining: 9, registered: false }).text,
+    'No DOB registration recorded', 'expiring, unregistered');
+  eq(V.licenceSentence({ state: 'expired', registered: false }).text,
+    'No DOB registration recorded', 'expired, unregistered');
+});
+
+check('an older deploy sending no `registered` key does not badge everybody', () => {
+  // ABSENT MUST NOT READ AS UNREGISTERED. During a rollout the client can be
+  // ahead of the server, and `registered == null` would put "No DOB
+  // registration recorded" on every superintendent in the product.
+  eq(V.licenceSentence({ state: 'ok', days_remaining: 400 }), null, 'ok, no key');
+  const note = V.licenceSentence({ state: 'expired' });
+  eq(note.text, 'DOB registration EXPIRED', 'expired, no key');
+});
+
+// ── 8. THE FORM REFUSES WHAT THE SERVER CANNOT READ BACK ────────────────────
+
+check('the real typo is refused', () => {
+  ok(V.licenceExpiryError('07/212029') !== null, "'07/212029' was accepted");
+});
+
+check('an ISO date is accepted', () => {
+  eq(V.licenceExpiryError('2029-07-21'), null, 'the date he meant');
+});
+
+check('blank is an absence and not an error', () => {
+  // An admin who left it empty has not made a mistake; he has recorded nothing,
+  // and the badge says so in its own words. Refusing '' would make clearing an
+  // expiry impossible.
+  for (const blank of ['', '   ', null, undefined]) {
+    eq(V.licenceExpiryError(blank), null, JSON.stringify(blank));
+  }
+});
+
+check('a date that is not on the calendar is refused', () => {
+  for (const raw of ['2029-02-30', '2029-13-01', '2029-00-10', '2029-01-32',
+    '2026-02-29']) {
+    ok(V.licenceExpiryError(raw) !== null, `${raw} was accepted`);
+  }
+});
+
+check('and a leap day in a leap year is not', () => {
+  eq(V.licenceExpiryError('2028-02-29'), null, '2028 is a leap year');
+  eq(V.licenceExpiryError('2000-02-29'), null, '2000 is a leap year');
+  ok(V.licenceExpiryError('2100-02-29') !== null, '2100 is not');
+});
+
+check('the shapes a human actually types are refused by name', () => {
+  for (const raw of ['07/21/2029', '21-07-2029', '2029/07/21', 'soon', '2029',
+    '2029-7-21', ' 2029-07-21 extra']) {
+    ok(V.licenceExpiryError(raw) !== null, `${raw} was accepted`);
+  }
+});
+
+check('the validator and the badge agree about what is readable', () => {
+  // THE IDENTITY, not two lists. Anything the form admits must not come back
+  // from the server as `unreadable`; the server asserts the same thing from
+  // its side with its own parser (test_the_registration_warning_reads_the_number).
+  for (const raw of ['2029-07-21', '2028-02-29', '2026-12-31']) {
+    eq(V.licenceExpiryError(raw), null, raw);
+  }
+});
+
+check('the screen blocks the save rather than posting it', () => {
+  // The field message is the courtesy; not sending it is what stops the value
+  // reaching the database. Both handlers, because Edit is the route the real
+  // typo came through.
+  const calls = (SCREEN.match(/licenceExpiryError\(formDobExpiry\)/g) || []).length;
+  ok(calls >= 3, `expected the create path, the edit path and the field, found ${calls}`);
 });
 
 check('the badge does not recompute the date', () => {
