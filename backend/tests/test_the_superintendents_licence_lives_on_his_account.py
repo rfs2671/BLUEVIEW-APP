@@ -96,9 +96,30 @@ class UnknownIsNotOk(unittest.TestCase):
         for blank in ("", "   "):
             self.assertEqual(_state(blank)["state"], server.LICENCE_UNKNOWN)
 
-    def test_a_date_nobody_can_parse_is_unknown_and_not_a_crash(self):
-        for junk in ("2027", "soon", "12/31/2027", "next year", "0000-00-00"):
-            self.assertEqual(_state(junk)["state"], server.LICENCE_UNKNOWN, junk)
+    def test_a_date_nobody_can_parse_is_UNREADABLE_and_not_a_crash(self):
+        """THIS ASSERTED `LICENCE_UNKNOWN` AND THE RULING CHANGED IT.
+
+        Not a stricter version of the same rule — the opposite conclusion about
+        what the two facts are. The old docstring called the conflation
+        deliberate and for DISPLAY it was sound: neither an absent expiry nor an
+        unreadable one is a date anybody can act on.
+
+        WHAT IT COST WAS DISCOVERY, IN PRODUCTION. '07/212029' — '07/21/2029'
+        with a slash missing — was saved on a real account and read back as
+        `unknown`, which the screen renders as "No DOB registration recorded",
+        a sentence about the registration NUMBER, which was recorded. A typo and
+        an empty field produced the same state, so nothing anywhere could find
+        the row and say somebody had typed something that did not take.
+
+        STILL NOT A CRASH, which is the half of this test that did not change.
+        """
+        for junk in ("2027", "soon", "12/31/2027", "next year", "0000-00-00",
+                     "07/212029"):
+            self.assertEqual(_state(junk)["state"], server.LICENCE_UNREADABLE, junk)
+
+    def test_and_it_is_a_different_state_from_an_absent_one(self):
+        self.assertNotEqual(server.LICENCE_UNKNOWN, server.LICENCE_UNREADABLE)
+        self.assertNotEqual(_state("soon")["state"], _state(None)["state"])
 
     def test_unknown_carries_no_days_remaining(self):
         """A number here would be read as a countdown to something."""

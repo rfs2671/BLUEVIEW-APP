@@ -191,23 +191,58 @@ class TheFlaggedOperatorKeepsTheCrossTenantView(Base):
         self.assertEqual(self.names(user), set())
 
 
-class TheRoleIsNeverConsultedForTenancyAgain(unittest.TestCase):
+class TheCallersRoleIsNeverConsultedForTenancyAgain(unittest.TestCase):
     """The regression guard. The defect was a ROLE STRING standing in for a
-    trust decision, so the check is that the role has left the filter."""
+    trust decision about the CALLER, so the check is that the caller's role has
+    left the filter.
 
-    def test_the_tenant_filter_does_not_mention_the_role(self):
+    ── IT USED TO SAY `assertNotIn('"role"')` AND THAT BECAME WRONG ─────────
+
+    Not because the defect came back — because a SECOND, unrelated use of the
+    word arrived. A company admin now sees only the three roles he manages, so
+    the query carries `query["role"] = {"$in": ADMIN_MANAGED_ROLES}`: the ROW's
+    role, deciding which rows a scoped caller is shown.
+
+    THOSE ARE OPPOSITE THINGS AND THE OLD ASSERTION COULD NOT TELL THEM APART.
+    Reading `current_user["role"]` to decide WHOSE COMPANY leaked every user on
+    the platform. Filtering rows BY role leaks nothing at all — it can only ever
+    return fewer rows. So the guard is restated onto what it means: the caller's
+    role is not read here, and the flag is what separates him.
+
+    A token scan would have had to be relaxed or deleted. Restating it keeps a
+    guard that still fails on the thing it was written for — asserted below by
+    naming the exact expressions the defect was made of.
+    """
+
+    def _code(self):
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         i = src.index("async def get_admin_users(")
         j = src.index("USER_LIST_FIELDS = {", i)
-        body = src[i:j]
         # Comments explain the removed condition by quoting it, so read the
         # code: this is the trap the harness doc records four times.
-        code = "\n".join(l for l in body.split("\n")
+        return "\n".join(l for l in src[i:j].split("\n")
                          if not l.lstrip().startswith("#"))
-        self.assertNotIn('"role"', code,
-                         "the role is back in the tenant decision")
+
+    def test_the_callers_role_is_not_read_in_the_tenant_decision(self):
+        code = self._code()
+        for expr in ('current_user.get("role")', "current_user.get('role')",
+                     'current_user["role"]', "current_user['role']"):
+            self.assertNotIn(expr, code,
+                             "the caller's role is back in the tenant decision")
+
+    def test_and_the_flag_is_what_separates_him(self):
+        code = self._code()
         self.assertIn("is_platform_operator(current_user)", code)
         self.assertIn('query["_id"] = None', code)
+
+    def test_any_role_clause_is_about_the_ROW_and_names_the_ruling(self):
+        """A `role` in this query must be the managed-role scope and nothing
+        else. Pinned by name so a future `query["role"] = current_user[...]`
+        cannot arrive wearing the same three letters."""
+        code = self._code()
+        if 'query["role"]' in code:
+            self.assertIn("ADMIN_MANAGED_ROLES", code,
+                          "a role clause that is not the managed-role scope")
 
 
 if __name__ == "__main__":

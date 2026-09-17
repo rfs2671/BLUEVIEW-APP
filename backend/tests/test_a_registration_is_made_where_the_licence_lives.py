@@ -308,25 +308,87 @@ class TheLicenceComesOffTheRecord(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
 
-# ── HIS ASSIGNMENTS ONLY ────────────────────────────────────────────────────
+# ── HIS COMPANY'S PROJECTS, AND THE TENANT CHECK THAT USED TO BE IMPLIED ────
 
-class OnlyProjectsHeIsAssignedTo(unittest.TestCase):
-    def test_a_project_he_is_not_assigned_to_is_refused(self):
-        db = _db(regs=[])
+class ThePickerOffersTheCompanysProjects(unittest.TestCase):
+    """THIS CLASS WAS `OnlyProjectsHeIsAssignedTo` AND THE RULING WITHDREW IT.
+
+    Registration now does both: registering him on a project writes the row AND
+    assigns it, so `assigned_projects` is an OUTPUT of this screen rather than
+    the gate on its input. Left as it was, the picker would offer exactly the
+    set already ticked — and a superintendent created this morning, with no
+    assignments and no Assign button on his card, could never be registered on
+    anything at all.
+
+    THE HALF THAT MUST SURVIVE IS THE TENANT CHECK, AND IT WAS INVISIBLE.
+    `foreign = wanted - assigned` was doing two jobs: enforcing the withdrawn
+    rule, and INHERITING the company check, because everything in
+    `assigned_projects` had already been through `validate_assignable_projects`
+    on the way in. Dropping the first without restating the second would have
+    made this endpoint a way to mint cross-tenant access — the add writes the
+    id straight into `assigned_projects`, which `require_project_access`
+    honours. So it is asked here now, by name, and asserted here too.
+    """
+
+    def test_a_project_in_another_company_is_refused(self):
+        db = _db(regs=[], projects=[
+            {"_id": THOMAS, "name": "588 Thomas", "company_id": COMPANY,
+             "is_deleted": False},
+            {"_id": UNASSIGNED, "name": "Another Tenant's Job",
+             "company_id": "company-b", "is_deleted": False},
+        ])
         with self.assertRaises(HTTPException) as ctx:
             _put(db, [UNASSIGNED])
-        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertEqual(ctx.exception.status_code, 403)
         self.assertEqual(db.cs_registrations.inserted, [])
 
-    def test_the_picker_offers_his_assignments(self):
+    def test_and_an_unknown_project_id_is_refused_the_same_way(self):
+        """One message for foreign AND unknown: distinguishing them would
+        confirm the existence of another tenant's project id."""
+        db = _db(regs=[])
+        with self.assertRaises(HTTPException) as ctx:
+            _put(db, ["no-such-project"])
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_the_picker_offers_every_project_in_his_company(self):
+        """Including the one he is NOT assigned to — which is the whole point:
+        that is how he gets assigned to it."""
         out = _get(_db())
-        self.assertEqual([p["project_id"] for p in out["selectable"]],
-                         [THOMAS, OTHER])
+        self.assertEqual({p["project_id"] for p in out["selectable"]},
+                         {THOMAS, OTHER, UNASSIGNED})
+
+    def test_he_can_be_registered_on_a_project_he_was_never_assigned_to(self):
+        db = _db(user=_michael(assigned=()), regs=[])
+        out = _put(db, [THOMAS])
+        self.assertEqual([a["project_id"] for a in out["added"]], [THOMAS])
+
+    def test_and_that_registration_is_what_assigns_it(self):
+        """THE INVARIANT. His assigned projects ARE his active registrations —
+        one act, both writes, so a project cannot appear on one side only."""
+        db = _db(user=_michael(assigned=()), regs=[])
+        _put(db, [THOMAS])
+        him = next(u for u in db.users.rows if u["_id"] == MICHAEL)
+        self.assertEqual(him["assigned_projects"], [THOMAS])
+
+    def test_unregistering_removes_the_assignment_too(self):
+        """The direction that matters for access. An assignment left behind is
+        a live authorization grant: `require_project_access` honours
+        `assigned_projects`, so he would go on reaching a job he is no longer
+        the registered CS on."""
+        db = _db()
+        _put(db, [])
+        him = next(u for u in db.users.rows if u["_id"] == MICHAEL)
+        self.assertEqual(him["assigned_projects"], [])
 
     def test_the_picker_is_seeded_from_the_ROWS_not_from_the_assignments(self):
         """THE SEED DECIDES WHAT A SAVE DELETES. He is assigned to two projects
         and registered on one; if the client seeded from assignments, the first
-        save would silently register him on the second."""
+        save would silently register him on the second.
+
+        STILL TRUE, AND NOW LOAD-BEARING IN A SECOND WAY: under the invariant
+        the two sets agree, so a seed taken from the wrong one would be right
+        almost always — and wrong exactly on the account somebody had edited by
+        hand."""
         out = _get(_db())
         self.assertEqual(out["registered_project_ids"], [THOMAS])
 
@@ -361,13 +423,36 @@ class ARemovedRegistrationIsSoftDeleted(unittest.TestCase):
 
 
 class ItNeverTouchesWhatTheScreenCannotShow(unittest.TestCase):
-    """Michael's row the day somebody unassigns him from 588 Thomas. It cannot
-    appear in a multi-select of his assigned projects, so a de-selection pass
-    over every row would delete something the admin was never shown."""
+    """A live row the picker cannot draw. A de-selection pass over EVERY row
+    would retire something the admin was never shown.
+
+    ── THE SET IS NEW; THE RULE IS NOT ─────────────────────────────────────
+
+    This used to be "registered on 588, no longer assigned to it" — invisible
+    because the picker showed his assignments. Under the ruling his assignments
+    ARE his registrations, so that shape cannot occur and, more importantly,
+    scoping the delete to a list this endpoint itself writes would make its own
+    previous output the boundary of its next write. That is not a boundary.
+
+    The set that survives is "outside what the picker offers", which is now the
+    company's projects: a registration on another tenant's job, or on one that
+    has been deleted. Michael holds none today — the invariant is intact in
+    production — which is exactly why `registered_elsewhere` is worth keeping.
+    It is empty forever, so a non-empty one is the divergence reporting itself.
+    """
 
     def setUp(self):
-        # Registered on 588, no longer assigned to it.
-        self.db = _db(user=_michael(assigned=(OTHER,)))
+        # Registered on 588 Thomas, which now belongs to another company — the
+        # shape a project transfer or a mis-set company_id would produce.
+        self.db = _db(
+            user=_michael(assigned=(OTHER,)),
+            projects=[
+                {"_id": THOMAS, "name": "588 Thomas", "company_id": "company-b",
+                 "is_deleted": False},
+                {"_id": OTHER, "name": "Other Job", "company_id": COMPANY,
+                 "is_deleted": False},
+            ],
+        )
 
     def test_a_save_that_omits_it_leaves_it_alone(self):
         out = _put(self.db, [OTHER])

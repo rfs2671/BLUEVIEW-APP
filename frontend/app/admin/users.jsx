@@ -34,7 +34,7 @@ import FloatingNav from '../../src/components/FloatingNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isPlatformOperator } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI, versionAPI } from '../../src/utils/api';
 import { isBehindMinimum } from '../../src/utils/clientVersion';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -43,8 +43,9 @@ import { retentionSentence, drainWarning, accessRemovedSentence } from '../../sr
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
-  ASSIGNABLE_ROLES, ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
-  licenceSentence,
+  ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
+  licenceSentence, rolesAssignableBy, licenceExpiryError,
+  LICENCE_EXPIRY_FORMAT,
 } from '../../src/utils/roleVocabulary';
 
 export default function AdminUsersScreen() {
@@ -176,6 +177,13 @@ export default function AdminUsersScreen() {
       toast.error('Error', 'Please fill in all required fields');
       return;
     }
+    // A DATE THE SERVER CANNOT READ IS NOT SENT. Stored, it reads back as
+    // nothing and the row reports a missing registration NUMBER — see
+    // licenceExpiryError.
+    if (roleHasLicence(formRole) && licenceExpiryError(formDobExpiry)) {
+      toast.error('Check the expiry', licenceExpiryError(formDobExpiry));
+      return;
+    }
 
     try {
       const payload = {
@@ -192,12 +200,17 @@ export default function AdminUsersScreen() {
         if (formDobNumber.trim()) payload.dob_superintendent_number = formDobNumber.trim();
         if (formDobExpiry.trim()) payload.dob_registration_expiry = formDobExpiry.trim();
       }
-      const newUser = await adminUsersAPI.create(payload);
-      
-      setUsers([...users, newUser]);
+      await adminUsersAPI.create(payload);
+
       resetForm();
       setShowAddModal(false);
       toast.success('Added', 'User created successfully');
+      // THE LIST IS RE-READ RATHER THAN APPENDED TO, for the reason the edit
+      // path gives: `licence` is derived by the server and a row built from
+      // the create response would carry a badge nobody computed. It is also
+      // the only thing that shows a new superintendent in the right ORDER —
+      // the list is sorted by name on the server, and an append puts him last.
+      fetchData();
     } catch (error) {
       console.error('Failed to create user:', error);
       // Nothing is queued offline — be explicit that the user was NOT created.
@@ -217,7 +230,13 @@ export default function AdminUsersScreen() {
       toast.error('Error', 'You cannot edit your own account');
       return;
     }
-    
+    // The same refusal as the Add path, for the same reason. This is the route
+    // '07/212029' actually came through.
+    if (roleHasLicence(formRole) && licenceExpiryError(formDobExpiry)) {
+      toast.error('Check the expiry', licenceExpiryError(formDobExpiry));
+      return;
+    }
+
     try {
       const updatePayload = {
         name: formName,
@@ -231,16 +250,23 @@ export default function AdminUsersScreen() {
       }
       await adminUsersAPI.update(selectedUser.id, updatePayload);
 
-      const updated = users.map(u =>
-        u.id === selectedUser.id
-          ? { ...u, name: formName, email: formEmail, role: formRole, phone: formPhone.trim() || u.phone }
-          : u
-      );
-      
-      setUsers(updated);
       resetForm();
       setShowEditModal(false);
       toast.success('Updated', 'User updated successfully');
+      // ── THE CARD REFETCHES, IT DOES NOT PATCH ITSELF ───────────────────
+      //
+      // THIS PATCHED FOUR FIELDS IN LOCAL STATE and left every DERIVED field
+      // stale — including `licence`, which is the block the DOB warning is
+      // drawn from and which only the server computes. So saving a
+      // registration number fixed the account and NOT the badge: the warning
+      // stayed on screen until the admin pulled to refresh, which from the
+      // device is indistinguishable from the save not having landed.
+      //
+      // IT COSTS NO NEW ENDPOINT. `USER_LIST_FIELDS` already projects the
+      // number, the expiry and the card URL, and the badge is derived per row
+      // inside GET /admin/users — so the list call the screen already makes
+      // carries everything the badge reads.
+      fetchData();
     } catch (error) {
       console.error('Failed to update user:', error);
       if (isOfflineError(error)) {
@@ -452,13 +478,27 @@ export default function AdminUsersScreen() {
   // nothing could enumerate what the screen offers. The list is
   // src/utils/roleVocabulary.js now, and roleVocabulary.test.cjs holds it in
   // step with the server's allow-list.
+  //
+  // ── AND WHAT IT OFFERS DEPENDS ON WHO IS LOOKING ──────────────────────────
+  //
+  // A company admin manages PM, Superintendent and CP; admin accounts are the
+  // platform operator's, created in the owner panel. Leaving "Admin" on his
+  // picker would let him create an account that vanishes from this very list
+  // on the next refresh — the #576 defect ("created users don't vanish")
+  // arriving from the server end instead of the client one.
+  //
+  // THE SERVER REFUSES IT ANYWAY (`assert_role_assignable_by`, 403). This is
+  // the courtesy half: a button that produces a refusal is a worse screen than
+  // no button.
+  const rolePickerOptions = rolesAssignableBy(isPlatformOperator(user));
+
   const renderRolePicker = () => {
-    const chosen = ASSIGNABLE_ROLES.find((r) => r.value === formRole);
+    const chosen = rolePickerOptions.find((r) => r.value === formRole);
     return (
       <View style={s.roleSelectorBlock}>
         <Text style={s.roleSelectorLabel}>Role:</Text>
         <View style={s.roleSelector}>
-          {ASSIGNABLE_ROLES.map((role) => (
+          {rolePickerOptions.map((role) => (
             <Pressable
               key={role.value}
               onPress={() => setFormRole(role.value)}
@@ -478,6 +518,25 @@ export default function AdminUsersScreen() {
     );
   };
 
+  // ── THE EXPIRY, CHECKED WHILE HE TYPES IT ────────────────────────────────
+  //
+  // '07/212029' — '07/21/2029' with a slash missing — was typed into this
+  // field, posted as free text, and SAVED. The server reads ISO, so it read
+  // back as nothing at all, and the row then said "No DOB registration
+  // recorded" about an account whose registration NUMBER was right there.
+  //
+  // From the device, a save that stores something unreadable is
+  // indistinguishable from a save that failed. The operator typed it twice.
+  //
+  // COMPUTED ON EVERY RENDER RATHER THAN ON BLUR OR ON SUBMIT: a message that
+  // waits for submit is a message that arrives after he has stopped looking at
+  // the field. The rule itself is in roleVocabulary.js, so the suite can ask it
+  // questions; the server refuses the same value with the same format in its
+  // 422, and that is the gate.
+  const dobExpiryError = roleHasLicence(formRole)
+    ? licenceExpiryError(formDobExpiry)
+    : null;
+
   // The licence block, shown only for the one role that holds a licence.
   const renderLicenceFields = () => {
     if (!roleHasLicence(formRole)) return null;
@@ -493,13 +552,16 @@ export default function AdminUsersScreen() {
         <GlassInput
           value={formDobExpiry}
           onChangeText={setFormDobExpiry}
-          placeholder="Registration expiry (YYYY-MM-DD)"
+          placeholder={`Registration expiry (${LICENCE_EXPIRY_FORMAT})`}
           autoCapitalize="none"
           style={s.inputSpacing}
         />
+        {dobExpiryError ? (
+          <Text style={s.licenceError}>{dobExpiryError}</Text>
+        ) : null}
         {/* SAID OUT LOUD, because an admin who leaves it blank has not recorded
-            "no expiry" — he has recorded nothing, and the row will read "No DOB
-            registration recorded" rather than looking valid. */}
+            "no expiry" — he has recorded nothing, and the row will read "DOB
+            registration expiry not recorded" rather than looking valid. */}
         <Text style={s.licenceHint}>
           Warns {'≥'}30 days before expiry. Left blank, this account shows as
           unchecked rather than as valid.
@@ -676,15 +738,24 @@ export default function AdminUsersScreen() {
                     )}
 
                     <View style={s.userActions}>
-                      <GlassButton
-                        title="Assign"
-                        icon={<FolderOpen size={14} color={colors.text.primary} />}
-                        onPress={() => openAssignModal(userItem)}
-                        style={s.actionBtn}
-                      />
-                      {/* ONLY FOR THE ROLE THAT HOLDS A REGISTRATION. An
-                          admin or a CP has no DOB licence, so there is nothing
-                          for this button to write. */}
+                      {/* ── ONE BUTTON OR THE OTHER, NEVER BOTH ───────────
+                          A SUPERINTENDENT'S PROJECTS ARE HIS REGISTRATIONS.
+                          Registering him on a job writes the cs_registrations
+                          row AND assigns the project; unregistering retires
+                          the row AND removes the assignment. Assign would be a
+                          second writer of one side of that — a project on his
+                          list with no registration behind it, which he can
+                          open and cannot file on, because the BC 3301.13.13
+                          gate keys on the REGISTRATION and never on the
+                          assignment.
+
+                          THE SERVER REFUSES IT TOO (POST /assign-projects and
+                          PUT /admin/users both 422 for this role). Removing
+                          the button is the courtesy; the refusal is the rule.
+
+                          CP AND PM KEEP ASSIGN. They hold no registration, so
+                          for them the assignment list IS the grant and this is
+                          the only place it is written. */}
                       {roleHasLicence(userItem.role) ? (
                         <GlassButton
                           title="Registration"
@@ -692,7 +763,14 @@ export default function AdminUsersScreen() {
                           onPress={() => openCsModal(userItem)}
                           style={s.actionBtn}
                         />
-                      ) : null}
+                      ) : (
+                        <GlassButton
+                          title="Assign"
+                          icon={<FolderOpen size={14} color={colors.text.primary} />}
+                          onPress={() => openAssignModal(userItem)}
+                          style={s.actionBtn}
+                        />
+                      )}
                       <GlassButton
                         title="Edit"
                         icon={<Edit3 size={14} color={colors.text.primary} />}
@@ -857,10 +935,14 @@ export default function AdminUsersScreen() {
 
                   <Text style={s.csSectionLabel}>REGISTERED ON</Text>
                   {(csState.selectable || []).length === 0 ? (
+                    /* THE SENTENCE HAD TO CHANGE WITH THE RULING. It read
+                       "Assign him first" — advice for a button that is no
+                       longer on his card, pointing at a prerequisite that no
+                       longer exists. The picker now offers the company's
+                       projects, so an empty list means the COMPANY has none. */
                     <Text style={s.csEmpty}>
-                      He is not assigned to any project yet. Assign him first —
-                      a superintendent can only be registered on a job he is
-                      assigned to.
+                      This company has no projects yet. Create one first —
+                      registering him on a job is also what assigns it to him.
                     </Text>
                   ) : (
                     (csState.selectable || []).map((prj) => {
@@ -891,17 +973,21 @@ export default function AdminUsersScreen() {
                       Also registered on{' '}
                       {(csState.registered_elsewhere || [])
                         .map((r) => r.name || r.project_id).join(', ')}
-                      {' '}— not assigned to him, so this screen leaves those
-                      registrations alone.
+                      {' '}— outside this company's projects, so this screen
+                      leaves those registrations alone.
                     </Text>
                   )}
 
-                  {/* THE DELETE SIDE, SAID OUT LOUD. A removed project is
-                      soft-deleted and never hard-deleted: the row is the
+                  {/* BOTH SIDES OF THE ACT, SAID OUT LOUD. Ticking a project
+                      registers him AND assigns it; unticking retires the
+                      registration AND removes the assignment. The row itself
+                      is soft-deleted and never hard-deleted — it is the
                       provenance of every log filed under it. */}
                   <Text style={s.csHint}>
-                    Unticking a project retires that registration. The record is
-                    kept — logs already filed under it stay attributable.
+                    Ticking a project registers him on it and assigns it to him.
+                    Unticking retires that registration and removes the
+                    assignment. The record is kept — logs already filed under it
+                    stay attributable.
                   </Text>
                 </>
               )}
@@ -1252,6 +1338,17 @@ function buildStyles(colors, isDark) {
     fontSize: 12,
     lineHeight: 17,
     color: colors.text.muted,
+    marginTop: spacing.xs,
+  },
+  // THE REFUSAL, UNDER THE FIELD IT IS ABOUT. Error colour and not the muted
+  // hint colour: this is the difference between "here is how it works" and
+  // "what you have typed will not save", and rendering them the same weight is
+  // how the second gets read as the first.
+  licenceError: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+    color: colors.status.error,
     marginTop: spacing.xs,
   },
   roleSelectorLabel: {
