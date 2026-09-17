@@ -3353,6 +3353,7 @@ from lib.vision_meter import (  # noqa: E402
 from lib import plan_extract  # noqa: E402
 from lib import plan_text  # noqa: E402
 from lib import plan_records  # noqa: E402
+from lib import plan_search  # noqa: E402
 
 
 
@@ -44249,6 +44250,119 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
     return True, plan_extract.answer_question(chunks, route_text, parsed.get("keywords"))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# search_plans — the agent asks, the records answer, the gate checks
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The DB half lives here and the ranking half lives in lib/plan_search.py, so
+# the ordering that decides what an answer may cite is testable without Mongo.
+#
+# Supersession is resolved the same way _current_v3_chunks resolves it — via
+# document_page_index — because `superseded_by` is a property of a PAGE and
+# putting a second copy of it on every record is how the two drift apart.
+
+SEARCH_PLANS_MAX = 12
+
+
+async def _current_record_page_ids(project_id: str, *, discipline: str = "",
+                                   floor: str = "", sheet_number: str = "") -> list:
+    """The page ids a search may read from: live file, not superseded."""
+    live_ids = await _live_plan_file_ids(str(project_id))
+    q = {"project_id": str(project_id), **_current_page_filter(live_ids)}
+    if sheet_number:
+        q["sheet_number"] = {"$regex": f"^{re.escape(sheet_number)}",
+                             "$options": "i"}
+    if discipline:
+        q["discipline"] = {"$regex": f"^{re.escape(discipline)}$", "$options": "i"}
+    if floor:
+        q["floors"] = {"$regex": re.escape(floor), "$options": "i"}
+    pages = await db.document_page_index.find(q, {"_id": 1}).to_list(5000)
+    return [str(p["_id"]) for p in pages]
+
+
+async def search_plans(project_id: str, subject: str, *, intent: str = "",
+                       discipline: str = "", floor: str = "",
+                       sheet_number: str = "", limit: int = 8) -> List[dict]:
+    """The records on this project's current sheets that speak to `subject`.
+
+    Returns RECORDS, not prose. The agent composes; `answer_is_grounded` then
+    decides whether what it composed may be sent."""
+    terms = plan_search.search_terms(subject)
+    if not (project_id and terms):
+        return []
+    page_ids = await _current_record_page_ids(
+        project_id, discipline=discipline, floor=floor, sheet_number=sheet_number)
+    if not page_ids:
+        return []
+    # ── MATCHED IN THE DATABASE, RANKED IN PYTHON ──────────────────────────
+    #
+    # Mongo narrows to the rows that contain ANY term — a cheap OR over the
+    # three matchable fields, including `label`, which is how a vision-read
+    # word widens the search without ever becoming an answer. Ranking is the
+    # part that decides what may be cited, so it happens where it is tested.
+    ors = []
+    for t in terms:
+        rx = {"$regex": re.escape(t), "$options": "i"}
+        ors += [{"quote": rx}, {"label": rx}, {"subject_terms": rx}]
+    try:
+        rows = await db[PLAN_RECORDS].find(
+            {"project_id": str(project_id), "page_id": {"$in": page_ids}, "$or": ors},
+            {"_id": 0, "embedding": 0},
+        ).limit(400).to_list(400)
+    except Exception as e:
+        logger.warning(f"search_plans lookup failed for {subject!r}: {e}")
+        return []
+    ranked = plan_search.rank(rows, terms, intent)
+    return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
+
+
+def _render_records_for_model(records: List[dict], subject: str) -> str:
+    """What the agent is shown. Every line carries where it came from and how
+    strong it is, because those are the two things the model must not have to
+    guess at — and the numbers it is allowed to use are the ones printed
+    here."""
+    if not records:
+        return (f"(No record on the current drawings mentions {subject!r}. "
+                f"Say it is not on the indexed drawings; do not estimate.)")
+    lines = [f"{len(records)} record(s) for {subject!r}. "
+             f"Use ONLY numbers that appear below; an answer containing any "
+             f"other number will be discarded and replaced."]
+    for r in records:
+        where = r.get("sheet_number") or f"p{r.get('page_number')}"
+        quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip()[:400]
+        line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
+        if r.get("tier") == plan_extract.TIER_VISION:
+            line += " (read off the image — say so if you use it)"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def gate_plan_answer(text: str, records: List[dict], subject: str = ""
+                     ) -> Tuple[str, str]:
+    """(text_to_send, outcome). THE HARD GATE.
+
+    Every number and dimension in a composed answer must appear in a record
+    that was actually returned. One that does not means the model supplied it,
+    and a supplied number on a jobsite reads exactly like a measured one. The
+    answer is not edited or warned about — it is replaced by a render of the
+    records themselves, which can only say what the sheets say.
+
+    A vision-read label is checked the same way and for the same reason: those
+    words came from a model looking at a picture, and KICKER and PACKAGE
+    TERMINAL AIR CONDITIONER arrived by the identical path."""
+    if not records:
+        return text, "no_records"
+    grounded, unsupported = plan_search.answer_is_grounded(text, records)
+    leaked = plan_search.contains_label(text, records)
+    if grounded and not leaked:
+        return text, "grounded"
+    logger.warning(
+        "plan answer failed the gate: unsupported=%s labels=%s subject=%r text=%r",
+        unsupported[:6], leaked[:3], subject[:40], (text or "")[:200])
+    return plan_search.render_records(records, subject), (
+        "ungrounded" if not grounded else "label_leak")
+
+
 def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> None:
     """One line per plan question, every stage named.
 
@@ -45203,6 +45317,40 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_plans",
+            "description": (
+                "Search what the project's drawings actually SAY and get back the "
+                "printed lines, with the sheet each came from and how it was read. "
+                "Use this for any question about equipment, materials, quantities, "
+                "dimensions, symbols, notes or schedules — 'how many PTAC units', "
+                "'what type of AC', 'stucco thickness', 'what is KE 1', 'are there "
+                "chase walls'. Call it BEFORE saying anything about the drawings, and "
+                "call it again with a different subject rather than guessing. "
+                "Compose your reply only from the lines it returns and cite the sheet. "
+                "Every number you write must appear in a returned line; an answer "
+                "containing any other number is discarded. Use query_plan instead when "
+                "the user wants the sheet IMAGE sent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string", "description":
+                                "The thing to look for, in the user's own words — "
+                                "'ptac units', 'roof drain', 'pile schedule'"},
+                    "intent": {"type": "string", "description":
+                               "count|attribute|existence|location|identify|geometry"},
+                    "discipline": {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
+                    "floor": {"type": "string"},
+                    "sheet_number": {"type": "string", "description": "e.g. M-200.00"},
+                },
+                "required": ["subject"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "query_plan",
             "description": (
                 "Look up a construction drawing. Use for requests about PLANS, DRAWINGS, "
@@ -45359,6 +45507,7 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • Open items / punch list / materials (open_items, material_status)\n"
     "  • Crew roster + who's on site (list_workers, who_on_site)\n"
     "  • Project metadata — address/BIN/BBL (project_info)\n"
+    "  • What the drawings SAY, quoted from the sheet (search_plans)\n"
     "  • Construction drawings visual Q&A + image send (query_plan)\n"
     "  • Checklist assignment flow (start_checklist)\n\n"
     "ROUTING (pick based on the current message, not history):\n"
@@ -45372,9 +45521,12 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • 'list workers', 'all carpenters', 'roster' → list_workers.\n"
     "  • 'materials', 'deliveries', 'on order' → material_status.\n"
     "  • 'address', 'BIN', 'BBL', 'project info' → project_info.\n"
-    "  • 'plan', 'drawing', 'sheet', elevation/section/detail/schedule, "
-    "    'show me A-101/ME-401', any question about what's shown on a drawing → "
-    "    query_plan. ONLY for visual drawings.\n"
+    "  • A QUESTION about the drawings — 'how many PTAC units', 'what type of "
+    "    AC', 'stucco thickness', 'what is KE 1', 'are there chase walls' → "
+    "    search_plans FIRST, then answer from the lines it returns.\n"
+    "  • 'show me', 'pull up', 'send the', 'plan', 'drawing', 'sheet', "
+    "    elevation/section/detail/schedule, 'show me A-101/ME-401' — the user "
+    "    wants to SEE the sheet → query_plan. ONLY for visual drawings.\n"
     "  • 'daily log', 'OSHA log', 'jobsite log', 'log for <date>', 'what was "
     "    filed', 'sign-ins' → daily_log. NEVER query_plan.\n"
     "  • 'create checklist' → start_checklist.\n\n"
@@ -45395,7 +45547,23 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "workers, rosters, SST or OSHA cards, CP reviews, permits, DOB filings, "
     "violations, complaints, checklists, material deliveries or open items. "
     "Every one of those has its own tool and lives in the database, not on a "
-    "drawing. If no tool fits, say so — do not fall back to query_plan.\n\n"
+    "drawing. If no tool fits, say so — do not fall back to query_plan.\n"
+    "The same exclusion list applies to search_plans: it reads the drawings.\n\n"
+    # ── WHAT YOU MAY SAY ABOUT A DRAWING ───────────────────────────────────
+    #
+    # Belt. The braces are gate_plan_answer, which checks the composed text
+    # against the records and replaces it when a number has nothing behind it.
+    # The instruction is here because a model that is TOLD the rule fails it
+    # less often, and the check is there because being told is not a guarantee.
+    "ANSWERING FROM search_plans:\n"
+    "Every number, quantity and dimension you write must appear in a line "
+    "search_plans returned. Quote the sheet and name it. If no line carries a "
+    "number, say the drawings do not state it and name the sheets that mention "
+    "the thing — never estimate, never round, never add up across sheets. "
+    "A line marked vision_read was read off the image, not the text: say so if "
+    "you use it, and do not repeat wording it supplied as if the sheet printed "
+    "it. An answer containing a number that is not in the returned lines is "
+    "discarded and replaced before it reaches the group.\n\n"
     "PROACTIVE NEXT-STEP DOCTRINE — this is what makes you feel human:\n"
     "After every tool call, look at the result and offer the obvious next action "
     "as a 1-line question. The user should rarely have to ask for the follow-up.\n"
@@ -46254,7 +46422,9 @@ async def _run_group_agent(
             continue
         if name == "material_status" and not features.get("material_detection", True):
             continue
-        if name == "query_plan" and not features.get("plan_queries", False):
+        # search_plans rides the same flag as query_plan: both read the plan
+        # index, and a group that has plan questions turned off has both off.
+        if name in ("query_plan", "search_plans") and not features.get("plan_queries", False):
             continue
         enabled_tools.append(t)
 
@@ -46262,6 +46432,23 @@ async def _run_group_agent(
         async with ServerHttpClient(timeout=40.0) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
             used_tool = False  # a reply built from tool results is data; never cut it
+            # Everything search_plans handed back this conversation. The gate
+            # checks the composed answer against the EVIDENCE, not against the
+            # prose the model was shown.
+            plan_evidence: list = []
+
+            def _gated(reply: str) -> str:
+                if not plan_evidence:
+                    return reply
+                records = [r for hit in plan_evidence for r in hit["records"]]
+                subject = plan_evidence[-1]["subject"]
+                sent, outcome = gate_plan_answer(reply, records, subject)
+                if outcome not in ("grounded", "no_records"):
+                    logger.warning(
+                        f"plan gate replaced the reply group="
+                        f"{group_id[-10:] if group_id else '?'} outcome={outcome}")
+                return sent
+
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -46314,7 +46501,7 @@ async def _run_group_agent(
                         return None
                     if not used_tool:
                         stripped = _cap_sentences(stripped, AGENT_KNOWLEDGE_MAX_SENTENCES)
-                    return stripped or None
+                    return _gated(stripped) or None
                 used_tool = True
 
                 # Short-circuit: query_plan and start_checklist both dispatch
@@ -46386,6 +46573,7 @@ async def _run_group_agent(
                         group_id=group_id,
                         company_id=company_id,
                         sender=sender,
+                        record_sink=plan_evidence,
                     )
                     messages.append({
                         "role":         "tool",
@@ -46398,7 +46586,8 @@ async def _run_group_agent(
             # otherwise fall back silently rather than dumping a "too many
             # tool calls" message into the group chat.
             if last_content and last_content.strip().upper() != "NOREPLY":
-                return last_content.strip()
+                # The overrun path sends text too, so it passes the same gate.
+                return _gated(last_content.strip())
             logger.warning(
                 f"agent: max turns hit for group={group_id} sender={sender} body={body[:80]!r}"
             )
@@ -46411,10 +46600,29 @@ async def _run_group_agent(
 async def _dispatch_agent_tool(
     name: str, args: dict, *, project_id: str, group_id: str,
     company_id: Optional[str], sender: str, reply_to: Optional[str] = None,
-    user_body: Optional[str] = None,
+    user_body: Optional[str] = None, record_sink: Optional[list] = None,
 ) -> str:
-    """Invoke one of the agent tools and return its text result."""
+    """Invoke one of the agent tools and return its text result.
+
+    `record_sink` collects the records search_plans returned, because the gate
+    that checks the composed answer needs the evidence, not the prose the model
+    was shown. A tool that returns only a string cannot be checked against."""
     try:
+        if name == "search_plans":
+            subject = (args.get("subject") or user_body or "").strip()
+            found = await search_plans(
+                project_id, subject,
+                intent=args.get("intent") or "",
+                discipline=args.get("discipline") or "",
+                floor=args.get("floor") or "",
+                sheet_number=args.get("sheet_number") or "",
+            )
+            if record_sink is not None:
+                record_sink.append({"subject": subject, "records": found})
+            logger.info(
+                f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
+                f"hits={len(found)} top={[r.get('tier') for r in found[:3]]}")
+            return _render_records_for_model(found, subject)
         if name == "who_on_site":
             return await _handle_who_on_site(
                 project_id,
