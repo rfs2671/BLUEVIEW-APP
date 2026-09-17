@@ -24,6 +24,14 @@
 # NOTE ON THE HOST. The web deploy runs through an external git integration, not
 # from this repo, so this job OBSERVES the deploy rather than performing it. It
 # is why the outage's duration is recorded as a floor rather than a measurement.
+#
+# THE HOST IS app.levelog.com. www.levelog.com is the marketing site -- a
+# different project, with its own SPA fallback that answers /version.json with
+# index.html and never calls the API. This job was pointed there from the day it
+# shipped and failed 20 runs out of 20 while the app was healthy the whole time,
+# reporting "version.json reported no commit" about a site that has no such
+# file. A gate naming the wrong host does not go red usefully; it goes red
+# always, which is the same as being switched off.
 
 name: post-deploy web check
 
@@ -35,7 +43,7 @@ on:
       site:
         description: "Web origin to check"
         required: false
-        default: "https://www.levelog.com"
+        default: "https://app.levelog.com"
       api_base:
         description: "API origin the site must reach"
         required: false
@@ -68,7 +76,7 @@ jobs:
       - name: Load the deployed site and watch what the browser is refused
         working-directory: frontend
         env:
-          SITE: ${{ github.event.inputs.site || 'https://www.levelog.com' }}
+          SITE: ${{ github.event.inputs.site || 'https://app.levelog.com' }}
           API: ${{ github.event.inputs.api_base || 'https://api.levelog.com' }}
           # On a push this is the commit that was just merged. The script polls
           # version.json until the live build reports it, then asserts.

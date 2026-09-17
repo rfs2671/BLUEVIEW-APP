@@ -26,9 +26,10 @@
  *      still live, which is exactly the state that hid a 33-commit deployment
  *      gap for three days.
  *   2. THE LIVE BUNDLE ACTUALLY TALKS TO THE LIVE API — load the site in
- *      Chromium and watch. No header list is written here: the page sends
- *      whatever the shipped bundle sends, so this cannot drift from the client
- *      the way a hand-built request would.
+ *      Chromium and watch everything the shipped bundle sends, which cannot
+ *      drift from the client the way a hand-built request would. Then issue
+ *      ONE request of our own, with the header list spelled out, because
+ *      watching alone has a floor of zero (see below).
  *
  * AND A COUNT, BECAUSE A CHECK THAT CAN BE SATISFIED WITHOUT RUNNING MUST
  * COUNT ITS OWN EXECUTIONS AND FAIL AT ZERO. A page that made no cross-origin
@@ -36,13 +37,20 @@
  * which is precisely how the mount smoke passed for a week. At least one
  * request to the API must have SUCCEEDED, or this fails.
  *
+ * THE HOST. This is app.levelog.com, the Expo web build. www.levelog.com is
+ * the marketing site, a different project with its own SPA fallback: it
+ * answers /version.json with index.html and never calls the API. This gate
+ * spent its entire life pointed there and failed 20 runs out of 20 without
+ * once describing the app — the site was healthy throughout. A gate naming the
+ * wrong host is not a red build, it is no gate at all.
+ *
  * USAGE
- *   SITE=https://www.levelog.com API=https://api.levelog.com \
+ *   SITE=https://app.levelog.com API=https://api.levelog.com \
  *   [EXPECT_SHA=<sha>] node scripts/postdeploy-web-check.cjs
  *
  * Exits 0 if every assertion holds, 1 otherwise.
  */
-const SITE = (process.env.SITE || 'https://www.levelog.com').replace(/\/$/, '');
+const SITE = (process.env.SITE || 'https://app.levelog.com').replace(/\/$/, '');
 const API = (process.env.API || 'https://api.levelog.com').replace(/\/$/, '');
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || 600);
@@ -51,7 +59,7 @@ const POLL_EVERY_MS = Number(process.env.POLL_EVERY_MS || 15000);
 // ── the part worth testing ─────────────────────────────────────────────────
 // Kept pure so the gate's own logic is tested rather than trusted; the network
 // and browser shell below is the only untested part, and it only observes.
-function evaluate({ deployedSha, expectSha, corsErrors, apiOk, apiFailed }) {
+function evaluate({ deployedSha, expectSha, corsErrors, apiOk, apiFailed, probeRefused }) {
   const out = [];
 
   if (!deployedSha) {
@@ -74,13 +82,26 @@ function evaluate({ deployedSha, expectSha, corsErrors, apiOk, apiFailed }) {
     );
   }
 
+  // THE PROBE'S OWN VERDICT, kept separate from the counter below. The
+  // browser's error text ("Failed to fetch") is thin, so this says which of
+  // the two questions failed: was the request refused, or never made at all.
+  if (probeRefused) {
+    out.push(
+      `the preflighted probe to ${API} was refused by the browser: `
+      + `${probeRefused}. The deployed build cannot reach its own API from `
+      + 'its own origin -- this is the 2026-08-28 outage, live.',
+    );
+  }
+
   // THE VACUITY GUARD. "no CORS errors" is free if nothing was requested.
+  // Since the probe issues a request unconditionally, reaching here with a
+  // zero count no longer means "the app happened not to call the API" -- it
+  // means the probe itself did not complete either.
   if (!apiOk) {
     out.push(
       `NOT ONE request to ${API} completed, so nothing here was actually `
-      + 'exercised. Either the site never called the API on these routes, or '
-      + 'every call failed for a reason this did not classify '
-      + `(${apiFailed} failed). Do not relax this to make it pass.`,
+      + `exercised -- not even the probe this check issues itself (${apiFailed} `
+      + 'failed). Do not relax this to make it pass.',
     );
   }
 
@@ -151,6 +172,7 @@ async function main() {
   const corsErrors = [];
   let apiOk = 0;
   let apiFailed = 0;
+  let probeRefused = null;
 
   page.on('console', (m) => {
     if (m.type() === 'error' && isCorsFailure(m.text())) {
@@ -167,8 +189,8 @@ async function main() {
     if (r.url().startsWith(API) && r.status() < 500) apiOk += 1;
   });
 
-  // /login is deliberate: it is the route the outage was reported on, it needs
-  // no session, and it calls the API on mount.
+  // /login is deliberate: it is the route the outage was reported on and it
+  // needs no session. It is NOT relied on to call the API -- see the probe.
   for (const route of ['/login', '/']) {
     try {
       await page.goto(`${SITE}${route}`, { waitUntil: 'networkidle', timeout: 45000 });
@@ -178,12 +200,52 @@ async function main() {
     }
   }
 
+  // THE PROBE, AND WHY THE ROUTES ABOVE ARE NOT ENOUGH.
+  //
+  // This gate asserted "some request to the API completed" and left it to the
+  // app to make one. On 2026-09-17 the login screen made ZERO calls to the API
+  // on mount -- it polls its own origin with HEAD for reachability -- so the
+  // assertion was unsatisfiable by the very route chosen to satisfy it. A gate
+  // whose subject is incidental behaviour of a page measures whatever that
+  // page happens to do this month.
+  //
+  // So issue the request here: from the loaded page, in the real browser, at
+  // the real origin. X-Client-Version is the header whose absence from
+  // allow_headers caused the outage, and sending it forces the preflight that
+  // is the whole subject of this check. /api/version needs no session, so a
+  // refusal here is CORS and nothing else.
+  try {
+    const probe = await page.evaluate(async (api) => {
+      try {
+        const r = await fetch(`${api}/api/version`, {
+          cache: 'no-store',
+          headers: {
+            'X-Client-Version': 'postdeploy-web-check',
+            'X-Request-Id': 'postdeploy-probe',
+          },
+        });
+        // Reading the body is part of the proof: the browser only hands it
+        // over when the preflight passed AND the origin was allowed.
+        await r.text();
+        return { ok: true, status: r.status };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    }, API);
+    console.log(`  preflighted probe: ${probe.ok ? `completed ${probe.status}` : `REFUSED (${probe.error})`}`);
+    if (!probe.ok) probeRefused = probe.error;
+  } catch (e) {
+    probeRefused = `probe could not run: ${e.message.split('\n')[0]}`;
+    console.log(`  ${probeRefused}`);
+  }
+
   await browser.close();
 
   console.log(`  api responses ok: ${apiOk}   failed: ${apiFailed}   cors errors: ${corsErrors.length}`);
 
   const failures = evaluate({
     deployedSha, expectSha: EXPECT_SHA, corsErrors, apiOk: apiOk > 0, apiFailed,
+    probeRefused,
   });
   if (failures.length) {
     console.log('\n✗ POST-DEPLOY WEB CHECK FAILED');

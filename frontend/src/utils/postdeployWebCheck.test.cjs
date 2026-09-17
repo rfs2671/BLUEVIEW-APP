@@ -33,6 +33,7 @@ const GOOD = {
   corsErrors: [],
   apiOk: true,
   apiFailed: 0,
+  probeRefused: null,
 };
 const only = (over) => evaluate({ ...GOOD, ...over });
 
@@ -49,6 +50,34 @@ section('THE VACUITY GUARD — the assertion this file exists for');
   const clean = only({ apiOk: false, corsErrors: [] });
   ok(clean.length > 0,
     'a perfectly clean run with no traffic still fails — silence is not proof');
+}
+
+section('THE PROBE — the gate issues its own request, and says which half failed');
+{
+  // WHY THIS EXISTS. The vacuity guard above was left to be satisfied by the
+  // app: the comment named /login because it "calls the API on mount". On
+  // 2026-09-17 it made ZERO calls to the API on mount -- it polls its own
+  // origin with HEAD -- so the only route chosen to satisfy the guard could
+  // not satisfy it. The gate now issues the request itself.
+  const refused = only({ probeRefused: 'Failed to fetch', apiOk: false });
+  ok(refused.length === 2,
+    'a refused probe reports BOTH the refusal and the zero count');
+  ok(refused.some((f) => /refused by the browser/.test(f)),
+    '...and names the refusal, so "Failed to fetch" is not the whole story');
+  ok(refused.some((f) => /2026-08-28 outage, live/.test(f)),
+    '...and says which outage this is, because that is the one thing the '
+    + 'person reading a red build at 3am needs first');
+
+  // THE DISTINCTION THE PROBE BUYS. Refused and never-attempted are different
+  // failures with different causes, and a single "no traffic" message
+  // conflates them.
+  ok(only({ probeRefused: 'Failed to fetch' }).length === 1,
+    'a probe refused while other traffic DID complete still fails');
+  ok(only({ apiOk: false }).every((f) => !/refused by the browser/.test(f)),
+    'zero traffic with no refusal is NOT reported as a refusal');
+
+  ok(only({ probeRefused: null }).length === 0,
+    'a probe that completed is silent — it adds no failure of its own');
 }
 
 section('provenance: the check must run against the build that was pushed');
