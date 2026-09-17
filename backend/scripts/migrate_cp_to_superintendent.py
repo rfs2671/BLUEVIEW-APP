@@ -71,7 +71,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from prod_guard import (  # noqa: E402
-    add_guard_args, check_guard, report_dry_run, script_audit,
+    add_guard_args, audited, check_guard, refuse_legacy_flag, report_dry_run,
 )
 
 NAME = "migrate_cp_to_superintendent"
@@ -83,6 +83,18 @@ MICHAEL = "6a68b16ebe9c27dedf5cf47f"
 
 
 async def main() -> int:
+    # ── `--apply` MUST NOT LOOK LIKE A CLEAN REPORT ─────────────────────────
+    #
+    # BEFORE parse_args, because argparse would reject an unknown flag with its
+    # own message and never reach this one. This script was born with
+    # `--i-know` and has never had a write flag of its own -- which is exactly
+    # why it needs the refusal: an operator who has run any of the other twenty
+    # scripts in this directory reaches for `--apply` out of habit, and the
+    # failure that matters is not the typo. It is that WITHOUT this, a dry run
+    # is what he would get: a clean report, a promotion he believes happened,
+    # and an account still holding `role: cp`.
+    refuse_legacy_flag()
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--user", default=MICHAEL,
                     help=f"user id to promote (default {MICHAEL}, Michael Cespedes)")
@@ -91,7 +103,23 @@ async def main() -> int:
 
     import server  # noqa: E402  -- the SAME role vocabulary the app uses
 
-    db = server.db
+    # ── THE HANDLE AUDITS ITSELF ────────────────────────────────────────────
+    #
+    # The row is now a property of the WRITE, not of this script remembering to
+    # record one. A hand-placed `script_audit` sat after the update below, and
+    # a source test can only prove such a call EXISTS -- not that it runs when
+    # the write runs, which is the failure being guarded against ("the write
+    # happened and nothing recorded it"). An early return, a wrong branch or a
+    # future `return` between the two would have made it inert.
+    #
+    # ON A DRY RUN THIS RETURNS THE BARE HANDLE, so the reporting path below is
+    # byte-for-byte what it was: nothing to audit, and no wrapper to step
+    # through while debugging one.
+    #
+    # READS ARE UNTOUCHED. The three below -- the user, his registrations, the
+    # read-back -- pass straight through; only the eleven write methods are
+    # wrapped.
+    db = audited(server.db, args, NAME)
     user = await db.users.find_one({"_id": server.to_query_id(args.user)})
     if not user:
         print(f"user {args.user} not found")
@@ -172,20 +200,19 @@ async def main() -> int:
               "Nothing was written.")
         return 4
 
-    await script_audit(
-        db, "user_role_promoted", "user", args.user,
-        {
-            "name": name,
-            "email": user.get("email"),
-            "old": {"role": role},
-            "new": {"role": server.ROLE_SUPERINTENDENT},
-            "company_id": company_id,
-            "assigned_projects": user.get("assigned_projects") or [],
-            "cs_registrations": [str(r.get("project_id")) for r in regs],
-        },
-        args, name=NAME,
-    )
-    print(f"audit row written, actor script:{NAME}")
+    # NO `script_audit` CALL HERE ANY MORE, AND ITS ABSENCE IS THE FIX. The
+    # `update_one` above went through the audited handle, so the row was
+    # written by the write itself -- with the selector (this user id AND the
+    # role it was read at) and the driver's own matched/modified counts, which
+    # is what anybody asks afterwards.
+    #
+    # WHAT THE ROW NO LONGER CARRIES, said plainly rather than left to be
+    # discovered: his name, his email, his company and the projects he was
+    # registered on. Those are CONTEXT rather than the change, they are printed
+    # above every run, and two of them are recoverable from the user document.
+    # `cs_registrations` is the one that is not, which is why it is printed
+    # before the guard is asked and not only after.
+    print(f"audit row written by the audited handle, actor script:{NAME}")
 
     after = await db.users.find_one({"_id": server.to_query_id(args.user)})
     print("\nread back:", {k: after.get(k) for k in

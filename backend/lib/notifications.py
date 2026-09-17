@@ -119,10 +119,26 @@ NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH = "suppressed_kill_switch"
 # silent non-delivery diagnosable.
 NOTIFICATION_STATUS_SUPPRESSED_FIELD_ROLE = "suppressed_field_role"
 
-#: The roles that receive no email. `superintendent` is here for the same
-#: reason as `cp`, and the dual-capacity user holds `role: cp` with a
-#: capability flag -- so he is covered by the first entry and does not need a
-#: third. See the roles mapping: role=cp + is_superintendent.
+#: The roles that receive no email. BOTH ARE FULL ROLES, and a superintendent
+#: is excluded ON HIS OWN NAME rather than through `cp`.
+#:
+#: THIS NOTE SAID OTHERWISE, and the design it described was withdrawn. It read
+#: "the dual-capacity user holds `role: cp` with a capability flag -- so he is
+#: covered by the first entry and does not need a third", which was true of an
+#: earlier plan where `superintendent` was an `is_superintendent` flag on a CP
+#: account. There is no such flag: the roles are Admin, Site Manager / PM,
+#: Superintendent and CP, and a man who is both the registered construction
+#: superintendent and the competent person on his own job holds
+#: `role: superintendent`.
+#:
+#: SO THE SECOND ENTRY IS THE ONE THAT COVERS HIM, not the first. The set and
+#: the behaviour are unchanged -- he was excluded before this was written down
+#: correctly and he is excluded now -- but an explanation that names the wrong
+#: entry is how the right entry gets deleted as redundant.
+#:
+#: NEITHER ENTRY IS THE FILING GATE. `role == "superintendent"` decides nothing
+#: about who may file BC 3301.13.13; `cs_registrations` does, per
+#: lib/logbook/superintendent_log.py. This frozenset decides who is written to.
 EMAIL_EXCLUDED_ROLES = frozenset({"cp", "superintendent"})
 
 

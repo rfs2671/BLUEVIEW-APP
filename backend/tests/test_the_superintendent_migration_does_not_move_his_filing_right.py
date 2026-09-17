@@ -205,9 +205,35 @@ class TheScriptItself(unittest.TestCase):
         self.src = self.PATH.read_text(encoding="utf-8")
 
     def test_it_carries_the_production_guard(self):
-        for name in ("add_guard_args", "check_guard", "script_audit",
-                     "report_dry_run"):
+        for name in ("add_guard_args", "check_guard", "audited",
+                     "report_dry_run", "refuse_legacy_flag"):
             self.assertIn(name, self.src)
+
+    def test_the_row_is_a_property_of_the_WRITE_and_not_of_this_script(self):
+        """`script_audit` WAS CALLED BY HAND HERE, after the update. A source
+        test can only prove such a call exists -- not that it runs when the
+        write runs, which is the failure being guarded against. The handle is
+        wrapped instead, so `db.users.update_one(...)` records itself because it
+        EXECUTED, and an early return or a future branch between the two cannot
+        make it inert.
+
+        Read off the code, not the prose: the paragraphs in this file explain
+        the call that was removed, and a raw search matches the explanation."""
+        from tests.source_text import strip_python
+        code = strip_python(self.src)
+        self.assertIn("db = audited(server.db, args, NAME)", code)
+        self.assertNotIn("script_audit(", code)
+
+    def test_the_legacy_write_flag_is_refused_before_argparse(self):
+        """`--apply` on a dry-run-by-default script is the dangerous shape: a
+        clean report, a promotion the operator believes happened, and an
+        account still holding `role: cp`. argparse would reject the unknown
+        flag with its own message and never reach the refusal, so it runs
+        first."""
+        from tests.source_text import strip_python
+        code = strip_python(self.src)
+        self.assertLess(code.index("refuse_legacy_flag()"),
+                        code.index("args = ap.parse_args()"))
 
     def test_it_is_a_dry_run_by_default(self):
         """`check_guard` returns False without --i-know, and the branch that
