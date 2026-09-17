@@ -43,7 +43,10 @@ def _run(coro):
 class TestRegistrationLockdown(unittest.TestCase):
     def _register(self, **body):
         import server
-        payload = {"email": "new@example.com", "password": "pw",
+        # COMPLIANT BECAUSE THE RULE IS BACK. register's complexity check runs
+        # before anything this file asserts about, so "pw" would 422 and every
+        # test here would fail on the password instead of on the lockdown.
+        payload = {"email": "new@example.com", "password": "newuser1",
                    "name": "New User"}
         payload.update(body)
         inserted = {}

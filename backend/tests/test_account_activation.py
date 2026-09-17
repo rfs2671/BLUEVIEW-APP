@@ -117,7 +117,12 @@ def test_signup_defaults_to_pending():
     try:
         client = TestClient(server.app)
         r = client.post("/api/auth/register", json={
-            "email": "new@example.com", "password": "pw", "name": "New", "role": "owner",
+            # THE PASSWORD IS COMPLIANT BECAUSE THE RULE IS BACK. "pw" stood
+            # here while the complexity check was cut for demo day; register
+            # now 422s on it, and this test is about account_status, not about
+            # the password rule (see test_a_demo_account_never_writes.py).
+            "email": "new@example.com", "password": "newuser1", "name": "New",
+            "role": "owner",
         })
         assert r.status_code == 200, r.text
         assert r.json()["account_status"] == "pending"
