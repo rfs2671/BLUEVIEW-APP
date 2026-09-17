@@ -2,6 +2,33 @@
 
 Each JSON file here is the unedited output of `scripts/plan_eval.py`, run against the production corpus. Each section says which CODE produced it — a deployed build, or a working tree run through `railway run` — because the two are not the same claim. A result is only recorded if the run was valid: the corpus matched the suite's baseline before and after scoring. `tests/test_recorded_eval_results.py` enforces this.
 
+## 588 Thomas S Boyland Street, 2026-09-17 — the deployed build
+
+**This is the row the gate rests on.** The two runs below were working trees; this one is the code production is serving.
+
+| | |
+|---|---|
+| file | `boyland-2026-09-17-58a2cb60.json` |
+| code | **`58a2cb60`, deployed** — `/api/version` reported `58a2cb6081f0d…` at 21:52:37Z, and the eval ran from a checkout of that same commit. #592 (`904efaf6`), #595 (`eb5f046a`) and #597 (`6c285948`, the matcher deletion) are all ancestors of it |
+| ran | 21:57:29Z |
+| corpus | 129 pages, 111 current, 15,369 records; newest write 06:29:02Z; unchanged across the run |
+| suite | `eval/boyland.json`, 24 cases |
+
+**20 of 22 scored cases pass (0.909). 2 stale. Both failures are in known classes.**
+
+**Not one verdict differs from the working-tree run below** — 24 cases, 24 identical outcomes. That is what the deployed row is for: it says the score belongs to the code that answers a superintendent's question, not to a tree on somebody's laptop.
+
+| kind | scored | passed |
+|---|---|---|
+| answer | 17 | 15 |
+| absent | 5 | 5 |
+
+Failures: `ac-type` (`boilerplate_outranks_specific`) and `sidewalk-shed-height` (`a_mention_outranks_the_measurement`). Both are recorded classes with a lead for a principled fix, deliberately not tuned.
+
+**How to take this measurement again.** Check out the commit `/api/version` reports, then run the eval from it — `railway run` gives the production corpus and environment, and the checkout gives the deployed code. Running from a working tree is a weaker claim and the section has to say so.
+
+---
+
 ## 588 Thomas S Boyland Street, 2026-09-17 — after the matcher was deleted
 
 | | |
