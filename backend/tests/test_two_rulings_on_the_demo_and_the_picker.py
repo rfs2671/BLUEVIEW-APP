@@ -199,6 +199,31 @@ class TheOptInWidensRolesAndNeverCompany(unittest.TestCase):
                 include_all_roles=include_all_roles))
         return captured["query"]
 
+    def test_OMITTING_the_argument_still_hides_admins(self):
+        """THE PATH EVERY OTHER TEST IN THIS CLASS SKIPPED.
+
+        They all pass `include_all_roles` explicitly. Called without it, the
+        parameter is FastAPI's `Query(False)` object, which is truthy -- and
+        the first version of this change read it with `not`, so a direct
+        caller silently lost the admin filter. A sibling test that calls the
+        handler without the argument is what caught it; this pins it here.
+        """
+        captured = {}
+
+        async def _paginated(coll, query, **kw):
+            captured["query"] = query
+            return {"items": [], "total": 0, "limit": 50, "skip": 0,
+                    "has_more": False}
+
+        user = {"_id": "u1", "id": "u1", "email": "a@b.c", "role": "admin",
+                "company_id": "c1", "account_status": "approved"}
+        with patch.object(server, "paginated_query", side_effect=_paginated):
+            _run(server.get_admin_users(current_user=user, limit=50, skip=0))
+        self.assertEqual(
+            captured["query"].get("role"),
+            {"$in": list(server.ADMIN_MANAGED_ROLES)},
+            "omitting include_all_roles dropped the role filter")
+
     def test_the_default_still_hides_admins(self):
         q = self._query_for(operator=False, company_id="c1",
                             include_all_roles=False)

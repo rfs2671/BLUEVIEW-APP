@@ -10606,7 +10606,15 @@ async def get_admin_users(
         query["company_id"] = company_id
         # THE TENANT CLAUSE ABOVE IS NOT CONDITIONAL AND MUST NEVER BECOME SO.
         # Only the role clause is opt-out-able; see the parameter's note.
-        if not include_all_roles:
+        #
+        # `is not True`, NOT `not include_all_roles`. Called through FastAPI the
+        # default resolves to False, but called directly from Python it IS the
+        # `Query(False)` object -- and that object is truthy. `not <Query>` is
+        # False, so the role clause was silently skipped for every direct
+        # caller: the admin filter vanished with no error. Only an explicit
+        # True may widen the list; a sentinel, None, or a string keeps the
+        # ruling. Failing closed is the direction that cannot leak.
+        if include_all_roles is not True:
             query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
     else:
         query["_id"] = None
