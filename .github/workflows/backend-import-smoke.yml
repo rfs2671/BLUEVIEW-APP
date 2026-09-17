@@ -24,9 +24,32 @@
 name: backend-import-smoke
 
 on:
+  # ALWAYS ON A PUSH TO main, with no filter. Since #594 stopped `tests` running
+  # there, this and two other cheap checks are the ONLY post-merge verification
+  # left -- narrowing them would leave a merge unverified to save a minute.
   push:
     branches: [main]
+
+  # ON A PULL REQUEST, only when something the import can depend on changed.
+  # This job proves `server.py` imports under both entrypoints; a frontend-only
+  # change cannot affect that. Measured over the last 14 merged PRs, 14% were
+  # frontend-only, so this skips about one PR in seven -- roughly 116 minutes a
+  # month. Named as a path filter rather than a `changes` job because this
+  # workflow has exactly ONE job: there is nothing to gate selectively, so the
+  # whole workflow can simply not run.
+  #
+  # A SKIPPED WORKFLOW REPORTS NO CHECK AT ALL. That is safe only while this
+  # repo has no branch protection (it needs GitHub Pro). If protection is ever
+  # enabled with this as a required check, a frontend-only PR would sit pending
+  # forever -- at which point this must become a `changes`-gated job like the
+  # ones in tests.yml, not a path filter.
   pull_request:
+    paths:
+      - 'backend/**'
+      - 'requirements*.txt'
+      - 'nixpacks.toml'
+      - 'Dockerfile'
+      - '.github/workflows/backend-import-smoke.yml'
 
 # One run per branch: a rebase or force-push supersedes the run it replaces.
 # PR-triggered only -- see the note in tests.yml on why the OTA publish and the
