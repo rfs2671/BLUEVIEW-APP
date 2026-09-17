@@ -7000,6 +7000,73 @@ def assert_assignable_role(role) -> str:
     return normalised
 
 
+# ── THE PEOPLE A COMPANY ADMIN ADMINISTERS ──────────────────────────────────
+#
+# OPERATOR RULING: User Management, opened by a company admin, lists the Site
+# Managers, the superintendents and the CPs of his own company. Not other
+# admins, and not himself. ADMIN ACCOUNTS ARE THE PLATFORM OPERATOR'S, managed
+# in the owner panel, and the operator viewing a company still sees everybody.
+#
+# ONE CLAUSE DELIVERS BOTH HALVES, AND THAT IS WHY IT IS ONE CLAUSE. "not other
+# admins" and "not himself" are not two rules -- he IS an admin, so the filter
+# that drops the role drops him with them. A separate `_id != me` clause would
+# be a second place the answer lives, and the day the membership here changes
+# the two would disagree about who is looking at the screen.
+#
+# IT IS AN ALLOW-LIST, SO IT ALSO HIDES THE LEGACY ROWS: "worker", "owner",
+# "demo", "site_device". That is the ruling's shape rather than an oversight --
+# none of them is a person a company admin administers, and none reaches a
+# screen of its own. The consequence, said out loud: a company admin cannot
+# delete one either. The platform operator can, because his view carries no
+# role clause at all.
+#
+# A SEPARATE NAME FROM ASSIGNABLE_ROLES DESPITE THE OVERLAP, for the reason
+# ROLES_SCOPED_TO_ASSIGNED_PROJECTS gives beside ROLES_REQUIRING_COMPANY: two
+# rules that happen to coincide are still two rules. This one answers "whom does
+# a company admin see"; that one answers "what may be assigned". They differ
+# TODAY -- the operator may assign "admin" and nobody manages one from here --
+# and folding them together would make the next divergence silent.
+ADMIN_MANAGED_ROLES = (ROLE_PM, ROLE_SUPERINTENDENT, "cp")
+
+
+def assert_role_assignable_by(role, actor) -> str:
+    """The normalised role, or a refusal naming who may assign it.
+
+    TWO QUESTIONS IN ORDER, AND THE ORDER IS THE MESSAGE. First "is this a role
+    at all" (422, the existing allow-list), then "may THIS actor hand it out"
+    (403). Collapsing them would answer "worker" with a permission error and
+    send an admin looking for a permission that does not exist.
+
+    ── WHY A COMPANY ADMIN MAY NOT CREATE AN ADMIN ─────────────────────────
+
+    Because `ADMIN_MANAGED_ROLES` means he would never see it again. He would
+    create the account, the list would refresh, and it would be gone -- which is
+    EXACTLY the defect #576 fixed from the client end (`.filter(u => u.role !==
+    'admin')`, "created users don't vanish"), reintroduced by design from the
+    server end. A product may refuse an act or may hide its result. Doing both
+    is the bug.
+
+    ONE FUNCTION FOR BOTH WRITE ROUTES. `role` is in ALLOWED_USER_FIELDS, so a
+    create-side refusal alone is refused at the door and admitted through the
+    window: create a cp, PUT a role of "admin". Both writers or neither -- the
+    same sentence `assert_assignable_role` was given when it gained an
+    edit-side caller.
+    """
+    normalised = assert_assignable_role(role)
+    if normalised in ADMIN_MANAGED_ROLES:
+        return normalised
+    if is_platform_operator(actor):
+        return normalised
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"A company admin may create {', '.join(ADMIN_MANAGED_ROLES)} "
+            "accounts. An admin account is created by the platform operator "
+            "in the owner panel."
+        ),
+    )
+
+
 # ── WHAT A SITE MANAGER / PM MAY NOT DO ─────────────────────────────────────
 #
 # The ruling states the role in terms of what it LACKS, so the code does too.
@@ -7077,17 +7144,37 @@ SUPERINTENDENT_LICENCE_FIELDS = (
 # an alert about a job that has already stopped.
 SUPERINTENDENT_LICENCE_WARNING_DAYS = 30
 
-# The three answers, named. An UNKNOWN is not an OK: a superintendent account
-# with no expiry recorded is a licence nobody has checked, and printing that as
-# "valid" is the failure this vocabulary exists to prevent.
+# The answers, named. An UNKNOWN is not an OK: a superintendent account with no
+# expiry recorded is a licence nobody has checked, and printing that as "valid"
+# is the failure this vocabulary exists to prevent.
 LICENCE_OK = "ok"
 LICENCE_EXPIRING = "expiring"
 LICENCE_EXPIRED = "expired"
 LICENCE_UNKNOWN = "unknown"
 
+# ── THE FIFTH STATE, AND WHY IT HAD TO EXIST ────────────────────────────────
+#
+# `unknown` USED TO MEAN TWO THINGS. The old docstring said so and called it
+# deliberate: an unparseable expiry and an absent one were "the same fact", so
+# both returned `unknown`. For DISPLAY that reasoning is sound -- neither is a
+# date anybody can act on.
+#
+# WHAT IT COST IS DISCOVERY, AND IT COST IT IN PRODUCTION. The operator saved
+# Michael Cespedes's expiry as '07/212029' -- '07/21/2029' with a slash missing.
+# The write succeeded. The read could not parse it. The badge said "No DOB
+# registration recorded", which is a sentence about the NUMBER, and the number
+# was right there. He typed it again, because from the device a save that
+# stores something unreadable is indistinguishable from a save that failed.
+#
+# Nothing anywhere could find that row. A typo and an empty field produced the
+# same state, so no badge, no report and no query could say "somebody typed
+# this and it did not take". THAT is what a conflated state costs, and it is
+# not a display concern.
+LICENCE_UNREADABLE = "unreadable"
 
-def superintendent_licence_state(user, today=None) -> dict:
-    """{state, expires_on, days_remaining} for a superintendent's registration.
+
+def superintendent_licence_state(user, today=None, registered_number=None) -> dict:
+    """{state, expires_on, days_remaining, number, registered} for a licence.
 
     TAKES `today` AND DEFAULTS IT, rather than reading the clock inside a
     branch. Every statutory gate in this codebase resolves against a date it was
@@ -7099,19 +7186,45 @@ def superintendent_licence_state(user, today=None) -> dict:
     without also saying WHEN, and every caller (the admin list badge, the
     scan endpoint, a future email) needs the date it would print.
 
-    UNKNOWN IS RETURNED FOR AN UNPARSEABLE DATE AS WELL AS A MISSING ONE. A
-    field holding "2027" or "soon" is a licence nobody has checked, which is the
-    same fact as an empty one, and guessing at it would make the badge assert
-    something no person asserted.
+    ── TWO FACTS, NOT ONE, AND THAT IS THE DEFECT THIS CLOSES ──────────────
+
+    `state` ANSWERS ABOUT THE EXPIRY AND `registered` ANSWERS ABOUT THE NUMBER.
+    They were one field, and the screen drew a sentence about the number out of
+    a verdict measured from the expiry -- so an account with a registration
+    number and a mistyped date rendered as "No DOB registration recorded".
+
+    A function that measures one field must not return a verdict about another.
+    Both fields are measured here now, and both are handed back, so the caller
+    composing the sentence has the facts the sentence is about.
+
+    `registered_number` IS THE cs_registrations FALLBACK, per the ruling: the
+    warning clears if the user document OR an active registration row carries a
+    number. IT IS PASSED IN RATHER THAN LOOKED UP, because this is called once
+    per row on a paginated list and a lookup inside it would be one query per
+    superintendent. `licence_numbers_from_registrations` does them all at once.
+
+    THE USER DOCUMENT WINS when both are present. Not arbitrary: the ruling puts
+    the licence on the person's own record, and the row's `license_number` is a
+    copy taken on the day the registration was made.
     """
+    number = str((user or {}).get("dob_superintendent_number") or "").strip()
+    if not number:
+        number = str(registered_number or "").strip()
+
     raw = str((user or {}).get("dob_registration_expiry") or "").strip()
     out = {"state": LICENCE_UNKNOWN, "expires_on": raw or None,
-           "days_remaining": None}
+           "days_remaining": None, "number": number or None,
+           "registered": bool(number)}
     if not raw:
         return out
     try:
         expires = datetime.strptime(raw[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
+        # THE RAW STRING IS HANDED BACK UNCHANGED, and that is the point of the
+        # state. An admin told "unreadable" without being shown WHAT is
+        # unreadable has to open the edit form to find out; shown '07/212029'
+        # he can see the missing slash from the list.
+        out["state"] = LICENCE_UNREADABLE
         return out
     ref = today or datetime.now(timezone.utc).date()
     days = (expires - ref).days
@@ -7123,6 +7236,98 @@ def superintendent_licence_state(user, today=None) -> dict:
         out["state"] = LICENCE_EXPIRING
     else:
         out["state"] = LICENCE_OK
+    return out
+
+
+def assert_licence_expiry(raw):
+    """The expiry as it will be stored, or 422 naming the format. None if blank.
+
+    THE WRITE-SIDE GATE FOR THE TYPO THAT SHIPPED. The form posted free text,
+    `update_admin_user` $set it verbatim, and the reader wanted ISO -- so
+    '07/212029' was stored, read back as nothing, and reported as a missing
+    registration number. THREE SCREENS AGREED IT HAD SAVED because it had.
+
+    THE CLIENT REFUSES IT AT THE POINT OF TYPING TOO (roleVocabulary.js,
+    `licenceExpiryError`), and that is the half the operator sees. This is the
+    half that is a gate: the picker is not the gate, and neither is an input
+    mask -- `curl` reaches this route, and so does an app build from before the
+    validator existed.
+
+    IT PARSES WITH THE READER'S OWN PARSER. Not a regex that agrees with
+    `strptime` today: the same call, so "what may be written" and "what can be
+    read back" cannot drift into two answers. 2029-02-30 is refused here for
+    exactly the reason it would return LICENCE_UNREADABLE there.
+
+    BLANK IS NOT AN ERROR. An admin who left the field empty has not made a
+    mistake -- he has recorded nothing, and the badge says so in its own words.
+    Refusing "" would make clearing a licence impossible.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Registration expiry must be a calendar date written "
+                f"YYYY-MM-DD (for example 2029-07-21). Received {text!r}."
+            ),
+        )
+    return text
+
+
+async def licence_numbers_from_registrations(user_ids) -> dict:
+    """{user_id: license_number} from the ACTIVE cs_registrations of these users.
+
+    THE FALLBACK HALF OF "ONE FIELD, WRITTEN AND READ". A superintendent whose
+    user document carries no number may still hold a live registration that
+    does; the ruling is that the warning clears on either.
+
+    ── THREE NAMES FOR TWO FACTS, AND THE ONE THAT BITES ───────────────────
+
+    The registration row spells the licence `license_number` (US) and its live
+    flag `is_active`. The user document spells the same licence
+    `dob_superintendent_number`. A filter written against `active` rather than
+    `is_active` MATCHES EVERY ROW -- Mongo has no opinion about a field that
+    does not exist -- so a retired registration would go on clearing the
+    warning, silently, for as long as the row existed. That was nearly shipped
+    in a probe while this was being diagnosed.
+
+    ONE QUERY FOR THE WHOLE PAGE, and none at all for an empty set: this is
+    called from a paginated list, and a per-row lookup is the shape that turns
+    a badge into N round trips.
+
+    BOTH SPELLINGS OF THE ID, for the reason `_cs_rows_are_for` gives: rows
+    written before `_register_cs_on_project` stringified the id can hold either,
+    and a selector matching one spelling treats a live registration as absent.
+    """
+    ids = [str(i) for i in (user_ids or []) if str(i or "").strip()]
+    if not ids:
+        return {}
+    spellings = list(ids)
+    for one in ids:
+        try:
+            oid = to_query_id(one)
+        except Exception:
+            continue
+        if oid not in spellings:
+            spellings.append(oid)
+    rows = await db.cs_registrations.find(
+        {
+            "user_id": {"$in": spellings},
+            "is_active": True,
+            "is_deleted": {"$ne": True},
+        },
+        {"user_id": 1, "license_number": 1},
+    ).to_list(500)
+    out = {}
+    for row in rows:
+        number = str(row.get("license_number") or "").strip()
+        if not number:
+            continue
+        out.setdefault(str(row.get("user_id")), number)
     return out
 
 
@@ -9976,10 +10181,26 @@ async def get_admin_users(
     # one code path and one response shape, and a caller who owns nobody gets
     # what a company with no other users gets. `company_id: None` would match
     # precisely the orphan rows -- every other un-onboarded signup.
+    #
+    # ── AND THE ROLE CLAUSE BESIDE IT IS A DIFFERENT QUESTION ───────────────
+    #
+    # THE TENANT FILTER ASKS "WHOSE COMPANY"; THIS ASKS "WHOM DOES HE MANAGE".
+    # They sit in the same branch because they have the same answer for the same
+    # caller, not because they are one rule. Per the operator's ruling a company
+    # admin administers the Site Managers, superintendents and CPs of his own
+    # company -- see ADMIN_MANAGED_ROLES, which carries the reasoning and the
+    # consequences.
+    #
+    # THE ROLE HERE IS THE ROW'S, NEVER THE CALLER'S, and that distinction is
+    # the whole subject of the block above. `current_user["role"]` decided
+    # TENANCY and leaked every user on the platform. Nothing below reads it:
+    # the caller is separated by `is_platform_operator` alone, and the role
+    # names which ROWS a scoped caller is shown.
     if is_platform_operator(current_user):
         pass                      # the cross-tenant view, on the flag alone
     elif company_id:
         query["company_id"] = company_id
+        query["role"] = {"$in": list(ADMIN_MANAGED_ROLES)}
     else:
         query["_id"] = None
 
@@ -10047,8 +10268,22 @@ async def get_admin_users(
     )
     # DERIVED PER ROW, by the same helper the single-user reads use, so the
     # badge on the list and the panel on the detail screen can never disagree.
-    for _row in result.get("items") or []:
-        _with_licence(_row)
+    #
+    # THE FALLBACK IS RESOLVED FOR THE WHOLE PAGE FIRST, and only for the rows
+    # that need it. The ruling is that the warning clears if the user field OR
+    # an active registration carries a number; asking that per row would be one
+    # query per superintendent on a list that already sorts in memory. Rows that
+    # carry their own number cost nothing at all -- which, today, is all of
+    # them.
+    _rows = result.get("items") or []
+    _needy = [
+        str(r.get("id") or r.get("_id") or "") for r in _rows
+        if str(r.get("role") or "").strip().lower() == ROLE_SUPERINTENDENT
+        and not str(r.get("dob_superintendent_number") or "").strip()
+    ]
+    _fallback = await licence_numbers_from_registrations(_needy)
+    for _row in _rows:
+        _with_licence(_row, _fallback.get(str(_row.get("id") or _row.get("_id") or "")))
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admin)):
@@ -10076,7 +10311,11 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
     # THE PICKER IS NOT THE GATE. Both role pickers in admin/users.jsx offered
     # "Worker" and the ruling withdraws it; deleting the buttons stops the app
     # sending it and stops nothing else.
-    user_dict["role"] = assert_assignable_role(user_dict.get("role"))
+    #
+    # AND IT IS ASKED OF THE ACTOR, NOT OF THE STRING ALONE. A company admin
+    # may not mint an admin -- ADMIN_MANAGED_ROLES hides the result, so allowing
+    # the act would recreate "created users vanish" (#576) from the server end.
+    user_dict["role"] = assert_role_assignable_by(user_dict.get("role"), admin)
 
     # -- THE LICENCE BELONGS TO ONE ROLE -------------------------------------
     #
@@ -10100,6 +10339,12 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
         for _f in ("dob_superintendent_number", "dob_registration_expiry"):
             if not str(user_dict.get(_f) or "").strip():
                 user_dict.pop(_f, None)
+        # AND THE EXPIRY MUST BE A DATE THE READER CAN READ BACK. '07/212029'
+        # was stored here, read as nothing, and reported as a missing
+        # registration NUMBER. See assert_licence_expiry.
+        if "dob_registration_expiry" in user_dict:
+            user_dict["dob_registration_expiry"] = assert_licence_expiry(
+                user_dict["dob_registration_expiry"])
 
     user_dict["password"] = hash_password(user_dict["password"])
     now = datetime.now(timezone.utc)
@@ -10195,7 +10440,7 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
 
     return UserResponse(**user_dict)
 
-def _with_licence(doc: dict) -> dict:
+def _with_licence(doc: dict, registered_number=None) -> dict:
     """The user document plus its DERIVED licence verdict, for the response.
 
     ONE PLACE, because two read routes return a single user and a third
@@ -10207,9 +10452,46 @@ def _with_licence(doc: dict) -> dict:
     NON-SUPERINTENDENTS GET `licence: None`, NOT an "ok". They hold no DOB
     registration, so there is no state to report, and an "ok" would be this
     server asserting something about a credential nobody claims.
+
+    `registered_number` IS THE CALLER'S TO RESOLVE, not this function's. The
+    list route resolves the whole page in one query; a lookup in here would be
+    one round trip per row, and the badge would be the reason the list got
+    slow.
     """
     if str((doc or {}).get("role") or "").strip().lower() == ROLE_SUPERINTENDENT:
-        doc["licence"] = superintendent_licence_state(doc)
+        doc["licence"] = superintendent_licence_state(
+            doc, registered_number=registered_number)
+    return doc
+
+
+async def _licence_for(doc: dict):
+    """The licence verdict for ONE user, registration fallback resolved.
+
+    THE SINGLE-ROW COUNTERPART of what `get_admin_users` does for a whole page.
+    The list resolves the page in one query and passes the number in; the routes
+    that serve one user ask here rather than each writing the same four lines.
+    What must not differ between them is the ANSWER -- a man whose badge reads
+    "registered" on the list and "no registration recorded" on the detail screen
+    is the disagreement `_with_licence` exists to prevent.
+
+    NO QUERY AT ALL when the user document carries its own number, which today
+    is every superintendent on the platform. None for every other role, for the
+    reason `_with_licence` gives.
+    """
+    if str((doc or {}).get("role") or "").strip().lower() != ROLE_SUPERINTENDENT:
+        return None
+    if str((doc or {}).get("dob_superintendent_number") or "").strip():
+        return superintendent_licence_state(doc)
+    uid = str(doc.get("id") or doc.get("_id") or "")
+    found = await licence_numbers_from_registrations([uid])
+    return superintendent_licence_state(doc, registered_number=found.get(uid))
+
+
+async def _with_licence_resolved(doc: dict) -> dict:
+    """`_with_licence`, with the fallback resolved. Same shape, one extra await."""
+    verdict = await _licence_for(doc)
+    if verdict is not None:
+        doc["licence"] = verdict
     return doc
 
 
@@ -10218,7 +10500,7 @@ async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_adm
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserResponse(**_with_licence(serialize_id(user)))
+    return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
 async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_user_admin)):
@@ -10242,8 +10524,13 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     # "owner" at the door and admit it through the window: create a cp, PUT a
     # role of "owner", and the account now skips the tenant filter on
     # GET /admin/users. Both writers or neither.
+    #
+    # AND THE ACTOR IS PART OF THE QUESTION. A company admin who cannot CREATE
+    # an admin must not be able to promote a cp into one either -- the
+    # promotion would take the account out of his own list on the next refresh,
+    # which is the same "it vanished" defect wearing a different verb.
     if "role" in update_data:
-        update_data["role"] = assert_assignable_role(update_data["role"])
+        update_data["role"] = assert_role_assignable_by(update_data["role"], admin)
 
     # Normalize phone to E.164 if provided
     if "phone" in update_data and update_data["phone"]:
@@ -10274,6 +10561,28 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     # id is validated against the caller's company, and the whole update is
     # rejected if any is foreign.
     if "assigned_projects" in update_data:
+        # ── EXCEPT FOR THE ONE ROLE WHOSE LIST HAS AN OWNER ─────────────────
+        #
+        # A SUPERINTENDENT'S ASSIGNED PROJECTS ARE HIS ACTIVE REGISTRATIONS --
+        # `set_user_cs_registrations` writes both sides of that invariant in one
+        # act, and this route is a second writer of one side of it. A write
+        # here would add a project he is not the registered CS on, or drop one
+        # he IS, and nothing would notice until a log could not be filed.
+        #
+        # THE SCREEN NO LONGER OFFERS IT (the superintendent card carries
+        # Registration, Edit and Delete, no Assign) AND THAT IS NOT THE GATE.
+        # Hiding a control is a courtesy; an invariant with one writer needs the
+        # other writers refused.
+        _target_role = str(
+            update_data.get("role") or existing_user.get("role") or "",
+        ).strip().lower()
+        if _target_role == ROLE_SUPERINTENDENT:
+            raise HTTPException(
+                status_code=422,
+                detail="A superintendent's projects are set by Registration, "
+                       "not by Assign. Registering him on a project assigns it "
+                       "and unregistering him removes it.",
+            )
         update_data["assigned_projects"] = await validate_assignable_projects(
             admin, update_data["assigned_projects"],
         )
@@ -10302,6 +10611,19 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
             f: "" for f in SUPERINTENDENT_LICENCE_FIELDS
             if existing_user.get(f) is not None
         }
+    elif update_data.get("dob_registration_expiry") is not None:
+        # THE EXPIRY MUST BE READABLE BY THE READER. The typo that shipped came
+        # through this route: `dob_registration_expiry` is in
+        # ALLOWED_USER_FIELDS and was $set verbatim, so '07/212029' landed,
+        # read back as nothing, and was reported as a missing registration
+        # NUMBER. See assert_licence_expiry.
+        #
+        # AFTER THE DEMOTION BRANCH, NOT BEFORE IT. Checked first, an admin
+        # editing a CP's NAME would be 422'd over an expiry field the very next
+        # block was about to drop — a refusal about a value that was never
+        # going to be stored.
+        update_data["dob_registration_expiry"] = assert_licence_expiry(
+            update_data["dob_registration_expiry"])
 
     old_phone = existing_user.get("phone", "")
     company_id = existing_user.get("company_id")
@@ -10366,7 +10688,7 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
         await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
-    return UserResponse(**_with_licence(serialize_id(user)))
+    return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
 @api_router.delete("/admin/users/{user_id}")
 async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
@@ -10478,38 +10800,69 @@ async def get_user_cs_registrations(user_id: str, admin=Depends(get_user_admin))
     and a guess that is wrong in the DELETE direction soft-deletes a live
     statutory registration.
 
-    `selectable` IS HIS ASSIGNED PROJECTS, per the ruling. `registered_elsewhere`
-    is the set this screen must NOT touch: rows on projects he is not assigned
-    to. They are returned so the screen can SAY they exist rather than leaving
-    an admin looking at a list that silently omits a registration.
+    ── `selectable` IS THE COMPANY'S PROJECTS, AND IT USED TO BE HIS ────────
+
+    It was his `assigned_projects`, because a registration could only be made on
+    a job he had already been Assigned to. THE RULING COLLAPSED THOSE TWO ACTS
+    INTO ONE: registering him assigns the project, unregistering removes it, and
+    his assignment list is now a CONSEQUENCE of this screen rather than an input
+    to it. Left as it was, the picker would offer exactly the set already ticked
+    -- and a superintendent created this morning, with an empty assignment list
+    and no Assign button, could never be registered on anything at all.
+
+    `registered_elsewhere` IS THE SET THIS SCREEN MUST NOT TOUCH: active rows on
+    projects the picker cannot show. That rule is unchanged; only the set it is
+    measured against is. Under the invariant it is empty forever, which makes a
+    NON-empty one the divergence reporting itself, on the screen, rather than in
+    a report nobody runs.
     """
     target = await _assert_superintendent_under_admin(user_id, admin)
 
-    assigned = [str(pid) for pid in (target.get("assigned_projects") or [])]
     rows = await db.cs_registrations.find(
         {**_cs_rows_are_for(user_id), "is_active": True},
     ).to_list(200)
 
-    names = {}
-    if assigned or rows:
-        ids = {*assigned, *[str(r.get("project_id")) for r in rows]}
-        for prj in await db.projects.find(
-            {"_id": {"$in": [to_query_id(i) for i in ids if i]}},
-            {"name": 1},
-        ).to_list(400):
-            names[str(prj["_id"])] = prj.get("name") or ""
+    # THE COMPANY'S PROJECTS, by the same predicate `validate_assignable_projects`
+    # enforces on the way in -- so what the picker offers and what the save will
+    # accept are the same set, asked once from each side.
+    #
+    # FAILS CLOSED, the rule `validate_assignable_projects` states in its own
+    # words: an actor with no company may assign nothing, because absence is not
+    # authorization. The platform operator is the one deliberate cross-company
+    # path and he reaches it only when there is no company to scope to.
+    _company = get_user_company_id(target) or get_user_company_id(admin)
+    _prj_query = {"is_deleted": {"$ne": True}}
+    if _company:
+        _prj_query["company_id"] = _company
+        selectable_docs = await db.projects.find(_prj_query, {"name": 1}).to_list(500)
+    elif is_platform_operator(admin):
+        selectable_docs = await db.projects.find(_prj_query, {"name": 1}).to_list(500)
+    else:
+        selectable_docs = []
+    selectable = [str(p.get("_id")) for p in selectable_docs]
+    names = {str(p.get("_id")): (p.get("name") or "") for p in selectable_docs}
 
     registered = [str(r.get("project_id")) for r in rows]
+    # Names for rows the picker cannot show, so `registered_elsewhere` can print
+    # something a human recognises rather than an id.
+    _missing = [pid for pid in registered if pid not in names]
+    if _missing:
+        for prj in await db.projects.find(
+            {"_id": {"$in": [to_query_id(i) for i in _missing if i]}},
+            {"name": 1},
+        ).to_list(200):
+            names[str(prj["_id"])] = prj.get("name") or ""
+
     return {
         "user_id": str(user_id),
         "licence_number": target.get("dob_superintendent_number") or None,
-        "licence": superintendent_licence_state(target),
+        "licence": await _licence_for(target),
         "selectable": [{"project_id": pid, "name": names.get(pid, "")}
-                       for pid in assigned],
+                       for pid in selectable],
         "registered_project_ids": registered,
         "registered_elsewhere": [
             {"project_id": pid, "name": names.get(pid, "")}
-            for pid in registered if pid not in set(assigned)
+            for pid in registered if pid not in set(selectable)
         ],
     }
 
@@ -10521,7 +10874,30 @@ async def set_user_cs_registrations(
     data: UserCSRegistrationsSet,
     admin=Depends(get_user_admin),
 ):
-    """Make this superintendent's registrations match the selection.
+    """Make this superintendent's registrations — and his assignments — match.
+
+    ── REGISTRATION DOES BOTH, AND THAT IS THE RULING ──────────────────────
+
+        INVARIANT: for a superintendent, set(assigned_projects)
+                   == {r.project_id for r in cs_registrations if r.is_active}
+
+    Registering him on a project writes the row AND adds the project to
+    `assigned_projects`; unregistering soft-deletes the row AND removes the
+    assignment. THIS IS THE ONLY WRITER OF THAT LIST FOR THIS ROLE -- Assign is
+    gone from his card, `POST /assign-projects` refuses him and
+    `PUT /admin/users/{id}` refuses the field. An invariant with two writers is
+    an invariant until the second one runs.
+
+    WHY BOTH HALVES SHIP TOGETHER. `selectable` used to be his assignment list,
+    so a superintendent with no assignments could be registered on nothing.
+    Remove Assign first and a new superintendent is unregisterable forever;
+    land this write first and Assign becomes a second writer of a set that now
+    has an owner. Neither half is shippable alone.
+
+    THE ASSIGNMENT IS NOT COSMETIC. `require_project_access` treats a project id
+    in `assigned_projects` as authorization (branch 3), so the add is what lets
+    him open the job at all and the remove is what stops him reaching one he is
+    no longer the CS on.
 
     ── THE DELETE SIDE IS THE DANGEROUS HALF ───────────────────────────────
 
@@ -10534,12 +10910,15 @@ async def set_user_cs_registrations(
 
     ── AND IT IS SCOPED TO WHAT THE SCREEN CAN SEE ─────────────────────────
 
-    The de-selection pass touches ONLY rows on projects in his
-    `assigned_projects`. A registration on a project he is not assigned to
-    cannot appear in the multi-select, so a save that dropped it would be this
-    endpoint deleting something the admin was never shown. That is the exact
-    shape of Michael Cespedes's row on 588 Thomas if he were ever unassigned
-    from it: invisible to the screen, and destroyed by the next save.
+    The de-selection pass touches ONLY rows on projects the picker could show —
+    his company's, which is what `selectable` now is. A registration outside
+    that set cannot appear in the multi-select, so a save that dropped it would
+    be this endpoint deleting something the admin was never shown.
+
+    THE RULE IS UNCHANGED AND THE SET IT MEASURES AGAINST IS NOT. It used to be
+    his `assigned_projects`; that list is now an OUTPUT of this endpoint, so
+    scoping the delete to it would make the endpoint's own previous write the
+    boundary of its next one — which is not a boundary at all.
 
     ── THE LICENCE COMES OFF THE USER RECORD ───────────────────────────────
 
@@ -10577,25 +10956,45 @@ async def set_user_cs_registrations(
             detail="This account has no name to register under.",
         )
 
-    assigned = {str(pid) for pid in (target.get("assigned_projects") or [])}
     wanted = {str(pid).strip() for pid in (data.project_ids or []) if str(pid).strip()}
 
-    # HIS ASSIGNMENTS ONLY, per the ruling — and it is also the tenant check for
-    # the ids in this body. `validate_assignable_projects` already refused any
-    # foreign project before it could reach `assigned_projects`, so intersecting
-    # with that list inherits the check rather than restating it.
-    foreign = wanted - assigned
-    if foreign:
-        raise HTTPException(
-            status_code=422,
-            detail=("A superintendent can only be registered on projects he is "
-                    "assigned to. Not assigned: " + ", ".join(sorted(foreign))),
-        )
+    # ── THE TENANT CHECK, NOW ASKED DIRECTLY ────────────────────────────────
+    #
+    # THIS READ `foreign = wanted - assigned`, and it was doing two jobs at
+    # once. It enforced "only projects he is assigned to" — which the ruling
+    # withdraws — and it INHERITED the tenant check, because everything in
+    # `assigned_projects` had already been through
+    # `validate_assignable_projects` on the way in.
+    #
+    # Dropping the first job without restating the second would have made this
+    # endpoint a way to mint cross-tenant access: `_register_cs_on_project` runs
+    # on a project id off the wire, and the add below now writes that id into
+    # `assigned_projects`, which `require_project_access` honours. So the check
+    # is asked HERE, by name, with the same function every other writer of that
+    # list uses. It raises 403 for a foreign OR unknown id and rejects the
+    # whole request, so a partial success cannot be mistaken for a full one.
+    await validate_assignable_projects(admin, sorted(wanted))
 
     current_rows = await db.cs_registrations.find(
         {**_cs_rows_are_for(user_id), "is_active": True},
     ).to_list(200)
     current = {str(r.get("project_id")) for r in current_rows}
+
+    # WHAT THE PICKER COULD HAVE SHOWN, read the same way the GET reads it. This
+    # is the scope of the de-selection pass below AND the scope of the
+    # assignment write: a project id that could not appear on the screen is one
+    # this save must neither retire nor grant access to.
+    _company = get_user_company_id(target) or get_user_company_id(admin)
+    _prj_query = {"is_deleted": {"$ne": True}}
+    if _company:
+        _prj_query["company_id"] = _company
+    if _company or is_platform_operator(admin):
+        selectable_ids = {
+            str(p.get("_id")) for p in
+            await db.projects.find(_prj_query, {"_id": 1}).to_list(500)
+        }
+    else:
+        selectable_ids = set()
 
     now = datetime.now(timezone.utc)
     added, warnings = [], []
@@ -10627,7 +11026,7 @@ async def set_user_cs_registrations(
             warnings.append(out["conflict_warning"])
 
     removed = []
-    for pid in sorted((current - wanted) & assigned):
+    for pid in sorted((current - wanted) & selectable_ids):
         res = await db.cs_registrations.update_many(
             {**_cs_rows_are_for(user_id), "project_id": pid, "is_active": True},
             {"$set": {
@@ -10641,6 +11040,29 @@ async def set_user_cs_registrations(
         if getattr(res, "modified_count", 0):
             removed.append(pid)
 
+    # ── THE ASSIGNMENT SIDE, DERIVED FROM THE REGISTRATIONS ─────────────────
+    #
+    # ONE STATEMENT, NOT AN ADD PASS AND A REMOVE PASS. The invariant says his
+    # assignments ARE his active registrations, so the honest write is the whole
+    # list computed from the whole answer — `$addToSet` here and `$pull` there
+    # would be two chances to leave the sets disagreeing, and the second one
+    # only ever runs on the path somebody tested less.
+    #
+    # INTERSECTED WITH `selectable_ids`, WHICH IS NOT A ROUNDING ERROR. A row on
+    # a project outside this company survives the pass above (deliberately — see
+    # the docstring) and its id has been through no tenant check on this
+    # request. `assigned_projects` is an AUTHORIZATION GRANT that
+    # `require_project_access` honours, so writing an unvalidated id into it is
+    # the SEV-0 shape `validate_assignable_projects` exists to stop. Such a row
+    # goes on existing and goes on being reported as `registered_elsewhere`;
+    # what it does not do is silently mint access.
+    resulting = sorted(((current | wanted) - set(removed)) & selectable_ids)
+    if resulting != sorted(str(p) for p in (target.get("assigned_projects") or [])):
+        await db.users.update_one(
+            {"_id": to_query_id(user_id)},
+            {"$set": {"assigned_projects": resulting, "updated_at": now}},
+        )
+
     if added or removed:
         await audit_log(
             "user_cs_registrations_set", actor_id(admin), "user", str(user_id),
@@ -10651,7 +11073,12 @@ async def set_user_cs_registrations(
                 # THE ROWS THIS SCREEN COULD NOT SEE, recorded on the same line
                 # as what it changed. If one is ever lost, the audit says
                 # whether this endpoint was even looking at it.
-                "left_alone_unassigned": sorted(current - assigned),
+                "left_alone_unselectable": sorted(current - selectable_ids),
+                # AND WHAT HIS ASSIGNMENTS BECAME, because this endpoint is now
+                # the only writer of that list for this role. An audit that
+                # recorded the registration and not the access grant would
+                # describe half of what happened.
+                "assigned_projects": resulting,
             },
         )
 
@@ -10685,6 +11112,26 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
     if not is_platform_operator(admin) and not _same_company(admin, target):
         raise HTTPException(
             status_code=403, detail="Not authorized to modify this user",
+        )
+
+    # ── NOT FOR A SUPERINTENDENT. HIS LIST HAS AN OWNER ─────────────────────
+    #
+    # A superintendent's assigned projects ARE his active registrations, and
+    # `set_user_cs_registrations` writes both sides of that in one act. This
+    # route would write one side of it, so a project could appear in his list
+    # with no registration behind it — he would open the job and be unable to
+    # file, because `superintendent_log` keys the filing gate on the
+    # REGISTRATION and never on the assignment.
+    #
+    # THE CARD NO LONGER DRAWS THE BUTTON, AND THAT IS NOT WHY THIS IS HERE.
+    # Hiding a control is a courtesy; an invariant with one writer needs every
+    # other writer refused, including the next caller who has not read the card.
+    if str(target.get("role") or "").strip().lower() == ROLE_SUPERINTENDENT:
+        raise HTTPException(
+            status_code=422,
+            detail="A superintendent's projects are set by Registration, not "
+                   "by Assign. Registering him on a project assigns it and "
+                   "unregistering him removes it.",
         )
 
     assigned = await validate_assignable_projects(

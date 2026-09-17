@@ -244,12 +244,31 @@ class TheRoleIsNeverTheCarveOut(unittest.TestCase):
     decision made on it is satisfied by having registered."""
 
     def test_admin_users_decides_on_the_flag(self):
+        """THE CALLER'S ROLE, NOT THE WORD "role".
+
+        This asserted `assertNotIn('"role"')` until a SECOND, unrelated use of
+        the word arrived: a company admin now sees only the three roles he
+        manages, so the query carries `query["role"] = {"$in":
+        ADMIN_MANAGED_ROLES}` — the ROW's role, choosing which rows a
+        tenant-scoped caller is shown.
+
+        Those are opposite things. Reading `current_user["role"]` to decide
+        WHOSE COMPANY leaked every user on the platform; filtering rows BY role
+        can only ever return fewer rows. A token scan cannot tell them apart,
+        so the assertion is restated onto what it means — and the managed-role
+        clause is pinned by name so a future `query["role"] = current_user[...]`
+        cannot arrive wearing the same three letters.
+        """
         i = _SRC.index("async def get_admin_users(")
         j = _SRC.index("USER_LIST_FIELDS = {", i)
         code = "\n".join(l for l in _SRC[i:j].split("\n")
                          if not l.lstrip().startswith("#"))
         self.assertIn("is_platform_operator(current_user)", code)
-        self.assertNotIn('"role"', code)
+        for expr in ('current_user.get("role")', "current_user.get('role')",
+                     'current_user["role"]', "current_user['role']"):
+            self.assertNotIn(expr, code)
+        if 'query["role"]' in code:
+            self.assertIn("ADMIN_MANAGED_ROLES", code)
 
     def test_is_platform_operator_reads_a_flag_and_not_a_role(self):
         i = _SRC.index("def is_platform_operator(")

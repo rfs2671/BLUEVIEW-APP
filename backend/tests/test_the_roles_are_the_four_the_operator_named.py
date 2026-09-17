@@ -123,13 +123,37 @@ class TheFourRoles(unittest.TestCase):
 
 
 class BothWritersAreOnTheList(unittest.TestCase):
-    """The window as well as the door. See the header."""
+    """The window as well as the door. See the header.
+
+    ── WHAT THE ROUTES NOW CALL, AND WHY IT IS STILL THIS CHECK ────────────
+
+    `assert_role_assignable_by(role, actor)`, which calls
+    `assert_assignable_role` and THEN asks whether this actor may hand that
+    role out — a company admin may not create an admin, because the list filter
+    would hide the account he just made.
+
+    THE ALLOW-LIST IS NOT WEAKENED BY BEING WRAPPED and the class below proves
+    it from the other end: every route reaches the same 422 for a role off the
+    list. What this class pins is that neither WRITER got missed, which is the
+    failure it was written after.
+    """
 
     def test_create_admin_user_validates_the_role(self):
-        self.assertIn("assert_assignable_role", _src(server.create_admin_user))
+        self.assertIn("assert_role_assignable_by", _src(server.create_admin_user))
 
     def test_update_admin_user_validates_the_role(self):
-        self.assertIn("assert_assignable_role", _src(server.update_admin_user))
+        self.assertIn("assert_role_assignable_by", _src(server.update_admin_user))
+
+    def test_and_that_wrapper_still_runs_the_allow_list(self):
+        """The wrapper could have replaced the check instead of adding to it.
+        Asked of the BEHAVIOUR rather than of the source: a withdrawn role is
+        still a 422 for the platform operator himself, who is refused nothing
+        else."""
+        operator = {"id": "root", "is_platform_operator": True}
+        for role in ("worker", "owner", "demo", "", "site_device"):
+            with self.assertRaises(HTTPException, msg=role) as ctx:
+                server.assert_role_assignable_by(role, operator)
+            self.assertEqual(ctx.exception.status_code, 422, role)
 
     def test_role_is_still_editable_at_all(self):
         """If `role` ever leaves ALLOWED_USER_FIELDS the validator above
