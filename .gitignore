@@ -119,3 +119,8 @@ dump.rdb
 # the repo. The actual .env.local with secrets stays ignored via
 # the patterns above.
 !dob_worker/.env.local.example
+
+# Browser network captures. A HAR records every request header, which means
+# every bearer token the session sent -- the same class of leak as the JWT that
+# test_reports/iteration_4.json carried into history.
+*.har
