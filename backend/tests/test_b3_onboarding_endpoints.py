@@ -343,7 +343,10 @@ class TestRegisterInitializesOnboarding(unittest.TestCase):
             client = TestClient(server.app)
             payload = {
                 "email": "newgc@example.com",
-                "password": "secret",
+                # COMPLIANT BECAUSE THE RULE IS BACK — register enforces an
+                # 8-character letter-and-digit password again, and "secret"
+                # is neither. This test is about onboarding_step.
+                "password": "secret01",
                 "name": "B3 New GC Owner",
                 "role": "owner",  # owner doesn't require company_id
             }

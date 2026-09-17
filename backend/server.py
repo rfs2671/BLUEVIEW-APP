@@ -1225,6 +1225,79 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ
     "http://localhost:3000",
 ]
 
+# ── THE DEMO ACCOUNT NEVER WRITES ─────────────────────────────────
+#
+# ONE GUARD, AT THE AUTH LAYER, NOT PER ROUTE — the operator's words. Every
+# non-safe method (POST/PUT/PATCH/DELETE) from a demo principal is refused
+# with 403 {"error": "demo_read_only", "detail": "Demo mode, nothing is
+# saved.", ...}. lib/demo_guard.py holds the decision, the refusal shape, the
+# two-entry exemption list, and the long note on why it is a middleware and
+# not a `Depends` on 153 routes.
+#
+# ── REGISTERED FIRST, WHICH MAKES IT INNERMOST ────────────────────────────
+#
+# `add_middleware` PREPENDS, so the three blocks below all wrap this one and
+# the runtime order becomes CORS -> X-Request-Id -> rate limit -> this -> app.
+# That is the position this guard needs, and every part of it was paid for
+# already by a bug recorded further down this file:
+#
+#   INSIDE CORS      a middleware that short-circuits returns its own response
+#                    WITHOUT passing back out through CORS. That is exactly
+#                    how the rate limiter's 429 lost its
+#                    Access-Control-Allow-Origin and the browser reported a
+#                    CORS misconfiguration instead of the real status (see the
+#                    CORS block). A demo refusal the web build cannot read is
+#                    a "Demo mode" toast that can never fire.
+#   INSIDE REQUEST-ID  so the refusal gets an id and its own `[req] ... -> 403`
+#                    line. A refused write is precisely what a support call is
+#                    about.
+#   INSIDE RATE LIMIT  because this guard reads db.users, and a layer that
+#                    touches Mongo must not be reachable faster than the
+#                    limiter permits.
+#
+# THE PREDICATE IS RESOLVED PER REQUEST, NOT NOW. `_demo_write_guard_principal`
+# is defined far below, in the role-vocabulary section, beside the predicate it
+# calls — the question it answers is a role question, so it lives with the
+# roles. This registration runs thousands of lines earlier, and the lambda
+# defers the name lookup to call time, which is the only thing that makes the
+# two placements compatible; the guard is a request-time object, so there is
+# nothing to resolve at import.
+#
+# (No other name from that section is SPELLED here, deliberately. Several
+# tests in this repo locate a region of this file by searching it for a
+# literal and a search returns the LEFTMOST match, so a role predicate's name
+# written into prose 5,800 lines above its definition silently moves a test's
+# window onto this comment. The same trap is documented on the X-Request-Id
+# block below.)
+#
+# THE IMPORT IS OUTSIDE THE try AND THE WIRING IS INSIDE IT, WHICH IS NOT THE
+# SHAPE OF THE RATE LIMITER BELOW. That block swallows its own import so a
+# corrupt limiter cannot stop the app booting; the trade is right for a
+# throttle and wrong here. lib/demo_guard imports `jwt`, `logging` and
+# `typing` and nothing else — if it fails to import, this process has a broken
+# PyJWT, which means server.py's own `import jwt` on line 24 already failed.
+# There is no realistic state where swallowing it buys a working app, and one
+# where it buys a silently unguarded one.
+from lib import demo_guard  # noqa: E402  (import placed with its subject)
+
+try:
+    app.add_middleware(
+        demo_guard.make_middleware(
+            jwt_secret=JWT_SECRET,
+            jwt_algorithm=JWT_ALGORITHM,
+            demo_principal_check=lambda payload: _demo_write_guard_principal(
+                payload),
+        ),
+    )
+except Exception as _demo_guard_err:
+    # Reached only if add_middleware itself refuses (an app already started).
+    # Logged in the words a person reading a boot log needs, not as a stack
+    # trace about middleware: what is unprotected, and who can now write.
+    logging.getLogger(__name__).error(
+        f"[demo_guard] middleware NOT installed: {_demo_guard_err!r}; "
+        f"DEMO ACCOUNTS CAN CURRENTLY WRITE",
+    )
+
 # ── Phase C2: rate limiting + abuse protection ────────────────────
 #
 # In-memory fixed-window limiter wrapping every /api/* request.
@@ -6397,6 +6470,56 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
+
+# ── THE PASSWORD RULE, IN ONE PLACE ────────────────────────────────────────
+#
+# Eight characters, at least one letter and at least one digit. That is the
+# rule the removed checks enforced and the rule the "restore before production
+# rollout" comments described.
+#
+# IT IS A FUNCTION BECAUSE IT WAS DELETED IN THREE PLACES. `register`,
+# `PUT /auth/password` and `POST /admin/users` each carried their own copy,
+# each copy was cut for demo-day, and each was left behind a comment promising
+# it would come back. Three copies is how one of them gets restored and the
+# other two keep the hole — so there is now one copy, and a fourth password
+# writer added later has one obvious thing to call.
+#
+# LETTER AND DIGIT ARE UNICODE, NOT ASCII. `str.isalpha` / `str.isdigit`, so
+# "пароль1234" is a letter-and-digit password and is accepted. Restricting to
+# ascii_letters would refuse a perfectly strong password for being written in
+# the wrong alphabet, which is not a security property.
+#
+# THE MESSAGE STATES THE RULE. A 422 that says only "invalid" sends the person
+# back to the form to guess, and the rule is not a secret — an attacker learns
+# it by registering once.
+MIN_PASSWORD_LENGTH = 8
+
+PASSWORD_RULE_MESSAGE = (
+    f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include "
+    f"at least one letter and one number."
+)
+
+
+def assert_password_complexity(password, *, field: str = "Password") -> str:
+    """The password, or 422 naming the rule it failed.
+
+    `field` only changes the word the empty-password message starts with, so
+    PUT /auth/password can say "New password is required" the way it always
+    did rather than telling somebody changing their password that a
+    "Password" is required — a difference that matters on a form with two
+    password boxes on it.
+    """
+    pwd = password or ""
+    if not pwd:
+        raise HTTPException(status_code=422, detail=f"{field} is required")
+    if len(pwd) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=422, detail=PASSWORD_RULE_MESSAGE)
+    if not any(c.isalpha() for c in pwd):
+        raise HTTPException(status_code=422, detail=PASSWORD_RULE_MESSAGE)
+    if not any(c.isdigit() for c in pwd):
+        raise HTTPException(status_code=422, detail=PASSWORD_RULE_MESSAGE)
+    return pwd
+
 def _jwt_claim(value):
     """Make a claim JSON-safe WITHOUT turning None into the string "None".
 
@@ -6915,6 +7038,60 @@ def is_demo(user) -> bool:
     is not a role nobody holds — it is this one, with whitespace.
     """
     return str((user or {}).get("role") or "").strip().lower() == ROLE_DEMO
+
+
+async def _demo_write_guard_principal(payload) -> bool:
+    """Is the holder of this token a demo account? The write guard's one read.
+
+    Called from the demo write-guard middleware registered near the top of
+    this file; it lives HERE, beside the predicate it calls, because the
+    question it answers is a role question and not a middleware question.
+
+    ── THE DOCUMENT DECIDES, THE CLAIM IS ONLY THE FALLBACK ────────────────
+
+    `payload["role"]` is right there and free, and it is not what is read.
+    The token is a THIRTY-DAY snapshot (JWT_EXPIRATION_HOURS = 720) and
+    `_reissue_token_if_stale` COPIES the old claims into the replacement
+    rather than re-reading the account, so a demo who is promoted to a paying
+    CP carries the string "demo" until the day the session finally dies.
+    Trusting the claim would refuse that customer's every write for a month,
+    with nothing on any screen able to explain it.
+
+    Reading `db.users` makes this guard's answer the SAME answer
+    `get_current_user` + `is_demo` give the route behind it. That identity is
+    what the census test asserts; two independent derivations of "is a demo"
+    would be two things that can disagree.
+
+    ── EVERY UNCERTAIN ANSWER IS "NOT A DEMO", ON PURPOSE ──────────────────
+
+    No `sub`, or no such user: this guard is not the authenticator.
+    `get_current_user` runs immediately after it and answers 401 for exactly
+    those tokens. Returning True here would replace that 401 with a 403 that
+    says "Demo mode, nothing is saved" about a request with no account behind
+    it — a false statement, and a confusing one to debug.
+
+    A LOOKUP THAT RAISES FALLS BACK TO THE SIGNED CLAIM rather than to
+    "allow". The claim is weaker but it is authentic — this server signed it —
+    and the case it covers is Mongo being unreachable, where the honest answer
+    for a demo is still refusal. It cannot deny a real customer anything they
+    could otherwise have done: if this read failed, the write behind it was
+    going to fail too.
+    """
+    user_id = (payload or {}).get("sub")
+    if not user_id:
+        return False
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+            {"role": 1},
+        )
+    except Exception as e:
+        logger.warning(f"[demo_guard] user lookup failed, falling back to the "
+                       f"token claim: {e!r}")
+        return is_demo({"role": (payload or {}).get("role")})
+    if not user:
+        return False
+    return is_demo(user)
 
 
 # The roles that hard-require a company. A user in one of these without a
@@ -8388,13 +8565,9 @@ async def login(credentials: UserLogin, request: Request = None, _rate=Depends(c
 
 @api_router.post("/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate, request: Request = None, _rate=Depends(check_auth_rate_limit)):
-    # SECURITY REGRESSION (intentional, temporary): password complexity
-    # (8-char min + letter+digit mix) was removed for demo-day testing.
-    # Only a bare non-empty check remains. Restore the strict checks
-    # before production customer rollout.
-    pwd = user_data.password
-    if not pwd:
-        raise HTTPException(status_code=422, detail="Password is required")
+    # BEFORE THE EMAIL LOOKUP AND BEFORE THE HASH, so a refused password costs
+    # no query and no bcrypt round.
+    pwd = assert_password_complexity(user_data.password)
 
     # Check if email exists
     existing = await db.users.find_one({"email": user_data.email})
@@ -8748,7 +8921,47 @@ def _onboarding_in_flight(user: dict) -> bool:
     return not (user.get("company_id") or "")
 
 
-@api_router.post("/onboarding/company")
+# ── THIS ROUTE MINTS A TENANT, AND IT CARRIED NO GATE AT ALL ───────────────
+#
+# `require_approved` is on roughly forty routes in this file and it was NOT on
+# this one, which is the route that CREATES A COMPANY. The hole is not
+# theoretical and it is not old: in production `yero151218vi@gmail.com` is
+# `account_status: "pending"` and owns a company, because he walked through
+# onboarding while pending and nothing here stopped him. Approval is supposed
+# to be the moment a human decides this account may cost money and may exist
+# as a tenant; it was being granted by the signup form.
+#
+# TWO REFUSALS, TWO REASONS, AND THE READER CAN TELL WHICH ONE FIRED:
+#
+#   demo         403 {"error": "demo_read_only",  "detail": "Demo mode, ..."}
+#                the account is a prospect looking around. The write guard
+#                middleware refuses this before the route is ever entered;
+#                the check in the body is the second lock — see below.
+#   not approved 403 {"detail": {"error": "account_pending"}}
+#                the account is real and nobody has said yes to it yet. Same
+#                shape `require_approved` produces everywhere else in this
+#                file, so the client's existing reader already handles it.
+#
+# WHICH ONE A FRESH SIGNUP SEES, since it is BOTH: `demo_read_only`. The
+# middleware runs before any dependency, so the more specific truth wins in
+# production. Only with the middleware gone would such an account fall through
+# to `account_pending` — still refused, which is the part that matters, and
+# the reason the body check is not load-bearing for the ordinary case.
+#
+# WHY THE DEMO CHECK IS HERE AS WELL AS IN THE MIDDLEWARE. Not
+# belt-and-braces for its own sake. The guard is ONE object registered in ONE
+# place at boot, and the failure mode of one object is that it is not there:
+# `add_middleware` is wrapped in a try/except, RATE_LIMITS_DISABLED shows how
+# readily a middleware gets a kill switch, and a future refactor that reorders
+# the block reorders every route's protection at once. Every other write in
+# the product is a row a demo should not have made; this one mints a COMPANY
+# DOCUMENT, which is a tenant, which is what the whole account model hangs
+# off. It gets the local check too, and the route stays correct whatever
+# happened at boot.
+@api_router.post(
+    "/onboarding/company",
+    dependencies=[Depends(require_approved)],
+)
 async def onboarding_create_company(
     body: OnboardingCompanyCreate,
     current_user = Depends(get_current_user),
@@ -8756,7 +8969,18 @@ async def onboarding_create_company(
     """Phase B3 — Step 1 submit. Creates the new GC's company and
     auto-links the authenticated user to it (sets user.company_id +
     company_name). One-shot per user.
+
+    Refuses a demo principal and an unapproved one — see the block above for
+    which refusal says which.
     """
+    if is_demo(current_user):
+        # RETURNED, NOT RAISED, so the body is byte-for-byte the one the
+        # middleware produces. `raise HTTPException(detail=<dict>)` would nest
+        # it under "detail" and hand the client a second shape to parse for
+        # the same event.
+        return demo_guard.build_403_response(
+            demo_guard.refusal_body("POST", "/api/onboarding/company"))
+
     if not _onboarding_in_flight(current_user):
         raise HTTPException(
             status_code=409,
@@ -9185,10 +9409,9 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
     if not verify_password(body.current_password, stored_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    # SECURITY REGRESSION (intentional, temporary): minimum-length check
-    # removed for demo-day testing. Restore before production rollout.
-    if not body.new_password:
-        raise HTTPException(status_code=422, detail="New password is required")
+    # THE SAME RULE REGISTRATION ENFORCES. A complexity floor that applies only
+    # at signup is a floor anybody steps off on their second visit.
+    assert_password_complexity(body.new_password, field="New password")
 
     new_hash = hash_password(body.new_password)
     await db.users.update_one(
@@ -10287,11 +10510,10 @@ async def get_admin_users(
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admin)):
-    # SECURITY REGRESSION (intentional, temporary): password complexity
-    # removed for demo-day testing. Restore before production rollout.
-    pwd = user_data.password
-    if not pwd:
-        raise HTTPException(status_code=422, detail="Password is required")
+    # THE SAME RULE REGISTRATION ENFORCES, and it matters more here: this is an
+    # account an ADMIN types a password into on somebody else's behalf, and the
+    # person it belongs to may never change it.
+    pwd = assert_password_complexity(user_data.password)
 
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
