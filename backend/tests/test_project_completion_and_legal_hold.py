@@ -257,9 +257,17 @@ class Base(unittest.TestCase):
     def set_project(self, **over):
         self.db.projects.docs = [_proj(**over)]
 
-    def purge(self, user=None):
+    def purge(self, user=None, confirm_name=None):
+        # THE TYPED NAME, read off the fixture. See the note in
+        # test_pending_deletion_and_purge_scope.py: the control is newer than
+        # these tests and they supply it rather than it being relaxed.
+        if confirm_name is None:
+            doc = (self.db.projects.docs or [{}])[0]
+            confirm_name = doc.get("name") or doc.get("address") or ""
         return self.loop.run_until_complete(
-            server.hard_delete_project(project_id=PID, owner=user or _owner()))
+            server.hard_delete_project(
+                project_id=PID, confirm_name=confirm_name,
+                owner=user or _owner()))
 
     def purge_refused(self, user=None):
         with self.assertRaises(HTTPException) as c:

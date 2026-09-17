@@ -309,6 +309,8 @@ class OwnerGateTest(unittest.TestCase):
             c, cleanup = _client(role=role)
             try:
                 with patch.object(server, "db", db):
+                    # No confirm_name needed: this asserts the ROLE gate,
+                    # which must refuse before the name is ever read.
                     r = c.delete(f"/api/projects/{_PID}/hard-delete")
             finally:
                 cleanup()
@@ -341,7 +343,11 @@ def _hard_delete(db):
     try:
         with patch.object(server, "db", db), \
              patch.object(server, "_r2_client", None):   # no storage in tests
-            return c.delete(f"/api/projects/{_PID}/hard-delete")
+            # THE TYPED NAME. The purge refuses without it; "Test Tower"
+            # is this fixture's project name.
+            return c.delete(
+                f"/api/projects/{_PID}/hard-delete",
+                params={"confirm_name": "Test Tower"})
     finally:
         cleanup()
 
@@ -459,9 +465,16 @@ class LandmineTest(unittest.TestCase):
         """Deleting project_files first would orphan the index rows."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         body = src[src.index("async def hard_delete_project"):]
+        # ANCHORED ON THE SWEEPS THEMSELVES, not on the first mention of a
+        # name. `_PROJECT_OWNED_COLLECTIONS` is now READ near the top of the
+        # function — the dependency report counts those collections before
+        # anything is destroyed — so its first textual occurrence stopped
+        # marking where the sweep runs, and the assertion inverted while the
+        # actual delete order was unchanged. The claim is about the ORDER OF
+        # TWO DELETES; it now points at two deletes.
         self.assertLess(
-            body.index("document_page_index"),
-            body.index("_PROJECT_OWNED_COLLECTIONS"),
+            body.index('db.document_page_index.delete_many'),
+            body.index('for coll in _PROJECT_OWNED_COLLECTIONS'),
             "page-index cleanup must precede the project_files sweep",
         )
 

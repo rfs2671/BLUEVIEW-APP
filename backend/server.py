@@ -9806,12 +9806,186 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
 
 @api_router.get("/owner/companies", dependencies=[Depends(require_platform_operator)])
 async def get_companies(current_user = Depends(get_current_user)):
-    """Get all companies (owner only)"""
+    """EVERY company, and every project that belongs to none of them.
+
+    ── WHAT THIS USED TO HIDE ──────────────────────────────────────────────
+
+    The query was `{"is_deleted": {"$ne": True}}` with no projection and a 200
+    cap, and the panel rendered it verbatim. That is not wrong so much as
+    partial, and what it left out is the part that matters:
+
+      * a soft-deleted company simply vanished, with no way to see it existed
+      * 31 soft-deleted PROJECTS are invisible on every surface in the product
+      * FOUR company ids are referenced by projects and have NO company
+        document at all -- `hard_delete_company` deletes the company and its
+        users and leaves the projects behind. 26 projects and 20 logbooks sit
+        under tenants that do not exist, and one of them was LIVE, appearing
+        in the operator's project list under no card.
+
+    So the operator asked why he could not see a company that the endpoint was
+    in fact returning, and the honest answer was that the panel had no way to
+    show him the shape of what it was not returning.
+
+    THE RULE IS NOW: THE PANEL SHOWS EVERYTHING AND LABELS IT. Nothing is
+    filtered out; a deleted company is a row with a status, and an orphaned
+    company id is its own section with the projects that name it.
+
+    ── EVERY ROW CARRIES ITS ID AND ITS CREATED DATE ───────────────────────
+
+    Two companies on this platform are called "BLUEVIEW CONSTRUCTION INC" and
+    "Blueview llc". A card showing only a name cannot be told apart from the
+    other one, and the operation underneath it is a permanent delete.
+    """
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
-    
-    companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(200)
-    return serialize_list(companies)
+
+    companies = await db.companies.find({}).sort("created_at", -1).to_list(500)
+    known = {str(c["_id"]) for c in companies}
+
+    # One pass over projects for the counts AND the orphan set -- the project
+    # collection is small and two passes would be two chances to disagree.
+    by_company: Dict[str, Dict[str, int]] = {}
+    orphan_projects: Dict[str, list] = {}
+    async for p in db.projects.find(
+            {}, {"company_id": 1, "name": 1, "is_deleted": 1,
+                 "marked_for_deletion": 1, "created_at": 1}):
+        cid = str(p.get("company_id") or "")
+        slot = by_company.setdefault(cid, {"projects": 0, "live": 0})
+        slot["projects"] += 1
+        if p.get("is_deleted") is not True:
+            slot["live"] += 1
+        if cid and cid not in known:
+            orphan_projects.setdefault(cid, []).append({
+                "id": str(p["_id"]),
+                "name": p.get("name"),
+                "is_deleted": bool(p.get("is_deleted")),
+                "marked_for_deletion": bool(p.get("marked_for_deletion")),
+                "created_at": p.get("created_at"),
+            })
+
+    rows = []
+    for c in companies:
+        cid = str(c["_id"])
+        row = serialize_id(dict(c))
+        counts = by_company.get(cid, {"projects": 0, "live": 0})
+        row["project_count"] = counts["projects"]
+        row["live_project_count"] = counts["live"]
+        row["user_count"] = await db.users.count_documents({"company_id": cid})
+        # ONE WORD FOR THE CHIP, resolved here rather than by the client, so
+        # the panel and any other reader cannot disagree about what a row is.
+        row["status"] = ("deleted" if c.get("is_deleted") is True
+                         else "test" if c.get("is_test") is True
+                         else "active")
+        rows.append(row)
+
+    return {
+        "companies": rows,
+        # THE SECTION THAT DID NOT EXIST. A company id that projects name and
+        # no company document answers to. Each one is a `hard_delete_company`
+        # that ran without looking at projects.
+        "orphans": [
+            {
+                "company_id": cid,
+                "project_count": len(items),
+                "live_project_count": sum(
+                    1 for i in items if not i["is_deleted"]),
+                "projects": items[:20],
+            }
+            for cid, items in sorted(orphan_projects.items())
+        ],
+        # Projects with no company_id at all, which belong to no tenant and no
+        # orphan group either.
+        "unassigned_projects": by_company.get("", {}).get("projects", 0),
+    }
+
+
+class TestFlagUpdate(BaseModel):
+    """Body for PATCH /owner/companies/{id}/test-flag."""
+    is_test: bool
+
+
+@api_router.patch("/owner/companies/{company_id}/test-flag",
+                  dependencies=[Depends(require_approved),
+                                Depends(require_platform_operator)])
+async def set_company_test_flag(
+    company_id: str, body: TestFlagUpdate,
+    current_user = Depends(get_current_user),
+):
+    """Mark a company as fixture data, or unmark it.
+
+    ── WHAT THE FLAG GOVERNS, AND WHAT IT DOES NOT ─────────────────────────
+
+    It excludes the company from the machinery that acts with NOBODY ASKING:
+    the nightly compliance sweep, the report emails, the DOB scans, and the
+    cross-tenant panels that real projects are scored against. It excludes it
+    from NOTHING a user asks for -- a test account still sees its own projects
+    and files its own logs.
+
+    ── WHY IT IS A TOGGLE AND NOT A SCRIPT ─────────────────────────────────
+
+    Operator ruling, and the reason is the incident this panel work came out
+    of: a production write by ad-hoc script leaves no row anybody can find.
+    This one is audited with the actor, the old value and the new one.
+    """
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    old = bool(company.get("is_test"))
+    new = bool(body.is_test)
+    if old != new:
+        await db.companies.update_one(
+            {"_id": to_query_id(company_id)},
+            {"$set": {"is_test": new,
+                      "updated_at": datetime.now(timezone.utc)}},
+        )
+    await audit_log(
+        "company_test_flag_set", actor_id(current_user), "company", company_id,
+        {"name": company.get("name"), "old": old, "new": new,
+         "changed": old != new},
+    )
+    return {"company_id": company_id, "is_test": new, "changed": old != new}
+
+
+@api_router.get("/owner/companies/{company_id}/dependencies",
+                dependencies=[Depends(require_platform_operator)])
+async def get_company_dependencies(
+    company_id: str, current_user = Depends(get_current_user),
+):
+    """What deleting this company would destroy, and what forbids it.
+
+    A GET. Nothing here writes; the operator reads it, and the DELETE re-runs
+    the same check rather than trusting what the screen was told."""
+    from lib.purge_dependencies import company_dependencies
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    out = await company_dependencies(db, company_id)
+    out["name"] = (company or {}).get("name")
+    out["exists"] = bool(company)
+    return out
+
+
+@api_router.get("/projects/{project_id}/dependencies",
+                dependencies=[Depends(require_platform_operator)])
+async def get_project_dependencies(
+    project_id: str, current_user = Depends(get_current_user),
+):
+    """What purging this project would destroy, and what forbids it."""
+    from lib.purge_dependencies import project_dependencies
+
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    out = await project_dependencies(
+        db, project_id, _PROJECT_OWNED_COLLECTIONS)
+    out["name"] = project.get("name")
+    out["address"] = project.get("address")
+    out["company_id"] = project.get("company_id")
+    # THE STRING THE OPERATOR HAS TO TYPE. Returned so the dialog can say which
+    # one it wants rather than leaving him to guess between a name and an
+    # address, and so the client cannot invent a different rule from the server.
+    out["confirm_name"] = project.get("name") or project.get("address") or ""
+    return out
 
 @api_router.post("/owner/companies", dependencies=[Depends(require_platform_operator)])
 async def create_company(company_data: CompanyCreate, current_user = Depends(get_current_user)):
@@ -10020,12 +10194,59 @@ async def link_gc_license_to_company(
 
 
 @api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_approved), Depends(require_platform_operator)])
-async def hard_delete_company(company_id: str, current_user=Depends(get_current_user)):
-    """Hard delete a company and all its users (owner only)"""
+async def hard_delete_company(
+    company_id: str,
+    confirm_name: str = Query(
+        "", description="The company's name, typed by the operator."),
+    current_user=Depends(get_current_user),
+):
+    """Hard delete a company and all its users. PLATFORM OPERATOR ONLY.
+
+    ── THE REVERSE CASCADE, WHICH IS WHY FOUR TENANTS ARE ORPHANED ────────
+
+    This checked for active ADMINS and nothing else. It deleted every user and
+    the company row and NEVER LOOKED AT PROJECTS. It ran four times. Three of
+    those four company ids still have projects in the database with no company
+    document to hang them on — 26 projects and 20 logbooks, and one of them was
+    LIVE, appearing on the operator's project list under no card at all.
+
+    A COMPANY WITH PROJECTS IS NOT DELETABLE. Delete or reparent them first.
+    That is deliberately NOT a cascade: deleting a project is a decision about
+    compliance records, one project at a time, with its own refusal for filed
+    logbooks. Running it implicitly for twenty-six of them, to satisfy a click
+    on a different row, is how this happened in the first place.
+
+    ── AND THE ROW NAMES WHO DID IT ───────────────────────────────────────
+
+    All four existing `company_hard_delete` rows carry an EMPTY actor, because
+    this line read `current_user["_id"]` — a key `serialize_id` deletes. Four
+    companies destroyed with every user under them, and the log cannot say by
+    whom. `actor_id` reads the key that is there.
+    """
+    from lib.purge_dependencies import company_dependencies, confirm_matches
+
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
 
-    # Safety check: no active admins assigned
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    deps = await company_dependencies(db, company_id)
+    if deps["blocking"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROJECTS_WOULD_BE_ORPHANED",
+                "message": "This company still has projects. Delete or "
+                           "reparent them first.",
+                "blocking": deps["blocking"],
+            },
+        )
+
+    # Safety check: no active admins assigned. KEPT — it answers a different
+    # question from the one above (who would lose their account, rather than
+    # what would be left dangling) and it has never been the failing one.
     admin_count = await db.users.count_documents({
         "company_id": company_id,
         "role": "admin",
@@ -10034,17 +10255,47 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     if admin_count > 0:
         raise HTTPException(status_code=400, detail="Remove all admins from this company first")
 
-    # Delete all users belonging to this company
-    await db.users.delete_many({"company_id": company_id})
+    if not confirm_matches(confirm_name, company.get("name")):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CONFIRM_NAME_MISMATCH",
+                "message": "Type the company's name to confirm.",
+                "expected": company.get("name"),
+            },
+        )
 
-    # Delete the company
+    # THE ROW GOES FIRST, and that ordering is the point: it must survive the
+    # delete, and a row written afterwards is a row that is not written when
+    # the delete succeeds and the process then dies. It records what was there
+    # at the moment of the decision.
+    users_to_delete = await db.users.count_documents({"company_id": company_id})
+    await audit_log(
+        "company_hard_delete", actor_id(current_user), "company", company_id,
+        {
+            "name": company.get("name"),
+            "is_test": bool(company.get("is_test")),
+            "created_at": str(company.get("created_at")),
+            "users_deleted": users_to_delete,
+            "dependencies": deps["counts"],
+            "confirmed_name": confirm_name,
+        },
+    )
+
+    await db.users.delete_many({"company_id": company_id})
     result = await db.companies.delete_one({"_id": to_query_id(company_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    await audit_log("company_hard_delete", actor_id(current_user), "company", company_id)
+    logger.warning(
+        f"HARD DELETE company {company_id} ({company.get('name')!r}) by "
+        f"{actor_id(current_user)}: {users_to_delete} users")
 
-    return {"message": "Company and all users permanently deleted"}
+    return {
+        "message": "Company and all users permanently deleted",
+        "company_id": company_id,
+        "users_deleted": users_to_delete,
+    }
 
 
 # ==================== MR.2: FILING REPS CRUD (owner-tier) =================
@@ -13977,17 +14228,68 @@ async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
 
 
 @api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_approved), Depends(require_platform_operator)])
-async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
+async def hard_delete_project(
+    project_id: str,
+    confirm_name: str = Query(
+        "", description="The project's name, typed by the operator."),
+    owner = Depends(get_owner_user),
+):
     """TIER 2 — irreversible purge. OWNER ONLY.
 
     Physically removes the project and every document, storage object and
     config key it owns. Uses delete_many/delete_one exclusively — never
     drop(). Storage and scheduler cleanup are best-effort so a single
     failure cannot leave the database half-purged.
+
+    ── TWO REFUSALS AND A TYPED NAME, ALL BEFORE ANYTHING IS TOUCHED ───────
+
+    A FILED OR SIGNED LOGBOOK, OR ANY SIGNATURE EVENT, BLOCKS THIS OUTRIGHT.
+    Not a warning on a screen, not a count beside a confirm button: a 409. A
+    filed logbook is a BC 3301.13 statutory record and a signature event is a
+    person's attestation, including the affirmation a worker gives at the gate.
+    Soft delete hides them and keeps them, and that is the operation for a
+    project with records. Nothing in this product may destroy them.
+
+    THE NAME IS TYPED. `confirm_name` must match the project's name, and the
+    check is case- and space-insensitive because the control exists to make the
+    act deliberate rather than to test transcription. The dependency endpoint
+    returns the exact string to ask for, so the dialog and the server cannot
+    disagree about which one it wants.
+
+    ORDERED BEFORE THE RETENTION BRAKE AND THE R2 SWEEPS on purpose. Everything
+    below is irreversible and the R2 deletes are by PREFIX, with no rows to
+    rebuild from — a refusal that arrives after the sweep is a refusal that has
+    already destroyed the photographs.
     """
+    from lib.purge_dependencies import confirm_matches, project_dependencies
+
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    _deps = await project_dependencies(
+        db, project_id, _PROJECT_OWNED_COLLECTIONS)
+    if _deps["blocking"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SIGNED_RECORDS_PRESENT",
+                "message": "This project holds filed or signed records. They "
+                           "cannot be destroyed; mark it for deletion instead.",
+                "blocking": _deps["blocking"],
+            },
+        )
+
+    _want = project.get("name") or project.get("address") or ""
+    if not confirm_matches(confirm_name, _want):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CONFIRM_NAME_MISMATCH",
+                "message": "Type the project's name to confirm.",
+                "expected": _want,
+            },
+        )
 
     # ── TENANT GATE ON AN IRREVERSIBLE PURGE ────────────────────────────────
     # This compared NOTHING. The decorator's require_platform_operator is in

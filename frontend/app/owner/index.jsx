@@ -59,8 +59,31 @@ import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 
 // Owner API functions
 const ownerAPI = {
+  // THE PAYLOAD GREW AND THE OLD SHAPE IS STILL HANDLED.
+  //
+  // It used to be a bare array of companies. It is now
+  // {companies, orphans, unassigned_projects}, because a list that silently
+  // omitted 31 soft-deleted projects and four whole tenants was not a list of
+  // what exists. An older server still returns the array; that branch is kept
+  // so a deploy ordering cannot blank this screen.
   getCompanies: async () => {
     const response = await apiClient.get('/api/owner/companies');
+    const d = response.data;
+    if (Array.isArray(d)) return { companies: d, orphans: [], unassigned_projects: 0 };
+    return {
+      companies: Array.isArray(d?.companies) ? d.companies : [],
+      orphans: Array.isArray(d?.orphans) ? d.orphans : [],
+      unassigned_projects: Number(d?.unassigned_projects) || 0,
+    };
+  },
+  setTestFlag: async (companyId, isTest) => {
+    const response = await apiClient.patch(
+      `/api/owner/companies/${companyId}/test-flag`, { is_test: !!isTest });
+    return response.data;
+  },
+  companyDependencies: async (companyId) => {
+    const response = await apiClient.get(
+      `/api/owner/companies/${companyId}/dependencies`);
     return response.data;
   },
   createCompany: async (companyData) => {
@@ -175,6 +198,17 @@ export default function OwnerPortalScreen() {
   // Data state
   const [loading, setLoading] = useState(false);
   const [companies, setCompanies] = useState([]);
+  // TENANTS THAT DO NOT EXIST, AND THE PROJECTS THAT STILL NAME THEM.
+  // `hard_delete_company` deleted the company and its users and left every
+  // project behind; it ran four times. Until this section they were invisible
+  // on every surface in the product.
+  const [orphans, setOrphans] = useState([]);
+  const [unassignedProjects, setUnassignedProjects] = useState(0);
+  // The delete dialog's dependency report: what this would destroy, and what
+  // forbids it. Read from the server, never computed here.
+  const [deps, setDeps] = useState(null);
+  const [typedName, setTypedName] = useState('');
+  const [busyFlag, setBusyFlag] = useState('');
   const [admins, setAdmins] = useState([]);
   const [unmigratedAdmins, setUnmigratedAdmins] = useState([]);
 
@@ -259,7 +293,10 @@ export default function OwnerPortalScreen() {
 
     setCompaniesState(companiesRes.status);
     if (companiesRes.status === 'ok') {
-      setCompanies(Array.isArray(companiesRes.data) ? companiesRes.data : []);
+      const d = companiesRes.data || {};
+      setCompanies(d.companies || []);
+      setOrphans(d.orphans || []);
+      setUnassignedProjects(d.unassigned_projects || 0);
     } else {
       console.error('Failed to fetch companies:', companiesRes.error);
     }
@@ -500,7 +537,55 @@ export default function OwnerPortalScreen() {
   // collection, and the agent_crypto.js encryption helper all gone,
   // the v1 owner portal exposes filing_reps roster CRUD only.
 
-  const handleDeleteCompany = (company) => {
+  /**
+   * MARK A COMPANY AS FIXTURE DATA.
+   *
+   * ── WHAT IT GOVERNS ─────────────────────────────────────────────────────
+   *
+   * The nightly compliance sweep, the report emails, the DOB scans and the
+   * cross-tenant panels real projects are scored against. It governs NOTHING a
+   * user asks for: a test account still sees its own projects and files its own
+   * logs.
+   *
+   * ── THE CONFIRM NAMES THE PROJECTS ──────────────────────────────────────
+   *
+   * "Mark as test company?" is a question nobody can answer. "857 Prescott Pl
+   * and 587 Prescott Place stop being alerted on" is one they can. A company
+   * named `test` holding two live projects is why this exists, and the risk is
+   * marking the wrong row — so the row's own projects are the confirmation.
+   */
+  const handleToggleTestFlag = (company) => {
+    const on = company.status === 'test';
+    const n = company.live_project_count || 0;
+    const detail = on
+      ? `${company.name} goes back to being alerted on, emailed about and counted in the platform statistics.`
+      : `${n === 0 ? 'No live projects' : `${n} live project${n === 1 ? '' : 's'}`} under ${company.name} stop being alerted on, emailed about and counted in the platform statistics. Its own users see no change.`;
+    const apply = async () => {
+      setBusyFlag(company.id);
+      try {
+        await ownerAPI.setTestFlag(company.id, !on);
+        setCompanies((prev) => prev.map((c) => (c.id === company.id
+          ? { ...c, is_test: !on, status: !on ? 'test' : 'active' } : c)));
+        toast.success(!on ? 'Marked as test' : 'Unmarked',
+          `${company.name} — ${!on ? 'excluded from' : 'back in'} alerts and statistics`);
+      } catch (e) {
+        console.error('test flag failed:', e);
+        toast.error('Not changed',
+          e.response?.data?.detail || 'Could not update the company');
+      } finally {
+        setBusyFlag('');
+      }
+    };
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${on ? 'Unmark' : 'Mark'} ${company.name} as a test company?\n\n${detail}`)) apply();
+    } else {
+      Alert.alert(`${on ? 'Unmark' : 'Mark'} as test company?`, detail,
+        [{ text: 'Cancel', style: 'cancel' },
+         { text: on ? 'Unmark' : 'Mark', onPress: apply }]);
+    }
+  };
+
+  const handleDeleteCompany = async (company) => {
     const companyAdminsList = admins.filter(a => a.company_id === company.id);
     
     if (companyAdminsList.length > 0) {
@@ -509,12 +594,27 @@ export default function OwnerPortalScreen() {
     }
 
     setSelectedCompany(company);
+    setTypedName('');
+    setDeps(null);
     setShowDeleteCompanyModal(true);
+    // THE REPORT IS THE SERVER'S, NOT A COUNT ASSEMBLED HERE. The DELETE
+    // re-runs the same check, so a dialog that computed its own numbers could
+    // promise something the server then refuses -- or worse, reassure about
+    // something it permits.
+    try {
+      setDeps(await ownerAPI.companyDependencies(company.id));
+    } catch (e) {
+      console.error('dependency read failed:', e);
+      setDeps({ error: true });
+    }
   };
 
   const confirmDeleteCompany = async () => {
   try {
-    await apiClient.delete(`/api/owner/companies/${selectedCompany.id}`);
+    await apiClient.delete(
+      `/api/owner/companies/${selectedCompany.id}`,
+      { params: { confirm_name: typedName } },
+    );
     setCompanies(companies.filter(c => c.id !== selectedCompany.id));
     toast.success('Deleted', 'Company deleted successfully');
   } catch (error) {
@@ -527,6 +627,8 @@ export default function OwnerPortalScreen() {
   } finally {
     setShowDeleteCompanyModal(false);
     setSelectedCompany(null);
+    setTypedName('');
+    setDeps(null);
   }
 };
 
@@ -745,9 +847,49 @@ export default function OwnerPortalScreen() {
                           </Text>
                           <Text style={styles.companyMeta}>
                             {companyAdminCount} admin{companyAdminCount !== 1 ? 's' : ''}
+                            {company.live_project_count != null
+                              ? ` · ${company.live_project_count} live project${company.live_project_count === 1 ? '' : 's'}`
+                              : ''}
+                            {company.project_count > (company.live_project_count || 0)
+                              ? ` (${company.project_count - company.live_project_count} deleted)`
+                              : ''}
+                          </Text>
+                          {/* THE ID AND THE DATE, ON EVERY ROW.
+                              Two companies here are called "BLUEVIEW
+                              CONSTRUCTION INC" and "Blueview llc". A card
+                              showing only a name cannot be told from the other
+                              one, and the control underneath it is a permanent
+                              delete. */}
+                          <Text style={styles.rowMeta}>
+                            {company.id} · created{' '}
+                            {String(company.created_at || '').slice(0, 10) || 'unknown'}
                           </Text>
                         </View>
                         <View style={styles.companyActions}>
+                          {/* ONE WORD, RESOLVED BY THE SERVER so the panel and
+                              any other reader cannot disagree about what a row
+                              is. `deleted` is shown rather than hidden: a
+                              soft-deleted company used to vanish with no way to
+                              see it had ever existed. */}
+                          <Pressable
+                            onPress={() => handleToggleTestFlag(company)}
+                            disabled={busyFlag === company.id || company.status === 'deleted'}
+                            accessibilityRole="switch"
+                            accessibilityState={{ checked: company.status === 'test' }}
+                            style={[
+                              styles.statusChip,
+                              company.status === 'test' && styles.statusChipTest,
+                              company.status === 'deleted' && styles.statusChipDeleted,
+                            ]}
+                          >
+                            <Text style={[
+                              styles.statusChipText,
+                              company.status === 'test' && styles.statusChipTextTest,
+                            ]}>
+                              {company.status === 'test' ? 'TEST'
+                                : company.status === 'deleted' ? 'DELETED' : 'ACTIVE'}
+                            </Text>
+                          </Pressable>
                           <Pressable
                             onPress={() => handleViewCompanyAdmins(company)}
                             style={styles.actionBtn}
@@ -902,6 +1044,66 @@ export default function OwnerPortalScreen() {
               </GlassCard>
             )}
           </View>
+
+          {/* ── TENANTS THAT DO NOT EXIST ───────────────────────────────────
+              A company id that projects still name and no company document
+              answers to. Each one is a `hard_delete_company` that ran without
+              looking at projects: it deleted the company and every user under
+              it and left every project behind. It ran four times.
+
+              26 projects and 20 logbooks sit under these, and one of them was
+              LIVE — it appeared on the operator's own project list under no
+              card at all, which is how this was found.
+
+              THERE IS NOTHING TO DELETE AND NOTHING TO REPARENT TO. The
+              company row is gone; only the id survives, on the projects. So
+              this section is visibility, and the projects under it are purged
+              one at a time on their own screen, where the filed-record refusal
+              applies to each. A bulk action here would be the same cascade
+              that caused this, pointed the other way. */}
+          {orphans.length > 0 && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Orphaned tenants</Text>
+              </View>
+              <Text style={styles.emptySubtext}>
+                {orphans.length} company id{orphans.length === 1 ? '' : 's'} named by
+                projects, with no company record. Deleted without their projects.
+              </Text>
+              {orphans.map((o) => (
+                <GlassCard key={o.company_id} style={styles.companyCard}>
+                  <Text style={styles.companyName}>{o.company_id}</Text>
+                  <Text style={styles.companyMeta}>
+                    {o.project_count} project{o.project_count === 1 ? '' : 's'}
+                    {o.live_project_count > 0
+                      ? ` · ${o.live_project_count} still live`
+                      : ' · none live'}
+                  </Text>
+                  {(o.projects || []).slice(0, 8).map((p) => (
+                    <Text key={p.id} style={styles.rowMeta}>
+                      {p.is_deleted ? '· deleted · ' : '· LIVE · '}
+                      {p.name || p.id}
+                      {p.marked_for_deletion ? ' · marked for deletion' : ''}
+                    </Text>
+                  ))}
+                  {o.project_count > 8 && (
+                    <Text style={styles.rowMeta}>
+                      +{o.project_count - 8} more
+                    </Text>
+                  )}
+                </GlassCard>
+              ))}
+            </View>
+          )}
+
+          {unassignedProjects > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.emptySubtext}>
+                {unassignedProjects} project{unassignedProjects === 1 ? '' : 's'} carry
+                no company id at all — they belong to no tenant and to no orphan group.
+              </Text>
+            </View>
+          )}
 
           {/* Create Admin Section */}
           <View style={styles.section}>
@@ -1274,19 +1476,88 @@ export default function OwnerPortalScreen() {
                 </IconPod>
                 <Text style={styles.confirmTitle}>Delete Company?</Text>
                 <Text style={styles.confirmText}>
-                  Are you sure you want to delete "{selectedCompany?.name}"?
+                  "{selectedCompany?.name}"
                 </Text>
+                <Text style={styles.rowMeta}>
+                  {selectedCompany?.id} · created{' '}
+                  {String(selectedCompany?.created_at || '').slice(0, 10) || 'unknown'}
+                </Text>
+
+                {/* WHAT THIS WOULD DESTROY, FROM THE SERVER.
+                    The DELETE re-runs the same check, so a dialog that
+                    computed its own numbers could promise something the
+                    server then refuses -- or reassure about something it
+                    permits. `blocking` is what forbids it and is shown
+                    separately from the counts, because a refusal buried in a
+                    list of numbers is a refusal nobody reads. */}
+                {deps === null && (
+                  <Text style={styles.confirmText}>Reading what this would delete…</Text>
+                )}
+                {deps?.error && (
+                  <Text style={styles.confirmText}>
+                    Could not read the dependencies. Nothing has been deleted.
+                  </Text>
+                )}
+                {deps && !deps.error && (deps.blocking || []).length > 0 && (
+                  <View style={styles.blockBox}>
+                    {(deps.blocking || []).map((b) => (
+                      <View key={b.kind}>
+                        <Text style={styles.blockTitle}>
+                          {b.count} {b.kind === 'projects_would_be_orphaned'
+                            ? `project${b.count === 1 ? '' : 's'} would be left with no company`
+                            : b.kind.replace(/_/g, ' ')}
+                        </Text>
+                        <Text style={styles.blockReason}>{b.reason}</Text>
+                        {(b.names || []).length > 0 && (
+                          <Text style={styles.blockReason}>
+                            {(b.names || []).join(' · ')}
+                          </Text>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                )}
+                {deps && !deps.error && (deps.blocking || []).length === 0 && (
+                  <>
+                    <Text style={styles.confirmText}>
+                      {Object.entries(deps.counts || {}).length === 0
+                        ? 'Nothing is attached to this company.'
+                        : Object.entries(deps.counts || {})
+                          .map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`)
+                          .join(' · ')}
+                    </Text>
+                    {/* TYPE THE NAME. The server checks it too, and returns
+                        the string it wants -- the control exists to make the
+                        act deliberate, not to test transcription, so case and
+                        spacing are forgiven on both sides. */}
+                    <Text style={styles.rowMeta}>
+                      Type the company name to confirm.
+                    </Text>
+                    <GlassInput
+                      value={typedName}
+                      onChangeText={setTypedName}
+                      placeholder={selectedCompany?.name || ''}
+                    />
+                  </>
+                )}
+
                 <View style={styles.confirmActions}>
                   <GlassButton
                     title="Cancel"
                     onPress={() => setShowDeleteCompanyModal(false)}
                     variant="secondary"
                   />
-                  <GlassButton
-                    title="Delete"
-                    onPress={confirmDeleteCompany}
-                    style={styles.deleteButton}
-                  />
+                  {deps && !deps.error && (deps.blocking || []).length === 0 && (
+                    <GlassButton
+                      title="Delete"
+                      onPress={confirmDeleteCompany}
+                      disabled={
+                        (typedName || '').trim().toLowerCase()
+                        !== String(selectedCompany?.name || '').trim().toLowerCase()
+                      }
+                      style={styles.deleteButton}
+                    />
+                  )}
                 </View>
               </GlassCard>
             </View>
@@ -1588,6 +1859,56 @@ function buildStyles(colors, isDark) {
     // before it pushes the row actions off-screen.
     flex: 1,
     maxWidth: 200,
+  },
+  rowMeta: {
+    ...typography.caption,
+    color: colors.text.subtle,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  statusChip: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: withAlpha('#ffffff', 0.15),
+    backgroundColor: withAlpha('#ffffff', 0.04),
+    marginRight: spacing.xs,
+  },
+  statusChipTest: {
+    backgroundColor: semantic.attentionBg,
+    borderColor: semantic.attention,
+  },
+  statusChipDeleted: {
+    backgroundColor: semantic.criticalBg,
+    borderColor: semantic.criticalText,
+  },
+  statusChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.text.muted,
+  },
+  statusChipTextTest: {
+    color: semantic.attention,
+  },
+  blockBox: {
+    borderWidth: 1,
+    borderColor: semantic.criticalText,
+    backgroundColor: semantic.criticalBg,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  blockTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: semantic.criticalText,
+  },
+  blockReason: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.text.secondary,
   },
   companyMeta: {
     fontSize: 13,

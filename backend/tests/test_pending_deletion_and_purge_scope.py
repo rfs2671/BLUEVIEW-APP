@@ -187,9 +187,18 @@ class Base(unittest.TestCase):
                          "count and items must not disagree")
         return out["items"]
 
-    def purge(self, project_id, user):
+    def purge(self, project_id, user, confirm_name=None):
+        # THE TYPED NAME. `hard_delete_project` refuses without it: a permanent
+        # purge is deliberate or it does not happen. The helper reads it off
+        # the fixture rather than hardcoding one, so a test that changes its
+        # project's name cannot start passing for the wrong reason.
+        if confirm_name is None:
+            doc = next((d for d in self.db.projects.docs
+                        if str(d.get("_id")) == str(project_id)), {})
+            confirm_name = doc.get("name") or doc.get("address") or ""
         return self.loop.run_until_complete(
-            server.hard_delete_project(project_id=project_id, owner=user))
+            server.hard_delete_project(
+                project_id=project_id, confirm_name=confirm_name, owner=user))
 
     def refused(self, fn, *a):
         with self.assertRaises(HTTPException) as c:
@@ -214,8 +223,18 @@ class TheShadowFlagIsOffForEveryTestHere(unittest.TestCase):
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         for fn in ("async def list_pending_deletion_projects",
                    "async def hard_delete_project"):
-            body = src[src.index(fn):]
-            body = body[:3000]
+            # THE WHOLE FUNCTION, NOT THE FIRST 3000 CHARACTERS.
+            #
+            # `body[:3000]` passed until the purge grew a docstring and two
+            # refusals, which pushed the tenant gate past the window — so the
+            # test failed while the gate it checks was exactly where it should
+            # be. A character count is not a scope: anything added ABOVE the
+            # line under test silently changes what the assertion can see.
+            start = src.index(fn)
+            nxt = src.find("\n@api_router", start + 1)
+            end = src.find("\nasync def ", start + 1)
+            stops = [x for x in (nxt, end) if x != -1]
+            body = src[start:min(stops)] if stops else src[start:]
             code = "\n".join(l for l in body.splitlines()
                              if not l.strip().startswith("#"))
             with self.subTest(fn=fn):
