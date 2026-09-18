@@ -169,6 +169,49 @@ ok(paint(screen.SstFlagLines, { sstStatus: 'valid' }) === '',
 ok(paint(screen.SstFlagLines, {}) === '',
   'no status paints nothing');
 
+// ── A DECIDED ROW, AFTER A REMOUNT ─────────────────────────────────────────
+//
+// THE PAYLOAD BELOW IS NOT INVENTED. The pre-shift roster merges two reads:
+// /checkins-today, which always returns the row, and the flagged endpoint,
+// which EXCLUDES rows that already carry a review_decision (server.py,
+// get_flagged_project_checkins: `review_decision: {$exists: false} | null`).
+// So on the first load after a decision — a remount, a pull-to-refresh, a date
+// change — the merge finds no flagged entry for that worker and both reason
+// fields are null. sstFlagCopy then falls through to its catch-all.
+//
+// That is a SILENT DEGRADATION: the identical row prints
+// "The expiry date could not be read." before a reload and the vaguer
+// "The card class or the expiry date could not be confirmed." after one. Two
+// renders of one row that disagree is a reading of nothing.
+//
+// The screen's answer is to print no reason at all once a decision exists
+// (showDetail={!reviewed}), so there is no sentence left to degrade. What must
+// still survive is the TITLE — the compliance fact that the card was never
+// confirmed does not go away because the man was admitted.
+console.log('\na decided row after a remount (both reason fields come back null)');
+
+const REMOUNTED = { sstStatus: 'unknown', reviewReason: null, unknownReason: null };
+const CATCH_ALL = 'The card class or the expiry date could not be confirmed.';
+
+// The control for the two assertions after it: with the reason fields null and
+// nothing suppressing the detail, the catch-all really is what would print.
+// Without this, "the catch-all is absent" could pass because the sentence was
+// renamed rather than because it was suppressed.
+ok(words(paint(screen.SstFlagLines, REMOUNTED)).includes(CATCH_ALL),
+  'CONTROL — undecided, with null reasons, the catch-all is what degrades to');
+
+const remounted = words(paint(screen.SstFlagLines, { ...REMOUNTED, showDetail: false }));
+ok(!remounted.includes(CATCH_ALL),
+  'a decided row does NOT print the degraded catch-all reason after a remount');
+ok(remounted.includes('SST card not confirmed'),
+  '...and still prints the title — being admitted does not confirm the card');
+
+// showDetail defaults to true, so every other caller and every assertion above
+// keeps the behaviour it had. Only the decided row opts out.
+ok(words(paint(screen.SstFlagLines, { ...REMOUNTED, showDetail: true }))
+  .includes(CATCH_ALL),
+  'suppression is opt-in — showDetail defaults to printing the reason');
+
 // ── The two gates that live in renderWorkerFlags ───────────────────────────
 // SOURCE ASSERTIONS, AND LABELLED AS SUCH. renderWorkerFlags is a closure over
 // component state, so it cannot be rendered from here the way SstFlagLines

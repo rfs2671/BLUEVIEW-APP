@@ -131,9 +131,53 @@ ok(/>\s*Approve\s*</.test(preshift) && />\s*Deny\s*</.test(preshift),
 ok(!/setWorkers/.test(reviewFn),
   'DENY MARKS, NEVER REMOVES — handleReview never touches the worker list');
 
-// Re-review stays possible: the buttons are not hidden once a decision exists.
-ok(/f\.review_decision &&/.test(preshift) && !/f\.review_decision \?/.test(preshift),
-  're-review stays available — a recorded decision annotates, it does not replace the buttons');
+// INVERTED ON THE OPERATOR'S RULING, AND THE OLD TEXT IS KEPT HERE. It read:
+//
+//   ok(/f\.review_decision &&/.test(preshift) && !/f\.review_decision \?/.test(preshift),
+//     're-review stays available — a recorded decision annotates, it does not
+//      replace the buttons');
+//
+// pinning a deliberate arrangement: a decision added a line and BOTH buttons
+// stayed, because the endpoint overwrites and the latest decision wins.
+//
+// On device that read as a refusal. The superintendent taps Approve on a
+// flagged row and the banner still says "SST card not confirmed" and still
+// offers him Approve and Deny — the same question, asked again, over a
+// decision he had just made. The operator ruled that Approve is a review
+// DECISION and the row must read as resolved immediately, not re-offer the
+// same choice. The buttons are now replaced by the recorded decision.
+//
+// WHAT THE INVERSION DOES NOT GIVE UP is asserted immediately below: the
+// ability to CORRECT a recorded decision survives. What was removed is the
+// re-OFFER, not the correction.
+ok(/const reviewed = sstReviewable \? f\.review_decision : null;/.test(preshift),
+  'a recorded decision is read into ONE `reviewed` value, scoped to the two '
+  + 'statuses that have a decision at all');
+ok(!/f\.review_decision &&/.test(preshift),
+  'the annotate-and-keep-both-buttons shape is gone from the code');
+ok(/reviewed && !changingDecision \?/.test(preshift),
+  'A RECORDED DECISION REPLACES THE BUTTONS — it no longer annotates them '
+  + '(operator ruling; the previous assertion pinned the opposite and is '
+  + 'quoted above)');
+ok(/Admitted — credential still unverified/.test(preshift),
+  'and the resolved row still says the credential is UNVERIFIED — approving '
+  + 'admits the man, it does not confirm his card');
+ok(/setChangingDecisionFor\(key\)/.test(preshift)
+  && />\s*Change decision\s*</.test(preshift),
+  'a recorded decision can still be CORRECTED — one tap-only affordance, the '
+  + 'same keyed-reveal shape this screen already uses for the trade picker');
+
+// THE REASON SENTENCE IS NOT REPRINTED ON A DECIDED ROW, and that is the
+// second half of the same defect. The flagged endpoint EXCLUDES decided rows
+// (server.py, get_flagged_project_checkins), so after a remount or a date
+// change `review_reason` and `unknown_reason` come back null and sstFlagCopy
+// falls through to its catch-all — the same row would print a SPECIFIC reason
+// before a reload and a vaguer one after it. The row's reason is suppressed
+// once a decision exists rather than being allowed to degrade silently.
+// Executed, not just scanned, in sstCardFlagPaints.test.cjs.
+ok(/showDetail=\{!reviewed\}/.test(preshift),
+  'a decided row prints no reason sentence — the field it would come from is '
+  + 'not returned for decided rows, so it could only degrade');
 
 // Trade assignment — one picker, fed by the project trade roster.
 const assignFn = block(preshift, 'const handleAssignTrade', 'const updateWorker');
