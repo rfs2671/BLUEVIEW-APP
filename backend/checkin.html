@@ -97,6 +97,14 @@ select option{background:#1e293b;color:#f1f5f9}
 .btn-success:active{transform:scale(0.98)}
 .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
 .btn-outline:active{background:var(--surface)}
+/* THE SECOND CHOICE, AND IT HAS TO LOOK LIKE ONE.
+   The manual-entry control is a real button -- it was a `manual-note` div
+   styled as a caption, which is a thing workers were measured not reading --
+   but it must not carry the same weight as the primary action, or "type it
+   instead" is once again an equal option to photographing the card. Smaller
+   padding and a lighter weight than .btn: quieter than Next, louder than a
+   note. */
+.btn-manual{padding:12px;font-size:15px;font-weight:500;margin-top:14px}
 
 /* Camera */
 .camera-zone{
@@ -360,13 +368,31 @@ select option{background:#1e293b;color:#f1f5f9}
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
           </div>
-          <!-- Card fields stay ALWAYS VISIBLE (from the photo-optional fix):
-               a worker with no camera / a damaged card must be able to type
-               these without first producing a photo. #82's retake loop layers
-               on top — it prompts for a better photo up to 3 times, but never
-               hides these fields, so there is no dead-end and no duplicate
-               "manual entry" surface. -->
-          <div class="manual-note" data-i18n="manualEntryLink">Can't photograph the card? Enter the details below instead</div>
+          <!-- ── THE PHOTO IS THE DEFAULT; TYPING IT IS A DELIBERATE CHOICE ──
+               These fields used to be ALWAYS VISIBLE, from the photo-optional
+               fix, and its reason was right: a worker with no camera or a
+               damaged card must be able to type the card without first
+               producing a photo, and hiding the fields behind a successful OCR
+               is what made a dead end. Nothing about that has been undone —
+               see `revealManualCardFields`, which opens this block on ANY read
+               outcome, success or failure, and `chooseManualEntry`, which opens
+               it on request before any photo is taken.
+
+               WHAT CHANGED IS THE ORDER, AND WHY. Presented side by side, a
+               photo and four empty inputs are an EQUAL CHOICE, and typing is
+               the faster one — so manual entry became the path of least
+               resistance for workers whose card would have photographed fine.
+               A typed card is a CLAIM about a credential; a photographed one is
+               EVIDENCE of it, kept in R2 for a reviewer to look at. They are
+               not equal and the screen should not say they are.
+
+               COLLAPSED, NOT REMOVED, and the button is above the fields rather
+               than being a link that looks like prose. `manual-note` styling
+               read as a caption and was measured being missed. -->
+          <button type="button" class="btn btn-outline btn-manual" id="btnManualEntry"
+                  onclick="chooseManualEntry()" data-i18n="manualEntryLink">Can't photograph the card? Enter the details below instead</button>
+          <div id="manualCardFields" class="hidden">
+          <div class="manual-note" data-i18n="manualEntryNote">Enter what you can read from your card. A photo is not required.</div>
           <div class="input-group">
             <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
             <!-- autocapitalize="characters" IS THE DEFECT FIX, not a nicety.
@@ -379,7 +405,13 @@ select option{background:#1e293b;color:#f1f5f9}
                  not a word and must not be helpfully rewritten into one.
                  The server normalises regardless — see
                  normalize_card_number in server.py. -->
-            <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
+            <!-- `oninput` MARKS THE SOURCE, the same mechanism and for the same
+                 reason as the class picker's `onchange` below: a value the
+                 WORKER typed is a statement about his card, a value OCR read is
+                 a reading of it, and the server's demotion keys on the marker
+                 built from these. showOcrResults stamps 'ocr'; this stamps
+                 'worker' the instant he touches the field. -->
+            <input type="text" id="regCardNumber" oninput="this.dataset.src='worker'" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
           </div>
           <!-- THE CLASS FIELD THAT DID NOT EXIST.
                Manual entry collapsed the card to three keys — number, issued,
@@ -435,12 +467,13 @@ select option{background:#1e293b;color:#f1f5f9}
           </div>
           <div class="input-group">
             <div class="input-label" data-i18n="issuedLabel">Issued Date</div>
-            <input type="text" id="regIssued" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
+            <input type="text" id="regIssued" oninput="this.dataset.src='worker'" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
           </div>
           <div class="input-group">
             <div class="input-label" data-i18n="expirationLabel">Expiration Date</div>
-            <input type="text" id="regExpiration" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
+            <input type="text" id="regExpiration" oninput="this.dataset.src='worker'" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
           </div>
+          </div><!-- /#manualCardFields -->
         </div>
         <!-- NEVER `disabled`. It was, and the ONLY line that ever cleared it
              lived inside handleOcrOutcome() -- reachable only from a card photo
@@ -679,6 +712,14 @@ const TRANSLATIONS = {
     // back to the camera rather than to manual entry, and names both ways out.
     cardReadTimeout: 'The card reader did not answer. Tap the photo area to try again — your card is fine. If it keeps failing, type your card number below.',
     cardReaderDown: 'The card reader is unavailable right now. Enter your card number below to continue — you do not need the photo.',
+    // BUSY, NOT DOWN. cardReaderDown sends him to manual entry, which is right
+    // for a reader that is switched off and wrong for one that is merely
+    // queueing — the server has already retried once and waited. So this one
+    // sends him back to the camera and says the wait is short, and it does NOT
+    // lead with "type it instead": a photographed card is evidence and a typed
+    // one is a claim, and a thirty-second queue is not a reason to trade one
+    // for the other.
+    cardReaderBusy: 'The card reader is busy right now. Wait a moment and tap the photo area to try again. If it keeps failing you can type your card number below.',
     // NO ANSWER ARRIVED — we stopped waiting, or the connection dropped. Same
     // advice as a server timeout because it is the same situation from the
     // worker's side, and it must name the retry: this is the case that used to
@@ -805,6 +846,7 @@ const TRANSLATIONS = {
     readCardFailed: 'No se pudo leer la tarjeta',
     cardReadTimeout: 'El lector de tarjetas no respondió. Toque el área de la foto para intentar de nuevo — su tarjeta está bien. Si sigue fallando, escriba el número de su tarjeta abajo.',
     cardReaderDown: 'El lector de tarjetas no está disponible en este momento. Escriba el número de su tarjeta abajo para continuar — no necesita la foto.',
+    cardReaderBusy: 'El lector de tarjetas está ocupado en este momento. Espere un momento y toque el área de la foto para intentar de nuevo. Si sigue fallando, puede escribir el número de su tarjeta abajo.',
     // ELEVEN OF ELEVEN recorded gate failures are lang='es'. This sentence is
     // not the translation of the English one; it is the one most workers will
     // actually read.
@@ -856,7 +898,23 @@ const BACKEND_ERROR_MAP = {
   'Too many requests. Please wait a moment.': 'errRateLimited',
 };
 
+// A MACHINE CODE BEATS A SENTENCE, and BACKEND_ERROR_MAP above is the standing
+// proof of why: it matches on the server's ENGLISH PROSE, so every entry breaks
+// silently the day somebody rewords a `detail=`. Codes are checked first, and
+// any endpoint that answers with `_card_error_detail(...)` can be read here
+// without adding an English string to match on. See api(), which lifts `code`
+// off the body onto the thrown Error.
+const API_ERROR_CODES = {
+  // register-and-checkin now refuses a NEW registration that carries no card
+  // evidence at all — no photo, no typed number, no typed expiry. The copy is
+  // the one the page's own step-1 guard already shows for the same condition,
+  // so the server and the screen say the same thing in the worker's language.
+  CARD_EVIDENCE_REQUIRED: 'needCardOrManual',
+};
+
 function translateApiError(e) {
+  const byCode = (e && e.code) ? API_ERROR_CODES[e.code] : null;
+  if (byCode) return t(byCode);
   const raw = (e && e.message) ? String(e.message).trim() : '';
   const key = BACKEND_ERROR_MAP[raw];
   return key ? t(key) : t('genericError');
@@ -1923,6 +1981,16 @@ async function handleOshaPhoto(input) {
         // landed in the fallback branch below and the worker never got the
         // camera back. See api().
         GATEWAY_NO_ANSWER: { msg: 'cardReadTimeout', kind: 'card_ocr_gateway_no_answer', retake: true },
+        // ── BUSY IS NOT DOWN, AND IT WAS THE SAME ROW AS DOWN ─────────────
+        // `retake: true` BY THE RULE THIS MAP ALREADY ENCODES, correctly read:
+        // "did an answer arrive?" A 429 is not an answer about the request — it
+        // is the provider declining to look at it — so the same photograph very
+        // probably works on the next tap, which is the retake side of the rule.
+        // The server has already retried once with a backoff and is only
+        // reporting this because it was STILL busy (see CARD_READ_BUSY in
+        // server.py), so the camera is the right place to send him, and NOT
+        // manual entry, which is where CARD_READ_UNAVAILABLE's copy leads.
+        CARD_READ_BUSY: { msg: 'cardReaderBusy', kind: 'card_ocr_busy', retake: true },
         CARD_READ_UNAVAILABLE: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
         CARD_READ_NOT_CONFIGURED: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
         CARD_READ_FAILED: { msg: 'couldNotReadCard', kind: 'card_ocr_http_failed', retake: false },
@@ -2130,10 +2198,37 @@ function showOcrResults(data) {
   // corrections flow through to the cert logic. The "scanned" banner is
   // revealed by handleOcrOutcome only when the read was actually complete.
   if (data.name) document.getElementById('regName').value = data.name;
-  if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
-  if (data.issued) document.getElementById('regIssued').value = data.issued;
-  if (data.expiration) document.getElementById('regExpiration').value = data.expiration;
+  // dataset.src='ocr' ON THE NUMBER AND THE EXPIRY TOO, for exactly the reason
+  // presetCardClass already does it for the class: it is the only thing that
+  // distinguishes a value THE CARD SAID from a value THE WORKER SAID, and the
+  // server's demotion keys on the marker built from it. Without it a typed
+  // number and a typed expiry were indistinguishable from a read of the same
+  // card — so a hand-typed credential whose class happened to be legible
+  // minted a clean row. Each field's own `oninput` overwrites this with
+  // 'worker' the moment he touches it, so correcting a misread value is
+  // recorded as his statement and not as a second reading.
+  setOcrField('regCardNumber', data.sst_number);
+  setOcrField('regIssued', data.issued);
+  setOcrField('regExpiration', data.expiration);
   presetCardClass(data.card_class);
+  // NO DEAD END, EVER. The card fields are collapsed until asked for (see
+  // chooseManualEntry) — but the moment a read comes back they must be on
+  // screen, whether it succeeded (so a misread field can be corrected) or
+  // failed (so there is somewhere to type). This is what keeps "the photo is
+  // the default" from becoming "the photo is the only way".
+  revealManualCardFields();
+}
+
+// One OCR-supplied field: the value, and where it came from. Absent or nullish
+// readings leave the input alone AND leave it unstamped — an empty field the
+// worker then fills is his, not the card's.
+function setOcrField(id, raw) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s || OCR_NULLISH.has(s.toLowerCase())) return;
+  el.value = s;
+  el.dataset.src = 'ocr';
 }
 
 // Preselect the class picker from what OCR read, and STAMP WHERE IT CAME FROM.
@@ -2163,6 +2258,54 @@ function presetCardClass(raw) {
   if (!value) return;
   el.value = value;
   el.dataset.src = 'ocr';
+}
+
+// ── OPENING THE MANUAL FIELDS: ON REQUEST, AND ON ANY READ OUTCOME ─────────
+//
+// TWO CALLERS AND THEY ARE DIFFERENT EVENTS. `chooseManualEntry` is the worker
+// deliberately electing to type his card; `revealManualCardFields` is
+// showOcrResults putting the fields on screen because a read happened — well
+// or badly — and he now needs to correct or complete them. Only the first is a
+// CHOICE, and only the first hides the button that offered it.
+//
+// NEITHER ONE MARKS THE VALUES. `manual_entry` is decided per field from
+// dataset.src at submit time (see buildCardPayload), not from which control
+// opened the block: a worker who taps "enter the details" and then photographs
+// the card successfully has a READ card, and the payload must say so.
+function revealManualCardFields() {
+  const block = document.getElementById('manualCardFields');
+  if (block) block.classList.remove('hidden');
+}
+
+function chooseManualEntry() {
+  revealManualCardFields();
+  // The offer is spent. Leaving the button up under the open fields is a
+  // control that does nothing, which on a gate screen reads as a step the
+  // worker has not finished.
+  const btn = document.getElementById('btnManualEntry');
+  if (btn) btn.classList.add('hidden');
+  const el = document.getElementById('regCardNumber');
+  if (el) el.focus();
+}
+
+// TRUE WHEN THE CARD DETAILS ON SCREEN ARE THE WORKER'S OWN STATEMENT.
+//
+// Per FIELD, from the same dataset.src marker the class picker has used since
+// #554 — not from "was a photo taken". A worker whose photo produced a read
+// and who then CORRECTED the expiry has stated that expiry himself, and a
+// reviewer needs to know that; a worker who photographed the card and touched
+// nothing has a read, and must not be flagged for having a camera.
+//
+// The `!oshaImage` clause is the no-OCR-ran case: nothing ever stamped these
+// fields, so nothing can be attributed to a card that was never photographed.
+function cardDetailsAreSelfReported() {
+  const ids = ['regCardNumber', 'regIssued', 'regExpiration'];
+  const typed = ids.some((id) => {
+    const el = document.getElementById(id);
+    return !!(el && String(el.value || '').trim()
+              && !(el.dataset && el.dataset.src === 'ocr'));
+  });
+  return typed || (!oshaImage && hasManualCardDetails());
 }
 
 // FIX 2: true when the worker has typed enough card detail by hand to stand
@@ -2213,6 +2356,26 @@ function buildCardPayload() {
     // and the card read (or the blank) stands exactly as before.
     if (!classFromOcr) payload.class_source = 'self_reported';
   }
+
+  // ── AND THE MARKER THE CLASS PICKER'S ONE COULD NOT CARRY ────────────────
+  //
+  // `class_source` is attached by the CLASS control, so it is absent from the
+  // manual entry that leaves the picker on "I'm not sure" — which is what the
+  // two real manual entries on 588 Thomas look like. The class was then
+  // correctly flagged CLASS_UNVERIFIED, but nothing on the row said that the
+  // NUMBER and the EXPIRY were TYPED rather than read: a hand-entered card
+  // whose class happened to be legible would have minted a clean, unflagged
+  // certification out of nothing but the worker's say-so.
+  //
+  // `manual_entry` says the whole read is his statement. The server answers it
+  // in `class_is_self_reported`, so every consequence is the one that already
+  // exists: the row is demoted, forced to review, can never read as a valid
+  // credential, and `worker_needs_card_scan` asks him to photograph the card on
+  // his next check-in — the #554 path, not a second prompt built beside it.
+  //
+  // IT FLAGS; IT DOES NOT REFUSE. A worker without his card still gets through
+  // the gate. That is the standing rule and this does not touch it.
+  if (cardDetailsAreSelfReported()) payload.manual_entry = true;
 
   return {
     osha_number: cardNumber || (oshaData && oshaData.sst_number) || '',

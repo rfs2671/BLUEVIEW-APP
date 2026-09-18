@@ -104,7 +104,11 @@ ok(/t\('admit'\)/.test(review),
 for (const code of ['CLASS_UNVERIFIED', 'EXPIRY_IMPLAUSIBLE', 'EXPIRY_UNPARSEABLE',
                      'EXPIRY_CONFLICT', 'DUPLICATE_SST',
                      // Newly produced — see the note at the top of this file.
-                     'EXTRACTION_INCOMPLETE']) {
+                     'EXTRACTION_INCOMPLETE',
+                     // Newly produced by evaluate_cert_expiry: "no expiry
+                     // reached the record at all", which used to arrive as
+                     // review_reason null on a row nobody was asked to look at.
+                     'EXPIRY_MISSING']) {
   // EN only — see above. The guard is unchanged in substance: a backend code
   // with no mapped copy renders as the raw key to the CP, and that still fails.
   ok(new RegExp(`reason_${code}:`).test(EN_SRC),

@@ -213,7 +213,14 @@ class RegisterAndCheckinStillFailsOpenTest(unittest.TestCase):
             resp = TestClient(server.app).post(
                 "/api/checkin/register-and-checkin",
                 json={"project_id": "proj1", "tag_id": "t1",
-                      "name": "Jane Worker", "phone": "5551234567"},
+                      "name": "Jane Worker", "phone": "5551234567",
+                      # CARD EVIDENCE, because a NEW registration that carries
+                      # none is now refused server-side with
+                      # CARD_EVIDENCE_REQUIRED. Not this test's subject -- it
+                      # is about the ROSTER failing open -- so the minimum the
+                      # page itself accepts is supplied, and the roster
+                      # assertion below is unchanged.
+                      "osha_number": "JH447TBBXG"},
             )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertIs(

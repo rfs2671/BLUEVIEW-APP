@@ -204,6 +204,10 @@ export default function WorkerDetailScreen() {
     CLASS_SELF_REPORTED: 'Card class was stated by the worker — check it against the card',
     EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
     EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
+    // NOT the same as UNPARSEABLE: that one refused a value it still holds for
+    // him to correct from, this one never received an expiry at all, so the
+    // answer is a fresh look at the card rather than a correction.
+    EXPIRY_MISSING: 'No expiry date on file for this card — scan or enter it',
     EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     DUPLICATE_SST: 'Duplicate SST records — resolve to one',
     // AN OBSERVATION, NOT A JUDGEMENT, and the same words the register uses.

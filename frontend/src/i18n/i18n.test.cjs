@@ -290,7 +290,7 @@ const REASON_CODES = Object.keys(I.CATALOGUES.en.review).filter((k) => k.startsW
 // CARD_NUMBER_FORMAT are all still here rather than freezing the count.
 for (const required of ['reason_CLASS_UNVERIFIED', 'reason_EXPIRY_IMPLAUSIBLE',
   'reason_EXPIRY_UNPARSEABLE', 'reason_EXPIRY_CONFLICT', 'reason_DUPLICATE_SST',
-  'reason_CARD_NUMBER_FORMAT']) {
+  'reason_CARD_NUMBER_FORMAT', 'reason_EXPIRY_MISSING']) {
   ok(REASON_CODES.includes(required), `${required} is mapped`);
 }
 for (const loc of I.LOCALES) {

@@ -222,6 +222,12 @@ def _reg_body(project_id="projA", **kw):
     body = {
         "project_id": project_id, "tag_id": "t1",
         "name": "Jane Worker", "phone": "5551234567",
+        # CARD EVIDENCE, because a NEW registration carrying none is now
+        # refused server-side with CARD_EVIDENCE_REQUIRED. Nothing in this file
+        # is about the card -- it is about where the trade and company are
+        # stored -- so the minimum the gate page itself accepts is supplied
+        # here once, for every case built on this body.
+        "osha_number": "JH447TBBXG",
     }
     body.update(kw)
     return body

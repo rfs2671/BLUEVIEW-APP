@@ -3527,8 +3527,12 @@ class WorkerCertification(BaseModel):
     # surfaces the row in the CP/admin cert-review queue.
     needs_review: bool = False
     # Machine code for WHY review is needed (frontend maps to EN/ES). One of:
-    # CLASS_UNVERIFIED, EXPIRY_IMPLAUSIBLE, EXPIRY_UNPARSEABLE, EXPIRY_CONFLICT,
-    # DUPLICATE_SST, EXTRACTION_INCOMPLETE.
+    # CLASS_UNVERIFIED, CLASS_SELF_REPORTED, EXPIRY_IMPLAUSIBLE,
+    # EXPIRY_UNPARSEABLE, EXPIRY_MISSING, EXPIRY_CONFLICT, DUPLICATE_SST,
+    # EXTRACTION_INCOMPLETE. Every one of them is mapped in OSHA_REVIEW_LABELS
+    # and carried as `reason_<CODE>` in frontend/src/i18n/en.js: a produced code
+    # with no copy renders as a bare "Needs review", which tells a reviewer to
+    # look at a card and not what to look for.
     review_reason: Optional[str] = None
     # The raw OCR expiry string that FAILED the sanity gate. Retained so an
     # admin can correct it; NEVER promoted to expiration_date automatically.
@@ -3986,7 +3990,31 @@ def class_is_self_reported(od: dict) -> bool:
     OCR read no class at all (the manual-entry case this exists for) or the
     worker changed what OCR proposed. A class OCR read and the worker left
     alone carries no marker and is resolved exactly as before.
+
+    ── AND `manual_entry` NOW ANSWERS IT TOO ──────────────────────────────────
+
+    THE HOLE THAT LEAVES, SPELLED OUT. The marker above is attached by the
+    CLASS PICKER, so it is absent from a manual entry where the worker typed a
+    number and an expiry and left the picker on "I'm not sure" — which is what
+    the two real manual entries on 588 Thomas look like. The class was then
+    unread (CLASS_UNVERIFIED, correctly flagged), but nothing on the row said
+    that the NUMBER and the EXPIRY were typed rather than read: a hand-typed
+    card whose class happened to be legible would have minted a clean row.
+
+    `manual_entry` is set by the gate when the worker deliberately chose to
+    type his card instead of photographing it, and it means THE WHOLE READ IS
+    HIS STATEMENT. Answered here rather than in a second function, because
+    every consequence already hangs off this one answer:
+    `demote_self_reported_class` marks the row, UNCONFIRMED_CLASS_SOURCES
+    forces review, `_sst_cert_state` refuses to call it valid, and
+    `worker_needs_card_scan` therefore asks him to photograph the card on his
+    next check-in — the #554 path, not a second one built beside it.
+
+    A CLAIM IS NOT A REFUSAL. This flags the row; it does not turn the man
+    away. Manual entry stays a real way through the gate.
     """
+    if (od or {}).get("manual_entry"):
+        return True
     raw = str((od or {}).get("class_source") or "").strip().lower()
     return raw == CLASS_SOURCE_SELF_REPORTED
 
@@ -4238,6 +4266,50 @@ def card_image_may_be_replaced(worker, new_image) -> bool:
 # for anything wrong with their card.
 CERT_DATE_FORMATS = ("%m/%d/%Y", "%Y-%m-%d")
 
+# ── AND THE THIRD SHAPE, WHICH IS NOT A THIRD strptime FORMAT ──────────────
+#
+# EXACTLY EIGHT DIGITS IN MMDDYYYY ORDER, with a slash optionally after the
+# month and optionally after the day: 10272029, 10/272029, 1027/2029,
+# 10/27/2029. This is `parseStoredDate`'s acceptance rule in
+# frontend/src/utils/dateEntry.js, character for character, so the shared date
+# field and this parser read the same strings.
+#
+# WRITTEN AS A REGEX RATHER THAN AS `"%m%d%Y"`, AND THAT IS THE POINT.
+# strptime's `%m` and `%d` each take ONE OR TWO digits, so `"%m%d%Y"` reads
+# `'1272029'` -- seven digits, a DROPPED DIGIT -- as 1 December 2029 and writes
+# it to a compliance record. The frontend refuses that string, and a writing
+# parser that is wider than the field the person types into is the wrong way
+# round. Two fixed-width groups cannot do it.
+CERT_DATE_PADDED_US_RE = re.compile(r"^(\d{2})/?(\d{2})/?(\d{4})$")
+
+# THE YEAR BOUND IS NOT DECORATION -- IT IS WHAT MAKES EIGHT BARE DIGITS
+# UNAMBIGUOUS. With the year in 1900-2199, a YYYYMMDD string read as MMDDYYYY
+# has a "month" of 19, 20 or 21, and there is no such month; so no string of
+# eight digits is a valid date BOTH ways and the reading is forced rather than
+# assumed. Same numbers as dateEntry.js's MIN_YEAR / MAX_YEAR, and
+# TheAcceptanceSurfaceIsPINNED reads them out of that file rather than
+# retyping them, so the two cannot drift apart quietly.
+#
+# It also catches the dropped digit in the year ('07/21/229' -> 0229).
+CERT_DATE_MIN_YEAR = 1900
+CERT_DATE_MAX_YEAR = 2199
+
+
+def _parse_padded_us_date(s):
+    """The eight-digit MMDDYYYY form, or None. See CERT_DATE_PADDED_US_RE."""
+    m = CERT_DATE_PADDED_US_RE.match(str(s if s is not None else ""))
+    if not m:
+        return None
+    month, day, year = (int(g) for g in m.groups())
+    if not (CERT_DATE_MIN_YEAR <= year <= CERT_DATE_MAX_YEAR):
+        return None
+    try:
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except ValueError:
+        # 02/30, 13/01, 02/29 in a non-leap year. A calendar day is three
+        # numbers and this is the table that knows it; no guessing, no rollover.
+        return None
+
 
 def parse_cert_date(s):
     """Read an SST/OSHA card date. Returns a UTC datetime, or None.
@@ -4251,25 +4323,40 @@ def parse_cert_date(s):
     four-digit leading field cannot be a month or a day, so there is exactly
     one reading of `2027-10-03` and no assumption is needed to get it.
 
-    ** DO NOT ADD `'10272029'`, `'062427'` OR `'05/35'` TO THIS PARSER. **
-    You will want to. They are all real production values, all currently sent
-    to a human, and `10272029` in particular reads as 27 October 2029 to any
-    person who glances at it. That reading is available ONLY to someone who
-    already assumes month-day-year; the eight digits themselves do not say
-    which field comes first, and under a different assumption they are 10
-    December 7202. `062427` is 06/24/2027 or 06/24/1927 -- and ONE OF THOSE IS
-    AN EXPIRED CARD. `05/35` is May 2035, or May the 35th (impossible) with the
-    year lost.
+    ** `'062427'` AND `'05/35'` STAY REFUSED. DO NOT ADD THEM. **
+    Both are real production values and both are still sent to a human.
+    `062427` is 06/24/2027 or 06/24/1927 -- and ONE OF THOSE IS AN EXPIRED
+    CARD. `05/35` is May 2035, or May the 35th (impossible) with the year lost.
+    Neither carries a four-digit year, so nothing in the string forces one
+    reading: the parser would be GUESSING, and a guess about an expiry date on
+    a §3301 compliance record is the thing this product does not do. They
+    belong on the human correction path with `'illegible'`, which is the same
+    judgement made out loud. See
+    docs/plans/expiry-unreadable-the-two-builds-2026-09-15.md.
 
-    The reason those three are refused is NOT that they are hard to read. It is
-    that the parser would be GUESSING, and a guess about an expiry date on a
-    §3301 compliance record is the thing this product does not do. They belong
-    on the human correction path with `'illegible'`, which is the same judgement
-    made out loud. See docs/plans/expiry-unreadable-the-two-builds-2026-09-15.md.
+    ** `'10272029'` HAS MOVED, AND THE RULE ABOVE DID NOT. **
+    This docstring used to refuse it alongside those two, on the ground that
+    "the eight digits themselves do not say which field comes first, and under
+    a different assumption they are 10 December 7202". That sentence is true of
+    eight digits and FALSE of eight digits with a bounded year. Read the other
+    way round -- as YYYYMMDD -- `10272029` is year 1027, MONTH 20, and there is
+    no month 20; and the string that WOULD be 27 October 2029 in that order,
+    `20291027`, is month 20 read as MMDDYYYY and so is refused too. See
+    CERT_DATE_MIN_YEAR: with the year bounded, no run of eight digits is a
+    valid date both ways, so the reading is forced rather than assumed.
+    `10 December 7202` is refused BY THE BOUND, not by preference. That is the
+    ACCEPTING side of the very rule stated above. It is the third shape
+    `CERT_DATE_PADDED_US_RE` accepts, and it is what
+    frontend/src/utils/dateEntry.js has read since PR #590 -- the same string
+    was being shown to a CP as a date on one screen and sent to a reviewer as
+    unreadable by this parser.
 
-    test_iso_expiry_widening.TheAmbiguousShapesStayRefused pins all three, and
-    test_the_parser_accepts_exactly_two_formats pins the COUNT, so a third
-    format cannot arrive quietly.
+    test_iso_expiry_widening.TheAmbiguousShapesStayRefused pins the two that
+    stay, and TheAcceptanceSurfaceIsPINNED (in
+    test_a_busy_card_reader_is_asked_again.py) pins the WHOLE acceptance
+    surface -- the strptime tuple AND the regex -- so a fourth shape cannot
+    arrive quietly. Pinning only `CERT_DATE_FORMATS` would now be a count that
+    no longer counts.
 
     THIS PARSER READS BOTH DATES ON THE CARD -- the expiry AND `issued`. See
     the census in WideningAlsoWidensTheIssueDate: zero stored `issued` strings
@@ -4282,7 +4369,95 @@ def parse_cert_date(s):
             return datetime.strptime(str(s), fmt).replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
+    # LAST, so the two strptime formats keep their existing behaviour exactly
+    # and this only ever sees a string they both refused. '10/27/2029' matches
+    # both and is read by the first, which is why nothing above changes.
+    return _parse_padded_us_date(s)
+
+
+# ── "NO EXPIRY WAS READ" IS A REASON, AND IT DID NOT HAVE A NAME ───────────
+#
+# EXPIRY_UNPARSEABLE means a value ARRIVED and the parser refused it.
+# EXPIRY_MISSING means no value arrived at all. Two different events with two
+# different repairs -- correct the string, or photograph the card -- and until
+# now the second one had no word, which is why it reached the record as
+# `review_reason: null`.
+#
+# Declared beside the gate that emits it and mapped in OSHA_REVIEW_LABELS, so
+# a reviewer is never told to review and not told what to look at. The frontend
+# carries `reason_EXPIRY_MISSING` for the same reason.
+EXPIRY_MISSING = "EXPIRY_MISSING"
+
+
+def cert_row_fault(row) -> Optional[str]:
+    """WHY THIS CERTIFICATION ROW MAY NOT BE WRITTEN, or None. PURE.
+
+    ── THE ONE RULE, AND THE ROW IT EXISTS FOR ────────────────────────────────
+
+    An SST row with NO EXPIRY must say WHY it has no expiry. Angel Lopez's row
+    does not: `expiration_date: null`, `expiration_raw_rejected: null`,
+    `review_reason: null`, `needs_review: false`. Nothing put him in a queue,
+    nothing told a reviewer what to look at, and the register reads as though
+    his card was never scanned -- while a complete read of it sits on the same
+    document. Nobody in this repository can say what wrote that row (both
+    repair scripts have never run; the code at his registration computed
+    `needs_review` True for it), so the provenance is unexplained and this
+    makes the SHAPE UNREACHABLE instead.
+
+    Three things are mandatory when the expiry could not be stored:
+      needs_review            True   -- somebody is asked
+      review_reason           set    -- and told what to look at
+      expiration_raw_rejected set    -- WHEN A VALUE WAS REJECTED, so he has
+                                        something to correct FROM. Not when
+                                        nothing arrived: there is no string to
+                                        keep, and inventing one would put a
+                                        sentinel in a field that means "the
+                                        value printed on the card".
+
+    ── WHAT THIS IS NOT ───────────────────────────────────────────────────────
+
+    NOT A CHECK ON OSHA ROWS. An OSHA card issued after 2020 is LIFETIME, so
+    `expiration_date: None` on an OSHA_10 row is the correct reading and not a
+    lost one. Sweeping those in would flag every OSHA row in the database and
+    get this function deleted by the next reader.
+
+    NOT A GATE ON A WORKER, and never applied to a row that is merely STORED.
+    Angel's own row fails this check; asking it at read time would refuse his
+    check-in, and the standing rule is that the gate does not stop a man
+    working. It is asked only of rows a call has just MINTED OR MODIFIED -- see
+    the single check at the end of build_worker_certifications.
+    """
+    if str((row or {}).get("type") or "") not in RECOGNIZED_SST_TYPES:
+        return None
+    if (row or {}).get("expiration_date") is not None:
+        return None
+    reason = (row or {}).get("review_reason")
+    if not reason:
+        return ("no expiration_date and no review_reason: nothing says why "
+                "the expiry is absent")
+    if not (row or {}).get("needs_review"):
+        return (f"no expiration_date and review_reason {reason!r}, but "
+                "needs_review is false: nobody is asked to look at it")
+    # A REJECTION MUST KEEP WHAT IT REJECTED. Both of these codes mean a value
+    # arrived and was refused; the raw string is what a human corrects from.
+    if reason in ("EXPIRY_UNPARSEABLE", "EXPIRY_IMPLAUSIBLE") and not (
+            row or {}).get("expiration_raw_rejected"):
+        return (f"review_reason {reason!r} without expiration_raw_rejected: "
+                "the reviewer is sent to a value the record no longer holds")
     return None
+
+
+class CertRowUnsound(ValueError):
+    """A certification row was assembled that cannot say why it has no expiry.
+
+    UNREACHABLE BY CONSTRUCTION, which is why it is a tripwire and not a gate.
+    Every field on a minted row comes from `evaluate_cert_expiry` and
+    `derive_cert_review`, and those two now guarantee that a missing expiry
+    arrives with a reason and a raised flag. This fires only if that stops
+    being true -- a new writer, a new branch, a hand-assembled row -- and
+    refusing loudly is the point: the alternative is repairing the row
+    silently, which is how the shape got onto the record in the first place.
+    """
 
 
 def evaluate_cert_expiry(raw_expiry, issue_dt, sst_type, now):
@@ -4298,13 +4473,52 @@ def evaluate_cert_expiry(raw_expiry, issue_dt, sst_type, now):
     again.
 
     The rules, unchanged:
+      * no raw value at all                   -> EXPIRY_MISSING, not suppressed
       * a raw value the parser will not read  -> EXPIRY_UNPARSEABLE, suppressed
       * an expiry at or before the issue date -> EXPIRY_IMPLAUSIBLE, suppressed
       * an expiry past the class-aware ceiling -> EXPIRY_IMPLAUSIBLE, suppressed
     A PAST expiry is NOT suppressed and never has been: an expired card is a
     fact about the card, and `_sst_cert_state` reports it as 'expired'.
+
+    ── THE FIRST ROW IS NEW, AND IT IS ANGEL LOPEZ'S ROW ──────────────────────
+
+    `evaluate_cert_expiry(None, ...)` returned `(None, False, None)`: no
+    expiry, no rejection recorded, NO REASON. That tuple is exactly the
+    certification row worker 6a9576da611a543244a9ccac has carried since
+    2026-08-31 -- `expiration_date: null`, `expiration_raw_rejected: null`,
+    `review_reason: null` -- while his worker document held a complete card
+    read and a 431358-byte card image. Thirteen check-ins passed over it.
+
+    THE INVARIANT THIS ESTABLISHES: **stored_exp is None implies reason is not
+    None.** It holds by CONSTRUCTION here -- the branch below is the only path
+    that can return no expiry without a reason, and it now returns one -- and it
+    is established HERE rather than at the callers because this function and
+    `derive_cert_review` were extracted precisely so the scanner and the
+    backfill share ONE gate. A rule added at each call site is a rule the third
+    caller will not have.
+
+    It is ASSERTED, on the row rather than on this tuple, by `cert_row_fault`
+    at the single check in build_worker_certifications: a tuple this function
+    cannot produce needs no runtime assertion here, and an assertion that
+    cannot fail is not an instrument. The row-level check CAN fail -- on a
+    hand-assembled row, or a fourth writer -- which is where it belongs.
+
+    EXPIRY_MISSING IS NOT SUPPRESSION. `suppressed` is what makes the writer
+    keep the raw string in `expiration_raw_rejected` so a human can correct
+    from it -- and when nothing was read there is no string to keep. Saying
+    otherwise would put a sentinel in a field that means "the value printed on
+    the card", which is a lie a reviewer would act on. Nothing was rejected;
+    nothing arrived.
+
+    AND IT IS THE WEAKEST REASON, not the strongest. See derive_cert_review:
+    "no expiry was read" is less informative than "his answer contradicts the
+    card's colour", and ranked above them it would shadow CLASS_CONFLICTED,
+    CLASS_SELF_REPORTED and CLASS_UNVERIFIED on every row that has no expiry --
+    which is most of the flagged rows on the live company.
     """
     exp_dt = parse_cert_date(raw_expiry) if raw_expiry else None
+    if not str(raw_expiry or "").strip():
+        return None, False, EXPIRY_MISSING
     if raw_expiry and exp_dt is None:
         return None, True, "EXPIRY_UNPARSEABLE"
     if exp_dt is not None:
@@ -4338,7 +4552,20 @@ def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
     hand. Sharing the expressions is the only way "the same gate" is a fact
     rather than a claim in a commit message.
     """
-    reason = gate_reason
+    # ── EXPIRY_MISSING IS RANKED LAST, NOT FIRST ───────────────────────────
+    #
+    # Every other gate reason means a value was READ AND REFUSED, which is more
+    # specific than anything else on the row, so it still wins outright.
+    # EXPIRY_MISSING means no value arrived -- and "no expiry was read" says
+    # less than "his answer contradicts the card's colour" or "the class could
+    # not be read at all". Taken at the top of this chain it would shadow
+    # CLASS_CONFLICTED, CLASS_SELF_REPORTED and CLASS_UNVERIFIED on every row
+    # with no expiry, which is most of the flagged rows on the live company:
+    # Amaury Ayala's CLASS_UNVERIFIED would have been relabelled by a change
+    # that was supposed to add information. So it is held back and applied
+    # below, above only the generic EXTRACTION_INCOMPLETE.
+    expiry_absent = gate_reason == EXPIRY_MISSING
+    reason = None if expiry_absent else gate_reason
     # The resolver's own reason wins when the expiry gate had none: it is
     # more specific (CLASS_CONFLICTED / CLASS_FROM_COLOR_UNCONFIRMED /
     # CLASS_EXPIRED_SCHEME all say something CLASS_UNVERIFIED cannot).
@@ -4346,6 +4573,11 @@ def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
         reason = resolver_reason
     if not class_ok and reason is None:
         reason = "CLASS_UNVERIFIED"
+    # Nothing more specific stood. Now the absent expiry names itself, rather
+    # than falling through to EXTRACTION_INCOMPLETE ("some detail is missing")
+    # when we know exactly WHICH detail is missing.
+    if reason is None and expiry_absent:
+        reason = EXPIRY_MISSING
     completeness = round(
         (int(name_ok) + int(number_ok) + int(class_ok) + int(bool(stored_exp))) / 4, 3
     )
@@ -4388,6 +4620,125 @@ def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
     if needs_review and reason is None:
         reason = "EXTRACTION_INCOMPLETE"
     return needs_review, reason, completeness
+
+
+#: Keys on an `osha_data` payload that describe HOW a reading was arrived at
+#: rather than WHAT was read. They are never inherited by the merge below: a
+#: marker is a statement about ONE submission. Inherited, a worker who typed
+#: his class once would carry `self_reported` on every later scan of the same
+#: card -- a genuine read demoted by an old claim -- and a stale marker is
+#: evidence about the wrong event in either direction.
+CARD_READ_MARKERS = ("class_source", "manual_entry")
+
+
+def _card_field_answered(value) -> bool:
+    """Did this payload field actually answer? PURE.
+
+    `norm_ocr_str` and not truthiness, because A MODEL'S ANSWER OF "I COULD NOT
+    READ THIS" IS SOMETIMES THE STRING "null" -- truthy, and it has already
+    reached filed compliance PDFs as a worker's name. Read as an answer it
+    would overwrite a good stored value with the word null, which is the
+    opposite of what the merge is for.
+    """
+    if isinstance(value, str) or value is None:
+        return norm_ocr_str(value) is not None
+    return bool(value)
+
+
+def merge_stored_card_read(new_od, stored_od) -> dict:
+    """The card evidence a check-in may be judged on: THIS submission's read,
+    with the STORED read answering only the fields this one did not. PURE.
+
+    ── THE GAP THIS CLOSES, AND IT IS THE NAMED DEFECT ────────────────────────
+
+    `register_and_checkin`'s returning path falls two of its three card inputs
+    back to the worker document:
+
+        effective_osha_number     = osha_number     or worker["osha_number"]
+        effective_osha_card_image = osha_card_image or worker["osha_card_image"]
+
+    and `osha_data` -- the one that carries the NAME, the CLASS, the ISSUE DATE
+    and THE EXPIRY -- does not. So on the returning quick path `od` is `{}`
+    while the stored image still makes `resolved_kind` come out "SST", and
+    `evaluate_cert_expiry(None, ...)` used to answer "no expiry, no reason".
+    Worker 6a9576da611a543244a9ccac took that path thirteen times with a
+    complete stored read one field away on the same document.
+
+    ── NEVER WORSE, AND IT IS A PER-FIELD RULE ────────────────────────────────
+
+    A field this submission answered wins. A field it did not answer keeps
+    whatever the stored read said. So a rebuild can only ever ADD to what is
+    known, never subtract -- which is what "a rebuild must not produce a worse
+    row than the one it replaces" means at this level.
+
+    ── SAME CARD, OR NO MERGE AT ALL ──────────────────────────────────────────
+
+    This is NOT `osha_data or worker["osha_data"]`, and the difference is the
+    whole safety of it. The stored read is the LATEST scan and need not be a
+    scan of the card in the worker's hand -- backfill_iso_expiry's planner says
+    the same thing about the same field. Filling this card's blank expiry from a
+    DIFFERENT card's read would attribute one card's life to another card's
+    number on a §3301 compliance record. So when both reads name a card number
+    and the numbers differ, this submission stands alone.
+
+    Normalised before comparing, because one man's one card must not read as
+    two: a stored row may hold any case, and comparing raw is what appended a
+    duplicate SST row to an admin-confirmed worker.
+    """
+    new = dict(new_od or {})
+    stored = {k: v for k, v in dict(stored_od or {}).items()
+              if k not in CARD_READ_MARKERS}
+    if not stored:
+        return new
+    new_no = normalize_card_number(norm_ocr_str(new.get("sst_number")))
+    old_no = normalize_card_number(norm_ocr_str(stored.get("sst_number")))
+    if new_no and old_no and new_no != old_no:
+        return new
+    out = dict(stored)
+    for key, value in new.items():
+        if key in CARD_READ_MARKERS or _card_field_answered(value):
+            out[key] = value
+    return out
+
+
+def registration_card_evidence(osha_card_image, osha_data, osha_number
+                               ) -> Optional[str]:
+    """What card evidence a REGISTRATION carries: 'image', 'manual', or None.
+
+    ── SERVER-SIDE THERE WAS NO CARD VALIDATION AT ALL ────────────────────────
+
+    `POST /checkin/register-and-checkin` reads `osha_card_image`, `osha_data`
+    and `osha_number` with plain `data.get(...)` and raised nothing when all
+    three were absent. The only thing that has ever asked is the gate page's
+    own `goStep(2)` guard -- so a cached page, a retried submit, or any client
+    at all could create a worker with a name, a signature and no card evidence
+    of any kind, and the record could not say whether the card was unreadable
+    or never presented.
+
+    ── IT ACCEPTS EXACTLY WHAT THE PAGE OFFERS ────────────────────────────────
+
+    checkin.html's `hasManualCardDetails()` returns true on EITHER a card
+    number or an expiration, and its manual-entry note says so out loud: "Enter
+    what you can read from your card. A photo is not required." A server rule
+    narrower than that would refuse a worker who did exactly what the screen
+    told him, which is the dead end this whole path exists to remove. So: a
+    photo, a number, or an expiry. Any one of the three is evidence.
+
+    `norm_ocr_str` throughout, so the model's word for nothing is not evidence:
+    a payload of `{"sst_number": "null"}` is an absent card, not a present one.
+
+    RETURNS WHICH, not just whether, because the caller needs the answer twice
+    -- once to refuse, and once to record that the card was TYPED. See
+    build_worker_certifications, where a manual entry is never mistaken for a
+    reading.
+    """
+    if osha_card_image:
+        return "image"
+    od = osha_data or {}
+    for value in (osha_number, od.get("sst_number"), od.get("expiration")):
+        if norm_ocr_str(value) is not None:
+            return "manual"
+    return None
 
 
 def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
@@ -4439,6 +4790,21 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
     # A rule that has to hold at every write holds better inside the writer.
     osha_number = normalize_card_number(osha_number)
     worker_certs = list(existing_certs or [])
+    # ── THE ROWS THIS CALL MINTED, AND ONLY THOSE ───────────────────────────
+    #
+    # Checked against `cert_row_fault` at the single return below. See the
+    # comment there for why it is the MINTED rows and not `worker_certs`, and
+    # why an existing row this call only partially repairs is not on the list.
+    touched = []
+
+    def _record(row):
+        """Append a new row and mark it for the invariant check. A helper, so
+        the check is a property of writing a row rather than something each
+        branch has to remember to ask for."""
+        worker_certs.append(row)
+        touched.append(row)
+        return row
+
     has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
     # None unless the scan was of a card that is not an SST card at all.
     not_sst = None
@@ -4458,16 +4824,38 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         resolved_kind = None
 
     name_ok = bool(str(od.get("name") or "").strip())
-    number_ok = bool(str(osha_number or od.get("sst_number") or "").strip())
+    # ── ONE READING OF THE CARD NUMBER, WHERE THERE USED TO BE TWO ──────────
+    #
+    # `number_ok` read `osha_number or od["sst_number"]` and the row stored
+    # `osha_number or None`, one line apart in the SST branch below. So a row
+    # SCORED the card number as extracted and STORED null. That is the second
+    # half of Angel Lopez's row: "RUQ24T3LVF" on his worker document,
+    # "RUQ24T3LVF" in his stored read, `card_number: null` on the
+    # certification.
+    #
+    # And it is not cosmetic. `card_number` is what the dedup match below keys
+    # on ("prefer an exact card-number match"), what the frozen check-in
+    # snapshot copies, and what the OSHA register prints. A null there means one
+    # man's card cannot be matched to itself on his next scan.
+    #
+    # DERIVED FROM ONE EXPRESSION rather than asserted to agree in two places:
+    # the completeness score and the stored value now cannot differ, because
+    # there is only one value. Normalised for the same reason the scan's own
+    # number is — the stored form is the form the register and the LL196
+    # attestation print — and through `norm_ocr_str` so the model's "null" is
+    # not a card number.
+    card_no = osha_number or normalize_card_number(
+        norm_ocr_str(od.get("sst_number"))) or None
+    number_ok = bool(card_no)
 
     if resolved_kind == "OSHA":
         if not has_existing_osha:
             osha_type = _map_osha_level(card_class)
             class_ok = osha_type != "OSHA_UNSPECIFIED"
             completeness = round((int(name_ok) + int(number_ok) + int(class_ok)) / 3, 3)
-            worker_certs.append({
+            _record({
                 "type": osha_type,
-                "card_number": osha_number or None,
+                "card_number": card_no,
                 "issue_date": None,
                 "expiration_date": None,          # OSHA lifetime post-2020
                 "verified": False,
@@ -4519,7 +4907,8 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         needs_review, reason, completeness = derive_cert_review(
             name_ok, number_ok, class_ok, stored_exp, class_source,
             reason, _res["review_reason"])
-        card_no = osha_number or None
+        # `card_no` is resolved ONCE, above, beside `number_ok` — see the
+        # comment there for why it is no longer computed twice.
 
         # Prefer an exact card-number match (any state — a verified match is
         # then correctly left untouched). Fall back to an UNVERIFIED SST row
@@ -4546,7 +4935,7 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         )
 
         if existing_sst is None:
-            worker_certs.append({
+            _record({
                 "type": sst_type,
                 "card_number": card_no,
                 "issue_date": issue_dt,
@@ -4567,6 +4956,26 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         elif existing_sst.get("verified"):
             pass  # admin-confirmed — a re-scan may never modify it.
         else:
+            # ── FILL A BLANK ALWAYS; REPLACE A VALUE ONLY ON THE OLD RULES ──
+            #
+            # THIS IS HOW "NEVER WORSE" RECONCILES WITH "MAY BE MADE BETTER",
+            # and the distinction is per FIELD, not per row. Overwriting a
+            # stored answer needs the existing better-evidence rules below (the
+            # row unverified, the row flagged or expiry-less, the scan not
+            # suppressed) — those are unchanged, because a scan that may be
+            # wrong must never displace a value that may be right. Filling a
+            # field that holds NOTHING needs none of them: there is no answer to
+            # lose, so no rule is needed to protect one.
+            #
+            # DELIBERATELY ABOVE THE `suppressed or stored_exp is None` skip.
+            # That skip means "this scan's EXPIRY is untrustworthy", and it is
+            # right about the expiry; it says nothing about the card number.
+            # Angel Lopez's `card_number: null` is repaired by this line even
+            # on a tap whose expiry could not be read at all — which is most of
+            # his thirteen.
+            if card_no and not normalize_card_number(
+                    existing_sst.get("card_number")):
+                existing_sst["card_number"] = card_no
             old_exp = existing_sst.get("expiration_date")
             old_flagged = bool(existing_sst.get("needs_review")) or old_exp is None
             if suppressed or stored_exp is None:
@@ -4610,6 +5019,30 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
             c["needs_review"] = True
             if not c.get("review_reason"):
                 c["review_reason"] = "DUPLICATE_SST"
+
+    # ── A ROW THAT CANNOT SAY WHY IT HAS NO EXPIRY IS NOT WRITTEN ───────────
+    #
+    # ONE CHECK, AT THE ONE RETURN THAT MINTS ANYTHING — after Amendment C
+    # above, so a row this function's own last block re-flagged is judged as it
+    # will be stored and not as it was three lines earlier.
+    #
+    # UNREACHABLE BY CONSTRUCTION, and that is the intent rather than a
+    # weakness: every field on a minted row comes from `evaluate_cert_expiry`
+    # and `derive_cert_review`, which now guarantee that a missing expiry
+    # arrives with a reason and a raised flag. This is a tripwire on a shape
+    # that is already impossible, so that a fourth writer, a new branch or a
+    # hand-assembled row cannot make it possible again quietly.
+    #
+    # ONLY THE ROWS THIS CALL MINTED. Not `worker_certs`: worker
+    # 6a9576da611a543244a9ccac's STORED row fails this check, so asking it of
+    # everything would raise on his next tap and turn an unsound record into a
+    # man refused at a turnstile. Repairing a stored row is the repair script's
+    # job (backend/scripts/repair_cert_rows_from_stored_read.py), under the
+    # production write guard, with an audit row — not the gate's.
+    for row in touched:
+        fault = cert_row_fault(row)
+        if fault:
+            raise CertRowUnsound(fault)
 
     return worker_certs, not_sst
 
@@ -17162,11 +17595,60 @@ def _osha_ocr_payload(data: dict) -> "OshaCardOcrResult":
 # api() calls fetch with no AbortSignal), so the browser outlives the server on
 # every path — see the PR body's budget table.
 #
-# ONLY A TIMEOUT OR A CONNECT FAILURE IS RETRIED. A 4xx from the provider is an
-# answer — a bad model id, a bad key, a rejected image — and sending it again
-# buys a second identical refusal and a second bill.
+# A TIMEOUT, A CONNECT FAILURE, A 429 OR A 5xx IS RETRIED. A 4xx OTHER THAN
+# 429 is an answer — a bad model id, a bad key, a rejected image — and sending
+# it again buys a second identical refusal and a second bill. A 429 is NOT
+# such an answer: it is the provider declining to look, it is not billed, and
+# it was measured twice in a row on a real card on 2026-09-18. See
+# vision_status_is_retryable, which is the plan-index path's rule and not a
+# second copy of it.
 OSHA_VISION_ATTEMPT_TIMEOUT = 22.0
 OSHA_VISION_ATTEMPTS = 2
+
+# ── AND A PAUSE BEFORE THE SECOND ASK, WHICH A TIMEOUT DID NOT NEED ───────
+#
+# A retried TIMEOUT has already waited 22 seconds by definition, so it needs no
+# backoff. A retried 429 has waited nothing at all: the provider answered
+# instantly to say it was too busy, and firing the same request straight back
+# puts it inside the same overloaded window. 1.5 s is the difference between a
+# retry and a second failure.
+#
+# ONE VALUE, NOT A SCHEDULE, because there is only one retry
+# (OSHA_VISION_ATTEMPTS = 2). It is added to the 44 s worst case the endpoint
+# already declared — 45.5 s, still inside the 60 s this handler spent before
+# any of this existed, so nothing downstream sees a longer request than it did.
+OSHA_VISION_BUSY_BACKOFF = 1.5
+
+
+async def _vision_backoff(seconds: float) -> None:
+    """Wait before asking a busy provider again.
+
+    A NAMED FUNCTION RATHER THAN A BARE `asyncio.sleep`, so a test can assert
+    the wait happened and how long it was WITHOUT actually waiting. A retry
+    test that really sleeps is a slow test nobody notices going quiet; this way
+    the delay is a recorded value. See
+    test_a_busy_card_reader_is_asked_again.ABusyProviderIsAskedAgain.
+    """
+    await asyncio.sleep(seconds)
+
+
+def vision_status_is_retryable(status: int) -> bool:
+    """Is this provider status worth asking again? One rule, one place.
+
+    DERIVED FROM `_worth_asking_again`, NOT A COPY OF IT. That function is the
+    plan-index path's answer to the same question -- retry a timeout, a dropped
+    connection, a 429 or a 5xx; never a 4xx -- and it is pinned by
+    test_a_timeout_is_not_a_fact_about_the_drawing.py. Spelling the rule a
+    second time here would be two rules that agree until somebody changes one,
+    and the card read is the caller that had NO rule at all: its loop retried
+    silence and treated every answer, including "too many requests", as final.
+
+    `_worth_asking_again` is defined FURTHER DOWN this file than this wrapper.
+    That is fine at runtime -- Python resolves the name when the call runs --
+    and it is deliberate: the rule stays beside the caller it was written for
+    rather than being moved (or copied) up here to satisfy reading order.
+    """
+    return _worth_asking_again(ProviderStatus(int(status)))
 
 # ── MACHINE CODES THE GATE PAGE CAN BRANCH ON ─────────────────────────────
 #
@@ -17183,6 +17665,27 @@ CARD_READ_TIMEOUT = "CARD_READ_TIMEOUT"          # the provider never answered
 CARD_READ_UNAVAILABLE = "CARD_READ_UNAVAILABLE"  # the provider answered non-200
 CARD_READ_FAILED = "CARD_READ_FAILED"            # anything else on the read path
 CARD_READ_NOT_CONFIGURED = "CARD_READ_NOT_CONFIGURED"
+
+# ── "BUSY" IS NOT "DOWN", AND THEY HAD THE SAME CODE ──────────────────────
+#
+# MEASURED 2026-09-18: re-reading a stored card against
+# Qwen/Qwen2.5-VL-32B-Instruct on DeepInfra returned `429 engine_overloaded`
+# TWICE. One of Amaury Ayala's gate_failures rows is `Vision API error: 429`.
+#
+# A 429 reached the worker as CARD_READ_UNAVAILABLE, whose copy leads with
+# "enter your card number below" — and the gate page's own map marks that code
+# `retake: false`, so it does not even give him the camera back. A queue at the
+# provider therefore became a SELF-REPORTED card on a §3301 compliance record,
+# which is a worse record and one nobody chose.
+#
+# Its own code, because the answer is different: wait a moment and take the
+# photo again. Manual entry stays available — it always does — but it is not
+# what he is told to do first.
+CARD_READ_BUSY = "CARD_READ_BUSY"                # the provider declined to look
+
+# A REGISTRATION THAT CARRIES NO CARD AT ALL. Not a read failure — nothing was
+# read because nothing was sent. See registration_card_evidence.
+CARD_EVIDENCE_REQUIRED = "CARD_EVIDENCE_REQUIRED"
 
 
 def _card_error_detail(code: str, message: str) -> dict:
@@ -17418,13 +17921,28 @@ async def upload_osha_card(file_data: dict, request: Request):
 
     text = ""
     try:
-        # ── ONE RETRY, ON A TIMEOUT ONLY ────────────────────────────────────
+        # ── ONE RETRY, ON SILENCE **AND ON A REFUSAL TO LOOK** ──────────────
         #
         # See OSHA_VISION_ATTEMPT_TIMEOUT above for where 22 s and 2 attempts
-        # come from. The important property is that the loop retries a call
-        # that DID NOT ANSWER and nothing else: a non-200 breaks out to the
-        # 502 below on the first attempt, because a provider that answered
-        # "no" answers "no" again and bills for it twice.
+        # come from.
+        #
+        # THIS LOOP USED TO RETRY A CALL THAT DID NOT ANSWER AND NOTHING ELSE,
+        # and the comment here argued for it: "a provider that answered 'no'
+        # answers 'no' again and bills for it twice." That is exactly right
+        # about a 400, a 401 and a 404 — a bad image, a bad key, a bad model id
+        # — and exactly wrong about a 429. A 429 is not an answer ABOUT THE
+        # REQUEST; it is the provider declining to look at it. It is not
+        # billed, the same photograph very probably succeeds seconds later, and
+        # DeepInfra returned two of them in a row on a real stored card on
+        # 2026-09-18 — after which the worker was shown "the card reader is
+        # unavailable, enter your card number below" and not even given the
+        # camera back.
+        #
+        # So the loop now asks `vision_status_is_retryable`, which is
+        # `_worth_asking_again` — the rule the plan-index path already uses —
+        # and a retryable status waits OSHA_VISION_BUSY_BACKOFF first, because
+        # a 429 answered instantly and a retry fired instantly arrives inside
+        # the same overloaded window.
         resp = None
         last_timeout = None
         for _attempt in range(1, OSHA_VISION_ATTEMPTS + 1):
@@ -17451,6 +17969,24 @@ async def upload_osha_card(file_data: dict, request: Request):
                             }],
                         },
                     )
+                # ── A REFUSAL TO LOOK IS ASKED AGAIN; AN ANSWER IS NOT ──────
+                #
+                # The status decides, through the ONE rule this codebase
+                # already has for it. `resp` is deliberately left holding the
+                # busy response: if this was the last attempt, the branch below
+                # reads its status and tells the worker to try the photo again
+                # rather than dropping him into manual entry.
+                if (_attempt < OSHA_VISION_ATTEMPTS
+                        and vision_status_is_retryable(resp.status_code)):
+                    logger.warning(
+                        "[osha-ocr] attempt %d/%d refused with %s: %s "
+                        "(model=%s) — asking again in %.1fs",
+                        _attempt, OSHA_VISION_ATTEMPTS, resp.status_code,
+                        (resp.text or "")[:200], QWEN_MODEL,
+                        OSHA_VISION_BUSY_BACKOFF,
+                    )
+                    await _vision_backoff(OSHA_VISION_BUSY_BACKOFF)
+                    continue
                 break
             except (httpx.TimeoutException, httpx.ConnectError,
                     httpx.ReadError, httpx.RemoteProtocolError) as timeout_exc:
@@ -17504,6 +18040,32 @@ async def upload_osha_card(file_data: dict, request: Request):
                 f"ip={request.client.host if request.client else 'unknown'} "
                 f"ua={request.headers.get('user-agent', '')[:200]}]"
             )
+            # ── STILL BUSY AFTER THE RETRY IS ITS OWN ANSWER ───────────────
+            #
+            # The loop above already asked again and waited. Reaching here with
+            # a retryable status means the provider is genuinely overloaded
+            # right now — which is a DIFFERENT fact from a reader that is down,
+            # misconfigured or switched off, and it has a different answer:
+            # wait a moment and take the photo again.
+            #
+            # CARD_READ_UNAVAILABLE's copy leads with "enter your card number
+            # below" and the gate page marks it `retake: false`, so a 429 used
+            # to send a worker to manual entry AND take away his camera. Manual
+            # entry is still there under this message; it is just no longer the
+            # thing he is told to do first.
+            #
+            # 503, NOT 502: a client that branches on the HTTP status alone
+            # still learns "come back", not "this failed". Same reasoning as the
+            # 504 the all-timeouts branch above uses.
+            if vision_status_is_retryable(resp.status_code):
+                raise HTTPException(
+                    status_code=503,
+                    detail=_card_error_detail(
+                        CARD_READ_BUSY,
+                        "The card reader is busy. Wait a moment and tap the "
+                        "photo area to try again.",
+                    ),
+                )
             raise HTTPException(
                 status_code=502,
                 detail=_card_error_detail(
@@ -18779,6 +19341,39 @@ async def register_and_checkin(data: dict, request: Request):
     
     # `worker` was already resolved above (the pairing lookup needed it).
     if not worker:
+        # ── A REGISTRATION WITH NO CARD EVIDENCE AT ALL IS REFUSED ─────────
+        #
+        # SERVER-SIDE THERE WAS NO CARD VALIDATION HERE. This handler reads
+        # `osha_card_image`, `osha_data` and `osha_number` with plain
+        # `data.get(...)` and raised nothing when all three were absent, so the
+        # ONLY thing that has ever asked is the gate page's own `goStep(2)`
+        # guard. A cached page, a retried submit or any other client could
+        # create a worker with a name, a phone, a signature and no card of any
+        # kind — and the record could not afterwards say whether the card was
+        # unreadable or never presented.
+        #
+        # SCOPED TO A NEW WORKER, AND THAT SCOPE IS THE WHOLE CARE OF IT. The
+        # returning quick path legitimately posts no card evidence — that is
+        # what `effective_osha_*` and merge_stored_card_read are for — so this
+        # must never reach a man who proved his card on a previous visit. It is
+        # inside `if not worker:` for that reason, and above every write in the
+        # branch so a refusal leaves nothing behind.
+        #
+        # IT ACCEPTS EXACTLY WHAT THE SCREEN OFFERS: a photo, a typed number,
+        # or a typed expiry. `hasManualCardDetails()` accepts either of the last
+        # two and the page says so out loud — "Enter what you can read from your
+        # card. A photo is not required." — so a narrower server rule would
+        # refuse a worker who did what he was told, which is the dead end this
+        # path exists to remove. See registration_card_evidence.
+        if registration_card_evidence(osha_card_image, osha_data, osha_number) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=_card_error_detail(
+                    CARD_EVIDENCE_REQUIRED,
+                    "Take a photo of your OSHA/SST card, or type the card "
+                    "number or expiry date from it.",
+                ),
+            )
         # Create new worker with full data.
         # NOTE: no `trade` / `company` here. Those are per-project and live in
         # worker_project_trades; a worker-level copy is what bled across jobs.
@@ -19012,8 +19607,29 @@ async def register_and_checkin(data: dict, request: Request):
     # independent of the company/roster logic (Task D), so it can't weaken D.
     effective_osha_number = osha_number or worker.get("osha_number")
     effective_osha_card_image = osha_card_image or worker.get("osha_card_image")
+    # ── AND `osha_data` FALLS BACK TOO, WHICH IS THE NAMED DEFECT ───────────
+    #
+    # The two lines above have fallen back to the worker document since Task E.
+    # This one did not — and `osha_data` is the input that carries the NAME, the
+    # CLASS, the ISSUE DATE and THE EXPIRY. So on the returning quick path the
+    # builder ran with `od = {}` while the stored image still made
+    # `resolved_kind` come out "SST": a row was judged against no card fields
+    # at all, on the strength of a card photograph the same document holds.
+    #
+    # Worker 6a9576da611a543244a9ccac took that path THIRTEEN TIMES, every one
+    # with `osha_data_sent = False`, with a complete stored read of his card one
+    # field away. Thirteen chances to notice his empty row, all of them spent
+    # asking the builder a question with the evidence removed.
+    #
+    # NOT `osha_data or worker.get("osha_data")`. See merge_stored_card_read:
+    # the merge is PER FIELD, so a rebuild can only add to what is known; and it
+    # refuses to merge two reads that name DIFFERENT card numbers, because the
+    # stored read is the latest scan and need not be a scan of the card in his
+    # hand.
+    effective_osha_data = merge_stored_card_read(osha_data, worker.get("osha_data"))
     worker_certs, not_sst = build_worker_certifications(
-        existing_certs, osha_data, effective_osha_number, effective_osha_card_image, now
+        existing_certs, effective_osha_data, effective_osha_number,
+        effective_osha_card_image, now
     )
     if worker_certs != existing_certs:
         await db.workers.update_one(
@@ -33466,6 +34082,13 @@ OSHA_REVIEW_LABELS = {
     "CLASS_SELF_REPORTED": "Class stated by worker",
     "EXPIRY_IMPLAUSIBLE": "Expiry implausible",
     "EXPIRY_UNPARSEABLE": "Expiry unreadable",
+    # DISTINCT FROM "Expiry unreadable", and the reviewer's job differs. That
+    # one means a value was read off the card and refused, and
+    # `expiration_raw_rejected` holds it for him to correct. This means NO
+    # expiry reached the record at all, so there is nothing to correct and the
+    # answer is a fresh look at the card. It is the word worker
+    # 6a9576da611a543244a9ccac's row needed and did not have: his said null.
+    "EXPIRY_MISSING": "No expiry on file",
     "EXPIRY_CONFLICT": "Expiry conflict",
     "DUPLICATE_SST": "Duplicate SST",
     # AN OBSERVATION, NEVER A JUDGEMENT. "Incorrect card number" and "Invalid

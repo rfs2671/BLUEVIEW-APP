@@ -148,15 +148,30 @@ ok(criticalBlock.indexOf('card_class') < 0,
 console.log('\n-- 2/3. a picked class is the worker\'s statement --');
 
 const buildCardPayloadSrc = extractFn('function buildCardPayload()');
+// TWO MORE SHIPPED FUNCTIONS, LIFTED NOT RETYPED. buildCardPayload acquired a
+// free name — `cardDetailsAreSelfReported`, which decides the second marker on
+// the payload (`manual_entry`) the way the class picker's dataset.src decides
+// the first. This harness runs the SHIPPED source in a synthetic scope, so a
+// name it references and this scope does not declare is a ReferenceError: that
+// is the extraction contract working, and it fired the day the name arrived.
+//
+// EXTRACTED RATHER THAN STUBBED. A stub here would let this file keep passing
+// over a changed rule about who said what, which is precisely the question
+// every assertion below is about. `hasManualCardDetails` comes along because
+// the extracted function calls it.
+const selfReportedSrc = extractFn('function cardDetailsAreSelfReported()');
+const hasManualSrc = extractFn('function hasManualCardDetails()');
 
-function runBuildCardPayload({ fields, dataset, oshaData }) {
-  const document = makeDom(fields, { regCardClass: dataset || {} });
+function runBuildCardPayload({ fields, dataset, oshaData, oshaImage }) {
+  const document = makeDom(fields, Object.assign(
+    { regCardClass: dataset || {} }, (arguments[0] || {}).datasets || {}));
   // eslint-disable-next-line no-new-func
   const build = new Function(
-    'document', 'oshaData',
-    `${buildCardPayloadSrc}\nreturn buildCardPayload;`,
+    'document', 'oshaData', 'oshaImage',
+    `${hasManualSrc}\n${selfReportedSrc}\n${buildCardPayloadSrc}
+     return buildCardPayload;`,
   );
-  return build(document, oshaData || null)();
+  return build(document, oshaData || null, oshaImage || null)();
 }
 
 // THE ONE THAT MATTERS. OCR failed entirely; the worker typed his card number
@@ -257,7 +272,8 @@ ok(/needs_card_scan === true/.test(src),
 // trade, an orientation and a signature on file, and re-collecting them is how
 // a re-scan turns into a second worker document for one man.
 const goStepSrc = extractFn('function goStep(step)');
-const hasManualSrc = extractFn('function hasManualCardDetails()');
+// `hasManualSrc` is extracted once, with the payload harness above — goStep
+// needs the same shipped function and there must be one copy of it in scope.
 
 function runGoStep({ fields, rescan }) {
   const document = makeDom(fields);

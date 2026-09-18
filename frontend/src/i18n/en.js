@@ -87,6 +87,14 @@ export default {
     reason_CLASS_SELF_REPORTED: 'Card class was stated by the worker — check it against the card',
     reason_EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
     reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
+    // DISTINCT FROM EXPIRY_UNPARSEABLE, and the CP's job differs. That one
+    // means a value was read off the card and refused, and the row keeps it in
+    // `expiration_raw_rejected` for him to correct from. This means NO expiry
+    // reached the record at all -- there is nothing to correct and the answer
+    // is a fresh look at the card. It is the word worker
+    // 6a9576da611a543244a9ccac's row needed and did not have: his said null,
+    // with `needs_review` false, so nobody was ever asked.
+    reason_EXPIRY_MISSING: 'No expiry date on file for this card — scan or enter it',
     reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
     reason_CARD_NUMBER_FORMAT: 'Card number does not match the expected format — check the card and re-enter',
