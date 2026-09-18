@@ -80,8 +80,20 @@ const EMPTY_WORKER = () => ({
  * a component returning null passes it. src/utils/sstCardFlagPaints.test.cjs
  * renders THIS function — not a copy of it — and asserts the words come out,
  * for each of the four rows. Nothing else in this repo executes a screen.
+ *
+ * `showDetail` SUPPRESSES THE REASON SENTENCE AND NEVER THE TITLE. It has one
+ * caller: a row that already carries a review decision. The reason fields come
+ * from the flagged endpoint, which EXCLUDES decided rows (server.py,
+ * get_flagged_project_checkins), so after a remount, a pull-to-refresh or a
+ * date change they arrive null and sstFlagCopy falls through to its catch-all.
+ * The same row would then print a specific reason before a reload and a vaguer
+ * one after one. Printing no reason is honest about what is no longer being
+ * read; printing the catch-all claims a reading that did not happen. Defaults
+ * to true, so every other caller keeps the behaviour it had.
  */
-export function SstFlagLines({ sstStatus, reviewReason, unknownReason, styles = {} }) {
+export function SstFlagLines({
+  sstStatus, reviewReason, unknownReason, showDetail = true, styles = {},
+}) {
   const copy = sstFlagCopy({ sstStatus, reviewReason, unknownReason });
   if (!copy) return null;
   return (
@@ -90,7 +102,8 @@ export function SstFlagLines({ sstStatus, reviewReason, unknownReason, styles = 
         <ShieldAlert size={14} strokeWidth={2} color={semantic.attention} />
         <Text style={styles.flagReasonText}>{copy.title}</Text>
       </View>
-      {copy.detail ? <Text style={styles.flagHint}>{copy.detail}</Text> : null}
+      {showDetail && copy.detail
+        ? <Text style={styles.flagHint}>{copy.detail}</Text> : null}
     </>
   );
 }
@@ -155,6 +168,18 @@ export default function PreShiftSignIn() {
   const [roster, setRoster] = useState([]);
   // worker_id whose trade picker is currently open (one at a time).
   const [tradePickerFor, setTradePickerFor] = useState(null);
+  // worker_id whose ALREADY-RECORDED review decision is being changed. A
+  // decided row shows the decision and no buttons; this is how the buttons
+  // come back, and it is deliberately opt-in and per-worker.
+  //
+  // WHY THIS EXISTS AT ALL, given that the re-offer was just removed. The
+  // operator removed the RE-OFFER, not the ability to correct a mistake: a
+  // superintendent who taps Deny on the wrong row must be able to undo it
+  // himself rather than phone the office. The keyed-reveal shape is the one
+  // this screen already uses for `tradePickerFor` — same idiom, same Cancel,
+  // nothing new to learn. UI-only: it is never sent anywhere, and it is not
+  // persisted, so a remount closes it and the row reads as decided again.
+  const [changingDecisionFor, setChangingDecisionFor] = useState(null);
   // Per worker: how many OTHER check-ins this project holds for him. The
   // confirm step names it, because "earlier check-ins keep what they recorded"
   // is abstract until a CP sees it means four of them.
@@ -536,9 +561,16 @@ export default function PreShiftSignIn() {
    * Approve / deny an expired or unknown SST card.
    *
    * DENY MARKS, IT NEVER REMOVES: 'sent_home' is recorded on the check-in row
-   * and the worker stays on this roster. Both buttons stay available after a
-   * decision because re-review is allowed — the endpoint overwrites the
-   * decision on the row and audit_logs keeps every one of them.
+   * and the worker stays on this roster.
+   *
+   * THE ROW READS AS RESOLVED THE MOMENT THIS RETURNS. It used to leave both
+   * buttons up and add a line underneath, on the grounds that re-review is
+   * allowed and the latest decision wins. On device that read as a refusal —
+   * the banner still said "SST card not confirmed" and still asked Approve or
+   * Deny, over a decision the superintendent had just made. Operator ruling:
+   * Approve is a review DECISION and the row must stop asking. Re-review is
+   * still possible, behind `changingDecisionFor`; the endpoint still
+   * overwrites and audit_logs still keeps every decision.
    */
   const handleReview = async (workerKey, decision) => {
     const f = flags[workerKey];
@@ -547,6 +579,10 @@ export default function PreShiftSignIn() {
     try {
       const res = await checkinsAPI.review(f.checkin_id, decision);
       setFlag(workerKey, { review_decision: res.review_decision });
+      // The correction panel closes only on a decision the SERVER took. A
+      // failed write leaves it open with the buttons still up, because the
+      // decision the CP just tried to make is not recorded anywhere.
+      setChangingDecisionFor(null);
       toast.success(
         decision === 'approved' ? 'Approved' : 'Denied',
         decision === 'approved'
@@ -923,6 +959,22 @@ export default function PreShiftSignIn() {
     });
     const sstReviewable = f.sst_status === 'expired' || f.sst_status === 'unknown';
     const canAct = !!f.checkin_id;
+    // THE ROW'S STATE IS READ FROM THE DECISION, NOT FROM THE STATUS.
+    //
+    // This is the whole defect. `sst_status` is FROZEN onto the check-in at tap
+    // time and never overwritten — by design, the filed LL196 register reads it
+    // — so `sstFlagged` above is permanently true and every branch keyed on it
+    // kept re-rendering, buttons included, after the CP had already decided.
+    // `review_decision` is the field that actually answers "has anyone looked
+    // at this": it is on the row, comes back on /checkins-today, and is patched
+    // in by handleReview. Server-side the same pair is already the invariant —
+    // flagged AND not review_decision — in get_flagged_project_checkins.
+    //
+    // Scoped to `sstReviewable` because those are the only two statuses that
+    // are offered a decision at all; a `missing` row has no decision to read
+    // and must not be made to look as though it were resolved.
+    const reviewed = sstReviewable ? f.review_decision : null;
+    const changingDecision = changingDecisionFor === key;
 
     return (
       <View style={styles.flagBlock}>
@@ -932,47 +984,90 @@ export default function PreShiftSignIn() {
               sstStatus={f.sst_status}
               reviewReason={f.review_reason}
               unknownReason={f.unknown_reason}
+              showDetail={!reviewed}
               styles={styles}
             />
-            {sstReviewable && f.review_decision && (
-              <Text style={styles.flagStatusText}>
-                {f.review_decision === 'approved'
-                  ? 'Approved — recorded on this check-in.'
-                  : 'Denied — recorded as sent home. Still listed below.'}
-              </Text>
-            )}
-            {!sstReviewable ? null : canAct ? (
-              /* Both buttons stay available after a decision — re-review is
-                 allowed and the latest decision wins on the check-in row. */
-              <View style={styles.flagActions}>
-                <Pressable
-                  onPress={() => handleReview(key, 'approved')}
-                  disabled={busy}
-                  style={[styles.flagBtn, styles.flagBtnApprove, busy && styles.flagBtnBusy]}
-                >
-                  <Check size={14} strokeWidth={2} color={semantic.verified} />
-                  <Text style={[styles.flagBtnText, { color: semantic.verified }]}>
-                    Approve
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => handleReview(key, 'sent_home')}
-                  disabled={busy}
-                  style={[styles.flagBtn, styles.flagBtnDeny, busy && styles.flagBtnBusy]}
-                >
-                  <X size={14} strokeWidth={2} color={semantic.attention} />
-                  <Text style={[styles.flagBtnText, { color: semantic.attention }]}>
-                    Deny
-                  </Text>
-                </Pressable>
-              </View>
-            ) : (
+            {!sstReviewable ? null : !canAct ? (
               /* No check-in row behind this worker (gate sign-in), so there is
                  nothing to approve or deny. Say so rather than show a button
                  that cannot work. */
               <Text style={styles.flagHint}>
                 No check-in record to review for this worker.
               </Text>
+            ) : reviewed && !changingDecision ? (
+              /*
+                RESOLVED. The decision REPLACES the buttons; it does not sit
+                under them. The title above still names the card's state,
+                because admitting the man is not the same act as confirming his
+                card and the copy must never let the two blur:
+                  approved + unknown -> "credential still unverified"
+                  approved + expired -> "card still expired"
+                Nothing here says the card was renewed, re-read or cleared,
+                because the review endpoint writes a decision on the CHECK-IN
+                and touches no certificate.
+
+                NO ATTRIBUTION LINE, unlike site/checkins.jsx and review.jsx,
+                and that is not an oversight. /review returns reviewed_by_name
+                and reviewed_at, but /checkins-today — the only read this screen
+                makes for this field — does not carry them. Printing them would
+                show a reviewer's name right after the tap and drop it on the
+                next remount: one row, two renders, two different stories.
+              */
+              <>
+                <Text style={styles.flagStatusText}>
+                  {reviewed === 'approved'
+                    ? (f.sst_status === 'unknown'
+                      ? 'Admitted — credential still unverified'
+                      : 'Admitted — card still expired')
+                    : 'Sent home — recorded. The worker stays on this sheet.'}
+                </Text>
+                <Pressable
+                  onPress={() => setChangingDecisionFor(key)}
+                  disabled={busy}
+                  style={styles.tradeCancel}
+                >
+                  <Text style={styles.flagHint}>Change decision</Text>
+                </Pressable>
+              </>
+            ) : (
+              /*
+                UNDECIDED, or a recorded decision the CP has chosen to change.
+                One set of buttons serves both: a correction IS a review, the
+                endpoint overwrites and audit_logs keeps every decision, so
+                there is nothing a second control would do differently.
+              */
+              <>
+                <View style={styles.flagActions}>
+                  <Pressable
+                    onPress={() => handleReview(key, 'approved')}
+                    disabled={busy}
+                    style={[styles.flagBtn, styles.flagBtnApprove, busy && styles.flagBtnBusy]}
+                  >
+                    <Check size={14} strokeWidth={2} color={semantic.verified} />
+                    <Text style={[styles.flagBtnText, { color: semantic.verified }]}>
+                      Approve
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => handleReview(key, 'sent_home')}
+                    disabled={busy}
+                    style={[styles.flagBtn, styles.flagBtnDeny, busy && styles.flagBtnBusy]}
+                  >
+                    <X size={14} strokeWidth={2} color={semantic.attention} />
+                    <Text style={[styles.flagBtnText, { color: semantic.attention }]}>
+                      Deny
+                    </Text>
+                  </Pressable>
+                </View>
+                {changingDecision ? (
+                  <Pressable
+                    onPress={() => setChangingDecisionFor(null)}
+                    style={styles.tradeCancel}
+                  >
+                    <Text style={styles.flagHint}>Cancel</Text>
+                  </Pressable>
+                ) : null}
+              </>
             )}
           </>
         )}
@@ -1276,7 +1371,38 @@ export default function PreShiftSignIn() {
                   )}
                 </View>
 
-                {/* Y/N Questions */}
+                {/*
+                  Y/N QUESTIONS — AND WHY THEY ARE PHRASED AS AN INSTRUCTION.
+
+                  Both labels used to be subjectless fragments: "Injury /
+                  Incident last time?" and "Inspected PPE today?". A fragment
+                  has no subject, so the reader supplies one — and the operator
+                  supplied the wrong one. He read the first as the WORKER
+                  self-reporting, which made it look like a duplicate of the
+                  affirmation already taken at the gate, and it came close to
+                  being deleted on that reading.
+
+                  It is not a duplicate. The attestation he signs at the bottom
+                  of this sheet claims an ACT, performed by HIM, on each man:
+
+                      "Each worker named below ... was asked, before starting
+                       work, whether there was an injury or incident on their
+                       last shift and whether they inspected their PPE for
+                       today."
+
+                  So the CP is the one asking and the worker is the one
+                  answering, and the label now says so. "last shift" rather
+                  than "last time" is the attestation's own wording, so what he
+                  is asked for on screen is the thing he signs for on paper —
+                  the words are checked against attestations.py by
+                  src/utils/preshiftQuestionsAskWhatIsAttested.test.cjs so the
+                  two cannot drift apart again.
+
+                  COPY ONLY. `had_injury` and `inspected_ppe` keep their names
+                  and their values, the filed sheet's Injury and PPE columns are
+                  untouched, and the attestation is NOT re-versioned: nothing
+                  about what is claimed changed, only about what is read.
+                */}
                 <View style={styles.ynBlock}>
                   {/* Required. Outlined red and labelled only once the row
                       has a NAME — an untouched spare row is not a worker and
@@ -1285,7 +1411,7 @@ export default function PreShiftSignIn() {
                     styles.ynItem,
                     !!worker.name.trim() && worker.had_injury == null && styles.ynItemRequired,
                   ]}>
-                    <Text style={styles.ynLabel}>Injury / Incident last time?</Text>
+                    <Text style={styles.ynLabel}>Ask the worker: any injury or incident on your last shift?</Text>
                     <YesNoToggle
                       value={worker.had_injury}
                       onChange={(v) => updateWorker(index, 'had_injury', v)}
@@ -1298,7 +1424,7 @@ export default function PreShiftSignIn() {
                     styles.ynItem,
                     !!worker.name.trim() && worker.inspected_ppe == null && styles.ynItemRequired,
                   ]}>
-                    <Text style={styles.ynLabel}>Inspected PPE today?</Text>
+                    <Text style={styles.ynLabel}>Ask the worker: did you inspect your PPE for today?</Text>
                     <YesNoToggle
                       value={worker.inspected_ppe}
                       onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
