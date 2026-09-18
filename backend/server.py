@@ -21554,9 +21554,32 @@ async def get_all_checkins(
                 # project got to him first. An admin list showing a blank trade
                 # is visibly incomplete; one showing another site's trade is
                 # invisibly wrong.
-                s["name"] = s["worker_name"]
-                s["company"] = s["worker_company"]
-                s["trade"] = s["worker_trade"]
+                # `.get`, NOT A SUBSCRIPT, AND THE DIFFERENCE IS THE WHOLE PAGE.
+                #
+                # `worker_name` and `worker_company` are assigned two lines up,
+                # so reading them back is safe. `worker_trade` is NOT: nothing
+                # in this branch writes it, and no schema guarantees it. A
+                # single check-in document that reached this branch without the
+                # key raised KeyError out of the loop, out of the handler, and
+                # returned 500 for the ENTIRE response -- every other worker's
+                # row with it. One malformed row removing every good one is not
+                # a degraded list, it is an empty screen, and the screen is the
+                # roster a CP uses to see who is on site.
+                #
+                # Measured 2026-09-18: 0 rows of this shape in production, so
+                # this is a latent crash rather than a live one. It is fixed
+                # anyway, because the condition that reaches it -- a check-in
+                # with a worker_id and no worker_name -- is exactly what a
+                # half-written or hand-edited row looks like, and the blast
+                # radius is not the row.
+                #
+                # None is the CORRECT value here, not a fallback: see the
+                # paragraph above for why `workers.trade` is the wrong answer
+                # everywhere. A blank trade is visibly incomplete; another
+                # site's trade is invisibly wrong.
+                s["name"] = s.get("worker_name")
+                s["company"] = s.get("worker_company")
+                s["trade"] = s.get("worker_trade")
         results.append(s)
     return {"items": results, "total": total, "limit": limit, "skip": skip, "has_more": (skip + limit) < total}
 
