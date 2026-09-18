@@ -103,6 +103,47 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+def missing_env():
+    """The environment names this script cannot run without."""
+    return [n for n in ("MONGO_URL", "DB_NAME") if not os.environ.get(n)]
+
+
+# ── THE REFUSALS RUN BEFORE ANYTHING ELSE CAN FAIL FOR ANOTHER REASON ───────
+#
+# MEASURED ON THIS FILE, BEFORE THIS BLOCK EXISTED:
+#
+#     $ python backend/scripts/repair_cert_rows_from_stored_read.py --execute
+#     KeyError: 'MONGO_URL'
+#
+# `import server` reads MONGO_URL at MODULE level, so a documented command --
+# and `--execute` is documented, in runbooks and in shell history -- died with a
+# traceback about an environment variable instead of the sentence that says the
+# flag no longer authorises a production write. An operator reading that fixes
+# his environment and runs it again, which is the opposite of what the refusal
+# is for. `refuse_legacy_flag`'s own docstring makes the case: the third
+# outcome, the command stopping and saying what changed, is the only honest one
+# -- and it was unreachable here.
+#
+# GUARDED ON __main__, so importing this module for its planner (which is how
+# test_repair_cert_rows_dry_run.py drives it, with the env already set) is
+# untouched. `retire_owner_accounts.py` gets the same property by importing
+# server inside main(); this file cannot, because `plan_for_worker` is a
+# module-level pure function the tests import directly.
+#
+# backend/scripts/backfill_iso_expiry.py has the identical defect and is NOT
+# fixed here -- see the PR's "left alone" list. It is one line of the same
+# shape and it belongs to that file's next change.
+if __name__ == "__main__":
+    from prod_guard import refuse_legacy_flag as _refuse_early
+    _refuse_early()
+    _absent = missing_env()
+    if _absent:
+        sys.stderr.write(
+            "\nSet " + " and ".join(_absent) + " in the environment first.\n"
+            "  Nothing was read and nothing was written.\n\n")
+        raise SystemExit(1)
+
 import server  # noqa: E402
 from server import (  # noqa: E402
     card_image_may_be_replaced,
@@ -443,11 +484,17 @@ def main(argv=None):
     args = ap.parse_args(argv)
     execute = check_guard(args)
 
-    mongo_url = os.environ.get("MONGO_URL")
-    db_name = os.environ.get("DB_NAME")
-    if not mongo_url or not db_name:
-        print("Set MONGO_URL and DB_NAME in the environment first.")
+    # THE SAME RULE, ONE FUNCTION, TWO CALL SITES. The copy above runs before
+    # `import server` so a script invocation gets the sentence rather than a
+    # KeyError; this one runs for a caller that imported the module and invoked
+    # main() itself, where the import has already succeeded and the environment
+    # can still be half-set.
+    absent = missing_env()
+    if absent:
+        print("Set " + " and ".join(absent) + " in the environment first.")
         return 1
+    mongo_url = os.environ["MONGO_URL"]
+    db_name = os.environ["DB_NAME"]
     try:
         from pymongo import MongoClient
     except ImportError:
