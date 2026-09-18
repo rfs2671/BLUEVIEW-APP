@@ -478,6 +478,30 @@
       }
     },
     {
+      "id": "ptac-2-contested",
+      "question": "how many PTAC-2 units are there",
+      "subject": "PTAC-2",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-200.00"
+        ],
+        "text": [
+          "readings disagree"
+        ],
+        "forbid_text": [
+          "count 6",
+          "count 9"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), ROOMS PTAC UNITS SCHEDULE, row PTAC-2, column QTY",
+        "evidence": "The sheet prints 9, read off a 330 dpi render by eye on 2026-09-17. The grid OCR reads 6 and the vision model reads 9, on every pass — deterministic, not a flake. Two renders of the same rectangle two device pixels apart also disagree: 9 unpadded, 6 padded, at the pipeline's own 400 dpi. THE CASE DOES NOT ASSERT 9. The reader cannot stand behind either number, and what it must do is say so: the mark, the schedule, and that the readings disagree. Asserting 9 here would be asking the system to guess correctly rather than to be honest about what it cannot read."
+      }
+    },
+    {
       "id": "kicker-invented",
       "question": "what is a kicker",
       "subject": "kicker",
@@ -560,6 +584,21 @@
         "how": "absent",
         "source": "PyMuPDF text of all 111 current pages, plus every stored record quote",
         "evidence": "CHASE is on no current page and in no record quote of the 12,040 on those pages. Asked live on 2026-09-16 the matcher replied 'Yes — chase walls is on T-001.01, Z-001.01, A-100.01, A-105.01' over a quote of 'CONC. WALL', and cited a page whose sheet number could not be read as '?'."
+      }
+    },
+    {
+      "id": "sprinkler-count-absent",
+      "question": "how many sprinkler heads are there",
+      "subject": "sprinkler",
+      "intent": "count",
+      "kind": "absent",
+      "expect": {
+        "no_stated_count": true
+      },
+      "truth": {
+        "how": "absent",
+        "source": "PyMuPDF text of all current pages, plus every stored record's count",
+        "evidence": "SPRINKLER is printed on eight current sheets and no sheet states how many there are. Measured 2026-09-18: 26 fragments on the current pages put a digit within 40 characters of SPRINKLER and every one is a code citation (SEC. 903, Chapter 9, a numbered note); zero element records state a sprinkler count. THE CASE EXISTS BECAUSE OF A NEAR MISS: FA-001's fire-alarm matrix lists eight device types against checkmark columns, and the grid OCR merged the ROW NUMBER into the description, reading '6 SPRK, TAMPER VALVE' on one render and '9 SPRK, TAMPER VALVE' on another. A reader that turned that row into '6 sprinklers' would be inventing a quantity from a list index."
       }
     }
   ],
