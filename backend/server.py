@@ -21414,6 +21414,48 @@ async def create_worker(worker_data: WorkerCreate, current_user = Depends(get_cu
     
     return WorkerResponse(**worker_dict)
 
+
+def _live_sst_fields(worker: dict) -> dict:
+    """The SST verdict this worker's cert row supports RIGHT NOW.
+
+    NOT A SECOND OPINION. The verdict is produced by
+    validate_worker_certifications -- the same function the gate itself runs --
+    so "valid" keeps one definition in this file. Nothing here re-implements
+    "has a number and a future date": that comparison would call a dead-scheme
+    SST_LIMITED card valid, and _sst_cert_state is the only place that knows it
+    is not.
+
+    IT COMPOSES NOTHING NEW. It re-runs the existing rules against the CURRENT
+    cert row instead of against the row that existed at tap time. The check-in's
+    own frozen fields are not read, not repaired and not touched.
+
+    `sst_review_reason` is the LIVE, granular code (CLASS_UNVERIFIED,
+    EXPIRY_UNPARSEABLE, ...) that the admin review queue already renders --
+    same field, same name, same vocabulary as
+    GET /checkins/project/{id}/flagged. It is NOT the check-in's
+    `sst_unknown_reason`, which is the coarse CLASS|EXPIRY|BOTH code frozen at
+    the gate. The two describe different moments and must not be mistaken for
+    one another.
+    """
+    state = validate_worker_certifications(worker).get("sst_state")
+    now = datetime.now(timezone.utc)
+    sst_certs = [c for c in (worker.get("certifications") or [])
+                 if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
+    # WHICH CERT'S REASON, when a worker carries more than one SST row. The
+    # aggregate verdict is decided by ONE of them, so the reason has to come
+    # from a row that actually holds that verdict -- `sst_certs[0]` would
+    # explain a card the verdict is not about. _sst_cert_state is the same
+    # per-cert function the aggregate is built from, so this selects WITHIN the
+    # existing rule rather than beside it.
+    chosen = next((c for c in sst_certs if _sst_cert_state(c, now) == state), None)
+    if chosen is None and sst_certs:
+        chosen = sst_certs[0]
+    return {
+        "sst_status_live": state,
+        "sst_review_reason": (chosen or {}).get("review_reason"),
+    }
+
+
 @api_router.get("/checkins")
 async def get_all_checkins(
     date: str = None,
@@ -21456,12 +21498,47 @@ async def get_all_checkins(
         query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
     total = await db.checkins.count_documents(query)
     checkins = await db.checkins.find(query).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
-    
+
+    # ── THE LIVE CERT STATE, BESIDE THE FROZEN ONE ──────────────────────────
+    #
+    # `sst_status` on a check-in row is the durable per-check-in compliance
+    # artifact, written at tap time and NEVER overwritten. That is correct and
+    # stays correct: the filed LL196 register freezes its UNVERIFIED marker off
+    # this field, and a filed document shows what was filed.
+    #
+    # But a snapshot cannot answer the question the ROSTER asks. Angel Lopez
+    # tapped at 10:57:53Z with an unreadable expiry and his cert row was
+    # repaired at 12:33:56Z; his 06:57 row went on reading "unknown" for the
+    # rest of the day, sending the CP to fix a card that was already fixed.
+    # "What was known then" and "what needs doing now" are two questions, so
+    # they get two fields. Every frozen field is returned exactly as stored and
+    # the live pair is ADDED; which of the two a screen believes is the
+    # screen's decision, not this endpoint's.
+    #
+    # BATCHED, NOT PER ROW. `limit` goes to 500, so a lookup inside the loop is
+    # 500 round trips per page load. The same $in also feeds the worker_name
+    # fallback below, which WAS exactly that per-row find_one.
+    #
+    # ABSENT, NOT GUESSED. A row whose worker cannot be read -- deleted, or an
+    # id that no longer resolves -- gets NO live field rather than a default.
+    # A default here would be a fabricated verdict; the client falls back to
+    # the frozen snapshot and says so on screen.
+    _page_worker_ids = [c.get("worker_id") for c in checkins if c.get("worker_id")]
+    _page_workers = {}
+    if _page_worker_ids:
+        _wids = [to_query_id(w) for w in _page_worker_ids]
+        for _w in await db.workers.find({
+            "_id": {"$in": _wids}, "is_deleted": {"$ne": True},
+        }).to_list(len(_wids)):
+            _page_workers[str(_w["_id"])] = _w
+
     results = []
     for c in checkins:
         s = serialize_id(c)
+        worker = _page_workers.get(s.get("worker_id"))
+        if worker:
+            s.update(_live_sst_fields(worker))
         if not s.get("worker_name") and s.get("worker_id"):
-            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
