@@ -51,7 +51,14 @@ const stripComments = (src) => src
 
 const preshift = stripComments(read('logbooks', 'preshift_signin.jsx'));
 const cpHome = read('logbooks', 'index.jsx');
-const workers = read('workers.jsx');
+// STRIPPED FOR THE SAME REASON, AND IT WAS NOT, AND IT MATTERED. The header
+// above records the trap for `preshift` and the same file left `workers` raw.
+// When workers.jsx's two hardcoded sentences were replaced by sstFlagCopy, the
+// replacement's header comment QUOTED the lines it removed -- and the
+// "all three reasons are named specifically" assertion below went on passing,
+// matching the documentation of the old behaviour. The trap does not belong to
+// one screen.
+const workers = stripComments(read('workers.jsx'));
 const signIn = read('checkin', '[project_id]', '[tag_id].jsx');
 const review = read('logbooks', 'review.jsx');
 
@@ -216,13 +223,42 @@ console.log('\nworkers.jsx — admin sign-in log');
 
 ok(/function checkinWarnings/.test(workers),
   'a per-check-in reason helper exists');
-ok(/'Expired SST card'/.test(workers) && /'Unknown SST card'/.test(workers)
-  && /'No trade assigned'/.test(workers),
-  'all three reasons are named specifically');
-ok(/sst_status === 'expired'/.test(workers)
-  && /sst_status === 'unknown'/.test(workers)
-  && /needs_trade_assignment/.test(workers),
-  'reasons are read from fields the check-in row already carries');
+
+// THE TWO SST SENTENCES USED TO BE WRITTEN OUT HERE, and this file used to
+// require them to be. They are gone: the words come from sstFlagCopy, which is
+// the same module the CP's pre-shift roster and the gate screen read, so one
+// card is described one way wherever it is looked at. What the assertions
+// below pin is no longer "the strings are present" but "this screen does not
+// own them".
+ok(!/'Unknown SST card'/.test(workers) && !/'Expired SST card'/.test(workers),
+  'neither hardcoded SST sentence survives in the code');
+ok(/sstFlagCopy/.test(workers),
+  'the SST wording comes from the shared module, not from this screen');
+ok(/'No trade assigned'/.test(workers),
+  'the trade reason is still named here -- it is not an SST sentence and '
+  + 'sstFlagCopy has nothing to say about it');
+ok(/needs_trade_assignment/.test(workers),
+  'and it is still read from the field the check-in row carries');
+
+// ── WHICH SST STATE THE BADGE IS KEYED ON ──────────────────────────────────
+//
+// `sst_status` is FROZEN at tap time and never refreshed. Angel Lopez's card
+// was repaired at 12:33 and his 06:57 row went on printing "Unknown SST card"
+// all day. The frozen row is not wrong -- the filed LL196 register reads it --
+// but the roster asks "what needs doing now", and only the live cert can
+// answer that.
+ok(/sst_status_live/.test(workers),
+  'the badge is keyed on the LIVE cert state the endpoint now returns');
+ok(/sst_review_reason/.test(workers),
+  "...and on the live cert's granular review_reason");
+// The behavioural half of this -- that the frozen coarse reason is NOT handed
+// over beside a live one, which would re-assert the half already fixed -- is
+// executed against Angel's and Juan's real rows in
+// src/utils/rosterBadgeReadsLiveCert.test.cjs. A source scan cannot see which
+// arguments reach a call.
+ok(/as recorded at check-in/.test(workers),
+  'and when there is no live reading the frozen one is shown DATED, never '
+  + 'worn as current');
 ok(/review_decision === 'approved'/.test(workers),
   "a recorded decision is shown, including the 'sent home' mark");
 ok(/fetchState === 'ok' && warningSummary\.length > 0/.test(workers),

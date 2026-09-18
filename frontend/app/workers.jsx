@@ -36,6 +36,7 @@ import {
   checkinCompany, checkinProject, checkinWorker,
   distinctCompanies, distinctProjects,
 } from '../src/utils/checkinFields';
+import { sstFlagCopy } from '../src/utils/sstFlagCopy';
 
 /**
  * OFFLINE SIGN-IN LOG.
@@ -73,24 +74,116 @@ async function readCachedCheckIns(date) {
 }
 
 /**
- * FIX 1 — the SPECIFIC reasons a worker was admitted with warnings.
+ * WHICH SST STATE THIS ROW IS JUDGED ON — the live cert, not the snapshot.
  *
- * Reads fields that already exist on the check-in row GET /api/checkins
- * returns (sst_status and needs_trade_assignment are written at check-in;
- * review_decision by /checkins/{id}/review). Nothing new is stored and
- * nothing is derived that the server did not report.
+ * `sst_status` is frozen onto the check-in at tap time and, by design, NEVER
+ * refreshed: it is the durable compliance artifact, and the filed LL196
+ * register freezes its UNVERIFIED marker off it. Angel Lopez's card was
+ * repaired at 12:33 and his 06:57 row went on printing "Unknown SST card" for
+ * the rest of the day. THAT ROW IS NOT WRONG — it is a truthful record of what
+ * was known at 06:57, and nothing here rewrites it. The roster simply asks a
+ * different question: not "what was known then" but "what needs doing now".
+ *
+ * `sst_status_live` / `sst_review_reason` are added beside the frozen fields
+ * by GET /api/checkins (server.py `_live_sst_fields`), derived through the
+ * gate's own rules.
+ *
+ * WHEN THEY ARE ABSENT there is no live answer — an old payload in the
+ * AsyncStorage cache, written before this change, or an offline read. The
+ * frozen pair is shown instead and DATED (`asOf`). It is never worn as
+ * current: a reason from 06:57 that says the expiry is unknown may already be
+ * false, and a stale sentence in today's voice is worse than an honestly
+ * dated one.
+ */
+function sstBadge(checkin) {
+  const live = checkin?.sst_status_live;
+  if (live) {
+    // THE FROZEN `sst_unknown_reason` IS DELIBERATELY NOT PASSED, and that
+    // omission is half the repair. It is the coarse CLASS|EXPIRY|BOTH code
+    // recorded at the gate; handing it to sstFlagCopy beside a live
+    // review_reason re-asserts the half that has since been fixed. Juan
+    // Lopez's row froze BOTH and his expiry is now on file — passing it would
+    // print "the card class AND the expiry date could not be confirmed" about
+    // a card of which only the class is open.
+    return sstFlagCopy({ sstStatus: live, reviewReason: checkin?.sst_review_reason });
+  }
+  const frozen = sstFlagCopy({
+    sstStatus: checkin?.sst_status,
+    unknownReason: checkin?.sst_unknown_reason,
+  });
+  return frozen ? { ...frozen, asOf: 'as recorded at check-in' } : null;
+}
+
+/**
+ * ADMITTED WITH A WARNING THAT HAS SINCE BEEN CLEARED.
+ *
+ * The roster stops WARNING about a card the cert row now supports — there is
+ * nothing left for the CP to do about it, and a warning he cannot act on is
+ * what trains him to ignore the ones he can. But "this man was let in on a
+ * card the app could not read" is a compliance fact about this check-in, and
+ * it must not simply vanish off the screen when the card is repaired. So it is
+ * stated quietly, in the past tense, and it is NOT a warning: no attention
+ * colour, no shield, no place in the banner tally above the list.
+ *
+ * REQUIRES BOTH READINGS. Without a live one we cannot know anything was
+ * resolved; without a frozen one that actually raised something there is
+ * nothing to have resolved. Rows where the two agree get no note — a note on
+ * every clean row says nothing at all.
+ *
+ * NOT THE OTHER DIRECTION. Frozen-clean + live-flagged is a card that lapsed
+ * or was re-read SINCE the tap; that is a live warning, handled above, and it
+ * is emphatically not a resolution.
+ */
+function checkinResolvedNote(checkin) {
+  if (!checkin?.sst_status_live) return null;
+  const wasFlagged = !!sstFlagCopy({ sstStatus: checkin?.sst_status });
+  const isFlagged = !!sstFlagCopy({ sstStatus: checkin.sst_status_live });
+  if (!wasFlagged || isFlagged) return null;
+  return 'SST card flagged at check-in — resolved since';
+}
+
+/**
+ * FIX 1 — the SPECIFIC reasons a worker is still flagged.
+ *
+ * The two SST sentences used to be hardcoded here, read straight off the
+ * frozen snapshot:
+ *
+ *     if (sst_status === 'expired') reasons.push('Expired SST card');
+ *     if (sst_status === 'unknown') reasons.push('Unknown SST card');
+ *
+ * Both are gone. The words now come from src/utils/sstFlagCopy.js — the same
+ * module the CP's pre-shift roster and the gate's check-in screen already
+ * read, so one card is described one way wherever it is looked at. The copy
+ * rules are decided there and are not restated here.
+ *
+ * `key` is the tally bucket for the banner above the list; `label` and
+ * `detail` are what one row prints. They are separated because the banner
+ * COUNTS rows and a row EXPLAINS one card, and a single string cannot do both
+ * without the banner growing a sentence per worker.
  *
  * Never returns a generic "flagged" — an unnamed warning is not a warning.
  * BLOCKED workers (missing OSHA) are not represented here at all: they never
  * completed sign-in, so they have no check-in row on this screen.
  */
-function checkinWarnings(checkin) {
-  const reasons = [];
-  if (checkin?.sst_status === 'expired') reasons.push('Expired SST card');
-  if (checkin?.sst_status === 'unknown') reasons.push('Unknown SST card');
-  if (checkin?.needs_trade_assignment) reasons.push('No trade assigned');
-  return reasons;
+export function checkinWarnings(checkin) {
+  const out = [];
+  const sst = sstBadge(checkin);
+  if (sst) {
+    out.push({ key: sst.title, label: sst.title, detail: sst.detail, asOf: sst.asOf });
+  }
+  if (checkin?.needs_trade_assignment) {
+    out.push({ key: 'No trade assigned', label: 'No trade assigned', detail: '', asOf: null });
+  }
+  return out;
 }
+
+// EXPORTED SO A TEST CAN RUN THEM, not because anything else imports them.
+// src/utils/rosterBadgeReadsLiveCert.test.cjs executes these two against
+// Angel's and Juan's real documents; a source scan can see that this file now
+// imports sstFlagCopy but cannot see WHICH fields it hands over, and handing
+// over the frozen reason is precisely the defect. Same reason
+// preshift_signin.jsx exports SstFlagLines.
+export { checkinResolvedNote };
 
 export default function WorkersScreen() {
   const { colors, isDark } = useTheme();
@@ -209,10 +302,20 @@ export default function WorkersScreen() {
 
   // FIX 1 — roll the per-row reasons up into one soft banner. It states what
   // is open; it gates nothing on this screen.
+  //
+  // KEYED ON `key`, NOT on the rendered label: the label can now carry an
+  // "as recorded at check-in" tail on a cached row, and tallying that would
+  // split one reason into two buckets purely because some rows were read
+  // offline. The banner counts REASONS; how each row came to be read is the
+  // row's business.
+  //
+  // A RESOLVED NOTE IS NOT COUNTED HERE. It is not open work, and putting it
+  // in a banner headed "Admitted with warnings" would re-raise as a warning
+  // the very thing this screen just stopped warning about.
   const warningSummary = (() => {
     const tally = new Map();
     for (const c of todayCheckIns) {
-      for (const r of checkinWarnings(c)) tally.set(r, (tally.get(r) || 0) + 1);
+      for (const w of checkinWarnings(c)) tally.set(w.key, (tally.get(w.key) || 0) + 1);
     }
     return [...tally.entries()].map(([reason, n]) => `${n} ${reason.toLowerCase()}`);
   })();
@@ -346,6 +449,12 @@ export default function WorkersScreen() {
                   <Text style={s.companyHeader}>{company}</Text>
                   {companyCheckins.map((checkin, index) => {
                     const workerInfo = getWorkerInfo(checkin);
+                    // Computed ONCE per row. Both used to be called twice in
+                    // the JSX below, so the list and the decision line each
+                    // re-derived the same answer — and could have disagreed if
+                    // either ever stopped being pure.
+                    const warnings = checkinWarnings(checkin);
+                    const resolvedNote = checkinResolvedNote(checkin);
                     const initials = workerInfo.name
                       .split(' ')
                       .map((n) => n[0])
@@ -418,16 +527,45 @@ export default function WorkersScreen() {
                             </View>
                           </View>
 
-                          {/* FIX 1 — the specific reason(s) this worker was
-                              admitted with warnings, plus the CP's decision if
-                              one has been recorded. Never the word "flagged". */}
-                          {checkinWarnings(checkin).map((reason) => (
-                            <View key={reason} style={s.warnRow}>
+                          {/* FIX 1 — the specific reason(s) this worker is
+                              still flagged, plus the CP's decision if one has
+                              been recorded. Never the word "flagged".
+
+                              The title says WHAT is open and the detail line
+                              says WHICH HALF of the card it is about; the CP
+                              cannot act on "not confirmed" but can act on "the
+                              class was read from the colour". Two lines
+                              because they are two different facts — collapsing
+                              them into one truncated row is how the detail
+                              would be the part that gets cut. */}
+                          {warnings.map((w) => (
+                            <View key={w.key} style={s.warnRow}>
                               <ShieldAlert size={11} strokeWidth={2} color={semantic.attention} />
-                              <Text style={s.warnRowText} numberOfLines={1}>{reason}</Text>
+                              <View style={s.warnRowBody}>
+                                <Text style={s.warnRowText} numberOfLines={1}>
+                                  {w.asOf ? `${w.label} (${w.asOf})` : w.label}
+                                </Text>
+                                {w.detail ? (
+                                  <Text style={s.warnRowDetail} numberOfLines={2}>{w.detail}</Text>
+                                ) : null}
+                              </View>
                             </View>
                           ))}
-                          {checkinWarnings(checkin).length > 0 && checkin.review_decision ? (
+                          {/* MUTED, AND NOT A WARNING ROW. No shield and no
+                              attention colour: the point of the note is that
+                              there is nothing to do, while still recording on
+                              screen that this man was admitted on a card the
+                              app could not read at the time. */}
+                          {resolvedNote ? (
+                            <Text style={s.resolvedNote} numberOfLines={2}>{resolvedNote}</Text>
+                          ) : null}
+                          {/* THE DECISION OUTLIVES THE WARNING IT WAS MADE
+                              ABOUT. Gating this on `warnings.length > 0`
+                              alone would make the CP's recorded call disappear
+                              from Angel's row the moment his card was
+                              repaired — erasing who decided what, which is the
+                              one thing a review is for. */}
+                          {(warnings.length > 0 || resolvedNote) && checkin.review_decision ? (
                             <Text style={s.warnDecision} numberOfLines={1}>
                               {checkin.review_decision === 'approved'
                                 ? 'Approved by CP'
@@ -600,9 +738,20 @@ function buildStyles(colors, isDark) {
   },
   warnTitle: { fontSize: 13, fontWeight: '700', color: semantic.attention },
   warnBody: { fontSize: 12, color: colors.text.secondary, marginTop: 2 },
-  warnRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
-  warnRowText: { flex: 1, fontSize: 11, fontWeight: '600', color: semantic.attention },
+  // `flex-start`, not `center`: the row is now two lines tall on a card that
+  // has a reason to give, and centring would float the shield beside the gap
+  // between them instead of beside the title it belongs to.
+  warnRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4, marginTop: 3 },
+  warnRowBody: { flex: 1 },
+  warnRowText: { fontSize: 11, fontWeight: '600', color: semantic.attention },
+  // SECONDARY, NOT ATTENTION-COLOURED. The title already carries the alarm;
+  // painting the explanation the same amber makes a two-line block that reads
+  // as two warnings.
+  warnRowDetail: { fontSize: 11, color: colors.text.secondary, marginTop: 1 },
   warnDecision: { fontSize: 11, color: colors.text.muted, marginTop: 2 },
+  // Muted and unadorned — see checkinResolvedNote. This is a record, not a
+  // request, and it must not compete with the rows above it.
+  resolvedNote: { fontSize: 11, color: colors.text.muted, marginTop: 3, fontStyle: 'italic' },
   // Cards inside one company group used to be bare siblings with no gap, so
   // they visually touched. This gap is what separates card-from-card.
   companyGroup: {
