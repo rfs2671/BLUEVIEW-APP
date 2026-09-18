@@ -4,15 +4,15 @@
     "id": "6a5f63bc147407d3261df2c7",
     "name": "588 Thomas S Boyland Street, Brooklyn",
     "baseline": {
-      "_note": "The corpus of the full re-index on 2026-09-17 23:47-2026-09-18 00:35Z, the first pass on a build that retries a failed section call (#600) and the first with a clean stale census. 129 pages, 16 files, 48 minutes, and NOT ONE failed extraction call — the pass before it lost a section on 19 of 129 pages. Any difference from these numbers means a sync or upload wrote into the project and the whole pass is re-run.",
+      "_note": "The corpus of the re-index of 2026-09-18 13:24-15:31Z, the first pass carrying the contested-cell rule (#602). 33 of 129 pages lost a section to a provider that was timing out, and 41 calls were retried — the retry that #600 added fires on the spot, so one slow section could spend the page budget twice and starve the sections behind it. That is fixed in the retry-at-end-of-page change, which is NOT in this corpus. Any difference from these numbers means something wrote into the project and the whole pass is re-run.",
       "pages": 129,
       "current_pages": 111,
-      "records": 15536,
-      "newest_page_indexed_at": "2026-09-18 00:34:52.085000",
-      "newest_record_created_at": "2026-09-18 00:34:59.178000"
+      "records": 15289,
+      "newest_page_indexed_at": "2026-09-18 15:26:02.984000",
+      "newest_record_created_at": "2026-09-18 15:31:05.479000"
     },
     "stale": {
-      "_note": "Measured on the re-indexed corpus 2026-09-18. ALL THREE CLASSES ARE ZERO. The 3 schedule_cell counts promoted from the vision-read PTAC schedule — the last known-stale records, and the reason this re-index was run — are gone: #585's tier-follows-source rule was in the writer for this pass. No case is excluded from scoring any more.",
+      "_note": "Measured on the 2026-09-18 re-indexed corpus. All three classes remain ZERO, as they were after the first re-index. No case is excluded from scoring.",
       "schedule_cell_count_from_a_vision_schedule": 0,
       "element_without_a_count_basis": 0,
       "tag_that_is_not_a_mark": 0
@@ -22,7 +22,7 @@
     "Single project. What this proves about a second consultant's drawings is limited to what the case vocabulary can express without change.",
     "Scores search_plans and the gate, not the composing model: the model's paraphrase is not reproducible run to run.",
     "Absent-case truth is the text layer of every current page PLUS every stored record's quote. The text layer alone was wrong once: EN-001.00 prints PACKAGED TERMINAL AIR CONDITIONERS in an outlined table.",
-    "SEVEN current pages have no sheet number, measured on the re-indexed corpus 2026-09-18: three DEP cross-connection pages, the shed inspection letter, the as-built survey, one SD detail page, and the AR gas-change roof plan. It was nine before the re-index; three cross-connection pages gained a number and one SD page lost one. A fact that lives only on such a page cannot be checked by sheet, so no case depends on one. The gas-change page is the only DRAWING among them, and it is the open supersession problem: its title-block call SUCCEEDED this pass and the number it answered still could not be corroborated by anything printed on the page.",
+    "SIX current pages have no sheet number, measured on the 2026-09-18 re-index: three DEP cross-connection pages, the shed inspection letter, the as-built survey, and the AR gas-change roof plan. It was nine before the first re-index and seven after it; the count moves between passes because a title-block read that fails leaves a page unnumbered, and which pages fail changes with the provider. The gas-change page is the only DRAWING among them and is the open supersession problem.",
     "ONE CURRENT DRAWING CANNOT BE IDENTIFIED, and it is a reissue. 'AR - 6.9.26 (Gas change).pdf' p2 is the roof plan reissued; its title-block call SUCCEEDED on the 2026-09-18 re-index and the number it returned could not be corroborated by anything printed on the page, so the page has no sheet number and supersession — which keys on one — cannot match it to A-105.01. MEASURED COST: asked 'roof drain', two of the eight records come from that page, duplicating A-105.01's legend entry and its element count. THE TWO COUNTS AGREE (2 and 2), so this is redundancy and a weaker citation — a superintendent is sent to 'AR - 6.9.26 (Gas change).pdf p2' rather than to A-105.01 — and NOT a wrong answer. An automatic content match was measured and rejected: the page's token overlap with A-105.01 is 0.706 against 0.452 for the next candidate, a real margin but a threshold fitted to one example, and a false match hides a live drawing. The work queued instead is suggest-and-confirm, where the overlap only ORDERS a suggestion and a person decides."
   ],
   "cases": [

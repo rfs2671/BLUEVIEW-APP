@@ -44793,25 +44793,30 @@ class ProviderStatus(RuntimeError):
         self.status = status
 
 
-# ── ONE RETRY, BECAUSE A TIMEOUT IS NOT A FACT ABOUT THE DRAWING ───────────
+# ── A TIMEOUT IS NOT A FACT ABOUT THE DRAWING, AND A RETRY IS NOT FREE ─────
 #
-# Measured on the 588 Boyland corpus, 2026-09-17: 19 of 129 indexed pages —
-# one in seven — carry at least one `call_failed:` flag, 17 of them on the
-# TITLE BLOCK. Ten were ReadTimeout, seven a provider error. Eight of those
-# pages ended with no sheet number at all, and one of the eight is a real
-# drawing: the roof plan reissued in 'AR - 6.9.26 (Gas change).pdf'.
+# Measured 2026-09-17: 19 of 129 indexed pages — one in seven — carried at
+# least one `call_failed:` flag, 17 of them on the TITLE BLOCK. Eight ended
+# with no sheet number at all, and one of the eight is a real drawing: the
+# roof plan reissued in 'AR - 6.9.26 (Gas change).pdf'. Nothing retried, so a
+# call that timed out was stored as though the sheet prints no number.
 #
-# Nothing retried, nothing re-visited, and the page was written `complete`.
-# So a call that timed out was stored as though the sheet prints no number,
-# and every reader downstream believed it: supersession could not match the
-# reissue to A-105.01, both stayed current, and the same roof-drain count was
-# carried twice. THAT is the "supersession gap" — supersession was handed a
-# page with no identity and did the only thing it could.
+# THE RETRY THAT FIXED THAT MADE A SECOND THING WORSE, and the next re-index
+# showed it within twenty minutes: on 2026-09-18 the first 22 pages lost 9
+# title blocks, and 13 of the 22 failures were `BudgetExhausted` rather than a
+# provider error. The retry fired where the call failed, BEFORE the rest of
+# the page had been asked at all — and the 300-second budget is shared, so one
+# slow section could spend it twice while the sections behind it were refused
+# without ever being asked once.
 #
-# One retry, inside the page budget, on the failures that are worth asking
-# again: a timeout, a dropped connection, a 429 or a 5xx. Not on a 4xx, which
-# will fail identically, and never on BudgetExhausted, which IS the ceiling.
-PLAN_INDEX_CALL_ATTEMPTS = 2
+# So the retry moved to plan_extract, which is the only place that knows every
+# section has had its turn: each is asked once, and only then is whatever is
+# left of the budget spent re-asking the ones that came back empty. A retry
+# can no longer starve a section that has not been tried.
+#
+# This wrapper asks exactly once. What it still owns is the budget: it refuses
+# a call the page cannot afford, which is what stops the second pass running
+# past the ceiling.
 
 
 def _sections_lost(flags: dict) -> List[str]:
@@ -44827,11 +44832,29 @@ def _sections_lost(flags: dict) -> List[str]:
 
 
 def _worth_asking_again(exc: Exception) -> bool:
+    """Is this failure worth asking again? Retry a timeout, a dropped
+    connection, a 429 or a 5xx; never a 4xx, which fails the same way; never
+    BudgetExhausted, which IS the ceiling.
+
+    THE PLAN INDEX NO LONGER CALLS THIS. Its retry moved into plan_extract, so
+    that every section is asked once before any is asked twice — see the block
+    above `_section_call`. The rule itself did not change and is still the one
+    `vision_status_is_retryable` derives the card read's answer from, which is
+    why it stays here rather than going with the loop that used to call it."""
     if isinstance(exc, BudgetExhausted):
         return False
     if isinstance(exc, ProviderStatus):
         return exc.status == 429 or exc.status >= 500
     return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
+def _retries_in(flags: dict) -> int:
+    """How many sections were asked a second time.
+
+    plan_extract stamps `retried_after:<reason>` when its second pass re-asks
+    one, so the count reaches the row without this having to watch the calls."""
+    return sum(1 for fl in (flags or {}).values()
+               for f in (fl or []) if str(f).startswith("retried_after:"))
 
 
 # At most this many grids per page get OCR'd. M-200.00, the densest schedule
@@ -45149,25 +45172,8 @@ async def _index_single_page(
     # `call_failed:BudgetExhausted` on the section and keeps the rest of the
     # page, which is the same degrade path a provider error already takes.
     _page_deadline = _time.monotonic() + PLAN_INDEX_PAGE_BUDGET
-    _page_retries: List[str] = []
 
     async def _section_call(image_b64: str, prompt: str, max_tokens: int):
-        for attempt in range(1, PLAN_INDEX_CALL_ATTEMPTS + 1):
-            try:
-                return await _one_section_call(image_b64, prompt, max_tokens)
-            except Exception as exc:
-                if attempt >= PLAN_INDEX_CALL_ATTEMPTS or not _worth_asking_again(exc):
-                    raise
-                _page_retries.append(type(exc).__name__)
-                logger.warning(
-                    "[plan-index] retrying section for %s p%s after %r "
-                    "(attempt %d of %d, %.0fs of page budget left)",
-                    file_name, page_number, exc, attempt,
-                    PLAN_INDEX_CALL_ATTEMPTS,
-                    _page_deadline - _time.monotonic(),
-                )
-
-    async def _one_section_call(image_b64: str, prompt: str, max_tokens: int):
         remaining = _page_deadline - _time.monotonic()
         if remaining < PLAN_INDEX_MIN_CALL_SECONDS:
             logger.warning(
@@ -45332,7 +45338,7 @@ async def _index_single_page(
         # 129 on 588 Boyland, and one of them a drawing. These two fields are
         # the same fact in a form a query can find: how many calls had to be
         # asked twice, and which sections never answered at all.
-        "extraction_retries": len(_page_retries),
+        "extraction_retries": _retries_in(result["flags"]),
         "sections_lost":      _sections_lost(result["flags"]),
         "number_flags":       result["number_flags"],
         "text_source":        text_source,
@@ -45382,10 +45388,11 @@ async def _index_single_page(
                 "will index it again.",
                 file_name, page_number, ",".join(lost),
             )
-        elif lost or _page_retries:
+        elif lost or _retries_in(result["flags"]):
             logger.warning(
                 "[plan-index] %s p%s indexed with sections_lost=%s retries=%s",
-                file_name, page_number, lost or "-", _page_retries or "-",
+                file_name, page_number, lost or "-",
+                _retries_in(result["flags"]) or "-",
             )
     except Exception as e:
         # The page row stands without its chunks: retrieval falls back to the
