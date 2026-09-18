@@ -105,6 +105,6 @@ The matcher answered this one, by looking for a value near the term — with a h
 - Seven current pages have no sheet number.
 
 **Open items this run leaves:**
-- **Duplicate roof-drain count.** The count is stored twice: once on A-105.01, and once on the AR gas-change page, which reissues the same roof plan. That page has no sheet number, so supersession never retired it. Fixing this means changing extraction.
+- ~~**Duplicate roof-drain count.**~~ **Corrected 2026-09-18, after the re-index.** The claim that the count is stored twice described the PRE-RE-INDEX corpus. On the current one the AR gas-change page still duplicates A-105.01's legend entry and element count — two of the eight records returned for 'roof drain' — but THE TWO COUNTS AGREE (2 and 2). It is redundancy and a weaker citation, not a double count and not a wrong answer. It is recorded as a known limit in the suite, with the measured overlap that argued against fixing it automatically.
 - **Boilerplate in vision-read notes.** They are never checked for boilerplate. A note repeated verbatim across one discipline's sheets could be handled the same way `boilerplate_lines` handles repeated text-layer lines.
 - **Stale PTAC elements.** The three leave only with a full Boyland re-index under #585. A partial re-index would mix the corpus.

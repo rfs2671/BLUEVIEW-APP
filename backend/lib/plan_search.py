@@ -439,9 +439,20 @@ def _values(text: str) -> List[str]:
 
 
 def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
-    """Every number a returned record can vouch for."""
+    """Every number a returned record can vouch for.
+
+    ── A CONTESTED CELL VOUCHES FOR NOTHING ───────────────────────────────
+    #
+    # When two independent readings of one schedule cell disagree, the record
+    # carries both and stands behind neither. Letting either number through
+    # here would put it in a composed answer with a citation behind it, which
+    # is the whole failure this gate exists to stop — the fact that one of the
+    # two happens to be right is not something we can demonstrate.
+    """
     ok: set = set()
     for r in records or []:
+        if (r.get("payload") or {}).get("count_contested"):
+            continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
         #
@@ -570,6 +581,11 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         more = [w for w in (r.get("also_on") or []) if w]
         where_all = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})" if more else where
         line = f"{where_all} ({r.get('record_type')}): {quote[:200]}"
+        readings = (r.get("payload") or {}).get("count_readings")
+        if readings:
+            said = " and ".join(str(x.get("value")) for x in readings)
+            line += (f" — two readings of that cell say {said}; "
+                     f"verify against the sheet")
         if r.get("tier") == TIER_ORDER[-1]:
             line += " — read from the drawing image, verify against the sheet"
         lines.append(line)

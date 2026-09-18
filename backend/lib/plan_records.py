@@ -65,6 +65,11 @@ RECORD_VERSION = 1
 TIER_ORDER = (TIER_SCHEDULE_CELL, TIER_OCR_GRID, TIER_TAG_LEGEND,
               TIER_TEXT_LAYER, TIER_OCR_FREEFORM, TIER_VISION)
 
+# What stands in for a cell two readers could not agree on. Deliberately not a
+# number and not blank: blank reads as "the sheet says nothing there", and the
+# sheet says plenty — we are the ones who cannot read it.
+CONTESTED_CELL = "(readings disagree)"
+
 RECORD_TYPES = ("schedule", "element", "note", "legend_entry", "callout",
                 "dimension", "tag", "text")
 
@@ -240,15 +245,50 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
         out.append(rec)
 
     # ── schedules ────────────────────────────────────────────────────────
+    #
+    # A CONTESTED CELL IS REDACTED FROM THE TABLE TOO. The element record for
+    # M-200.00's PTAC-2 stops quoting a quantity when two readings disagree —
+    # but the SCHEDULE record quotes every cell of the table, so `PTAC-2 | 6`
+    # was still a printed number as far as the gate was concerned, and an
+    # answer saying "six" would have passed with a citation behind it.
+    #
+    # Only the disputed cell goes. `9,000` and `9.9` elsewhere in the same row
+    # are untouched, because the match is on the cell being exactly one of the
+    # numbers under dispute for exactly that mark in exactly that schedule.
+    contested_cells = {}
+    for el in (fields.get("elements") or []):
+        if not el.get("count_contested"):
+            continue
+        key = ((el.get("location_hint") or "").strip().upper(),
+               (el.get("tag") or "").strip().upper())
+        contested_cells[key] = {str(x.get("value"))
+                                for x in (el.get("count_readings") or [])}
+
+    def _redact(rows, name):
+        if not contested_cells:
+            return rows
+        out = []
+        for row in rows or []:
+            cells = [str(c or "") for c in row]
+            mark = cells[0].strip().upper() if cells else ""
+            disputed = contested_cells.get(((name or "").strip().upper(), mark))
+            if disputed:
+                cells = [CONTESTED_CELL if c.strip() in disputed else c
+                         for c in cells]
+            out.append(cells)
+        return out
+
     for i, s in enumerate(fields.get("schedules") or []):
         via_vision = (s.get("source") == "vision")
         via_ocr = (s.get("source") == "ocr_grid")
         cols = [str(c or "") for c in (s.get("columns") or [])]
-        payload = dict(s, columns=[{"header": c, "role": column_role(c)} for c in cols])
+        rows = _redact(s.get("rows"), s.get("name"))
+        payload = dict(s, rows=rows,
+                       columns=[{"header": c, "role": column_role(c)} for c in cols])
         lines = [s.get("name") or f"Schedule {i + 1}"]
         if cols:
             lines.append(" | ".join(cols))
-        lines += [" | ".join(str(c or "") for c in r) for r in (s.get("rows") or [])]
+        lines += [" | ".join(str(c or "") for c in r) for r in rows]
         # An OCR'd grid is NOT quotable against the page text — the page has no
         # text there, which is why it was OCR'd at all. `_span` returns None
         # for it; `source` says where it came from so nothing has to infer it.
@@ -286,9 +326,18 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
         # An unpaired mark is named by the mark. The sheet's nearby words
         # travel as a description and are never rendered as a meaning.
         desc = _clean(el.get("described_by"))
+        # A CONTESTED CELL HAS NO QUOTED VALUE. Two readings of M-200.00's
+        # PTAC-2 QTY came back 9 and 6 on 2026-09-18; the sheet prints 9. The
+        # quote is what a reader may be shown, and neither number has earned
+        # that, so the quote names the cell and says the readings disagree.
+        # The values themselves live in the payload, for a person who goes to
+        # look — never as something an answer can quote.
+        contested = bool(el.get("count_contested"))
         quote = " — ".join(x for x in (
             name,
-            f"count {el['count_if_stated']}" if el.get("count_if_stated") is not None else "",
+            ("QTY on the sheet, readings disagree" if contested else
+             f"count {el['count_if_stated']}"
+             if el.get("count_if_stated") is not None else ""),
             _clean(el.get("location_hint"))) if x)
         # The SOURCE follows the basis too. An element counted off an OCR'd
         # grid is not a text-layer fact, and one counted off a picture is not
