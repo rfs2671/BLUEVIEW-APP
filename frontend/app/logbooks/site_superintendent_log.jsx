@@ -109,16 +109,17 @@ import { isAffirmedSignature } from '../../src/utils/signatureAffirmed';
 import { useAuth } from '../../src/context/AuthContext';
 import { resolveSignerName } from '../../src/utils/signerName';
 import {
-  csLogItems, csItemState, csUnanswered, csItemLabels,
+  csUnanswered, csItemLabels,
 } from '../../src/utils/superintendentLogModel';
 import {
   emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
   CORRECTED, NOT_CORRECTED, NOT_YET, isCorrectionState,
 } from '../../src/utils/csFindings';
-import {
-  adoptableSummary, progressBlock, progressSource,
-  adoptedTextFromStored, PROVENANCE_ADOPTED,
-} from '../../src/utils/progressProvenance';
+// progressProvenance IS NOT IMPORTED, and the module is still there on purpose.
+// Item 2's input came off this screen, so nothing here adopts, flags or files a
+// summary any more. The module remains because the SERVER still reads `source`
+// off the logs already filed, and it is the only written statement of what
+// `adopted` and `own` mean on this side. See progressProvenance.test.cjs.
 import {
   adoptableFindings, anyFindingStillAdopted,
 } from '../../src/utils/adoptedFindings';
@@ -133,20 +134,31 @@ const LOG_TYPE = 'site_superintendent_log';
 // were two steps and became one screen of collapsible rows; then "Work &
 // inspection" went, because every field on it was answered somewhere else.
 //
-// WHAT THAT STEP HELD, AND WHERE IT WENT. The operator read it as redundant
-// and he was three-quarters right:
+// WHAT THAT STEP HELD, AND WHERE IT WENT:
 //
-//   General progress of work   item 2   MOVED to the sign step
+//   General progress of work   item 2   REMOVED (moved here first)
 //   What you did, and where    item 3   MOVED to the sign step
 //   Location inspected         item 11  MOVED to the sign step
 //   Result                     item 11  REMOVED
 //
-// ONLY `result` IS ACTUALLY GONE. Items 2 and 3 are required BC 3301.13.13
-// items with no counterpart anywhere: `areas_visited` on the CP's daily log is
-// empty on all 55 filed records, so item 3 has nothing to adopt and nothing to
-// merge into. Dropping either would print "&mdash; Not recorded" against a
-// statutory item on every log, forever -- and he fills both on two of the
-// three logs he has filed.
+// THE OPERATOR READ THE STEP AS REDUNDANT AND WAS THREE-QUARTERS RIGHT, then
+// right about item 2 as well. The argument for keeping items 2 and 3 was that
+// both are BC 3301.13.13 items with NO COUNTERPART, so dropping either would
+// print "&mdash; Not recorded" against a statutory item forever. That holds
+// for item 3 and never held for item 2:
+//
+//   ITEM 2 HAS A COUNTERPART and this screen was already using it. `general_
+//   description` is required on the CP's daily jobsite log for the same date,
+//   and item 2's box was AUTOFILLED from it, with a note explaining that the
+//   words were not his. He was typing the same day twice.
+//
+//   ITEM 3 HAS NONE. `areas_visited` was empty on all 55 filed daily logs and
+//   has since been deleted from the schema outright -- so there is nothing to
+//   adopt, nothing to merge into, and item 3 is asked here or nowhere.
+//
+// AND REMOVING THE INPUT IS NOT REMOVING THE ITEM. `progress` stays declared
+// and `collected` on both models, so the six logs already filed go on printing
+// what he wrote. See buildData.
 //
 // `result` GOES BECAUSE THE LOCATION CARRIES THE WEIGHT. 1 RCNY 3301-04(f)
 // wants the inspection recorded; `{location}` alone still reads PRESENT, which
@@ -580,26 +592,24 @@ export default function SiteSuperintendentLog() {
   // One boolean he sets costs nothing and asks nobody to convert.
   const [departedNextDay, setDepartedNextDay] = useState(false);
   const [printedName, setPrintedName] = useState('');
-  const [progress, setProgress] = useState('');
-  // ── THE TEXT THAT WAS OFFERED, HELD SO THE DOCUMENT CAN SAY WHERE IT CAME
-  //    FROM ──────────────────────────────────────────────────────────────
+  // ── ITEM 2 HAS NO STATE HERE ANY MORE ───────────────────────────────────
   //
-  // Item 2 is the ONE item that overlaps with the CP's daily jobsite log, and
-  // BC 3301.13.13 does not require the superintendent to have COMPOSED it --
-  // compare item 3, which is expressly "the construction superintendent's
-  // activities". It requires the information to be in HIS log over HIS
-  // signature. So the CP's summary is offered, and the document records
-  // whether he took it or wrote his own.
+  // "General progress of work" was a box, plus the text that had been OFFERED
+  // to it so the document could record whether he took the CP's summary or
+  // wrote his own. Both are gone: the operator ruled the question redundant,
+  // because item 2's answer is already required and already written on the
+  // CP's daily jobsite log for the same date, and this screen was autofilling
+  // it from exactly there.
   //
-  // COMPARED AGAINST WHAT WAS OFFERED, NOT AGAINST THE CP'S LOG AS IT STANDS
-  // LATER. The flag has to be true at the moment of filing; re-deriving it
-  // afterwards from a record that can still be amended is what
-  // `item_provenance`'s docstring explicitly refuses.
+  // WHICH IS NOT TRUE OF ITEM 3 BELOW, and that is the whole reason `activities`
+  // survives three lines down. `areas_visited` -- the daily log's counterpart
+  // to it -- was deleted from the product; item 3 has nothing to adopt and
+  // nothing to merge into, so it is asked here or it is nowhere.
   //
-  // NOT IN buildData's OUTPUT, and never on the filed document as its own
-  // field. `source` lives inside the progress block where the server already
-  // looks for it; this string is the local evidence used to compute it.
-  const [adoptedText, setAdoptedText] = useState('');
+  // THE DECLARATION DID NOT GO WITH THE INPUT. `progress` is still declared
+  // `collected` on both models, so the six logs already filed keep printing
+  // the sentences he wrote and the provenance line keeps saying where they
+  // came from. This screen stopped writing; nothing stopped reading.
   const [activities, setActivities] = useState('');
   // WHICH ROW IS OPEN. Nothing is open on arrival: the common day is
   // "nothing to report" on all four, and a screen that opens every editor
@@ -608,8 +618,13 @@ export default function SiteSuperintendentLog() {
   const [inspectionLocation, setInspectionLocation] = useState('');
   const [findings, setFindings] = useState([]);
   // WHAT WAS OFFERED FOR ITEMS 4/5, held so the note can say the rows are not
-  // his. The mirror of item 2's `adoptedText`, and like it this is NOT the
-  // CP's log as it stands now -- it is what he was shown.
+  // his. This is NOT the CP's log as it stands now -- it is what he was shown,
+  // because the note has to be true at the moment he signs and the CP's log
+  // can still be amended afterwards.
+  //
+  // IT WAS THE MIRROR OF ITEM 2's `adoptedText`, which no longer exists: item
+  // 2's input came off this screen and took its provenance tracking with it.
+  // This is now the only place the pattern survives.
   const [adoptedFindings, setAdoptedFindings] = useState([]);
   const [noneBoth, setNoneBoth] = useState(false);
   const [dobEntries, setDobEntries] = useState([]);
@@ -823,17 +838,23 @@ export default function SiteSuperintendentLog() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── WHAT THE CP'S RECORD FOR THIS DATE GIVES ITEMS 2 AND 8 ───────────────
+  // ── WHAT THE CP'S RECORD FOR THIS DATE GIVES ITEMS 4/5 AND 8 ─────────────
   //
   // ONE READ, TWO ANSWERS. Both items derive from the same document -- the
   // filed daily jobsite log for this project and date -- so fetching it twice
   // would be two chances to disagree about which link of an amended chain is
   // the record. See dailyLogRecord.js for that rule.
   //
-  //   item 2  is OFFERED the CP's summary of the day, and the document records
-  //           whether he took it (progressProvenance.js)
+  //   items 4/5 are OFFERED the conditions the CP recorded, each one marked as
+  //           not his until he says otherwise (adoptedFindings.js)
   //   item 8  OPENS ON the account that filed it, resolved against the roster
   //           (designatedCp.js)
+  //
+  // IT IS NOT "THE ITEM 2 AUTOFILL", though it was built as one and still
+  // reads the same document. Item 2's box came off this screen and its offer
+  // went with it; the two above did not. Deleting this effect as item 2's
+  // leftover would silently take the competent-person default and the finding
+  // offers with it.
   //
   // A SEPARATE EFFECT, NOT A BRANCH INSIDE fetchData. That function has three
   // exits -- a device draft with content returns early, the server path
@@ -848,12 +869,13 @@ export default function SiteSuperintendentLog() {
   // values.
   //
   // NEVER OVER WHAT HE HAS ENTERED, AND NEVER ON A FILED LOG. Each offer is
-  // guarded on ITS OWN field: a superintendent who typed his summary but not
-  // his competent person still gets item 8's default.
+  // guarded on ITS OWN field: a superintendent who ticked "nothing to report"
+  // on findings still gets item 8's default.
   //
   // allSettled, NOT all. The roster and the daily log are independent
   // questions and a failure of one must not silently cost him the other --
-  // Promise.all would have let a 403 on the roster suppress item 2's offer.
+  // Promise.all would have let a 403 on the roster suppress the finding
+  // offers.
   // ── DEPARTURE IS SUGGESTED WHEN HE REACHES THE SIGN STEP ────────────────
   //
   // THE OPERATOR'S POINT: he signs the log before he leaves the site, so the
@@ -903,7 +925,6 @@ export default function SiteSuperintendentLog() {
   useEffect(() => {
     if (loading || locked || dailyOfferRef.current) return undefined;
     dailyOfferRef.current = true;
-    const wantSummary = !String(progress || '').trim();
     // NOT OVER A TICK EITHER. A superintendent who has already said nobody was
     // designated must not find a name appearing under it.
     const wantCp = !String(competentPersonName || '').trim() && !cpNone;
@@ -930,10 +951,6 @@ export default function SiteSuperintendentLog() {
       const people = rosterRes.status === 'fulfilled' ? rosterRes.value : undefined;
       setRoster(people);
 
-      if (wantSummary && rows) {
-        const text = adoptableSummary(rows);
-        if (text) { setProgress(text); setAdoptedText(text); }
-      }
       // NO DEFAULT UNLESS THE APP KNOWS. designatedCpDefault returns null for
       // an absent daily log, a log with no created_by, and an id that resolves
       // to anything other than exactly one roster row. A wrong default on a
@@ -953,7 +970,7 @@ export default function SiteSuperintendentLog() {
       }
     })();
     return () => { alive = false; };
-  }, [loading, locked, progress, competentPersonName, cpNone, projectId, logDate,
+  }, [loading, locked, competentPersonName, cpNone, projectId, logDate,
     findings, noneBoth]);
 
   // ── DOB autofill ────────────────────────────────────────────────────────
@@ -998,14 +1015,10 @@ export default function SiteSuperintendentLog() {
     // did not tell us that.
     setDepartedNextDay(g('presence').departed_next_day === true);
     setPrintedName(g('presence').printed_name || '');
-    setProgress(g('progress').summary || '');
-    // A STORED `adopted` SAYS ITS OWN SUMMARY IS THE ADOPTED TEXT, so
-    // reopening and changing nothing keeps `adopted` and the first edit flips
-    // it to `own` -- the same behaviour as the first visit. A log stored as
-    // `own`, or one filed before this existed, adopts nothing: returning its
-    // summary here would file a log he wrote himself as adopted from a record
-    // it never came from.
-    setAdoptedText(adoptedTextFromStored(g('progress')));
+    // ITEM 2 IS NOT HYDRATED, BECAUSE IT IS NOT EDITED. A stored `progress`
+    // block is left exactly where it is: reading it into state the screen no
+    // longer shows would put a sentence back into the payload through the
+    // autosave without it appearing anywhere he could check it.
     // ONE FIELD NOW, AND A STORED PAIR IS JOINED RATHER THAN HALVED.
     // Records filed before the merge carry both keys; reopening one must
     // show him everything he wrote, not the first half.
@@ -1070,12 +1083,7 @@ export default function SiteSuperintendentLog() {
   // mount, which is exactly the class the mount smoke exists to catch.
 
   const snapshot = () => ({
-    arrivedAt, departedAt, departedNextDay, printedName, progress, activities,
-    // WITHOUT THIS, A TRIP TO /consent FILES AN ADOPTED SUMMARY AS HIS OWN.
-    // restore() puts the text back and `adoptedText` would come back empty, so
-    // progressSource would see text-with-nothing-offered and stamp `own` on a
-    // sentence he never wrote a word of.
-    adoptedText,
+    arrivedAt, departedAt, departedNextDay, printedName, activities,
     inspectionLocation,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, cpManual, cpNone, step,
@@ -1091,8 +1099,6 @@ export default function SiteSuperintendentLog() {
     setDepartedAt(v.departedAt ?? '');
     setDepartedNextDay(v.departedNextDay === true);
     setPrintedName(v.printedName ?? '');
-    setProgress(v.progress ?? '');
-    setAdoptedText(v.adoptedText ?? '');
     setActivities(v.activities ?? '');
     setInspectionLocation(v.inspectionLocation ?? '');
     setFindings(Array.isArray(v.findings) ? v.findings : []);
@@ -1161,11 +1167,23 @@ export default function SiteSuperintendentLog() {
         // has to derive it from the two times.
         departed_next_day: departedNextDay === true,
       },
-      // `{summary, source}` THROUGH ONE BUILDER. An empty box still writes
-      // `{}` and claims nothing -- stamping `own` on a blank would assert he
-      // wrote something. See progressProvenance.js for why the flag exists and
-      // why it cannot be retrofitted onto the records already filed.
-      progress: progressBlock(progress, adoptedText),
+      // ── ITEM 2 IS NO LONGER WRITTEN, AND THE KEY IS NOT WRITTEN EMPTY ────
+      //
+      // `progress: {}` would be the same absence in a costlier shape, and on
+      // an AMENDMENT -- whose child starts life holding the parent's `data` --
+      // it would be an empty block overwriting the parent's summary rather
+      // than a key simply not sent.
+      //
+      // THE THIRD OF THESE ON THIS SCREEN, and the same manoeuvre each time:
+      // `cs_activities.locations` and `daily_inspection.result` below are both
+      // still declared, still printed off the records that carry them, and no
+      // longer collected. The writer stops; the readers do not.
+      //
+      // WHAT MAKES IT SAFE IS ON THE OTHER SIDE. `item_state` short-circuits
+      // on `collected` BEFORE it reads the block, so the declaration -- not
+      // this line -- is what decides whether the six filed logs print what he
+      // wrote or print "This log does not record this item" over his
+      // signature. The declaration stays.
       // ONE STATUTORY ITEM, ONE INPUT. `locations` was a second box under a
       // label that asked the same question the first box's own placeholder
       // did -- "WHAT YOU DID, AND WHERE" above "Areas and floors you
@@ -1216,8 +1234,7 @@ export default function SiteSuperintendentLog() {
         ? { location: inspectionLocation.trim() } : {},
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
-    printedName, arrivedAt, departedAt, departedNextDay,
-    progress, adoptedText, activities,
+    printedName, arrivedAt, departedAt, departedNextDay, activities,
     inspectionLocation, competentPersonName, cpNone]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
@@ -1810,31 +1827,21 @@ export default function SiteSuperintendentLog() {
     </Card>
   );
 
-  // ── THE THREE FIELDS THAT OUTLIVED STEP 2 ───────────────────────────────
+  // ── THE TWO FIELDS THAT OUTLIVED STEP 2 ─────────────────────────────────
   //
   // They open the sign step, ABOVE item 8 and the signature, because they are
   // the last things he writes and the first things a reader of the filed
   // document meets. See TOTAL_STEPS for what went and what did not.
+  //
+  // THERE WERE THREE, AND ITEM 2 WAS THE ONE THAT WENT. "General progress of
+  // work" stood above item 3 here, pre-filled from the CP's daily jobsite log
+  // for the same date and carrying a note to say so -- which is the clearest
+  // statement of why it went: the app could fill it because the answer was
+  // already written down, required, and signed for on another document. Item 3
+  // has no such source and never had one.
   const stepRecord = () => (
     <>
       <Card s={s}>
-        <Field s={s} locked={locked} label={t('progressLabel')} value={progress} onChangeText={setProgress}
-          placeholder={t('progressPlaceholder')} multiline />
-        {/* HE MUST SEE THAT IT WAS NOT HIM. A sentence that appeared in the
-            box with nothing saying where it came from is a sentence he will
-            sign as his own account of the day, and item 2 sits over his
-            signature. The note is driven by the SAME rule that writes the
-            flag, so the screen cannot say "adopted" while the document says
-            "own" -- it disappears the moment he edits, because at that moment
-            the document changes its mind too.
-
-            AND IT MATTERS MORE HERE THAN IT DID ON STEP 2. The field is now
-            inches from the signature pad, so the one place the app says "these
-            are not your words" sits on the same screen as the act that makes
-            them his. */}
-        {progressSource(progress, adoptedText) === PROVENANCE_ADOPTED ? (
-          <Text style={s.noteText}>{t('progressAdoptedNote')}</Text>
-        ) : null}
         <Field s={s} locked={locked} label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
           placeholder={t('activitiesPlaceholder')} multiline />
         {/* ITEM 11, DOWN TO THE ONE FIELD THAT CARRIES IT. The heading and the
@@ -2001,14 +2008,24 @@ export default function SiteSuperintendentLog() {
     </>
   );
 
+  // ── "NOT COLLECTED IN THIS RELEASE" IS THE DOCUMENT'S LINE, NOT A CARD ──
+  //
+  // A card here listed the items of the eleven that this log does not collect
+  // -- in practice item 10, the weekly safety meeting -- so that a reader
+  // would take the gap as scope rather than as an omission.
+  //
+  // THE READER IT WAS ARGUING TO IS NOT THE MAN ON THIS SCREEN. He is filling
+  // the log, not reading the filed sheet, and the sheet makes the point
+  // itself: `_cs_register_rows` prints "10. Weekly safety meeting · BC
+  // 3301.13.19 — This log does not record the weekly meeting. It is kept
+  // elsewhere." whenever no `weekly_status` is supplied, and nothing supplies
+  // one. Every sheet already filed carries that sentence, put there by the
+  // server, with no help from this card.
+  //
+  // SO IT WAS A SECOND STATEMENT OF THE SAME THING, addressed to the wrong
+  // person, on the screen where he signs -- one more card to scroll past,
+  // naming an item nobody had asked him about.
   const stepSign = () => {
-    const data = buildData();
-    // ITEMS THIS RELEASE DOES NOT COLLECT, NAMED. An item of the eleven that
-    // is simply missing reads as an omission; one that says it is not
-    // collected reads as scope. csItemState returns NOT_COLLECTED for exactly
-    // these, off the declared items — this screen does not decide it.
-    const scopeItems = csLogItems(logDate)
-      .filter((it) => csItemState(it.key, data, logDate) === 'not_collected');
     return (
       <>
         {stepRecord()}
@@ -2087,38 +2104,55 @@ export default function SiteSuperintendentLog() {
                   designation is lawful only where he was on site whenever
                   active work occurred, so a bare "none designated" would file
                   an admission on one tap. He is asserting his presence and
-                  the control says so before he taps it. */}
-              <Pressable
-                style={[s.chip, cpNone && s.chipSelected]}
-                onPress={() => {
-                  const next = !cpNone;
-                  setCpNone(next);
-                  // TICKING IT CLEARS THE NAME, the other half of the rule in
-                  // buildData. A name left underneath would be filed instead
-                  // of the attestation, silently.
-                  if (next) { setCompetentPersonName(''); setCpManual(false); }
-                }}
-              >
-                {cpNone ? <Check size={13} strokeWidth={2} /> : null}
-                <Text style={[s.chipText, cpNone && s.chipTextSelected]}>
-                  {t('cpNoneDesignated')}
-                </Text>
-              </Pressable>
-              <Text style={s.noteText}>{t('cpNoneDesignatedNote')}</Text>
+                  the control says so before he taps it.
+
+                  ── AND IT IS OFFERED ONLY WHILE IT IS STILL AN ANSWER ─────
+                  This rendered unconditionally, so after he picked a man the
+                  screen showed the name he had chosen and, an inch below it,
+                  a live control asserting that nobody had been designated —
+                  the document contradicting itself on one card. Tapping it
+                  to resolve the contradiction WIPES the name: the handler
+                  clears it, which is right when nothing is named and a
+                  silent deletion of a statutory answer when something is.
+
+                  GATED ON THE NAME, NOT ON `cpNone`. The two can never both
+                  be set — each handler clears the other — so gating on the
+                  tick would hide the chip the moment it was used, and that
+                  is the one state it must stay visible in: unticking is the
+                  only way back from a tap he did not mean. Gating on the
+                  name keeps the ticked chip on screen, because the name is
+                  empty then, and removes it only when there is a name for it
+                  to contradict.
+
+                  buildData's "a name wins over the tick" is NOT this rule and
+                  stays where it is. That is the floor under a draft that
+                  somehow carries both; this is what stops the screen offering
+                  the tick once the question has been answered. */}
+              {!competentPersonName.trim() ? (
+                <>
+                  <Pressable
+                    style={[s.chip, cpNone && s.chipSelected]}
+                    onPress={() => {
+                      const next = !cpNone;
+                      setCpNone(next);
+                      // TICKING IT CLEARS THE NAME, the other half of the
+                      // rule in buildData. A name left underneath would be
+                      // filed instead of the attestation, silently.
+                      if (next) { setCompetentPersonName(''); setCpManual(false); }
+                    }}
+                  >
+                    {cpNone ? <Check size={13} strokeWidth={2} /> : null}
+                    <Text style={[s.chipText, cpNone && s.chipTextSelected]}>
+                      {t('cpNoneDesignated')}
+                    </Text>
+                  </Pressable>
+                  <Text style={s.noteText}>{t('cpNoneDesignatedNote')}</Text>
+                </>
+              ) : null}
             </>
           )}
           <Text style={s.noteText}>{t('competentPersonNote')}</Text>
         </Card>
-
-        {scopeItems.length > 0 ? (
-          <Card s={s}>
-            <StepHeaderBase s={s} title={t('scopeHeading')} />
-            <Text style={s.noteText}>{t('scopeNote')}</Text>
-            {scopeItems.map((it) => (
-              <Text key={it.key} style={s.noteText}>{`${it.number}. ${it.label}`}</Text>
-            ))}
-          </Card>
-        ) : null}
 
         <Card s={s}>
           <StepHeaderBase s={s} title={t('signHeading')} />

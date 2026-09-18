@@ -29,6 +29,29 @@ const PICKER = fs.readFileSync(
   path.join(FRONTEND, 'src', 'components', 'CompetentPersonPicker.jsx'), 'utf8',
 );
 
+/**
+ * Comments stripped, for the assertions that ask what the code DOES.
+ *
+ * THIS FILE HAD NONE, AND THE SUBJECTS BELOW EXPLAIN THEMSELVES AT LENGTH.
+ * The screen's item 8 block carries more prose than code, and every name this
+ * file searches for -- `wantCp`, `cpNone`, `setCompetentPersonName` -- is also
+ * written in the notes ABOUT that code. A bare search over the raw source
+ * cannot tell the rule from the paragraph explaining the rule, and this repo
+ * has twice shipped a source assertion that passed on its own comment prose.
+ *
+ * NEGATIVE ASSERTIONS ARE WHY IT IS NEEDED NOW RATHER THAN MERELY TIDY. The
+ * chip gate below is asserted partly by what the screen no longer does, and a
+ * note explaining a removal names the thing removed.
+ *
+ * The raw `SCREEN` is still used where the assertion is about a REASON being
+ * written down -- those have to read the comment, because the comment is the
+ * subject.
+ */
+const CODE = (s) => s
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(?<!:)\/\/.*$/gm, '');
+const SCREEN_CODE = CODE(SCREEN);
+
 let failures = 0;
 function ok(label, cond, hint) {
   if (cond) { console.log(`  ok   ${label}`); return; }
@@ -231,30 +254,102 @@ ok('finalized_by is NOT an anchor',
 console.log('\nthe screen');
 
 ok('one read serves both items',
-  (SCREEN.match(/getByProject\(projectId, SOURCE_LOG_TYPE, logDate\)/g) || [])
-    .length === 1,
+  (SCREEN_CODE.match(/getByProject\(projectId, SOURCE_LOG_TYPE, logDate\)/g)
+    || []).length === 1,
   'two reads are two chances to disagree about which link is the record');
 ok('the roster and the day are fetched independently',
-  /Promise\.allSettled/.test(SCREEN),
-  'Promise.all would let a 403 on the roster suppress item 2\'s offer');
+  /Promise\.allSettled/.test(SCREEN_CODE),
+  'Promise.all would let a 403 on the roster suppress item 4/5\'s offer');
+
+// ── THE EFFECT OUTLIVED THE ITEM THAT PROMPTED IT ──────────────────────────
+//
+// THIS ASSERTION NAMED `wantSummary`, AND ITEM 2 NO LONGER HAS AN INPUT. The
+// screen stopped collecting "general progress of work" -- see
+// siteSuperintendentSign.test.cjs section 8b for the operator's ruling and why
+// the DECLARATION stayed behind -- so the summary offer went with it.
+//
+// WHAT THE ASSERTION WAS FOR SURVIVES INTACT, which is why it is restated here
+// rather than deleted. The rule was never about item 2: it is that this ONE
+// effect serves several items and each offer is guarded on ITS OWN field, so a
+// superintendent who has answered one of them still gets the others. That
+// remains exactly true of the two offers left -- item 8's competent-person
+// default and items 4/5's finding offers -- and it is the shape the effect
+// would lose first if someone folded the guards back into one.
+//
+// AND IT IS STILL THE TRIPWIRE ON DELETING THE EFFECT WHOLESALE. The effect
+// reads the CP's daily log, which is easy to read as "the item 2 autofill" and
+// remove alongside item 2. Item 8's default and items 4/5's offers are in it.
 ok('each offer is guarded on its OWN field',
-  /const wantSummary = /.test(SCREEN) && /const wantCp = /.test(SCREEN),
-  'a superintendent who typed his summary but not his competent person must '
-  + 'still get item 8\'s default');
+  /const wantCp = /.test(SCREEN_CODE) && /const wantFindings = /
+    .test(SCREEN_CODE),
+  'a superintendent who ticked "nothing to report" on findings must still get '
+  + 'item 8\'s default, and vice versa');
+ok('and item 2\'s offer is gone with item 2\'s input',
+  !/wantSummary/.test(SCREEN_CODE) && !/adoptableSummary/.test(SCREEN_CODE),
+  'an autofill with no field to fill would write a summary onto the payload '
+  + 'that nobody ever saw');
 ok('the default is never applied over a name already present',
-  /if \(wantCp && rows && people\)/.test(SCREEN));
+  /if \(wantCp && rows && people\)/.test(SCREEN_CODE));
 ok('a filed log gets no picker at all',
-  /\{locked \? \(\s*<Field s=\{s\} locked/.test(SCREEN),
+  /\{locked \? \(\s*<Field s=\{s\} locked/.test(SCREEN_CODE),
   'a picker over a frozen statutory record offers to change what cannot '
   + 'change');
 ok('free text is still reachable, one tap further in',
   /onManual=\{\(\) => \{ setCpPickerOpen\(false\); setCpManual\(true\); \}\}/
-    .test(SCREEN));
+    .test(SCREEN_CODE));
 ok('and the second tap survives the trip to /consent',
-  /competentPersonName, cpManual, cpNone, step,/.test(SCREEN)
-  && /setCpManual\(v\.cpManual === true\)/.test(SCREEN));
+  /competentPersonName, cpManual, cpNone, step,/.test(SCREEN_CODE)
+  && /setCpManual\(v\.cpManual === true\)/.test(SCREEN_CODE));
 ok('the picked name comes off the record',
-  /setCompetentPersonName\(person\.name \|\| ''\)/.test(SCREEN));
+  /setCompetentPersonName\(person\.name \|\| ''\)/.test(SCREEN_CODE));
+
+console.log('\n"nobody was designated" stops being offered once somebody is');
+
+// ── THE CHIP WAS UNCONDITIONAL, AND THAT PUT A CONTRADICTION ON SCREEN ─────
+//
+// "No competent person designated" rendered in the unlocked branch whatever
+// else was true, so after he picked a man the screen showed his name and, an
+// inch below it, a live control asserting that no name exists. One tap on it
+// WIPES the name he just chose -- the handler clears it, which is the right
+// thing to do when nothing is named and a silent deletion when something is.
+//
+// GATED ON THE NAME, NOT ON `cpNone`. The two cannot both be set: each handler
+// clears the other. Gating on `!cpNone` would hide the chip the moment it was
+// ticked -- the one state it MUST stay visible in, because that is the only
+// way back from a mistaken tick. Gating on the name keeps the ticked chip on
+// screen (the name is empty then) and removes it only when there is something
+// to contradict.
+//
+// buildData's "a name wins over the tick" is NOT this fix and is not asserted
+// here. It is the floor under a stale draft that somehow carries both; this is
+// the rule that stops the screen offering the tick in the first place.
+const cpBlock = SCREEN_CODE.slice(
+  SCREEN_CODE.indexOf("t('competentPersonHeading')"),
+  SCREEN_CODE.indexOf("t('signHeading')"));
+ok('the item 8 block is present to inspect', cpBlock.length > 400);
+ok('the chip is gated on there being no name',
+  /\{!competentPersonName\.trim\(\) \? \(/.test(cpBlock),
+  'an unconditional chip sits under the name it denies, one tap from '
+  + 'deleting it');
+// INSIDE THE GATE, MEASURED BY SLICING IT. The first draft of this asserted
+// `cpNoneDesignatedNote` was followed by `</>` within 40 characters -- which
+// was ALREADY TRUE of the ungated screen, because the note was the last thing
+// in the branch's fragment either way. It passed against the code it was
+// written to reject. This takes the gate's own body and asks what is in it, so
+// an absent gate yields an empty slice and fails by name.
+const gated = cpBlock.slice(
+  cpBlock.indexOf('{!competentPersonName.trim() ? ('),
+  cpBlock.indexOf(') : null}', cpBlock.indexOf('{!competentPersonName')));
+ok('and the gate wraps the note as well as the chip',
+  /cpNoneDesignated'\)/.test(gated) && /cpNoneDesignatedNote/.test(gated),
+  'the note explains the chip — leaving it outside would strand a sentence '
+  + 'about a control that is no longer on screen');
+ok('the tick still clears the name, and is still reachable to untick',
+  /if \(next\) \{ setCompetentPersonName\(''\); setCpManual\(false\); \}/
+    .test(cpBlock)
+  && /const next = !cpNone;/.test(cpBlock),
+  'gating on `!cpNone` instead would hide the only way back from a mistaken '
+  + 'tick');
 
 console.log('\nthe picker was reused, not forked');
 
