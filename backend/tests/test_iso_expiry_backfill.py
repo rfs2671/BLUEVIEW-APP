@@ -75,14 +75,31 @@ class ItRecoversTheTwelveAndNothingElse(unittest.TestCase):
                          datetime(2027, 10, 3, tzinfo=timezone.utc))
         self.assertIsNone(p["set"]["expiration_raw_rejected"])
 
-    def test_the_three_ambiguous_shapes_are_left_for_the_human(self):
-        for raw in ("10272029", "062427", "05/35"):
+    def test_the_two_ambiguous_shapes_are_left_for_the_human(self):
+        """`10272029` LEFT THIS LIST, and the widened parser is why -- see
+        TheAmbiguousShapesStayRefused in test_iso_expiry_widening.py for the
+        argument (a bounded year makes eight digits unambiguous by
+        construction). The row below asserts it now RECOVERS, so the shape is
+        still tested rather than quietly dropped.
+
+        `062427` and `05/35` carry no four-digit year and stay refused: one
+        reading of `062427` is an EXPIRED card and the other is not."""
+        for raw in ("062427", "05/35"):
             p = plan_for_worker(worker(cert(raw)), NOW)[0]
             self.assertEqual(p["action"], "leave", raw)
             self.assertIsNone(p["recovered"], raw)
             self.assertEqual(p["after"]["review_reason"], "EXPIRY_UNPARSEABLE")
             self.assertTrue(p["after"]["needs_review"])
             self.assertEqual(p["set"], {}, f"{raw!r} must produce NO write")
+
+    def test_the_eight_digit_shape_is_RECOVERED_now(self):
+        """Juan Lopez's row, through the SAME planner. It was on the refused
+        list above until the parser gained the bounded eight-digit form."""
+        p = plan_for_worker(worker(cert("10272029")), NOW)[0]
+        self.assertEqual(p["action"], "recover")
+        self.assertEqual(p["recovered"],
+                         datetime(2029, 10, 27, tzinfo=timezone.utc))
+        self.assertIsNone(p["set"]["expiration_raw_rejected"])
 
     def test_illegible_and_null_are_left_too(self):
         for raw in ("illegible", "null"):
@@ -204,8 +221,14 @@ class TheImageLockIsReportedPerRow(unittest.TestCase):
         self.assertTrue(p["img_locks"])
 
     def test_a_row_left_alone_never_locks_an_image(self):
+        """`062427`, NOT `10272029`. The eight-digit shape was this test's
+        left-alone example and it is now RECOVERED, which would have made the
+        assertion pass or fail for a reason that has nothing to do with images.
+        `062427` is still refused by the parser, so the row is still left and
+        the image is still replaceable -- which is what this measures."""
         p = plan_for_worker(
-            worker(cert("10272029"), osha_card_r2_key="cards/x.jpg"), NOW)[0]
+            worker(cert("062427"), osha_card_r2_key="cards/x.jpg"), NOW)[0]
+        self.assertEqual(p["action"], "leave")
         self.assertTrue(p["img_after"])
         self.assertFalse(p["img_locks"])
 

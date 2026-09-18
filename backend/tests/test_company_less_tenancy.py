@@ -284,8 +284,27 @@ class GateIsUntouched(unittest.TestCase):
         are documented input/roster errors; the number going UP is the signal
         worth failing on. If a change legitimately adds or removes one, update
         the number here deliberately and say why in the diff.
+
+        ── register_and_checkin 5 -> 6, DELIBERATELY ─────────────────────────
+
+        The sixth is CARD_EVIDENCE_REQUIRED: a NEW registration that carries no
+        card photo, no typed card number and no typed expiry is refused. This
+        endpoint read all three with plain `data.get(...)` and raised nothing
+        when every one of them was absent, so the gate page's own step-1 guard
+        was the only thing that ever asked -- and a cached page, a retried
+        submit or any other client could create a worker with a name, a
+        signature and no credential evidence of any kind, leaving a record that
+        could not say whether the card was unreadable or never presented.
+
+        IT IS NOT A NEW REFUSAL ON A RETURNING WORKER, which is what this pin
+        exists to catch. It sits inside `if not worker:` -- the returning quick
+        path legitimately posts no card evidence, and falling back to the
+        stored read is what the rest of that change is about. It accepts
+        exactly what the screen offers: a photo, a number, OR an expiry, the
+        same three `hasManualCardDetails()` accepts, so nobody who did what the
+        page told him is refused by the API.
         """
-        expected = {"register_and_checkin": 5, "submit_checkin": 6}
+        expected = {"register_and_checkin": 6, "submit_checkin": 6}
         tree = ast.parse(SERVER_SRC)
         actual = {}
         for node in ast.walk(tree):

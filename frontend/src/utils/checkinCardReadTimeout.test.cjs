@@ -211,24 +211,51 @@ async function thrown(fakeResponse) {
     'a timeout is reported to the gate telemetry under its own kind');
   ok(timeoutEntry.msg === 'cardReadTimeout',
     'the timeout shows its own translated sentence');
-  // THE INVARIANT IS "DID AN ANSWER ARRIVE", NOT "IS IT THE TIMEOUT CODE".
+  // THE INVARIANT IS "WOULD ANOTHER TAP HAVE A DIFFERENT CHANCE", NOT "IS IT
+  // THE TIMEOUT CODE" — AND NOT, ANY MORE, "DID AN ANSWER ARRIVE".
   //
-  // This block used to read `every non-timeout entry has retake === false`,
-  // which was true when CARD_READ_TIMEOUT was the only no-answer case. It is
-  // not any more: the client's own ceiling and a dropped connection are both
-  // "no answer arrived" and both must go back to the camera. Written as the
-  // rule, so the next code added is classified rather than grandfathered.
+  // This block first read `every non-timeout entry has retake === false`, which
+  // was true when CARD_READ_TIMEOUT was the only no-answer case. It was then
+  // restated as "did an answer arrive", which covered the client's own ceiling
+  // and a dropped connection. That is still a PROXY, and CARD_READ_BUSY is
+  // where the proxy breaks: a 429 IS an answer and another tap is still the
+  // right move. So the rule is written as the question it was always standing
+  // in for, in two named categories, so the next code added is classified
+  // rather than grandfathered.
   const NO_ANSWER = [
     'CARD_READ_TIMEOUT', 'CLIENT_TIMEOUT', 'CLIENT_NETWORK', 'GATEWAY_NO_ANSWER',
   ];
+  // ── AND ONE ANSWER THAT IS NOT ABOUT THIS REQUEST ────────────────────────
+  //
+  // THE RULE RESTATED ONTO ITS MEANING, because "did an answer arrive" turned
+  // out to be a proxy for the real question and the proxy broke. What the
+  // retake disposition is actually deciding is: WILL THE SAME PHOTOGRAPH HAVE A
+  // DIFFERENT CHANCE ON THE NEXT TAP?
+  //
+  // A 429 answers. It is also the provider declining to LOOK at the request —
+  // not billed, not a verdict on the image, and measured twice in a row on a
+  // real stored card on 2026-09-18. The server already retried it once with a
+  // backoff and is only reporting CARD_READ_BUSY because it was STILL busy, so
+  // another tap seconds later is the best thing the worker can do. Classified
+  // here as a category rather than added to NO_ANSWER, because it is NOT true
+  // that no answer arrived and a list that said so would be a lie a later
+  // reader would act on.
+  const STILL_WORTH_A_RETAKE = ['CARD_READ_BUSY'];
+  const RETAKE = NO_ANSWER.concat(STILL_WORTH_A_RETAKE);
   NO_ANSWER.forEach((code) => {
     const v = CARD_CODES[code];
     ok(!!v && v.retake === true,
       `${code} means no answer arrived, so it puts the worker back at the camera`);
   });
-  const answered = Object.entries(CARD_CODES).filter(([c]) => !NO_ANSWER.includes(c));
+  STILL_WORTH_A_RETAKE.forEach((code) => {
+    const v = CARD_CODES[code];
+    ok(!!v && v.retake === true,
+      `${code} answered, but not about this photo — so the camera comes back`);
+  });
+  const answered = Object.entries(CARD_CODES).filter(([c]) => !RETAKE.includes(c));
   ok(answered.length > 0 && answered.every(([, v]) => v.retake === false),
-    'a card failure the provider ANSWERED sends the worker to manual entry');
+    'a card failure that is a VERDICT on the request sends the worker to '
+    + 'manual entry');
   // EVERY entry is classified. A code with no `retake` at all is falsy, which
   // reads as "manual entry" — a silent default on the branch that decides
   // whether the worker gets a way back to the camera.
@@ -359,10 +386,11 @@ async function thrown(fakeResponse) {
     ok(esHas, `Spanish has a real ${key} sentence`);
   });
 
-  // AND EVERY "NO ANSWER" SENTENCE NAMES THE RETRY, in both languages. The
+  // AND EVERY SENTENCE BEHIND A RETAKE NAMES THE RETRY, in both languages. The
   // outage's message named no way out at all; a retry the copy does not
-  // mention is a retry the worker does not know he has.
-  NO_ANSWER.forEach((code) => {
+  // mention is a retry the worker does not know he has. RETAKE and not
+  // NO_ANSWER, because CARD_READ_BUSY sends him back to the camera too.
+  RETAKE.forEach((code) => {
     const key = (CARD_CODES[code] || {}).msg;
     if (!key) return;
     const enS = (en.match(new RegExp(`${key}:\\s*'([^']*)'`)) || [])[1] || '';

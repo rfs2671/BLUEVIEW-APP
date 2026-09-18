@@ -152,15 +152,30 @@ class IsoDatesAreAccepted(unittest.TestCase):
 class TheAmbiguousShapesStayRefused(unittest.TestCase):
     """DO NOT RELAX THIS CLASS TO MAKE A ROW GO AWAY.
 
-    `10272029` reads as 27 October 2029 only to someone who ALREADY assumes
-    month-day-year; the string itself does not say. `062427` is 06/24/2027 or
-    06/24/1927 and one of those is an expired card. `05/35` is May 2035, or
-    May the 35th -- itself impossible -- with the year lost. Each needs a human
-    with the card in his hand, which is Build 2 and a separate change.
+    `062427` is 06/24/2027 or 06/24/1927 and ONE OF THOSE IS AN EXPIRED CARD.
+    `05/35` is May 2035, or May the 35th -- itself impossible -- with the year
+    lost. Neither carries a four-digit year, so nothing in the string forces
+    one reading. Each needs a human with the card in his hand.
+
+    ── `10272029` LEFT THIS CLASS, AND THE RULE DID NOT CHANGE ────────────────
+
+    It was the third member here, refused on the ground that "the string itself
+    does not say" which field comes first. That is true of eight digits and
+    FALSE of eight digits with a BOUNDED YEAR, which is what
+    `CERT_DATE_MIN_YEAR` now supplies: read as YYYYMMDD it is month 20, and the
+    string that would be this date in that order (`20291027`) is month 20 read
+    the other way, so no run of eight digits is a valid date both ways. The
+    reading is forced BY CONSTRUCTION -- the accepting side of this file's own
+    rule -- and the frontend's shared date field has read it that way since
+    PR #590, so the same string was a date on one screen and unreadable here.
+
+    MOVED, NOT DELETED. It is asserted on the ACCEPTED side below, because a
+    shape that silently stops being tested is how the line moves without
+    anybody deciding to move it.
     """
 
-    def test_the_three_convention_only_shapes_are_refused(self):
-        for raw in ("10272029", "062427", "05/35"):
+    def test_the_two_convention_only_shapes_are_refused(self):
+        for raw in ("062427", "05/35"):
             self.assertIsNone(parse_cert_date(raw),
                               f"{raw!r} is unambiguous only BY CONVENTION")
             row = build(expiration=raw)
@@ -168,6 +183,18 @@ class TheAmbiguousShapesStayRefused(unittest.TestCase):
             self.assertEqual(row["expiration_raw_rejected"], raw)
             self.assertEqual(row["review_reason"], "EXPIRY_UNPARSEABLE")
             self.assertTrue(row["needs_review"])
+
+    def test_the_eight_digit_form_is_now_READ_and_the_year_bound_is_why(self):
+        """Juan Lopez's expiry, on the accepting side. The second assertion is
+        the argument, not a detail: reversed, the same digits are not a date,
+        so the reading this makes is not a choice between two readings."""
+        self.assertEqual(parse_cert_date("10272029"),
+                         datetime(2029, 10, 27, tzinfo=timezone.utc))
+        self.assertIsNone(parse_cert_date("20291027"))
+        row = build(expiration="10272029")
+        self.assertEqual(row["expiration_date"],
+                         datetime(2029, 10, 27, tzinfo=timezone.utc))
+        self.assertIsNone(row["expiration_raw_rejected"])
 
     def test_the_models_own_refusal_is_still_a_refusal(self):
         row = build(expiration="illegible")
@@ -183,12 +210,27 @@ class TheAmbiguousShapesStayRefused(unittest.TestCase):
         for raw in ("10/03/27", "27-10-03", "03-10-2027"):
             self.assertIsNone(parse_cert_date(raw), raw)
 
-    def test_the_parser_accepts_exactly_two_formats(self):
-        """A COUNT, so the next widening is a deliberate act. Adding a third
-        format breaks this test on purpose -- read the comment at
-        parse_cert_date before you change the number."""
+    def test_the_parser_accepts_exactly_TWO_STRPTIME_FORMATS_AND_ONE_REGEX(self):
+        """A COUNT, so the next widening is a deliberate act. Adding a format
+        breaks this test on purpose -- read the comment at parse_cert_date
+        before you change it.
+
+        BOTH HALVES, NOW. This asserted `CERT_DATE_FORMATS` alone, which WAS
+        the complete acceptance set when the parser was nothing but that loop.
+        It is not any more: the eight-digit MMDDYYYY form is a regex beside it
+        (see CERT_DATE_PADDED_US_RE), and an assertion about the tuple alone
+        would keep passing over a third, fourth and fifth shape added next to
+        it -- a count that no longer counts anything.
+        """
         self.assertEqual(tuple(server.CERT_DATE_FORMATS),
                          ("%m/%d/%Y", "%Y-%m-%d"))
+        self.assertEqual(server.CERT_DATE_PADDED_US_RE.pattern,
+                         r"^(\d{2})/?(\d{2})/?(\d{4})$")
+        self.assertEqual(
+            (server.CERT_DATE_MIN_YEAR, server.CERT_DATE_MAX_YEAR),
+            (1900, 2199),
+            "the year bound is what makes eight bare digits unambiguous; "
+            "widening it re-opens the YYYYMMDD reading")
 
     def test_the_rule_is_written_down_at_the_parser(self):
         """The next reader will see an obviously-legible date being sent to a
