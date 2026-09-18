@@ -46561,6 +46561,13 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
             where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
         quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip()[:400]
         line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
+        readings = (r.get("payload") or {}).get("count_readings")
+        if readings:
+            # Say it plainly and early: a model shown two numbers for one cell
+            # will otherwise pick the one that reads best in a sentence.
+            said = " and ".join(str(x.get("value")) for x in readings)
+            line += (f" (READINGS DISAGREE: {said}. Do not state either as the "
+                     f"quantity — say the sheet must be checked.)")
         if r.get("tier") == plan_extract.TIER_VISION:
             line += " (read off the image — say so if you use it)"
         elif r.get("tier") == plan_extract.TIER_OCR_GRID:

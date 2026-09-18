@@ -1197,7 +1197,62 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
             out.append({"name": meaning_of.get(mark) or mark, "tag": mark,
                         "count_if_stated": n, "count_basis": basis,
                         "location_hint": (sc.get("name") or "schedule")[:120]})
-    return out[:150]
+    return _mark_contested(out)[:150]
+
+
+# ── WHEN TWO READINGS OF ONE CELL DISAGREE, NEITHER IS THE VALUE ───────────
+#
+# M-200.00 is read TWICE: the vision model reads the schedule off the image,
+# and the grid OCR reads the same table out of its ruling lines. On the
+# re-index of 2026-09-18 they disagreed about one cell —
+#
+#     ROOMS PTAC UNITS SCHEDULE, PTAC-2, QTY:  vision 9, OCR 6
+#
+# — and every other cell of both rows agreed exactly. The sheet prints 9.
+#
+# The OCR reading won, because `ocr_grid_cell` outranks `vision_read`, so a
+# superintendent asking how many PTAC-2 units would have been told SIX and
+# shown it as a printed schedule cell. That is the `41 PTAC units` failure in
+# a new costume: not a model summing what no cell prints, but one reader
+# misreading a digit and being believed because of its badge.
+#
+# THERE IS NO BASIS FOR PICKING A WINNER. A tier says how a number was come
+# by, not whether it is right, and the pass before this one had the two
+# readings agreeing 42 of 42 — so the tier order is not evidence about which
+# reader is correct on the cell where they differ.
+#
+# So the disagreement itself becomes the fact. Both readings are kept, both
+# are marked contested, and retrieval refuses to quote either as a value: the
+# crew is told the sheet shows a quantity, that the readings disagree, and to
+# check the sheet. That is strictly more useful than a confident wrong number,
+# and it is the only thing the data supports.
+def _mark_contested(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flag every element whose cell another reading of the same cell disputes."""
+    by_cell: Dict[tuple, List[Dict[str, Any]]] = {}
+    for el in elements:
+        if el.get("count_if_stated") is None:
+            continue
+        if el.get("count_basis") not in _SCHEDULE_BASES:
+            continue        # a tag count and a schedule row are not one cell
+        key = ((el.get("tag") or "").strip().upper(),
+               (el.get("location_hint") or "").strip().upper())
+        by_cell.setdefault(key, []).append(el)
+    for key, group in by_cell.items():
+        values = {int(e["count_if_stated"]) for e in group}
+        if len(values) < 2:
+            continue
+        readings = sorted(
+            {(int(e["count_if_stated"]), str(e.get("count_basis"))) for e in group})
+        for e in group:
+            e["count_contested"] = True
+            e["count_readings"] = [{"value": v, "read_by": b} for v, b in readings]
+    return elements
+
+
+# The bases that mean "a cell of a schedule". A tag counted on the plan and a
+# schedule row are two different facts about the same mark, not two readings
+# of one cell, and they are allowed to differ without either being wrong.
+_SCHEDULE_BASES = frozenset({"schedule_qty", "ocr_schedule_qty", "vision_read"})
 
 
 _QTY_HEADER_WORDS = ("qty", "quantity", "no.", "number", "count", "total")
