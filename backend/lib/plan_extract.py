@@ -55,12 +55,19 @@ API key.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import random
 import re
 from collections import Counter
 from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, FrozenSet, List, Optional, Tuple
+
+#: Bound here so a test can replace it. Sleeping for real in a suite that runs
+#: eight thousand tests would trade minutes for nothing: what matters is HOW
+#: LONG was asked for, and that is asserted on the argument.
+sleep = asyncio.sleep
 
 EXTRACTION_VERSION = 3
 
@@ -761,6 +768,60 @@ def _call_failed_flag(exc: Exception) -> str:
     return base
 
 
+# ── WAITING, BECAUSE THE PROVIDER SAID NO ──────────────────────────────────
+#
+# MEASURED ON THE RE-INDEX OF 2026-09-18, 18:48-21:11Z: 55 of 91 failed
+# section calls were ProviderStatus:429 and a further 24 were BudgetExhausted
+# spent re-asking into them. 53 of 129 pages lost a section, against 33 the
+# night before. The first 40 pages lost NOTHING — #605's retry works when the
+# provider answers — and then two windows, 19:25-19:58 and 20:42-20:43, took
+# everything in them.
+#
+# The refusals track the CLOCK, not the file: AR - 3.28.25.pdf had 8 pages
+# refused and 18 not, same file, same sheets, minutes apart. Concurrency is
+# ruled out — the account allows 200 per model and the indexer peaks at nine —
+# and so is request rate: 14 rapid probe calls all returned 200 while the
+# indexer was still losing sections.
+#
+# So a 429 is weather, and the only useful response to weather is to wait.
+# Re-asking on the spot cannot succeed and spends the page budget that the
+# sections behind it need.
+#
+# THE NUMBERS ARE CONSERVATIVE ON PURPOSE. Not one of those 55 refusals left a
+# body or a header behind — the raise site discarded them, which is what the
+# capture in this branch fixes — so nothing here is tuned to an observed
+# Retry-After. When a real one arrives it is OBEYED, and these defaults become
+# the fallback they were always meant to be.
+RETRY_BASE_SECONDS = 2.0
+#: Doubling, so the third wait is 8s. Past that the page's own cap bites first.
+RETRY_BACKOFF_FACTOR = 2.0
+#: Jitter is a FRACTION of the wait, not a constant: a fleet that all woke at
+#: t+2.0 would rebuild the burst it is backing off from.
+RETRY_JITTER = 0.25
+#: WHAT A THROTTLED PAGE MAY SPEND WAITING, in total. The point is that it
+#: DEGRADES rather than burning everything: past this it stops waiting, stops
+#: retrying, and finishes with the sections it has and a flag saying why. A
+#: page that sat out the whole window would starve every page behind it.
+RETRY_WAIT_CAP_SECONDS = 20.0
+
+
+def retry_wait_seconds(attempt: int, retry_after: Optional[float] = None,
+                       rand: Optional[Callable[[], float]] = None) -> float:
+    """How long to wait before asking again. Deterministic given `rand`.
+
+    `retry_after` is what the provider ASKED for and it wins outright — a
+    number we chose can only be a guess about a limit we cannot see. It is
+    still bounded by the page cap, because a provider asking for five minutes
+    is telling us this page is not going to be indexed in this pass.
+    """
+    if retry_after is not None and retry_after >= 0:
+        return min(float(retry_after), RETRY_WAIT_CAP_SECONDS)
+    base = RETRY_BASE_SECONDS * (RETRY_BACKOFF_FACTOR ** max(0, attempt - 1))
+    roll = (rand or random.random)()
+    return min(base * (1.0 + RETRY_JITTER * (2.0 * roll - 1.0)),
+               RETRY_WAIT_CAP_SECONDS)
+
+
 def flag_is_retryable(section_flags: List[str]) -> bool:
     """A second ask is for silence, never for an answer we did not like.
 
@@ -795,6 +856,13 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
     sections: Dict[str, Dict[str, Any]] = {}
     flags: Dict[str, List[str]] = {}
     raw: Dict[str, str] = {}
+    #: section -> the Retry-After the provider sent, or None when it refused
+    #: without saying. Only 429s are recorded: a timeout is not a rate limit,
+    #: and waiting out a timeout would spend budget for no reason.
+    waits: Dict[str, Optional[float]] = {}
+    spent_waiting = 0.0
+    waits_taken = 0
+    waited_note = ""
 
     async def _one_section(name: str) -> None:
         """Ask for one section and record what came back, in place."""
@@ -806,6 +874,11 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
             sections[name] = {}
             flags[name] = [_call_failed_flag(e)]
             raw[name] = ""
+            # What the provider asked for, when it asked for anything. The
+            # flag string cannot carry a float and should not try; this is
+            # read by the retry pass below and by nothing else.
+            if getattr(e, "status", None) == 429:
+                waits[name] = getattr(e, "retry_after", None)
             return
         content = content or ""
         raw[name] = content[:RAW_CAP]
@@ -849,7 +922,44 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
         if not flag_is_retryable(flags.get(name) or []):
             continue
         before = list(flags.get(name) or [])
+        if name in waits:
+            # ── A RATE LIMIT IS THE ONE FAILURE WAITING HELPS ──────────────
+            #
+            # A timeout means the model took too long on THIS page; asking
+            # again immediately is reasonable. A 429 means the provider is
+            # refusing everyone, and the same question a millisecond later
+            # gets the same answer. Only this branch sleeps.
+            # THE EXPONENT COUNTS THIS PAGE'S WAITS, not this section's. A
+            # section is re-asked once, so an attempt counter tied to the
+            # section would be 1 every time and the backoff would be a flat
+            # two seconds wearing the word 'exponential'. Counting the page's
+            # refusals is what the curve is actually about: the first throttled
+            # section waits ~2s, the second ~4s, the third ~8s, because each
+            # one is further evidence that the window has not passed.
+            #
+            # COUNTED IN A VARIABLE, NOT READ BACK OFF THE FLAGS. `_one_section`
+            # REPLACES `flags[name]` wholesale, so a marker written before the
+            # retry is gone by the time the next section looks for it: the
+            # count stayed at zero, every wait was the flat two seconds, and
+            # the page cap was never reached. The flags are a record of what
+            # happened; they are not where state lives.
+            waits_taken += 1
+            wait = retry_wait_seconds(waits_taken, waits.get(name))
+            if spent_waiting + wait > RETRY_WAIT_CAP_SECONDS:
+                # DEGRADE, DO NOT BURN. The page keeps what it has, says it
+                # was rate limited, and leaves the provider to the pages
+                # behind it rather than holding the queue open.
+                waits_taken -= 1
+                flags[name] = before + ["rate_limited_gave_up"]
+                continue
+            spent_waiting += wait
+            waited_note = f"waited:{wait:.1f}s"
+            await sleep(wait)
         await _one_section(name)
+        if waited_note:
+            # Re-applied AFTER the ask, because the ask overwrites the flags.
+            flags[name] = list(flags.get(name) or []) + [waited_note]
+            waited_note = ""
         after = flags.get(name) or []
         # Say that it was asked twice, and whether the second ask helped. A
         # retry that fails is not the same event as a section never retried,
