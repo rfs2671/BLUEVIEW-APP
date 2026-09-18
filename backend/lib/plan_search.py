@@ -479,8 +479,168 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
     return ok
 
 
-def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]]
-                       ) -> Tuple[bool, List[str]]:
+# A CLAUSE IS WHERE A NUMBER MEETS ITS SUBJECT.
+#
+# "PTAC-1: 21, PTAC-2: readings disagree, PTAC-3: 11" is one sentence and three
+# claims, so a sentence is too coarse a unit — bound at sentence level, 21
+# would vouch for PTAC-3. Commas, semicolons, dashes, newlines and bullets all
+# separate claims in the answers this model writes.
+#
+# ' and ' is deliberately NOT a separator: "12 and 1/2 inches" is one value,
+# and splitting there would break a dimension to catch a count.
+#
+# NEITHER IS ':'. A colon BINDS a label to its value \u2014 "PTAC-1: 21" is one
+# claim, and splitting there put the mark in one clause and its own quantity
+# in the next, so the TRUE answer was refused. Caught by the first smoke test
+# against real records, which is why the separators are written out one at a
+# time rather than reached for as a set.
+_CLAUSE_SPLIT = re.compile(r"[.;,!?\n\r]+|\s[-\u2013\u2014]\s|\s[\u2022*]\s")
+
+
+def _clauses(text: str) -> List[str]:
+    return [c for c in _CLAUSE_SPLIT.split(text or "") if c.strip()]
+
+
+def _record_values(r: Dict[str, Any]) -> set:
+    """Every number this one record can vouch for, from what it says."""
+    out = set(_values(r.get("quote") or ""))
+    payload = r.get("payload")
+    if isinstance(payload, dict):
+        for v in payload.values():
+            if isinstance(v, (str, int, float)):
+                out.update(_values(str(v)))
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, (str, int, float)):
+                        out.update(_values(str(item)))
+                    elif isinstance(item, list):
+                        for cell in item:
+                            out.update(_values(str(cell)))
+    return out
+
+
+def _citation_values(r: Dict[str, Any]) -> set:
+    """A sheet number, a job number and an issue date are how an answer says
+    where it came from. A gate that reads them as claims fails every well-cited
+    answer, so they are allowed in any clause."""
+    out: set = set()
+    for field in ("sheet_number", "filing_id", "issued_date"):
+        out.update(_values(str(r.get(field) or "")))
+    return out
+
+
+def _values_by_ident(records: Sequence[Dict[str, Any]]) -> Dict[str, set]:
+    """What each named thing — a mark, a schedule — can vouch for.
+
+    ── A SCHEDULE IS ABOUT EVERY MARK IT LISTS, ROW BY ROW ────────────────
+    #
+    # Indexing a schedule under its NAME alone refused true answers. Measured
+    # 2026-09-18: asked "number of PTAC-2", retrieval returns the ROOMS PTAC
+    # UNITS SCHEDULE but not the individual PTAC-1 element, so a clause saying
+    # "PTAC-1: 21" named a thing no returned record was indexed under — and 21
+    # is printed in that schedule, in PTAC-1's own row.
+    #
+    # So each ROW is indexed under the mark in its first cell. Row by row and
+    # not grid-wide, because grid-wide would let PTAC-3 borrow PTAC-1's 21 —
+    # a smaller hole than the one being closed, but the same kind, and the
+    # rows are right there.
+    #
+    # This does NOT reopen the contested cell. That schedule carries 21 and 11
+    # and neither 6 nor 9, because PTAC-2's QTY was written as '(readings
+    # disagree)' rather than as a digit. The rule that keeps a contested cell
+    # out of the grid is what makes this safe, and if it ever wrote a number
+    # there instead, this would leak.
+    """
+    out: Dict[str, set] = {}
+    for r in records or []:
+        if (r.get("payload") or {}).get("count_contested"):
+            continue
+        key = _attribute_key(r)
+        if key is None:
+            continue
+        out.setdefault(key[2], set()).update(_record_values(r))
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        for row in (payload.get("rows") or []):
+            if not isinstance(row, list) or not row:
+                continue
+            mark = re.sub(r"\s+", " ", str(row[0] or "")).strip().upper()
+            # ── A ROW NUMBER IS NOT A SUBJECT ──────────────────────────────
+            #
+            # Many grids number their rows, so `row[0]` is often just '1', '2',
+            # '9'. Indexed as idents those are catastrophic and CIRCULAR: the
+            # clause "There are 9 PTAC-2 units" names the ident '9', which
+            # holds the value 9, and the number vouches for itself. Measured
+            # exactly that way on 'number of PTAC-2', where a numbered row let
+            # both 6 and 9 back through.
+            #
+            # This is the FA-001 mistake in a second place — there a row index
+            # merged into a description cell and read as a sprinkler count.
+            # A thing a drawing NAMES has a letter in it.
+            if not any(ch.isalpha() for ch in mark):
+                continue
+            vals: set = set()
+            for cell in row:
+                vals.update(_values(str(cell)))
+            out.setdefault(mark, set()).update(vals)
+    return out
+
+
+def _idents_named_in(clause: str, idents: Iterable[str]) -> List[str]:
+    """Which of these things the clause actually names, as whole words."""
+    found = []
+    for ident in idents:
+        # Belt to the braces above: an ident with no letter cannot be named by
+        # a clause without the digit itself doing the naming, which is the
+        # circularity this gate exists to stop.
+        if not ident or not any(ch.isalpha() for ch in ident):
+            continue
+        pattern = _ALNUM_BEFORE + re.escape(ident) + _ALNUM_AFTER
+        if re.search(pattern, clause or "", re.I):
+            found.append(ident)
+    return found
+
+
+def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
+                           ) -> Tuple[bool, List[str]]:
+    """Every quantity must come from a record about the thing it counts.
+
+    ── WHY THE UNION WAS NOT ENOUGH ───────────────────────────────────────
+    #
+    # `_supported_values` asks whether a number appears in ANY returned record.
+    # Measured on 588 Boyland 2026-09-18, with the contested PTAC-2 record
+    # correctly excluded, the gate still passed "There are 9 PTAC-2 units":
+    # the 9 came from a DCDA & RPZ backflow schedule's unverified cells, and
+    # on another phrasing from the Sheet List Table. A zoning table vouched
+    # for the 6. Nothing about those records is about PTAC-2 — they merely
+    # contained the digit.
+    #
+    # So a quantity is checked against the values of the things its own clause
+    # NAMES. A clause that names nothing states a quantity of nothing, which
+    # is the exact shape of an invented count, and it is refused.
+    #
+    # RESIDUE, recorded rather than papered over: a clause that names two marks
+    # may borrow either one's numbers. Splitting further would break dimensions
+    # like "12 and 1/2 inches", and the narrower rule is the one that can be
+    # explained to somebody holding the drawing.
+    """
+    by_ident = _values_by_ident(records)
+    citations: set = set()
+    for r in records or []:
+        citations |= _citation_values(r)
+    unsupported: List[str] = []
+    for clause in _clauses(text):
+        said = _values(clause)
+        if not said:
+            continue
+        allowed = set(citations)
+        for ident in _idents_named_in(clause, by_ident.keys()):
+            allowed |= by_ident[ident]
+        unsupported.extend(v for v in said if v not in allowed)
+    return (not unsupported), unsupported
+
+
+def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]],
+                       intent: str = "") -> Tuple[bool, List[str]]:
     """(ok, the numbers nothing returned can vouch for).
 
     A CHECK ON THE OUTPUT, not an instruction in a prompt. The model composes;
@@ -489,6 +649,17 @@ def answer_is_grounded(text: str, records: Sequence[Dict[str, Any]]
     said = _values(text)
     if not said:
         return True, []
+    # A COUNT IS BOUND TO ITS SUBJECT; EVERYTHING ELSE KEEPS THE UNION.
+    #
+    # The failure measured was a quantity — "9 PTAC-2 units" — and the bound
+    # rule is written for that shape. An attribute answer quotes a note or a
+    # cell whose number often belongs to no mark at all: of the ten suite
+    # cases stating a number, eight bind to a mark or a schedule and the two
+    # that do not (a 42" parapet, a 1,970 sf recreation area) are both
+    # attribute cases. Applying the bound rule to them would refuse two true
+    # answers to catch nothing.
+    if (intent or "").strip().lower() == "count":
+        return _count_answer_is_bound(text, records)
     ok = _supported_values(records)
     unsupported = [v for v in said if v not in ok]
     return (not unsupported), unsupported
