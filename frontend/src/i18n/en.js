@@ -1529,15 +1529,13 @@ export default {
     departedNextDay: 'I left after midnight, on the following day',
     departedNextDayNote: 'Tick this only if your departure time falls on the day AFTER this log’s date. Nothing works it out from the two times — a 20:00 arrival and a 20:30 departure the next evening look the same either way.',
 
-    progressLabel: 'GENERAL PROGRESS OF WORK',
-    progressPlaceholder: 'What the job advanced today',
-    // SAYS WHOSE SENTENCE IT IS, AND WHAT SIGNING WILL MEAN. BC 3301.13.13
-    // item 2 does not require him to have composed it -- it requires the
-    // information to be in his log over his signature -- so adopting is
-    // legitimate and the note frames it as a check rather than a warning.
-    // "Edit it if the day looked different to you" invites the change without
-    // implying the CP got it wrong.
-    progressAdoptedNote: "Taken from the CP's daily jobsite log for this date. Signing makes it your account of the day — edit it if the day looked different to you.",
+    // ITEM 2'S THREE STRINGS ARE GONE WITH ITS FIELD. `progressLabel`,
+    // `progressPlaceholder` and `progressAdoptedNote` -- the last of which
+    // said whose sentence it was, because the box was autofilled from the CP's
+    // daily jobsite log. That autofill was the clearest evidence the question
+    // was already answered elsewhere, and the operator removed the question.
+    // Copy for a control nobody can reach is a promise the screen no longer
+    // keeps; the DECLARATION stays, so filed logs still print item 2.
     activitiesLabel: 'WHAT YOU DID, AND WHERE',
     // ONE BOX NOW. The old placeholder here asked for the SECOND box's subject
     // ("Areas and floors you inspected") while the second box's LABEL asked for
@@ -1604,8 +1602,12 @@ export default {
     cpTypedPlaceholder: 'Their full name',
     competentPersonNote: 'Their name goes on the record. Their signature is not collected in this release — the log states that rather than leaving a blank a reader would take for "nobody was designated".',
 
-    scopeHeading: 'Not collected in this release',
-    scopeNote: 'These items are part of BC 3301.13.13 and this log states plainly that it does not carry them, rather than printing a blank a reader would take for "nothing to report".',
+    // `scopeHeading` / `scopeNote` ARE GONE WITH THE CARD THEY TITLED. They
+    // named the items this log does not collect so a reader would take the gap
+    // as scope -- but the reader they addressed is reading the FILED SHEET,
+    // and the sheet says it itself: _cs_register_rows prints "This log does
+    // not record the weekly meeting. It is kept elsewhere." with no help from
+    // this screen. The card was the same statement made to the wrong person.
 
     signHeading: 'Sign and freeze',
     signNote: 'Signing completes this log and locks it, as 3301.13.13 requires before you leave the site.',

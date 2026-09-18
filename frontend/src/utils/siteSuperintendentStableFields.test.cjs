@@ -262,7 +262,18 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
   //             siteSuperintendentSign.test.cjs, which now also checks that
   //             both models still DECLARE the field so filed records keep
   //             printing it.
-  ok(callSites('Field').length === 9, `Field is used at 9 call sites (found ${callSites('Field').length})`);
+  //    9 ->  8  ITEM 2's BOX WENT, "general progress of work". The same
+  //             manoeuvre as `result` one line up and for the same reason —
+  //             the answer was already recorded elsewhere. Here "elsewhere" is
+  //             the CP's daily jobsite log, whose `general_description` this
+  //             very field was AUTOFILLED from, note and all; he was typing
+  //             the day a second time. Item 3 beside it has no counterpart
+  //             (`areas_visited` was deleted from the daily log outright) and
+  //             stays. Asserted by its own test, section 8b of
+  //             siteSuperintendentSign.test.cjs, which also checks that both
+  //             models still declare item 2 `collected` so the six filed logs
+  //             keep printing what he wrote.
+  ok(callSites('Field').length === 8, `Field is used at 8 call sites (found ${callSites('Field').length})`);
   ok(callSites('TimeField').length === 3,
     `and the three that left are TimeField pickers (found ${callSites('TimeField').length})`);
   // NOT A FREE-TEXT BOX ANYWHERE NEAR A TIME. `placeholder="HH:MM"` was the

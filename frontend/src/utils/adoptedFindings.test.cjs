@@ -221,20 +221,33 @@ console.log('\nthe screen offers it only into an untouched, unattested item');
     'a superintendent who already said there was nothing to report must not '
     + 'find conditions appearing underneath it');
 
-  // ONE READ, NOW THREE ANSWERS. A second fetch would be a second chance to
+  // ONE READ, NOW TWO ANSWERS. A second fetch would be a second chance to
   // disagree about which link of an amended chain is the record.
+  //
+  // IT WAS THREE, AND ITEM 2's WAS REMOVED. The effect offered item 2 the CP's
+  // summary of the day; item 2's input came off the screen, so that offer went
+  // with it. Items 4/5 and item 8 still read this one document.
+  //
   // BOUNDED BY THE EFFECT'S OWN DEPENDENCY ARRAY, which is unique in the file.
   // The first attempt hunted for the NEXT `useEffect(` and landed inside this
   // one, because the DOB effect that follows opens identically — so the slice
   // held half an effect and the single-fetch count came out wrong. An anchor
   // that also matches the thing it is meant to stop at is not an anchor.
+  //
+  // AND THE ANCHOR NAMED `progress`, so removing item 2 from the dependency
+  // array broke the slice rather than any rule — offerEnd went to -1, the
+  // slice came back '' and two assertions failed for a reason that had nothing
+  // to do with findings. That is the cost of anchoring on a neighbour's name;
+  // `competentPersonName` is the one this effect cannot lose without ceasing
+  // to be itself.
   const offerAt = SCREEN.indexOf('const dailyOfferRef');
-  const offerEnd = SCREEN.indexOf('}, [loading, locked, progress,', offerAt);
+  const offerEnd = SCREEN.indexOf('}, [loading, locked, competentPersonName,',
+    offerAt);
   const offerEffect = offerAt < 0 || offerEnd < 0 ? ''
     : SCREEN.slice(offerAt, offerEnd);
   ok('the offer effect was located by its own dependency array',
     offerEffect.length > 400 && offerEffect.includes('designatedCpDefault'));
-  ok('it reads the SAME document items 2 and 8 read',
+  ok('it reads the SAME document item 8 reads',
     (offerEffect.match(/logbooksAPI\.getByProject\(/g) || []).length === 1
       && /adoptableFindings\(rows\)/.test(offerEffect),
     'a second fetch is a second chance to pick a different link of an '

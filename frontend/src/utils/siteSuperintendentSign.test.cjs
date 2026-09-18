@@ -661,9 +661,47 @@ console.log('\n7. THE DECLARED ITEMS ARE THE SOURCE OF TRUTH');
     'the screen reads the declared items rather than restating them');
   ok(/csUnanswered/.test(CODE(SCREEN)),
     'the submit gate mirrors the server rule');
-  ok(/'not_collected'/.test(CODE(SCREEN)),
-    'and items this release does not collect are NAMED as scope, not left '
-    + 'blank for a reader to take as an omission');
+  // ── THE SCOPE SENTENCE IS THE SHEET'S, AND WAS ASSERTED ON THE SCREEN ────
+  //
+  // This read `'not_collected'` out of the SCREEN and called it the thing that
+  // keeps item 10 from looking like an omission. The argument was right and
+  // the layer was wrong: the box on the sign step was a SECOND statement of
+  // something the filed document already says on its own, to a different
+  // reader, through code the screen never touches.
+  //
+  // `_cs_register_rows` substitutes the sentence for item 10 whenever
+  // `weekly_status` is absent, and NOTHING supplies one -- the only live
+  // caller is the filed-document render, which passes `logbook` and
+  // `attribution` and stops. So every sheet already filed prints it, and every
+  // sheet filed after the box was deleted prints exactly the same words.
+  //
+  // ASSERTED ON BOTH HALVES, because either alone is vacuous: the sentence
+  // could exist behind a branch nothing reaches, or the caller could start
+  // passing a status and leave the sentence stranded.
+  const SERVER = read('..', 'backend', 'server.py');
+  ok(/This log does not record '\s*\n?\s*'the weekly meeting\. It is kept elsewhere\./
+    .test(SERVER),
+    'the SHEET states item 10 is kept elsewhere, so a reader never meets a '
+    + 'blank there');
+  // EVERY `weekly_status=` IN THE FILE, NOT JUST THE ONE CALLER. A count or a
+  // single-call-site check would go quiet the day a second renderer appeared.
+  // The two defaults and the one pass-through are the whole population; any
+  // other value means something now supplies a status and the sentence below
+  // has stopped being what the sheet prints.
+  const wsArgs = (SERVER.match(/weekly_status=(\w+)/g) || [])
+    .map((m) => m.split('=')[1]);
+  ok(/def _cs_register_rows\(logbook, weekly_status=None/.test(SERVER)
+    && /_cs_register_rows\(\s*logbook, attribution=_cs_attr\)/.test(SERVER)
+    && wsArgs.length > 0
+    && wsArgs.every((v) => v === 'None' || v === 'weekly_status'),
+    'and no caller supplies `weekly_status`, so the fallback IS the printed '
+    + `sentence rather than a branch nothing reaches (got ${
+      JSON.stringify(wsArgs)})`);
+  ok(!/'not_collected'/.test(CODE(SCREEN)),
+    'the screen no longer keeps its own copy of that statement — a card the '
+    + 'superintendent scrolled past on his way to the signature, naming an '
+    + 'item he is not being asked about and that the document explains '
+    + 'without any help from him');
   ok(!/number: 1[01]/.test(CODE(SCREEN)) && !/'weekly_meeting'/.test(CODE(SCREEN)),
     'the screen does not hardcode item numbers or keys the model owns');
 }
@@ -694,15 +732,41 @@ console.log('\n8. THE NAV');
     'and the pill height is still composed from padding and icon only');
 }
 
-console.log('\n8b. STEP 2 IS GONE, AND ONLY `result` WENT WITH IT');
+console.log('\n8b. STEP 2 IS GONE, AND ITEM 2 HAS NOW GONE WITH IT');
 {
   const csCode = CODE(SCREEN);
 
-  // THE OPERATOR READ STEP 2 AS REDUNDANT AND WAS THREE-QUARTERS RIGHT.
-  // Items 2 and 3 are required BC 3301.13.13 items with NO counterpart --
-  // `areas_visited` on the CP's daily log is empty on all 55 filed records --
-  // so dropping either would print "not recorded" against a statutory item on
-  // every log, forever. They moved; they did not go.
+  // ── THE PREVIOUS RULING, AND WHY THIS ONE DIFFERS ────────────────────────
+  //
+  // WHAT THIS BLOCK USED TO SAY. The operator read step 2 as redundant and was
+  // "three-quarters right": `result` went, and items 2, 3 and 11 moved to the
+  // sign step. The reason given for keeping 2 and 3 was that both are required
+  // BC 3301.13.13 items with NO COUNTERPART -- `areas_visited` on the CP's
+  // daily log is empty on all 55 filed records -- so dropping either would
+  // print "not recorded" against a statutory item on every log, forever.
+  //
+  // THAT REASONING WAS RIGHT ABOUT ITEM 3 AND WRONG ABOUT ITEM 2, and the
+  // operator has now ruled accordingly. Item 2 is "the general progress of
+  // work at the job site", and it DOES have a counterpart: `general_description`
+  // on the CP's daily jobsite log, which is required there, filled there, and
+  // which this screen was already offering to item 2 as an autofill. The
+  // premise "no counterpart" was the one item 2 never satisfied -- the
+  // adoption machinery existed precisely because the counterpart does.
+  //
+  // ITEM 3 IS UNTOUCHED AND THE OLD ARGUMENT STILL CARRIES IT. `areas_visited`
+  // was afterwards deleted from the daily log's schema outright, so item 3's
+  // counterpart is not merely empty now, it is gone from the product. There is
+  // nothing to adopt and nothing to merge into. It stays.
+  //
+  // AND THE DECLARATION STAYED BEHIND, WHICH IS THE WHOLE SAFETY OF IT. Only
+  // the INPUT was removed. `progress` keeps `collected: True` and its `fields`
+  // in superintendent_log.py, so `item_state` never reaches its
+  // `collected` short-circuit and the six superintendent logs already filed go
+  // on printing the sentences he actually wrote. Flipping the flag would have
+  // replaced his words with "This log does not record this item" on records
+  // nobody may rewrite. See `daily_inspection.result` and
+  // `cs_activities.locations` for the same manoeuvre: the writer stops, the
+  // readers carry on.
   ok(/const TOTAL_STEPS = 3;/.test(csCode), 'three steps');
   ok(!/stepWork/.test(csCode), 'the work step is gone');
   const steps = csCode.slice(csCode.indexOf('const STEPS = ['),
@@ -713,19 +777,71 @@ console.log('\n8b. STEP 2 IS GONE, AND ONLY `result` WENT WITH IT');
     'stepRecord is NOT a step — it is rendered by the sign step, which is '
     + 'what puts item 2 beside the signature that adopts it');
 
-  // BOTH SURVIVING FIELDS ARE ON THE SIGN STEP, AND THE ADOPTION NOTE WITH
-  // THEM. Item 2 can arrive pre-filled from the CP's log; the one sentence
-  // that says "these are not your words" has to be on the screen where he
-  // signs them.
+  // THE TWO SURVIVING FIELDS ARE ON THE SIGN STEP. Item 3 is what he did and
+  // where; item 11 is the daily inspection's location. Both are his own
+  // account of his own day and neither is written down anywhere else.
   const rec = csCode.slice(csCode.indexOf('const stepRecord = () => ('),
     csCode.indexOf('const stepFindings'));
   ok(rec.length > 200, 'stepRecord is present to inspect');
-  for (const f of ['progressLabel', 'activitiesLabel', 'inspectionLocation']) {
+  for (const f of ['activitiesLabel', 'inspectionLocation']) {
     ok(rec.includes(f), `it carries ${f}`);
   }
-  ok(rec.includes('progressAdoptedNote'),
-    'the adoption note moved with item 2');
   ok(/\{stepRecord\(\)\}/.test(csCode), 'and the sign step renders it');
+
+  // ── ITEM 2'S INPUT IS GONE, NOT MERELY UNUSED ────────────────────────────
+  //
+  // ASSERTED ON THE WHOLE SCREEN, NOT ON `rec`. A field removed from
+  // stepRecord and left behind in state, in the snapshot or in buildData is
+  // the failure this is watching for: the payload would still carry a
+  // `progress` block, now filled by nothing but a restored draft, and the
+  // provenance flag would be computed against a box he never saw.
+  ok(!rec.includes('progressLabel') && !rec.includes('progressAdoptedNote'),
+    'the input and its adoption note are off the sign step');
+  // BUT buildData DOES STILL WRITE A `progress` KEY, AND MUST. An amendment
+  // inherits its parent's `data` and the autosave rewrites `data` wholesale,
+  // so a key this screen never writes is a key the CORRECTION loses — and item
+  // 2 has no second field to survive in. What it writes is the stored block,
+  // carried through untouched; it composes nothing. amendmentCarryForward
+  // .test.cjs runs the real hydrate and buildData and proves the round trip.
+  ok(!/progressBlock\(/.test(csCode) && !/progress: /.test(csCode)
+    && /\.\.\.writeCarried\('progress', carriedProgress\)/.test(csCode),
+    'buildData composes no `progress` block of its own — it carries the one '
+    + 'already stored, or writes no key at all');
+  ok(!/progressProvenance/.test(csCode) && !/PROVENANCE_ADOPTED/.test(csCode)
+    && !/adoptedText/.test(csCode) && !/setProgress\(/.test(csCode),
+    'the state, the snapshot, restore and hydrate went with it — a half-'
+    + 'removed field is a draft that restores into nothing');
+
+  // ── AND THE DECLARATION IS UNTOUCHED, WHICH IS WHAT MAKES IT SAFE ────────
+  //
+  // `item_state` returns NOT_COLLECTED on `collected` being false BEFORE it
+  // ever looks at the stored block. So flipping that flag does not quietly
+  // stop collecting item 2 going forward — it REWRITES what six filed logs
+  // print, replacing the superintendent's own sentences with "This log does
+  // not record this item" on documents that may not be changed.
+  //
+  // READ OUT OF ITEM 2's OWN DECLARATION, not looked for loose in the file.
+  // Ten other items carry `collected` and one of them (item 10) is false; a
+  // file-wide search would answer a question about item 2 with a fact about
+  // its neighbours. Each side is sliced from its own `progress` entry to the
+  // `cs_activities` entry that follows it.
+  const PY = read('..', 'backend', 'lib', 'logbook', 'superintendent_log.py');
+  const MODEL = read('src', 'utils', 'superintendentLogModel.js');
+  for (const [name, src, from, to] of [
+    ['superintendent_log.py', PY, '"key": "progress"', '"key": "cs_activities"'],
+    ['superintendentLogModel.js', MODEL, "key: 'progress'", "key: 'cs_activities'"],
+  ]) {
+    const at = src.indexOf(from);
+    const blk = at < 0 ? '' : src.slice(at, src.indexOf(to, at));
+    ok(blk.length > 40, `${name}: item 2's declaration is present to inspect`);
+    ok(/collected"?:\s*(True|true)/.test(blk),
+      `${name} still declares item 2 COLLECTED`);
+    ok(/summary/.test(blk),
+      `${name} still declares item 2's \`summary\` field`);
+    ok(/provenance"?:\s*(True|true)/.test(blk),
+      `${name} still declares item 2's provenance flag, so a filed record's `
+      + '`source` still prints the line that says where its text came from');
+  }
 
   // ── THE RENUMBER NEEDS A MIGRATION, AND CLAMPING IS NOT ONE ─────────────
   //
