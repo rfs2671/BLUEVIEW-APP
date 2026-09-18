@@ -18,6 +18,7 @@ from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 # perf_counter only — `time` itself is deliberately not a module-level
 # import here (see the local `import time as _time` further down).
 from time import perf_counter
@@ -44716,7 +44717,7 @@ async def _ocr_page_text(project_id: str, jpeg_bytes: bytes) -> Tuple[str, Optio
     """(text, flag). Called only for a page whose text layer is too thin to be
     a CAD export — a scan. Metered before the call, like every paid call."""
     if not _ocr_configured():
-        return "", "ocr_not_configured"
+        return "", "page_ocr_not_configured"
     await record_vision_call(db, endpoint=VISION_PLAN_INDEX_OCR, project_id=project_id)
     try:
         return (await asyncio.to_thread(_textract_lines, jpeg_bytes)) or "", None
@@ -44857,6 +44858,69 @@ class BudgetExhausted(RuntimeError):
     """
 
 
+# Everything a refusal might use to say WHICH limit was hit. DeepInfra sent no
+# rate-limit header at all on the 200s probed on 2026-09-18, so this list is
+# deliberately wider than one provider's documentation: a header we do not
+# expect is exactly the one worth seeing.
+_REFUSAL_HEADERS = (
+    "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining",
+    "x-ratelimit-reset", "x-ratelimit-limit-requests",
+    "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
+    "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens",
+    "x-ratelimit-reset-tokens", "ratelimit-limit", "ratelimit-remaining",
+    "ratelimit-reset", "x-request-id", "x-deepinfra-request-id",
+)
+# Enough of the body to carry a provider's message, and short enough that a log
+# line stays a log line. A refusal explains itself in its first sentence or not
+# at all.
+_REFUSAL_BODY_CHARS = 600
+
+
+def _retry_after_seconds(raw: Optional[str]) -> Optional[float]:
+    """Seconds to wait, from a header that may be seconds or an HTTP date.
+
+    Returns None when the provider did not say — which is not the same as zero,
+    and the difference decides whether a backoff has a number to obey or has to
+    invent one."""
+    if not raw:
+        return None
+    text = str(raw).strip()
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _refusal_detail(resp) -> Tuple[Dict[str, str], Optional[float], str]:
+    """(headers worth keeping, seconds to wait if stated, the body's first words).
+
+    Reads only; never raises. A capture step that can itself fail would turn a
+    provider's bad minute into our exception, which is the opposite of the
+    point."""
+    kept: Dict[str, str] = {}
+    try:
+        for name in _REFUSAL_HEADERS:
+            value = resp.headers.get(name)
+            if value is not None:
+                kept[name] = str(value)
+    except Exception:
+        pass
+    try:
+        body = (resp.text or "")[:_REFUSAL_BODY_CHARS]
+    except Exception:
+        body = ""
+    return kept, _retry_after_seconds(kept.get("retry-after")), body
+
+
 class ProviderStatus(RuntimeError):
     """A non-200 from the vision provider, carrying the status.
 
@@ -44865,9 +44929,27 @@ class ProviderStatus(RuntimeError):
     this request being wrong.
     """
 
-    def __init__(self, status: int, detail: str = ""):
+    def __init__(self, status: int, detail: str = "",
+                 retry_after: Optional[float] = None,
+                 headers: Optional[Dict[str, str]] = None):
         super().__init__(f"qwen status {status}{(': ' + detail) if detail else ''}")
         self.status = status
+        # ── WHAT THE PROVIDER SAID, NOT JUST THAT IT SAID NO ───────────────
+        #
+        # On 2026-09-18 a re-index lost a section on 32 of 129 pages and 46 of
+        # the 64 failed calls were this class. Not one of them left a body, a
+        # header or a reason behind: the raise site passed the status code and
+        # nothing else, the log line printed the same code, and the flag on the
+        # page carried `call_failed:ProviderStatus:429`. By the time anyone
+        # asked WHICH limit we had hit — requests, tokens, or the model being
+        # full — the window had closed, the log buffer had rolled, and the
+        # answer was gone. A probe afterwards got 200s, which proves only that
+        # the limit was not in force any more.
+        #
+        # So the refusal is kept. `retry_after` is seconds the provider asked
+        # us to wait, when it says so; `headers` is what it sent alongside.
+        self.retry_after = retry_after
+        self.headers = dict(headers or {})
 
 
 # ── A TIMEOUT IS NOT A FACT ABOUT THE DRAWING, AND A RETRY IS NOT FREE ─────
@@ -45324,11 +45406,15 @@ async def _index_single_page(
             )
             raise
         if resp.status_code != 200:
+            kept, retry_after, body = _refusal_detail(resp)
             logger.warning(
-                f"Qwen index returned {resp.status_code} for "
-                f"{file_name} page {page_number} [model={QWEN_MODEL}]"
+                "Qwen index returned %s for %s page %s [model=%s] "
+                "retry_after=%s headers=%s body=%s",
+                resp.status_code, file_name, page_number, QWEN_MODEL,
+                retry_after, kept, body,
             )
-            raise ProviderStatus(resp.status_code)
+            raise ProviderStatus(resp.status_code, detail=body,
+                                 retry_after=retry_after, headers=kept)
         choice = resp.json()["choices"][0]
         return (choice["message"].get("content") or ""), choice.get("finish_reason")
 
