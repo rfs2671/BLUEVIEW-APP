@@ -1,5 +1,5 @@
 /**
- * DAILY JOBSITE LOG — NYC DOB 3301-02, as a five-step stepper.
+ * DAILY JOBSITE LOG — NYC DOB 3301-02, as a four-step stepper.
  *
  * WHO THIS IS FOR. A Competent Person who is older and not technical, on his
  * own phone, outdoors, gloved, one-handed. That outranks aesthetics wherever
@@ -43,7 +43,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
-  Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock, Trash2,
+  Check, Camera, X, ImageIcon, Plus, Lock, Trash2,
 } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
@@ -92,10 +92,10 @@ import {
   composeChipBands,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, newActivityId, buildCrewsFromRoster,
   rosterIdIndex,
-  composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
+  composeSelection, cameraReady,
   isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   hasNoWorkersOnSite, reconcileCrewsWithRoster,
-  applyHeadcountEdit, isHeadcountOverridden, gateHeadcount, CP_SOURCE,
+  applyHeadcountEdit, isHeadcountOverridden, gateHeadcount,
   isDeletableCrew, crewDeleteImpact,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
@@ -110,7 +110,12 @@ import {
 // language — so it is a module constant rather than a catalogue string.
 const FORM_NUMBER = 'NYC DOB 3301-02';
 
-const TOTAL_STEPS = 5;
+// FOUR, NOT FIVE. The old Step 1 — a read-only confirmation of who came
+// through the gate, plus the two roster warnings and the fetched weather — was
+// removed by ruling. Equipment was the one thing on it that WROTE to the filed
+// record, so it moved onto the step that now leads (see renderStep1); nothing
+// else on that step had a writer.
+const TOTAL_STEPS = 4;
 
 // ── THE PHOTO CAP: 10 PER SUBCONTRACTOR, AGGREGATED ─────────────────────────
 // Counted across EVERY row that names the sub, not per row. There is no
@@ -442,11 +447,14 @@ export default function DailyJobsiteLog() {
   // PERSON VISITED -- it records where the WORK is, and the crew rows
   // already carry that in `work_locations`.
 
-  // ── Roster integrity ──────────────────────────────────────────────────
-  // A short roster shown as complete is a fabricated record, so what the
-  // server could not confirm is carried and stated, never swallowed.
-  const [rosterPartial, setRosterPartial] = useState(false);
-  const [rosterCollapsed, setRosterCollapsed] = useState(0);
+  // ── Roster integrity: NOT CARRIED ANY MORE, and that is a removal ─────
+  // `rosterPartial` and `rosterCollapsed` existed for two banners on the old
+  // Step 1 and for nothing else — no draft field, no payload key, no other
+  // reader. The banners were removed by ruling, so the state and the
+  // derivation that fed it went with them rather than being left as a pair of
+  // setters nobody reads. THE SERVER STILL REPORTS ALL OF IT (roster.partial,
+  // degraded_passes, truncated_passes, collapsed); this screen no longer looks.
+  // What that costs the CP is recorded on the PR, not softened here.
 
   // ── Chips ─────────────────────────────────────────────────────────────
   // CHIPS ARE PER TRADE, NOT PER PROJECT. An electrical crew was being offered
@@ -489,7 +497,6 @@ export default function DailyJobsiteLog() {
   const [filedLog, setFiledLog] = useState(null);
 
   // ── Modals ────────────────────────────────────────────────────────────
-  const [addingCrew, setAddingCrew] = useState(null);      // {company, trade, num}
   // The card the CP has asked to remove, with its impact already computed.
   const [deletingCrew, setDeletingCrew] = useState(null);
   const [otherPrompt, setOtherPrompt] = useState(null);    // {index, kind, value}
@@ -750,33 +757,15 @@ export default function DailyJobsiteLog() {
       setBuildingLevels(projectData || null);
       rosterIdsRef.current = rosterIdIndex(headcount);
 
-      // A roster read that FAILED is not an empty jobsite. Null here means the
-      // request itself did not come back, which is exactly the case the CP
-      // must not read as "nobody was here".
-      if (!roster) {
-        setRosterPartial(true);
-      } else {
-        // A COLLAPSE IS NOT A FAILURE TO CONFIRM — device round 4, finding 12.
-        //
-        // The server returns ONE boolean: `partial` is
-        // `bool(_degraded or _truncated or _collapsed)`. But a collapse is the
-        // opposite of a degradation — the server DID read the roster and merged
-        // two rows it could not tell apart. Gating the "could not confirm the
-        // full list" banner on it told the CP the read had failed on a day
-        // nothing failed and nobody was dropped.
-        //
-        // FORWARD-COMPATIBILITY IS PRESERVED, which is the point of the
-        // server's single boolean: anything that sets `partial` still raises
-        // the banner UNLESS the only reason given is a collapse. A degradation
-        // mode added server-side with no client change still warns.
-        const degraded = (roster.degraded_passes || []).length > 0;
-        const truncated = (roster.truncated_passes || []).length > 0;
-        const collapsed = roster.collapsed || 0;
-        const onlyCollapse = Boolean(roster.partial)
-          && collapsed > 0 && !degraded && !truncated;
-        setRosterPartial(Boolean(roster.partial) && !onlyCollapse);
-        setRosterCollapsed(collapsed);
-      }
+      // THE ROSTER ENVELOPE IS STILL READ — getCheckinsRoster is what supplies
+      // `roster.workers` to buildCrewsFromRoster below — but its INTEGRITY
+      // fields are no longer inspected. `partial`, `degraded_passes`,
+      // `truncated_passes` and `collapsed` drove the two Step 1 banners and
+      // nothing else; with those removed by ruling there is no reader left, so
+      // deriving them here would be state computed for nobody. A null `roster`
+      // still means the request did not come back rather than an empty
+      // jobsite — buildCrewsFromRoster is simply given [] and the crews come
+      // from what was stored.
 
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
@@ -881,7 +870,7 @@ export default function DailyJobsiteLog() {
 
   /**
    * One fetch per DISTINCT crew trade on site — a handful, not one per crew.
-   * Each is cached under its trade key, so revisiting Step 2 refetches nothing.
+   * Each is cached under its trade key, so revisiting Step 1 refetches nothing.
    */
   const loadChips = async (rows) => {
     // workRows drops the unassigned-worker rows: a worker with no company is
@@ -1110,7 +1099,7 @@ export default function DailyJobsiteLog() {
    */
   const stepsLeftIncomplete = useMemo(() => {
     const state = { activities, observations, checklistItems, cpSignature };
-    return [1, 2, 3, 4, 5].filter((n) => n < step && !stepComplete(n, state));
+    return [1, 2, 3, 4].filter((n) => n < step && !stepComplete(n, state));
   }, [step, activities, observations, checklistItems, cpSignature]);
 
   // THE CP IS ATTESTING TO THIS SENTENCE, so the app may draft it and may not
@@ -1258,42 +1247,19 @@ export default function DailyJobsiteLog() {
     });
   };
 
-  const commitAddCrew = () => {
-    const c = addingCrew;
-    if (!c) return;
-    const company = String(c.company || '').trim();
-    if (!company) { setAddingCrew(null); return; }
-    const trade = String(c.trade || '').trim();
-    setActivities((prev) => [...prev, {
-      ...EMPTY_ACTIVITY(),
-      crew_id: `C${prev.length + 1}`,
-      company,
-      trade,
-      // AN UNTYPED COUNT IS UNKNOWN, NOT ZERO. This was
-      // `String(parseInt(c.num, 10) || 0)`, so leaving the count blank wrote
-      // the literal string "0" onto the row — the app asserting, on a record
-      // the CP signs, that a crew he had just told it was on site had nobody
-      // in it. That manufactured zero is one of the two ways the reported
-      // 0-worker crew appears (the other is roster reconciliation, which is
-      // entitled to write a real zero because it has actually looked).
-      //
-      // Blank now stays blank, which hasNoWorkersOnSite reads as "nobody
-      // counted" rather than "nobody here", so the crew keeps being asked for
-      // its work — he added it precisely because it WAS on site.
-      num_workers: Number.isFinite(parseInt(c.num, 10))
-        ? String(parseInt(c.num, 10))
-        : '',
-      // A TYPED COUNT IS THE CP'S, A BLANK ONE IS NOBODY'S. Marking a blank
-      // 'cp' would put "(CP)" on the filed record against a number he never
-      // supplied; the blank means nobody counted, and that is not an assertion
-      // he made.
-      num_workers_source: Number.isFinite(parseInt(c.num, 10)) ? CP_SOURCE : undefined,
-      // Added by hand — it did NOT come from the gate and must not claim to.
-      gate_sourced: false,
-      subcontractor_id: resolveRosterId(company, trade, rosterIdsRef.current),
-    }]);
-    setAddingCrew(null);
-  };
+  // THE HAND-ADD PATH IS GONE — "Add a crew the gate missed", its modal and
+  // commitAddCrew, removed by ruling. It was the ONLY way a crew row was
+  // created from nothing; every row now comes from the gate roster or from
+  // what was already stored. The manufactured-zero rule it used to carry
+  // (an untyped count is unknown, never the string "0") is not lost: the
+  // surviving writer of num_workers is applyHeadcountEdit, which keeps a blank
+  // blank for a non-gate row, and dailyJobsiteEmptyCrew.test.cjs now asserts
+  // it there.
+  //
+  // Step 2's Remove control STAYS. It is gated on isDeletableCrew — no worker
+  // identities — which still admits rows this app can no longer create: a
+  // hand-added row rehydrated from a draft or a stored log, and a gate row
+  // whose men came through with neither worker_id nor worker_name.
 
   // ── THE CAPTURE-TIME UPLOAD ───────────────────────────────────────────
   // Photos go to R2 as they are TAKEN, so the document never carries full-size
@@ -1936,7 +1902,12 @@ export default function DailyJobsiteLog() {
     }
     const blocking = incompleteObservations(observations);
     if (blocking.length > 0) {
-      setStep(3);
+      // Observations are step 2 now, not 3 — the whole sequence shifted down
+      // one when the roster-confirmation step was removed. These three gates
+      // send the CP TO a step by number, so each had to move with it; sending
+      // him to the wrong step is worse than not sending him at all, because
+      // the toast names a problem the step he lands on does not hold.
+      setStep(2);
       toast.warning(t('sectionObservations'), t('observationRemedyMissing'));
       return;
     }
@@ -1946,13 +1917,13 @@ export default function DailyJobsiteLog() {
     // fix. Only a fail blocks — an item he did not walk is a real answer.
     const badInspections = incompleteInspections(checklistItems);
     if (badInspections.length > 0) {
-      setStep(4);
+      setStep(3);
       toast.warning(t('sectionInspected'), t('inspectionNoteMissing'));
       return;
     }
     // A CREW ON SITE THAT DID NOTHING RECORDABLE IS A CREW NOBODY DESCRIBED.
     //
-    // stepComplete(2) has held this rule the whole time and only MARKED with
+    // stepComplete(1) has held this rule the whole time and only MARKED with
     // it. So a filed §3301.2 daily log could name four subcontractors on site
     // and say what none of them did, and the only trace was a pip the CP had
     // already walked past. The document that goes to the DOB, the investor and
@@ -1969,14 +1940,14 @@ export default function DailyJobsiteLog() {
       toast.warning(t('descriptionRequiredTitle'), t('descriptionRequiredHint'));
       return;
     }
-    // THE BACKSTOP. Next is disabled on step 2 until every crew is complete
+    // THE BACKSTOP. Next is disabled on step 1 until every crew is complete
     // (see nextDisabled below), so reaching here means the state moved under
-    // the press — a roster refresh adding a crew while he was on step 5. The
+    // the press — a roster refresh adding a crew while he was on step 4. The
     // check stands rather than filing a log that names a crew and says nothing
     // about it.
     const bareCrews = crewsWithoutWork(activitiesRef.current || activities);
     if (bareCrews.length > 0) {
-      setStep(2);
+      setStep(1);
       toast.warning(t('crewWorkMissingTitle'), crewGapSentence(bareCrews));
       return;
     }
@@ -2078,11 +2049,14 @@ export default function DailyJobsiteLog() {
     return `${where}${who} ${what}`;
   }).join('; '), [t]);
 
-  // Present on site, not a unit of work. Counted so Step 2 can say why there
+  // Present on site, not a unit of work. Counted so Step 1 can say why there
   // is no card for him rather than simply omitting him without explanation.
+  // THIS SENTENCE CARRIES MORE WEIGHT THAN IT DID: the removed step used to
+  // list him by name with a hint of his own, so the count was a cross-
+  // reference. It is now the only mention of him before the review.
   const unassignedWorkerCount = activities.filter(isUnassignedWorkerRow).length;
 
-  // The crews step 2 is still waiting on. One computation, read by the Next
+  // The crews step 1 is still waiting on. One computation, read by the Next
   // gate and by its hint.
   // #167, UNCONDITIONAL AGAIN. This was relaxed on a no-work day, because a
   // washout had nothing to describe and the gate would have blocked the CP from
@@ -2122,115 +2096,35 @@ export default function DailyJobsiteLog() {
    */
   const descriptionEmpty = String(generalDescription || '').trim() === '';
 
-  // ── STEP 1 — what was on site ─────────────────────────────────────────
+  // ── STEP 1 — crews and equipment ──────────────────────────────────────
   //
-  // COMPACT BY RULING. This step has no editable field in the ordinary case —
-  // it is a confirmation — so it must not cost a full scrolling screen to
-  // read. Measured against the real tokens on 390x844: chrome takes 188pt
-  // (header 72, pips 12, footer 104), leaving 527pt; fixed content is 228pt
-  // (step header 28, add-crew 64, equipment summary 56, weather 80), so 299pt
-  // remains and a 40pt row fits SEVEN crews before scrolling. On a 4.7" SE the
-  // same arithmetic gives FOUR.
+  // THIS WAS STEP 2. The old Step 1 — the roster confirmation — was removed by
+  // ruling, and only ONE thing on it wrote to the filed record: equipment. So
+  // equipment came here rather than being deleted with the step around it.
   //
-  // 40pt IS ONLY HONEST BECAUSE THE ROWS ARE NOT TAPPABLE. They display locked
-  // gate data and there is nothing to tap. Anything that makes a row
-  // interactive has to go back to touchTarget.min and the arithmetic above has
-  // to be redone.
+  // WHY THAT MATTERS RATHER THAN BEING TIDINESS. `equipment_on_site` has one
+  // writer in the whole app, toggleEquipment, and it prints as section 5 of
+  // every filed 3301-02 (backend/lib/legal_render/schema.py, "Equipment on
+  // Site", empty: "none_documented") — so the section draws whether or not the
+  // key is there. Dropping the control would have printed "Equipment on Site —
+  // None" on every daily log filed from today onward, forever, with nobody able
+  // to say otherwise.
+  //
+  // IT IS THE SAME CONTROL, NOT A REDESIGN: the collapsed summary row and the
+  // chips behind it, moved verbatim. The {} vs absent distinction the
+  // formatter depends on is untouched — equipmentSummary still reads an
+  // all-false map as NOT RECORDED rather than as "none".
+  //
+  // THE TITLE CHANGED WITH IT. "What each crew did" no longer covers the step,
+  // because a hoist is not something a crew did.
   const renderStep1 = () => (
     <View>
       <StepHeader title={t('step1Title')} />
 
-      {/* THE READ FAILED. "May be incomplete" is a statement about the
-          SERVER, not about the roster, and it must only appear when the
-          server could genuinely not confirm the list. */}
-      {rosterPartial && (
-        <Card s={s} style={s.cardWarn}>
-          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
-          <View style={s.warnBody}>
-            <Text style={s.warnTitle}>{t('rosterPartialTitle')}</Text>
-            <Text style={s.warnText}>{t('rosterPartialBody')}</Text>
-            {rosterCollapsed > 0 && (
-              <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
-            )}
-          </View>
-        </Card>
-      )}
-
-      {/* TWO ROWS WERE MERGED. A different fact and a different sentence: the
-          server read the roster fine and could not tell two men apart. It is
-          worth telling the CP — the headcount may be one short — but it is not
-          a failed read, and dressing it as one taught him to ignore the
-          banner that means the read actually failed. */}
-      {!rosterPartial && rosterCollapsed > 0 && (
-        <Card s={s} style={s.cardWarn}>
-          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
-          <View style={s.warnBody}>
-            <Text style={s.warnTitle}>{t('rosterCollapsedTitle')}</Text>
-            <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
-          </View>
-        </Card>
-      )}
-
-      {activities.length === 0 && (
-        <Text style={s.emptyText}>{t('noCrews')}</Text>
-      )}
-
-      {/* One row per crew. Two lines at 13pt, not a card. */}
-      {activities.map((a, i) => {
-        const flagged = isUnassignedWorkerRow(a);
-        return (
-          <View
-            key={a.activity_id || i}
-            style={[s.crewRow, flagged && s.crewRowFlagged]}
-          >
-            <View style={s.crewRowMain}>
-              <Text style={s.crewRowName} numberOfLines={1}>
-                {flagged ? t('unassignedTitle') : crewName(a)}
-              </Text>
-              {/* The badge shrinks but does not go: it is the only thing
-                  saying this data is locked and came from the gate. */}
-              {a.gate_sourced && (
-                <Lock size={12} strokeWidth={2} color={outdoor.textSoft} />
-              )}
-            </View>
-            <Text style={s.crewRowMeta} numberOfLines={1}>
-              {[
-                tradeLabel(a.trade),
-                plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
-                a.check_in_time ? formatCheckInTime(a.check_in_time) : t('checkInTimeUnknown'),
-              ].join(' · ')}
-            </Text>
-            {/* He is the one row here that needs attention, so compaction
-                must not bury him: he keeps his own line at full contrast. */}
-            {flagged && (
-              <Text style={s.crewRowFlag} numberOfLines={2}>{t('unassignedHint')}</Text>
-            )}
-            {isUnboundCrew(a) && (
-              <Text style={s.crewRowFlag} numberOfLines={2}>{t('unboundCrewHint')}</Text>
-            )}
-            {!flagged && hasNoWorkersOnSite(a) && (
-              <Text style={s.crewRowFlag} numberOfLines={2}>{t('emptyCrewHint')}</Text>
-            )}
-            {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
-              <Text style={s.crewRowFlag} numberOfLines={1}>
-                {t('correctedFrom')}: {a.company_gate}
-              </Text>
-            )}
-          </View>
-        );
-      })}
-
-      <Pressable
-        style={s.secondaryBtn}
-        accessibilityRole="button"
-        onPress={() => setAddingCrew({ company: '', trade: '', num: '1' })}
-      >
-        <Plus size={20} strokeWidth={2} color={outdoor.text} />
-        <Text style={s.secondaryBtnText}>{t('addCrew')}</Text>
-      </Pressable>
-
-      {/* EQUIPMENT — one summary line, expanding to the chips. Folded rather
-          than the crews because Step 1 exists to confirm WHO was on site.
+      {/* EQUIPMENT — one summary line, expanding to the chips. FIRST on the
+          step, above the crew cards, because it is one tap about the whole
+          site and the cards below are one long card per crew; burying it under
+          them would put a site-wide question at the bottom of a scroll.
           It NAMES the plant, so a CP scanning sees it without expanding, and
           an empty list reads as not recorded rather than as none: those are
           different facts on a filed record. */}
@@ -2254,40 +2148,21 @@ export default function DailyJobsiteLog() {
         </View>
       )}
 
-      {/* READ-ONLY. Weather is observed and fetched, never chosen: the CP is
-          reporting what the sky did, and a tappable list invites him to record
-          what he remembers rather than what was measured. When the fetch
-          failed, the failure is shown — it is never left looking unanswered. */}
-      <Text style={s.question}>{t('fieldWeather')}</Text>
-      {weatherLoading ? (
-        <ActivityIndicator size="small" color={outdoor.textDim} />
-      ) : weatherFetchState === 'ok' && weather ? (
-        <View style={s.readOnlyValue}>
-          <Text style={s.readOnlyText}>
-            {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')}
-          </Text>
-        </View>
-      ) : (
-        <Card s={s} style={s.cardWarn}>
-          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
-          <View style={s.warnBody}>
-            <Text style={s.warnTitle}>{t('weatherUnavailableTitle')}</Text>
-            <Text style={s.warnText}>
-              {weatherFetchState === 'offline'
-                ? t('weatherUnavailableOffline')
-                : t('weatherUnavailableBody')}
-            </Text>
-          </View>
-        </Card>
-      )}
+      {/* WEATHER IS NOT DISPLAYED HERE ANY MORE, AND IS STILL FETCHED AND
+          STILL FILED. The display went by ruling; the fetch did not move.
+          fetchWeather() is called once, from fetchData()'s first-open branch,
+          which runs from useEffect([projectId, date]) at MOUNT — before any
+          step renders — so nothing about which step is on screen can reach it.
+          Step 1 never held a writer of weather: it was read-only here too.
+          The value rides the payload (weather / weather_temp / weather_wind /
+          weather_fetch_state) and prints through weather_line on the filed
+          3301-02; backend/lib/logbook/deficiency.py raises a DOB deficiency if
+          it is ever missing, which is why the fetch must stay where it is and
+          must NOT be pulled into a step render.
 
-    </View>
-  );
-
-  // ── STEP 2 — one card per crew ────────────────────────────────────────
-  const renderStep2 = () => (
-    <View>
-      <StepHeader title={t('step2Title')} />
+          THE FAILURE SIGNAL SURVIVES, one step later and read-only: the review
+          step restates the value and falls back to weatherUnavailableTitle,
+          so a CP whose fetch failed is still told so before he signs. */}
 
       {(() => {
         const anyMeta = Object.values(chipsMetaByTrade).find(Boolean);
@@ -2307,7 +2182,9 @@ export default function DailyJobsiteLog() {
           with no company assignment gets NO card here — no activity, no
           location, no camera. Giving him one lets the CP log work against
           nobody, which is a line in a signed record that cannot be true. He is
-          shown on Step 1 instead, present and flagged for assignment.
+          COUNTED here, in the line below, and named on the review step. He used
+          to have a flagged row of his own on the step above this one; that step
+          is gone, so this count and the review are all that say he was here.
 
           The INDEX is the one from the full `activities` array, not the
           filtered one: the photo bucket, the chip toggles and every patch
@@ -2580,10 +2457,10 @@ export default function DailyJobsiteLog() {
     </View>
   );
 
-  // ── STEP 3 — safety observations ──────────────────────────────────────
-  const renderStep3 = () => (
+  // ── STEP 2 — safety observations ──────────────────────────────────────
+  const renderStep2 = () => (
     <View>
-      <StepHeader title={t('step3Title')} />
+      <StepHeader title={t('step2Title')} />
       {observations.length === 0 && (
         <Text style={s.emptyText}>{t('noObservations')}</Text>
       )}
@@ -2665,7 +2542,7 @@ export default function DailyJobsiteLog() {
       {/* Who came onto the site who was not working on it — a delivery, a
           visitor, or an INSPECTOR turning up. An inspector's visit belongs
           here, with the other arrivals; the nine items the CP walks himself
-          are Step 4, and they are a different statement. Key unchanged. */}
+          are Step 3, and they are a different statement. Key unchanged. */}
       <Text style={s.question}>{t('sectionVisitors')}</Text>
       <TextInput
         style={s.input}
@@ -2678,7 +2555,7 @@ export default function DailyJobsiteLog() {
     </View>
   );
 
-  // ── STEP 4 — the nine daily inspections, walked ───────────────────────
+  // ── STEP 3 — the nine daily inspections, walked ───────────────────────
   //
   // These were nine tick-chips under "Items Inspected". A tick could only
   // ever record THAT the CP looked, never what he found — and on a filed DOB
@@ -2689,9 +2566,9 @@ export default function DailyJobsiteLog() {
   // NOT WALKED stays a real answer: the CP is not forced through all nine, and
   // an item he did not reach is printed as not inspected rather than being
   // quietly counted as fine.
-  const renderStep4 = () => (
+  const renderStep3 = () => (
     <View>
-      <StepHeader title={t('step4Title')} />
+      <StepHeader title={t('step3Title')} />
       <Text style={s.noteText}>{t('inspectionsHint')}</Text>
 
       {CHECKLIST_ITEMS.map((it) => {
@@ -2756,10 +2633,10 @@ export default function DailyJobsiteLog() {
     </View>
   );
 
-  // ── STEP 5 — review and sign ──────────────────────────────────────────
-  const renderStep5 = () => (
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => (
     <View>
-      <StepHeader title={t('step5Title')} />
+      <StepHeader title={t('step4Title')} />
       <Text style={s.question}>{t('reviewHeading')}</Text>
 
       <Card s={s}>
@@ -2889,7 +2766,7 @@ export default function DailyJobsiteLog() {
   // one rendered at a time, 1-indexed.
   const STEPS = [
     { render: renderStep1 }, { render: renderStep2 }, { render: renderStep3 },
-    { render: renderStep4 }, { render: renderStep5 },
+    { render: renderStep4 },
   ];
 
   return (
@@ -2909,15 +2786,16 @@ export default function DailyJobsiteLog() {
       step={step}
       steps={STEPS}
       onStepChange={(n) => (n > step ? goNext() : goBack())}
-      /* GATING NEXT ON STEP 2 — the documented exception, same as toolbox
-         step 1. The stepper's rule is MARK, NEVER GATE, because a CP must be
-         able to finish a day he cannot complete. This is the case that rule
-         was never about: a crew row with no activity and no location makes the
-         whole log unfilable, and every one of these fields is known the moment
-         the card is on screen — he is standing in front of the crew. Being
-         stopped at step 2 is better than discovering it at step 5 with four
-         steps behind him. */
-      nextDisabled={step === 2 && crewGaps.length > 0}
+      /* GATING NEXT ON STEP 1 — the documented exception, same as toolbox
+         step 1. It was step 2 until the roster-confirmation step above it was
+         removed; the rule is unchanged, only its index moved. The stepper's
+         rule is MARK, NEVER GATE, because a CP must be able to finish a day he
+         cannot complete. This is the case that rule was never about: a crew row
+         with no activity and no location makes the whole log unfilable, and
+         every one of these fields is known the moment the card is on screen —
+         he is standing in front of the crew. Being stopped at step 1 is better
+         than discovering it at step 4 with three steps behind him. */
+      nextDisabled={step === 1 && crewGaps.length > 0}
       nextHint={crewGaps.length > 0 ? crewGapSentence(crewGaps) : ''}
       onExit={() => router.push('/logbooks')}
       locked={locked}
@@ -3000,45 +2878,9 @@ export default function DailyJobsiteLog() {
         s={s}
       />
 
-      <Modal
-        visible={!!addingCrew}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setAddingCrew(null)}
-      >
-        <View style={s.modalOverlay}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>{t('addCrewTitle')}</Text>
-            <TextInput
-              style={s.input}
-              value={addingCrew?.company || ''}
-              onChangeText={(v) => setAddingCrew((p) => ({ ...p, company: v }))}
-              placeholder={t('phCompany')}
-              placeholderTextColor={outdoor.textDim}
-            />
-            <TextInput
-              style={s.input}
-              value={addingCrew?.num || ''}
-              onChangeText={(v) => setAddingCrew((p) => ({ ...p, num: v }))}
-              placeholder={t('workers_one')}
-              placeholderTextColor={outdoor.textDim}
-              keyboardType="numeric"
-            />
-            <View style={s.modalActions}>
-              <Pressable
-                style={s.secondaryBtn}
-                accessibilityRole="button"
-                onPress={() => setAddingCrew(null)}
-              >
-                <Text style={s.secondaryBtnText}>{t('cancel')}</Text>
-              </Pressable>
-              <Pressable style={s.primaryBtn} accessibilityRole="button" onPress={commitAddCrew}>
-                <Text style={s.primaryBtnText}>{t('next')}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {/* THE ADD-CREW MODAL IS GONE with the button that opened it. Removed by
+          ruling, together with commitAddCrew — see the note where that handler
+          used to be for what carried its one surviving rule. */}
 
       {/* THE CONSEQUENCE, BEFORE HE TAPS. A bland "are you sure" would let him
           through to discover at a disabled Next, two steps later, that a crew
@@ -3133,20 +2975,9 @@ function buildStyles() {
     // lifted verbatim, so this screen renders exactly what it rendered before.
     // Only the keys BELOW are specific to the Daily Jobsite Log.
     ...buildStepperStyles(),
-    crewRow: {
-      paddingVertical: spacing.xs, paddingHorizontal: spacing.sm,
-      borderBottomWidth: 1, borderBottomColor: outdoor.line,
-    },
-    crewRowFlagged: {
-      backgroundColor: outdoor.warnBg,
-      borderLeftWidth: 2, borderLeftColor: outdoor.warn,   // bw2
-    },
-    crewRowMain: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-    crewRowName: {
-      flex: 1, fontSize: typography.sizes.dense, fontWeight: '700',
-      color: outdoor.text,
-    },
-    crewRowMeta: { fontSize: typography.sizes.fine, color: outdoor.textSoft },
+    // The dense two-line crew ROW and its flagged variant went with the step
+    // that held them. `crewRowFlag` stays: it is the warn-coloured hint line
+    // under a crew CARD on step 1, which is a different element.
     crewRowFlag: { fontSize: typography.sizes.fine, color: outdoor.warn },
     // The equipment summary IS tappable, so it carries the full minimum.
     summaryRow: {

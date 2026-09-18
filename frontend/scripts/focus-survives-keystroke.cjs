@@ -240,15 +240,22 @@ const TARGETS = [
   },
   {
     // THE CONTROL. Zero components declared in its screen body; its
-    // renderStep1..renderStep5 are render FUNCTIONS that get CALLED, so its
+    // renderStep1..renderStep4 are render FUNCTIONS that get CALLED, so its
     // inputs keep a stable identity across renders. If this fails, the harness
     // is wrong and nothing it says about the screen above can be believed.
     label: 'daily_jobsite — control, a screen with no inner components',
     route: '/logbooks/daily_jobsite?projectId=p1',
-    // Steps 1 and 2 are crew/equipment chips, and with an empty gate roster
-    // they render no crew rows and therefore no inputs at all. Step 3 is the
-    // first step with a prose field under this stub.
-    advance: 2,
+    // ONE PRESS, NOT TWO, AND THE NUMBER IS LOAD-BEARING. The screen dropped
+    // its roster step and renumbered 5 -> 4, so everything below moved one
+    // nearer. Step 1 is now the equipment chips and the crew cards, and with an
+    // empty gate roster it renders no cards and therefore no inputs at all;
+    // step 2 — safety observations — is the first step with a prose field under
+    // this stub, and with no observations added its first input is the
+    // visitors / deliveries box. Left at 2 this control would have measured the
+    // INSPECTIONS step, whose only inputs appear after a Fail is tapped: it
+    // would have found nothing, and a control that measures nothing cannot
+    // fail, which is the one thing a control may not do.
+    advance: 1,
     nth: 0,
     subject: false,
   },

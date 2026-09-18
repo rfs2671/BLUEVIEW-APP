@@ -70,10 +70,15 @@ for (const f of tests) {
 //    tail when the marker is missing (indexOf -1 → slice(-1) → last char), so
 //    the subject silently shrinks to nothing useful. Every marker a test
 //    slices on must actually exist in the file it slices.
+// FOUR RENDER FUNCTIONS, NOT FIVE. daily_jobsite dropped its roster step; the
+// marker list is the census of what the stepper suite slices on, so it has to
+// name what is there. Leaving `const renderStep5` in it would have kept this
+// gate red for the right reason, which is exactly why it is the thing that
+// caught the change first.
 const SUBJECTS = [
   ['dailyJobsiteStepper.test.cjs', 'app/logbooks/daily_jobsite.jsx',
     ['function buildStyles()', 'const renderStep1', 'const renderStep2',
-      'const renderStep3', 'const renderStep4', 'const renderStep5']],
+      'const renderStep3', 'const renderStep4']],
   ['stepper.test.cjs', 'src/components/logbookStepper/LogbookStepper.jsx',
     ['<View style={s.footer}>', '</SafeAreaView>', 's.progressPip,']],
 ];
@@ -90,11 +95,24 @@ const screen = fs.readFileSync(
   path.join(FRONTEND, 'app', 'logbooks', 'daily_jobsite.jsx'), 'utf8');
 const stylesBody = screen.slice(screen.indexOf('function buildStyles()'));
 ok(stylesBody.length > 500, 'the stylesBody slice is a real stylesheet, not a tail');
-for (const n of [1, 2, 3, 4, 5]) {
+// The LAST step is bounded by `const STEPS`, so the bound moved with the count:
+// at five it was renderStep5, at four it is renderStep4. Get that wrong and the
+// final slice runs to the end of the file — a subject that swallows the whole
+// stylesheet and every later step, which is the failure mode this block exists
+// to catch rather than to demonstrate.
+const LAST_STEP = 4;
+for (let n = 1; n <= LAST_STEP; n += 1) {
   const a = screen.indexOf(`const renderStep${n}`);
-  const b = n < 5 ? screen.indexOf(`const renderStep${n + 1}`) : screen.indexOf('const STEPS');
+  const b = n < LAST_STEP
+    ? screen.indexOf(`const renderStep${n + 1}`)
+    : screen.indexOf('const STEPS');
   ok(a > -1 && b > a && (b - a) > 100, `the renderStep${n} slice is non-empty`);
 }
+// AND THERE IS NO FIFTH. Without this, dropping a step would quietly shrink the
+// census above and this file would go green over a screen it had stopped
+// covering — the marker list would agree with itself and with nothing else.
+ok(screen.indexOf('const renderStep5') === -1,
+  'daily_jobsite declares exactly four render steps — no fifth is left behind');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

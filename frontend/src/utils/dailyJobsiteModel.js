@@ -36,7 +36,8 @@ export const isUnassignedCompany = (v) => {
 /**
  * THE SAME RULE, FOR TRADE. The gate writes "UNASSIGNED" into a check-in's
  * `trade` as well as its `company`, and only the company was ever sanitised —
- * so the placeholder rendered on Step 1 as though it were the man's trade.
+ * so the placeholder rendered on the roster step as though it were the man's
+ * trade.
  *
  * The three coercion sites are the no_roster and not_listed branches of
  * register-and-checkin and the no_roster branch of submit. Named rather than
@@ -150,8 +151,10 @@ export const CP_SOURCE = 'cp';
  *
  * ABSENCE MEANS GATE, DELIBERATELY. Drafts written before this field existed
  * carry no marker, and every one of them holds a number that came from the
- * roster or from commitAddCrew. Reading a missing marker as 'cp' would label
- * historical rows as hand-typed on a record somebody signs.
+ * roster or from the hand-add path that used to exist on this screen (see
+ * daily_jobsite.jsx — the path was removed, the rows it wrote were not).
+ * Reading a missing marker as 'cp' would label historical rows as hand-typed
+ * on a record somebody signs.
  */
 export const headcountSource = (activity) => (
   activity?.num_workers_source === CP_SOURCE ? CP_SOURCE : GATE_SOURCE
@@ -186,7 +189,9 @@ export const gateHeadcount = (activity) => {
  * on a crew the turnstile DID count that would be false -- so the row goes back
  * to tracking the gate, which is the state it would have had if he had never
  * typed. On a hand-added row a blank is the honest answer and stays blank,
- * matching commitAddCrew.
+ * which is the rule the removed hand-add path carried. No new hand-added rows
+ * are created any more; the ones in stored logs and drafts still arrive here,
+ * and this is now the ONLY writer that keeps their blank blank.
  *
  * A NON-NUMERIC ENTRY CHANGES NOTHING. Returning a partial patch for garbage
  * would let a stray keystroke overwrite a real count.
@@ -558,7 +563,7 @@ export function reconcileCrewsWithRoster(stored, fresh) {
         trade: row.trade || f.trade,
         num_workers: _keepHis ? row.num_workers : f.num_workers,
         // undefined, not a sentinel: the key is simply absent, which is what
-        // commitAddCrew already writes for an untyped count and what
+        // the removed hand-add path wrote for an untyped count and what
         // _headcount_cell already reads as "no attribution".
         num_workers_source: _asserted
           ? CP_SOURCE
@@ -945,14 +950,17 @@ export function deriveGeneralDescription(activities, tradeById) {
  * AN ACTIVITY ROW REPRESENTS A COMPANY'S WORK. A man with no company assignment
  * does not get one: giving him activity and location fields lets the CP log
  * work against nobody, and that is a line in a signed record that cannot be
- * true. He is a real person who was on site, so Step 1 shows him and flags him
- * for assignment — he is simply not a unit of work yet.
+ * true. He is a real person who was on site, so the log still carries him: the
+ * crew step COUNTS him in a line saying why he has no card, and the review step
+ * NAMES him. It used to show him as a flagged row of his own on the roster step
+ * before it, and that step was removed by ruling — the predicate is unchanged,
+ * what it feeds is thinner.
  *
  * He is NEVER blocked over it. Soft flag, not a gate.
  *
- * Identified by the absence of a company on a gate-sourced row. A hand-added
- * crew always has one (commitAddCrew refuses an empty company), so this cannot
- * catch a crew the CP typed in.
+ * Identified by the absence of a company on a gate-sourced row. The hand-add
+ * path that could have produced a company-less row is gone from the app
+ * entirely, so every row this can catch came from the gate.
  *
  * ONCE HE IS ASSIGNED A COMPANY HE JOINS THAT COMPANY'S ROW rather than
  * creating a new one — that needs no code here, because buildCrewsFromRoster
@@ -963,7 +971,7 @@ export const isUnassignedWorkerRow = (activity) => Boolean(
   activity && activity.gate_sourced && !String(activity.company || '').trim(),
 );
 
-/** The rows that RENDER a crew card on Step 2. */
+/** The rows that RENDER a crew card on Step 1. */
 export const workRows = (activities) => (Array.isArray(activities) ? activities : [])
   .filter((a) => !isUnassignedWorkerRow(a));
 
@@ -988,14 +996,16 @@ export const crewHeadcount = (activity) => {
  *
  * ZERO IS NOT BLANK, AND THE DIFFERENCE IS THE WHOLE POINT.
  *
- *   '0'  something said NOBODY. Either the CP typed it, or — far more often —
- *        `commitAddCrew` manufactured it out of an untyped count
- *        (`String(parseInt('') || 0)`), or the roster reconciliation found no
- *        crew under that key today. All three are evidence of absence.
+ *   '0'  something said NOBODY. Either the CP typed it, or — on rows written
+ *        before it was fixed — the old hand-add path manufactured it out of an
+ *        untyped count (`String(parseInt('') || 0)`), or the roster
+ *        reconciliation found no crew under that key today. All three are
+ *        evidence of absence.
  *   ''   nobody ever counted. That is not evidence of ANYTHING, so the log
  *        keeps asking. A gate-sourced row can never hold it (buildCrewsFromRoster
  *        increments from the first worker, so a crew that exists has ≥ 1), and
- *        commitAddCrew no longer mints it as a zero.
+ *        nothing mints it as a zero: the hand-add path stopped doing so before
+ *        it was removed, and applyHeadcountEdit never did.
  *
  * Reading a blank as "nobody" would be the more convenient rule and the wrong
  * one: it would silently stop demanding work from a crew that WAS on site
@@ -1211,13 +1221,19 @@ export function formatCheckInTime(value) {
  * Is this step's work done? Drives the stepper's progress marks only — it
  * NEVER blocks moving on. A CP who cannot complete a step because the data is
  * not there must still be able to finish and sign his day.
+ *
+ * FOUR STEPS, RENUMBERED. The old case 1 — `acts.length > 0`, "a crew came
+ * through the gate" — was the mark for the roster-confirmation step, and that
+ * step was removed by ruling. It is NOT folded into the new case 1: whether a
+ * crew exists is the gate's answer, not the CP's, and marking a step
+ * incomplete for it would blame him for an empty turnstile. Cases 2-5 each
+ * shifted down one and are otherwise unchanged.
  */
 export function stepComplete(step, state) {
   const acts = state?.activities || [];
   switch (step) {
-    case 1: return acts.length > 0;
-    case 2: {
-      // Only the rows Step 2 actually asks about. An unassigned worker gets no
+    case 1: {
+      // Only the rows Step 1 actually asks about. An unassigned worker gets no
       // activity card, so requiring a work description from him would leave
       // this step permanently incomplete the moment one man checks in without
       // a company.
@@ -1234,7 +1250,7 @@ export function stepComplete(step, state) {
       // stopped by something the screen says is finished.
       const work = describableRows(acts);
       // `work.length > 0` STAYS. A day on which no crew's work is described is
-      // not a completed Step 2, and that ruling is not this change's to
+      // not a completed Step 1, and that ruling is not this change's to
       // overturn — it is asserted directly in dailyJobsiteModel.test.cjs for
       // the unassigned-worker case. All that moves here is WHICH rows count as
       // askable, so an empty crew can no longer hold the pip incomplete.
@@ -1247,13 +1263,14 @@ export function stepComplete(step, state) {
           && String(a.work_locations || '').trim(),
       );
     }
-    case 3: return incompleteObservations(state?.observations).length === 0;
-    // Step 4 is the nine daily inspections. Weather moved to Step 1, where it
-    // belongs with the other observed facts about the day; it was never
-    // something Step 4 asked the CP for, so a fetch failure it could not fix
-    // used to leave this step permanently marked incomplete.
-    case 4: return incompleteInspections(state?.checklistItems).length === 0;
-    case 5: return Boolean(state?.cpSignature);
+    case 2: return incompleteObservations(state?.observations).length === 0;
+    // Step 3 is the nine daily inspections. Weather is not asked for on any
+    // step — it is fetched at mount and printed on the filed sheet — so no
+    // step can be left permanently marked incomplete by a fetch failure the CP
+    // cannot fix. That was true when weather merely moved off this step, and
+    // it stays true now the display is gone entirely.
+    case 3: return incompleteInspections(state?.checklistItems).length === 0;
+    case 4: return Boolean(state?.cpSignature);
     default: return false;
   }
 }

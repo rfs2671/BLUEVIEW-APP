@@ -205,8 +205,10 @@ const freshRow = (over) => ({
   ok(describableRows([empty]).length === 0,
     'and is NOT asked for work (the #244 ruling)');
   ok(crewsWithoutWork([empty]).length === 0, 'so it does not block Next');
-  ok(stepComplete(2, { activities: [empty] }) === false,
-    'a day of nothing but an empty crew is still not a completed Step 2');
+  // STEP 1, NOT 2. The crew step moved up one when daily_jobsite dropped its
+  // roster-confirmation step; the rule this asserts did not change.
+  ok(stepComplete(1, { activities: [empty] }) === false,
+    'a day of nothing but an empty crew is still not a completed Step 1');
 
   const corrected = { ...empty, ...applyHeadcountEdit(empty, '4') };
   ok(!hasNoWorkersOnSite(corrected), 'correcting it to 4 puts men back on site');

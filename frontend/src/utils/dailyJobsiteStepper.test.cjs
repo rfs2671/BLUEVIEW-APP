@@ -99,6 +99,39 @@ const stylesBody = (() => {
 /** Everything ABOVE buildStyles — the component itself. */
 const componentBody = code.slice(0, code.indexOf('function buildStyles()'));
 
+/**
+ * ONE PLACE THAT KNOWS WHERE A STEP ENDS.
+ *
+ * Every subject below used to be sliced by hand as
+ * `indexOf('const renderStepN') .. indexOf('const renderStep(N+1)')`, and the
+ * LAST step was bounded by `const STEPS` instead. That is two rules kept in
+ * thirteen places, and the screen just dropped a step: every hand-written
+ * `renderStep5` bound became indexOf === -1, `slice(a, -1)` ran to the last
+ * character of the file, and a dozen assertions quietly changed what they were
+ * asked about — several of them NEGATIVE assertions, which a swollen subject
+ * turns from a guarantee into noise.
+ *
+ * So the bound is derived: the next render function if there is one, `const
+ * STEPS` otherwise. TOTAL is read from the screen rather than typed here, so a
+ * step added or removed moves this file with it instead of past it.
+ *
+ * It THROWS on a step that does not exist. A helper that answered '' would hand
+ * every negative assertion a guaranteed pass, which is the failure this exists
+ * to end.
+ */
+const TOTAL = Number((/const TOTAL_STEPS = (\d+);/.exec(code) || [])[1] || 0);
+ok(TOTAL === 4, `the screen declares four steps (TOTAL_STEPS = ${TOTAL})`);
+function stepSrc(n) {
+  const from = code.indexOf(`const renderStep${n} =`);
+  const to = n < TOTAL
+    ? code.indexOf(`const renderStep${n + 1} =`)
+    : code.indexOf('const STEPS = [');
+  if (from === -1 || to <= from) {
+    throw new Error(`stepSrc(${n}): no such step on this screen (from=${from}, to=${to})`);
+  }
+  return code.slice(from, to);
+}
+
 // ═══ TAP ONLY ════════════════════════════════════════════════════════════════
 console.log('\n── Tap only: no swipe, no long-press, no hidden gesture ──');
 
@@ -205,7 +238,10 @@ ok(/label=\{t\('locationOther'\)\} selected=\{false\}/.test(src),
   '"Somewhere else" is never pre-selected');
 // "Other" is rendered inside the SUGGESTED band's wrap, before the collapsed
 // catalogue, so it is reachable without scrolling past everything else.
-const step2 = src.slice(src.indexOf('const renderStep2'), src.indexOf('const renderStep3'));
+// THE CREW STEP IS STEP 1 NOW, and this reads the STRIPPED source through
+// stepSrc rather than slicing `src` by hand: the old hand-slice named
+// renderStep3 as its end, which no longer bounds the crew step at all.
+const step2 = stepSrc(1);
 const otherAt = step2.indexOf("t('chipOther')");
 const catalogAt = step2.indexOf("t('chipsCatalog')");
 ok(otherAt > -1 && catalogAt > -1 && otherAt < catalogAt,
@@ -235,7 +271,7 @@ ok(/const \{ primary, rest, basis \} = chipBandsFor\(a\);/.test(code),
 // followed it: the guarantees are the ones this block always made, re-pointed
 // rather than dropped, and dailyJobsiteModel.test.cjs runs the behaviour end
 // to end.
-const step2band = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
+const step2band = stepSrc(1);
 ok(/\{primary\.map\(/.test(step2band),
   "the crew's four render INLINE, not behind the catalogue toggle");
 // THE ALWAYS-AVAILABLE BAND IS GONE. It put the same chips on every crew card
@@ -524,47 +560,85 @@ const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
 // SCOPED TO THE dailyJobsite NAMESPACE. This used to scan the whole catalogue,
 // which was right while dailyJobsite was the only stepper form; the ported
 // forms carry their own step titles (oshaLog has 2, scaffoldMaintenance 3) and
-// an unscoped count picked up all ten. The assertion is unchanged — THIS
-// screen has five — it is now asked of the right block.
+// an unscoped count picked up all ten. THIS screen has four now — the roster
+// step was removed — and the count is taken from TOTAL_STEPS rather than typed,
+// so a catalogue with one title too few or one left behind fails here instead
+// of falling back to the key NAME on a screen the CP is reading.
 // ENDS AT THE NEXT NAMESPACE, whichever it is. Naming oshaLog made this window
 // depend on the ORDER of the blocks in en.js: adding fallProtection between the
 // two widened it, and the count picked up another form's step titles.
 const _djStart = en.indexOf('\n  dailyJobsite: {');
 const _djRest = en.slice(_djStart + 20).search(/\n {2}[a-zA-Z]+: \{/);
 const djBlock = _djRest > -1 ? en.slice(_djStart, _djStart + 20 + _djRest) : '';
-const titles = [...djBlock.matchAll(/step[1-5]Title: '([^']+)'/g)].map((m) => m[1]);
-ok(djBlock.length > 0 && titles.length === 5,
-  `all five step titles exist in the dailyJobsite namespace (got ${titles.length})`);
+// [1-9], NOT [1-4]: a bounded class would simply not SEE a leftover step5Title
+// and would call the count correct. The range has to be wider than the answer.
+const titles = [...djBlock.matchAll(/step[1-9]Title: '([^']+)'/g)].map((m) => m[1]);
+ok(djBlock.length > 0 && titles.length === TOTAL,
+  `the dailyJobsite namespace has exactly ${TOTAL} step titles (got ${titles.length})`);
+// AND THE NEW FIRST TITLE COVERS WHAT IS ON THE STEP. Equipment moved onto it,
+// so "What each crew did" — the title it inherited — would have named half of
+// what the CP is looking at.
+ok(/step1Title: 'Crews and equipment'/.test(djBlock),
+  'step 1 is titled for both the crews and the equipment it now holds');
 const longTitle = titles.filter((x) => x.split(/\s+/).length > 12);
 ok(longTitle.length === 0,
   `no step title exceeds twelve words${longTitle.length ? ` — ${JSON.stringify(longTitle)}` : ''}`);
 ok(/stepOf: 'Step \{n\} of \{m\}'/.test(en), 'the CP always knows where he is in the sequence');
 
-// ═══ THE ROSTER IS NEVER SHOWN AS COMPLETE WHEN IT IS NOT ════════════════════
-console.log('\n── A short roster is never rendered as a complete one ──');
+// ═══ THE ROSTER WARNINGS ARE GONE, BY RULING ═════════════════════════════════
+//
+// THIS BLOCK REVERSED, AND THE REVERSAL IS THE RECORD. It used to assert that a
+// short roster is never rendered as a complete one: `rosterPartial` when the
+// server could not confirm the list, `rosterCollapsed` when two same-name
+// workers at one company may have been counted once. Both banners were removed
+// by ruling — the operator does not want them on the screen — and with no
+// reader left, the state and the derivation behind them went too.
+//
+// WHAT THAT COSTS IS WRITTEN DOWN RATHER THAN SOFTENED: the collapse banner was
+// the ONLY statement anywhere in this product that a headcount may be short by
+// N men. The OSHA log reads the same already-collapsed list and says nothing at
+// all, so this is a removal and not a de-duplication.
+//
+// The assertions are INVERTED rather than deleted, because a warning that comes
+// back by accident — a merge, a revert, a copy from a sibling form — is exactly
+// what a ruling like this needs guarding against. The envelope read stays: it
+// is what supplies roster.workers to the crew list.
+console.log('\n── The roster-integrity warnings are absent, by ruling ──');
 
-ok(/getCheckinsRoster/.test(src), 'the screen asks for the roster ENVELOPE, not the bare list');
-// NARROWED, not dropped. The flag is still carried; what changed is that a
-// pure COLLAPSE no longer counts as "the server could not confirm the list".
-// See the device-round-4 block below for the full rule.
-ok(/setRosterPartial\(Boolean\(roster\.partial\) && !onlyCollapse\);/.test(src),
-  'the partial flag is carried into screen state');
-ok(/if \(!roster\) \{\s*setRosterPartial\(true\);/.test(src),
-  'a roster read that FAILED is treated as partial, not as an empty jobsite');
-ok(/rosterPartial && \(/.test(src), 'and the warning is actually rendered');
-ok(/rosterPartialTitle|rosterPartialBody/.test(src), 'with copy that says what is wrong');
-ok(/rosterCollapsed > 0/.test(src),
-  'a same-name collapse is surfaced too — it means the headcount may be short');
+ok(/getCheckinsRoster/.test(src), 'the screen still asks for the roster ENVELOPE, not the bare list');
+ok(!/setRosterPartial|setRosterCollapsed/.test(code),
+  'no roster-integrity state is carried on the screen');
+ok(!/rosterPartial|rosterCollapsed/.test(code),
+  'and nothing reads one — the derivation went with the banners');
+ok(!/rosterPartialTitle|rosterPartialBody|rosterCollapsedTitle|rosterCollapsedBody/.test(code),
+  'no roster warning is rendered');
+// AND THE COPY WENT WITH IT. A key left in the catalogue is a banner someone
+// can restore with one line and no ruling. `en` is the read taken above — this
+// file reads no source file twice.
+ok(!/rosterPartialTitle:|rosterCollapsedTitle:/.test(en),
+  'the warning copy is gone from the catalogue too, not merely unreferenced');
 
 // ═══ GATE PROVENANCE — AND NO CORRECTION AFFORDANCE ══════════════════════════
 console.log('\n── Gate provenance, and no company/trade assignment on this log ──');
 
-ok(/a\.gate_sourced && \(/.test(src), 'a gate-sourced crew is visibly marked as such');
-ok(/fromGate|gateLocked/.test(src), 'with copy naming the gate as the source');
-ok(/gate_sourced: false/.test(src),
-  'a hand-added crew is explicitly NOT marked gate-sourced');
-ok(/isUnboundCrew\(a\)/.test(src) && /unboundCrew/.test(src),
-  'a crew off the roster is saved and visibly flagged, never blocked');
+ok(/a\.gate_sourced && \(/.test(code), 'a gate-sourced crew is visibly marked as such');
+ok(/fromGate|gateLocked/.test(code), 'with copy naming the gate as the source');
+// NOTHING MINTS A CREW ANY MORE, so there is no row for `gate_sourced: false`
+// to be written on. The button that did it — "Add a crew the gate missed" — was
+// the only path in the app that created a crew row from nothing, and it was
+// removed by ruling. Asserted ABSENT so the affordance cannot return without
+// one, and asserted on the HANDLER as well as the flag, because a flag alone
+// would not say whether the path came back under another name.
+ok(!/gate_sourced: false/.test(code),
+  'no code path writes a hand-added crew row — every crew comes from the gate or from storage');
+ok(!/commitAddCrew|addingCrew/.test(code),
+  'and the hand-add handler and its modal state are gone with it');
+// A CREW OFF THE ROSTER IS STILL SAVED AND STILL FLAGGED SERVER-SIDE — what
+// went is the CP being TOLD. `isUnboundCrew` was rendered only on the removed
+// step's rows. Recorded here rather than dropped silently: this is a capability
+// the screen used to have.
+ok(!/isUnboundCrew/.test(code),
+  'the off-roster flag is no longer shown to the CP — it went with the roster step');
 
 // ASSIGNING A COMPANY OR TRADE DOES NOT BELONG HERE. A worker sets his own at
 // check-in; a CP who has to fix one does it during safety orientation. The
@@ -596,67 +670,128 @@ ok(/weather_fetch_state: weatherFetchState/.test(code),
 // The manual chooser is GONE. With it gone, a silent failure would leave the CP
 // unable to fill the field at all — which is why the failure state came first.
 //
-// WEATHER LIVES ON STEP 1 NOW, with the crews and the equipment: it is a fact
-// about what the day was, not a site condition the CP is asked to assess.
-const step1 = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
-const step4 = code.slice(code.indexOf('const renderStep4'), code.indexOf('const renderStep5'));
+// WEATHER HAS NO STEP AT ALL NOW. The display and its failure banner were
+// removed by ruling; the FETCH was not touched, and this is the block that has
+// to prove the difference, because the two are easy to confuse and getting it
+// wrong files a DOB-deficient log (backend/lib/logbook/deficiency.py raises
+// missing_weather on an empty field).
+const step1 = stepSrc(1);
 ok(!/WEATHER_OPTIONS\.map/.test(code),
   'weather is nowhere rendered as a tappable chooser');
 ok(!/setWeather\(weather === w/.test(code),
   'nothing on the screen sets weather by hand');
-ok(/weatherUnavailableTitle/.test(step1),
-  'a failed fetch is STATED on Step 1, not left looking unanswered');
-ok(/weatherUnavailableOffline/.test(step1),
-  'and offline is distinguished from a server that answered badly');
-ok(!/weatherUnavailableTitle/.test(step4),
-  'and weather is no longer asked for on Step 4 — it moved, it was not copied');
 
-// ═══ THE FIVE STEPS, AND WHAT IS ON EACH ═════════════════════════════════════
-console.log('\n── The restructure: what was on site, and what was walked ──');
+// THE FETCH IS STILL WIRED, AND STILL AT MOUNT. One call site, inside
+// fetchData's first-open branch, which useEffect([projectId, date]) runs before
+// any step renders. Asserted on the CALL SITE and on its position, not merely
+// on the function existing: a fetch moved into a step render would satisfy
+// "fetchWeather exists" and would stop happening the day that step went.
+ok((code.match(/fetchWeather\(fullAddress\)/g) || []).length === 1,
+  'fetchWeather has exactly one call site');
+ok(/useEffect\(\(\) => \{ fetchData\(\); \}, \[projectId, date\]\);/.test(code),
+  'and fetchData — which holds it — runs from mount, on project and date');
+for (let n = 1; n <= TOTAL; n += 1) {
+  ok(!/fetchWeather\(/.test(stepSrc(n)),
+    `no step render calls fetchWeather — step ${n} does not fetch`);
+}
+ok(/weather, weather_temp: weatherTemp, weather_wind: weatherWind,/.test(code),
+  'and the value still rides the payload onto the filed sheet');
 
-const step3code = code.slice(code.indexOf('const renderStep3'), code.indexOf('const renderStep4'));
+// THE DISPLAY IS GONE FROM EVERY STEP BUT THE REVIEW. Checked across all four
+// rather than naming one: "it moved, it was not copied" is a statement about
+// the whole screen, and a loop cannot be satisfied by a stale index.
+for (let n = 1; n < TOTAL; n += 1) {
+  ok(!/weatherUnavailableTitle|t\('fieldWeather'\)/.test(stepSrc(n)),
+    `weather is not displayed on step ${n}`);
+}
+// THE FAILURE SIGNAL SURVIVES ONE STEP LATER, read-only. The review restates
+// the value and falls back to the same title, so a CP whose fetch failed is
+// still told before he signs. What he loses is WHICH failure it was, which is
+// why the two detail strings are asserted gone rather than left orphaned.
+ok(/weatherUnavailableTitle/.test(stepSrc(TOTAL)),
+  'the review still says so when the fetch failed — the signal survives the removal');
+ok(!/weatherUnavailableOffline|weatherUnavailableBody/.test(code),
+  'offline is no longer distinguished from a bad answer — the banner that said which is gone');
 
-// STEP 1 — what was on site: crews, equipment, weather.
-ok(/EQUIPMENT_ITEMS\.map/.test(step1),
-  'equipment is answered on Step 1 — a hoist being present is the same kind of fact as a man being present');
-ok(!/EQUIPMENT_ITEMS\.map/.test(step4) && !/EQUIPMENT_ITEMS\.map/.test(step3code),
-  'and it appears exactly once — it moved, it was not copied');
-ok(/toggleEquipment/.test(step1) && /equipment_on_site: equipmentOnSite/.test(code),
+// ═══ THE FOUR STEPS, AND WHAT IS ON EACH ═════════════════════════════════════
+console.log('\n── The restructure: crews and equipment, and what was walked ──');
+
+const step2code = stepSrc(2);
+const step3code = stepSrc(3);
+
+// ── STEP 1 — THE CREWS, AND THE EQUIPMENT THAT CAME ACROSS WITH THE RULING ──
+//
+// THIS IS THE RELOCATION GATE, and it is the one assertion in this file with a
+// filed document behind it. `equipment_on_site` has exactly ONE writer in the
+// app — toggleEquipment — and it prints as section 5 of every filed 3301-02
+// with `empty: "none_documented"`, so the section draws whether or not the key
+// is present. Had the control been deleted with the step that held it, every
+// daily log filed from that day on would have printed "Equipment on Site —
+// None" and no CP could have said otherwise.
+//
+// Asserted on the step it is on NOW, on the writer, and on the key — three
+// marks, because the control surviving on the wrong step, or surviving with its
+// key renamed, are different failures that look the same from the screen.
+const equipStep = [1, 2, 3, 4].filter((n) => /EQUIPMENT_ITEMS\.map/.test(stepSrc(n)));
+ok(equipStep.length === 1 && equipStep[0] === 1,
+  `equipment is answered on step 1 and nowhere else (found on ${JSON.stringify(equipStep)})`);
+ok(/toggleEquipment\(it\.key\)/.test(step1),
+  'and the chips call the ONE writer of the key, not a new one written for the move');
+ok(/equipment_on_site: equipmentOnSite/.test(code),
   'the key is unchanged: both PDF renderers read equipment_on_site');
+// THE {} vs ABSENT DISTINCTION IS NOT TOUCHED. An all-false map and an
+// unanswered one are different facts on a filed record — the formatter's own
+// docstring records that as a past defect — and the summary line is what keeps
+// them apart on the screen.
+ok(/on\.length \? on\.join\(', '\) : t\('notRecorded'\)/.test(code),
+  'nothing ticked still reads as NOT RECORDED, never as none');
+// CARRIED OVER AS THE SAME CONTROL, not redesigned: a collapsed summary row
+// that expands to the chips.
+ok(/setEquipmentOpen/.test(step1) && /equipmentSummary/.test(step1),
+  'it is the same collapsed summary row it was, expanding to the same chips');
 
-// STEP 3 — observations, plus who came onto the site who was not working on it.
-ok(/sectionVisitors/.test(step3code) && !/sectionVisitors/.test(step4),
+// STEP 2 — observations, plus who came onto the site who was not working on it.
+ok(/sectionVisitors/.test(step2code) && !/sectionVisitors/.test(step3code),
   'visitors / deliveries / inspections sits with the observations');
 ok(/Visitors \/ Deliveries \/ Inspections/.test(en),
   "an INSPECTOR turning up is an arrival, and the heading says so");
 ok(/visitors_deliveries: visitorsDeliveries/.test(code),
   'and that key is unchanged too');
 
-// STEP 4 — the nine walked inspections. THE POINT: a tick could say the CP
+// STEP 3 — the nine walked inspections. THE POINT: a tick could say the CP
 // looked; it could never say what he found.
-ok(/CHECKLIST_ITEMS\.map/.test(step4),
-  'Step 4 renders the nine items');
-ok(!/CHECKLIST_ITEMS\.map/.test(step1) && !/CHECKLIST_ITEMS\.map/.test(step3code),
-  'and only Step 4 does');
-ok(/inspectionRow\(checklistItems, it\.key\)/.test(step4),
+// NAMED FOR WHAT IT HOLDS, not for a number. A binding called `step4` holding
+// step 3's source is the drift this file's slice helper exists to end.
+const inspections = step3code;
+ok(/CHECKLIST_ITEMS\.map/.test(inspections),
+  'Step 3 renders the nine items');
+ok(!/CHECKLIST_ITEMS\.map/.test(step1) && !/CHECKLIST_ITEMS\.map/.test(step2code),
+  'and only Step 3 does');
+ok(/inspectionRow\(checklistItems, it\.key\)/.test(inspections),
   'each item is read through the shared rule, not re-derived on the screen');
-ok(/INSPECTION_PASS/.test(step4) && /INSPECTION_FAIL/.test(step4),
+ok(/INSPECTION_PASS/.test(inspections) && /INSPECTION_FAIL/.test(inspections),
   'pass and fail are both offered');
 ok(!/toggleChecklist/.test(code),
   'the old tick-toggle is GONE — a tick beside "Fall Protections" reads as "fine"');
 
 // A FAILED INSPECTION MUST SAY WHAT FAILED.
-ok(/inspectionNoteRequired/.test(step4) && /phInspectionNote/.test(step4),
+ok(/inspectionNoteRequired/.test(inspections) && /phInspectionNote/.test(inspections),
   'a fail opens a note field');
-ok(/noteMissing && \(/.test(step4),
+ok(/noteMissing && \(/.test(inspections),
   'and an un-noted fail is flagged on the card itself');
 ok(/const badInspections = incompleteInspections\(checklistItems\);/.test(code),
   'signing checks every inspection');
-ok(/setStep\(4\);/.test(code),
-  'and an un-noted fail sends the CP back to the step that has it, rather than refusing at the signature');
+// DERIVED, NOT TYPED. The gate sends the CP to a step BY NUMBER and the numbers
+// all moved. `setStep(4)` would still have matched a literal somewhere and
+// dropped him on the review with a toast about inspections he could not see.
+{
+  const inspStep = [1, 2, 3, 4].find((n) => /CHECKLIST_ITEMS\.map/.test(stepSrc(n)));
+  ok(new RegExp(`setStep\\(${inspStep}\\);`).test(code),
+    'and an un-noted fail sends the CP back to the step that has it, rather than refusing at the signature');
+}
 
 // NOT WALKED IS NOT A PASS — asserted on the review, which is what he signs.
-const step5i = code.slice(code.indexOf('const renderStep5'));
+const step5i = stepSrc(TOTAL);
 ok(/reviewInspectionsNotWalked/.test(step5i),
   'the review names the items he did NOT walk — a missing item is not a passed one');
 ok(/errorText/.test(step5i) && /inspectionFail/.test(step5i),
@@ -695,11 +830,11 @@ ok(/accessibilityRole="progressbar"/.test(chromeSrc) && /stepsIncomplete/.test(c
 ok(/state = \{ activities, observations, checklistItems, cpSignature \}/.test(code),
   'and every input the rule reads is supplied — a missing one reads as complete');
 
-const step5w = code.slice(code.indexOf('const renderStep5'));
+const step5w = stepSrc(TOTAL);
 ok(/weatherFetchState === 'ok' && weather/.test(step5w),
   'the review step shows weather only when it was actually retrieved');
 ok(/weatherUnavailableTitle/.test(step5w),
-  '...and says so plainly when it was not');
+  '...and says so plainly when it was not — the ONLY place left that tells him');
 
 // ═══ THE GENERAL DESCRIPTION IS DRAFTED, NOT WRITTEN ═════════════════════════
 console.log('\n── The drafted general description ──');
@@ -718,8 +853,8 @@ ok(/if \(step !== TOTAL_STEPS\) return;/.test(code),
   'and it is only drafted onto the review step, where he can see it');
 ok(step5w.includes('setDescriptionTouched(true); setGeneralDescription(v);'),
   'the drafted line is EDITABLE in review — he is signing it');
-ok(!/fieldGeneralDescription/.test(step4),
-  'and it no longer sits on Step 4, away from the record it summarises');
+ok(!/fieldGeneralDescription/.test(inspections),
+  'and it no longer sits on the inspections step, away from the record it summarises');
 
 // ═══ THE UNASSIGNED WORKER IS PRESENT, NOT A UNIT OF WORK ════════════════════
 console.log('\n── A man with no company gets no activity card ──');
@@ -727,10 +862,10 @@ console.log('\n── A man with no company gets no activity card ──');
 ok(/isUnassignedWorkerRow/.test(stripComments(model)),
   'the rule lives in the model, where a test can execute it');
 
-// STEP 2 — no card at all. Not a disabled card, not an empty one.
-const s2 = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
+// THE CREW STEP — no card at all. Not a disabled card, not an empty one.
+const s2 = stepSrc(1);
 ok(/if \(isUnassignedWorkerRow\(a\)\) return null;/.test(s2),
-  'Step 2 renders NOTHING for him — no activity, no location, no camera');
+  'the crew step renders NOTHING for him — no activity, no location, no camera');
 ok(/unassignedNoCard_one|unassignedNoCard_other/.test(s2),
   '...and says why, rather than silently omitting him');
 
@@ -742,18 +877,34 @@ ok(/\{activities\.map\(\(a, i\) => \{/.test(s2),
 ok(!/workRows\(activities\)\.map/.test(s2),
   'it does not map a filtered array, which would silently write to the wrong crew');
 
-// STEP 1 — he is shown, and flagged.
-const s1 = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
-ok(/isUnassignedWorkerRow\(a\)/.test(s1), 'Step 1 still renders him');
-ok(/unassignedTitle/.test(s1) && /unassignedHint/.test(s1),
-  '...flagged as needing assignment');
+// HE NO LONGER HAS A ROW OF HIS OWN, AND THAT IS A LOSS, NOT A TIDY-UP.
+//
+// The removed roster step listed him by name, flagged, with `unassignedHint`
+// explaining why there was nothing to fill in for him. That step went by
+// ruling. What is left before the signature is a COUNT on the crew step saying
+// why he has no card, and his name on the review. Written down here, asserted
+// both ways, so nobody reads the thinner surface as an accident.
+ok(!/unassignedHint/.test(code),
+  'his explanatory hint is gone with the step that carried it');
+ok(/unassignedNoCard_one|unassignedNoCard_other/.test(s2),
+  'the crew step still COUNTS him and says why he has no card');
+{
+  // AND THE COUNT DOES NOT POINT AT A SCREEN THAT NO LONGER EXISTS. The copy
+  // read "He is recorded on the previous step" — the roster step — and the crew
+  // step is now the FIRST. A sentence that sends a CP somewhere he cannot go is
+  // worse than one that says nothing.
+  ok(!/unassignedNoCard_one: '[^']*previous step/.test(en),
+    'and it no longer sends him to the step above, because there is none');
+  ok(/unassignedNoCard_one: '[^']*review step/.test(en),
+    'it names the review, which is where he is still listed');
+}
 
 // SOFT FLAG, NOT A GATE. Nothing about him may block the CP.
 ok(!/isUnassignedWorkerRow[\s\S]{0,200}?(return;|disabled=\{true\}|toast\.(error|warning))/.test(code),
   'he never blocks a save, disables a control, or raises an error');
 
-// STEP 5 — he stays in the record. He was on site.
-const s5 = code.slice(code.indexOf('const renderStep5'));
+// THE REVIEW — he stays in the record. He was on site.
+const s5 = stepSrc(TOTAL);
 ok(/isUnassignedWorkerRow\(a\)/.test(s5),
   'the review still lists him — dropping him would hide a man who was there');
 ok(/unassignedTitle/.test(s5), '...marked as having no company rather than no work');
@@ -761,42 +912,54 @@ ok(/unassignedTitle/.test(s5), '...marked as having no company rather than no wo
 // ═══ OBSERVATIONS ════════════════════════════════════════════════════════════
 console.log('\n── Observations ──');
 
-ok(/observationComplete\(o\)/.test(src), 'each observation is checked against the shared rule');
-ok(/incompleteObservations\(observations\)/.test(src),
+ok(/observationComplete\(o\)/.test(code), 'each observation is checked against the shared rule');
+ok(/incompleteObservations\(observations\)/.test(code),
   'signing checks every observation for a corrective action');
-ok(/setStep\(3\)/.test(src),
+// DERIVED, NOT TYPED — the third of the three sign-time gates that send the CP
+// to a step by NUMBER. Observations are step 2 now; a literal `setStep(3)` left
+// here would have matched the INSPECTIONS gate a few lines up in the same file
+// and passed while dropping him on the wrong step.
+const obsStep = [1, 2, 3, 4].find((n) => /observations\.map/.test(stepSrc(n)));
+ok(obsStep === 2, `observations render on step ${obsStep}`);
+ok(new RegExp(`setStep\\(${obsStep}\\);\\s*\\n\\s*toast\\.warning\\(t\\('sectionObservations'\\)`).test(code),
   'and an incomplete one sends the CP back to the step that has it');
 // Responsible party is PICKED, never typed.
-const step3 = src.slice(src.indexOf('const renderStep3'), src.indexOf('const renderStep4'));
+const step3 = stepSrc(obsStep);
 ok(/onPress=\{\(\) => updateObservation\(i, 'responsible_party', crewName\(a\)\)\}/.test(step3),
   'the responsible party is PICKED from the crews on site');
 ok(!/onChangeText=\{\(v\) => updateObservation\(i, 'responsible_party'/.test(step3),
   'the responsible party can NOT be free-typed');
 
-// COMPACT STEP 1, and the flagged worker inside it.
-console.log('\n-- Step 1 is dense, and the flagged man still stands out --');
+// THE COMPACT ROSTER STEP IS GONE, AND WITH IT THE DENSE CREW ROW.
+//
+// This block measured a 40pt two-line row that was only honest because nothing
+// on it was tappable, and checked that the flagged man still stood out inside
+// that compaction. The step it described was removed by ruling. The assertions
+// are INVERTED rather than dropped: a 40pt row is below the 56pt minimum this
+// screen is built to, so if the pattern ever reappears it must come back with
+// its own ruling and its own arithmetic, not by being copied from here.
+console.log('\n-- The dense crew row went with the step that justified it --');
 
-const step1c = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
+const step1c = stepSrc(1);
 
-// The crew CARD is gone. Rows, not cards.
-ok(!/<Card s=\{s\} key=\{a\.activity_id/.test(step1c),
-  'crews render as rows, not full cards');
-ok(/style=\{\[s\.crewRow, flagged && s\.crewRowFlagged\]\}/.test(step1c),
-  'and the unassigned worker gets a DISTINCT row, not a crew row');
-ok(/crewRowFlagged: \{[^}]*borderLeftColor: outdoor\.warn/s.test(stylesBody),
-  'he is marked with the warn token, so compaction does not bury him');
-ok(/\{flagged \? t\('unassignedTitle'\) : crewName\(a\)\}/.test(step1c),
-  'he is named as unassigned rather than as a crew');
+ok(!/style=\{\[s\.crewRow, flagged && s\.crewRowFlagged\]\}/.test(code),
+  'the dense crew row is rendered nowhere');
+ok(!/crewRow:|crewRowFlagged:|crewRowMain:|crewRowName:|crewRowMeta:/.test(stylesBody),
+  'and its styles are gone from the stylesheet, not left as a sub-minimum row to copy');
+// crewRowFlag SURVIVES and is a different element: the warn-coloured hint line
+// under a crew CARD. Asserted so the sweep above cannot take it by accident.
+ok(/crewRowFlag: \{[^}]*color: outdoor\.warn/s.test(stylesBody)
+   && /s\.crewRowFlag/.test(step1c),
+  'the warn-coloured hint line under a crew card stays — a different element, same token');
 
-// 40pt is only honest because nothing here is tappable.
-ok(!/crewRow[^:]*onPress/.test(step1c), 'crew rows are NOT tappable');
-const crewRowBlock = (stylesBody.match(new RegExp(`\\n\\s{4}crewRow:\\s*\\{([\\s\\S]*?)\\n\\s{4}\\}`)) || [, ''])[1];
-ok(/paddingVertical: spacing\.xs/.test(crewRowBlock) && !/touchTarget/.test(crewRowBlock),
-  'the row is 4pt padding on two dense lines, NOT a 56pt target');
+// CARDS, NOT ROWS, AND THEY CARRY THE FULL TARGET. The step that is left is the
+// crew cards, every control on which is a real touch target.
+ok(/<Card s=\{s\} key=\{a\.activity_id/.test(step1c),
+  'crews render as full cards on the step that is left');
 
-// The gate badge shrinks but survives.
-ok(/a\.gate_sourced && \(/.test(step1c) && /Lock size=\{12\}/.test(step1c),
-  'the gate badge stays, smaller — it is the only thing saying this is locked');
+// The gate badge survives, at card size rather than row size.
+ok(/a\.gate_sourced && \(/.test(step1c) && /Lock size=\{14\}/.test(step1c),
+  'the gate badge stays — it is the only thing saying this data is locked');
 
 // Equipment folds; crews never do.
 ok(/setEquipmentOpen/.test(step1c), 'equipment collapses behind a summary row');
@@ -807,16 +970,18 @@ const summaryBlock = (stylesBody.match(new RegExp(`\\n\\s{4}summaryRow:\\s*\\{([
 ok(/minHeight: touchTarget\.min/.test(summaryBlock),
   'and that summary row IS tappable, so it carries the full 56pt');
 ok(/equipmentSummary/.test(step1c), 'the summary NAMES the plant');
-ok(/on\.length \? on\.join\(', '\) : t\('notRecorded'\)/.test(code),
-  'nothing ticked reads as NOT RECORDED, never as none');
 ok(/\{activities\.map\(\(a, i\) => \{/.test(step1c) && !/activities\.slice\(/.test(step1c),
-  'every crew renders — none hidden behind a "+N more", which is what Step 1 is for');
+  'every crew renders — none hidden behind a "+N more"');
 
 // The sentinel never reaches the screen.
-ok(/tradeLabel\(a\.trade\)/.test(step1c), 'Step 1 renders the trade through the label rule');
+ok(/tradeLabel\(a\.trade\)/.test(step1c), 'the crew step renders the trade through the label rule');
 ok(!/\{!!a\.trade &&/.test(code), 'and the raw trade render is gone everywhere');
-ok((code.match(/tradeLabel\(a\.trade\)/g) || []).length === 2,
-  'both surfaces that show a roster trade use it — Step 1 and the Step 2 crew line');
+// ONE, NOT TWO. It was two — the roster step's dense row and the crew card's
+// meta line — and the row went. The COUNT is the assertion: a second surface
+// appearing without the label rule is how the "UNASSIGNED" sentinel reached a
+// filed record the first time, and an unbounded /tradeLabel/ would not see it.
+ok((code.match(/tradeLabel\(a\.trade\)/g) || []).length === 1,
+  'the one surviving surface that shows a roster trade uses it — the crew card line');
 
 
 console.log('DEVICE ROUND 4 -- group 3');
@@ -857,31 +1022,33 @@ console.log('DEVICE ROUND 4 -- group 3');
     'stepper: it wraps the scroll and NOT the footer — the primary action stays put');
 }
 
-// ── 12. A COLLAPSE IS NOT A FAILED READ ─────────────────────────────────────
+// ── 12. A COLLAPSE IS NOT A FAILED READ — AND NEITHER IS NOW TOLD ──────────
 //
-// partial = degraded OR truncated OR collapsed, server-side. A collapse is the
-// OPPOSITE of a degradation: the server read the roster and merged two rows it
-// could not tell apart. Gating "could not confirm the full list" on it told the
-// CP the read had failed on a day nothing failed and nobody was dropped.
-ok(/const onlyCollapse = Boolean\(roster\.partial\)/.test(code),
-  'the two causes are separated');
-// FORWARD COMPATIBILITY is the point of the server's single boolean: a NEW
-// degradation mode must start warning with no client change.
-ok(/const degraded = \(roster\.degraded_passes \|\| \[\]\)\.length > 0;/.test(code)
-   && /const truncated = \(roster\.truncated_passes \|\| \[\]\)\.length > 0;/.test(code),
-  'the exemption is narrow: ONLY a collapse with nothing else reported');
-ok(/collapsed > 0 && !degraded && !truncated/.test(code),
-  'so anything else that sets partial still raises the banner, client unchanged');
-ok(/\{!rosterPartial && rosterCollapsed > 0 && \(/.test(code),
-  'a collapse gets its OWN disclosure rather than being silently dropped');
-ok(/rosterCollapsedTitle/.test(code),
-  'with its own heading — the two say different things about the server');
-{
-  const en = fs.readFileSync(path.join(__dirname, '..', 'i18n', 'en.js'), 'utf8');
-  const title = /rosterCollapsedTitle: '([^']+)'/.exec(en);
-  ok(title && !/incomplete|could not/i.test(title[1]),
-    'and it does not claim the read failed: ' + JSON.stringify(title && title[1]));
-}
+// WHAT THIS BLOCK USED TO PIN, kept as the record of what was given up.
+// Server-side, `partial` = degraded OR truncated OR collapsed. A collapse is
+// the OPPOSITE of a degradation: the server read the roster and merged two rows
+// it could not tell apart. This screen separated the two so the "could not
+// confirm the full list" banner did not fire on a day nothing failed, and gave
+// the collapse its own heading — "Two workers may have been counted once" —
+// because the headcount may be short by N men.
+//
+// BOTH BANNERS WERE REMOVED BY RULING, so the client-side derivation that fed
+// them has no reader and is gone too. The SERVER still reports every one of
+// these fields; nothing about the envelope changed. What changed is that the CP
+// is no longer told, and the short-headcount statement now exists nowhere in
+// the product — the OSHA log reads the same collapsed list and never said it.
+//
+// Asserted ABSENT, at the level of the derivation as well as the banner: a
+// half-restored version — the state back, the banner not — would be state
+// computed for nobody, which is how this drifts back one commit at a time.
+ok(!/const onlyCollapse/.test(code),
+  'the collapse/degradation split is gone with the banners it fed');
+ok(!/roster\.degraded_passes|roster\.truncated_passes|roster\.collapsed/.test(code),
+  'and the screen reads none of the envelope integrity fields');
+ok(!/rosterCollapsedTitle|rosterCollapsedBody/.test(code),
+  'no collapse disclosure is rendered');
+ok(!/rosterCollapsedTitle:/.test(en),
+  'and the copy went from the catalogue too — a key left behind is a one-line restore');
 
 // ── 13. "OTHER" IS NOT A PASS/FAIL ITEM ─────────────────────────────────────
 //
@@ -893,7 +1060,11 @@ ok(/\{isOtherInspection\(it\.key\) \? \(/.test(code),
   'Other renders a text field, not pass/fail chips');
 ok(/phInspectionOther/.test(code), 'and asks what was inspected');
 {
-  const step4 = code.slice(code.indexOf('CHECKLIST_ITEMS.map'), code.indexOf('const renderStep5'));
+  // FROM THE MARKER TO THE END OF THE STEP THAT HOLDS IT. The old bound was
+  // `const renderStep5`, which no longer exists — indexOf -1, slice(a, -1), and
+  // a subject running to the last character of the file.
+  const inspSrc = stepSrc([1, 2, 3, 4].find((n) => /CHECKLIST_ITEMS\.map/.test(stepSrc(n))));
+  const step4 = inspSrc.slice(inspSrc.indexOf('CHECKLIST_ITEMS.map'));
   const otherAt = step4.indexOf('isOtherInspection(it.key) ? (');
   const chipsAt = step4.indexOf("label={t('inspectionPass')}");
   ok(otherAt > -1 && chipsAt > otherAt,

@@ -1,16 +1,18 @@
 /**
  * A CREW THAT WAS NOT ON SITE HAS NOTHING TO DESCRIBE.
  *
- * From the CP's device: AAZ showed "0 workers" on Step 1 — no AAZ men came
- * through the gate that day — and Step 3 still demanded an activity and a
- * location for them and held Next disabled. `num_workers` was consulted
- * NOWHERE: not in workRows, not in crewsWithoutWork, not in stepComplete(2).
+ * From the CP's device: AAZ showed "0 workers" on the roster step — no AAZ men
+ * came through the gate that day — and the crew step still demanded an activity
+ * and a location for them and held Next disabled. `num_workers` was consulted
+ * NOWHERE: not in workRows, not in crewsWithoutWork, not in stepComplete.
  *
  * TWO PRODUCERS OF THE ZERO, and each needs its own half of the fix:
  *
  *   commitAddCrew    turned an untyped count into the literal string "0"
  *                    (`String(parseInt('') || 0)`) — the app asserting nobody
- *                    was there about a crew the CP had just said was.
+ *                    was there about a crew the CP had just said was. THIS PATH
+ *                    HAS SINCE BEEN REMOVED from the screen entirely; section 4
+ *                    below says what carries its rule now.
  *   no reconcile     a stored activity list was never compared against today's
  *                    roster again once non-empty, so a crew present when the
  *                    draft was opened kept its count all day — and, worse, a
@@ -43,9 +45,12 @@ const body = raw
 // run before a single assertion prints — so against a tree without this change
 // the output is a stack trace instead of the list of things that are missing.
 // `typeof` yields undefined instead, and the assertions below report it.
+// applyHeadcountEdit joined the list when the hand-add path was removed: it is
+// the only writer of num_workers left on the screen, so section 4's rule is now
+// asked of it.
 const NAMES = ['EMPTY_ACTIVITY', 'crewHeadcount', 'hasNoWorkersOnSite', 'workRows',
   'describableRows', 'crewsWithoutWork', 'stepComplete',
-  'reconcileCrewsWithRoster', 'buildCrewsFromRoster'];
+  'reconcileCrewsWithRoster', 'buildCrewsFromRoster', 'applyHeadcountEdit'];
 // eslint-disable-next-line no-new-func
 const M = new Function(`
   ${body}
@@ -245,7 +250,23 @@ console.log('\n-- the stored list is brought back into line with the roster --')
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 4. THE PRODUCER — commitAddCrew no longer mints a zero from a blank
+// 4. THE PRODUCER — nothing mints a zero from a blank
+//
+// THE PRODUCER IS GONE, WHICH IS NOT THE SAME AS THE RULE BEING GONE.
+// commitAddCrew and the "Add a crew the gate missed" button that opened it were
+// removed by ruling, so the expression this block used to extract and RUN no
+// longer exists to extract. The rule it carried — an untyped count is unknown,
+// never the string "0" — still has to hold, because rows it wrote are still in
+// stored logs and drafts and are still edited.
+//
+// So the block asserts the same rule against what is left:
+//   • the `|| 0` expression is absent from the screen (unchanged, and it is now
+//     absent because the whole path is, which is a stronger absence);
+//   • the hand-add path really is gone, rather than having quietly survived
+//     somewhere this file no longer looks;
+//   • applyHeadcountEdit — the ONLY writer of num_workers left on this screen —
+//     keeps a blank blank on a non-gate row, asserted by EXECUTION, which is
+//     what the extracted expression was for.
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n-- an untyped count is unknown, not zero --');
 {
@@ -266,25 +287,35 @@ const SCREEN = fs.readFileSync(
   ok(!/String\(parseInt\(c\.num, 10\) \|\| 0\)/.test(code),
     'the `|| 0` that manufactured the zero is gone from the CODE');
 
-  // Evaluated, not grepped: the shipped expression is extracted verbatim and run.
-  const m = SCREEN.match(/num_workers: (Number\.isFinite[\s\S]*?),\n/);
-  ok(!!m, 'the num_workers expression is still findable in commitAddCrew');
-  // NOT `if (m)`. A silent skip is how this hid: five assertions vanished and
-  // the suite still said ALL PASSED. A miss now fails every one of them.
-  {
-    // eslint-disable-next-line no-new-func
-    const numWorkers = m
-      ? new Function('c', `return (${m[1]});`)
-      : () => '__NO_MATCH__';
-    eq(numWorkers({ num: '' }), '', 'a blank count stays blank — unknown, not zero');
-    eq(numWorkers({ num: undefined }), '', 'an absent count stays blank');
-    eq(numWorkers({ num: 'abc' }), '', 'an unparseable count stays blank');
-    eq(numWorkers({ num: '6' }), '6', 'a real count is kept');
-    eq(numWorkers({ num: '0' }), '0', 'and a deliberately typed zero is still respected');
-  }
+  // THE PATH ITSELF IS GONE. Asserted rather than assumed, and asserted on
+  // three separate marks — the handler, the state that fed it, and the copy on
+  // the button — because any one of them surviving alone would mean the
+  // affordance had only half gone and could be wired back without notice.
+  ok(!/commitAddCrew/.test(code),
+    'the hand-add handler is gone from the screen');
+  ok(!/setAddingCrew|addingCrew/.test(code),
+    'and so is the modal state it wrote through');
+  ok(!/t\('addCrew'\)|t\('addCrewTitle'\)/.test(code),
+    'and nothing renders "Add a crew the gate missed" any more');
 
-  // A hand-added crew with no count keeps being asked for its work: the CP
-  // added it because it WAS on site.
+  // THE SURVIVING WRITER, EVALUATED. applyHeadcountEdit is now the only thing
+  // on this screen that writes num_workers, so the unknown-is-not-zero rule
+  // lives or dies there. Run for real against the shipped module — the same
+  // standard the extracted expression was held to, moved onto what is left.
+  const handRow = crew({ company: 'Typed Co', gate_sourced: false, num_workers: '4' });
+  eq(M.applyHeadcountEdit(handRow, '').num_workers, '',
+    'clearing the box on a non-gate row leaves it blank — unknown, not zero');
+  eq(M.applyHeadcountEdit(handRow, '   ').num_workers, '',
+    'whitespace is a blank, not a count');
+  eq(M.applyHeadcountEdit(handRow, '6').num_workers, '6', 'a real count is kept');
+  eq(M.applyHeadcountEdit(handRow, '0').num_workers, '0',
+    'and a deliberately typed zero is still respected');
+  eq(M.applyHeadcountEdit(handRow, 'abc').num_workers, undefined,
+    'an unparseable entry writes nothing at all rather than a manufactured number');
+
+  // A hand-added crew with no count keeps being asked for its work. No NEW ones
+  // are created any more, but they arrive from stored logs and drafts, and the
+  // rule is about the row, not about who made it.
   const handBlank = crew({ company: 'Typed Co', gate_sourced: false, num_workers: '' });
   ok(M.crewsWithoutWork([handBlank]).length === 1,
     'a hand-added crew with no count is still asked what it did');
