@@ -797,10 +797,16 @@ console.log('\n8b. STEP 2 IS GONE, AND ITEM 2 HAS NOW GONE WITH IT');
   // provenance flag would be computed against a box he never saw.
   ok(!rec.includes('progressLabel') && !rec.includes('progressAdoptedNote'),
     'the input and its adoption note are off the sign step');
-  ok(!/progressBlock\(/.test(csCode) && !/progress: /.test(csCode),
-    'and buildData no longer files a `progress` block — writing one from a '
-    + 'field that does not exist would put an unattributed sentence over his '
-    + 'signature');
+  // BUT buildData DOES STILL WRITE A `progress` KEY, AND MUST. An amendment
+  // inherits its parent's `data` and the autosave rewrites `data` wholesale,
+  // so a key this screen never writes is a key the CORRECTION loses — and item
+  // 2 has no second field to survive in. What it writes is the stored block,
+  // carried through untouched; it composes nothing. amendmentCarryForward
+  // .test.cjs runs the real hydrate and buildData and proves the round trip.
+  ok(!/progressBlock\(/.test(csCode) && !/progress: /.test(csCode)
+    && /\.\.\.writeCarried\('progress', carriedProgress\)/.test(csCode),
+    'buildData composes no `progress` block of its own — it carries the one '
+    + 'already stored, or writes no key at all');
   ok(!/progressProvenance/.test(csCode) && !/PROVENANCE_ADOPTED/.test(csCode)
     && !/adoptedText/.test(csCode) && !/setProgress\(/.test(csCode),
     'the state, the snapshot, restore and hydrate went with it — a half-'

@@ -120,6 +120,12 @@ import {
 // summary any more. The module remains because the SERVER still reads `source`
 // off the logs already filed, and it is the only written statement of what
 // `adopted` and `own` mean on this side. See progressProvenance.test.cjs.
+//
+// WHAT DID NOT STOP IS CARRYING WHAT IS ALREADY STORED. An amendment opens
+// holding the parent's data and the autosave rewrites `data` wholesale, so
+// "no longer written" would DELETE item 2 from a correction. See
+// carriedForward.js — read it, keep it, write it back, never show it.
+import { readCarried, writeCarried } from '../../src/utils/carriedForward';
 import {
   adoptableFindings, anyFindingStillAdopted,
 } from '../../src/utils/adoptedFindings';
@@ -610,6 +616,22 @@ export default function SiteSuperintendentLog() {
   // `collected` on both models, so the six logs already filed keep printing
   // the sentences he wrote and the provenance line keeps saying where they
   // came from. This screen stopped writing; nothing stopped reading.
+  //
+  // ── EXCEPT THE ONE THING IT STILL WRITES: WHAT WAS ALREADY THERE ────────
+  //
+  // NOT STATE FOR AN INPUT. Nothing renders this, nothing edits it, nothing
+  // offers it. It holds the stored `progress` block of the record being
+  // edited so that `buildData` can put it back exactly as it found it.
+  //
+  // WITHOUT IT AN AMENDMENT DELETES ITEM 2. The correction is seeded with the
+  // parent's `data` and the first autosave PUTs `buildData()` over that data
+  // wholesale -- so a key this screen never writes is a key the amended
+  // record loses, and item 2 has no second field to survive in. The filed
+  // parent is a separate document and was never at risk; the correction was.
+  //
+  // `undefined` MEANS THE RECORD HAD NONE, and stays undefined. See
+  // carriedForward.js for why present-or-absent and never `{}`.
+  const [carriedProgress, setCarriedProgress] = useState(undefined);
   const [activities, setActivities] = useState('');
   // WHICH ROW IS OPEN. Nothing is open on arrival: the common day is
   // "nothing to report" on all four, and a screen that opens every editor
@@ -1015,10 +1037,17 @@ export default function SiteSuperintendentLog() {
     // did not tell us that.
     setDepartedNextDay(g('presence').departed_next_day === true);
     setPrintedName(g('presence').printed_name || '');
-    // ITEM 2 IS NOT HYDRATED, BECAUSE IT IS NOT EDITED. A stored `progress`
-    // block is left exactly where it is: reading it into state the screen no
-    // longer shows would put a sentence back into the payload through the
-    // autosave without it appearing anywhere he could check it.
+    // ITEM 2 IS READ BUT NOT SHOWN. The field is gone and is not coming back;
+    // this is the stored block being picked up so `buildData` can put it back
+    // down untouched. It is read off `d` rather than `g('progress')` because
+    // `g` turns a missing key into `{}` -- and the difference between "he had
+    // no item 2" and "he had an empty one" is exactly what must survive.
+    //
+    // THE REASON IS THE AMENDMENT PATH, not this screen: a correction inherits
+    // the parent's data and the autosave rewrites `data` wholesale, so not
+    // carrying it would quietly delete a required BC 3301.13.13 item from the
+    // corrected document. Never rendered, never offered, never editable.
+    setCarriedProgress(readCarried(d, 'progress'));
     // ONE FIELD NOW, AND A STORED PAIR IS JOINED RATHER THAN HALVED.
     // Records filed before the merge carry both keys; reopening one must
     // show him everything he wrote, not the first half.
@@ -1084,6 +1113,12 @@ export default function SiteSuperintendentLog() {
 
   const snapshot = () => ({
     arrivedAt, departedAt, departedNextDay, printedName, activities,
+    // NOT A FIELD, AND STILL HAS TO MAKE THE TRIP. /consent remounts this
+    // screen, restore() replaces the state wholesale, and hydrate does not run
+    // again — so a carried block left out here comes back `undefined` and the
+    // next autosave drops item 2 from the amendment after all. Signing goes
+    // through /consent; this is the normal path, not an edge case.
+    carriedProgress,
     inspectionLocation,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, cpManual, cpNone, step,
@@ -1099,6 +1134,11 @@ export default function SiteSuperintendentLog() {
     setDepartedAt(v.departedAt ?? '');
     setDepartedNextDay(v.departedNextDay === true);
     setPrintedName(v.printedName ?? '');
+    // NO `?? ''` AND NO `?? {}`. Every other line here defaults, because every
+    // other line restores a field with a natural empty value. This one carries
+    // a record's presence or absence, and a default would invent a block on
+    // every restored draft that never had one.
+    setCarriedProgress(v.carriedProgress);
     setActivities(v.activities ?? '');
     setInspectionLocation(v.inspectionLocation ?? '');
     setFindings(Array.isArray(v.findings) ? v.findings : []);
@@ -1167,23 +1207,34 @@ export default function SiteSuperintendentLog() {
         // has to derive it from the two times.
         departed_next_day: departedNextDay === true,
       },
-      // ── ITEM 2 IS NO LONGER WRITTEN, AND THE KEY IS NOT WRITTEN EMPTY ────
+      // ── ITEM 2 IS NO LONGER COLLECTED, ONLY CARRIED ─────────────────────
       //
-      // `progress: {}` would be the same absence in a costlier shape, and on
-      // an AMENDMENT -- whose child starts life holding the parent's `data` --
-      // it would be an empty block overwriting the parent's summary rather
-      // than a key simply not sent.
+      // NOTHING HERE ASKS HIM ANYTHING. There is no item 2 input on this
+      // screen; this spreads back the block that was already stored on the
+      // record being edited, exactly as it was found, or contributes NO KEY
+      // AT ALL when there was none. It cannot create one and cannot change
+      // one -- see carriedForward.js.
       //
-      // THE THIRD OF THESE ON THIS SCREEN, and the same manoeuvre each time:
-      // `cs_activities.locations` and `daily_inspection.result` below are both
-      // still declared, still printed off the records that carry them, and no
-      // longer collected. The writer stops; the readers do not.
+      // WHY A REMOVED FIELD STILL WRITES. An amendment is seeded with its
+      // parent's `data` and the first autosave PUTs this object over it
+      // WHOLESALE, so "no longer written" would mean "deleted from the
+      // correction". Item 2 has no second field to survive in, so the amended
+      // sheet would print "-- Not recorded" against a required BC 3301.13.13
+      // item, silently. The filed parent is a separate document and was never
+      // at risk; the correction was.
       //
-      // WHAT MAKES IT SAFE IS ON THE OTHER SIDE. `item_state` short-circuits
-      // on `collected` BEFORE it reads the block, so the declaration -- not
-      // this line -- is what decides whether the six filed logs print what he
-      // wrote or print "This log does not record this item" over his
-      // signature. The declaration stays.
+      // THE WHOLE BLOCK, because `source` is the provenance flag the sheet
+      // prints from and `item_provenance` refuses to re-derive it after the
+      // fact. Carrying the summary without it would reprint his words under
+      // the wrong attribution.
+      ...writeCarried('progress', carriedProgress),
+      // TWO NEIGHBOURS DO THE SAME THING AND ARE NOT TREATED THE SAME WAY, on
+      // purpose and pending a separate ruling. `cs_activities.locations` below
+      // is no longer written either, but `hydrate` folds it INTO `summary`, so
+      // nothing he wrote is lost. `daily_inspection.result` is neither carried
+      // nor folded and an amendment does drop it -- item 11 still reads
+      // PRESENT off `location`, so no item disappears, but the sentence does.
+      // Measured in amendmentCarryForward.test.cjs rather than assumed.
       // ONE STATUTORY ITEM, ONE INPUT. `locations` was a second box under a
       // label that asked the same question the first box's own placeholder
       // did -- "WHAT YOU DID, AND WHERE" above "Areas and floors you
@@ -1235,6 +1286,9 @@ export default function SiteSuperintendentLog() {
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay, activities,
+    // A STALE CLOSURE HERE WOULD FILE THE BLOCK CAPTURED BEFORE hydrate RAN --
+    // which is `undefined`, and the key would be dropped after all.
+    carriedProgress,
     inspectionLocation, competentPersonName, cpNone]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────

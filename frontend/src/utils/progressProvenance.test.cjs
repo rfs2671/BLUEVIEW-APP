@@ -221,10 +221,29 @@ ok('the screen carries no trace of item 2\'s input',
   `state, snapshot, restore, hydrate, buildData and the field go together — `
   + `a half-removed field files a block nobody saw (left: ${
     JSON.stringify(left)})`);
-ok('and buildData does not file a `progress` key',
-  !/progress:/.test(SCREEN_CODE),
-  'an empty block would still be a claim about a document, and a restored '
-  + 'draft would make it a non-empty one');
+// ── THE ONE `progress` THE SCREEN STILL WRITES, AND IT WRITES NOTHING NEW ──
+//
+// This asserted `!/progress:/` — "buildData does not file a progress key" —
+// and that was true, complete, and WRONG about the amendment path. A
+// correction is seeded with its parent's `data` and the autosave PUTs
+// buildData's object over it wholesale, so a key never written is a key the
+// correction LOSES. Item 2 has no second field to survive in.
+//
+// So buildData does file one, and what matters is that it is a CARRY and not a
+// collection: spread from the stored block through the shared rule, with no
+// literal `progress:` of its own anywhere. See amendmentCarryForward.test.cjs,
+// which runs the real hydrate and buildData and compares the block that comes
+// out with the block that went in.
+ok('buildData files item 2 only by carrying what was stored',
+  /\.\.\.writeCarried\('progress', carriedProgress\)/.test(SCREEN_CODE)
+  && !/progress:/.test(SCREEN_CODE),
+  'a literal `progress:` here would be this screen composing an answer again, '
+  + 'which is the thing that was removed');
+ok('and it cannot invent one where the record had none',
+  /readCarried\(d, 'progress'\)/.test(SCREEN_CODE)
+  && !/carriedProgress \?\?/.test(SCREEN_CODE),
+  'a default would put an empty block on every log that never had item 2, and '
+  + '`{}` versus absent is a distinction the renderer reads');
 
 // ── THE READERS ARE UNTOUCHED, WHICH IS THE WHOLE SAFETY OF IT ─────────────
 //
