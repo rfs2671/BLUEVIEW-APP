@@ -139,7 +139,14 @@ def unreadable_failure_sites():
 #: eval cases against the real corpus now, which is a stronger claim and prints
 #: a record rather than a file. Side effect of a deletion made for another
 #: reason, which is the only direction this number is allowed to move.
-EXPECTED_TOTAL = 58
+#: 58 -> 57 on 2026-09-18. `test_osha_review_column.py`'s
+#: `assertIn("Signed", SRC)` was a bare assertion over all of server.py -- and
+#: it could not fail anyway, because the Signed column lives in
+#: legal_render/schema.py and "Signed" occurs four times in server.py on
+#: unrelated lines. Replacing it with a schema-side assertion that carries a
+#: message fixed both faults at once. Side effect of a change made to give the
+#: guard teeth, not to move this number.
+EXPECTED_TOTAL = 57
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):
