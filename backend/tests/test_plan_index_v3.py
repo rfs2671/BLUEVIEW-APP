@@ -697,7 +697,7 @@ class OcrIsOptionalAndMetered(unittest.TestCase):
     def test_no_aws_credentials_is_a_flag_not_an_error(self):
         with mock.patch.dict(os.environ, {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""}):
             text, flag = _run(server._ocr_page_text("p1", b"jpeg"))
-        self.assertEqual((text, flag), ("", "ocr_not_configured"))
+        self.assertEqual((text, flag), ("", "page_ocr_not_configured"))
 
     def test_metered_under_its_own_name(self):
         src = inspect.getsource(server._ocr_page_text)
