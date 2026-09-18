@@ -721,6 +721,67 @@ def section_prompt(section: str, text_layer: str) -> str:
 VlmCall = Callable[[str, str, int], Awaitable[Tuple[str, Optional[str]]]]
 
 
+# A SECOND ASK IS FOR SILENCE, NOT FOR AN ANSWER WE DID NOT LIKE.
+#
+# `unparseable` means the model answered and the answer was not JSON; asking
+# again usually produces the same shape of thing and spends budget a section
+# that was never asked could have used. A budget that is already exhausted is
+# not worth asking with at all — the call would be refused on arrival.
+# ── WHICH FAILURES ARE WORTH A SECOND ASK ─────────────────────────────────
+#
+# THE RULE LIVES TWICE AND MAY NOT DIVERGE. server._worth_asking_again asks it
+# of an EXCEPTION; this asks it of the FLAGS a failed call left on the row,
+# because the second pass runs after the exception is gone. They are pinned to
+# the same answers by test_the_two_shapes_of_the_rule_agree, which sweeps every
+# httpx error class and every status from 100 to 599 rather than sampling —
+# the first version of this named seven classes by hand and disagreed with the
+# server on NINE of the twenty, all of them silently.
+#
+# It reads the exception's ANCESTRY BY NAME rather than by isinstance, because
+# this module may not depend on the http client at all — test_plan_extract.py
+# forbids it, and that ban is why the extractor can be tested without a
+# network in the first place. A CloseError is a TransportError whoever
+# constructed it, and the name says so.
+_TRANSIENT_BASES = frozenset({"TimeoutException", "TransportError"})
+
+
+def _call_failed_flag(exc: Exception) -> str:
+    """The flag a failed call leaves behind, carrying what the decision needs.
+
+    `call_failed:{type name}` alone was not enough twice over: it could not
+    tell a 503 from a 400 (both ProviderStatus), and it could not tell a
+    CloseError from a DecodingError without a hand-maintained list of names."""
+    names = {c.__name__ for c in type(exc).__mro__}
+    base = f"call_failed:{type(exc).__name__}"
+    status = getattr(exc, "status", None)
+    if status is not None:
+        return f"{base}:{status}"
+    if names & _TRANSIENT_BASES:
+        return f"{base}:transient"
+    return base
+
+
+def flag_is_retryable(section_flags: List[str]) -> bool:
+    """A second ask is for silence, never for an answer we did not like.
+
+    `unparseable` means the model answered and the answer was not JSON; asking
+    again returns the same shape and spends budget a section that was never
+    asked could have used. `BudgetExhausted` IS the ceiling. A 4xx fails the
+    same way twice; a 429 or a 5xx is the provider being busy."""
+    for f in (section_flags or []):
+        f = str(f)
+        if not f.startswith("call_failed:"):
+            continue
+        if f.endswith(":transient"):
+            return True
+        tail = f.rsplit(":", 1)[-1]
+        if tail.isdigit():
+            status = int(tail)
+            return status == 429 or status >= 500
+        return False
+    return False
+
+
 async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
                        boilerplate: FrozenSet[str] = frozenset()) -> Dict[str, Any]:
     """Run each section as its own call. One section failing costs only itself.
@@ -735,16 +796,17 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
     flags: Dict[str, List[str]] = {}
     raw: Dict[str, str] = {}
 
-    for name in SECTIONS:
+    async def _one_section(name: str) -> None:
+        """Ask for one section and record what came back, in place."""
         f: List[str] = []
         try:
             content, finish = await vlm_call(image_b64, section_prompt(name, text_for_prompt),
                                              SECTION_MAX_TOKENS[name])
         except Exception as e:
             sections[name] = {}
-            flags[name] = [f"call_failed:{type(e).__name__}"]
+            flags[name] = [_call_failed_flag(e)]
             raw[name] = ""
-            continue
+            return
         content = content or ""
         raw[name] = content[:RAW_CAP]
         if finish == "length":
@@ -761,6 +823,39 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
             sections[name] = clean
             f.extend(vflags)
         flags[name] = f
+
+    # ── EVERY SECTION ONCE, THEN THE FAILURES AGAIN ───────────────────────
+    #
+    # The retry used to fire where the call failed, before the rest of the page
+    # had been asked at all. The page budget is shared, so on a slow provider
+    # one section could spend it twice and the sections BEHIND it were then
+    # refused with `call_failed:BudgetExhausted` — never asked once, because
+    # something ahead of them was asked twice.
+    #
+    # MEASURED ON THE RE-INDEX OF 2026-09-18: in the first 22 pages, 9 lost
+    # their title block and 13 of the 22 failures were BudgetExhausted rather
+    # than a provider error. Fifteen pages retried and still lost something.
+    # The retry did not cause the timeouts; it multiplied what each one cost.
+    #
+    # So: every section is asked once, and only then is whatever budget
+    # remains spent re-asking the ones that came back empty. A retry can no
+    # longer starve a section that has not been tried. Nothing here knows what
+    # the budget is — the injected `vlm_call` raises when it is gone, and this
+    # simply stops having anything left to spend.
+    for name in SECTIONS:
+        await _one_section(name)
+
+    for name in SECTIONS:
+        if not flag_is_retryable(flags.get(name) or []):
+            continue
+        before = list(flags.get(name) or [])
+        await _one_section(name)
+        after = flags.get(name) or []
+        # Say that it was asked twice, and whether the second ask helped. A
+        # retry that fails is not the same event as a section never retried,
+        # and the row is where that difference has to survive.
+        flags[name] = list(after) + [
+            "retried_after:" + before[0].split(":", 1)[-1]]
 
     fields = merge_sections(sections)
     # A COUNT WITH NO BASIS IS WHAT WE REMOVED EVERYWHERE ELSE. On a scanned
@@ -861,30 +956,48 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     flags: Dict[str, List[str]] = {"title_block": [], "text_layer": []}
     raw: Dict[str, str] = {"title_block": ""}
     tb: Dict[str, Any] = {}
-    try:
-        content, finish = await vlm_call(
-            image_b64, title_prompt(title_text, pt.headings(layout), title_ids or page_ids[:12]),
-            TITLE_CALL_MAX_TOKENS)
-        content = content or ""
-        raw["title_block"] = content[:RAW_CAP]
-        if finish == "length":
-            flags["title_block"].append("hit_max_tokens")
-        cut, looped = detect_repetition(content)
-        if looped:
-            flags["title_block"].append("repetition_truncated")
-        obj = parse_json_loose(cut)
-        if obj is None:
-            flags["title_block"].append("unparseable")
-        else:
-            tb, vflags = validate_section("title_block", obj)
-            flags["title_block"].extend(vflags)
-    except Exception as e:
-        flags["title_block"].append(f"call_failed:{type(e).__name__}")
 
-    sheet_number, sn_flag = pt.validate_sheet_number(
-        tb.get("sheet_number"), title_ids, page_ids, drawing_index, position, title_text)
-    if sn_flag:
-        flags["title_block"].append(sn_flag)
+    async def _title_call() -> None:
+        """Ask for the title block and record what came back, in place.
+
+        Callable twice: the second pass re-asks it after every other call on
+        this page has had its turn. See the block above the retry pass."""
+        nonlocal tb
+        flags["title_block"] = []
+        try:
+            content, finish = await vlm_call(
+                image_b64,
+                title_prompt(title_text, pt.headings(layout), title_ids or page_ids[:12]),
+                TITLE_CALL_MAX_TOKENS)
+            content = content or ""
+            raw["title_block"] = content[:RAW_CAP]
+            if finish == "length":
+                flags["title_block"].append("hit_max_tokens")
+            cut, looped = detect_repetition(content)
+            if looped:
+                flags["title_block"].append("repetition_truncated")
+            obj = parse_json_loose(cut)
+            if obj is None:
+                flags["title_block"].append("unparseable")
+            else:
+                tb, vflags = validate_section("title_block", obj)
+                flags["title_block"].extend(vflags)
+        except Exception as e:
+            flags["title_block"].append(_call_failed_flag(e))
+
+    await _title_call()
+
+    def _read_title_block():
+        """Everything downstream of the title block's answer, so the retry
+        pass can redo exactly this and nothing else."""
+        number, flag = pt.validate_sheet_number(
+            tb.get("sheet_number"), title_ids, page_ids, drawing_index, position,
+            title_text)
+        if flag:
+            flags["title_block"].append(flag)
+        return number
+
+    sheet_number = _read_title_block()
     if tb.get("revision") and tb["revision"].upper() in {i.upper() for i in page_ids}:
         flags["title_block"].append("revision_was_a_sheet_id")
         tb["revision"] = None
@@ -913,7 +1026,7 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
             content, finish = await vlm_call(image_b64, section_prompt(section, text_for_prompt),
                                              SECTION_MAX_TOKENS[section])
         except Exception as e:
-            f.append(f"call_failed:{type(e).__name__}")
+            f.append(_call_failed_flag(e))
             return {}
         content = content or ""
         raw[section] = content[:RAW_CAP]
@@ -968,6 +1081,63 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
         if clean or not any(x.startswith(("call_failed", "unparseable")) for x in f):
             f.append(f"notes_found:{len(clean.get('notes') or [])}")
         flags["notes_fallback"] = f
+
+    # ── AND ONLY NOW, THE FAILURES AGAIN ──────────────────────────────────
+    #
+    # Same rule as the raster path, and this is the path that showed why it
+    # matters. The title block is the FIRST call a vector page makes and the
+    # fallbacks come after it, so a title block that timed out and was retried
+    # on the spot spent up to 360 seconds of a 300-second page budget — and
+    # the schedules and notes fallbacks behind it were refused with
+    # `BudgetExhausted` without ever being asked once.
+    #
+    # MEASURED ON THE RE-INDEX OF 2026-09-18, first 22 pages: title_block lost
+    # 9 times, schedules_fallback 7, notes_fallback 6, and 13 of the 22
+    # failures were BudgetExhausted rather than a provider error. The shape of
+    # that co-occurrence is the bug.
+    #
+    # Every call this page was going to make has now been made. Whatever is
+    # left of the budget is spent re-asking the ones that came back empty, and
+    # the injected vlm_call refuses when there is nothing left.
+    if flag_is_retryable(flags.get("title_block") or []):
+        before = (flags.get("title_block") or [""])[0]
+        calls += 1
+        await _title_call()
+        # The title block decides the sheet number, so a second answer has to
+        # redo that decision — the whole point of asking again.
+        sheet_number = _read_title_block()
+        fields["sheet_number"] = sheet_number
+        if tb.get("sheet_title"):
+            fields["sheet_title"] = tb.get("sheet_title")
+        flags["title_block"] = list(flags.get("title_block") or []) + [
+            "retried_after:" + before.split(":", 1)[-1]]
+
+    for section in ("schedules_fallback", "notes_fallback"):
+        if not flag_is_retryable(flags.get(section) or []):
+            continue
+        before = next((x for x in (flags.get(section) or [])
+                       if str(x).startswith("call_failed")), "call_failed:")
+        calls += 1
+        f = [x for x in (flags.get(section) or []) if not str(x).startswith("call_failed")]
+        clean = await _section_from_image(section.replace("_fallback", ""), f)
+        if section == "schedules_fallback":
+            found = [dict(x, source="vision") for x in (clean.get("schedules") or [])]
+            if found:
+                fields["schedules"] = list(fields.get("schedules") or []) + found
+            f.append(f"schedules_found:{len(found)}")
+        else:
+            if clean.get("notes"):
+                fields["notes"] = [dict(n, heading=None) for n in clean["notes"]]
+                fields["notes_source"] = "vision"
+            for k in ("legend", "callouts"):
+                if clean.get(k) and not fields.get(k):
+                    fields[k] = clean[k]
+            if fields.get("legend"):
+                fields["legend"], lflags = constrain_legend_to_page(
+                    fields["legend"], layout.get("text") or "")
+                f.extend(lflags)
+            f.append(f"notes_found:{len(clean.get('notes') or [])}")
+        flags[section] = f + ["retried_after:" + before.split(":", 1)[-1]]
 
     number_flags: List[str] = []
     if text_fields["dimensions_unverified"]:
@@ -1161,6 +1331,7 @@ __all__ = [
     "TIER_OCR_GRID", "TIER_TAG_LEGEND", "TIER_TEXT_LAYER", "TIER_OCR_FREEFORM",
     "TIER_VISION",
     "boilerplate_lines", "strip_boilerplate", "classify_text_source",
+    "flag_is_retryable", "_call_failed_flag",
     "section_prompt", "extract_page", "extract_vector_page", "legacy_fields",
     "embedding_text", "build_chunks",
 ]
