@@ -155,8 +155,16 @@ def grid_is_readable(grid: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-def _boxes(image_bytes: bytes) -> List[Tuple[float, float, str]]:
-    """(centre_x_px, centre_y_px, text) for everything the engine read."""
+def _boxes(image_bytes: bytes) -> List[Tuple[float, float, str, float]]:
+    """(centre_x_px, centre_y_px, text, confidence) for everything read.
+
+    THE CONFIDENCE USED TO BE DROPPED HERE. The engine returns it on every
+    box and this function discarded item[2], so nothing downstream could tell
+    a reading it was sure of from one it was not. Measured on M-200.00's
+    contested cell: 0.960 when it read the 9 as a 6, 0.994-0.998 on the reads
+    that were right. It is carried and stored as evidence — never as a
+    ranking input, because a low score losing to a high one is the tier
+    mistake again in a new unit."""
     eng = _load()
     if eng is None or not image_bytes:
         return []
@@ -172,18 +180,19 @@ def _boxes(image_bytes: bytes) -> List[Tuple[float, float, str]]:
     for item in (res or []):
         try:
             box, text = item[0], item[1]
+            score = float(item[2]) if len(item) > 2 and item[2] is not None else -1.0
             xs = [float(p[0]) for p in box]
             ys = [float(p[1]) for p in box]
             if text and text.strip():
-                out.append((sum(xs) / len(xs), sum(ys) / len(ys), text.strip()))
+                out.append((sum(xs) / len(xs), sum(ys) / len(ys), text.strip(), score))
         except Exception:
             continue
     return out
 
 
-def place_in_grid(boxes: Sequence[Tuple[float, float, str]], grid: Dict[str, Any],
-                  dpi: int = OCR_DPI) -> Tuple[List[List[str]], int]:
-    """(table, strays). Each box goes to the cell containing its centre.
+def place_in_grid(boxes: Sequence[Tuple], grid: Dict[str, Any],
+                  dpi: int = OCR_DPI) -> Tuple[List[List[str]], int, List[List[float]]]:
+    """(table, strays, scores). Each box goes to the cell containing its centre.
 
     Pure, and separately testable from the engine — this is the half that
     decides which column a value lands in."""
@@ -192,8 +201,14 @@ def place_in_grid(boxes: Sequence[Tuple[float, float, str]], grid: Dict[str, Any
     x0, y0 = cols[0], rows[0]
     scale = dpi / 72.0
     table = [["" for _ in range(len(cols) - 1)] for _ in range(len(rows) - 1)]
+    scores = [[-1.0 for _ in range(len(cols) - 1)] for _ in range(len(rows) - 1)]
     strays = 0
-    for px, py, text in boxes:
+    for box in boxes:
+        # A three-tuple is still a box: the callers that build them by hand —
+        # the tests that pin which column a value lands in — say nothing about
+        # confidence and should not have to.
+        px, py, text = box[0], box[1], box[2]
+        score = float(box[3]) if len(box) > 3 else -1.0
         cx, cy = x0 + px / scale, y0 + py / scale
         r = next((i for i in range(len(rows) - 1) if rows[i] <= cy < rows[i + 1]), None)
         c = next((j for j in range(len(cols) - 1) if cols[j] <= cx < cols[j + 1]), None)
@@ -201,7 +216,9 @@ def place_in_grid(boxes: Sequence[Tuple[float, float, str]], grid: Dict[str, Any
             strays += 1
             continue
         table[r][c] = (table[r][c] + " " + text).strip() if table[r][c] else text
-    return table, strays
+        # A cell built from two boxes is only as good as its worst one.
+        scores[r][c] = score if scores[r][c] < 0 else min(scores[r][c], score)
+    return table, strays, scores
 
 
 def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
@@ -282,20 +299,157 @@ def schedule_from_table(table: List[List[str]], grid: Dict[str, Any]
     }
 
 
+# What stands in a cell the two reads could not agree on. Deliberately not a
+# number and not blank: blank reads as "the sheet says nothing there", and the
+# sheet says plenty — we are the ones who cannot read it.
+CONTESTED_CELL = "(readings disagree)"
+
+
 def read_grid(image_bytes: bytes, grid: Dict[str, Any], dpi: int = OCR_DPI
               ) -> Optional[Dict[str, Any]]:
     """One rendered grid crop -> one schedule, or None when nothing read."""
     boxes = _boxes(image_bytes)
     if not boxes:
         return None
-    table, strays = place_in_grid(boxes, grid, dpi)
+    table, strays, scores = place_in_grid(boxes, grid, dpi)
     sched = schedule_from_table(table, grid)
     if sched is not None:
         sched["ocr_boxes"] = len(boxes)
         sched["ocr_strays"] = strays
+        sched["cell_scores"] = scores
+    return sched
+
+
+def _same_but_for_spacing(a: str, b: str) -> bool:
+    """Are these the same reading, differing only in spacing or punctuation?
+
+    ── A DIGIT NEVER NORMALISES ───────────────────────────────────────────
+    #
+    # `6` and `9` differ. So do `1,000` and `1000`, and `9` and `9.0` — one is
+    # a count and one is a measurement, and a comma is the difference between
+    # a thousand and a one. The whole reason a cell is read twice is that a
+    # digit disagreement is real, so any cell carrying one is compared exactly
+    # and contested if it differs at all.
+    #
+    # MEASURED ON THE 588 BOYLAND GRIDS, 2026-09-18: of 117 contested cells,
+    # 68 carry a digit, 19 differ only in spacing — `AUXILIARYHEATING CAPACITY
+    # (KW)` against `AUXILIARYHEATING CAPACITY(KW)` — and 30 differ in
+    # substance, with words reordered or characters mangled. Only the 19 are
+    # the same reading twice.
+    """
+    if any(ch.isdigit() for ch in a) or any(ch.isdigit() for ch in b):
+        return False
+    strip = lambda t: re.sub(r"[^A-Za-z]", "", t).upper()
+    return bool(strip(a)) and strip(a) == strip(b)
+
+
+def read_grid_twice(image_a: bytes, image_b: bytes, grid: Dict[str, Any],
+                    dpi: int = OCR_DPI) -> Optional[Dict[str, Any]]:
+    """Two renders of one grid. A cell they disagree on is contested, not guessed.
+
+    ── WHY A GRID IS READ TWICE ───────────────────────────────────────────
+    #
+    # MEASURED ACROSS EVERY READABLE GRID IN THE 588 BOYLAND SET, 2026-09-18:
+    # 57 grids, and 30 of them — more than half — read DIFFERENTLY when the
+    # crop changed by two pixels. Eleven differed on a NUMBER. The pipeline's
+    # crop happens to be two pixels wider than the grid (the pad in
+    # _render_pdf_crop), and that is the whole reason M-200.00's PTAC-2 QTY
+    # came back 6 where the sheet prints 9.
+    #
+    # THE PAD IS NOT THE BUG AND REMOVING IT IS NOT THE FIX. The sweep found
+    # 197 tokens only the unpadded crop read and 190 only the padded one did —
+    # symmetric. Two grids read a different digit in OPPOSITE directions:
+    # M-200.00 reads 9 unpadded and 6 padded, FA-001 reads 6 unpadded and 9
+    # padded. There is no better geometry to switch to; the engine is simply
+    # unstable at this operating point, and a single read cannot tell a stable
+    # cell from a coin-flip.
+    #
+    # So every grid is read at BOTH geometries and the cells are compared. One
+    # that agrees is a reading two independent rasterisations produced — worth
+    # more than either alone. One that differs is contested, and nothing
+    # downstream will state it as a value.
+    #
+    # No threshold and no confidence cutoff decides this. The confidence is
+    # carried because it is evidence a person may want later, and because it
+    # separated cleanly on the one cell we can check by eye — but it is not
+    # what picks, because picking is the thing being removed.
+    """
+    boxes_a, boxes_b = _boxes(image_a), _boxes(image_b)
+    if not boxes_a and not boxes_b:
+        return None
+    # The SAME grid rectangle both times, so the two tables have the same shape
+    # and a cell can be compared with its own counterpart.
+    table_a, strays_a, scores_a = place_in_grid(boxes_a, grid, dpi)
+    table_b, strays_b, scores_b = place_in_grid(boxes_b, grid, dpi)
+
+    merged: List[List[str]] = []
+    scores: List[List[float]] = []
+    contested: List[Dict[str, Any]] = []
+    for r in range(len(table_a)):
+        row, srow = [], []
+        for c in range(len(table_a[r])):
+            a = (table_a[r][c] or "").strip()
+            b = (table_b[r][c] or "").strip()
+            sa, sb = scores_a[r][c], scores_b[r][c]
+            if a == b:
+                row.append(a)
+                srow.append(max(sa, sb))
+                continue
+            # ONE SIDE READING NOTHING IS NOT A DISAGREEMENT ABOUT A VALUE.
+            # A crop two pixels wider catches a glyph the other clipped; that
+            # is the padded read finding a '5' where the unpadded found none,
+            # and taking the text is strictly better than taking the blank.
+            if not a or not b:
+                row.append(a or b)
+                srow.append(sa if a else sb)
+                continue
+            if _same_but_for_spacing(a, b):
+                # The fuller reading: one crop caught a separator the other
+                # dropped, and there is nothing in dispute about the content.
+                row.append(a if len(a) >= len(b) else b)
+                srow.append(max(sa, sb))
+                continue
+            row.append(CONTESTED_CELL)
+            srow.append(min(sa, sb))
+            # THE MARK, NOT THE ROW NUMBER. schedule_from_table strips the
+            # title and header rows, so a table coordinate does not survive
+            # into the schedule anything downstream sees. The row's first cell
+            # is what identifies it there — the same key elements are built on.
+            contested.append({"row": r, "col": c,
+                              "mark": (table_a[r][0] or table_b[r][0] or "").strip(),
+                              "readings": sorted([a, b]),
+                              "scores": [sa, sb]})
+        merged.append(row)
+        scores.append(srow)
+
+    sched = schedule_from_table(merged, grid)
+    if sched is None:
+        return None
+    sched["ocr_boxes"] = max(len(boxes_a), len(boxes_b))
+    sched["ocr_strays"] = max(strays_a, strays_b)
+    sched["cell_scores"] = scores
+    # Recorded against the MERGED table's own coordinates, so a reader does not
+    # have to know how schedule_from_table restructured the rows.
+    sched["contested_cells"] = contested
+    sched["read_twice"] = True
+
+    # ── A SCHEDULE'S NAME IS NOT A PLACE FOR A MARKER ──────────────────────
+    #
+    # `_title_and_body` rejoins the title band left to right, so a contested
+    # cell in that band became part of the name: one grid came out called
+    # `DIFFUSER (readings disagree)`. The name is what the schedule is FOUND
+    # by — subject terms, the location hint on every element under it — so a
+    # marker there corrupts search rather than informing anyone. The readable
+    # part is kept, and a flag says the rest could not be read.
+    name = sched.get("name") or ""
+    if CONTESTED_CELL in name:
+        cleaned = " ".join(name.replace(CONTESTED_CELL, " ").split())
+        sched["name"] = cleaned
+        sched["name_partly_unread"] = True
     return sched
 
 
 __all__ = ["available", "why_unavailable", "probe", "grid_is_readable", "place_in_grid",
+           "read_grid_twice", "CONTESTED_CELL",
            "schedule_from_table", "read_grid", "OCR_DPI", "MAX_GRID_INCHES",
            "MAX_CELLS"]

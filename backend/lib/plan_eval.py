@@ -219,6 +219,9 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                 raise SuiteError(f"{cid}: unknown tier {t!r}")
         if c["kind"] == "absent" and truth.get("how") != "absent":
             raise SuiteError(f"{cid}: an absent case's truth is 'absent'")
+        if exp.get("no_stated_count") and truth.get("how") != "absent":
+            raise SuiteError(f"{cid}: 'no count is stated' is an absence, and "
+                             f"its truth is established the way absences are")
     for k in suite.get("known_failures") or []:
         if not k.get("class") or not k.get("evidence"):
             raise SuiteError("a known failure names its class and its evidence")
@@ -331,13 +334,45 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     if allowed:
         reasons.append(f"the gate allowed {invented}, which nothing returned prints")
 
-    if case["kind"] == "absent":
-        quoting = _has_text(returned, subject)
-        checks["nothing_quotes_it"] = not quoting
-        if quoting:
+    # ── NOTHING MAY STATE A COUNT OF IT ───────────────────────────────────
+    #
+    # A DIFFERENT TRUTH FROM `absent`. An absent case says the subject is
+    # printed nowhere. This says the subject IS on the drawings and no sheet
+    # says HOW MANY — which is the ordinary state of most things a crew asks
+    # about, and the state a fabricated count is most likely to appear in.
+    #
+    # Written for FA-001, whose fire-alarm matrix lists eight device types
+    # against checkmark columns. The grid OCR merged the ROW NUMBER into the
+    # description cell and produced '6 SPRK, TAMPER VALVE' on one render and
+    # '9 SPRK, TAMPER VALVE' on another. Neither is a quantity of anything,
+    # and a reader that turned that row into "6 sprinklers" would be inventing
+    # a number from a list index. Measured 2026-09-18: of 26 fragments on the
+    # current pages that put a digit near SPRINKLER, every one is a code
+    # citation, and no element record states a sprinkler count.
+    if exp.get("no_stated_count"):
+        counted = [r for r in returned
+                   if (r.get("payload") or {}).get("count_if_stated") is not None
+                   and any(t.upper() in _norm(r.get("quote")) for t in terms)]
+        checks["nothing_states_a_count"] = not counted
+        if counted:
+            first = counted[0]
             reasons.append(
-                f"{len(quoting)} returned record(s) print {subject!r} — "
-                f"first on {quoting[0].get('sheet_number')}")
+                f"{len(counted)} returned record(s) state a count of "
+                f"{subject!r} — first {(first.get('payload') or {}).get('count_if_stated')} "
+                f"on {first.get('sheet_number')}, and no sheet states one")
+
+
+    if case["kind"] == "absent":
+        # WHICH absence is claimed. A case with `no_stated_count` says the
+        # subject IS on the drawings and no sheet says how many — so the
+        # subject appearing in a quote is the expected state, not the failure.
+        if not exp.get("no_stated_count"):
+            quoting = _has_text(returned, subject)
+            checks["nothing_quotes_it"] = not quoting
+            if quoting:
+                reasons.append(
+                    f"{len(quoting)} returned record(s) print {subject!r} — "
+                    f"first on {quoting[0].get('sheet_number')}")
         return reasons, checks, render
 
     sheets = set(exp.get("sheets") or [])

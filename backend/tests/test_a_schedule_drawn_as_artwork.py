@@ -146,19 +146,19 @@ class EachBoxGoesToTheCellThatContainsIt(unittest.TestCase):
 
     def test_a_value_lands_in_its_own_column(self):
         x, y = self.px(700, 160)
-        table, strays = plan_ocr.place_in_grid([(x, y, "21")], self.GRID)
+        table, strays, _scores = plan_ocr.place_in_grid([(x, y, "21")], self.GRID)
         self.assertEqual(table[2][2], "21")
         self.assertEqual(strays, 0)
 
     def test_two_boxes_in_one_cell_join_left_to_right(self):
         a = self.px(320, 60)
         b = self.px(360, 60)
-        table, _ = plan_ocr.place_in_grid([(a[0], a[1], "UNIT"),
+        table, _s, _sc = plan_ocr.place_in_grid([(a[0], a[1], "UNIT"),
                                            (b[0], b[1], "NO.")], self.GRID)
         self.assertEqual(table[0][1], "UNIT NO.")
 
     def test_a_box_outside_the_grid_is_a_stray_and_not_forced_into_a_cell(self):
-        table, strays = plan_ocr.place_in_grid(
+        table, strays, _scores = plan_ocr.place_in_grid(
             [(-50.0, -50.0, "SEE NOTES")], self.GRID)
         self.assertEqual(strays, 1)
         self.assertEqual([c for row in table for c in row if c], [])

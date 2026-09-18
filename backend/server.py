@@ -44895,13 +44895,32 @@ async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
         if not ok:
             flags.append(f"ocr_grid_skipped:{why}")
             continue
-        png = await asyncio.to_thread(
-            _render_pdf_crop, pdf_path, page_number, g["bbox"], plan_ocr.OCR_DPI)
-        if not png:
+        # TWO RENDERS OF THE SAME RECTANGLE, two pixels apart. A cell both
+        # rasterisations agree on is worth more than either alone; one they
+        # disagree on is contested and will not be stated as a value. Costs a
+        # second local OCR pass — no model call — and nothing is thrown away:
+        # where one read is blank and the other is not, the text wins.
+        pngs = await asyncio.gather(
+            asyncio.to_thread(_render_pdf_crop, pdf_path, page_number,
+                              g["bbox"], plan_ocr.OCR_DPI, 2),
+            asyncio.to_thread(_render_pdf_crop, pdf_path, page_number,
+                              g["bbox"], plan_ocr.OCR_DPI, 0),
+        )
+        if not pngs[0] and not pngs[1]:
             flags.append("ocr_render_failed")
             continue
-        sched = await asyncio.to_thread(plan_ocr.read_grid, png, g)
+        if not pngs[0] or not pngs[1]:
+            # One geometry failed to render. A single read is still a read; it
+            # simply cannot be checked, and the flag says which pages those are.
+            flags.append("ocr_single_geometry")
+            sched = await asyncio.to_thread(
+                plan_ocr.read_grid, pngs[0] or pngs[1], g)
+        else:
+            sched = await asyncio.to_thread(
+                plan_ocr.read_grid_twice, pngs[0], pngs[1], g)
         if sched:
+            if sched.get("contested_cells"):
+                flags.append(f"ocr_contested_cells:{len(sched['contested_cells'])}")
             out.append(sched)
     if len(grids) > PLAN_OCR_MAX_GRIDS:
         flags.append(f"ocr_grids_capped:{len(grids)}")
@@ -45459,7 +45478,8 @@ def _pdf_page_texts(pdf) -> List[str]:
             return []
 
 
-def _render_pdf_crop(pdf_path: str, page_number: int, bbox, dpi: int) -> Optional[bytes]:
+def _render_pdf_crop(pdf_path: str, page_number: int, bbox, dpi: int,
+                     pad: int = 2) -> Optional[bytes]:
     """One RECTANGLE of one page, as PNG bytes, at high resolution.
 
     ── WHY A CROP AND NOT THE PAGE ────────────────────────────────────────
@@ -45489,9 +45509,18 @@ def _render_pdf_crop(pdf_path: str, page_number: int, bbox, dpi: int) -> Optiona
         x0, y0, x1, y1 = [float(v) for v in bbox]
     except (TypeError, ValueError):
         return None
+    # ── THE PAD IS A GEOMETRY, NOT A CORRECTION ───────────────────────────
+    #
+    # Two extra device pixels so a right or bottom ruling line is not clipped.
+    # It is also, measurably, the difference between reading M-200.00's PTAC-2
+    # QTY as 9 and as 6 — the engine rescales its input, so two pixels change
+    # the resample and tip a marginal glyph. Neither value of `pad` is the
+    # right one: across 57 grids, 197 tokens were read only without it and 190
+    # only with it. It is a parameter so a grid can be read at BOTH and the
+    # disagreements caught, not so a better number can be chosen.
     s = dpi / 72.0
     x, y = int(x0 * s), int(y0 * s)
-    w, h = int((x1 - x0) * s) + 2, int((y1 - y0) * s) + 2
+    w, h = int((x1 - x0) * s) + pad, int((y1 - y0) * s) + pad
     if w <= 0 or h <= 0:
         return None
     try:

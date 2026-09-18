@@ -1173,9 +1173,22 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
             if not mark or not _looks_like_a_symbol(mark):
                 continue
             n = None
+            disputed = None
             if qty is not None and qty < len(row):
                 cell = str(row[qty] or "").strip()
                 n = int(cell) if re.fullmatch(r"\d{1,6}", cell) else None
+                # ── A CELL TWO READS DISAGREED ON IS NOT "NOT STATED" ──────
+                #
+                # The sheet states it plainly; we could not read it twice the
+                # same way. Falling through to not_stated would throw away
+                # both the disagreement and the fact that there IS a quantity
+                # printed there — and the crew would be told the schedule is
+                # silent about something it says.
+                if n is None and cell:
+                    disputed = next(
+                        (d for d in (sc.get("contested_cells") or [])
+                         if (d.get("mark") or "").strip().upper() == mark.upper()
+                         and d.get("col") == qty), None)
             # ── THE BASIS IS THE SCHEDULE'S SOURCE, NOT "IT WAS A SCHEDULE" ─
             #
             # This read `ocr_grid -> ocr_schedule_qty, everything else ->
@@ -1194,9 +1207,20 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
                 basis = {"ocr_grid": "ocr_schedule_qty",
                          "vision": "vision_read"}.get(sc.get("source"),
                                                       "schedule_qty")
-            out.append({"name": meaning_of.get(mark) or mark, "tag": mark,
-                        "count_if_stated": n, "count_basis": basis,
-                        "location_hint": (sc.get("name") or "schedule")[:120]})
+            el = {"name": meaning_of.get(mark) or mark, "tag": mark,
+                  "count_if_stated": n, "count_basis": basis,
+                  "location_hint": (sc.get("name") or "schedule")[:120]}
+            if disputed:
+                # Same shape the vision-versus-OCR contest produces, so the
+                # record writer, the gate and both renders need to know only
+                # one thing rather than two.
+                el["count_contested"] = True
+                el["count_readings"] = [
+                    {"value": int(v), "read_by": "ocr_grid"}
+                    for v in (disputed.get("readings") or [])
+                    if str(v).strip().isdigit()]
+                el["count_basis"] = "ocr_schedule_qty"
+            out.append(el)
     return _mark_contested(out)[:150]
 
 
