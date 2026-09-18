@@ -605,7 +605,36 @@ export default function LogBooksScreen() {
         icon: 'ShieldCheck',
         color: semantic.neutral,
         frequency: 'daily',
-      });
+      })
+        // ── AN AS-NEEDED LOG NOBODY NEEDS IS NOT TODAY'S WORK ─────────────
+        //
+        // REQUIRED IS NOT DUE, and the two words were the same word here.
+        // `subcontractor_orientation` is required on every project — it is in
+        // the resolved set for every §3310 class and the server is right to
+        // say so — but it is DUE for one reason: a worker checked in and has
+        // no orientation on this project. The tile asked `todayLogs[type]`,
+        // which is a by-DATE read, so it said Pending on all three live
+        // projects every morning while not one worker anywhere was waiting
+        // for one, and the count read 4/6 with a sixth item that was not due.
+        //
+        // ONE PREDICATE, TWO EFFECTS. The row leaves this list, so it leaves
+        // the tiles AND the denominator below, which is derived from
+        // `visibleLogs`. There is no second edit to keep in step with it.
+        //
+        // IT KEYS ON THE FREQUENCY, NOT ON THE LOG TYPE. A client-side list of
+        // log types is the "second model" this branch's note above exists to
+        // refuse; `frequency` is the registry's own word, served with the
+        // catalog.
+        //
+        // AND IT FAILS OPEN, WHICH IS WHAT PROTECTS `hot_work`. `hot_work` is
+        // as_needed too, and NO SERVER RULE SAYS WHEN A HOT-WORK PERMIT LOG IS
+        // DUE — nobody has defined one. With no period row for a key,
+        // periodSatisfied returns null, which is not `true`, so hot_work is
+        // never hidden by this. Only a type the server has positively said is
+        // satisfied disappears. A missing obligation is invisible in the way
+        // an extra one is not, so silence must keep the tile.
+        .filter((t) => !(t.frequency === 'as_needed'
+          && periodSatisfied(periods, t.key) === true));
     }
 
     // Nothing from the server yet (first paint, or offline). Local filtering,

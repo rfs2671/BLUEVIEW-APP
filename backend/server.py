@@ -16147,37 +16147,70 @@ async def _logbook_periods(project_id, required, on_date=None) -> list:
     reasoning that counting them "invents a deficiency out of a frequency". The
     screen had no equivalent, so this returns one.
 
-    ── ONE TYPE TODAY, AND THE SHAPE IS SO A SECOND NEEDS NO CLIENT CHANGE ──
+    ── TWO TYPES, AND THE SECOND NEEDED NO NEW PAYLOAD ─────────────────────
 
-    Only `toolbox_talk` is weekly. `subcontractor_orientation` is as_needed and
-    is deliberately NOT here: it is due when a first-time worker arrives, which
-    `unsigned_orientations` already answers, and inventing a period for it
-    would be this function asserting a cadence nobody has defined.
+    Only `toolbox_talk` is weekly. `subcontractor_orientation` is as_needed,
+    and this function USED TO REFUSE IT on the reasoning that "inventing a
+    period for it would be this function asserting a cadence nobody has
+    defined". The refusal was right about cadence and wrong about the tile:
+    with nothing on this channel the screen fell back to a by-DATE read and
+    answered "pending" on every project on every day, and the completion bar
+    counted a sixth item that was not due.
 
-    ── COSTS NOTHING ON A PROJECT WITHOUT THE TYPE ─────────────────────────
+    An orientation row asserts NO cadence -- `period_start` and `period_end`
+    are None on it. It answers the only question the type has ever had: is
+    there a worker on this project who checked in and has no orientation.
+    `unsigned_orientations` does not answer that one; it counts orientation
+    LOGS that are not yet signed, which is a different deficiency about
+    documents that exist.
 
-    Returns [] before any query when the required set has no weekly log.
+    ── COSTS NOTHING ON A PROJECT WITHOUT EITHER TYPE ──────────────────────
+
+    Returns [] before any query when the required set has neither. Each type's
+    reads are behind its own membership test, so a project that requires one
+    never pays for the other.
     """
     from lib.logbook.weekly_cadence import toolbox_period, week_span
 
-    if "toolbox_talk" not in (required or []):
+    req = required or []
+    if "toolbox_talk" not in req and "subcontractor_orientation" not in req:
         return []
-    day = on_date or eastern_today()
-    span = week_span(day)
-    if not span:
-        return []
-    try:
-        return await _toolbox_period_rows(project_id, day, span)
-    except Exception as e:  # pragma: no cover — defensive
-        # FAILURE-ISOLATED, ON THE CP'S CRITICAL PATH. This block is a cadence
-        # hint; the logbook list is the screen he files a statutory record
-        # from. An empty `periods` puts every tile back on the by-date read it
-        # used before this existed, which is worse than it was but is not a
-        # blank screen.
-        logger.warning(
-            f"[periods] could not resolve the toolbox week for "
-            f"project={project_id}: {e!r}")
-        return []
+    rows = []
+
+    if "toolbox_talk" in req:
+        day = on_date or eastern_today()
+        span = week_span(day)
+        if span:
+            try:
+                rows.extend(await _toolbox_period_rows(project_id, day, span))
+            except Exception as e:  # pragma: no cover — defensive
+                # FAILURE-ISOLATED, ON THE CP'S CRITICAL PATH. This block is a
+                # cadence hint; the logbook list is the screen he files a
+                # statutory record from. An empty `periods` puts every tile
+                # back on the by-date read it used before this existed, which
+                # is worse than it was but is not a blank screen.
+                #
+                # ONE TYPE'S FAILURE IS NOT THE OTHER'S. The two try blocks are
+                # separate so a broken toolbox week still leaves the
+                # orientation row standing, and vice versa.
+                logger.warning(
+                    f"[periods] could not resolve the toolbox week for "
+                    f"project={project_id}: {e!r}")
+
+    if "subcontractor_orientation" in req:
+        try:
+            rows.extend(await _orientation_period_rows(project_id))
+        except Exception as e:  # pragma: no cover — defensive
+            # Same isolation, same reason. NOTE the direction this fails in:
+            # no row means the client keeps its by-date answer, so the tile
+            # comes back as Pending. That is the defect this change fixes, and
+            # it is still the right way to fail -- a missing obligation on a
+            # compliance screen is invisible in the way an extra one is not.
+            logger.warning(
+                f"[periods] could not resolve orientation coverage for "
+                f"project={project_id}: {e!r}")
+
+    return rows
 
 
 async def _toolbox_period_rows(project_id, day, span) -> list:
@@ -16227,6 +16260,93 @@ async def _toolbox_period_rows(project_id, day, span) -> list:
     row = toolbox_period(day, [t.get("date") for t in talks],
                          weekend_ids, covered)
     return [row] if row else []
+
+
+async def _orientation_period_rows(project_id) -> list:
+    """The reads behind the `subcontractor_orientation` period row.
+
+    Split out for the same reason as its toolbox twin: the caller's try/except
+    wraps I/O only and cannot swallow a bug in the rule, which is pure and
+    lives in lib/logbook/orientation_cadence.py.
+
+    ── THREE READS, AND NOT ONE OF THEM IS PER WORKER ──────────────────────
+
+    This runs on a screen LOAD, once per required-logbooks request, so the cost
+    is paid by a CP standing at a gate. Three `distinct` calls -- one per
+    collection -- and the answer is set arithmetic over what comes back. 588
+    Thomas has 63 distinct workers across months of check-in rows; `distinct`
+    resolves that server-side rather than streaming the rows here.
+
+    A FOURTH READ ONLY WHEN THE LOG IS ACTUALLY DUE, to put names on the men
+    the row is about. On every live project today that read never happens, and
+    when it does it is one query for the whole uncovered set -- never one per
+    worker.
+
+    EVERY CHECK-IN, NOT TODAY'S. A worker who checked in last Tuesday without
+    an orientation is still a worker this project never oriented; windowing
+    this to today would close the log overnight and re-open it the next time
+    he taps the tag.
+    """
+    from lib.logbook.orientation_cadence import (
+        orientation_period, uncovered_workers)
+
+    pid = str(project_id)
+
+    checked_in = await db.checkins.distinct(
+        "worker_id", {"project_id": pid, "is_deleted": {"$ne": True}})
+    if not checked_in:
+        # NOBODY HAS EVER CHECKED IN, SO NOBODY IS WAITING. 8 Walworth is
+        # exactly this project and it is answered in one read -- the other two
+        # could only ever return men who are not on the list.
+        return [orientation_period([], [], [])]
+
+    # TWO RECORDS OF THE SAME FACT, and a worker named by either is oriented.
+    # See the module note: both shapes hold live production rows.
+    #
+    # NOT FILTERED BY STATUS. A draft orientation is an orientation that
+    # happened -- the CP's signature is what `unsigned_orientations` is for,
+    # and counting an unsigned one as "no orientation" would tell him to
+    # orient a man he has already oriented.
+    by_logbook = await db.logbooks.distinct("data.worker_id", {
+        "project_id": pid,
+        "log_type": "subcontractor_orientation",
+        "is_deleted": {"$ne": True},
+    })
+    # BOUNDED BY THE CHECK-IN SET, so this rides the `_id` index instead of
+    # scanning every worker in the estate for an embedded field nothing
+    # indexes. A worker oriented here who has never checked in is not an
+    # answer to the question -- he is not on the list the difference is taken
+    # from -- so narrowing the read cannot change the result.
+    by_worker_doc = await db.workers.distinct("_id", {
+        "_id": {"$in": [to_query_id(str(w)) for w in checked_in]},
+        "safety_orientations.project_id": pid,
+        "is_deleted": {"$ne": True},
+    })
+
+    missing = uncovered_workers(checked_in, by_logbook, by_worker_doc)
+    if not missing:
+        return [orientation_period(checked_in, by_logbook, by_worker_doc)]
+
+    # Names for the reason line. One query over the uncovered set only.
+    names = {}
+    try:
+        # BOTH SHAPES. `to_query_id` returns an ObjectId when the string is
+        # one and the string itself when it is not, so a legacy non-ObjectId
+        # worker key still matches rather than silently going unnamed.
+        async for w in db.workers.find(
+            {"_id": {"$in": [to_query_id(w) for w in missing]}},
+            {"name": 1},
+        ):
+            names[str(w["_id"])] = w.get("name")
+    except Exception as e:  # pragma: no cover — defensive
+        # A MISSING NAME IS NOT A MISSING OBLIGATION. The row already knows the
+        # log is due and how many men it is due for; losing the lookup costs a
+        # nicer sentence, never the tile.
+        logger.warning(
+            f"[periods] could not name uncovered workers for "
+            f"project={pid}: {e!r}")
+
+    return [orientation_period(checked_in, by_logbook, by_worker_doc, names)]
 
 
 @api_router.get("/projects/{project_id}/suggested-levels")

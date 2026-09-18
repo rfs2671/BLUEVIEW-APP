@@ -27,6 +27,20 @@
  * names him — so the CP is told who he has to speak to, rather than told to
  * repeat a talk he has already given.
  *
+ * ── AND AN AS-NEEDED LOG IS NOT DUE AT ALL UNTIL SOMEBODY NEEDS IT ───────────
+ *
+ * The same channel now carries `subcontractor_orientation`, which is as_needed:
+ * due when a worker has checked in on the project and has no orientation on it,
+ * and not otherwise. It was Pending on all three live projects every morning
+ * while ZERO workers anywhere were waiting for one, and it inflated the
+ * completion count by a sixth item that was not due.
+ *
+ * Its row asserts no cadence — `period_start` and `period_end` are null on it —
+ * because nothing has defined one and a period would be an invention. What it
+ * asserts is coverage. `hot_work` is as_needed too and NO ROW IS EMITTED FOR IT,
+ * because no server rule says when a hot-work permit log is due; see the
+ * fail-open note below for why that silence is safe.
+ *
  * ── FAILS OPEN ───────────────────────────────────────────────────────────────
  *
  * No `periods` key, no row for a type, a malformed row: every one of them falls
@@ -89,6 +103,32 @@ export function cadenceStatus(periods, logType, todayStatus) {
 export function cadenceLabel(periods, logType) {
   const row = periodFor(periods, logType);
   if (!row) return null;
+  // ── AN AS-NEEDED LOG HAS NO WEEK ───────────────────────────────────────────
+  //
+  // The weekly wording below ("Done this week", "Due this week") is a CADENCE
+  // claim, and `subcontractor_orientation` has no cadence — its row carries
+  // period_start/period_end of null precisely so nothing asserts one. It is due
+  // because a named worker checked in without an orientation, and that is what
+  // the CP has to be told: not that a period elapsed, but who he has to sit
+  // down with.
+  //
+  // THE SATISFIED CASE IS ALMOST UNREACHABLE from the logbook list, which drops
+  // a satisfied as-needed tile entirely. It is written anyway because this
+  // module is not that screen's private helper, and a label that would read
+  // "Done this week" about a log filed in March is worse than one nobody sees.
+  if (row.frequency === 'as_needed') {
+    if (row.satisfied) return 'Nobody on site is waiting for one';
+    const n = typeof row.uncovered_worker_count === 'number'
+      ? row.uncovered_worker_count
+      : (Array.isArray(row.uncovered_workers) ? row.uncovered_workers.length : 0);
+    if (n <= 0) return 'Due — a worker on site has no orientation';
+    const who = Array.isArray(row.uncovered_workers) && row.uncovered_workers.length
+      ? ` — ${row.uncovered_workers.slice(0, 3).join(', ')}`
+        + (n > 3 ? ` and ${n - 3} more` : '')
+      : '';
+    return `Due — ${n} worker${n === 1 ? '' : 's'} on site `
+      + `${n === 1 ? 'has' : 'have'} no orientation${who}`;
+  }
   if (row.satisfied) {
     const on = Array.isArray(row.filed_on) && row.filed_on.length > 0
       ? row.filed_on[row.filed_on.length - 1] : null;

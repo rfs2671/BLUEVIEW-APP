@@ -104,8 +104,28 @@ class Tier1_TheDateIsWrittenOntoARecord(unittest.TestCase):
     compliance record an inspector reads, not a lookup key."""
 
     def test_the_orientation_logbook_date_is_eastern(self):
-        block = _SRC[_SRC.index('"log_type": "subcontractor_orientation"'):]
-        block = block[:block.index("status")]
+        """ANCHORED ON THE WRITE, not on the file's first mention of the type.
+
+        It used to be `_SRC.index('"log_type": "subcontractor_orientation"')`,
+        which is a LEFTMOST match over the whole of server.py. Any earlier
+        line naming the type moved the window, and one arrived: the
+        `subcontractor_orientation` period row reads the same collection with
+        the same selector around line 16290, thousands of lines above the
+        write at ~19530. The slice then covered a READ, the date literal was
+        not in it, and the test failed while the record it is about was
+        untouched.
+
+        The failure was loud, which is the lucky half. `assertNotIn` on the
+        same slice would have passed over a window containing nothing at all.
+        So the anchor is now the insert itself, reached from the find_one that
+        immediately precedes it -- a pair that exists only at the write site.
+        """
+        read = _SRC.index("existing_orient_log = await db.logbooks.find_one(")
+        start = _SRC.index("await db.logbooks.insert_one({", read)
+        block = _SRC[start:]
+        block = block[:block.index('"status"')]
+        # ANCHOR: the slice is the orientation insert and it is not empty.
+        self.assertIn('"log_type": "subcontractor_orientation"', block)
         self.assertIn('"date": eastern_date(now)', block)
         self.assertNotIn('"date": now.strftime', block)
 
