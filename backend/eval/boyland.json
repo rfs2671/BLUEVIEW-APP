@@ -38,18 +38,32 @@
         ],
         "values": [
           21,
-          9,
           11
         ],
         "text": [
-          "PTAC-1"
+          "PTAC-1",
+          "readings disagree"
         ],
-        "tier_at_least": "ocr_grid_cell"
+        "tier_at_least": "ocr_grid_cell",
+        "claims": [
+          {
+            "subject": "PTAC-1",
+            "value": 21
+          },
+          {
+            "subject": "PTAC-3",
+            "value": 11
+          }
+        ],
+        "forbid_text": [
+          "count 6",
+          "count 9"
+        ]
       },
       "truth": {
         "how": "by_eye",
         "source": "MH - 7.2.26.pdf p9 (M-200.00), ROOMS PTAC UNITS SCHEDULE",
-        "evidence": "PTAC-1 qty 21, PTAC-2 qty 9, PTAC-3 qty 11. Text converted to curves; the text layer prints none of it. Read off a 60 dpi render 2026-09-16 and agreed 42/42 with the grid OCR."
+        "evidence": "PTAC-1 qty 21 and PTAC-3 qty 11, read off a 60 dpi render 2026-09-16 and agreed with the grid OCR. THE CASE NO LONGER ASSERTS PTAC-2's QUANTITY. The sheet prints 9 there - read by eye off a 330 dpi render on 2026-09-17 - and we cannot read it reliably: the grid OCR says 6 and the vision model says 9 on every pass, and two renders of the same rectangle two device pixels apart disagree at the pipeline's own 400 dpi. So the true value is 9 and the correct BEHAVIOUR is to refuse to state it and say the readings disagree. A case that demanded 9 would be scoring the system for guessing correctly rather than for being honest about what it cannot read - which is the whole point of the contested-cell rule. See ptac-2-contested, which holds the refusal itself."
       }
     },
     {
@@ -92,7 +106,13 @@
         "text": [
           "WH-1"
         ],
-        "tier_at_least": "ocr_grid_cell"
+        "tier_at_least": "ocr_grid_cell",
+        "claims": [
+          {
+            "subject": "WH-1",
+            "value": 9
+          }
+        ]
       },
       "truth": {
         "how": "by_eye",
@@ -177,7 +197,13 @@
         "values": [
           2
         ],
-        "glyph_scope": "family"
+        "glyph_scope": "family",
+        "claims": [
+          {
+            "subject": "FLOOR/AREA/ROOF DRAIN",
+            "value": 2
+          }
+        ]
       },
       "truth": {
         "how": "by_eye",

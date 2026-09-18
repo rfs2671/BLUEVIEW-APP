@@ -47471,6 +47471,26 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # asserting what the label says, so none is offered, on either path. The
     # label still widens retrieval for a record that ALSO matches on words the
     # sheet prints; that is the only use #568 needed it for.
+    # ── NOTHING HERE ANSWERS THAT ──────────────────────────────────────────
+    #
+    # `rank` admits any record sharing ONE word, and this then filled every
+    # slot with the best of a bad lot. Measured 2026-09-18: all 40 questions a
+    # superintendent would actually ask returned 8 records, including 'what is
+    # the concrete pour schedule', which reached a LIGHTING SCHEDULE on the
+    # word 'schedule'. `nothing found` was not a reachable outcome.
+    #
+    # The floor is checked BEFORE label-only records are dropped, and that
+    # order is the whole design: a label may widen what is FOUND, and may
+    # never be what is SAID. PACKAGE TERMINAL AIR CONDITIONER is printed on no
+    # sheet in this corpus and lives only in labels, so checking the floor
+    # after the filter would answer 'nothing found' for a building with 41 of
+    # them — while the filter below still keeps those label-only records out
+    # of the answer itself.
+    if not plan_search.meets_the_floor(ranked, terms):
+        logger.info(
+            f"search_plans floor: nothing prints all of "
+            f"{plan_search.floor_terms(terms)} - returning no records")
+        return []
     ranked = [r for r in ranked
               if not plan_search.matched_only_through_label(r, terms)]
     return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
