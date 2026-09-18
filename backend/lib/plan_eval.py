@@ -217,6 +217,25 @@ def validate_suite(suite: Dict[str, Any]) -> None:
             t = exp.get("tier_at_least")
             if t is not None and t not in TIER_ORDER:
                 raise SuiteError(f"{cid}: unknown tier {t!r}")
+        claims = exp.get("claims")
+        if claims is not None:
+            if not isinstance(claims, list) or not claims:
+                raise SuiteError(f"{cid}: claims is a non-empty list or absent")
+            for claim in claims:
+                if not isinstance(claim, dict) or not claim.get("subject"):
+                    raise SuiteError(f"{cid}: every claim names its subject")
+                if "value" not in claim:
+                    raise SuiteError(f"{cid}: every claim carries its value")
+                if str(claim["value"]) not in [str(v) for v in exp.get("values") or []]:
+                    raise SuiteError(
+                        f"{cid}: claim value {claim['value']!r} is not among "
+                        f"the case's expected values")
+        if (c.get("intent") == "count" and exp.get("values") and not claims):
+            # A count case whose numbers name no mark cannot exercise the rule
+            # that binds a number to the thing it counts, and it is that rule
+            # this suite exists to check.
+            raise SuiteError(f"{cid}: a count case that states values says "
+                             f"which mark each one belongs to")
         if c["kind"] == "absent" and truth.get("how") != "absent":
             raise SuiteError(f"{cid}: an absent case's truth is 'absent'")
         if exp.get("no_stated_count") and truth.get("how") != "absent":
@@ -260,11 +279,41 @@ def _has_text(records: Sequence[Dict[str, Any]], text: str) -> List[Dict[str, An
     return [r for r in records if want in _norm(r.get("quote"))]
 
 
-def _invented_number(records: Sequence[Dict[str, Any]]) -> str:
-    """A number none of the returned records can vouch for."""
+def _claims(case: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [c for c in ((case.get("expect") or {}).get("claims") or [])
+            if isinstance(c, dict) and c.get("subject")]
+
+
+def _sentence(anchor: str, value: Any) -> str:
+    """One claim, written the way an answer writes it.
+
+    `anchor: value` and not `there are <value>`, because a bound gate checks a
+    number against the thing its clause NAMES, and a sentence that names
+    nothing is refused for naming nothing — which would make every check below
+    pass or fail for the wrong reason."""
+    return f"{anchor}: {value}." if anchor else f"There are {value}."
+
+
+def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
+                     intent: str = "") -> str:
+    """A number none of the returned records can vouch for FOR THIS SUBJECT.
+
+    ── WHY THE PROBE CARRIES A MARK ───────────────────────────────────────
+    #
+    # This probed with "There are {n}." — a clause naming nothing. Under the
+    # bound rule a count that names nothing is refused whatever its value, so
+    # the probe would have returned the first number it tried and
+    # `gate_refuses_an_invented_number` would have been VACUOUSLY TRUE: the
+    # refusal would be about the sentence's shape, never about the number.
+    #
+    # An assertion satisfied by the shape of a token rather than the truth of
+    # a claim is the exact class this suite exists to catch, and it would have
+    # been sitting inside the suite.
+    """
     n = _INVENTED_START
     while True:
-        ok, _bad = ps.answer_is_grounded(f"There are {n}.", records)
+        ok, _bad = ps.answer_is_grounded(_sentence(anchor, n), records,
+                                         intent=intent)
         if not ok:
             return str(n)
         n += 1
@@ -328,11 +377,19 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         checks["header_names_the_subject_over_unrelated_records"] = not any(
             any(t.upper() in _norm(r.get("quote")) for t in terms) for r in lead)
 
-    invented = _invented_number(returned)
-    allowed, _ = ps.answer_is_grounded(f"There are {invented} of them.", returned)
+    # The mark the probe hangs on: a case's own first claim when it has one,
+    # so the refusal is about the VALUE being unsupported and nothing else.
+    claims = _claims(case)
+    anchor = str(claims[0]["subject"]) if claims else ""
+    intent = str(case.get("intent") or "")
+    invented = _invented_number(returned, anchor, intent)
+    allowed, _ = ps.answer_is_grounded(_sentence(anchor, invented), returned,
+                                       intent=intent)
     checks["gate_refuses_an_invented_number"] = not allowed
     if allowed:
-        reasons.append(f"the gate allowed {invented}, which nothing returned prints")
+        reasons.append(f"the gate allowed {invented} for "
+                       f"{anchor or 'no named subject'}, "
+                       f"which nothing returned prints")
 
     # ── NOTHING MAY STATE A COUNT OF IT ───────────────────────────────────
     #
@@ -390,8 +447,19 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
 
     values = [str(v) for v in exp.get("values") or []]
     if values:
-        ok, missing = ps.answer_is_grounded(
-            "The drawings show " + ", ".join(values) + ".", returned)
+        # ── THE TRUE ANSWER, WRITTEN AS AN ANSWER IS WRITTEN ───────────────
+        #
+        # "The drawings show 21, 9, 11." names no subject, so under the bound
+        # rule it is refused for naming nothing and the check reports a defect
+        # that is not there. A case that states counts says which mark each one
+        # belongs to, and the sentence is built from those.
+        if claims:
+            true_answer = " ".join(_sentence(str(c["subject"]), c["value"])
+                                   for c in claims)
+        else:
+            true_answer = "The drawings show " + ", ".join(values) + "."
+        ok, missing = ps.answer_is_grounded(true_answer, returned,
+                                            intent=intent)
         checks["gate_allows_the_true_answer"] = ok
         if not ok:
             reasons.append(f"the gate would refuse the true answer; nothing "

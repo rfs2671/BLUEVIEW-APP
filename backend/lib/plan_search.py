@@ -204,6 +204,101 @@ def printed_score(record: Dict[str, Any], terms: Sequence[str]) -> Tuple[float, 
     return _score(_printed(record), terms)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# The floor
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── WORDS THAT NAME THE ASKING, NOT THE THING ──────────────────────────────
+#
+# A floor asks whether the subject's words appear on the drawings at all. That
+# only works if the words it requires are words a DRAWING would print. These
+# are not: they belong to the question, and a sheet has no reason to carry
+# them. Measured 2026-09-18 — requiring every term emptied 27 of 40
+# superintendent questions, and the damage was almost entirely these.
+#
+# THIS LIST IS CLOSED. It is small, and every entry is justified where it
+# sits. It may not grow case by case: a floor that gains a word whenever a
+# question fails is a tuned threshold wearing a different coat, and
+# test_the_asking_words_are_justified fails on any entry without a reason.
+#
+# Removing a word from a subject only makes the floor MORE permissive — fewer
+# terms are required — so a wrong entry costs recall of the floor's strictness
+# and never costs an answer.
+ASKING_WORDS = {
+    # asking for a position
+    "where": "a sheet draws the thing; it does not print the word 'where'",
+    "location": "the question's noun for position, not the thing located",
+    "located": "as above, in verb form",
+    # asking for a magnitude — the sheet prints the NUMBER, not the property
+    "tall": "'how tall' asks for a height the sheet prints as a dimension",
+    "high": "the adjective form of the same question; HIGH SHED is printed on "
+            "the shed drawing, and stripping a printed word only widens",
+    "wide": "'how wide' asks for a width the sheet prints as a dimension",
+    "width": "the noun a question uses; a sheet prints the measurement itself",
+    "long": "'how long' asks for a length printed as a dimension",
+    "deep": "'how deep' asks for a depth printed as a dimension",
+    "depth": "the noun form; footings print their depth as a number",
+    "thick": "'how thick' asks for a thickness printed as a dimension",
+    "size": "'what size' asks for a dimension the sheet prints as a number",
+    "height": "the noun a question uses for a printed vertical dimension",
+    # asking for a quantity or a kind
+    "many": "from 'how many'; the sheet prints a QTY column, not the word",
+    "much": "from 'how much'; the sheet prints the amount, never the asking",
+    "number": "'number of X' asks a quantity. Measured: this word alone pulled "
+              "the Sheet List Table, TABLE 504.4 and four other indexes into a "
+              "PTAC question, and one of them vouched for an invented 9",
+    "type": "'what type' asks for a classification the sheet prints as a mark",
+    # asking about the document rather than the building
+    "issued": "a question about the set's date; the sheet prints the date",
+}
+
+
+def floor_terms(terms: Sequence[str]) -> List[str]:
+    """The subject's own words, with the question's words taken out.
+
+    Never empty: a question made ENTIRELY of asking words — 'how many', 'what
+    size' — has no subject to floor on, and stripping to nothing would empty
+    every result. The original terms stand in that case, which is the strict
+    reading and the safe one."""
+    kept = [t for t in terms if t not in ASKING_WORDS]
+    return kept or list(terms)
+
+
+def meets_the_floor(records: Iterable[Dict[str, Any]],
+                    terms: Sequence[str]) -> bool:
+    """Does ONE record carry every word of the subject?
+
+    ── WHY ONE RECORD AND NOT THE SET ─────────────────────────────────────
+    #
+    # A set can cover a question by accident: one record prints 'number',
+    # another prints 'ptac-2', and between them they 'cover' a question
+    # neither answers. Measured on the 40, the set-wide form let a LIGHTING
+    # SCHEDULE stand as the answer to 'what is the concrete pour schedule',
+    # on the shared word 'schedule' alone.
+    #
+    # ── AND WHY A LABEL COUNTS HERE ────────────────────────────────────────
+    #
+    # `match_score` includes the vision-supplied label, and that is deliberate:
+    # the floor decides what may be FOUND, not what may be SAID. The expansion
+    # of PTAC — PACKAGE TERMINAL AIR CONDITIONER — is printed on no sheet in
+    # the corpus; it exists only in labels on ten legend entries. A printed-
+    # only floor would answer 'nothing found' to 'how many packaged terminal
+    # air conditioners' on a building with 41 of them.
+    #
+    # What a label may never do is ANSWER. `matched_only_through_label` still
+    # removes every label-only record from what is returned, so a label can
+    # open the door and never speak through it.
+    """
+    want = floor_terms(terms)
+    if not want:
+        return True
+    for r in records or []:
+        hay = _haystacks(r)
+        if all(_score(hay, [t])[0] > 0 for t in want):
+            return True
+    return False
+
+
 def matched_only_through_label(record: Dict[str, Any], terms: Sequence[str]) -> bool:
     """True when the ONLY thing tying this record to the subject is a label —
     words a vision model supplied for a mark the sheet does not explain."""
@@ -765,5 +860,6 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
+           "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]
