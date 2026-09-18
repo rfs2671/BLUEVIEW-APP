@@ -54,6 +54,24 @@ name: tests
 
 on:
   pull_request:
+    # ready_for_review IS NOT A DEFAULT TYPE, AND THE DRAFT GATE BELOW NEEDS IT.
+    #
+    # The default set is [opened, synchronize, reopened]. Three jobs in this
+    # file skip on `draft == false`, so on a draft they are reported as
+    # "skipping" -- and without this line, taking that draft out of draft fires
+    # an event the workflow does not listen for. The skipped runs then STAY
+    # skipped until somebody happens to push again.
+    #
+    # WHAT THAT LOOKS LIKE ON THE PULL REQUEST IS THE PROBLEM: "skipping" is
+    # not red. A ready, reviewable PR sits there with the backend suite, the
+    # frontend suite and the mount smoke all showing a neutral grey tick, and
+    # the merge button is green. Measured on #603: marked ready at 07:26, all
+    # three still "skipping", and the only way to get a real run was to close
+    # and reopen it so a `reopened` event fired.
+    #
+    # A gate that silently does not run is worse than no gate, because the
+    # empty result is indistinguishable from a passing one at a glance.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # One run per branch. A rebase or a force-push supersedes the run it replaces,
 # and tonight's train left several superseded runs burning to completion.
@@ -119,7 +137,10 @@ jobs:
     needs: changes
     # DOCS-ONLY CHANGES SKIP EVERY SUITE: neither flag is set, so all three
     # heavy jobs are skipped and only `changes` runs. DRAFTS SKIP TOO -- a draft
-    # is work in progress by definition, and marking it ready re-runs this.
+    # is work in progress by definition, and marking it ready re-runs this,
+    # which is true ONLY because `ready_for_review` is in the trigger's `types`
+    # at the top of this file. It was not, and this sentence was wrong for as
+    # long as the gate existed. Do not remove that line.
     if: |
       needs.changes.outputs.backend == 'true'
       && github.event.pull_request.draft == false
