@@ -47318,8 +47318,8 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     return "\n".join(lines)
 
 
-def gate_plan_answer(text: str, records: List[dict], subject: str = ""
-                     ) -> Tuple[str, str]:
+def gate_plan_answer(text: str, records: List[dict], subject: str = "",
+                     intent: str = "") -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
 
     Every number and dimension in a composed answer must appear in a record
@@ -47333,7 +47333,8 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = ""
     TERMINAL AIR CONDITIONER arrived by the identical path."""
     if not records:
         return text, "no_records"
-    grounded, unsupported = plan_search.answer_is_grounded(text, records)
+    grounded, unsupported = plan_search.answer_is_grounded(
+        text, records, intent=intent)
     leaked = plan_search.contains_label(text, records)
     if grounded and not leaked:
         return text, "grounded"
@@ -49197,7 +49198,11 @@ async def _run_group_agent(
                     return reply
                 records = [r for hit in plan_evidence for r in hit["records"]]
                 subject = plan_evidence[-1]["subject"]
-                sent, outcome = gate_plan_answer(reply, records, subject)
+                # The intent rides with the subject, from the same hit. A
+                # count is the shape whose numbers must bind to a mark.
+                intent = plan_evidence[-1].get("intent") or ""
+                sent, outcome = gate_plan_answer(reply, records, subject,
+                                                 intent=intent)
                 if outcome not in ("grounded", "no_records"):
                     logger.warning(
                         f"plan gate replaced the reply group="
@@ -49392,7 +49397,8 @@ async def _dispatch_agent_tool(
                 sheet_number=args.get("sheet_number") or "",
             )
             if record_sink is not None:
-                record_sink.append({"subject": subject, "records": found})
+                record_sink.append({"subject": subject, "records": found,
+                                    "intent": args.get("intent") or ""})
             logger.info(
                 f"search_plans subject={subject[:40]!r} intent={args.get('intent')!r} "
                 f"hits={len(found)} top={[r.get('tier') for r in found[:3]]}")
@@ -49476,7 +49482,10 @@ async def _dispatch_agent_tool(
                 floor=args.get("floor") or "",
                 sheet_number=sheet_number)
             if record_sink is not None:
-                record_sink.append({"subject": question, "records": found})
+                # query_plan does not take an intent; it sends a sheet image
+                # and answers from records, so its numbers keep the union rule.
+                record_sink.append({"subject": question, "records": found,
+                                    "intent": ""})
             logger.info(
                 f"query_plan answered from records subject={question[:40]!r} "
                 f"hits={len(found)} (sheet image sent separately)")
