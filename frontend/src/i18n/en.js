@@ -387,7 +387,9 @@ export default {
     colWorkDescription: 'WORK DESCRIPTION',
     colWorkLocations: 'WORK LOCATIONS',
 
-    phCompany: 'Company',
+    // `phCompany` went with the add-a-crew modal, the only field that asked the
+    // CP to type a company name on this log. Every crew now comes from the gate
+    // or from what was already stored.
     phWorkPerformed: 'Work performed...',
     phWorkLocations: 'Floors, areas...',
     phGeneralDescription: 'Describe the main work performed today...',
@@ -454,13 +456,16 @@ export default {
     cancel: 'Cancel',
     save: 'Save',
 
-    step1Title: 'What was on site',
-    step2Title: 'What each crew did',
-    step3Title: 'Safety observations',
-    step4Title: 'Daily inspections walked',
-    step5Title: 'Review and sign',
+    // FOUR TITLES, NOT FIVE. "What was on site" — the roster confirmation —
+    // was removed by ruling and the rest moved up one. The new first title
+    // names BOTH halves of that step on purpose: equipment came across from the
+    // removed step, and "What each crew did" would not cover a hoist.
+    step1Title: 'Crews and equipment',
+    step2Title: 'Safety observations',
+    step3Title: 'Daily inspections walked',
+    step4Title: 'Review and sign',
 
-    // Step 4 — the nine items, walked. A tick could only say the CP LOOKED;
+    // Step 3 — the nine items, walked. A tick could only say the CP LOOKED;
     // on a filed 3301-02 that reads as "this is fine", with no way to say
     // otherwise. Pass, fail, or not walked — and a fail says what failed.
     // The progress pips carry a third state and colour alone is a weak
@@ -481,7 +486,8 @@ export default {
     reviewInspectionsNotWalked: 'Not inspected',
     reviewInspectionsPassed: 'Passed',
 
-    // Step 1 — the gate roster.
+    // Step 1 — the crew cards. `fromGate` is unreferenced: the badge that used
+    // it was on the removed roster step, and the card here uses `gateLocked`.
     // "Locked" has to read as PROVENANCE, not as a refusal. The CP is not
     // being denied an edit; the app is telling him where the number came from
     // and that it already matches the check-in record.
@@ -516,25 +522,31 @@ export default {
     // being silently absent, so the CP is not left looking for it.
     deleteCrewRefused: 'Recorded at the gate and cannot be removed — these men tapped in. If nobody from this crew worked today, set the count to 0.',
     crewsOnSite: 'Crews on site',
-    noCrews: 'No crews came through the gate for this day.',
-    addCrew: 'Add a crew the gate missed',
-    addCrewTitle: 'Add a crew',
+    // `addCrew` / `addCrewTitle` — "Add a crew the gate missed" and its modal —
+    // were removed by ruling. That was the only path in the app that created a
+    // crew row from nothing; `noCrews`, the empty-list line on the step that
+    // held it, went with it.
     // NO CORRECTION AFFORDANCE. Assigning a company or trade does not belong on
     // the daily log: a worker sets his own at check-in, and a CP who has to fix
     // one does it during safety orientation. The three `correctCompany*` keys
     // were removed with the flow. `correctedFrom` stays — company_gate is still
     // recorded as gate provenance and is still shown when it differs.
     correctedFrom: 'Gate recorded',
-    unboundCrew: 'Not on the project roster',
-    unboundCrewHint: 'Saved and flagged for an admin. It does not block this log.',
+    // `unboundCrew` / `unboundCrewHint` — "Not on the project roster … saved
+    // and flagged for an admin" — were rendered ONLY on the removed step's
+    // crew rows, so the copy went with them. A crew off the roster is still
+    // saved and still flagged server-side; the CP is simply no longer told.
     noCrewWorker: 'No crew assigned',
     // A man who came through the gate with no company. He is PRESENT — the log
     // must show he was here — but an activity row represents a COMPANY's work,
-    // so he gets no card on Step 2. The copy has to say both halves, and must
+    // so he gets no card on Step 1. The copy has to say both halves, and must
     // not read as an error: it is an admin gap, not something he did wrong, and
     // it never blocks the CP.
+    //
+    // `unassignedHint`, the sentence explaining WHY there is nothing to fill in
+    // for him, was rendered only on the removed step's rows and went with them.
+    // The title survives on the review step, where he is still listed by name.
     unassignedTitle: 'On site, no company assigned',
-    unassignedHint: 'He is counted as present. Work is logged per company, so there is nothing to fill in for him until a company is assigned.',
     // A CREW WITH NOBODY ON IT. Stated, never silent: the log has quietly
     // stopped asking this crew for an activity and a location, and a CP who
     // sees one card asking and another not asking, with no reason given,
@@ -546,23 +558,29 @@ export default {
     // does not exist.
     emptyCrewTitle: 'No workers recorded',
     emptyCrewHint: 'Nobody was recorded on site for this crew, so the log does not ask what they did. It stays on the record with a count of 0.',
-    unassignedNoCard_one: '1 worker on site has no company assigned, so he has no work card here. He is recorded on the previous step.',
-    unassignedNoCard_other: '{n} workers on site have no company assigned, so they have no work cards here. They are recorded on the previous step.',
+    // "ON THE PREVIOUS STEP" WAS TRUE AND IS NOT. This sentence sits on the
+    // first step now, and it pointed at the roster step that used to precede
+    // it. It names the review step instead, which is where he is still listed —
+    // a sentence that sends a CP to a screen that no longer exists is worse
+    // than one that says nothing.
+    unassignedNoCard_one: '1 worker on site has no company assigned, so he has no work card here. He stays on the record and is listed on the review step.',
+    unassignedNoCard_other: '{n} workers on site have no company assigned, so they have no work cards here. They stay on the record and are listed on the review step.',
     workers_one: '1 worker',
     workers_other: '{n} workers',
+    // `checkInTimeUnknown` stood in for a missing check-in time on the removed
+    // step's dense rows. The crew card omits the time when there is none, so
+    // there is nothing left for it to label.
     checkedInAt: 'Checked in {time}',
-    checkInTimeUnknown: 'Check-in time not recorded',
 
-    // The roster-integrity warning. This is a compliance claim: a short list
-    // shown as complete is a fabricated record, so the CP is told plainly.
-    rosterPartialTitle: 'This roster may be incomplete',
-    rosterPartialBody: 'The server could not confirm the full list of who was on site. Check the crews below and add anyone missing before you sign.',
-    // A MERGE, NOT A FAILED READ. Its own heading, because the two say
-    // different things about the server and only one of them is a fault.
-    rosterCollapsedTitle: 'Two workers may have been counted once',
-    rosterCollapsedBody: 'Two workers with the same name at one company can be counted once. Check the worker counts below.',
+    // THE ROSTER-INTEGRITY WARNINGS ARE GONE, AND THIS IS A REMOVAL, NOT A
+    // TIDY-UP. `rosterPartial*` said the server could not confirm the full
+    // list; `rosterCollapsed*` said two same-name workers at one company may
+    // have been counted once, so the headcount could be short by N. They were
+    // the ONLY place this product said either thing — the OSHA log reads the
+    // same already-collapsed list and says nothing at all — and the four keys
+    // went with the banners they were written for, by ruling.
 
-    // Step 2 — activity, location, then the camera.
+    // Step 1 — activity, location, then the camera.
     activityQuestion: 'What did this crew do?',
     // THE SECOND BAND'S OWN QUESTION. The first asks about THIS CREW's work;
     // this asks about the SITE. Deliberately not "More activities" or "Other" —
@@ -599,7 +617,7 @@ export default {
     photosCount_one: '1 photo',
     photosCount_other: '{n} photos',
 
-    // Step 3 — an observation is not savable without a corrective action.
+    // Step 2 — an observation is not savable without a corrective action.
     addObservation: 'Add an observation',
     removeObservation: 'Remove this observation',
     noObservations: 'No safety observations today.',
@@ -620,11 +638,16 @@ export default {
     descriptionEmpty: 'No activities were chosen, so this is blank. Write it yourself if there is anything to record.',
 
     weatherAutoNote: 'Recorded automatically from the weather service.',
+    // ONE SENTENCE LEFT, AND IT IS STILL SHOWN. The fetch-failure BANNER was
+    // removed with the step it sat on, and the two sentences that gave the
+    // reason — `weatherUnavailableBody` (the service did not answer) and
+    // `weatherUnavailableOffline` (this device could not reach it) — went with
+    // it. The TITLE stays because the review step falls back to it in place of
+    // the value, so a CP whose fetch failed is still told before he signs. What
+    // he loses is WHICH of the two failures it was.
     weatherUnavailableTitle: 'Weather could not be retrieved',
-    weatherUnavailableBody: 'The weather service did not answer. This is recorded on the log — it is not left blank.',
-    weatherUnavailableOffline: 'This device could not reach the weather service. This is recorded on the log — it is not left blank.',
 
-    // Step 5 — the record read back before it is signed.
+    // Step 4 — the record read back before it is signed.
     reviewHeading: 'Check this is right',
     reviewNothingYet: 'Nothing recorded',
     submitAndSign: 'Sign and close the day',

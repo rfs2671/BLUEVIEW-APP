@@ -258,16 +258,18 @@ console.log('\n── The unassigned worker gets no activity card ──');
 
 {
   // THE STEP CAN STILL COMPLETE. Requiring work from a man who is never asked
-  // for any would leave Step 2 permanently unfinished.
+  // for any would leave Step 1 permanently unfinished.
+  // THE CREW STEP IS STEP 1 NOW. The roster-confirmation step above it was
+  // removed and the rest moved up one; the rule is unchanged, the index is not.
   const work = { ...M.EMPTY_ACTIVITY(), company: 'Vanguard', gate_sourced: true,
     work_description: 'formwork', work_locations: 'Floor 3' };
   const solo = { ...M.EMPTY_ACTIVITY(), company: '', gate_sourced: true };
-  ok(M.stepComplete(2, { activities: [work, solo] }),
-    'step 2 completes with an unassigned worker present');
-  ok(!M.stepComplete(2, { activities: [{ ...work, work_description: '' }, solo] }),
+  ok(M.stepComplete(1, { activities: [work, solo] }),
+    'step 1 completes with an unassigned worker present');
+  ok(!M.stepComplete(1, { activities: [{ ...work, work_description: '' }, solo] }),
     '...but still refuses when a REAL crew has no work described');
-  ok(!M.stepComplete(2, { activities: [solo] }),
-    'and a day of nothing but unassigned workers is not a completed step 2');
+  ok(!M.stepComplete(1, { activities: [solo] }),
+    'and a day of nothing but unassigned workers is not a completed step 1');
 }
 
 {
@@ -399,17 +401,28 @@ eq(M.formatCheckInTime('garbage'), null, 'an unparseable instant renders as noth
 // STEP PROGRESS never blocks
 // ═════════════════════════════════════════════════════════════════════════════
 console.log('\n── Step marks ──');
-ok(!M.stepComplete(1, { activities: [] }), 'step 1 is incomplete with no crews');
-ok(M.stepComplete(1, { activities: [{}] }), 'step 1 completes once a crew exists');
-ok(!M.stepComplete(2, { activities: [{ work_description: '' }] }),
-  'step 2 is incomplete while a crew has no described work');
-ok(!M.stepComplete(2, { activities: [{ work_description: 'formwork' }] }),
-  'step 2 is STILL incomplete with work but no location — the pip and the Next '
+// FOUR STEPS. The old case 1 — "a crew came through the gate", `acts.length > 0`
+// — marked the roster-confirmation step, and that step was removed by ruling.
+// It is NOT folded into the new case 1: whether a crew exists is the gate's
+// answer, not the CP's, and a pip that marks him incomplete for an empty
+// turnstile blames him for someone else's data. The assertion below is the one
+// that would catch it coming back.
+ok(M.stepComplete(1, { activities: [{}] }) === false,
+  'a crew merely EXISTING no longer completes a step — the gate answered, not the CP');
+ok(!M.stepComplete(1, { activities: [{ work_description: '' }] }),
+  'step 1 is incomplete while a crew has no described work');
+ok(!M.stepComplete(1, { activities: [{ work_description: 'formwork' }] }),
+  'step 1 is STILL incomplete with work but no location — the pip and the Next '
   + 'gate ask for the same pair');
-ok(M.stepComplete(2, { activities: [{ work_description: 'formwork', work_locations: 'Floor 3' }] }),
-  'step 2 completes when every crew has an activity AND a location');
-ok(M.stepComplete(3, { observations: [] }), 'step 3 completes with no observations');
-ok(M.stepComplete(5, { cpSignature: 'data:...' }), 'step 5 completes once signed');
+ok(M.stepComplete(1, { activities: [{ work_description: 'formwork', work_locations: 'Floor 3' }] }),
+  'step 1 completes when every crew has an activity AND a location');
+ok(M.stepComplete(2, { observations: [] }), 'step 2 completes with no observations');
+ok(M.stepComplete(4, { cpSignature: 'data:...' }), 'step 4 completes once signed');
+// AND THERE IS NO FIFTH. `default: return false` answers anything else, so a
+// screen left asking about a step that no longer exists gets an honest no
+// rather than a silent true.
+ok(M.stepComplete(5, { cpSignature: 'data:...' }) === false,
+  'step 5 does not exist and does not answer as complete');
 
 // ═════════════════════════════════════════════════════════════════════════════
 // THE DAILY INSPECTIONS — a tick could not say what was FOUND
@@ -462,19 +475,21 @@ ok(JSON.stringify(M.incompleteInspections(items)) === JSON.stringify(['fall_prot
 ok(M.incompleteInspections({}).length === 0, 'a form nobody touched blocks nothing');
 ok(M.incompleteInspections(null).length === 0, 'and neither does a missing one');
 
-// Step 4 is the inspections now; weather moved to Step 1 and never gated a step
-// the CP could not fix.
-ok(M.stepComplete(4, { checklistItems: items }) === false,
-  'step 4 is incomplete while a fail has no note');
-ok(M.stepComplete(4, items) === true,
+// Step 3 is the inspections now — it was step 4 until the roster step above it
+// was removed. Weather has never gated it and now has no step at all: it is
+// fetched at mount and printed on the filed sheet, so a fetch failure the CP
+// cannot fix can no longer hold any pip incomplete.
+ok(M.stepComplete(3, { checklistItems: items }) === false,
+  'step 3 is incomplete while a fail has no note');
+ok(M.stepComplete(3, items) === true,
   'and it reads state.checklistItems — a bare items object is not the state');
-ok(M.stepComplete(4, { checklistItems: {
+ok(M.stepComplete(3, { checklistItems: {
   ...items, fall_protections: { result: FAIL, note: 'north edge open' },
 } }), 'and completes once every fail says what failed');
-ok(M.stepComplete(4, { checklistItems: {} }),
+ok(M.stepComplete(3, { checklistItems: {} }),
   'an untouched form is complete — walking all nine is not compulsory');
-ok(M.stepComplete(4, { weather: 'Sunny' }) === true,
-  'weather no longer decides step 4');
+ok(M.stepComplete(3, { weather: 'Sunny' }) === true,
+  'weather no longer decides the inspections step');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 // THE "UNASSIGNED" SENTINEL ON TRADE
@@ -663,7 +678,7 @@ for (const junk of [undefined, null, {}, { chips: null }, { chips: 'x' },
 
 console.log('\n-- a crew on site whose work nobody described --');
 {
-  // stepComplete(2) has held this rule the whole time and only MARKED with it,
+  // stepComplete(1) has held this rule the whole time and only MARKED with it,
   // so a filed daily log could name four subs and say what none of them did.
   // Every complete row carries BOTH fields — the rule is activity AND location.
   const crews = [
@@ -707,7 +722,7 @@ console.log('\n-- a crew on site whose work nobody described --');
   ok(!gaps.some((g) => g.crew === 'A'), 'a complete crew is never reported');
 }
 {
-  // The POSITION is within workRows, which is the list step 2 renders. An
+  // The POSITION is within workRows, which is the list step 1 renders. An
   // unassigned-worker row has no card, so counting it would point at a crew
   // that is not on screen.
   const rows = [
@@ -741,23 +756,23 @@ console.log('\n-- a crew on site whose work nobody described --');
   // ways, because a CP stopped by something the screen showed as complete
   // learns to distrust the screen.
   const bare = [{ company: 'Kestrel Electric', work_description: '', work_locations: 'Floor 3' }];
-  ok(M.stepComplete(2, { activities: bare }) === false
+  ok(M.stepComplete(1, { activities: bare }) === false
      && M.crewsWithoutWork(bare).length === 1,
     'the pip and the gate answer the same question');
   const done = [{ company: 'Kestrel Electric', work_description: 'rough-in', work_locations: 'Floor 3' }];
-  ok(M.stepComplete(2, { activities: done }) === true
+  ok(M.stepComplete(1, { activities: done }) === true
      && M.crewsWithoutWork(done).length === 0,
     'and they agree when it is done too');
-  // AND THEY AGREE ON THE LOCATION HALF TOO. stepComplete(2) asked only for the
+  // AND THEY AGREE ON THE LOCATION HALF TOO. stepComplete(1) asked only for the
   // description while the gate also wanted a location, so a crew with work and
   // no floor made the pip read COMPLETE and the Next button sit dead — a CP
   // stopped by something the screen has just told him is finished.
   const noLoc = [{ company: 'Kestrel Electric', work_description: 'rough-in', work_locations: '' }];
-  ok(M.stepComplete(2, { activities: noLoc }) === false
+  ok(M.stepComplete(1, { activities: noLoc }) === false
      && M.crewsWithoutWork(noLoc).length === 1,
     'a missing LOCATION marks the step incomplete AND stops Next — one answer');
   const noAct = [{ company: 'Kestrel Electric', work_description: '', work_locations: 'Floor 3' }];
-  ok(M.stepComplete(2, { activities: noAct }) === false
+  ok(M.stepComplete(1, { activities: noAct }) === false
      && M.crewsWithoutWork(noAct).length === 1,
     'and so does a missing activity — neither field belongs to the pip alone');
 }
@@ -775,17 +790,31 @@ console.log('\n-- a crew on site whose work nobody described --');
   // assertion pass against ANY code — a mutation that put the gate on the step
   // path walked straight through it. Named after what this screen actually
   // calls, with no escape hatch.
-  // GATING NEXT ON STEP 2 — the documented exception, same as toolbox step 1.
+  // GATING NEXT ON STEP 1 — the documented exception, same as toolbox step 1.
   // This asserted the opposite until the ruling changed: a crew row with no
   // activity and no location makes the whole log unfilable, and every field is
-  // known the moment the card is on screen. Being stopped at step 2 beats
-  // discovering it at step 5 with four steps behind him.
-  ok(/nextDisabled=\{step === 2 && crewGaps\.length > 0\}/.test(screen),
-    'Next is disabled on step 2 while a crew is incomplete');
+  // known the moment the card is on screen. Being stopped at step 1 beats
+  // discovering it at step 4 with three steps behind him.
+  //
+  // THE INDEX IS THE POINT, NOT DECORATION. The crew cards were step 2 until
+  // the roster step above them was removed. A gate left reading `step === 2`
+  // would arm on the OBSERVATIONS step — disabling Next over crews that are not
+  // on screen, and letting the crew step through with gaps. Asserted against
+  // the derived index, not a literal, so the two cannot drift apart: the gate
+  // must name the step whose render holds the crew cards.
+  const crewStep = [1, 2, 3, 4].find((n) => {
+    const from = screen.indexOf(`const renderStep${n} =`);
+    const to = n < 4 ? screen.indexOf(`const renderStep${n + 1} =`) : screen.indexOf('const STEPS = [');
+    return from > -1 && to > from && screen.slice(from, to).includes('updateCrewHeadcount(i, v)');
+  });
+  ok(crewStep === 1, `the crew cards render on step ${crewStep} — the step the gate must name`);
+  ok(new RegExp(`nextDisabled=\\{step === ${crewStep} && crewGaps\\.length > 0\\}`).test(screen),
+    `Next is disabled on step ${crewStep} while a crew is incomplete`);
   ok(/nextHint=\{crewGaps\.length > 0 \? crewGapSentence\(crewGaps\) : ''\}/.test(screen),
     'and it says WHICH crew — a dead button with no sentence is where a CP stops');
-  ok(/nextDisabled=\{step === 2/.test(screen) && !/nextDisabled=\{true\}/.test(screen),
-    'and only on step 2 — the mark-never-gate rule stands everywhere else');
+  ok(new RegExp(`nextDisabled=\\{step === ${crewStep}`).test(screen)
+     && !/nextDisabled=\{true\}/.test(screen),
+    `and only on step ${crewStep} — the mark-never-gate rule stands everywhere else`);
   // ── THE DAY'S DESCRIPTION, GATED AT STEP 5 ───────────────────────────────
   //
   // The report printed "Description: — Not recorded" on filed logs. Nothing was
@@ -822,7 +851,12 @@ console.log('\n-- a crew on site whose work nobody described --');
   ok(screen.indexOf('crewsWithoutWork(activitiesRef.current')
      > screen.indexOf('const handleSubmitAndSign'),
     'and the submit backstop survives, for a roster refresh mid-signature');
-  ok(/setStep\(2\);/.test(screen.slice(at - 200, at + 400)),
+  // DERIVED, NOT TYPED. The backstop sends the CP to a step by NUMBER, and the
+  // number moved with the renumber. Asserting the literal would have gone on
+  // passing while the toast dropped him on the observations step and named
+  // crews he could not see from there, so it is asked of the same derived index
+  // the Next gate is asked of.
+  ok(new RegExp(`setStep\\(${crewStep}\\);`).test(screen.slice(at - 200, at + 400)),
     'it sends him back to the step that holds the fix');
 }
 

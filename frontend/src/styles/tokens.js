@@ -281,10 +281,17 @@ export const space = Object.freeze({
 });
 
 // ─── Border widths ───────────────────────────────────────────────────────────
-// 2 distinct, 42 occurrences. bw1 is 41 of them.
+// ONE distinct value now, 53 occurrences across 9 of the scanned files.
+//
+// `bw2: 2` IS GONE, AND IT WAS NOT TIDIED AWAY. It had exactly one use in the
+// whole scanned set — the 2pt warn rule down the left of daily_jobsite's
+// flagged crew row — and that row was removed with the step that held it. This
+// scale claims to be MEASURED, so a value with no remaining use is an invented
+// one: tokens.test.cjs's honesty direction fails on it, correctly, and the fix
+// is to drop the value rather than to keep a scale that describes nothing.
+// If a 2pt border comes back on a CP screen, the token comes back with it.
 export const borderWidth = Object.freeze({
-  bw1: 1, // 41 uses, 7 files
-  bw2: 2, // 1 use,   1 file
+  bw1: 1, // 53 uses, 9 files
 });
 
 // ─── Standalone opacity ──────────────────────────────────────────────────────
