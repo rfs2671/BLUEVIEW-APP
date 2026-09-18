@@ -1371,7 +1371,38 @@ export default function PreShiftSignIn() {
                   )}
                 </View>
 
-                {/* Y/N Questions */}
+                {/*
+                  Y/N QUESTIONS — AND WHY THEY ARE PHRASED AS AN INSTRUCTION.
+
+                  Both labels used to be subjectless fragments: "Injury /
+                  Incident last time?" and "Inspected PPE today?". A fragment
+                  has no subject, so the reader supplies one — and the operator
+                  supplied the wrong one. He read the first as the WORKER
+                  self-reporting, which made it look like a duplicate of the
+                  affirmation already taken at the gate, and it came close to
+                  being deleted on that reading.
+
+                  It is not a duplicate. The attestation he signs at the bottom
+                  of this sheet claims an ACT, performed by HIM, on each man:
+
+                      "Each worker named below ... was asked, before starting
+                       work, whether there was an injury or incident on their
+                       last shift and whether they inspected their PPE for
+                       today."
+
+                  So the CP is the one asking and the worker is the one
+                  answering, and the label now says so. "last shift" rather
+                  than "last time" is the attestation's own wording, so what he
+                  is asked for on screen is the thing he signs for on paper —
+                  the words are checked against attestations.py by
+                  src/utils/preshiftQuestionsAskWhatIsAttested.test.cjs so the
+                  two cannot drift apart again.
+
+                  COPY ONLY. `had_injury` and `inspected_ppe` keep their names
+                  and their values, the filed sheet's Injury and PPE columns are
+                  untouched, and the attestation is NOT re-versioned: nothing
+                  about what is claimed changed, only about what is read.
+                */}
                 <View style={styles.ynBlock}>
                   {/* Required. Outlined red and labelled only once the row
                       has a NAME — an untouched spare row is not a worker and
@@ -1380,7 +1411,7 @@ export default function PreShiftSignIn() {
                     styles.ynItem,
                     !!worker.name.trim() && worker.had_injury == null && styles.ynItemRequired,
                   ]}>
-                    <Text style={styles.ynLabel}>Injury / Incident last time?</Text>
+                    <Text style={styles.ynLabel}>Ask the worker: any injury or incident on your last shift?</Text>
                     <YesNoToggle
                       value={worker.had_injury}
                       onChange={(v) => updateWorker(index, 'had_injury', v)}
@@ -1393,7 +1424,7 @@ export default function PreShiftSignIn() {
                     styles.ynItem,
                     !!worker.name.trim() && worker.inspected_ppe == null && styles.ynItemRequired,
                   ]}>
-                    <Text style={styles.ynLabel}>Inspected PPE today?</Text>
+                    <Text style={styles.ynLabel}>Ask the worker: did you inspect your PPE for today?</Text>
                     <YesNoToggle
                       value={worker.inspected_ppe}
                       onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
