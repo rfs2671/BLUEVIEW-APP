@@ -48,6 +48,12 @@ from tests.document_renderers import (  # noqa: E402
     N_DOCUMENT_RENDERERS as N_RENDERERS)
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+#: THE FILE THAT ACTUALLY DECIDES WHAT THE REGISTER PRINTS. The sheet is
+#: rendered from the declarative schema, not from server.py, so a guard on the
+#: printed columns has to read this one. server.py is still read above for the
+#: assertions that are genuinely about server.py.
+_SCHEMA_SRC = (BACKEND / "lib" / "legal_render" / "schema.py").read_text(
+    encoding="utf-8")
 
 
 def _code_only(fn) -> str:
@@ -538,10 +544,47 @@ class NothingElseOnTheRegisterMoved(unittest.TestCase):
         loss recorded at the top of this file. The register still prints its
         stored columns on the document an inspector reads; the Review column
         was the investor report's join to live certifications and the report
-        prints no register."""
-        self.assertIn("Signed", SRC)
+        prints no register.
+
+        THIS ASSERTION USED TO READ `assertIn("Signed", SRC)`, AND IT COULD
+        NOT FAIL. `SRC` is server.py; the Signed column moved to
+        legal_render/schema.py when the declarative engine took over the
+        sheet. "Signed" still occurs four times in server.py on unrelated
+        lines -- "Signed and stale", "Signed-off kept" -- so deleting the
+        column from the register would have left this test green. It was
+        passing on its neighbours, which is the failure this repo has now
+        seen three times.
+
+        It reads the DECLARATION now: the column tuple in the schema, which
+        is the thing that decides what prints. Asserting the header string
+        alone would go green again on any stray "Signed" in that file.
+        """
+        self.assertIn(
+            ('("signed", "Signed", "tick_or_blank")'), _SCHEMA_SRC,
+            "the Signed column is gone from the osha_log schema — the filed "
+            "register would stop printing a column that the CP's signed "
+            "attestation still describes in words")
         self.assertNotIn("<th {TH}>Review</th>", SRC,
                          "the Review column is back without a ruling")
+
+    def test_the_attestation_still_describes_the_column_it_prints(self):
+        """THE PAIR THAT MUST MOVE TOGETHER, and the reason the column is not
+        a free deletion.
+
+        `_OSHA_V1` is printed under the CP's signature and is hashed into the
+        signature ledger, and it explains the Signed column by name. Remove
+        the column and every already-signed register re-renders without a
+        column its own attestation still describes; reword the attestation
+        without re-versioning and the ledger's stored text stops matching what
+        the sheet says. Either one alone is the defect, so the test asserts
+        the two together rather than either by itself.
+        """
+        from lib.logbook import attestations
+        text = attestations.ATTESTATIONS["osha_log"]["text"]
+        self.assertIn(
+            "Signed column", text,
+            "the attestation stopped naming the Signed column while the "
+            "schema still prints it")
 
 
 if __name__ == "__main__":
