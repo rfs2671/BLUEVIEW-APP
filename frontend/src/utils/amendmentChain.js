@@ -64,6 +64,52 @@ export const chainKey = (o) => {
   return name ? `name:${name}` : null;
 };
 
+/**
+ * THE KEY THAT WORKS FOR EVERY TYPE, AND WHY `chainKey` WAS NOT IT.
+ *
+ * `chainKey` reads `data.worker_id` / `data.worker_name`, which resolves for
+ * `subcontractor_orientation` and NO OTHER TYPE. Measured on production:
+ * orientation 96 documents keyed; daily_jobsite 64, toolbox_talk 69,
+ * preshift_signin 55, osha_log 44, scaffold_maintenance 14,
+ * site_superintendent_log 11 all returned null and were passed through
+ * UNCOLLAPSED -- 32 of the 47 live amendment children are those types. So the
+ * one helper written to stop a chain rendering flat only ever stopped it for
+ * one of thirteen log types.
+ *
+ * `parent_logbook_id` IS WHAT AMEND_LOGBOOK WRITES, for every type, and until
+ * now nothing in this codebase read it back to group by. It is the chain
+ * itself rather than a proxy for it.
+ *
+ * ── THE WALK GOES ALL THE WAY UP ─────────────────────────────────────
+ *
+ * Chains reach depth 4 in production and 11 live children have a parent that
+ * is ITSELF an amendment, so a rule that read one link and stopped would put a
+ * grandchild in its own group and draw the inspector two records again.
+ *
+ * A PARENT THAT IS NOT IN THE LIST ENDS THE WALK, and the row becomes its own
+ * root. That is fail-open: an amendment whose parent is not on screen is
+ * SHOWN, rather than filtered into a group that does not contain it. A filed
+ * compliance record must never vanish off a list to make one tidy.
+ *
+ * CYCLE-SAFE, because a self-parent or a pair naming each other is a write
+ * nobody has ruled out and an infinite loop here is a frozen screen.
+ */
+export const parentId = (o) => {
+  const pid = String((o && o.parent_logbook_id) || '').trim();
+  return pid || null;
+};
+
+export function chainRoot(row, byId) {
+  let node = row;
+  const seen = new Set([String(rowId(row) || '')]);
+  for (;;) {
+    const pid = parentId(node);
+    if (!pid || seen.has(pid) || !byId.has(pid)) return node;
+    seen.add(pid);
+    node = byId.get(pid);
+  }
+}
+
 const isFiled = (o) => !!(o && (o.is_locked || o.status === 'submitted'));
 
 /**
@@ -103,6 +149,27 @@ const newestFirst = (a, b) => {
  *                        588 Thomas has a FORK, two competing unsigned
  *                        children of one parent, and showing one of them would
  *                        be picking a winner silently.
+ *   _competing_records   the same refusal, for FILED links. `_open_corrections`
+ *                        cannot see this case -- a filed child is not open --
+ *                        and production carries six parents with two live
+ *                        children. Where both are filed, the newest-first
+ *                        tie-break below picks one and the other correction
+ *                        leaves the record with nothing saying it was filed.
+ *                        A fork must surface as a fork, never as a silent
+ *                        choice.
+ *
+ *                        IT IS THE FILED LINKS OFF THE HEAD'S OWN ANCESTRY,
+ *                        which is what makes it depth-independent: on a linear
+ *                        chain of any length every filed link IS an ancestor of
+ *                        the head, so the list is empty; only a branch produces
+ *                        an entry.
+ *
+ *                        AND IT REQUIRES A PARENT LINK. Without that clause two
+ *                        separate ORIGINALS of one worker's orientation -- rows
+ *                        this module groups by worker, which amend nothing --
+ *                        would each report the other as a competing correction.
+ *                        A competing record is a CORRECTION somebody filed
+ *                        against this record.
  */
 export function chainHead(rows) {
   const all = (rows || []).filter(Boolean);
@@ -120,7 +187,10 @@ export function chainHead(rows) {
   // this is what makes that a fact about the data rather than a dependency.
   const list = all.filter((o) => !isWithdrawn(o));
   if (list.length === 0) {
-    return { ...all[0], _chain_length: all.length, _open_corrections: [] };
+    return {
+      ...all[0], _chain_length: all.length,
+      _open_corrections: [], _competing_records: [],
+    };
   }
 
   const filed = list.filter(isFiled).sort(newestFirst);
@@ -131,7 +201,24 @@ export function chainHead(rows) {
   // pre-signature state, NOT an open correction — calling it one would tell a
   // CP he has a correction outstanding on a record he has not filed yet.
   if (!record) {
-    return { ...open[0], _chain_length: list.length, _open_corrections: [] };
+    return {
+      ...open[0], _chain_length: list.length,
+      _open_corrections: [], _competing_records: [],
+    };
+  }
+
+  // The head's own ancestry: the documents this record was built from. Every
+  // filed link on it is superseded BY the head and is not competing with it.
+  const byId = new Map();
+  list.forEach((o) => { const id = rowId(o); if (id) byId.set(String(id), o); });
+  const path = [];
+  let node = record;
+  while (node) {
+    const nid = String(rowId(node) || '');
+    if (path.indexOf(nid) !== -1) break;
+    path.push(nid);
+    const pid = parentId(node);
+    node = pid ? byId.get(pid) : null;
   }
 
   return {
@@ -141,25 +228,63 @@ export function chainHead(rows) {
       id: rowId(o),
       created_at: o.created_at || null,
     })),
+    _competing_records: filed
+      .filter((o) => parentId(o) && path.indexOf(String(rowId(o) || '')) === -1)
+      .map((o) => ({ id: rowId(o), created_at: o.created_at || null })),
   };
 }
 
 /**
- * One row per worker. Rows that cannot be keyed at all are passed through
+ * One row per RECORD. Rows that cannot be keyed at all are passed through
  * rather than dropped — an unkeyable orientation is still a record, and losing
  * it from the list would be worse than showing it unchained.
+ *
+ * ── THE KEY IS THE ROOT'S, AND THE ORDER OF THE TWO MATTERS ──────────
+ *
+ * Each row is walked to the top of its chain, and the GROUP is keyed on that
+ * root's `chainKey` when it has one, and on the root's id when it does not.
+ *
+ * WORKER FIRST, NOT CHAIN FIRST, and that is deliberate. For orientation both
+ * keys exist, and keying on the chain alone would split a worker whose
+ * orientation was filed TWICE as two unlinked originals into two rows — a
+ * live behaviour change on the orientation editor, in a change that is meant
+ * to fix the twelve types the worker key never reached. Keying on the root's
+ * worker leaves those orientations grouped exactly as they already are and
+ * unions any chain hanging off them; every other type has no worker key,
+ * falls to the root id, and is collapsed for the first time.
+ *
+ * So this is strictly additive: no grouping that already happens stops
+ * happening, and the types that were passed through uncollapsed no longer
+ * are.
+ *
+ * ── AND THE WORDING ABOVE IS CONSTRAINED, WHICH IS WORTH KNOWING ─────
+ *
+ * amendmentVisible.test.cjs bans three clock-relative words by regex against
+ * the RAW text of this file, comments included, to prove no rule here reads
+ * the clock. That is the right claim about the code and the wrong instrument
+ * for it: the scan cannot tell a rule from a sentence describing one, so PROSE
+ * can fail a gate about behaviour — which is what the paragraph above had to
+ * be rewritten around. Left alone rather than weakened here; recorded in the
+ * PR's "found, not changed" list instead.
  */
 export function collapseChains(list) {
+  const rows = (list || []).filter(Boolean);
+  const byId = new Map();
+  rows.forEach((r) => { const id = rowId(r); if (id) byId.set(String(id), r); });
+
   const groups = new Map();
   const unkeyed = [];
-  (list || []).forEach((row) => {
-    const key = chainKey(row);
+  rows.forEach((row) => {
+    const root = chainRoot(row, byId);
+    const rootId = rowId(root);
+    const key = chainKey(root)
+      || (rootId ? `chain:${String(rootId)}` : chainKey(row));
     if (!key) { unkeyed.push(row); return; }
     groups.set(key, (groups.get(key) || []).concat(row));
   });
   const out = [];
-  groups.forEach((rows) => {
-    const head = chainHead(rows);
+  groups.forEach((group) => {
+    const head = chainHead(group);
     if (head) out.push(head);
   });
   return [...out, ...unkeyed];

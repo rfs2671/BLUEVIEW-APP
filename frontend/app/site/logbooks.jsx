@@ -1669,6 +1669,65 @@ export default function SiteLogbooksViewer() {
     );
   };
 
+  /**
+   * THE MARKER THIS SCREEN HAD NONE OF.
+   *
+   * Before this, `is_amendment`, `AMENDED` and `amendmentReason` appeared ZERO
+   * times in this file, and the endpoint returned every link of a chain. So an
+   * inspector saw the original and its correction as two identical-looking
+   * filed records — same type, same date, same SUBMITTED pill — with nothing
+   * anywhere saying which one is the record. 26 (project, date, log_type)
+   * groups in production are in that state.
+   *
+   * THE COLLAPSE IS THE SERVER'S AND SO IS THE SENTENCE. This screen reads
+   * three fields off the row and draws them; it does not re-derive which link
+   * is current, because a second supersession rule on the device is how the
+   * tablet and the PDF come to disagree about one record. `amendment_sentence`
+   * is `amendment_sentence(amendment_state(head))` — who amended it, when, and
+   * the reason they gave, every value off the document and none off the clock.
+   *
+   * SILENT ON AN UNAMENDED RECORD, which is almost every row. And silent on a
+   * tablet holding a day cached before this shipped: the fields are simply
+   * absent, the card renders exactly as it does today, and the next completed
+   * sync replaces the day.
+   */
+  const AmendmentMarker = ({ log }) => {
+    const sentence = String((log && log.amendment_sentence) || '').trim();
+    const chainLength = Number((log && log._chain_length) || 0);
+    const competing = (log && log._competing_records) || [];
+    if (!sentence && chainLength < 2 && competing.length === 0) return null;
+    const many = competing.length > 1;
+    return (
+      <View style={s.amendedCard}>
+        <View style={s.amendedHead}>
+          <AlertTriangle size={16} strokeWidth={1.8} color={semantic.attention} />
+          <Text style={s.amendedTitle}>
+            {competing.length > 0
+              ? 'Amended record — corrections compete'
+              : 'Amended record'}
+          </Text>
+        </View>
+        {!!sentence && <Text style={s.amendedText}>{sentence}</Text>}
+        {chainLength > 1 && (
+          <Text style={s.amendedText}>
+            {`This record is made of ${chainLength} documents. This is the current `
+             + (chainLength === 2
+               ? 'one; the one it replaces is not listed separately.'
+               : `one; the ${chainLength - 1} it replaces are not listed separately.`)}
+          </Text>
+        )}
+        {competing.length > 0 && (
+          <Text style={s.amendedText}>
+            {`${many ? `${competing.length} further corrections were` : 'A further correction was'} `
+             + `filed against the same record and ${many ? 'are' : 'is'} not answered by this one. `
+             + `Nothing decides between them: ask for ${many ? 'them' : 'it'} by record id `
+             + `— ${competing.map((c) => c && c.id).filter(Boolean).join(', ')}.`}
+          </Text>
+        )}
+      </View>
+    );
+  };
+
   const renderLogContent = (log) => {
     if (log.log_type === 'daily_jobsite') return renderDailyJobsite(log);
     if (log.log_type === 'toolbox_talk') return renderToolboxTalk(log);
@@ -1920,6 +1979,11 @@ export default function SiteLogbooksViewer() {
                             </View>
                           </View>
 
+                          {/* WHICH RECORD THIS IS, BEFORE ITS CONTENTS. An
+                              inspector must know he is reading the current
+                              version before he reads a single field of it. */}
+                          <AmendmentMarker log={log} />
+
                           {/* Full Document Content */}
                           {renderLogContent(log)}
 
@@ -2046,6 +2110,19 @@ function buildStyles(colors, isDark) {
 
   // Log card — full document style
   logCard: { marginTop: spacing.sm, marginBottom: spacing.md, padding: spacing.md },
+
+  // The amended-record marker. Same attention colour as the "not saved on this
+  // tablet" card above — both say "read the rest of this in a particular
+  // light", which is not the same as an error and must not read as one.
+  amendedCard: {
+    marginBottom: spacing.md, padding: spacing.md, gap: spacing.xs,
+    borderRadius: borderRadius.md,
+    borderWidth: 1, borderColor: withAlpha(semantic.attention, 0.4),
+    backgroundColor: withAlpha(semantic.attention, 0.1),
+  },
+  amendedHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  amendedTitle: { flex: 1, fontSize: 15, fontWeight: '700', color: semantic.attention },
+  amendedText: { fontSize: 14, lineHeight: 20, color: colors.text.secondary },
 
   // Document header
   docHeader: {

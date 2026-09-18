@@ -283,6 +283,18 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
     It is placed here rather than declared as a section because it is not about
     this log type. It is the same statement on every document in the product,
     and a section would mean thirteen schemas each remembering to ask for it.
+
+    ── ctx["superseded_html"] SITS BETWEEN THEM ─────────────────────────
+
+    THE THREE READ IN ORDER OF WHAT THEY DENY. `filing_state` denies that the
+    document is filed at all. `superseded_html` denies that it is the CURRENT
+    record. `amendment_html` says this record was itself a correction. A reader
+    must learn that the sheet in his hand has been replaced before he reads its
+    own audit trail -- and the two are not alternatives: a middle link of a
+    4-deep chain is an amendment AND superseded, and carries both.
+
+    Composed by the caller for the same reason the banner is -- it reads CHILD
+    documents this engine never sees, and `render` cannot await.
     """
     decl = SCHEMAS.get(log_type)
     if not decl:
@@ -357,6 +369,7 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         f'<div class="contfooter">{foot}</div>'
         + _head(ctx, decl)
         + (filing_state(*ctx["filing_state"]) if ctx.get("filing_state") else "")
+        + str(ctx.get("superseded_html") or "")
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + appended_photographs(ctx.get("appended_photographs") or [])
