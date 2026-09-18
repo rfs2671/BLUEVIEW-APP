@@ -241,10 +241,24 @@ class TheServerWiresItIn(unittest.TestCase):
         self.assertIn("return []", block)
 
     def test_it_costs_nothing_on_a_project_without_the_type(self):
+        """THE GUARD NOW NAMES TWO TYPES, and it used to name one.
+
+        `_logbook_periods` returned [] unless `toolbox_talk` was required.
+        `subcontractor_orientation` is as_needed and now has a row on the same
+        channel, so the early exit is the pair -- but the property this test
+        has always held to is unchanged: a project that requires neither pays
+        for no query, and each type's reads sit behind its own membership
+        test so requiring one never pays for the other."""
         block = self.src[self.src.index("async def _logbook_periods"):]
         block = block[:block.index("async def _toolbox_period_rows")]
-        guard = block.index('if "toolbox_talk" not in (required or []):')
+        guard = block.index(
+            'if "toolbox_talk" not in req and '
+            '"subcontractor_orientation" not in req:')
         self.assertLess(guard, block.index("_toolbox_period_rows(project_id"))
+        self.assertLess(guard, block.index("_orientation_period_rows(project_id"))
+        # The toolbox reads still happen ONLY for a project that requires it.
+        self.assertLess(block.index('if "toolbox_talk" in req:'),
+                        block.index("_toolbox_period_rows(project_id"))
 
 
 if __name__ == "__main__":

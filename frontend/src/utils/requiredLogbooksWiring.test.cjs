@@ -23,6 +23,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const FRONTEND = path.join(__dirname, '..', '..');
 const SCREEN_RAW = fs.readFileSync(
@@ -56,11 +57,19 @@ function slice(src, start, end) {
 const FALLBACK_SRC = slice(SCREEN_RAW, 'const FALLBACK_LOG_TYPES = [', '\n];');
 const FN_SRC = slice(SCREEN_RAW, '  const getVisibleLogTypes = () => {', '\n  };');
 
-/** Build the function with the component's closure supplied as data. */
+/** Build the function with the component's closure supplied as data.
+ *
+ * `periods` and `periodSatisfied` are the REAL ones — the payload key and the
+ * shared helper the screen imports — so this cannot pass on a stub that
+ * answers differently from the module in production. */
+// logbookCadence.js is ESM and imports nothing, so esmHarness loads the
+// SHIPPED module — not a copy of its rule kept in step by eye.
+const { logbookPeriods, periodSatisfied } = loadEsm('src/utils/logbookCadence.js');
+
 function build({ requiredLogbooks = null, logTypeCatalog = null,
   scaffoldActive = false, toolboxDoneThisWeek = false, notifications = {} } = {}) {
   // eslint-disable-next-line no-new-func
-  return new Function('env', `
+  return new Function('env', 'periodSatisfied', `
     const semantic = { neutral: '#94a3b8' };
     ${FALLBACK_SRC}
     const requiredLogbooks = env.requiredLogbooks;
@@ -68,9 +77,11 @@ function build({ requiredLogbooks = null, logTypeCatalog = null,
     const scaffoldActive = env.scaffoldActive;
     const toolboxDoneThisWeek = env.toolboxDoneThisWeek;
     const notifications = env.notifications;
+    const periods = env.periods;
     ${FN_SRC}
     return getVisibleLogTypes();
-  `)({ requiredLogbooks, logTypeCatalog, scaffoldActive, toolboxDoneThisWeek, notifications });
+  `)({ requiredLogbooks, logTypeCatalog, scaffoldActive, toolboxDoneThisWeek,
+    notifications, periods: logbookPeriods(requiredLogbooks) }, periodSatisfied);
 }
 
 // STANDS IN FOR WHAT /api/logbook-types SERVES, so it has to say what the
@@ -80,19 +91,26 @@ function build({ requiredLogbooks = null, logTypeCatalog = null,
 // gets learned. preshift_signin said "Pre-Shift Safety Meeting" until #259
 // moved the registry onto the name the filed document and the worker's gate
 // affirmation both use.
+//
+// IT CARRIES `frequency` NOW, and that is not decoration. The catalog wins
+// over FALLBACK_LOG_TYPES in getVisibleLogTypes' byKey merge, so a stand-in
+// without the field would have given every type `undefined` here while the
+// real server sends the registry's word — and the as-needed rule below would
+// have been tested against a shape the app never sees. The frequencies are
+// checked against LOGBOOK_TYPE_REGISTRY at the foot of this file.
 const CATALOG = [
-  { key: 'daily_jobsite', label: 'Daily Jobsite Log' },
-  { key: 'preshift_signin', label: 'Pre-Shift Sign-In' },
-  { key: 'toolbox_talk', label: 'Tool Box Talk' },
-  { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation' },
-  { key: 'osha_log', label: 'OSHA Log Book' },
-  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log' },
-  { key: 'ssc_daily_safety_log', label: 'SSC/SSM Daily Safety Log' },
-  { key: 'hot_work', label: 'Hot Work Permit Log' },
-  { key: 'concrete_operations', label: 'Concrete Operations Log' },
-  { key: 'crane_operations', label: 'Crane Operations Log' },
-  { key: 'excavation_monitoring', label: 'Excavation Monitoring Log' },
-  { key: 'fall_protection', label: 'Fall Protection Equipment Log' },
+  { key: 'daily_jobsite', label: 'Daily Jobsite Log', frequency: 'daily' },
+  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', frequency: 'daily' },
+  { key: 'toolbox_talk', label: 'Tool Box Talk', frequency: 'weekly' },
+  { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', frequency: 'as_needed' },
+  { key: 'osha_log', label: 'OSHA Log Book', frequency: 'daily' },
+  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', frequency: 'daily' },
+  { key: 'ssc_daily_safety_log', label: 'SSC/SSM Daily Safety Log', frequency: 'daily' },
+  { key: 'hot_work', label: 'Hot Work Permit Log', frequency: 'as_needed' },
+  { key: 'concrete_operations', label: 'Concrete Operations Log', frequency: 'daily' },
+  { key: 'crane_operations', label: 'Crane Operations Log', frequency: 'daily' },
+  { key: 'excavation_monitoring', label: 'Excavation Monitoring Log', frequency: 'daily' },
+  { key: 'fall_protection', label: 'Fall Protection Equipment Log', frequency: 'daily' },
 ];
 const keysOf = (rows) => rows.map((r) => r.key);
 
@@ -105,9 +123,130 @@ console.log('\n-- the server decides, and the screen renders that answer --');
     logTypeCatalog: CATALOG,
   });
   ok(JSON.stringify(keysOf(rows)) === JSON.stringify(required),
-    'exactly the required set, in the server’s order');
+    'exactly the required set, in the server’s order, when the server has said '
+    + 'nothing about any of them being satisfied');
   ok(rows.every((r) => r.label && !/^[a-z_]+$/.test(r.label)),
     'every row carries a real label, not a raw key');
+}
+
+console.log('\n-- REQUIRED IS NOT DUE: a satisfied as-needed log leaves the list --');
+// ── THIS BLOCK USED TO ASSERT THE DEFECT ───────────────────────────────────
+//
+// The assertion above said "exactly the required set" FULL STOP, with no
+// `periods` in play, and that was read as the rule. It is not the rule, and
+// holding it as one is what kept a broken tile on three CPs' screens:
+//
+//   `subcontractor_orientation` is `frequency: as_needed`. It is required on
+//   every project — get_required_logbooks resolves it for every §3310 class
+//   and is RIGHT to — but it is DUE for exactly one reason: a worker checked
+//   in and has no orientation on this project. The tile asked
+//   `todayLogs[type]`, a by-DATE read, so it answered Pending every morning.
+//
+//   MEASURED READ-ONLY ON ALL THREE LIVE PROJECTS: 8 Walworth 0 workers / 0
+//   orientations, 588 Thomas 63 checked in / 65 oriented, 857 Prescott 13/13.
+//   Nobody anywhere was waiting for an orientation, and every CP saw a
+//   permanently-Pending tile inside a count that read 4/6.
+//
+// The old assertion could not tell "the screen renders the server's set" from
+// "the screen renders the server's set and ignores everything else the server
+// says about it". It now carries the condition it was always implicitly
+// making — no periods, no opinion — and the rule proper is below.
+{
+  const required = ['daily_jobsite', 'preshift_signin', 'osha_log',
+    'toolbox_talk', 'subcontractor_orientation'];
+  const payload = {
+    required_logbooks: required,
+    classification_assessed: true,
+    periods: [
+      { log_type: 'subcontractor_orientation', frequency: 'as_needed',
+        satisfied: true, due_reason: null, uncovered_workers: [],
+        uncovered_worker_count: 0 },
+    ],
+  };
+  const rows = build({ requiredLogbooks: payload, logTypeCatalog: CATALOG });
+  ok(!keysOf(rows).includes('subcontractor_orientation'),
+    'a satisfied as-needed log is not on today’s list');
+  ok(keysOf(rows).length === required.length - 1,
+    'and it leaves the DENOMINATOR with it — the count is derived from this '
+    + 'same list, so 6 becomes 5 with no second edit');
+  ok(JSON.stringify(keysOf(rows))
+     === JSON.stringify(required.filter((k) => k !== 'subcontractor_orientation')),
+    'nothing else moves, and the server’s order is kept');
+}
+{
+  // THE OTHER HALF, and it is the half that matters more. A missing
+  // obligation on a compliance screen is invisible in the way an extra one is
+  // not, so a DUE as-needed log must stay exactly where it was.
+  const payload = {
+    required_logbooks: ['daily_jobsite', 'subcontractor_orientation'],
+    classification_assessed: true,
+    periods: [
+      { log_type: 'subcontractor_orientation', frequency: 'as_needed',
+        satisfied: false, due_reason: 'WORKER_NOT_ORIENTED',
+        uncovered_workers: ['Andre Duval'], uncovered_worker_count: 1 },
+    ],
+  };
+  ok(keysOf(build({ requiredLogbooks: payload, logTypeCatalog: CATALOG }))
+    .includes('subcontractor_orientation'),
+    'a DUE as-needed log stays on the list');
+}
+{
+  // AN OLDER SERVER SENDS NO `periods` AT ALL. periodSatisfied answers null,
+  // which is not `true`, so nothing is hidden — the same fail-open the
+  // cadence module is built around.
+  const rows = build({
+    requiredLogbooks: {
+      required_logbooks: ['daily_jobsite', 'subcontractor_orientation'],
+      classification_assessed: true,
+    },
+    logTypeCatalog: CATALOG,
+  });
+  ok(keysOf(rows).includes('subcontractor_orientation'),
+    'no periods key hides nothing');
+}
+{
+  // ── HOT WORK IS UNTOUCHED, AND THIS IS THE ASSERTION THAT KEEPS IT SO ────
+  //
+  // `hot_work` is as_needed too and has the identical defect on 8 Walworth,
+  // where the toggle is on. NOBODY HAS DEFINED WHEN A HOT-WORK PERMIT LOG IS
+  // DUE, so no server rule emits a period row for it and this change does not
+  // invent one. The predicate keys on the FREQUENCY, so the only thing between
+  // hot_work and being silently hidden is that silence — asserted here rather
+  // than left to be discovered.
+  //
+  // It needs the operator's ruling. Until then: same tile, same denominator.
+  const rows = build({
+    requiredLogbooks: {
+      required_logbooks: ['daily_jobsite', 'hot_work'],
+      classification_assessed: true,
+      periods: [
+        { log_type: 'subcontractor_orientation', frequency: 'as_needed',
+          satisfied: true },
+      ],
+    },
+    logTypeCatalog: CATALOG,
+  });
+  ok(keysOf(rows).includes('hot_work'),
+    'hot_work is still on the list — no row is emitted for it, and a type the '
+    + 'server has said nothing about is never hidden');
+}
+{
+  // A satisfied WEEKLY log keeps its tile. cadenceStatus paints it
+  // "This week" and the denominator already drops it; hiding it would take
+  // away the door a CP files next week's talk through.
+  const rows = build({
+    requiredLogbooks: {
+      required_logbooks: ['daily_jobsite', 'toolbox_talk'],
+      classification_assessed: true,
+      periods: [
+        { log_type: 'toolbox_talk', frequency: 'weekly', satisfied: true,
+          filed_on: ['2026-09-15'] },
+      ],
+    },
+    logTypeCatalog: CATALOG,
+  });
+  ok(keysOf(rows).includes('toolbox_talk'),
+    'the predicate is as-needed ONLY — a done weekly log keeps its tile');
 }
 {
   // The whole point of the change: a toggled-on conditional form reaches him.
@@ -399,6 +538,30 @@ ok(SCREEN.includes('stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [],
   const keys = [...reg.slice(0, reg.indexOf('\n]')).matchAll(/^\s*"key": "([a-z_]+)"/gm)]
     .map((m) => m[1]);
   ok(keys.length === 13, `ANCHOR: 13 registry keys read from server.py (${keys.length})`);
+
+  // ── AND THE STAND-IN'S FREQUENCIES ARE THE REGISTRY'S ────────────────────
+  //
+  // The CATALOG above stands in for /api/logbook-types. The file's own note
+  // says a stale LABEL there fails no test and is only ever read by the next
+  // person; `frequency` is worse than a label now, because the screen DECIDES
+  // on it — a satisfied as-needed type leaves the list. A stand-in that said
+  // "daily" where the registry says "as_needed" would test the opposite rule
+  // and pass.
+  const regBody = reg.slice(0, reg.indexOf('\n]'));
+  const entries = [...regBody.matchAll(
+    /^\s*"key": "([a-z_]+)",[\s\S]*?^\s*"frequency": "([a-z_]+)",/gm)];
+  ok(entries.length === 13,
+    `ANCHOR: a frequency read for each of 13 registry entries (${entries.length})`);
+  const serverFreq = Object.fromEntries(entries.map((m) => [m[1], m[2]]));
+  const drift = CATALOG.filter((c) => serverFreq[c.key]
+    && serverFreq[c.key] !== c.frequency);
+  ok(drift.length === 0,
+    'every stand-in frequency matches LOGBOOK_TYPE_REGISTRY. Drifted: '
+    + JSON.stringify(drift.map((c) => `${c.key}: ${c.frequency} vs ${serverFreq[c.key]}`)));
+  ok(serverFreq.subcontractor_orientation === 'as_needed'
+     && serverFreq.hot_work === 'as_needed',
+    'the two as-needed types are still as-needed on the server — the rule '
+    + 'above keys on this word and on nothing else');
 
   const screens = new Set(fs.readdirSync(path.join(FRONTEND, 'app', 'logbooks'))
     .filter((f) => f.endsWith('.jsx'))
