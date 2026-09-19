@@ -49095,6 +49095,30 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "check_drawing_set",
+            "description": (
+                "Report what does not line up ACROSS the whole drawing set, "
+                "rather than answering about one thing. Today it reports sheets "
+                "the drawings REFERENCE that are not in the indexed set. Use it "
+                "for 'what's missing from the drawings', 'are any sheets "
+                "referenced that we don't have', 'is anything wrong with the "
+                "set', or before a mobilisation walkthrough. Takes no subject: "
+                "it reads the whole project. "
+                "SAY 'referenced but not in the indexed set', NEVER 'missing' — "
+                "a sheet may never have been issued, or may simply not have been "
+                "uploaded, and this cannot tell those apart. If it returns "
+                "nothing, say that every referenced sheet is present."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_plans",
             "description": (
                 "Search what the project's drawings actually SAY and get back the "
@@ -50224,7 +50248,8 @@ async def _run_group_agent(
             continue
         # search_plans rides the same flag as query_plan: both read the plan
         # index, and a group that has plan questions turned off has both off.
-        if name in ("query_plan", "search_plans") and not features.get("plan_queries", False):
+        if (name in ("query_plan", "search_plans", "check_drawing_set")
+                and not features.get("plan_queries", False)):
             continue
         enabled_tools.append(t)
 
@@ -50431,6 +50456,22 @@ async def _dispatch_agent_tool(
     that checks the composed answer needs the evidence, not the prose the model
     was shown. A tool that returns only a string cannot be checked against."""
     try:
+        if name == "check_drawing_set":
+            rows = await referenced_sheets_not_in_set(project_id)
+            logger.info(f"check_drawing_set: {len(rows)} referenced sheet(s) "
+                        f"not in the set")
+            if not rows:
+                return ("Every sheet the drawings reference is in the indexed "
+                        "set.")
+            lines = [f"{len(rows)} referenced sheet(s) are NOT in the indexed "
+                     f"set (they may not have been issued, or may not have "
+                     f"been uploaded — this cannot tell which):"]
+            for r in rows:
+                by = ", ".join(r["referenced_by"][:8])
+                more = ("" if len(r["referenced_by"]) <= 8
+                        else f" and {len(r['referenced_by']) - 8} more")
+                lines.append(f"- {r['target_sheet']}: referenced by {by}{more}")
+            return "\n".join(lines)
         if name == "search_plans":
             subject = (args.get("subject") or user_body or "").strip()
             found = await search_plans(
@@ -53768,6 +53809,46 @@ async def retry_plan_index_job(project_id: str, file_id: str,
             "outcome": outcome, "file_name": rec.get("name")}
 
 
+async def referenced_sheets_not_in_set(project_id: str) -> List[dict]:
+    """Sheets the drawings point at that the indexed set does not contain.
+
+    ── THE FIRST SET-WIDE CHECK ───────────────────────────────────────────
+    #
+    # Everything else the reader does answers a question about one subject.
+    # This compares records ACROSS the set and is the shape the rest take:
+    # read the current pages, read their callouts, and report what does not
+    # line up — with nothing inferred that the records do not carry.
+    #
+    # ONE QUERY PER COLLECTION. Called from the Plans & Files status endpoint
+    # and from the agent's tool, so it stays cheap enough to run on a page
+    # load.
+    """
+    live = await _live_plan_file_ids(str(project_id))
+    live_set = set(live or [])
+    pages = await db.document_page_index.find(
+        {"project_id": str(project_id)},
+        {"sheet_number": 1, "file_id": 1, "superseded_by": 1},
+    ).to_list(5000)
+    current = {str(p["_id"]): p for p in pages
+               if p.get("file_id") in live_set
+               and p.get("superseded_by") not in live_set}
+    if not current:
+        return []
+    sheets = [p.get("sheet_number") for p in current.values()
+              if p.get("sheet_number")]
+    recs = await db[PLAN_RECORDS].find(
+        {"project_id": str(project_id), "record_type": "callout",
+         "page_id": {"$in": list(current)}},
+        {"payload": 1, "quote": 1, "page_id": 1},
+    ).to_list(4000)
+    callouts = [{"sheet_number": (current.get(str(r.get("page_id"))) or {}
+                                  ).get("sheet_number"),
+                 "quote": r.get("quote"),
+                 "payload": r.get("payload") or {}}
+                for r in recs]
+    return plan_search.referenced_sheets_missing(callouts, sheets)
+
+
 @api_router.get("/projects/{project_id}/document-index-status", dependencies=[Depends(require_project_access)])
 async def get_document_index_status(
     project_id: str,
@@ -53890,9 +53971,18 @@ async def get_document_index_status(
                 "updated_at")} if job else None),
         })
 
+    # The set-wide check rides along with the status the page already fetches,
+    # so Plans & Files can show it without a second round trip. A failure here
+    # costs the banner, never the file list.
+    try:
+        missing_refs = await referenced_sheets_not_in_set(project_id)
+    except Exception as e:
+        logger.warning(f"referenced-sheet check failed for {project_id}: {e!r}")
+        missing_refs = []
     return {
         "qwen_configured": bool(QWEN_API_KEY),
         "files": files_out,
+        "referenced_sheets_not_in_set": missing_refs,
     }
 
 

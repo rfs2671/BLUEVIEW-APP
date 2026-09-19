@@ -236,10 +236,26 @@ class TheGateIsWiredToWhatGetsSent(unittest.TestCase):
         self.assertIn("search_plans", names)
 
     def test_it_rides_the_same_feature_flag_as_the_other_plan_tool(self):
-        # Both read the plan index. A group that has turned plan questions off
-        # must not get one of them back through the other door.
+        # Every tool that reads the plan index rides one flag. A group that has
+        # turned plan questions off must not get any of them back through
+        # another door.
+        #
+        # ASSERTED AS A SET, NOT AS A LITERAL TUPLE. This pinned the exact
+        # string '("query_plan", "search_plans")', so adding a third plan tool
+        # -- check_drawing_set, the set-wide report -- failed the test for
+        # naming a new tool rather than for letting one past the flag. The
+        # intent is that they are ALL behind plan_queries; that is what is
+        # checked now.
         src = inspect.getsource(self.server._run_group_agent)
-        self.assertIn('("query_plan", "search_plans")', src)
+        plan_tools = {t["function"]["name"] for t in self.server._AGENT_TOOLS
+                      if t["function"]["name"] in
+                      ("query_plan", "search_plans", "check_drawing_set")}
+        self.assertGreaterEqual(len(plan_tools), 2, "plan tools not registered")
+        guard = src[src.index("plan_queries") - 400:src.index("plan_queries")]
+        for name in plan_tools:
+            self.assertIn(
+                f'"{name}"', guard,
+                f"{name} reads the plan index but is not behind plan_queries")
 
     def test_the_search_returns_records_rather_than_prose(self):
         src = inspect.getsource(self.server.search_plans)
