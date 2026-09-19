@@ -75,6 +75,16 @@ BASELINE = {
     # is_spec_page and sheet_title left this list on 2026-09-15: the
     # supersession pass and document-index-status stopped filtering on them.
     ("feature_flags", "flag"),
+    # Both written by `_set_hot_work_day`'s UPSERT FILTER, not by its $set:
+    # `update_one({"project_id": ..., "date": ...}, {...}, upsert=True)`, and
+    # Mongo copies a filter's equality fields into the document it inserts. The
+    # sweep reads $set / insert literals, so the writer is structurally
+    # invisible to it rather than absent. NOT HAND-AUDITED AND LEFT AT THAT:
+    # test_a_hot_work_day_is_a_date_not_a_flag.py asserts the upsert happens on
+    # exactly these two fields and that the row lands carrying both, so this
+    # note stops being true the moment the call site changes (2026-09-18).
+    ("hot_work_days", "date"),
+    ("hot_work_days", "project_id"),
     ("filing_jobs", "is_deleted"),
     ("filing_jobs", "permit_renewal_id"),
     ("notification_preferences", "project_id"),

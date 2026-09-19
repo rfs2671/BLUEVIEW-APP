@@ -604,21 +604,38 @@ DEMO_REQUIRED_LOGBOOKS = (
 #: carries a toggle, with this project's state of it. Stated and reconciled by a
 #: test for the same reason as the set above. The four False rows are the four
 #: tiles the demo does NOT show, and they are why the screen can explain itself.
+#:
+#: HOT WORK HAS TWO ROWS, because it carries two facts: the admin's standing
+#: permit statement and the CP's dated "hot work is happening today". The demo
+#: project has neither — `hot_work_permitted` is False above — so the day row
+#: is off AND unavailable, which is the state the screen explains with "an
+#: admin switches this one on". The demo does not declare a hot-work day: the
+#: dated row would then need a `hot_work_days` fiction and a period row to
+#: match it, and a demo that shows a hot-work tile on a site with no permit
+#: would be demonstrating the defect this pair was built to remove.
 DEMO_ACTIVATIONS = [
     {"log_type": "site_superintendent_log",
      "label": "Construction Superintendent Log",
      "field": "superintendent_log_active", "active": True,
-     "activated_by": "admin"},
+     "activated_by": "admin", "scope": "standing"},
     {"log_type": "scaffold_maintenance", "label": "Scaffold Maintenance Log",
-     "field": "scaffold_erected", "active": True, "activated_by": "cp"},
+     "field": "scaffold_erected", "active": True, "activated_by": "cp",
+     "scope": "standing"},
     {"log_type": "hot_work", "label": "Hot Work Permit Log",
-     "field": "hot_work_permitted", "active": False, "activated_by": "admin"},
+     "field": "hot_work_permitted", "active": False, "activated_by": "admin",
+     "scope": "standing"},
+    {"log_type": "hot_work", "label": "Hot Work Permit Log — today",
+     "field": "hot_work_days", "active": False, "activated_by": "cp",
+     "scope": "day", "available": False},
     {"log_type": "crane_operations", "label": "Crane Operations Log",
-     "field": "crane_on_site", "active": False, "activated_by": "cp"},
+     "field": "crane_on_site", "active": False, "activated_by": "cp",
+     "scope": "standing"},
     {"log_type": "excavation_monitoring", "label": "Excavation Monitoring Log",
-     "field": "excavation_active", "active": False, "activated_by": "cp"},
+     "field": "excavation_active", "active": False, "activated_by": "cp",
+     "scope": "standing"},
     {"log_type": "fall_protection", "label": "Fall Protection Equipment Log",
-     "field": "fall_protection_active", "active": False, "activated_by": "cp"},
+     "field": "fall_protection_active", "active": False, "activated_by": "cp",
+     "scope": "standing"},
 ]
 
 #: `_logbook_filing_rights`'s rows: who may file the one log whose filing is

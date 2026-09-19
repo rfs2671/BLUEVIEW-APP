@@ -43,10 +43,17 @@ It is NOT `unsigned_orientations`, which counts orientation LOGS that exist
 and are unsigned. A project can have zero of those and still owe an
 orientation to a man who has none.
 
-It is NOT a rule about `hot_work`. Hot work is as_needed too and reads Pending
-forever on 8 Walworth for the same shape of reason, but NO SERVER RULE DEFINES
-WHEN A HOT-WORK PERMIT LOG IS DUE and this change does not invent one. The
-last class here asserts that no row is emitted for it.
+It is NOT a rule about `hot_work`. Hot work is as_needed too and read Pending
+forever on 8 Walworth for the same shape of reason, but NO SERVER RULE DEFINED
+WHEN A HOT-WORK PERMIT LOG WAS DUE and this change did not invent one.
+
+THE OPERATOR HAS SINCE RULED ON HOT WORK -- "due only on days hot work
+happens... dated, not persistent" -- so it now has a rule of its own, in
+lib/logbook/hot_work_cadence.py and pinned by
+test_a_hot_work_day_is_a_date_not_a_flag.py. Nothing in the orientation rule
+moved for it; `HotWorkWasLeftAloneUntilItWasRuledOn` below records what this
+file used to assert about hot work, why it can no longer assert it, and where
+the property those assertions were really protecting is now pinned.
 """
 
 from __future__ import annotations
@@ -242,6 +249,17 @@ class _Coll:
     def find(self, query=None, projection=None):
         self.reads += 1
         return _Cursor([d for d in self.docs if _match(d, query or {})])
+
+    # THE HOT-WORK DECLARATION IS A KEYED READ, not a cursor. Without this the
+    # AttributeError would be swallowed by `_logbook_periods`' own try/except
+    # and the hot-work row would silently not be emitted -- the fixture, not
+    # the code, deciding the result of the assertion next door.
+    async def find_one(self, query=None, *a, **k):
+        self.reads += 1
+        for d in self.docs:
+            if _match(d, query or {}):
+                return copy.deepcopy(d)
+        return None
 
     async def distinct(self, field, query=None):
         self.reads += 1
@@ -451,22 +469,37 @@ class TheEndpointHelperAnswersIt(unittest.TestCase):
         self.assertEqual(row["uncovered_worker_count"], 2)
 
 
-class HotWorkIsLeftAlone(unittest.TestCase):
-    """`hot_work` HAS THE IDENTICAL DEFECT and is deliberately not fixed here.
+class HotWorkWasLeftAloneUntilItWasRuledOn(unittest.TestCase):
+    """`hot_work` HAD THE IDENTICAL DEFECT and was deliberately not fixed here.
 
-    It is `frequency: "as_needed"`, gated only by the `hot_work_permitted`
-    toggle, and 8 Walworth has that toggle on -- so its tile reads Pending
-    forever there, exactly as the orientation tile did.
+    ── WHAT THIS CLASS USED TO ASSERT, AND WHY IT NO LONGER CAN ────────────
 
-    NOBODY HAS DEFINED WHEN A HOT-WORK PERMIT LOG IS DUE. Inventing that rule
-    here would be this change asserting an obligation the operator has never
-    stated, which is the failure the orientation row goes out of its way to
-    avoid. It needs a ruling, and until then hot_work behaves EXACTLY as it did
-    before: a tile on the list and an entry in the denominator.
+    It asserted that NO PERIOD ROW IS EMITTED for `hot_work` -- from both
+    sides: none in a mixed set, and none plus zero reads on its own. The reason
+    given was that nobody had defined when a hot-work permit log is due, so
+    inventing one here would have been this change asserting an obligation the
+    operator had never stated.
 
-    The client predicate keys on `frequency === 'as_needed'`, so the only thing
-    standing between hot_work and being silently hidden is that no row is
-    emitted for it. That is asserted here rather than left to be noticed.
+    THE OPERATOR HAS NOW STATED IT:
+
+        "Hot work: due only on days hot work happens. CP or super toggles it
+         on for that day. Dated, not persistent."
+
+    So a row IS emitted, and the two assertions above are not weakened or
+    deleted -- they are replaced by their successors with the ruling recorded
+    as the reason. The rule is in lib/logbook/hot_work_cadence.py and the whole
+    of it is pinned by test_a_hot_work_day_is_a_date_not_a_flag.py.
+
+    ── AND THE PROPERTY THEY WERE REALLY PROTECTING IS UNTOUCHED ───────────
+
+    The client predicate keys on `frequency === 'as_needed'`, so a type the
+    server says nothing about must keep its tile. That was never a fact about
+    hot work; hot work was only its most visible instance. It is re-pinned
+    below on `fall_protection`, which is as_needed with no rule, and again in
+    `TheFailOpenPropertyIsUntouched` in the hot-work file.
+
+    HOT WORK STOPPED NEEDING THE SILENCE BY ACQUIRING A RULE. Nothing here
+    loosened.
     """
 
     def setUp(self):
@@ -481,21 +514,52 @@ class HotWorkIsLeftAlone(unittest.TestCase):
         S.db, S.to_query_id = self._orig_db, self._orig_tq
         self.loop.close()
 
-    def test_no_period_row_is_emitted_for_hot_work(self):
+    def test_a_period_row_IS_now_emitted_for_hot_work(self):
+        """The successor to `test_no_period_row_is_emitted_for_hot_work`.
+
+        `_DB` has no `hot_work_days` documents, so this is the ordinary day on
+        a permitted project: a row that says NOT DUE. That is the fix -- the
+        old silence left the tile on the by-date read, reading Pending.
+        """
         rows = self.loop.run_until_complete(S._logbook_periods(
             PROJECT, ["hot_work", "subcontractor_orientation"]))
         self.assertEqual([r["log_type"] for r in rows],
-                         ["subcontractor_orientation"])
+                         ["subcontractor_orientation", "hot_work"])
+        self.assertTrue(rows[1]["satisfied"])
 
-    def test_hot_work_alone_costs_nothing_and_says_nothing(self):
+    def test_hot_work_alone_costs_one_read_and_answers(self):
+        """The successor to `test_hot_work_alone_costs_nothing_and_says
+        _nothing`. It costs ONE find_one on (project_id, date) -- not the zero
+        it cost when it said nothing, and not a scan."""
         rows = self.loop.run_until_complete(
             S._logbook_periods(PROJECT, ["hot_work"]))
+        self.assertEqual([r["log_type"] for r in rows], ["hot_work"])
+        self.assertEqual(self.db.reads, 1)
+
+    def test_a_type_with_NO_rule_still_says_nothing(self):
+        """THE PROPERTY THE TWO RETIRED ASSERTIONS WERE PROTECTING.
+
+        A REQUIRED TYPE THIS FUNCTION HAS NEVER HEARD OF. Hot work and the
+        orientation are now the only two as-needed types in the registry and
+        both have rules, so the instance has to be a type that does not exist
+        yet -- which is exactly the case the property is for: the NEXT
+        as-needed type, added before anybody writes its rule.
+
+        No row, no reads. `periodSatisfied` answers null on the client, which
+        is not `true`, so the predicate never fires and the tile and its
+        denominator entry both survive.
+        """
+        rows = self.loop.run_until_complete(S._logbook_periods(
+            PROJECT, ["a_type_with_no_rule_yet", "daily_jobsite"]))
         self.assertEqual(rows, [])
         self.assertEqual(self.db.reads, 0)
 
     def test_it_is_still_unconditionally_required_when_the_toggle_is_on(self):
         """Nothing about the required SET changed for it, or for the
-        orientation. See the note in test_required_logbooks_model.py."""
+        orientation. `conditional` is still `hot_work_permitted` and it is
+        still the admin's: the ruling layered a DATED declaration on top of the
+        standing permit, it did not replace it. See the note in
+        test_required_logbooks_model.py."""
         got = set(S.get_required_logbooks("regular", {"hot_work_permitted": True}))
         self.assertIn("hot_work", got)
         self.assertIn("subcontractor_orientation", got)

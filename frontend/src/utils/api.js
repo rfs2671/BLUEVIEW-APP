@@ -1113,11 +1113,26 @@ export const logbookActivationAPI = {
    * and the endpoint enforces it, so hiding a control on the client is a
    * courtesy and never the guard. A CP who reaches the hot-work switch some
    * other way still gets a 403.
+   *
+   * `scope` names WHICH fact is being set, and the server owns both answers:
+   *
+   *   'standing'  the project condition — a scaffold is up, the site holds a
+   *               hot-work permit. Persistent. The default, and the only scope
+   *               most types have.
+   *   'day'       hot work is happening TODAY. One dated row, and the server
+   *               takes the date from its own clock rather than from here — a
+   *               date in this payload could declare a day whose log can no
+   *               longer be filed.
+   *
+   * THE PERMIT GATE IS ALSO THE SERVER'S. A 'day' request on a project with no
+   * standing hot-work permit comes back 400 HOT_WORK_DAY_REQUIRES_PERMIT, and
+   * that refusal is the rule — the greyed control on the screen is the
+   * courtesy, exactly as above.
    */
-  set: async (projectId, logType, active) => {
+  set: async (projectId, logType, active, scope) => {
     const response = await apiClient.put(
       `/api/logbooks/project/${projectId}/activation`,
-      { log_type: logType, active },
+      { log_type: logType, active, ...(scope ? { scope } : {}) },
     );
     return response.data;
   },

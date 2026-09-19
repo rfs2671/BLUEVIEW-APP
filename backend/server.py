@@ -2660,7 +2660,7 @@ def classification_assessed(project) -> bool:
     return str((project or {}).get("project_class") or "") in VALID_PROJECT_CLASSES
 
 
-def logbook_activations(project=None) -> list:
+def logbook_activations(project=None, declared_today=None) -> list:
     """Every log that has to be SWITCHED ON, and whether it currently is.
 
     One entry per registry type carrying a `conditional`, so the screen renders
@@ -2670,20 +2670,68 @@ def logbook_activations(project=None) -> list:
     `activated_by` rides along because the answer differs per log and the
     client must not guess it: three of these are site conditions the CP can
     see, and hot work rests on an FDNY permit the admin holds.
+
+    ── TWO ROWS FOR HOT WORK, BECAUSE THEY ARE TWO FACTS ───────────────────
+
+    A type carrying `dated_activation` gets a SECOND row beside its standing
+    one, and the two say different things:
+
+      scope "standing"   this site may do hot work — the admin's permit
+                         statement, the registry `conditional`, persistent
+      scope "day"        hot work is happening TODAY — the CP's or the
+                         superintendent's declaration, one date, expires
+
+    ONE ROW WOULD HAVE HAD TO LIE. Its `active` can only carry one of those
+    booleans, its `activated_by` only one of those owners, and its OFF copy
+    only one of those sentences — and merging them is how "permitted" came to
+    mean "due", which is the defect this pair exists to end. It also keeps the
+    admin's standing switch reachable: a single row that became the CP's day
+    control the moment the permit went on would leave nobody able to take the
+    permit back off.
+
+    `declared_today` is {log_type: bool} for the dated rows, supplied by the
+    caller. This function does no I/O — same reason the rules are pure — so a
+    caller that cannot answer gets `active: False` on the day row, which reads
+    as "not declared" and is the safe direction: it offers the control rather
+    than claiming a declaration nobody made.
     """
     proj = project or {}
+    declared = declared_today or {}
     out = []
     for entry in LOGBOOK_TYPE_REGISTRY:
         field = entry.get("conditional")
         if not field:
             continue
+        standing = bool(proj.get(field))
         out.append({
             "log_type": entry["key"],
             "label": entry.get("label") or entry["key"],
             "field": field,
-            "active": bool(proj.get(field)),
+            "active": standing,
             "activated_by": entry.get("activated_by") or "cp",
+            # NAMED ON EVERY ROW, not only the dated ones. The client keys its
+            # request on this, and a row whose scope is absent would have to be
+            # defaulted client-side — a second model of which types are dated,
+            # living where the registry cannot correct it.
+            "scope": "standing",
         })
+        if entry.get("dated_activation"):
+            out.append({
+                "log_type": entry["key"],
+                # A DIFFERENT SENTENCE, because it is a different fact. "Hot
+                # Work Permit Log" is the document; this row is not about the
+                # document, it is about whether today is a day it is owed.
+                "label": f"{entry.get('label') or entry['key']} — today",
+                "field": entry["dated_activation"],
+                "active": bool(declared.get(entry["key"])),
+                "activated_by": entry.get("dated_activated_by") or "cp",
+                "scope": "day",
+                # NO PERMIT, NO DAY — and this is the courtesy, not the guard.
+                # `set_logbook_activation` refuses the declaration outright
+                # when the standing field is off; this only lets the screen say
+                # so instead of offering a control that will 400.
+                "available": standing,
+            })
     return out
 
 
@@ -5902,7 +5950,56 @@ LOGBOOK_TYPE_REGISTRY = [
         # This one rests on an FDNY permit and a certificate of fitness — paper
         # the admin holds and the app has never seen. Filling the log is the
         # CP's act; declaring the work permitted is not.
+        #
+        # ── AND THAT ARGUMENT IS CONFIRMED, NOT SUPERSEDED ─────────────────
+        #
+        # The operator has since ruled on a DIFFERENT question — not who may
+        # say the site is permitted, but who may say hot work HAPPENED TODAY:
+        #
+        #     "Hot work: due only on days hot work happens. CP or super
+        #      toggles it on for that day. Dated, not persistent."
+        #
+        #     "hot_work_permitted stays as the admin's standing permit
+        #      statement. The dated toggle is the CP/super declaring hot work
+        #      happened that day, and it's only available on a project where
+        #      the standing field is on. No permit, no day."
+        #
+        # So this entry now carries TWO owners for TWO facts, and they are not
+        # the same fact stored twice:
+        #
+        #   `conditional` + `activated_by`   THIS SITE MAY DO HOT WORK.
+        #       Standing, the admin's, and still what decides whether the type
+        #       is in the required set at all. Unchanged above.
+        #   `dated_activation` + `dated_activated_by`   HOT WORK IS HAPPENING
+        #       ON THIS DAY. One row per (project, date) in `hot_work_days`,
+        #       declared by whoever is on the project.
+        #
+        # WHAT THE APP NOW TAKES ON TRUST, stated because the next reader must
+        # not think it was overlooked: it takes the CP's word that hot work is
+        # happening today. It does NOT take his word that the site may do hot
+        # work — the FDNY permit and the certificate of fitness remain the
+        # admin's business, held on paper outside this app, and the endpoint
+        # refuses a dated declaration on a project where he has not said so.
+        #
+        # WHY DATED AND NOT A SECOND BOOLEAN. A CP-settable persistent flag
+        # would reproduce the exact defect being fixed here: left on, the tile
+        # reads Pending forever, which is what `hot_work_permitted` alone did
+        # on 8 Walworth. A date expires by itself.
         "activated_by": "admin",
+        #: The collection the dated declaration lives in. Its PRESENCE is what
+        #: `set_logbook_activation` branches on, so a second dated type needs
+        #: no change there — the same reason `conditional` is a field name and
+        #: not a hardcoded list of four log types.
+        "dated_activation": "hot_work_days",
+        # "cp", AND THAT ADMITS THE SUPERINTENDENT. It is not a role-string
+        # gate: `role == "superintendent"` is held by NOBODY in production and
+        # the registered CS on the one live project holds `cp`, so a role test
+        # would refuse the very man who has to declare the day. Like the three
+        # site-condition toggles, "cp" means the endpoint's own project-access
+        # gate is the gate — whoever is on this project may say what is
+        # happening on it. See `_refuse_if_not_the_superintendent`, which
+        # declines to be a role check for the same measured reason.
+        "dated_activated_by": "cp",
     },
     {
         "key": "concrete_operations",
@@ -16148,7 +16245,7 @@ async def _logbook_periods(project_id, required, on_date=None) -> list:
     reasoning that counting them "invents a deficiency out of a frequency". The
     screen had no equivalent, so this returns one.
 
-    ── TWO TYPES, AND THE SECOND NEEDED NO NEW PAYLOAD ─────────────────────
+    ── THREE TYPES, AND NEITHER AS-NEEDED ONE NEEDED NEW PAYLOAD ───────────
 
     Only `toolbox_talk` is weekly. `subcontractor_orientation` is as_needed,
     and this function USED TO REFUSE IT on the reasoning that "inventing a
@@ -16165,16 +16262,33 @@ async def _logbook_periods(project_id, required, on_date=None) -> list:
     LOGS that are not yet signed, which is a different deficiency about
     documents that exist.
 
-    ── COSTS NOTHING ON A PROJECT WITHOUT EITHER TYPE ──────────────────────
+    `hot_work` is the third, and it USED TO BE REFUSED HERE TOO — for the same
+    reason and with the same consequence. It is as_needed, 8 Walworth has its
+    standing toggle on, and its tile read Pending on that project every morning
+    forever. Nobody had defined when a hot-work permit log is due; the operator
+    now has: "due only on days hot work happens... dated, not persistent". A
+    hot-work row therefore asserts a DAY, which the orientation row refuses to
+    do, and the difference is that this one was ruled on — see
+    lib/logbook/hot_work_cadence.py.
 
-    Returns [] before any query when the required set has neither. Each type's
-    reads are behind its own membership test, so a project that requires one
-    never pays for the other.
+    ── AND THE SILENCE IS STILL THE RULE FOR EVERYTHING ELSE ───────────────
+
+    A fourth as-needed type added to the registry with no rule gets NO ROW
+    here, so `periodSatisfied` answers null on the client, which is not `true`,
+    so its tile and its denominator entry survive. Hot work stopped being
+    protected by that silence by acquiring a rule, not by anything here
+    weakening.
+
+    ── COSTS NOTHING ON A PROJECT WITHOUT ANY OF THEM ──────────────────────
+
+    Returns [] before any query when the required set has none of the three.
+    Each type's reads are behind its own membership test, so a project that
+    requires one never pays for the others.
     """
     from lib.logbook.weekly_cadence import toolbox_period, week_span
 
     req = required or []
-    if "toolbox_talk" not in req and "subcontractor_orientation" not in req:
+    if not ({"toolbox_talk", "subcontractor_orientation", "hot_work"} & set(req)):
         return []
     rows = []
 
@@ -16209,6 +16323,23 @@ async def _logbook_periods(project_id, required, on_date=None) -> list:
             # compliance screen is invisible in the way an extra one is not.
             logger.warning(
                 f"[periods] could not resolve orientation coverage for "
+                f"project={project_id}: {e!r}")
+
+    if "hot_work" in req:
+        try:
+            rows.extend(await _hot_work_period_rows(
+                project_id, on_date or eastern_today()))
+        except Exception as e:  # pragma: no cover — defensive
+            # Same isolation, same direction. NOTE WHICH WAY THIS ONE FAILS:
+            # no row means the client keeps its by-date answer, so the tile
+            # comes back as Pending on a day nobody declared. That is the
+            # defect this change fixes, and it is still the right way to fail
+            # -- an extra obligation on a compliance screen is visible in the
+            # way a missing one is not, and a CP who sees a hot-work tile on a
+            # day with no welding can ignore it. The reverse could hide the
+            # log on a day somebody was cutting steel.
+            logger.warning(
+                f"[periods] could not resolve the hot-work day for "
                 f"project={project_id}: {e!r}")
 
     return rows
@@ -16350,6 +16481,101 @@ async def _orientation_period_rows(project_id) -> list:
     return [orientation_period(checked_in, by_logbook, by_worker_doc, names)]
 
 
+async def _hot_work_declaration(project_id, day):
+    """The ACTIVE hot-work declaration for one project on one day, or None.
+
+    ONE PLACE, because three callers ask it and they must not disagree: the
+    period row that decides whether the tile is up, the required-logbooks
+    handler that decides how the toggle renders, and the setter that decides
+    whether a tap is switching on or off.
+
+    `active: True` IS PART OF THE QUERY, not filtered afterwards. Switching a
+    day back off leaves the row in place with `active: False` -- see
+    `_set_hot_work_day` for why the row is kept -- and a read that found it and
+    then had to remember to look at the flag is a read that will eventually
+    forget.
+    """
+    return await db.hot_work_days.find_one({
+        "project_id": str(project_id),
+        "date": str(day),
+        "active": True,
+        "is_deleted": {"$ne": True},
+    })
+
+
+async def _hot_work_declared_today(project_id, project=None) -> dict:
+    """{log_type: bool} for the dated activation rows, for today.
+
+    WHAT THE TOGGLE SHOWS, which is a different read from what the TILE shows:
+    the period row above is computed for the day being displayed, and this is
+    always about today, because the control declares today and nothing else.
+
+    COSTS NOTHING WHERE THE PERMIT IS OFF. The declaration cannot exist there
+    -- `_set_hot_work_day` refuses to create one -- so the read is skipped and
+    the row renders as off-and-unavailable, which is what the screen needs to
+    say anyway.
+    """
+    out = {}
+    for entry in LOGBOOK_TYPE_REGISTRY:
+        # OFF THE REGISTRY, not off the name `hot_work`. Only one type is dated
+        # today and a test pins that as an anchor; writing the name in here
+        # would make the second one silently render as never-declared.
+        if not entry.get("dated_activation"):
+            continue
+        if not (project or {}).get(entry.get("conditional") or ""):
+            continue
+        try:
+            out[entry["key"]] = bool(
+                await _hot_work_declaration(project_id, eastern_today()))
+        except Exception as e:  # pragma: no cover — defensive
+            # THE CONTROL IS NOT THE COMPLIANCE RECORD. A failed read leaves
+            # the toggle reading OFF, which offers the CP the declaration he
+            # may already have made -- and re-declaring a declared day is an
+            # idempotent upsert, not a duplicate. The reverse default would
+            # show ON over a day nobody declared and hide the control that
+            # fixes it.
+            logger.warning(
+                f"[activations] could not read today's {entry['key']} "
+                f"declaration for project={project_id}: {e!r}")
+    return out
+
+
+async def _hot_work_period_rows(project_id, day) -> list:
+    """The read behind the `hot_work` period row.
+
+    Split out for the same reason as its two siblings: the caller's try/except
+    wraps I/O only and cannot swallow a bug in the rule, which is pure and
+    lives in lib/logbook/hot_work_cadence.py.
+
+    ── ONE READ, ON ONE (project, date) KEY ────────────────────────────────
+
+    This runs on a screen LOAD, once per required-logbooks request, so the cost
+    is paid by a CP standing at a gate. It is a `find_one` on the unique
+    `hot_work_days` index -- not a scan of the project's history, because the
+    only question is about ONE day.
+
+    TODAY'S DECLARATION ONLY, and that is the whole ruling. Yesterday's row is
+    not read, so it cannot hold the tile open; the day expires because nothing
+    looks at it again, rather than because anything switched it off.
+
+    ALWAYS EMITS A ROW WHEN THE TYPE IS REQUIRED. A project with no declaration
+    gets `satisfied: True`, which is the client's word for "not due" and is
+    what removes the permanently-Pending tile. Returning [] on the quiet case
+    would fall back to the by-date read and change nothing at all.
+    """
+    from lib.logbook.hot_work_cadence import hot_work_period
+
+    row = await _hot_work_declaration(project_id, day)
+    return [hot_work_period(
+        day,
+        [row["date"]] if row and row.get("date") else [],
+        # The name, not the id. This is the line a CP reads under a tile, and
+        # "declared by 68f2c1..." is not a sentence. A declaration whose name
+        # was never captured falls back to None and the label simply omits it.
+        declared_by=(row or {}).get("declared_by_name"),
+    )]
+
+
 @api_router.get("/projects/{project_id}/suggested-levels")
 async def get_suggested_building_levels(
     project_id: str, current_user = Depends(get_current_user),
@@ -16471,8 +16697,15 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
         # never show a control whose state disagrees with the set beside it.
         # Filtered by the same answer as the list above, so a log that is not on
         # his list cannot be named in the block underneath it.
+        #
+        # `declared_today` is read here rather than inside logbook_activations
+        # because that function is pure and is called from the demo dataset,
+        # which has no database. See `_hot_work_declared_today`: it costs one
+        # find_one, and only on a project whose standing permit is on.
         "activations": _visible_activations(
-            logbook_activations(project), filing, current_user),
+            logbook_activations(
+                project, await _hot_work_declared_today(project_id, project)),
+            filing, current_user),
         # ── WHOSE LOG IT IS, FOR THE PERSON ASKING ─────────────────────────
         #
         # `required_logbooks` above is a fact about the PROJECT and has never
@@ -31974,6 +32207,105 @@ async def _refresh_required_logbooks(project_id: str) -> list:
     return required
 
 
+async def _set_hot_work_day(project_id, entry, active, current_user) -> dict:
+    """Declare — or take back — that hot work is happening on this project
+    TODAY.
+
+    ── NO PERMIT, NO DAY ──────────────────────────────────────────────────
+
+    The operator's ruling layers the two facts: the dated declaration "is only
+    available on a project where the standing field is on". So this reads the
+    project's `conditional` and refuses when it is false, whatever the client
+    rendered. That refusal IS the rule; the greyed control is a courtesy.
+
+    THE REFUSAL IS ON ACTIVATION ONLY, never on deactivation, for the same
+    reason the CS-registration gate is: a project must always be able to reach
+    the off state. Otherwise an admin withdrawing the permit would strand a
+    mistaken declaration nobody could take back.
+
+    ── A LATER PERMIT WITHDRAWAL DOES NOT RETRACT A DECLARED DAY ──────────
+
+    Nothing here reaches backwards. If the admin switches `hot_work_permitted`
+    off tomorrow, the rows for days already declared are not touched, not
+    deleted and not deactivated — they are a record of what somebody said was
+    happening, and a hot-work log filed last Tuesday does not stop having been
+    due because a flag moved this morning. What the withdrawal does is stop NEW
+    declarations (here) and drop the type out of `get_required_logbooks`, so no
+    further tile is raised.
+
+    ── TODAY, AND ONLY TODAY ──────────────────────────────────────────────
+
+    The date is `eastern_today()` and is NOT taken from the request. A client
+    that could name the date could declare a hot-work day in the past — which
+    is a claim about a day whose log can no longer be filed (hot work is
+    `immediate`-class and the end-of-day sweep has closed it) — or in the
+    future, which is the persistent flag wearing a date. Backfilling a missed
+    day is an amendment question and has an amendment path; it is not this
+    control.
+
+    ── THE ROW IS KEPT WHEN IT IS SWITCHED OFF ────────────────────────────
+
+    `active: False` rather than a delete. Somebody declared a hot-work day and
+    then took it back; that is a thing that happened on a compliance record's
+    control surface, and the audit trail should be able to say who did both.
+    It also makes the (project, date) key stable, so the unique index does the
+    de-duplication instead of this function.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if active and not (project or {}).get(entry["conditional"]):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "HOT_WORK_DAY_REQUIRES_PERMIT",
+                "log_type": entry["key"],
+                "field": entry["conditional"],
+                "message": (
+                    "This project has no hot-work permit on file. An admin "
+                    "switches the site's hot-work permit on; until then a "
+                    "hot-work day cannot be declared."
+                ),
+            },
+        )
+    day = eastern_today()
+    who = str(current_user.get("id", current_user.get("_id", "")) or "")
+    name = (current_user.get("full_name") or current_user.get("name") or "")
+    now = datetime.now(timezone.utc)
+    await db.hot_work_days.update_one(
+        {"project_id": str(project_id), "date": day},
+        {"$set": {"active": active,
+                  "declared_by": who,
+                  # THE NAME AS IT WAS WHEN HE DECLARED. The period row reads
+                  # it back to put a person on the CP's line, and resolving it
+                  # at read time would be one user lookup per screen load for
+                  # a string that cannot change retroactively.
+                  "declared_by_name": name or None,
+                  "updated_at": now},
+         "$setOnInsert": {"declared_at": now, "is_deleted": False}},
+        upsert=True,
+    )
+    # THE REQUIRED SET DOES NOT MOVE, AND THAT IS THE POINT. A declaration says
+    # the log is DUE today; whether it is REQUIRED is the standing permit's
+    # question and was already answered. It is recomputed and returned anyway
+    # so the one client call site can use the same response shape for both
+    # scopes and cannot drift.
+    required = await _refresh_required_logbooks(project_id)
+    await audit_log(
+        "logbook_activation_day", who, "project", project_id,
+        {"log_type": entry["key"], "field": entry["dated_activation"],
+         "date": day, "active": active},
+    )
+    return {
+        "log_type": entry["key"], "scope": "day", "date": day,
+        "active": active, "required_logbooks": required,
+        # SO THE TILE APPEARS ON THE SAME TAP. Without this the screen would
+        # hold a `periods` payload fetched before the declaration, the hot-work
+        # row would still say satisfied, and getVisibleLogTypes would go on
+        # hiding the tile until the next refetch — a CP declaring a day and
+        # watching nothing happen.
+        "periods": await _logbook_periods(project_id, required),
+    }
+
+
 @api_router.put(
     "/logbooks/project/{project_id}/activation",
     dependencies=[Depends(require_approved), Depends(require_project_access)],
@@ -31997,6 +32329,22 @@ async def set_logbook_activation(
     remains entirely his.
 
     A client that hides the control is not a guard: the request still exists.
+
+    ── TWO SCOPES, AND ONLY HOT WORK HAS THE SECOND ────────────────────────
+
+    `scope` names WHICH FACT the caller is setting, and it defaults to the only
+    one every type has:
+
+      "standing"  the project condition — `conditional`, `activated_by`. What
+                  this endpoint has always done.
+      "day"       hot work is happening TODAY — one dated row, `activated_by`
+                  is `dated_activated_by`, and the type must declare
+                  `dated_activation` to have this scope at all.
+
+    NO PERMIT, NO DAY, AND IT IS ENFORCED HERE. The operator's ruling gates the
+    dated declaration on the standing one: a CP on a project whose admin has
+    not said the site may do hot work cannot declare a hot-work day. The screen
+    greys the control, but the screen is a courtesy — this refusal is the rule.
     """
     log_type = str((data or {}).get("log_type") or "").strip()
     entry = logbook_activation_entry(log_type)
@@ -32006,7 +32354,25 @@ async def set_logbook_activation(
             status_code=400,
             detail={"code": "LOGBOOK_NOT_ACTIVATABLE", "log_type": log_type},
         )
-    if entry.get("activated_by") == "admin" and current_user.get("role") not in ("admin", "owner"):
+    # UNKNOWN SCOPES ARE REFUSED, NOT DEFAULTED. Silently treating a typo as
+    # "standing" would take a request meaning "hot work today" and write the
+    # project's permit statement instead — a CP flipping the admin's switch by
+    # spelling a word wrong.
+    scope = str((data or {}).get("scope") or "standing").strip() or "standing"
+    if scope not in ("standing", "day"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ACTIVATION_SCOPE_UNKNOWN",
+                    "log_type": log_type, "scope": scope},
+        )
+    if scope == "day" and not entry.get("dated_activation"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ACTIVATION_NOT_DATED", "log_type": log_type},
+        )
+    owner = (entry.get("dated_activated_by") if scope == "day"
+             else entry.get("activated_by"))
+    if owner == "admin" and current_user.get("role") not in ("admin", "owner"):
         raise HTTPException(
             status_code=403,
             detail={"code": "ACTIVATION_REQUIRES_ADMIN", "log_type": log_type},
@@ -32020,6 +32386,8 @@ async def set_logbook_activation(
             status_code=400,
             detail={"code": "ACTIVATION_STATE_REQUIRED", "log_type": log_type},
         )
+    if scope == "day":
+        return await _set_hot_work_day(project_id, entry, active, current_user)
     # ── TURNING THE CS LOG ON REQUIRES SAYING WHO THE CS IS ─────────────────
     #
     # THE OTHER HALF OF THE FILING GATE, and neither half works alone.
@@ -32069,7 +32437,16 @@ async def set_logbook_activation(
         "logbook_activation", str(current_user.get("id", "")), "project", project_id,
         {"log_type": log_type, "field": entry["conditional"], "active": active},
     )
-    return {"log_type": log_type, "active": active, "required_logbooks": required}
+    return {
+        "log_type": log_type, "scope": "standing", "active": active,
+        "required_logbooks": required,
+        # THE SAME SHAPE AS THE DATED SCOPE, so the one client call site reads
+        # one response. It matters here too: switching the hot-work permit ON
+        # puts the type into `required_logbooks`, and without a fresh `periods`
+        # the screen would have no hot-work row at all and fall back to the
+        # by-date read — the permanently-Pending tile, for one paint.
+        "periods": await _logbook_periods(project_id, required),
+    }
 
 
 @api_router.get("/logbooks/project/{project_id}/scaffold-info")
@@ -55163,6 +55540,17 @@ async def startup_event():
         keys=[("project_id", 1), ("date", 1)],
         name="project_id_1_date_1",
         unique=True, sparse=True,
+    )
+    # ONE HOT-WORK DECLARATION PER PROJECT PER DAY, enforced by the database.
+    # `_set_hot_work_day` upserts on exactly this key, so two taps in the same
+    # second on two devices produce one row rather than two disagreeing ones --
+    # and `_hot_work_declaration` is a find_one on it, which is the read a CP
+    # pays for on every logbook-screen load.
+    await _ensure_index_resilient(
+        db.hot_work_days,
+        keys=[("project_id", 1), ("date", 1)],
+        name="project_id_1_date_1",
+        unique=True,
     )
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])

@@ -241,24 +241,41 @@ class TheServerWiresItIn(unittest.TestCase):
         self.assertIn("return []", block)
 
     def test_it_costs_nothing_on_a_project_without_the_type(self):
-        """THE GUARD NOW NAMES TWO TYPES, and it used to name one.
+        """THE GUARD NOW NAMES THREE TYPES, and it used to name one, then two.
 
         `_logbook_periods` returned [] unless `toolbox_talk` was required.
-        `subcontractor_orientation` is as_needed and now has a row on the same
-        channel, so the early exit is the pair -- but the property this test
-        has always held to is unchanged: a project that requires neither pays
-        for no query, and each type's reads sit behind its own membership
-        test so requiring one never pays for the other."""
+        `subcontractor_orientation` is as_needed and got a row on the same
+        channel; `hot_work` is as_needed too and got one when the operator
+        ruled on when a hot-work log is due ("due only on days hot work
+        happens... dated, not persistent").
+
+        THE PROPERTY THIS TEST HAS ALWAYS HELD TO IS UNCHANGED: a project that
+        requires none of them pays for no query, and each type's reads sit
+        behind its own membership test so requiring one never pays for the
+        others.
+
+        THE GUARD IS A SET INTERSECTION NOW, not a chain of `not in`. Three
+        `and`-ed negations is where a fourth gets forgotten, and the shape is
+        asserted rather than the spelling of any one type -- the census below
+        is what a new type has to move.
+        """
         block = self.src[self.src.index("async def _logbook_periods"):]
         block = block[:block.index("async def _toolbox_period_rows")]
-        guard = block.index(
-            'if "toolbox_talk" not in req and '
-            '"subcontractor_orientation" not in req:')
-        self.assertLess(guard, block.index("_toolbox_period_rows(project_id"))
-        self.assertLess(guard, block.index("_orientation_period_rows(project_id"))
-        # The toolbox reads still happen ONLY for a project that requires it.
-        self.assertLess(block.index('if "toolbox_talk" in req:'),
-                        block.index("_toolbox_period_rows(project_id"))
+        guard = block.index('if not ({"toolbox_talk", '
+                            '"subcontractor_orientation", "hot_work"} & set(req)):')
+        for read in ("_toolbox_period_rows(project_id",
+                     "_orientation_period_rows(project_id",
+                     "_hot_work_period_rows("):
+            with self.subTest(read=read):
+                self.assertLess(guard, block.index(read))
+        # Each type's reads still happen ONLY for a project that requires it.
+        for key, read in (('if "toolbox_talk" in req:',
+                           "_toolbox_period_rows(project_id"),
+                          ('if "subcontractor_orientation" in req:',
+                           "_orientation_period_rows(project_id"),
+                          ('if "hot_work" in req:', "_hot_work_period_rows(")):
+            with self.subTest(key=key):
+                self.assertLess(block.index(key), block.index(read))
 
 
 if __name__ == "__main__":

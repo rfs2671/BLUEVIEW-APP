@@ -341,11 +341,18 @@ class TheEndpointReportsBothTheSetAndTheDoubt(unittest.TestCase):
         """One request, so the control and the list beside it cannot disagree."""
         out = self._get({"_id": "p1", "project_class": "regular",
                          "excavation_active": True})
-        by_type = {a["log_type"]: a for a in out["activations"]}
-        self.assertEqual(set(by_type), set(TOGGLED))
-        self.assertIs(by_type["excavation_monitoring"]["active"], True)
-        self.assertIs(by_type["crane_operations"]["active"], False)
-        self.assertEqual(by_type["hot_work"]["activated_by"], "admin")
+        by_key = {(a["log_type"], a["scope"]): a for a in out["activations"]}
+        self.assertEqual({k[0] for k in by_key}, set(TOGGLED))
+        self.assertIs(by_key[("excavation_monitoring", "standing")]["active"], True)
+        self.assertIs(by_key[("crane_operations", "standing")]["active"], False)
+        # KEYED ON THE SCOPE, because hot work sends two rows and they have
+        # different owners. Reading `by_type["hot_work"]` would have silently
+        # started answering about the CP's dated row.
+        self.assertEqual(by_key[("hot_work", "standing")]["activated_by"], "admin")
+        # NO PERMIT ON THIS PROJECT, so the dated declaration is not available
+        # — "no permit, no day". The server refuses it; this is what lets the
+        # screen say so rather than offer a control that will 400.
+        self.assertIs(by_key[("hot_work", "day")]["available"], False)
 
     def test_a_toggle_shows_up_in_the_payload(self):
         out = self._get({"_id": "p1", "project_class": "regular",
@@ -410,15 +417,41 @@ class TheActivationsAreReadOffTheRegistry(unittest.TestCase):
         acts = S.logbook_activations({})
         self.assertEqual({a["log_type"] for a in acts}, set(TOGGLED))
 
+    def test_hot_work_alone_carries_a_SECOND_row(self):
+        """TWO FACTS, TWO ROWS, and every other type still has one.
+
+        `hot_work_permitted` says the SITE may do hot work — standing, the
+        admin's. A `hot_work_days` row says hot work IS HAPPENING TODAY —
+        dated, the CP's or the superintendent's, per the operator's ruling.
+        One row's `active` can only carry one of those booleans and its
+        `activated_by` only one of those owners, which is how "permitted" came
+        to mean "due" on 8 Walworth.
+
+        THE CENSUS IS THE ASSERTION, so a second dated type cannot be added
+        without this line moving. See test_a_hot_work_day_is_a_date_not_a_flag.
+        """
+        scopes = {}
+        for a in S.logbook_activations({}):
+            scopes.setdefault(a["log_type"], []).append(a["scope"])
+        self.assertEqual(scopes["hot_work"], ["standing", "day"])
+        for log_type in set(TOGGLED) - {"hot_work"}:
+            with self.subTest(log=log_type):
+                self.assertEqual(scopes[log_type], ["standing"])
+
     def test_each_names_its_field_and_its_owner(self):
-        by_type = {a["log_type"]: a for a in S.logbook_activations({})}
+        by_key = {(a["log_type"], a["scope"]): a for a in S.logbook_activations({})}
         for log_type, field in TOGGLED.items():
             with self.subTest(log=log_type):
-                self.assertEqual(by_type[log_type]["field"], field)
-        self.assertEqual(by_type["hot_work"]["activated_by"], "admin")
+                self.assertEqual(by_key[(log_type, "standing")]["field"], field)
+        # THE FDNY REASONING SURVIVES THE RULING. The admin still says the site
+        # may do hot work; what the CP gained is the DATED declaration beside
+        # it, which is a different question and a different row.
+        self.assertEqual(by_key[("hot_work", "standing")]["activated_by"], "admin")
+        self.assertEqual(by_key[("hot_work", "day")]["activated_by"], "cp")
+        self.assertEqual(by_key[("hot_work", "day")]["field"], "hot_work_days")
         for cp_owned in ("scaffold_maintenance", "crane_operations",
                          "excavation_monitoring", "fall_protection"):
-            self.assertEqual(by_type[cp_owned]["activated_by"], "cp")
+            self.assertEqual(by_key[(cp_owned, "standing")]["activated_by"], "cp")
 
     def test_active_tracks_the_project_field(self):
         acts = {a["log_type"]: a["active"]
@@ -427,8 +460,14 @@ class TheActivationsAreReadOffTheRegistry(unittest.TestCase):
         self.assertIs(acts["scaffold_maintenance"], False)
 
     def test_a_label_comes_along_so_the_client_invents_no_wording(self):
-        by_type = {a["log_type"]: a for a in S.logbook_activations({})}
-        self.assertEqual(by_type["hot_work"]["label"], "Hot Work Permit Log")
+        by_key = {(a["log_type"], a["scope"]): a for a in S.logbook_activations({})}
+        self.assertEqual(by_key[("hot_work", "standing")]["label"],
+                         "Hot Work Permit Log")
+        # A DIFFERENT SENTENCE FOR A DIFFERENT FACT. "Hot Work Permit Log" is
+        # the document; the dated row is not about the document, it is about
+        # whether today is a day it is owed.
+        self.assertEqual(by_key[("hot_work", "day")]["label"],
+                         "Hot Work Permit Log — today")
 
 
 class OnlyTheRightPersonMayFlipIt(unittest.TestCase):
