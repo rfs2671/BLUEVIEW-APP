@@ -192,23 +192,26 @@
       "kind": "answer",
       "expect": {
         "sheets": [
-          "A-105.01"
+          "P-206.00"
         ],
         "values": [
-          2
+          4
         ],
-        "glyph_scope": "family",
+        "text": [
+          "RD-1",
+          "RD-2"
+        ],
         "claims": [
           {
-            "subject": "FLOOR/AREA/ROOF DRAIN",
-            "value": 2
+            "subject": "RD-1",
+            "value": 4
           }
         ]
       },
       "truth": {
         "how": "by_eye",
-        "source": "AR - 8.18.26.pdf p7 (A-105.01), roof plan",
-        "evidence": "Two FLOOR/AREA/ROOF DRAIN glyphs at (932,1011) and (932,1737) in page space, each inside four converging SLOPE DN arrows with AD printed beside it, not inside. Crop viewed 2026-09-16. Family scope because the mark is beside the symbol."
+        "source": "PL - 6.29.26.pdf p14 (P-206.00), ROOF SANITARY & STORM PLAN",
+        "evidence": "FOUR roof drains: RD-1 and RD-2 on each side of the bulkhead, each a round drain symbol with its mark printed beside it and RD-1 carrying (72 GPM). Read off a 400 dpi render 2026-09-19. THIS CASE IS EXPECTED TO FAIL and is recorded that way on purpose. The marks are OUTLINED VECTOR TEXT, not a text layer: P-206.00's text layer is 1,481 characters and contains zero occurrences of RD, RD-1, RD-2, GPM, DOWNSPOUT, FD-1 or VTR - only 42\" PARAPET, SLOPE DN, AD, PASSIVE RECREATION, DN 16 and HWH ROOM. So no text-layer method can see them and the tag vocabulary cannot contain RD for this sheet. THE CASE IT REPLACED WAS WRONG: it named A-105.01 with value 2 and glyph_scope family, which is the ARCHITECTURAL roof plan - the FLOOR/AREA/ROOF DRAIN legend glyph counted twice there. Roof drains live on the P set. A case that passes by counting a different symbol on a different sheet is worse than a case that fails honestly. It passes when outlined text is read - see the geometric bounding work, which fixes this and EN-001.00's compliance tables together."
       }
     },
     {

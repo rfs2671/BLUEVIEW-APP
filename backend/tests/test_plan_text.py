@@ -183,10 +183,19 @@ class AnElementNeedsSomethingBehindIt(unittest.TestCase):
 class TagCountsAreLabelsOnly(unittest.TestCase):
 
     def _layout(self):
+        # TWO PTAC LABELS IN TWO PLACES. `block()` defaults every bbox to the
+        # same rectangle, which was harmless while count_tags counted
+        # occurrences and is not now: a mark is counted once per PLACE it is
+        # printed, so two labels at one coordinate are one label written
+        # twice. The intent of this fixture has always been two labels on the
+        # plan; it simply never had to say where.
         d = {"blocks": [
-            block(["PTAC"]), block(["PTAC"]), block(["W1"]),
-            block(["TOTAL WALL AREA OF THIS STORY IS 700 SF", "PTAC UNIT 3'-8\" X 1'-6\" = 5.5'"]),
-            block(["R-19"]),
+            block(["PTAC"], bbox=(100, 100, 400, 200)),
+            block(["PTAC"], bbox=(900, 1400, 1200, 1500)),
+            block(["W1"], bbox=(100, 600, 400, 700)),
+            block(["TOTAL WALL AREA OF THIS STORY IS 700 SF", "PTAC UNIT 3'-8\" X 1'-6\" = 5.5'"],
+                  bbox=(1500, 300, 2000, 500)),
+            block(["R-19"], bbox=(200, 900, 500, 1000)),
         ]}
         return pt.layout_from_dict(d, width=2592, height=1728, page_number=11)
 
