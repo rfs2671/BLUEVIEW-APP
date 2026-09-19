@@ -411,6 +411,83 @@ ok('every word he wrote is still somewhere in the filed block',
   + '`summary`; if that fold ever stops happening this field needs the same '
   + 'carry item 2 and item 11 have');
 
+// ── ITEM 11'S `inspected_on`, THE THIRD AND LAST OF THE BLOCK ──────────────
+//
+// FOUND WHILE CARRYING `result`, RULED AFTER IT, FIXED THE SAME WAY. It is the
+// third declared field of `daily_inspection`, printed by `_cs_item_body` like
+// the other two, and collected by this screen like neither of them -- so an
+// amendment dropped the DATE the superintendent walked the site.
+//
+//     stored {"inspected_on":"2026-09-04","location":"Cellar","result":"All good"}
+//     filed  {"location":"Cellar","result":"All good"}
+//
+// Quieter than the sentence, and worse in one specific way: 1 RCNY 3301-04(f)
+// is about an inspection HAVING BEEN MADE, and the date is the part that says
+// when. The item still read PRESENT off `location`, so nothing pointed at the
+// loss -- the same shape as `result`, one field over.
+console.log('\nitem 11: the date he walked the site survives the amendment');
+
+const STORED_FULL_INSPECTION = {
+  inspected_on: '2026-09-04', location: 'Cellar and 1st', result: 'All good here',
+};
+const FULL_INSPECTION_PARENT = {
+  presence: { printed_name: 'Michael Cespedes' },
+  daily_inspection: STORED_FULL_INSPECTION,
+};
+
+const fullAmended = roundTrip(FULL_INSPECTION_PARENT);
+
+ok('the amended record still carries the inspection date',
+  fullAmended.daily_inspection
+    && fullAmended.daily_inspection.inspected_on === '2026-09-04',
+  'was dropped before the ruling — the item survived on `location` while the '
+  + 'date it was made on did not. Operator: "carry it too. Same one-line fix, '
+  + 'same reasoning."');
+ok('byte-for-byte, unnormalised — not re-parsed, not reformatted',
+  fullAmended.daily_inspection.inspected_on === STORED_FULL_INSPECTION.inspected_on,
+  `stored ${JSON.stringify(STORED_FULL_INSPECTION.inspected_on)} -> filed ${
+    JSON.stringify(fullAmended.daily_inspection.inspected_on)}`);
+ok('all three fields of the block now make the trip together',
+  ['inspected_on', 'location', 'result']
+    .every((k) => fullAmended.daily_inspection[k] === STORED_FULL_INSPECTION[k]),
+  `filed ${JSON.stringify(fullAmended.daily_inspection)}`);
+ok('and the amender\'s own location still wins over the parent\'s',
+  roundTrip(FULL_INSPECTION_PARENT, { inspectionLocation: '3rd floor' })
+    .daily_inspection.inspected_on === '2026-09-04',
+  'carrying the date must not freeze the field he IS shown — location is his '
+  + 'to change and the date is not his to lose');
+
+console.log('\nand a record with no inspected_on does not acquire one');
+
+// THE NEGATIVE, AND IT BITES HARDER HERE THAN FOR `result`. An invented
+// `inspected_on` is not a blank cell -- it is a DATE on a statutory
+// inspection record, and `_has_content` counts any non-empty value, so an
+// empty string would make item 11 read PRESENT on a log where nobody walked
+// anything. A wrong date is worse than a missing one.
+for (const [label, stored] of [
+  ['result and location, never an inspected_on',
+    { daily_inspection: { location: 'Cellar and 1st', result: 'All good here' } }],
+  ['an empty inspection block', { daily_inspection: {} }],
+  ['no inspection block at all', { presence: { printed_name: 'Michael Cespedes' } }],
+]) {
+  const out = roundTrip(stored);
+  ok(`no \`inspected_on\` key is invented — ${label}`,
+    !Object.prototype.hasOwnProperty.call(out.daily_inspection || {}, 'inspected_on'),
+    `filed ${JSON.stringify(out.daily_inspection)}`);
+}
+
+ok('hydrate reads the date through the SAME shared rule, not a second one',
+  /setCarriedInspectedOn\(readCarried\(g\('daily_inspection'\), 'inspected_on'\)\)/
+    .test(SRC),
+  'three carried values, one readCarried — a fourth mechanism is how two of '
+  + 'them start disagreeing');
+ok('and it rides the /consent snapshot, like its two siblings',
+  /carriedInspectedOn,/.test(SRC) && /setCarriedInspectedOn\(v\.carriedInspectedOn\)/
+    .test(SRC),
+  'signing goes through /consent and restore() replaces state wholesale '
+  + 'without re-running hydrate — a value left out of the snapshot comes back '
+  + 'undefined and the next autosave drops it after all');
+
 if (failures) {
   console.error(`\namendmentCarryForward: ${failures} failure(s)`);
   process.exit(1);

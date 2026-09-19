@@ -656,6 +656,7 @@ export default function SiteSuperintendentLog() {
   // `undefined` MEANS THE RECORD HAD NO RESULT, and stays undefined. See
   // carriedForward.js for why present-or-absent and never `''`.
   const [carriedInspectionResult, setCarriedInspectionResult] = useState(undefined);
+  const [carriedInspectedOn, setCarriedInspectedOn] = useState(undefined);
   const [findings, setFindings] = useState([]);
   // WHAT WAS OFFERED FOR ITEMS 4/5, held so the note can say the rows are not
   // his. This is NOT the CP's log as it stands now -- it is what he was shown,
@@ -1087,6 +1088,13 @@ export default function SiteSuperintendentLog() {
     // `readCarried` returns `undefined` for a key absent from `{}` exactly as
     // it does for one absent from a real block.
     setCarriedInspectionResult(readCarried(g('daily_inspection'), 'result'));
+    // `inspected_on` IS THE THIRD FIELD OF THE SAME BLOCK AND HAD THE SAME HOLE.
+    // Declared in both models, printed by `_cs_item_body`, and never collected
+    // by this screen -- so an amendment dropped the date the superintendent
+    // walked the site, exactly as it dropped his sentence. Ruled after `result`
+    // and for the same reason: the screen removed the input, the amender did
+    // not. Carried the same way, and equally never rendered or offered.
+    setCarriedInspectedOn(readCarried(g('daily_inspection'), 'inspected_on'));
     setCompetentPersonName(g('competent_person').name || '');
     setCpNone(g('competent_person').none_to_report === true);
     setNoneBoth(g('unsafe_conditions').none_to_report === true
@@ -1154,6 +1162,10 @@ export default function SiteSuperintendentLog() {
     // comes back `undefined` and the next autosave drops it from the
     // amendment after all.
     carriedInspectionResult,
+    // THE DATE MAKES THE SAME TRIP, for the reason above it. It is the
+    // third field of the same block and it is not a field on this form
+    // either.
+    carriedInspectedOn,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, cpManual, cpNone, step,
     // WHICH LAYOUT `step` IS COUNTED IN. Without it a stored 2 is ambiguous:
@@ -1180,6 +1192,10 @@ export default function SiteSuperintendentLog() {
     // and `_has_content` counts, invented on every restored draft that never
     // had one.
     setCarriedInspectionResult(v.carriedInspectionResult);
+    // NO `?? ''` HERE EITHER. An empty string is an `inspected_on` key
+    // the renderer finds and `_has_content` counts -- a date claimed on
+    // every restored draft that never had one.
+    setCarriedInspectedOn(v.carriedInspectedOn);
     setFindings(Array.isArray(v.findings) ? v.findings : []);
     setNoneBoth(v.noneBoth === true);
     setDobEntries(Array.isArray(v.dobEntries) ? v.dobEntries : []);
@@ -1350,6 +1366,7 @@ export default function SiteSuperintendentLog() {
       daily_inspection: {
         ...(inspectionLocation.trim() ? { location: inspectionLocation.trim() } : {}),
         ...writeCarried('result', carriedInspectionResult),
+        ...writeCarried('inspected_on', carriedInspectedOn),
       },
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
@@ -1358,6 +1375,7 @@ export default function SiteSuperintendentLog() {
     // buildData captured before hydrate ran holds `undefined` and files a
     // block without his sentence.
     carriedInspectionResult,
+    carriedInspectedOn,
     // A STALE CLOSURE HERE WOULD FILE THE BLOCK CAPTURED BEFORE hydrate RAN --
     // which is `undefined`, and the key would be dropped after all.
     carriedProgress,
