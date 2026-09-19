@@ -1,5 +1,8 @@
 /**
- * A STORED BLOCK THE SCREEN NO LONGER COLLECTS, CARRIED THROUGH UNTOUCHED.
+ * STORED DATA THE SCREEN NO LONGER COLLECTS, CARRIED THROUGH UNTOUCHED.
+ *
+ * A whole block or one key inside a block that is otherwise still written --
+ * see "A BLOCK OR A KEY INSIDE ONE" at the foot of this note.
  *
  * ── THE PATH THIS EXISTS FOR ────────────────────────────────────────────────
  *
@@ -49,11 +52,32 @@
  * The value that came out of storage is the value that goes back in. A record
  * whose appearance changed after it was signed is the thing being prevented.
  *
- * ONE KEY USES THIS TODAY: `progress`, item 2. `cs_activities.locations` and
- * `daily_inspection.result` are also no longer written, and whether they should
- * be carried the same way is a SEPARATE RULING -- see
- * amendmentCarryForward.test.cjs for what each of them actually does today,
- * measured rather than assumed.
+ * ── A BLOCK OR A KEY INSIDE ONE; THE RULE DOES NOT CARE ─────────────────────
+ *
+ * These two take `(object, key)` and `(key, value)`, so what they carry is
+ * whatever the caller hands them. `progress` is a whole TOP-LEVEL block the
+ * screen never writes, and `data` is the document. `daily_inspection.result` is
+ * one uncollected key inside a block the screen DOES still write -- `location`
+ * is collected and current -- and there the object handed in is the BLOCK and
+ * the carried key rides back alongside the live one:
+ *
+ *     daily_inspection: {
+ *       ...(location.trim() ? {location: location.trim()} : {}),
+ *       ...writeCarried('result', carriedResult),
+ *     }
+ *
+ * The present-or-absent rule is identical one level down, and so is the reason
+ * for it: `_has_content` and `_cs_item_body` both walk `item["fields"]`, so a
+ * `result` key that exists is a key the renderer reaches and the item-state
+ * check counts. An invented `""` is still absence presented as an answer.
+ *
+ * TWO KEYS USE THIS TODAY: `progress` (item 2, a block) and
+ * `daily_inspection.result` (item 11, a sub-key), both by operator ruling.
+ * `cs_activities.locations` is also no longer written and is deliberately NOT
+ * carried: `hydrate` folds its text into `summary` and writes it back there, so
+ * nothing he wrote is lost and a carry would duplicate his own words onto the
+ * record. See amendmentCarryForward.test.cjs for what each of the three
+ * actually does, measured rather than assumed.
  */
 
 /**

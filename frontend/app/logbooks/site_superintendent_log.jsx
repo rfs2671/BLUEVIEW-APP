@@ -638,6 +638,24 @@ export default function SiteSuperintendentLog() {
   // makes him scroll past four empty forms to say so.
   const [openItem, setOpenItem] = useState('');
   const [inspectionLocation, setInspectionLocation] = useState('');
+  // ── ITEM 11's `result`, HELD THE SAME WAY ITEM 2's BLOCK IS ─────────────
+  //
+  // A SUB-KEY, WHICH IS THE ONLY THING THAT MAKES IT DIFFERENT FROM item 2.
+  // `progress` is a whole block this screen never writes; `daily_inspection`
+  // is a block it DOES still write -- `inspectionLocation` above is collected
+  // and current -- with one uncollected key inside it. Same rule, one level
+  // down: `readCarried` works on a key WITHIN an object, so the stored block
+  // is what gets handed to it.
+  //
+  // WITHOUT IT AN AMENDMENT DELETES HIS SENTENCE WITHOUT DELETING THE ITEM,
+  // which is the quiet version of the item 2 defect. The correction inherits
+  // the parent's data, the autosave PUTs `buildData()` over it wholesale, and
+  // item 11 goes on reading PRESENT off `location` -- so no item number goes
+  // missing to point at the loss. The words just stop being there.
+  //
+  // `undefined` MEANS THE RECORD HAD NO RESULT, and stays undefined. See
+  // carriedForward.js for why present-or-absent and never `''`.
+  const [carriedInspectionResult, setCarriedInspectionResult] = useState(undefined);
   const [findings, setFindings] = useState([]);
   // WHAT WAS OFFERED FOR ITEMS 4/5, held so the note can say the rows are not
   // his. This is NOT the CP's log as it stands now -- it is what he was shown,
@@ -1054,11 +1072,21 @@ export default function SiteSuperintendentLog() {
     setActivities([g('cs_activities').summary, g('cs_activities').locations]
       .map((x) => String(x || '').trim()).filter(Boolean).join('\n'));
     setInspectionLocation(g('daily_inspection').location || '');
-    // `result` IS NOT READ BACK, and nothing rewrites the records that carry
-    // it. Three filed logs hold one; `superintendentLogModel.js` and
-    // `superintendent_log.py` both still DECLARE the field, so every renderer
-    // keeps printing it off a stored document. The writer stops, the readers
-    // do not -- the same forward-only shape `locations` took on item 3.
+    // `result` IS PICKED UP BUT NOT SHOWN. There is no result input and there
+    // is not going to be one; this is the stored sentence being held so
+    // `buildData` can put it back down exactly as it found it. Three filed
+    // logs hold one; `superintendentLogModel.js` and `superintendent_log.py`
+    // both still DECLARE the field, so every renderer keeps printing it off a
+    // stored document. The writer stops, the readers do not.
+    //
+    // `g('daily_inspection')` RATHER THAN `d.daily_inspection`, and it is safe
+    // for the same reason `d` is used for item 2 rather than `g`: there the
+    // block ITSELF is what must be present-or-absent, so `g`'s `{}` would
+    // destroy the distinction. Here the block is written unconditionally by
+    // buildData either way and it is the SUB-KEY whose presence matters --
+    // `readCarried` returns `undefined` for a key absent from `{}` exactly as
+    // it does for one absent from a real block.
+    setCarriedInspectionResult(readCarried(g('daily_inspection'), 'result'));
     setCompetentPersonName(g('competent_person').name || '');
     setCpNone(g('competent_person').none_to_report === true);
     setNoneBoth(g('unsafe_conditions').none_to_report === true
@@ -1120,6 +1148,12 @@ export default function SiteSuperintendentLog() {
     // through /consent; this is the normal path, not an edge case.
     carriedProgress,
     inspectionLocation,
+    // ALSO NOT A FIELD, AND ALSO HAS TO MAKE THE TRIP. Same reason as
+    // `carriedProgress` directly above: restore() replaces the state
+    // wholesale and hydrate does not run again, so a sentence left out here
+    // comes back `undefined` and the next autosave drops it from the
+    // amendment after all.
+    carriedInspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, cpManual, cpNone, step,
     // WHICH LAYOUT `step` IS COUNTED IN. Without it a stored 2 is ambiguous:
@@ -1141,6 +1175,11 @@ export default function SiteSuperintendentLog() {
     setCarriedProgress(v.carriedProgress);
     setActivities(v.activities ?? '');
     setInspectionLocation(v.inspectionLocation ?? '');
+    // NO `?? ''`, for the reason given on carriedProgress above. An empty
+    // string here is not "no result": it is a `result` key the renderer finds
+    // and `_has_content` counts, invented on every restored draft that never
+    // had one.
+    setCarriedInspectionResult(v.carriedInspectionResult);
     setFindings(Array.isArray(v.findings) ? v.findings : []);
     setNoneBoth(v.noneBoth === true);
     setDobEntries(Array.isArray(v.dobEntries) ? v.dobEntries : []);
@@ -1228,12 +1267,18 @@ export default function SiteSuperintendentLog() {
       // fact. Carrying the summary without it would reprint his words under
       // the wrong attribution.
       ...writeCarried('progress', carriedProgress),
-      // TWO NEIGHBOURS DO THE SAME THING AND ARE NOT TREATED THE SAME WAY, on
-      // purpose and pending a separate ruling. `cs_activities.locations` below
-      // is no longer written either, but `hydrate` folds it INTO `summary`, so
-      // nothing he wrote is lost. `daily_inspection.result` is neither carried
-      // nor folded and an amendment does drop it -- item 11 still reads
-      // PRESENT off `location`, so no item disappears, but the sentence does.
+      // THREE NEIGHBOURS DO THE SAME THING AND TWO OF THEM ARE NOW CARRIED.
+      // This note used to say `daily_inspection.result` was "neither carried
+      // nor folded" and that an amendment dropped it, "pending a separate
+      // ruling". THAT RULING CAME -- "carry it forward, same as item 2" -- and
+      // it is carried below, as a sub-key rather than a block. The old state is
+      // recorded here because the sentence it describes was lost silently for a
+      // while and a reader should be able to date the fix.
+      //
+      // `cs_activities.locations` BELOW IS STILL THE ODD ONE OUT, and still
+      // correctly so: it is no longer written either, but `hydrate` folds it
+      // INTO `summary` and writes it back there, so nothing he wrote is lost
+      // and a carry would duplicate his own words back onto the record.
       // Measured in amendmentCarryForward.test.cjs rather than assumed.
       // ONE STATUTORY ITEM, ONE INPUT. `locations` was a second box under a
       // label that asked the same question the first box's own placeholder
@@ -1278,14 +1323,41 @@ export default function SiteSuperintendentLog() {
       // who never walked the site. Item 11 is the one place the log says he
       // inspected at all.
       //
-      // FORWARD-ONLY. The key is simply no longer written; both models still
-      // declare it and every renderer keeps printing it off the records that
-      // have one.
-      daily_inspection: inspectionLocation.trim()
-        ? { location: inspectionLocation.trim() } : {},
+      // FORWARD-ONLY ON A NEW LOG, CARRIED ON AN AMENDMENT. The input is gone
+      // and stays gone -- nothing below asks him for a result. But "no longer
+      // collected" and "deleted from a record that has one" are two different
+      // acts, and the wholesale PUT turns the first into the second on a
+      // correction. So the live field is written from his state and the stored
+      // sentence rides back alongside it, or contributes NO KEY AT ALL when
+      // there was none. Both models still declare `result` and every renderer
+      // keeps printing it off the records that have one.
+      //
+      // ORDER MATCHES THE DECLARATION -- `inspected_on`, `location`, `result`
+      // in superintendent_log.py -- because `_cs_item_body` prints the fields
+      // in the order the item lists them, not the order the object holds them,
+      // and a payload that reads the same way as the sheet is one less thing
+      // to reconcile by eye.
+      //
+      // THE EMPTY CASE IS UNCHANGED: no location typed and nothing carried
+      // still writes `{}`, exactly the byte this screen wrote before.
+      //
+      // AND IF HE CLEARS THE LOCATION, THE SENTENCE STILL RIDES. `result` was
+      // never his to delete -- the screen removed that input, he did not, and
+      // an edit to the box he WAS shown must not silently take out the words
+      // of the man who filed the parent. Item 11 still reads PRESENT in that
+      // state: `_has_content` walks all three declared fields and returns on
+      // the first non-empty one. Operator-ruled; see amendmentCarryForward.
+      daily_inspection: {
+        ...(inspectionLocation.trim() ? { location: inspectionLocation.trim() } : {}),
+        ...writeCarried('result', carriedInspectionResult),
+      },
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay, activities,
+    // THE SAME STALE-CLOSURE HAZARD AS carriedProgress, one level down: a
+    // buildData captured before hydrate ran holds `undefined` and files a
+    // block without his sentence.
+    carriedInspectionResult,
     // A STALE CLOSURE HERE WOULD FILE THE BLOCK CAPTURED BEFORE hydrate RAN --
     // which is `undefined`, and the key would be dropped after all.
     carriedProgress,
