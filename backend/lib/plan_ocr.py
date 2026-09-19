@@ -247,9 +247,53 @@ def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
 _VALUE_CELL = re.compile(r"^[\d.,/\-]+$")
 
 
+#: The longest a COLUMN HEADING gets. 'AUXILIARYHEATING CAPACITY (KW)' is 30
+#: characters and is the longest real heading measured on the 588 Boyland
+#: grids; a compliance table's cells run to several hundred. The number is a
+#: property of headings, not a tuned threshold: a heading names a column, and
+#: a name is short.
+_HEADING_CELL_MAX = 40
+#: And a heading is a NOUN PHRASE, not a sentence. 'AUXILIARYHEATING CAPACITY
+#: (KW)' is three words; 'CALCULATION OF HEATING AND COOLING LOADS' is six and
+#: is a provision, not a column name. The character bound alone let that one
+#: through at exactly 40 characters, which is how this second property came to
+#: be measured rather than the first one widened.
+_HEADING_CELL_MAX_WORDS = 4
+
+
 def _is_heading_row(row: Sequence[str]) -> bool:
+    """Is this row a band of COLUMN HEADINGS rather than data?
+
+    ── WHY 'HAS NO NUMBER' WAS THE WRONG QUESTION ─────────────────────────
+    #
+    # This asked whether any cell was purely a value — 'KW' and 'BTUH' are
+    # headings, '900' and '208/1/60' are not. That works for an equipment
+    # schedule, whose data rows are mostly numbers, and fails completely for
+    # a table of PROSE.
+    #
+    # MEASURED ON EN-001.00, 2026-09-19, on production's own renderer: the
+    # ENERGY CODE TABULAR ANALYSIS yields 15 body rows and the old rule called
+    # ALL FIFTEEN headings, because a code-compliance table has no purely
+    # numeric cell anywhere — every cell is a citation like 'C403.3.2' or a
+    # sentence. `schedule_from_table` then folded fourteen of them into the
+    # column headings and returned a one-row schedule with headers like
+    # 'NYCECC CITATION C403.1.1'. Nineteen of the corpus's 28 OCR-grid
+    # schedules were reduced to a single row that way, including the
+    # sprinkler-head schedules on SP-002.00, SP-003.00 and SP-004.00, and
+    # FA-001's device matrix — whose merged rows are where the '6 SPRK,
+    # TAMPER VALVE' misreading came from.
+    #
+    # A heading is a NAME for a column: short. That is what is asked now, and
+    # the absence of digits is no longer sufficient on its own.
+    """
     filled = [c for c in row if c]
-    return bool(filled) and not any(_VALUE_CELL.match(c) for c in filled)
+    if not filled:
+        return False
+    if any(_VALUE_CELL.match(c) for c in filled):
+        return False
+    return all(len(str(c).strip()) <= _HEADING_CELL_MAX
+               and len(str(c).split()) <= _HEADING_CELL_MAX_WORDS
+               for c in filled)
 
 
 def schedule_from_table(table: List[List[str]], grid: Dict[str, Any]
@@ -278,11 +322,24 @@ def schedule_from_table(table: List[List[str]], grid: Dict[str, Any]
         return None
     header = list(body[0])
     rest = body[1:]
-    # A second heading band merges into the first, while data still follows it.
-    while rest and _is_heading_row(rest[0]) and len(rest) > 1:
+    # ── AT MOST ONE EXTRA BAND, WHATEVER THE PREDICATE SAYS ───────────────
+    #
+    # A second heading band merges into the first — the 'MOTOR DATA' tier over
+    # HP / VOLTS / # on M-200.00's fan schedules. That is ONE extra band; a
+    # schedule with three tiers of heading has not been seen and would be
+    # worth looking at rather than silently absorbing.
+    #
+    # This loop used to run while the predicate said heading, and when the
+    # predicate was wrong about a table of prose it ate fourteen rows and left
+    # one. The bound is the protection, not the predicate: a wrong predicate
+    # now costs a single merged row, which is visible in the output, instead
+    # of the whole table, which is not.
+    merged = 0
+    while rest and merged < 1 and _is_heading_row(rest[0]) and len(rest) > 1:
         header = [" ".join(x for x in (a, b) if x).strip()
                   for a, b in zip(header, rest[0] + [""] * len(header))]
         rest = rest[1:]
+        merged += 1
     if not rest:
         # Everything under the title was one row: it is the data, and this
         # schedule prints no column headings at all.

@@ -1414,6 +1414,13 @@ def tag_vocabulary(layouts: Iterable[Optional[Dict[str, Any]]]) -> FrozenSet[str
     return frozenset(vocab)
 
 
+#: How far apart two prints of the same mark must be to be two marks, in PDF
+#: points. A CAD export commonly writes the same annotation twice at the SAME
+#: coordinates; two real marks on a plan are metres apart on the sheet, so a
+#: couple of points is generous in the direction of counting both.
+TAG_SAME_SPOT_PTS = 2.0
+
+
 def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str],
                exclude: FrozenSet[int] = frozenset()) -> List[Dict[str, Any]]:
     """How often each tag is PRINTED AS A LABEL on this sheet.
@@ -1421,19 +1428,44 @@ def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str],
     Only short blocks count — a tag on a plan is a label on its own. The word
     'PTAC' inside a window-area calculation, which is where it appears on this
     set's floor plans, is not a PTAC tag and is not counted. This is a count of
-    labels, never a schedule total, and it says so in its source."""
-    counts: Counter = Counter()
+    labels, never a schedule total, and it says so in its source.
+
+    ── COUNTED BY POSITION, NOT BY OCCURRENCE ─────────────────────────────
+    #
+    # A CAD export writes the same annotation into the content stream more
+    # than once. Measured on P-206.00 (PL - 6.29.26.pdf p14) 2026-09-19:
+    # `AD` is found FOUR times at TWO distinct positions — every rect exactly
+    # duplicated — and this reported `AD count 4` for a roof plan carrying two
+    # area drains. A superintendent asking how many area drains there are was
+    # told double.
+    #
+    # So a mark counts once per PLACE it is printed. Two prints within
+    # TAG_SAME_SPOT_PTS of each other are one mark; anything further apart is
+    # two, because two real marks on a sheet are nowhere near each other.
+    """
+    seen: Dict[str, List[Tuple[float, float]]] = {}
     for i, b in enumerate(layout.get("blocks") or []):
         # A legend entry or a note defines a tag; it is not a tag on the plan.
         if len(b["text"]) > LABEL_MAX_CHARS or i in exclude:
             continue
+        bbox = b.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+        try:
+            x, y = float(bbox[0]), float(bbox[1])
+        except (TypeError, ValueError, IndexError):
+            x, y = 0.0, 0.0
         # CASE-SENSITIVE. A tag is printed in capitals. Upper-casing the block
         # first turned the sprinkler engineer's address, '128 Museum Village
         # Rd', into an RD tag, and the bot answered "RD tag appears 1 time on
         # SP-003.00" for roof drains.
         for tok in re.findall(r"[A-Za-z0-9\-]+", b["text"]):
-            if tok in vocab:
-                counts[tok] += 1
+            if tok not in vocab:
+                continue
+            spots = seen.setdefault(tok, [])
+            if any(abs(x - sx) <= TAG_SAME_SPOT_PTS
+                   and abs(y - sy) <= TAG_SAME_SPOT_PTS for sx, sy in spots):
+                continue
+            spots.append((x, y))
+    counts = Counter({k: len(v) for k, v in seen.items()})
     return [{"tag": k, "count": v, "source": TAG_SOURCE} for k, v in counts.most_common(60)]
 
 
