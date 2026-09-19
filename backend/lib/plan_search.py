@@ -44,6 +44,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from lib.plan_records import TIER_ORDER, tier_rank
+from lib.plan_text import SHEET_ID_RE
 
 # What a reader is entitled to see is a printed string. These are the fields a
 # render may draw on; `label` is deliberately not among them.
@@ -507,6 +508,127 @@ def best_per_attribute(ranked: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Set-wide checks
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── WHY THESE ARE NOT RETRIEVAL ────────────────────────────────────────────
+#
+# Everything above answers one question about one subject. A superintendent
+# reading the set before mobilising has a different need: not "what does the
+# drawing say about X" — he can read a drawing — but "what in this set does
+# not add up". Those are comparisons ACROSS records, and the typed records are
+# the nodes they run over.
+#
+# This is the first of them, and it is the shape the rest take: a pure
+# function over records that returns findings, each naming its source sheet
+# and what is wrong, with nothing inferred that the records do not carry.
+
+
+def dangling_callouts(callouts: Iterable[Dict[str, Any]],
+                      sheets_present: Iterable[str]) -> List[Dict[str, Any]]:
+    """Callouts pointing at a sheet the set does not contain.
+
+    ── THE TARGET MUST LOOK LIKE A SHEET NUMBER ───────────────────────────
+    #
+    # Measured on 588 Boyland 2026-09-19: of 106 callouts on current pages,
+    # 76 resolve, 24 point at something absent and 6 carry no readable
+    # target. But the 24 are NOT 24 findings. These were among them:
+    #
+    #     M-101.00 -> 'NO. 586'    'ADJACENT 2 STORY BRICK & CELLAR No. 586'
+    #     3 OF 3   -> 'ELEV.'      'SEE ELEV. 1 ELEV.'
+    #     P-100.00 -> 'NO. 586'    'SEE D.W. RISER. 1A No. 586'
+    #
+    # A neighbouring building's street number and a detail-bubble label are
+    # not sheet references. Reporting them would train a superintendent to
+    # ignore the report, which costs more than the check is worth.
+    #
+    # So a target counts only if it has the SHAPE of a sheet number — the
+    # same `SHEET_ID_RE` the indexer identifies sheets with, so the check and
+    # the corpus cannot disagree about what a sheet number is.
+    #
+    # Comparison is on the sheet number ALONE, not the revision: A-201 and
+    # A-201.01 are the same drawing at different issues, and a callout to
+    # 'A-201' is satisfied by 'A-201.01' being in the set.
+    """
+    have = set()
+    for s in sheets_present or []:
+        base = _sheet_base(s)
+        if base:
+            have.add(base)
+    out: List[Dict[str, Any]] = []
+    for c in callouts or []:
+        payload = c.get("payload") if isinstance(c.get("payload"), dict) else c
+        raw = str(payload.get("target_sheet") or "").strip().upper()
+        target = _sheet_shaped(raw)
+        if not target:
+            continue
+        if _sheet_base(target) in have:
+            continue
+        out.append({
+            "from_sheet": c.get("sheet_number") or payload.get("sheet_number"),
+            "detail_number": str(payload.get("detail_number") or "").strip(),
+            "target_sheet": target,
+            "quote": c.get("quote") or payload.get("text") or "",
+        })
+    out.sort(key=lambda f: (str(f["from_sheet"] or ""), f["target_sheet"]))
+    return out
+
+
+def referenced_sheets_missing(callouts: Iterable[Dict[str, Any]],
+                              sheets_present: Iterable[str]
+                              ) -> List[Dict[str, Any]]:
+    """The same findings, grouped by the sheet that is not there.
+
+    ── ONE MISSING SHEET IS ONE FINDING, NOT SEVEN ────────────────────────
+    #
+    # Measured on 588 Boyland 2026-09-19: eight dangling callouts, and SEVEN
+    # of them are the structural drawings all pointing at S-400. A list of
+    # eight rows says eight problems; the truth is two, and the useful
+    # sentence is 'seven sheets reference S-400 and it is not in the set'.
+    #
+    # On a larger project the ungrouped form is a list nobody opens.
+    #
+    # ── AND THE WORDING IS DELIBERATE ──────────────────────────────────────
+    #
+    # 'referenced but not in the indexed set', never 'missing'. A sheet may
+    # never have been issued, or may simply not have been uploaded, and
+    # nothing in the records distinguishes those. Saying 'missing' asserts the
+    # first and would send somebody to the architect over an upload.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for f in dangling_callouts(callouts, sheets_present):
+        tgt = f["target_sheet"]
+        row = out.setdefault(tgt, {"target_sheet": tgt, "referenced_by": [],
+                                   "details": []})
+        src = f.get("from_sheet")
+        if src and src not in row["referenced_by"]:
+            row["referenced_by"].append(src)
+        if f.get("detail_number"):
+            row["details"].append(f"{src}:{f['detail_number']}")
+    rows = sorted(out.values(),
+                  key=lambda r: (-len(r["referenced_by"]), r["target_sheet"]))
+    for r in rows:
+        r["referenced_by"].sort()
+        n = len(r["referenced_by"])
+        r["summary"] = (
+            f"{r['target_sheet']} is referenced by {n} "
+            f"{'sheet' if n == 1 else 'sheets'} and is not in the indexed set")
+    return rows
+
+
+def _sheet_shaped(text: str) -> str:
+    """The sheet number inside `text`, or '' when it does not contain one."""
+    m = SHEET_ID_RE.search((text or "").upper())
+    return m.group(1) if m else ""
+
+
+def _sheet_base(sheet: str) -> str:
+    """'A-201.01' and 'A-201' are the same drawing at different issues."""
+    s = (sheet or "").strip().upper()
+    return s.split(".")[0] if s else ""
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # The gate
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -861,5 +983,6 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
+           "dangling_callouts", "referenced_sheets_missing",
            "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]

@@ -4,15 +4,15 @@
     "id": "6a5f63bc147407d3261df2c7",
     "name": "588 Thomas S Boyland Street, Brooklyn",
     "baseline": {
-      "_note": "The corpus of the re-index of 2026-09-18 13:24-15:31Z, the first pass carrying the contested-cell rule (#602). 33 of 129 pages lost a section to a provider that was timing out, and 41 calls were retried — the retry that #600 added fires on the spot, so one slow section could spend the page budget twice and starve the sections behind it. That is fixed in the retry-at-end-of-page change, which is NOT in this corpus. Any difference from these numbers means something wrote into the project and the whole pass is re-run.",
+      "_note": "The corpus of the re-index of 2026-09-19 19:47-20:48Z on deployed build 8a9fb9df - the first pass carrying the heading-row fix (#624), which stopped `schedule_from_table` folding a table of prose into its own column headings. ZERO pages lost a section and ZERO section calls failed, for the second clean pass running. The 429 backoff was again NOT exercised: the provider refused nothing, so a clean pass is still no evidence that the backoff works. WHAT THIS BASELINE CLAIMS: that nothing wrote into the project between the start and the end of the run, and that the page set is unchanged. It does NOT claim two passes are comparable - `temperature: 0` is not reproducible on this provider, so `records` is INFORMATIONAL and a delta against a previous pass is within run-to-run noise, not evidence of contamination.",
       "pages": 129,
       "current_pages": 111,
-      "records": 15289,
-      "newest_page_indexed_at": "2026-09-18 15:26:02.984000",
-      "newest_record_created_at": "2026-09-18 15:31:05.479000"
+      "records": 15463,
+      "newest_page_indexed_at": "2026-09-19 20:43:27.405000",
+      "newest_record_created_at": "2026-09-19 20:43:34.593000"
     },
     "stale": {
-      "_note": "Measured on the 2026-09-18 re-indexed corpus. All three classes remain ZERO, as they were after the first re-index. No case is excluded from scoring.",
+      "_note": "Measured on the 2026-09-19 clean corpus with plan_eval.stale_index. All three classes ZERO and the total stale record count is ZERO, so no case is excluded from scoring. Read off the module rather than assumed: an earlier census in this session reported zero because the function name was wrong, which is the same lie as a probe reading the wrong field.",
       "schedule_cell_count_from_a_vision_schedule": 0,
       "element_without_a_count_basis": 0,
       "tag_that_is_not_a_mark": 0
