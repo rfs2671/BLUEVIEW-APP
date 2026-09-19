@@ -24369,6 +24369,24 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         f'{_amend_esc.escape(_amend_line)}</span></div>'
     ) if _amend_line else ""
 
+    # ── AND A SUPERSEDED RECORD SAYS SO, TOO ────────────────────────────
+    #
+    # THE BANNER ABOVE IS THE CHILD'S HALF. It reads `is_amendment` off THIS
+    # document, so it fires on the correction and is silent on the record that
+    # was corrected -- `amendment_state` returns the "none" state unless
+    # `is_amendment is True`. The parent's sheet therefore printed as though it
+    # were the current record, and an inspector handed that PDF is holding a
+    # superseded document that asserts itself as live.
+    #
+    # IT ADDS A NOTICE AND NOTHING ELSE. The record's own content is not
+    # altered, hidden or restated; the same rule `_appended_photo_notice`
+    # follows, and for the same reason -- this apparatus reports that something
+    # about the filing changed, it does not re-report the filing.
+    #
+    # AWAITED HERE, LIKE EVERY OTHER CROSSING. `render` is synchronous, so the
+    # one read this needs happens on this side and the result crosses as data.
+    _superseded_html = await superseded_notice_for(logbook)
+
     # ── WHAT THE ENGINE CANNOT AWAIT, RESOLVED HERE ─────────────────────
     #
     # `render` is synchronous and will stay that way: a renderer that can
@@ -24518,6 +24536,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
             "amendment_html": amendment_html,
+            # WHETHER THIS SHEET IS STILL THE RECORD. Also composed above the
+            # switch, and drawn by the engine ABOVE the banner: "this is not
+            # the current version" outranks "this version was itself a
+            # correction", and a middle link of a 4-deep chain carries both.
+            "superseded_html": _superseded_html,
         })
         if _sheet:
             return _sheet
@@ -35776,6 +35799,350 @@ def _filed_log(logbooks, log_type):
     return None
 
 
+
+
+# ══ ONE RECORD WITH ITS HISTORY, NOT TWO ═══════════════════════════════════
+#
+# `_filed_log` above answers "which document of this TYPE should print on the
+# combined report", and the rule it states -- the original prints until the
+# amendment is FILED, and from that moment the amendment prints and the
+# original never appears again -- is the whole of the operator's ruling. What
+# it could not answer is the inspector's LIST, because that list is not one
+# document per type: 92 orientation records on one project are 92 chains, and
+# `_filed_log` would collapse them to one.
+#
+# SO THE GROUPING IS THE MISSING HALF, AND IT IS THE CHAIN ITSELF. Every other
+# key that was tried is a proxy: (project, date, log_type) is too coarse for
+# the per-worker types, and `chainKey` -- the client's worker_id/worker_name
+# rule -- resolves for `subcontractor_orientation` and NO other type, so a
+# daily jobsite log and its amendment were passed through as two records with
+# nothing saying which was current. `parent_logbook_id` is what amend_logbook
+# actually writes, it is written for every type, and nothing in this codebase
+# read it back for grouping until now.
+#
+# THE HEAD IS STILL `_filed_log`'S. This does not re-decide which link is the
+# record; it decides which documents are one record's links, and then CALLS
+# `_filed_log` on them. A second supersession rule is how the report and the
+# list would come to disagree about the same amendment.
+#
+# NOTHING HERE WRITES. Every function below reads documents and returns new
+# dicts and lists; no stored byte of a filed record is touched, which is the
+# constraint the whole read-path ruling rests on -- `verify_signature_integrity`
+# re-hashes the stored snapshot against itself, so an in-place edit would leave
+# every signature verifying green on content nobody signed.
+
+
+def logbook_chain_parent(log) -> Optional[str]:
+    """The id of the document this one amends, or None for an original."""
+    pid = str((log or {}).get("parent_logbook_id") or "").strip()
+    return pid or None
+
+
+def logbook_chain_root_id(log, by_id) -> str:
+    """The id of the document at the TOP of this record's chain, walking up.
+
+    N DEEP, NOT ONE. Production carries chains of depth 1, 2, 3 and 4, and 11
+    live children have a parent that is ITSELF an amendment -- so a rule that
+    looked only at `parent_logbook_id` and stopped would put a grandchild in
+    its own group and show the inspector two records again, one link further
+    down.
+
+    A PARENT THAT IS NOT IN THE SET ENDS THE WALK, and the walk returns the
+    child's own id. That is fail-open on purpose: the caller groups on what
+    comes back, so an amendment whose parent was never submitted -- or sits on
+    another page, or another date -- becomes its own group and is SHOWN. The
+    other direction drops a filed compliance record off an inspector's screen.
+
+    CYCLE-SAFE. `seen` is not defensive decoration: a self-parent, or two rows
+    naming each other, is a write nobody has ruled out, and an infinite loop
+    here is an unanswered request on the tablet's only logbook read.
+    """
+    node = log
+    node_id = str((log or {}).get("_id") or "")
+    seen = {node_id}
+    while True:
+        pid = logbook_chain_parent(node)
+        if not pid or pid in seen or pid not in by_id:
+            return node_id
+        seen.add(pid)
+        node, node_id = by_id[pid], pid
+
+
+def amendment_chains(logs) -> list:
+    """The documents, grouped into chains. One list per RECORD.
+
+    KEYED ON (chain root, log_type). The type is in the key only as a guard: a
+    child copies its parent's `log_type` at amend_logbook, so a chain whose
+    links disagree is a corruption -- and the two halves then land in two
+    groups and BOTH render, rather than one of them being filtered out of its
+    own group by `_filed_log` and vanishing.
+
+    ORDER IS FIRST APPEARANCE, so the caller's ordering survives collapse.
+    """
+    rows = [l for l in (logs or []) if isinstance(l, dict)]
+    by_id = {}
+    for l in rows:
+        rid = str(l.get("_id") or "")
+        if rid:
+            by_id[rid] = l
+    groups: Dict[tuple, List] = {}
+    order: List[tuple] = []
+    for l in rows:
+        # A ROW WITH NO `_id` GETS ITS OWN GROUP, by object identity. Keying
+        # every id-less row on "" would merge unrelated records into one and
+        # hide all but one of them.
+        key = (logbook_chain_root_id(l, by_id) or f"row:{id(l)}",
+               str(l.get("log_type") or ""))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(l)
+    return [groups[k] for k in order]
+
+
+def collapsed_chain(chain) -> Optional[dict]:
+    """One chain, read as one record: `{head, rows, length, path, superseded,
+    competing}`.
+
+    `head`        the document that IS the record -- `_filed_log`'s choice,
+                  not a second one.
+    `length`      how many live documents this record is made of. A reader
+                  cannot tell an amended record from an original without it.
+    `path`        the head's ancestry, head first: the documents it was built
+                  from. Every id in it is superseded BY the head.
+    `competing`   filed links that are NOT on that path. See below.
+
+    ── A FORK MUST SURFACE AS A FORK, NEVER AS A SILENT CHOICE ─────────
+
+    `_filed_log` breaks ties deterministically, which is the right property for
+    a renderer that must print SOMETHING -- but determinism is not correctness.
+    Six parents in production have two live children, and for the filed ones
+    the tie-break silently picks the newer and the other correction leaves the
+    record with nothing anywhere saying it was filed. The client's
+    `_open_corrections` already refuses that for UNSIGNED children; this is the
+    same refusal for FILED ones, which is the case `_open_corrections` cannot
+    see because a filed child is not open.
+
+    IT REQUIRES A PARENT LINK, and that clause is load-bearing. Without it, two
+    separate ORIGINALS of the same worker's orientation -- which the client
+    groups by worker and which amend nothing -- would each report the other as
+    a competing correction. A competing record is a CORRECTION somebody filed
+    against this record; a document that amends nothing is not one.
+
+    NOTHING FILED FALLS BACK TO THE FIRST ROW rather than to None. `_filed_log`
+    returns None there, and on the report that is right -- a card that says
+    FILED over an unsigned draft, carrying a public share link to it, is worse
+    than a blank. A LIST is the opposite case: returning None here would
+    DELETE the row, and a filed history that silently drops a draft is the
+    defect this whole change exists to remove.
+    """
+    rows = [l for l in (chain or []) if isinstance(l, dict)]
+    if not rows:
+        return None
+    log_type = str(rows[0].get("log_type") or "")
+    head = _filed_log(rows, log_type)
+    if head is None:
+        head = rows[0]
+    by_id = {str(l.get("_id") or ""): l for l in rows if l.get("_id")}
+
+    path: List[str] = []
+    node = head
+    while node is not None:
+        nid = str(node.get("_id") or "")
+        if nid in path:
+            break
+        path.append(nid)
+        pid = logbook_chain_parent(node)
+        node = by_id.get(pid) if pid else None
+
+    live = [l for l in rows if not logbook_is_withdrawn(l)]
+    head_id = str(head.get("_id") or "")
+    return {
+        "head": head,
+        "rows": rows,
+        "length": len(live),
+        "path": path,
+        "superseded": [str(l.get("_id") or "") for l in live
+                       if str(l.get("_id") or "") != head_id],
+        "competing": [l for l in live
+                      if str(l.get("_id") or "") not in path
+                      and logbook_chain_parent(l)
+                      and logbook_is_filed(l)],
+    }
+
+
+def collapse_amendment_chains(logs) -> list:
+    """Many documents in, one entry per record out. The primitive, composed."""
+    out = []
+    for chain in amendment_chains(logs):
+        c = collapsed_chain(chain)
+        if c:
+            out.append(c)
+    return out
+
+
+# ── AND THE SUPERSEDED PARENT SAYS SO, ON ITS OWN SHEET ────────────────────
+#
+# THE HALF THE LIST CANNOT DO. Collapsing the list hands the inspector the
+# current record -- but the superseded one is still a PDF, still downloadable,
+# still in somebody's folder and in somebody's inbox, and it renders today as
+# though it were the record: `amendment_state` returns the "none" state unless
+# `is_amendment is True`, so a parent's sheet is silent about ever having been
+# amended. An inspector holding that PDF is holding a superseded document that
+# asserts itself as live.
+#
+# MODELLED ON `_appended_photo_notice`, which is the house precedent for
+# telling a filed sheet's reader that something about it changed after filing:
+# same box, same colours, a statement rather than a caption, and NOTHING about
+# the record's own data is altered, hidden or restated. The sheet still prints
+# exactly what it printed.
+SUPERSEDED_LABEL = "Superseded record"
+
+# The fields the notice reads. An EXCLUSION would be wrong here for once: this
+# lookup exists to be cheap, and `data` on a logbook carries the photographs.
+SUPERSEDED_LOOKUP_FIELDS = {
+    "_id": 1, "parent_logbook_id": 1, "log_type": 1, "date": 1,
+    "status": 1, "is_locked": 1, "is_amendment": 1,
+    "created_at": 1, "created_by_name": 1,
+}
+
+
+def superseded_sentence(record, siblings) -> str:
+    """WHY THIS SHEET IS NOT THE CURRENT RECORD -- or "" when it is.
+
+    Reads the chain and nothing else: no clock, no relative time, every date
+    off a document. A sheet printed in December says what it said in September.
+
+    FOUR ANSWERS, AND THE SILENT ONE IS THE COMMON CASE:
+
+      the head, or unfiled            "" -- an unamended record says nothing,
+                                      and a DRAFT says nothing here because
+                                      `filing_state` above already says it is
+                                      a draft. Two pieces of apparatus making
+                                      one claim is how they come to disagree.
+      amended once                    the ruling's own sentence.
+      amended, then amended again     names the CURRENT record, not the child.
+                                      On a 4-deep chain the direct child is
+                                      itself superseded, and pointing a reader
+                                      at it would hand him a second stale
+                                      document.
+      forked                          says there are two and refuses to name
+                                      one as the record.
+    """
+    rid = str((record or {}).get("_id") or "")
+    if not rid or not logbook_is_filed(record) or logbook_is_withdrawn(record):
+        return ""
+    rows = [l for l in (siblings or []) if isinstance(l, dict)]
+    if not any(str(l.get("_id") or "") == rid for l in rows):
+        rows = rows + [record]
+    mine = None
+    for chain in amendment_chains(rows):
+        if any(str(l.get("_id") or "") == rid for l in chain):
+            mine = chain
+            break
+    c = collapsed_chain(mine)
+    if not c:
+        return ""
+    head = c["head"]
+    if str(head.get("_id") or "") == rid:
+        return ""
+
+    live = [l for l in c["rows"] if not logbook_is_withdrawn(l)]
+    kids = [l for l in live
+            if logbook_chain_parent(l) == rid and logbook_is_filed(l)]
+    head_day = _amendment_day(head.get("created_at"))
+    head_by = str(head.get("created_by_name") or "").strip()
+    current = "The current record is the amendment"
+    if head_day:
+        current += f" filed on {head_day}"
+    if head_by:
+        current += f" by {head_by}"
+
+    if len(kids) > 1:
+        days = ", ".join(d for d in sorted(
+            {_amendment_day(k.get("created_at")) for k in kids}) if d)
+        return (f"This record was amended more than once at the same point: "
+                f"{len(kids)} separate corrections to it were filed"
+                + (f" ({days})" if days else "")
+                + f". They compete, and no single one of them supersedes this "
+                f"record. {current}, but the others were filed against this "
+                f"same record and are not answered by it.")
+    if not kids:
+        # A FILED LEAF THAT IS NOT THE HEAD: this sheet is a correction, and a
+        # DIFFERENT correction to the same parent is the record. It is the
+        # losing half of a fork, and it must not read as current either.
+        return (f"A second correction to the same record was filed, and this "
+                f"sheet is not the one that stands. {current}.")
+    kid_day = _amendment_day(kids[0].get("created_at"))
+    lead = "This record was amended"
+    if kid_day:
+        lead += f" on {kid_day}"
+    if str(kids[0].get("_id") or "") == str(head.get("_id") or ""):
+        return f"{lead}. The current record is the amendment of that date."
+    deeper = max(len(c["path"]) - 1, 1)
+    return (f"{lead}, and has been corrected {deeper} times in all. {current}.")
+
+
+def superseded_notice(record, siblings) -> str:
+    """The sentence above, as the sheet's own apparatus. "" when there is none."""
+    import html as _h
+
+    line = superseded_sentence(record, siblings)
+    if not line:
+        return ""
+    return (
+        '<div style="margin:16px 0 0;padding:8px 10px;border:1px solid #92400e;'
+        'background:#fffbeb;">'
+        '<p style="margin:0 0 6px;font-size:13px;font-weight:700;'
+        f'color:#92400e;">&#9888; {_h.escape(SUPERSEDED_LABEL)}</p>'
+        '<p style="margin:0;font-size:12px;color:#334155;">'
+        f'{_h.escape(line)}</p></div>'
+    )
+
+
+async def superseded_notice_for(logbook) -> str:
+    """The notice for one stored record, with the one read it needs.
+
+    ── NOT KEYED ON `parent_logbook_id`, AND THAT IS MEASURED ──────────
+
+    The obvious query is `{"parent_logbook_id": <this id>}` and there IS an
+    index on that field -- `logbooks_one_open_amendment_per_parent`. It cannot
+    serve this query. It is PARTIAL, filtered to
+    `status: "draft", is_locked: false, cp_signature: None`, which is the
+    OPPOSITE of what this notice asks: it wants the FILED children. A query
+    Mongo cannot prove to be a subset of a partial filter does not use that
+    index, so the "indexed lookup" would have been a collection scan over
+    `logbooks` -- the collection that holds the photographs.
+
+    SO IT READS THE (project, date, log_type) GROUP, which
+    `logbooks_project_date` serves and which the engine's group renderer
+    already reads for four of the thirteen types. A child copies its parent's
+    project, date and log_type at amend_logbook, so that set CONTAINS the whole
+    chain; it is one project-day-type, a few dozen documents, and the
+    projection drops `data` so none of the photographs cross.
+
+    A FAILED READ PRINTS NOTHING AND LOGS. The alternative is a 500 on an
+    inspector's download, and a missing notice is the behaviour of every sheet
+    filed before today.
+    """
+    if not isinstance(logbook, dict) or not logbook.get("_id"):
+        return ""
+    try:
+        siblings = await db.logbooks.find(
+            {
+                "project_id": logbook.get("project_id"),
+                "date": logbook.get("date"),
+                "log_type": logbook.get("log_type"),
+                "is_deleted": {"$ne": True},
+                **WITHDRAWN_EXCLUDED,
+            },
+            SUPERSEDED_LOOKUP_FIELDS,
+        ).to_list(500)
+    except Exception as _e:                              # pragma: no cover
+        logger.warning(f"superseded lookup failed: {_e}")
+        return ""
+    return superseded_notice(logbook, siblings)
+
 # ── REPORT #N — ISSUED ONCE, PER PROJECT, AT SEND ──────────────────────────
 #
 # WHAT N COUNTS: the Nth report ISSUED for this project. Not the Nth generated
@@ -36574,6 +36941,12 @@ async def get_submitted_logbooks(
     unchanged in shape and stays first for the installed clients that read
     nothing else.
 
+    ONE ROW PER RECORD, NOT PER DOCUMENT. An amendment chain arrives as one
+    row -- its head -- carrying `_chain_length`, `_superseded_ids`,
+    `amendment_sentence` and, where two corrections compete,
+    `_competing_records`. See step 4 below for why the collapse is here and
+    not on the device.
+
     PAGES BY DATE, NEVER BY LOG. The client caches [{date, logs}] entries and
     renders a day as a unit; half a day in one page and half in the next would
     cache a date that is missing filed records with nothing saying so. So the
@@ -36614,23 +36987,91 @@ async def get_submitted_logbooks(
             SUBMITTED_LOGBOOK_EXCLUDED_FIELDS,
         ).sort("date", -1).to_list(None)
 
-    by_date: Dict[str, List] = {k: [] for k in page}
+    # ── STEP 4 — ONE RECORD WITH ITS HISTORY, NOT TWO ───────────────────────
+    #
+    # THE DEFECT, MEASURED. This response carried every submitted row with no
+    # `is_amendment` filter, and 26 (project, date, log_type) groups in
+    # production hold two or more submitted rows where at least one is an
+    # amendment. `frontend/app/site/logbooks.jsx` draws a card per row and
+    # imports no collapse helper, so a DOB inspector standing on the site saw
+    # the original and its correction as two identical-looking filed records
+    # with nothing saying which one is the record.
+    #
+    # COLLAPSED HERE AND NOT ON THE DEVICE, for three reasons that all point
+    # the same way. The kiosk and every installed tablet get the fix with no
+    # OTA -- a phone in the field can be weeks from one. An OLD client is
+    # strictly better off: it receives FEWER rows of exactly the shape it
+    # already reads, and ignores the `_`-prefixed additions. And the cached day
+    # payload shrinks by whatever the superseded documents weighed, on a screen
+    # whose whole design is a ~6MB AsyncStorage ceiling.
+    #
+    # PER DATE, NOT ACROSS THE PAGE. amend_logbook copies the parent's `date`
+    # onto the child, so a chain lives inside one date and collapsing inside
+    # the bucket is lossless. It is also the safe direction if that ever stops
+    # being true: a parent and child on two dates fall into two groups and BOTH
+    # render, which is the old behaviour, rather than one of them being dropped
+    # from a date it was filed on.
+    #
+    # THE SUPERSEDED ROWS LEAVE THE BODY, AND THAT IS THE POINT. Their PDFs
+    # stop being named by the stored list, so `sweepDocCache` drops them from
+    # the tablet; the record an inspector is handed is the current one. The
+    # superseded sheet is still served by its own endpoint, and since this
+    # change it says on its face that it is not the current record.
+    _by_day: Dict[str, List] = {k: [] for k in page}
     for log in logbooks:
-        # SAFE FOR AN OLD CLIENT WITHOUT A SECOND FIELD, unlike the manifest
-        # above. These rows are whole documents, so they still carry
-        # `updated_at`/`submitted_at`/`created_at` -- all three are in
-        # docCache's VERSION_FIELDS -- and the keep-set therefore holds the
-        # old name AND this one. The compact manifest row carries neither,
-        # which is why it needed `rv`.
-        _row = serialize_id(dict(log))
-        _row["cache_version"] = _logbook_cache_version(log)
-        by_date[_submitted_date_key(log.get("date"))].append(_row)
+        _by_day[_submitted_date_key(log.get("date"))].append(log)
+
+    by_date: Dict[str, List] = {k: [] for k in page}
+    for _key, _day in _by_day.items():
+        for _chain in collapse_amendment_chains(_day):
+            _head = _chain["head"]
+            # SAFE FOR AN OLD CLIENT WITHOUT A SECOND FIELD, unlike the manifest
+            # above. These rows are whole documents, so they still carry
+            # `updated_at`/`submitted_at`/`created_at` -- all three are in
+            # docCache's VERSION_FIELDS -- and the keep-set therefore holds the
+            # old name AND this one. The compact manifest row carries neither,
+            # which is why it needed `rv`.
+            _row = serialize_id(dict(_head))
+            _row["cache_version"] = _logbook_cache_version(_head)
+            # WHAT THE ROW HAS TO SAY, AND WHY EACH PART IS SEPARATE.
+            #
+            # `_chain_length` is the only thing that tells a reader this is an
+            # amended record rather than a first draft -- the head looks like
+            # an original. `_superseded_ids` names the documents it replaces,
+            # so the row is auditable without a second request.
+            #
+            # `amendment_sentence` IS COMPUTED INDEPENDENTLY OF THE LENGTH. A
+            # head whose parent was never submitted has a chain of one here and
+            # is still an amendment; gating the sentence on the length would
+            # silence it on exactly that row.
+            if _chain["length"] > 1:
+                _row["_chain_length"] = _chain["length"]
+                _row["_superseded_ids"] = _chain["superseded"]
+            _amend_line = amendment_sentence(amendment_state(_head))
+            if _amend_line:
+                _row["amendment_sentence"] = _amend_line
+            # A FORK SURFACES AS A FORK. `_filed_log` had to pick one of two
+            # filed corrections to print; naming the other is what keeps that
+            # pick from being silent.
+            if _chain["competing"]:
+                _row["_competing_records"] = [
+                    {"id": str(_c.get("_id") or ""),
+                     "created_at": _c.get("created_at")}
+                    for _c in _chain["competing"]
+                ]
+            by_date[_key].append(_row)
     return {
         "dates": by_date,
         "complete": complete,
         "next_before": next_before,
         "date_count": len(by_date),
-        "log_count": len(logbooks),
+        # THE COUNT OF WHAT THIS BODY CONTAINS, which after the collapse is the
+        # number of RECORDS and no longer the number of documents read. No
+        # client reads it -- the only occurrence of `log_count` under
+        # frontend/ is siteLogbookHistory.test.cjs, which COMPUTES it for its
+        # fake server -- and a count describing rows that are not in the body
+        # is a number no reading of the payload could contradict.
+        "log_count": sum(len(v) for v in by_date.values()),
     }
 
 @api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
