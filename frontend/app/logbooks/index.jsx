@@ -536,7 +536,27 @@ export default function LogBooksScreen() {
    * switch above it even for a frame — and a REFUSAL (hot work, from a CP)
    * puts the switch back rather than leaving it showing a state the server
    * never accepted.
+   *
+   * ── AND `periods` COMES BACK WITH IT ──────────────────────────────────────
+   *
+   * Declaring a hot-work day does not change what is REQUIRED — the standing
+   * permit already settled that — it changes whether the log is DUE today, and
+   * that answer lives on `periods`. Applying only `required_logbooks` would
+   * leave the pre-declaration hot-work row in place saying satisfied, and
+   * getVisibleLogTypes would go on hiding the tile: a CP declaring a day and
+   * watching nothing happen.
+   *
+   * ── SCOPE, BECAUSE ONE TYPE NOW HAS TWO ROWS ──────────────────────────────
+   *
+   * `hot_work` appears twice: the admin's standing permit and the dated "today"
+   * declaration. Both carry `log_type: 'hot_work'`, so every match below is on
+   * (log_type, scope) — matching on the type alone would move both switches on
+   * one tap and put the admin's permit wherever the CP's day went.
    */
+  const sameSwitch = (a, act) => (
+    a.log_type === act.log_type && (a.scope || 'standing') === (act.scope || 'standing')
+  );
+
   const handleToggleLogbook = async (act) => {
     if (!selectedProject || !act) return;
     const projectId = selectedProject._id || selectedProject.id;
@@ -544,33 +564,56 @@ export default function LogBooksScreen() {
     setRequiredLogbooks((prev) => (prev ? {
       ...prev,
       activations: (prev.activations || []).map(
-        (a) => (a.log_type === act.log_type ? { ...a, active: next } : a),
+        (a) => (sameSwitch(a, act) ? { ...a, active: next } : a),
       ),
     } : prev));
     try {
-      const res = await logbookActivationAPI.set(projectId, act.log_type, next);
+      const res = await logbookActivationAPI.set(
+        projectId, act.log_type, next, act.scope,
+      );
       setRequiredLogbooks((prev) => (prev ? {
         ...prev,
         required_logbooks: Array.isArray(res?.required_logbooks)
           ? res.required_logbooks : prev.required_logbooks,
+        periods: Array.isArray(res?.periods) ? res.periods : prev.periods,
+        // TURNING THE PERMIT ON UNBLOCKS THE DAY ROW IN THE SAME BREATH. Its
+        // `available` came off the standing field, and leaving it false until
+        // the next fetch would show an admin a dead control one tap after he
+        // enabled it.
+        activations: (prev.activations || []).map((a) => (
+          (act.scope !== 'day' && a.log_type === act.log_type && a.scope === 'day')
+            ? { ...a, available: next } : a
+        )),
       } : prev));
       toast.success(
         next ? `${act.label} on` : `${act.label} off`,
-        next
-          ? 'It is now on your logbook list.'
-          : 'Hidden until you switch it back on.',
+        // A DAY IS NOT A SETTING, and the sentence has to say so — the whole
+        // ruling is that nobody has to remember to switch it back off.
+        act.scope === 'day'
+          ? (next
+            ? 'Today’s hot work log is on your list. It clears itself tomorrow.'
+            : 'Taken back. Today’s hot work log is off your list.')
+          : (next
+            ? 'It is now on your logbook list.'
+            : 'Hidden until you switch it back on.'),
       );
     } catch (e) {
       setRequiredLogbooks((prev) => (prev ? {
         ...prev,
         activations: (prev.activations || []).map(
-          (a) => (a.log_type === act.log_type ? { ...a, active: act.active } : a),
+          (a) => (sameSwitch(a, act) ? { ...a, active: act.active } : a),
         ),
       } : prev));
       // A 403 is the server saying this one is not the CP's to set. That is a
       // different sentence from "it did not save", and telling him the wrong
       // one is how a CP learns to distrust the screen.
-      const refused = e?.response?.status === 403;
+      //
+      // AND SO IS THE PERMIT REFUSAL, which is a 400 and not a 403: the CP MAY
+      // declare hot-work days, on a project whose permit the office has
+      // filed. "No permit, no day" — the server's rule, reached whatever this
+      // screen rendered.
+      const refused = e?.response?.status === 403
+        || e?.response?.data?.detail?.code === 'HOT_WORK_DAY_REQUIRES_PERMIT';
       toast.error(
         refused ? 'An admin sets this one' : 'Could not update',
         refused
@@ -626,13 +669,20 @@ export default function LogBooksScreen() {
         // refuse; `frequency` is the registry's own word, served with the
         // catalog.
         //
-        // AND IT FAILS OPEN, WHICH IS WHAT PROTECTS `hot_work`. `hot_work` is
-        // as_needed too, and NO SERVER RULE SAYS WHEN A HOT-WORK PERMIT LOG IS
-        // DUE — nobody has defined one. With no period row for a key,
-        // periodSatisfied returns null, which is not `true`, so hot_work is
-        // never hidden by this. Only a type the server has positively said is
-        // satisfied disappears. A missing obligation is invisible in the way
-        // an extra one is not, so silence must keep the tile.
+        // AND IT FAILS OPEN. With no period row for a key, periodSatisfied
+        // returns null, which is not `true`, so nothing is hidden. Only a type
+        // the server has positively said is satisfied disappears. A missing
+        // obligation is invisible in the way an extra one is not, so silence
+        // must keep the tile.
+        //
+        // `hot_work` USED TO BE WHAT THAT PROTECTED, and it no longer needs
+        // protecting: the operator ruled that a hot-work log is due "only on
+        // days hot work happens... dated, not persistent", the server emits a
+        // row for it, and on a day nobody declared that row says satisfied and
+        // the tile goes. THE GUARD DID NOT MOVE — hot work became an exception
+        // by acquiring a rule, not by this predicate weakening. A sixth type
+        // added as_needed with no rule is still silent, still null, still
+        // visible.
         .filter((t) => !(t.frequency === 'as_needed'
           && periodSatisfied(periods, t.key) === true));
     }
@@ -835,9 +885,31 @@ export default function LogBooksScreen() {
                   // `hot_work_permitted` could not be switched on from any
                   // screen, on any project, by anybody. The server endpoint was
                   // correct the whole time and simply never reached.
-                  const mine = act.activated_by !== 'admin' || isAdminUser;
+                  //
+                  // AND `available` IS THE THIRD FACT, on the dated row only.
+                  // The hot-work DAY is the CP's to declare, but only where
+                  // the office has filed the site's permit — "no permit, no
+                  // day", which the server enforces and this mirrors. An
+                  // unavailable day row is therefore not his either, and it
+                  // borrows the admin-owned sentence below verbatim because it
+                  // is the same message: the log exists, and an admin is who
+                  // turns it on.
+                  const mine = (act.activated_by !== 'admin' || isAdminUser)
+                    && act.available !== false;
+                  // DOES THIS STANDING ROW HAVE A DATED ROW BESIDE IT? If it
+                  // does, "On" cannot mean "it is on your logbook list" — the
+                  // permit being on puts nothing on his list until somebody
+                  // declares a day, and that sentence would be false on every
+                  // quiet morning. Read off the SERVER's rows, so a second
+                  // dated type gets the right sentence with no change here.
+                  const datedPeer = act.scope !== 'day' && activations.some(
+                    (a) => a.log_type === act.log_type && a.scope === 'day',
+                  );
                   return (
-                    <View key={act.log_type} style={styles.scaffoldToggleRow}>
+                    <View
+                      key={`${act.log_type}:${act.scope || 'standing'}`}
+                      style={styles.scaffoldToggleRow}
+                    >
                       <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.scaffoldToggleTitle}>{act.label}</Text>
@@ -846,11 +918,33 @@ export default function LogBooksScreen() {
                               switch on" is a different fact from "off" — a CP
                               hunting for the hot-work log needs to know it
                               exists and who turns it on, not to find a dead
-                              control. */}
+                              control.
+
+                              A DATED ROW SAYS SO IN BOTH ITS OWN STATES. "On"
+                              has to name the expiry or the CP will go looking
+                              for the switch-off that killed the old hot-work
+                              flag, and "off" has to say WHEN to switch on — a
+                              day, not a condition. The blocked state is shared
+                              with the admin-owned rows above, unchanged.
+
+                              AND THE ROW ABOVE IT HAD TO STOP SAYING "it is on
+                              your logbook list". For a type with a dated row
+                              beside it that sentence is FALSE on every day
+                              nobody declared: the permit is on, and the log is
+                              not on his list. It says what it actually means
+                              and points at the control that does put it
+                              there. `dated_peer` is a fact about the SERVER's
+                              rows, not a client-side list of log types. */}
                           {act.active
-                            ? 'On — it is on your logbook list'
+                            ? (act.scope === 'day'
+                              ? 'On — on your list for today. It clears itself tomorrow'
+                              : (datedPeer
+                                ? 'On — allowed on this site. Declare the days below'
+                                : 'On — it is on your logbook list'))
                             : (mine
-                              ? 'Off — switch on when it starts'
+                              ? (act.scope === 'day'
+                                ? 'Off — switch on for the day hot work happens'
+                                : 'Off — switch on when it starts')
                               : 'Off — an admin switches this one on')}
                         </Text>
                       </View>

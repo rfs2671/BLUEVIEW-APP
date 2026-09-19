@@ -37,9 +37,21 @@
  *
  * Its row asserts no cadence — `period_start` and `period_end` are null on it —
  * because nothing has defined one and a period would be an invention. What it
- * asserts is coverage. `hot_work` is as_needed too and NO ROW IS EMITTED FOR IT,
- * because no server rule says when a hot-work permit log is due; see the
- * fail-open note below for why that silence is safe.
+ * asserts is coverage.
+ *
+ * ── AND A HOT-WORK DAY IS A DATE SOMEBODY DECLARED ───────────────────────────
+ *
+ * `hot_work` is as_needed too and USED TO GET NO ROW AT ALL, because no server
+ * rule said when a hot-work permit log was due — so it read Pending forever on
+ * 8 Walworth, where the standing permit toggle is on. The operator has ruled:
+ * "due only on days hot work happens... dated, not persistent". Its row now
+ * carries a day on `period_start`/`period_end`, which is reporting the
+ * declaration rather than inventing a cadence — the ruling is itself a date.
+ *
+ * TWO FACTS, AND ONLY THE SECOND IS HERE. `hot_work_permitted` on the project
+ * still says the site may do hot work at all and is still the admin's; this
+ * channel answers only whether today is a day hot work is happening. Permitted
+ * with nothing declared is NOT DUE, which is the whole fix.
  *
  * ── FAILS OPEN ───────────────────────────────────────────────────────────────
  *
@@ -47,6 +59,11 @@
  * back to the by-date status the screen used before this existed. An older
  * server must not make a required log vanish from a CP's count, and a cadence
  * hint is never worth a blank tile.
+ *
+ * THAT PROPERTY IS UNCHANGED BY HOT WORK HAVING A RULE. A fourth as-needed type
+ * added with no rule still gets no row, still reads null, and still keeps its
+ * tile. Hot work stopped relying on the silence by acquiring a rule — the guard
+ * itself did not move.
  */
 
 /** `periods` from the required-logbooks payload, keyed by log type. */
@@ -117,6 +134,31 @@ export function cadenceLabel(periods, logType) {
   // module is not that screen's private helper, and a label that would read
   // "Done this week" about a log filed in March is worse than one nobody sees.
   if (row.frequency === 'as_needed') {
+    // ── THE ONE PLACE A LOG TYPE'S NAME BELONGS ──────────────────────────────
+    //
+    // Two as-needed rules now cross this channel and they are due for
+    // unrelated reasons: an orientation is owed to a PERSON, a hot-work log to
+    // a DAY. The sentence is therefore type-specific, and no amount of shared
+    // wording makes "Nobody on site is waiting for one" true of a day nobody
+    // declared.
+    //
+    // THE DECISION IS STILL NOT MADE ON THE TYPE. getVisibleLogTypes hides a
+    // row on `frequency` and `satisfied` alone — the registry's own words —
+    // and that is the "second model" the screen refuses to grow. This function
+    // only renders a line for a row the server has already ruled on, which is
+    // why naming the type here costs nothing the note there is protecting.
+    if (row.log_type === 'hot_work') {
+      // SATISFIED IS ALMOST UNREACHABLE from the logbook list, which drops the
+      // tile entirely — same as the orientation below. Written anyway because
+      // this module is not that screen's private helper.
+      if (row.satisfied) return 'No hot work declared for today';
+      const by = typeof row.declared_by === 'string' && row.declared_by.trim()
+        ? ` — declared by ${row.declared_by.trim()}` : '';
+      // "TODAY", NOT "THIS WEEK" AND NOT "AGAIN". The obligation is one day
+      // long; saying anything wider would claim the log recurs, and two
+      // hot-work days in a week are two independent facts.
+      return `Due today — hot work is happening${by}`;
+    }
     if (row.satisfied) return 'Nobody on site is waiting for one';
     const n = typeof row.uncovered_worker_count === 'number'
       ? row.uncovered_worker_count

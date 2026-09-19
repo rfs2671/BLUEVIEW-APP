@@ -205,30 +205,80 @@ console.log('\n-- REQUIRED IS NOT DUE: a satisfied as-needed log leaves the list
     'no periods key hides nothing');
 }
 {
-  // ── HOT WORK IS UNTOUCHED, AND THIS IS THE ASSERTION THAT KEEPS IT SO ────
+  // ── HOT WORK HAS A RULING NOW, AND THIS IS WHAT IT LOOKS LIKE HERE ───────
   //
-  // `hot_work` is as_needed too and has the identical defect on 8 Walworth,
-  // where the toggle is on. NOBODY HAS DEFINED WHEN A HOT-WORK PERMIT LOG IS
-  // DUE, so no server rule emits a period row for it and this change does not
-  // invent one. The predicate keys on the FREQUENCY, so the only thing between
-  // hot_work and being silently hidden is that silence — asserted here rather
-  // than left to be discovered.
+  // This block used to assert the opposite: that `hot_work` KEEPS its tile
+  // when another type's row is satisfied, because NO SERVER RULE SAID WHEN A
+  // HOT-WORK PERMIT LOG WAS DUE and the predicate's silence was the only thing
+  // between it and being hidden. It needed the operator's ruling.
   //
-  // It needs the operator's ruling. Until then: same tile, same denominator.
-  const rows = build({
+  // The ruling: "due only on days hot work happens. CP or super toggles it on
+  // for that day. Dated, not persistent." So the server emits a row, and on a
+  // day nobody declared it says satisfied and the tile goes — which is the
+  // defect being fixed. 8 Walworth has the STANDING permit on, which is why
+  // hot_work is in its required set, and its tile read Pending every morning.
+  //
+  // THE PREDICATE DID NOT MOVE. The block below this one re-pins the fail-open
+  // property on a type that has no rule, which is what these assertions were
+  // really protecting.
+  const quiet = build({
     requiredLogbooks: {
       required_logbooks: ['daily_jobsite', 'hot_work'],
       classification_assessed: true,
       periods: [
-        { log_type: 'subcontractor_orientation', frequency: 'as_needed',
-          satisfied: true },
+        { log_type: 'hot_work', frequency: 'as_needed', satisfied: true,
+          period_start: '2026-09-18', period_end: '2026-09-18',
+          declared: false },
       ],
     },
     logTypeCatalog: CATALOG,
   });
-  ok(keysOf(rows).includes('hot_work'),
-    'hot_work is still on the list — no row is emitted for it, and a type the '
-    + 'server has said nothing about is never hidden');
+  ok(!keysOf(quiet).includes('hot_work'),
+    'a day nobody declared: hot_work leaves the list');
+
+  const declared = build({
+    requiredLogbooks: {
+      required_logbooks: ['daily_jobsite', 'hot_work'],
+      classification_assessed: true,
+      periods: [
+        { log_type: 'hot_work', frequency: 'as_needed', satisfied: false,
+          period_start: '2026-09-18', period_end: '2026-09-18',
+          due_reason: 'HOT_WORK_DECLARED', declared: true },
+      ],
+    },
+    logTypeCatalog: CATALOG,
+  });
+  ok(keysOf(declared).includes('hot_work'),
+    'and a declared one is back on it');
+}
+{
+  // ── THE FAIL-OPEN PROPERTY, RE-PINNED ON A TYPE THAT STILL NEEDS IT ──────
+  //
+  // Both as-needed types in the registry now have rules, so the instance has
+  // to be the NEXT one — a type added before anybody writes its rule. With no
+  // row for a key, periodSatisfied answers null, which is not `true`, so the
+  // predicate never fires and the tile and denominator entry both survive.
+  //
+  // A missing obligation is invisible in the way an extra one is not, so
+  // silence must keep the tile. That has not changed.
+  const rows = build({
+    requiredLogbooks: {
+      required_logbooks: ['daily_jobsite', 'a_type_with_no_rule_yet'],
+      classification_assessed: true,
+      periods: [
+        { log_type: 'hot_work', frequency: 'as_needed', satisfied: true },
+      ],
+    },
+    logTypeCatalog: [...CATALOG,
+      // NOT A REGISTRY TYPE, and named so nobody goes looking for it in
+      // server.py. The registry cross-check at the foot of this file only
+      // compares stand-ins the server DOES declare, so this one is ignored by
+      // it by construction.
+      { key: 'a_type_with_no_rule_yet', label: 'Future As-Needed Log',
+        frequency: 'as_needed' }],
+  });
+  ok(keysOf(rows).includes('a_type_with_no_rule_yet'),
+    'a type the server has said nothing about is never hidden');
 }
 {
   // A satisfied WEEKLY log keeps its tile. cadenceStatus paints it
@@ -367,8 +417,39 @@ console.log('\n-- who owns which switch --');
     'ownership is read off the server’s answer');
   ok(!/log_type\s*===\s*['"]/.test(block) && !/site_superintendent_log/.test(block),
     'no client-side list of log types decides who owns a switch');
-  ok(/const mine = act\.activated_by !== 'admin' \|\| isAdminUser;/.test(block),
+  ok(/const mine = \(act\.activated_by !== 'admin' \|\| isAdminUser\)/.test(block),
     'an admin can activate an admin-activated log');
+  // ── AND `available` IS THE THIRD FACT, ADDED FOR THE HOT-WORK DAY ────────
+  //
+  // The dated declaration is the CP's, but only where the office has filed
+  // the site's permit — "no permit, no day", the operator's ruling, enforced
+  // by the endpoint. An unavailable row is therefore not his either, and it
+  // reuses the admin-owned sentence because it is the same message: the log
+  // exists, and an admin is who turns it on.
+  ok(/&& act\.available !== false;/.test(block),
+    'and a dated control with no standing permit behind it is not his to flip');
+  // THE SERVER'S WORD, NOT A CLIENT-SIDE LIST. `available` and `scope` ride on
+  // the row exactly as `activated_by` does.
+  ok(!/hot_work/.test(block),
+    'no log type is named in the block that decides who owns a switch');
+  ok(/act\.scope === 'day'/.test(block),
+    'the dated row gets its own copy, keyed on the server’s scope');
+  ok(/key=\{`\$\{act\.log_type\}:\$\{act\.scope \|\| 'standing'\}`\}/.test(block),
+    'and rows are keyed on type AND scope — hot work sends two of them, and '
+    + 'matching on the type alone would move both switches on one tap');
+  ok(block.includes('It clears itself tomorrow'),
+    'the ON copy names the expiry — a day is not a setting, and nobody has to '
+    + 'remember to switch it back off');
+  // AND THE STANDING ROW ABOVE IT STOPPED CLAIMING THE LIST. "On — it is on
+  // your logbook list" is FALSE for a permit with a dated row beside it: on
+  // every day nobody declared, the permit is on and the log is not on his
+  // list. The branch is keyed on whether the SERVER sent a day row for that
+  // type, not on a client-side list of log types.
+  ok(/const datedPeer = act\.scope !== 'day' && activations\.some\(/.test(block),
+    'a standing row knows whether a dated row sits beside it');
+  ok(block.includes('Declare the days below'),
+    'and says what ON actually means for it, pointing at the control that does '
+    + 'put the log on his list');
   // IT USED TO BE `['admin', 'owner'].includes(...)`. The role "owner" is
   // retired -- it was what every self-serve signup received, never a rank --
   // and the server's gate is now `holds_rank(user, COMPANY_ADMIN_ROLES)`,

@@ -77,6 +77,11 @@ const CATALOG = [
   { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', frequency: 'as_needed' },
   { key: 'osha_log', label: 'OSHA Log Book', frequency: 'daily' },
   { key: 'hot_work', label: 'Hot Work Permit Log', frequency: 'as_needed' },
+  // NOT A REGISTRY TYPE. The fail-open guard is about the NEXT as-needed log
+  // added before anybody writes its rule, and both as-needed types that exist
+  // today now have one — so the instance has to be invented here. It is named
+  // for what it is so nobody goes looking for it in server.py.
+  { key: 'a_type_with_no_rule_yet', label: 'Future As-Needed Log', frequency: 'as_needed' },
 ];
 
 /**
@@ -137,6 +142,36 @@ const DUE = {
   uncovered_worker_count: 2,
 };
 
+// ── THE HOT-WORK ROW ────────────────────────────────────────────────────────
+//
+// `period_start` and `period_end` carry the DAY, unlike the orientation row
+// above, which sets them null because an as-needed log has no cadence. A
+// hot-work day IS a date — the operator's ruling is literally a date — so
+// naming it reports the declaration rather than inventing a cadence.
+//
+// There is no `uncovered_workers` on it: that is the orientation's field, this
+// row is not about people, and an empty list there would read as "nobody is
+// waiting", which is a different claim.
+const HOT_QUIET = {
+  log_type: 'hot_work',
+  frequency: 'as_needed',
+  period_start: '2026-09-18',
+  period_end: '2026-09-18',
+  satisfied: true,
+  filed_on: [],
+  due_reason: null,
+  uncovered_weekend_workers: [],
+  declared: false,
+  declared_by: null,
+};
+const HOT_DECLARED = {
+  ...HOT_QUIET,
+  satisfied: false,
+  due_reason: 'HOT_WORK_DECLARED',
+  declared: true,
+  declared_by: 'Andre Duval',
+};
+
 const SIX = ['daily_jobsite', 'preshift_signin', 'osha_log', 'toolbox_talk',
   'subcontractor_orientation', 'hot_work'];
 
@@ -188,15 +223,59 @@ console.log('\n-- a DUE one stays in the count --');
     `filed today: 1/6, not 1/5 (${s.submitted}/${s.total})`);
 }
 
-console.log('\n-- hot_work is untouched, before and after --');
+console.log('\n-- a hot-work day: the tile appears, then disappears --');
 {
-  // NO ROW IS EMITTED FOR hot_work by any server rule, because nobody has
-  // defined when a hot-work permit log is due. periodSatisfied answers null,
-  // which is not true, so it is never hidden and never leaves the count.
-  const s = screen({ required: SIX, periods: [SATISFIED] });
-  ok(s.keys.includes('hot_work'), 'hot_work keeps its tile');
-  ok(s.total === 5 && s.keys.length === 5,
-    'and its entry in the denominator — only the orientation left');
+  // THE OPERATOR'S RULING: "due only on days hot work happens. CP or super
+  // toggles it on for that day. Dated, not persistent." 8 Walworth has the
+  // STANDING permit on, which is why hot_work is in its required set at all —
+  // and before this, the tile read Pending there every morning forever.
+  //
+  // A QUIET DAY. No declaration, so the row says satisfied and the tile and
+  // its denominator entry both go. This is the fix.
+  const quiet = screen({ required: SIX, periods: [SATISFIED, HOT_QUIET] });
+  ok(!quiet.keys.includes('hot_work'),
+    'a day nobody declared: the hot-work tile is gone');
+  ok(quiet.total === 4 && quiet.keys.length === 4,
+    `and out of the denominator — both as-needed types left (${quiet.total})`);
+
+  // THE CP DECLARES A DAY. Same payload, one row flipped, and the tile is back
+  // with its entry in the count.
+  const declared = screen({ required: SIX, periods: [SATISFIED, HOT_DECLARED] });
+  ok(declared.keys.includes('hot_work'),
+    'he declares hot work for today: the tile is back');
+  ok(declared.total === 5, `and back in the denominator (${declared.total})`);
+
+  // HE FILES IT. Filing does NOT remove it — the row still says the day is
+  // declared, and cadenceStatus gives a log filed today the last word, so the
+  // tile reads Done and stays up. Hot work is `immediate`-class: a second
+  // operation that afternoon is a second discrete log, opened through this
+  // same tile.
+  const filed = screen({
+    required: SIX, periods: [SATISFIED, HOT_DECLARED], filed: ['hot_work'],
+  });
+  ok(filed.keys.includes('hot_work') && filed.submitted === 1 && filed.total === 5,
+    `filed today: 1/5 with the tile still there (${filed.submitted}/${filed.total})`);
+
+  // TOMORROW. Nobody switched anything off; the next day's row is about the
+  // next day, which nobody declared.
+  const tomorrow = screen({ required: SIX, periods: [SATISFIED, HOT_QUIET] });
+  ok(!tomorrow.keys.includes('hot_work'),
+    'the next morning it is gone again — with nobody having switched it off');
+}
+
+console.log('\n-- and the fail-open guard did not move --');
+{
+  // THE PROPERTY #611 PINNED, on a type that is still an instance of it. Hot
+  // work stopped relying on the silence by acquiring a RULE; the predicate
+  // itself is unchanged, so a type the server says nothing about still keeps
+  // its tile and its denominator entry.
+  const s = screen({
+    required: [...SIX, 'a_type_with_no_rule_yet'],
+    periods: [SATISFIED, HOT_QUIET],
+  });
+  ok(s.keys.includes('a_type_with_no_rule_yet'),
+    'an as-needed type with no row keeps its tile');
+  ok(s.total === 5, `and its entry in the denominator (${s.total})`);
 }
 
 console.log('\n-- the whose-log filter still works on the other axis --');
@@ -218,8 +297,13 @@ ok(periodSatisfied(logbookPeriods({ periods: [SATISFIED] }),
   'subcontractor_orientation') === true, 'satisfied reads true');
 ok(periodSatisfied(logbookPeriods({ periods: [DUE] }),
   'subcontractor_orientation') === false, 'due reads false');
-ok(periodSatisfied(logbookPeriods({ periods: [SATISFIED] }), 'hot_work') === null,
+ok(periodSatisfied(logbookPeriods({ periods: [SATISFIED] }),
+  'a_type_with_no_rule_yet') === null,
   'a type with NO row reads null — the question does not apply');
+ok(periodSatisfied(logbookPeriods({ periods: [HOT_QUIET] }), 'hot_work') === true,
+  'an undeclared hot-work day reads true — not due');
+ok(periodSatisfied(logbookPeriods({ periods: [HOT_DECLARED] }), 'hot_work') === false,
+  'a declared one reads false');
 ok(periodSatisfied(logbookPeriods({}), 'subcontractor_orientation') === null,
   'and a payload with no periods key reads null, not false');
 ok(periodSatisfied(logbookPeriods({ periods: [{ log_type: 'x', satisfied: 'yes' }] }),
@@ -240,8 +324,13 @@ console.log('\n-- cadenceStatus does not argue with a log he filed today --');
   const q = logbookPeriods({ periods: [SATISFIED] });
   ok(cadenceStatus(q, 'subcontractor_orientation', 'pending') === 'period_done',
     'a satisfied one is period_done, never pending');
-  ok(cadenceStatus(q, 'hot_work', 'pending') === 'pending',
+  ok(cadenceStatus(q, 'a_type_with_no_rule_yet', 'pending') === 'pending',
     'a type with no row keeps its by-date answer');
+  const h = logbookPeriods({ periods: [HOT_DECLARED] });
+  ok(cadenceStatus(h, 'hot_work', 'submitted') === 'submitted',
+    'a hot-work log filed on its declared day reads submitted, and the tile stays');
+  ok(cadenceStatus(h, 'hot_work', 'pending') === 'pending',
+    'and an unfiled declared day is still pending');
 }
 
 console.log('\n-- the label does not call an as-needed log weekly --');
@@ -283,6 +372,39 @@ console.log('\n-- the label does not call an as-needed log weekly --');
     'subcontractor_orientation');
   ok(typeof s === 'string' && s.length > 0 && !/week/i.test(s),
     'a nameless due row still produces a line');
+}
+
+console.log('\n-- the hot-work line is about a DAY, not a week and not a man --');
+{
+  const due = cadenceLabel(logbookPeriods({ periods: [HOT_DECLARED] }), 'hot_work');
+  ok(!/week/i.test(due),
+    `no week is claimed for a one-day obligation (${JSON.stringify(due)})`);
+  // "AGAIN" IS THE WEEKLY ROW'S WORD. Two hot-work days in a week are two
+  // independent facts, not a rhythm, and "due again" would tell a CP the app
+  // had lost the log he filed on Tuesday.
+  ok(!/again/i.test(due), 'and no recurrence is claimed either');
+  ok(/today/i.test(due), `it names the day (${JSON.stringify(due)})`);
+  ok(/Andre Duval/.test(due),
+    'and NAMES who declared it — the log is open on somebody’s word');
+  // It must not borrow the orientation's sentence. That one is about people
+  // with no orientation; this is about a day somebody said is happening.
+  ok(!/orientation/i.test(due) && !/waiting/i.test(due),
+    'and it does not borrow the orientation wording');
+
+  const quiet = cadenceLabel(logbookPeriods({ periods: [HOT_QUIET] }), 'hot_work');
+  ok(!/week/i.test(quiet) && !/waiting for one/.test(quiet),
+    `the quiet day reads as a day, not as coverage (${JSON.stringify(quiet)})`);
+
+  const nameless = cadenceLabel(
+    logbookPeriods({ periods: [{ ...HOT_DECLARED, declared_by: null }] }), 'hot_work');
+  ok(typeof nameless === 'string' && /today/i.test(nameless),
+    'a declaration whose name was never captured still produces a line');
+
+  // THE ORIENTATION'S OWN LINE IS UNTOUCHED by the type branch added for hot
+  // work — asserted here, beside it, rather than trusted.
+  ok(/no orientation/.test(
+    cadenceLabel(logbookPeriods({ periods: [DUE] }), 'subcontractor_orientation')),
+    'and the orientation line still says what it always said');
 }
 
 console.log('\n-- the weekly wording is unchanged --');
