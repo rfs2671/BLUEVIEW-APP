@@ -824,7 +824,44 @@ def _glyph_inputs(page) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
 # 'S-001.00', 'A-500', 'SSP-004.00'. A hyphen or letter may not precede, so
 # 'C-AJ-2086' (a UL system) yields nothing; digits may, because pypdf-style
 # text glues a drawing-list index to the id ('2S-001.00GENERAL NOTES').
-SHEET_ID_RE = re.compile(r"(?<![A-Z\-])([A-Z]{1,3}-\d{3}(?:\.\d{2}|(?!\d)))")
+# ── WHAT A SHEET NUMBER LOOKS LIKE, IN ONE PLACE ──────────────────────────
+#
+# This required a DASH and exactly THREE digits, so it could not see the
+# dotted scheme `A.0.1` that ordinary NYC architectural sets use. The cost was
+# not a missed id: `588 THOMAS BOYLAND ST SET_UPDATED .pdf` numbers all 44 of
+# its pages A.0.1 through A.1.7, none of them matched, the file therefore
+# looked like a set with no sheet numbers, `looks_combined` fired, and the
+# whole file was SKIPPED as a duplicate of the AR sets. The ceiling heights
+# printed on its sections reached nothing.
+#
+# THE RULE IS STRUCTURAL, not a list of schemes: letters, a separator, then
+# digit groups. The leading letter is what does the work — it excludes the
+# code citations (110.3.4), phone numbers (212-961), zoning figures (1704.13)
+# and dates (08-24) that share the shape and are NOT sheet numbers.
+#
+# A TRAILING REVISION LETTER (`A-101A`) is admitted because the validator
+# already claimed to accept one; the finder could not see it, which is the
+# same disagreement in miniature. Reconciled rather than left split.
+#
+# NOT WIDENED SPECULATIVELY. `A101`, with no separator at all, does not appear
+# in any set here; it is left out rather than guessed at. See the validator
+# below, which used to accept it and no longer does.
+SHEET_ID_RE = re.compile(
+    r"(?<![A-Z\-.])("
+    # DASHED, unchanged in what it accepts: three digits, an optional .DD,
+    # an optional revision letter. The `.DD|(?!\d)` alternation is load
+    # bearing and is why it is not written as `(?:\.\d{2})?` — the sheet id
+    # arrives GLUED to its page count ('A-500.0024 OF 31') and to its drawing
+    # list index ('2S-001.00GENERAL NOTES'), so the decimal must be preferred
+    # without a trailing constraint that the glue would fail.
+        # The revision letter belongs to the BASE number (A-101A), never
+    # after a decimal, and scoping it that way is also what stops it
+    # eating the G of a glued "S-001.00GENERAL NOTES".
+    r"[A-Z]{1,3}-\d{3}(?:\.\d{2}|[A-Z]?(?!\d))"
+    r"|"
+    # DOTTED. At least two groups, so `A.1` in prose is not an id.
+    r"[A-Z]{1,3}\.\d{1,2}(?:\.\d{1,2})+"
+    r")")
 _TITLE_WORDS = re.compile(
     r"\b(SHEET|DRAWING|TITLE|SCALE|DATE|PROJECT|DRAWN|CHECKED|SEAL|JOB|REVISION|ISSUE|DWG)\b",
     re.I)
@@ -875,7 +912,19 @@ _SHEET_POSITION_RE = re.compile(r"(?<![\d.])(\d{1,3})\s*OF\s*(\d{1,3})(?!\d)", r
 # What a sheet number looks like. Everything else in a project's files — a
 # DOB form numbered 'Page 2 of 2', a survey numbered '0', an attachment
 # numbered 'F' — is a document, not a drawing.
-_SHEET_NUMBER_RE = re.compile(r"^[A-Z]{1,4}-?\d{1,4}[A-Z]?(?:\.\d{1,2})?$")
+# THE VALIDATOR ACCEPTS EXACTLY WHAT THE FINDER FINDS, which it did not
+# before. With `-?` optional and up to four letters it also accepted `IIA1`
+# (a construction class), `R19` and `R11.5` (insulation values), `I1` and `P5`
+# — none of them sheet numbers, all of them printed in title blocks. A finder
+# too narrow and a validator too broad fail in opposite directions, and the
+# gap between them is where `F`, `1` and `PAGE 2 OF 2` became sheet numbers.
+#
+# MEASURED BEFORE CHANGING, against all 173 sheet numbers the corpus holds:
+# zero become unfindable, zero become invalid. The six shapes above stop being
+# accepted, and `A.0.1` starts being both found and valid.
+_SHEET_NUMBER_RE = re.compile(
+    r"^(?:[A-Z]{1,3}-\d{3}(?:\.\d{2}|[A-Z]?)"
+    r"|[A-Z]{1,3}\.\d{1,2}(?:\.\d{1,2})+)$")
 
 
 def _position_match(text: str):

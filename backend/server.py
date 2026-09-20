@@ -45962,7 +45962,7 @@ PLAN_OCR_MAX_GRIDS = 12
 
 async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
                            layout: Optional[dict], file_name: str
-                           ) -> Tuple[List[dict], List[str]]:
+                           ) -> Tuple[List[dict], List[str], List[dict]]:
     """(schedules, flags) for the ruled grids this page's text layer cannot read.
 
     ── WHY THIS RUNS ON SOME GRIDS AND NOT EVERY PAGE ─────────────────────
@@ -45980,13 +45980,14 @@ async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
     """
     grids = (layout or {}).get("ocr_grids") or []
     if not grids:
-        return [], []
+        return [], [], []
     if not plan_ocr.available():
-        return [], [f"ocr_engine_absent:{plan_ocr.why_unavailable()[:60]}"]
+        return [], [f"ocr_engine_absent:{plan_ocr.why_unavailable()[:60]}"], []
     if not pdf_path:
-        return [], ["ocr_no_pdf_path"]
+        return [], ["ocr_no_pdf_path"], []
     out: List[dict] = []
     flags: List[str] = []
+    contested: List[dict] = []
     for g in grids[:PLAN_OCR_MAX_GRIDS]:
         ok, why = plan_ocr.grid_is_readable(g)
         if not ok:
@@ -46016,8 +46017,21 @@ async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
             sched = await asyncio.to_thread(
                 plan_ocr.read_grid_twice, pngs[0], pngs[1], g)
         if sched:
-            if sched.get("contested_cells"):
-                flags.append(f"ocr_contested_cells:{len(sched['contested_cells'])}")
+            cc = sched.get("contested_cells") or []
+            if cc:
+                flags.append(f"ocr_contested_cells:{len(cc)}")
+                # THE COUNT WAS ALL THAT SURVIVED, AND THE COUNT IS NOT THE
+                # EVIDENCE. read_grid_twice already knows both readings and
+                # which cell they belong to; taking len() of that and dropping
+                # the rest meant a person asked to resolve a contested cell had
+                # to read it cold, with no candidates — or the page had to be
+                # extracted again to recover what was computed here.
+                #
+                # The grid's own rect rides along so the cell can be cropped
+                # without re-deriving the geometry.
+                for c in cc:
+                    contested.append({**c, "grid_bbox": list(g.get("bbox") or []),
+                                      "schedule": (sched.get("name") or "")})
             out.append(sched)
     if len(grids) > PLAN_OCR_MAX_GRIDS:
         flags.append(f"ocr_grids_capped:{len(grids)}")
@@ -46025,7 +46039,7 @@ async def _ocr_blind_grids(pdf_path: Optional[str], page_number: int,
         logger.info(
             f"plan OCR {file_name} p{page_number}: {len(out)} of {len(grids)} "
             f"blind grids read, rows={[len(s.get('rows') or []) for s in out]}")
-    return out, flags
+    return out, flags, contested
 
 
 async def _index_single_page(
@@ -46384,8 +46398,9 @@ async def _index_single_page(
     # rather than nowhere: a refused template is a real gap in what this sheet
     # can be asked, and it is the recall cost of never guessing one.
     text_flags.extend((fields.get("glyph_flags") or [])[:6])
+    ocr_contested: List[dict] = []
     try:
-        ocr_scheds, ocr_flags = await _ocr_blind_grids(
+        ocr_scheds, ocr_flags, ocr_contested = await _ocr_blind_grids(
             pdf_path, page_number, layout, file_name)
         text_flags.extend(ocr_flags)
         if ocr_scheds:
@@ -46463,6 +46478,23 @@ async def _index_single_page(
         "number_flags":       result["number_flags"],
         "text_source":        text_source,
         "text_flags":         text_flags,
+        # ── WHAT THE TWO READS COULD NOT AGREE ON ────────────────────────
+        #
+        # Stored on the PAGE, deliberately, and deliberately NOT in a record
+        # payload: `_record_values` walks payload lists, so the two readings
+        # would become numbers an answer is allowed to quote. They survive
+        # there today only because that function does not descend into lists
+        # of dicts — accidental protection, which breaks the moment someone
+        # flattens the field. Page level is a structural guarantee instead.
+        #
+        # Kept OUT of `_PAGE_FIELDS` for the same reason: no answer path reads
+        # it. It is evidence for a person, not input to a sentence.
+        #
+        # `scores` are RapidOCR's per-cell reads. They are NOT a model rating
+        # its own judgement and they rank nothing — read_grid_twice picks by
+        # AGREEMENT, never by score. Measured on the one cell checkable by
+        # eye: 0.960 when wrong, 0.997 when right.
+        "contested_cells":    ocr_contested,
         "text_layer_chars":   len(page_text or ""),
         "raw_text":           (page_text or "")[:plan_extract.RAW_CAP],
         "raw_vlm":            result["raw_vlm"],
