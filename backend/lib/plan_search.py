@@ -300,6 +300,57 @@ def meets_the_floor(records: Iterable[Dict[str, Any]],
     return False
 
 
+# ── AN INDEX OF THE SET IS NOT A FACT ABOUT THE BUILDING ───────────────────
+#
+# A drawing list, a sheet index and an abbreviations table all match a great
+# many subjects, because they LIST the things the set contains. Asked 'door
+# schedule', retrieval returned T-001.01 - the drawing list, whose row happens
+# to read 'A-400 DOOR SCHEDULE' - ahead of A-400.00, which IS the door
+# schedule. Asked 'vent fan', the GENERAL ABBREVIATIONS table on M-001.00 led.
+#
+# Both were live complaints from a GC on 2026-09-19.
+#
+# This is not fixed by ranking. An index legitimately matches the words; it
+# is the KIND of record that disqualifies it from leading, and that is what is
+# keyed on here rather than a score.
+_INDEX_NAME = re.compile(
+    r"^\s*(?:DRAWING\s+LIST|SHEET\s+LIST|SHEET\s+INDEX|LIST\s+OF\s+DRAWINGS"
+    r"|GENERAL\s+ABBREVIATIONS|ABBREVIATIONS)\b", re.I)
+#: A schedule most of whose first column is a SHEET NUMBER is an index of the
+#: set, whatever it calls itself. Measured on 588 Boyland: no equipment
+#: schedule keys its rows by sheet number, and every index does.
+_INDEX_ROW_SHARE = 0.6
+_INDEX_MIN_ROWS = 3
+
+
+def is_index_record(record: Dict[str, Any]) -> bool:
+    """Does this record INDEX the set rather than describe the building?"""
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    if _INDEX_NAME.search(str(payload.get("name") or "")):
+        return True
+    if _INDEX_NAME.search(str(record.get("quote") or "")):
+        return True
+    rows = payload.get("rows") or []
+    firsts = [str(row[0] or "") for row in rows
+              if isinstance(row, list) and row and str(row[0] or "").strip()]
+    if len(firsts) < _INDEX_MIN_ROWS:
+        return False
+    sheetish = sum(1 for f in firsts if SHEET_ID_RE.search(f.upper()))
+    return sheetish / len(firsts) >= _INDEX_ROW_SHARE
+
+
+def drop_indexes(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Indexes out, UNLESS they are all there is.
+
+    A question whose only match is the drawing list has not been answered, and
+    'Not found. Closest: T-001.01.' is a better reply than a row of the index
+    presented as the answer — but that is the RENDER's decision, not this
+    one's. Here, keeping them when nothing else matched preserves the pointer.
+    """
+    kept = [r for r in records or [] if not is_index_record(r)]
+    return kept if kept else list(records or [])
+
+
 def matched_only_through_label(record: Dict[str, Any], terms: Sequence[str]) -> bool:
     """True when the ONLY thing tying this record to the subject is a label —
     words a vision model supplied for a mark the sheet does not explain."""
@@ -1007,6 +1058,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
+           "is_index_record", "drop_indexes",
            "dangling_callouts", "referenced_sheets_missing",
            "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]

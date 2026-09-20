@@ -1,0 +1,1623 @@
+{
+  "suite": "eval/boyland.json",
+  "suite_cases": [
+    "ptac-count",
+    "ptac-make-and-model",
+    "wall-heater-count",
+    "duct-heater-capacity",
+    "exhaust-fan-models",
+    "diffuser-manufacturer",
+    "roof-drain-count",
+    "parapet-height",
+    "stucco-wall-assembly",
+    "roof-occupancy-load",
+    "passive-recreation-area",
+    "pile-type",
+    "elevator",
+    "sprinklered",
+    "ac-type",
+    "packaged-terminal-air-conditioners",
+    "stud-gauge",
+    "sidewalk-shed-height",
+    "roof-protection",
+    "ptac-2-contested",
+    "kicker-invented",
+    "escalator-absent",
+    "solar-absent",
+    "helipad-absent",
+    "chase-walls-absent",
+    "sprinkler-count-absent",
+    "door-size",
+    "ceiling-height",
+    "pile-details",
+    "vent-fan-count-not-stated"
+  ],
+  "project": "6a5f63bc147407d3261df2c7",
+  "ran_at": "2026-09-20T05:07:04.894100+00:00",
+  "corpus_before": {
+    "pages": 129,
+    "current_pages": 111,
+    "records": 15463,
+    "newest_page_indexed_at": "2026-09-19 20:43:27.405000",
+    "newest_record_created_at": "2026-09-19 20:43:34.593000"
+  },
+  "corpus_after": {
+    "pages": 129,
+    "current_pages": 111,
+    "records": 15463,
+    "newest_page_indexed_at": "2026-09-19 20:43:27.405000",
+    "newest_record_created_at": "2026-09-19 20:43:34.593000"
+  },
+  "valid": true,
+  "stale_census": {},
+  "stale_census_drift": [],
+  "summary": {
+    "cases": 30,
+    "failed_in_known_classes": 2,
+    "scored": 30,
+    "passed": 25,
+    "failed": 5,
+    "stale": 0,
+    "pass_rate": 0.833,
+    "by_kind": {
+      "answer": {
+        "scored": 23,
+        "passed": 18
+      },
+      "absent": {
+        "scored": 7,
+        "passed": 7
+      }
+    }
+  },
+  "results": [
+    {
+      "id": "ptac-count",
+      "kind": "answer",
+      "question": "how many PTAC units are there",
+      "subject": "PTAC units",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:PTAC-1": true,
+        "text:readings disagree": true,
+        "best_supporting_tier": "ocr_grid_cell",
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-1 \u2014 count 21 \u2014 ROOMS PTAC UNITS SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-3 \u2014 count 11 \u2014 ROOMS PTAC UNITS SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-2 \u2014 QTY on the sheet, readings disagree \u2014 ROOMS PTAC UNITS SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "ROOMS PTAC UNITS SCHEDULE UNIT NO. | QTY | MAKE | MODEL | ARRANGEMENT | NET COOLING CAPACITY (BTUH) "
+        }
+      ],
+      "render": "PTAC-1 \u2014 count 21 \u2014 ROOMS PTAC UNITS SCHEDULE [M-200.00]\nPTAC-3 \u2014 count 11 \u2014 ROOMS PTAC UNITS SCHEDULE [M-200.00]\nPTAC-2 \u2014 QTY on the sheet, readings disagree \u2014 ROOMS PTAC UNITS SCHEDULE [M-200.00] \u2014 two readings of that cell say 6 and 9; verify against the sheet",
+      "known_failure": null
+    },
+    {
+      "id": "ptac-make-and-model",
+      "kind": "answer",
+      "question": "what make and model are the PTAC units",
+      "subject": "PTAC",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:AMANA": true,
+        "text:PTH093K": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "M-104.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-1 | | | | TE 10\"X10\"UP\uff06DN 1 PTAC-1 | |"
+        },
+        {
+          "sheet": "M-104.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "Schedule 1 | | PTAC-1 | | | | | | TE 10\"X10\"UP\uff06DN 2 PTAC-1 | | | |"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-1 \u2014 count 21 \u2014 ROOMS PTAC UNITS SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-3 \u2014 count 11 \u2014 ROOMS PTAC UNITS SCHEDULE"
+        }
+      ],
+      "render": "PTAC-1 | | | | TE 10\"X10\"UP\uff06DN 1 PTAC-1 | | [M-104.00]\nSchedule 1 | | PTAC-1 | | | | | | TE 10\"X10\"UP\uff06DN 2 PTAC-1 | | | | [M-104.00]\nPTAC-1 \u2014 count 21 \u2014 ROOMS PTAC UNITS SCHEDULE [M-200.00]",
+      "known_failure": null
+    },
+    {
+      "id": "wall-heater-count",
+      "kind": "answer",
+      "question": "how many wall electric unit heaters",
+      "subject": "wall electric unit heater",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:WH-1": true,
+        "best_supporting_tier": "ocr_grid_cell",
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "WH-1 \u2014 count 9 \u2014 WALL ELECTRIC UNIT HEATER SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "WALL ELECTRIC UNIT HEATER SCHEDULE SYMBOL | LOCATION | QTY | MANUFACTURER | MODEL | KW | BTUH | CFM "
+        },
+        {
+          "sheet": "Z-001.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "ZONING ANALYSIS: | ITEM | PERMITTED / REQUIRED | PROPOSED ZR 22-12 | USE PERMITTED | USE GROUP II | "
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "DH-1 \u2014 count 1 \u2014 DUCT ELECTRIC HEATER"
+        }
+      ],
+      "render": "WH-1 \u2014 count 9 \u2014 WALL ELECTRIC UNIT HEATER SCHEDULE [M-200.00]\nWALL ELECTRIC UNIT HEATER SCHEDULE SYMBOL | LOCATION | QTY | MANUFACTURER | MODEL | KW | BTUH | CFM | VOLTAGE | AMPS | WEIGHT | REMARKS WH-1 | PER PLANS | 9 | (readings disagree) | E3323TD-RP | 1.5 |  [M-200.00]\nZONING ANALYSIS: | ITEM | PERMITTED / REQUIRED | PROPOSED ZR 22-12 | USE PERMITTED | USE GROUP II | USE GROUP II RESIDENTIAL ZR 23-22 | MAX FLOOR AREA | FLOOR AREA:3.0 3,654 SF. x 3.0 = 10,962 SF. | 1 [Z-001.01]",
+      "known_failure": null
+    },
+    {
+      "id": "duct-heater-capacity",
+      "kind": "answer",
+      "question": "what is the capacity of the duct electric heater",
+      "subject": "duct electric heater",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:DH-1": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "DH-1 \u2014 count 1 \u2014 DUCT ELECTRIC HEATER"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "DUCT ELECTRIC HEATER MARK | BASISOF[ DESIGN TPI | QTY | CAPACITY (KW) | VOLTAGE | AMPS DH-1 | 8PD15-"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "WH-1 \u2014 count 9 \u2014 WALL ELECTRIC UNIT HEATER SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "WALL ELECTRIC UNIT HEATER SCHEDULE SYMBOL | LOCATION | QTY | MANUFACTURER | MODEL | KW | BTUH | CFM "
+        }
+      ],
+      "render": "DH-1 \u2014 count 1 \u2014 DUCT ELECTRIC HEATER [M-200.00]\nDUCT ELECTRIC HEATER MARK | BASISOF[ DESIGN TPI | QTY | CAPACITY (KW) | VOLTAGE | AMPS DH-1 | 8PD15-1812-3 | 1 | 15.0 | 208/3/60 | 41.7 [M-200.00]\nWH-1 \u2014 count 9 \u2014 WALL ELECTRIC UNIT HEATER SCHEDULE [M-200.00]",
+      "known_failure": null
+    },
+    {
+      "id": "exhaust-fan-models",
+      "kind": "answer",
+      "question": "what exhaust fans are specified",
+      "subject": "exhaust fan",
+      "intent": "identify",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:AEN110": true,
+        "text:BRN503": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | A"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": null,
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        }
+      ],
+      "render": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | AMP | MOTOR DATA ELEC. VOLTS | | WEIGHT LBS | REMARKS EF-1 | APARTMENTSBATHROOMS EXHAUST | NUTONE | A [M-200.00]\nEXHAUST FAN [A-100.01]\nEXHAUST FAN [A-105.01]",
+      "known_failure": null
+    },
+    {
+      "id": "diffuser-manufacturer",
+      "kind": "answer",
+      "question": "who makes the diffusers",
+      "subject": "diffuser",
+      "intent": "identify",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 6,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:CARNES": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "FA-001",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "Schedule 1 (readings disagree) | AFF | | (readings disagree) | | (readings disagree) | | MINIMUM 36\""
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "DIFFUSER & REGISTER SCHEDULE | SYMBOLIMANUFACTURER | MODEL | CFM RANGE | SERVICE | NK.SIZE | PANEL S"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "A1 \u2014 DIFFUSER & REGISTER SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "A2 \u2014 DIFFUSER & REGISTER SCHEDULE"
+        }
+      ],
+      "render": "Schedule 1 (readings disagree) | AFF | | (readings disagree) | | (readings disagree) | | MINIMUM 36\" T REMOTE ANNUN. | | 60 AFF | | AIR DIFFUSER CONTROL PANEL | \u25b3 | | A | | | | | | | | | A | [FA-001]\nDIFFUSER & REGISTER SCHEDULE | SYMBOLIMANUFACTURER | MODEL | CFM RANGE | SERVICE | NK.SIZE | PANEL SIZE | REMARKS SEE NOTES A1 | CARNES | RSDB | 125-235 | SUPPLY | | 8X6 | 1,2,3,4,5 A2 | CARNES | RSDB [M-200.00]\nA1 \u2014 DIFFUSER & REGISTER SCHEDULE [M-200.00]",
+      "known_failure": null
+    },
+    {
+      "id": "roof-drain-count",
+      "kind": "answer",
+      "question": "how many roof drains are there",
+      "subject": "roof drain",
+      "intent": "count",
+      "outcome": "fail",
+      "reasons": [
+        "lead sheets ['P-400.00', 'A-100.01', 'A-105.01', None]; the expected sheet is nowhere in what came back",
+        "the gate would refuse the true answer; nothing returned prints ['4']"
+      ],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": false,
+        "expected_sheet_anywhere": false,
+        "gate_allows_the_true_answer": false,
+        "text:RD-1": true,
+        "text:RD-2": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "P-400.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PLUMBING ROUGH-IN SCHEDULE SIZES OR AS REQUIRED FOR PARTICULAR FIXTURES. FIXTURES | VERIFY ALL MODEL"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "FLOOR/AREA/ROOF DRAIN"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "FLOOR/AREA/ROOF DRAIN"
+        },
+        {
+          "sheet": null,
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "FLOOR/AREA/ROOF DRAIN"
+        }
+      ],
+      "render": "PLUMBING ROUGH-IN SCHEDULE SIZES OR AS REQUIRED FOR PARTICULAR FIXTURES. FIXTURES | VERIFY ALL MODEL NUMBERS WITH OWNER OWNERS'S REP AD ARCH, PRIOR TO ORDERING. ABBR | H.W. | C.W. | WASTE | VENT LAVAT [P-400.00]\nFLOOR/AREA/ROOF DRAIN [A-100.01]\nFLOOR/AREA/ROOF DRAIN [A-105.01]",
+      "known_failure": null
+    },
+    {
+      "id": "parapet-height",
+      "kind": "answer",
+      "question": "how high is the parapet",
+      "subject": "parapet",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:42\" PARAPET": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "SSP-013.00",
+          "type": "dimension",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "PLYWOOD PARAPET & PROTECTION"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "42\" PARAPET"
+        },
+        {
+          "sheet": "FA-007",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "42\" PARAPET"
+        },
+        {
+          "sheet": "M-105.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "42\" PARAPET"
+        }
+      ],
+      "render": "PLYWOOD PARAPET & PROTECTION [SSP-013.00]\n42\" PARAPET [A-105.01]\n42\" PARAPET [FA-007]",
+      "known_failure": null
+    },
+    {
+      "id": "stucco-wall-assembly",
+      "kind": "answer",
+      "question": "what is the stucco wall made of",
+      "subject": "stucco",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:STUCCO FINISH": true,
+        "text:R19": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "A-500.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATED) UL DESIGN NO. U42 | WALL TYPE 2"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH"
+        },
+        {
+          "sheet": null,
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH"
+        }
+      ],
+      "render": "TABLE WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATED) UL DESIGN NO. U42 | WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DESIGN NO. U4 | WALL TYPE 3 W3 INTERIOR SHEA [A-500.00]\n6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH [A-100.01]\n6\" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH [A-105.01]",
+      "known_failure": null
+    },
+    {
+      "id": "roof-occupancy-load",
+      "kind": "answer",
+      "question": "what is the occupancy load on the roof",
+      "subject": "occupancy load",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "A-105.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS | | | | | PASSIVE | 1970 SF"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS APT 1A"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS PASSIVE RECREATION 1970 SF."
+        },
+        {
+          "sheet": "GN-004.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "FIRST FLOOR OCCUPANCY LOAD OCCUPANCY R-2 AREA"
+        }
+      ],
+      "render": "TABLE OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS | | | | | PASSIVE | 1970 SF. | / 200 = | 10 | USE | 10 [A-105.01]\nOCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS APT 1A [A-100.01]\nOCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS PASSIVE RECREATION 1970 SF. [A-105.01]",
+      "known_failure": null
+    },
+    {
+      "id": "passive-recreation-area",
+      "kind": "answer",
+      "question": "how big is the passive recreation area",
+      "subject": "passive recreation",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "P-206.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE SSLLOO DD NN PPEE OOPPEE DD NN SSLL | PASSIVE DN 16 | RECREATION PASSIVE RECREATION SSLLOO DD "
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS PASSIVE RECREATION 1970 SF."
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "PASSIVE RECREATION 1970 SQ. FT."
+        },
+        {
+          "sheet": "FA-007",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "PASSIVE RECREATION"
+        }
+      ],
+      "render": "TABLE SSLLOO DD NN PPEE OOPPEE DD NN SSLL | PASSIVE DN 16 | RECREATION PASSIVE RECREATION SSLLOO DD NN PPEE OOPPEE DD NN SSLL AADD AADD DD NN SSLLOO DD NN SSLLOO OOPPEE PPEE OOPPEE PPEE SSLL DD NN SSL [P-206.00]\nOCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS PASSIVE RECREATION 1970 SF. [A-105.01]\nPASSIVE RECREATION 1970 SQ. FT. [A-105.01]",
+      "known_failure": null
+    },
+    {
+      "id": "pile-type",
+      "kind": "answer",
+      "question": "what piles are used on site",
+      "subject": "piles",
+      "intent": "identify",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:HELICAL PILES": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "S-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "SPECIAL INSPECTION CATEGORIES | ALTERNATIVE MATERIALS - OTCR BUILDING BULLETIN# ___________ | BC 170"
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "note",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "8.6. SUPPORT OF EXCAVATION AND PILES."
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "dimension",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "SUPPORT OF EXCAVATION AND PILES."
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "dimension",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "HELICAL PILES (BB # 2014-020)"
+        }
+      ],
+      "render": "SPECIAL INSPECTION CATEGORIES | ALTERNATIVE MATERIALS - OTCR BUILDING BULLETIN# ___________ | BC 1705.1.1 | STRUCTURAL STEEL -- WELDING | BC 1705.2.1 | STRUCTURAL STEEL -- DETAILS | BC 1705.2.2 | STRU [S-001.00]\n8.6. SUPPORT OF EXCAVATION AND PILES. [S-001.00]\nSUPPORT OF EXCAVATION AND PILES. [S-001.00]",
+      "known_failure": null
+    },
+    {
+      "id": "elevator",
+      "kind": "answer",
+      "question": "is there an elevator",
+      "subject": "elevator",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:ELEVATOR": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "ENERGY CODE PROGRESS INSPECTION: TR-8 - PROTECTION OF EXPOSED FOUNDATION INSULATION | (IIA1) - INSUL"
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "- ELECTRICAL MOTORS AND ELEVATORS"
+        },
+        {
+          "sheet": "S-002.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ELEVATION OR ELEVATOR E.O.R."
+        },
+        {
+          "sheet": "S-002.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ELEVATOR LOBBIES"
+        }
+      ],
+      "render": "ENERGY CODE PROGRESS INSPECTION: TR-8 - PROTECTION OF EXPOSED FOUNDATION INSULATION | (IIA1) - INSULATION PLACEMENT AND R VALUES | (IIA2) - FENESTRATION AND DOOR U-FACTOR AND PRODUCT RATING | (IIA3) - [GN-001.00]\n- ELECTRICAL MOTORS AND ELEVATORS [GN-001.00]\nELEVATION OR ELEVATOR E.O.R. [S-002.00]",
+      "known_failure": null
+    },
+    {
+      "id": "sprinklered",
+      "kind": "answer",
+      "question": "is the building sprinklered",
+      "subject": "sprinkler",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:SPRINKLER": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "T-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "LIST OF RELATED JOB NOS. JOB TYPE | JOB NUMBER ARCHITECTURAL | B01141294-I1 MECHANICAL | PLUMBING | "
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE 506.2 ALLOWABLE AREA FACTOR GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER (SM) | TYPE OF CONSTRUCTI"
+        },
+        {
+          "sheet": "T-001.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "APPLICATIONS TO BE FILED SEPARATELY 1. | FENCE | JOB # B01141294-S1 2. 3. | PLUMBING / SPRINKLER MEC"
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE 504.4 ALLOWABLE NUMBER OF STORIES ABOVE GRADE PLANE GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER ("
+        }
+      ],
+      "render": "LIST OF RELATED JOB NOS. JOB TYPE | JOB NUMBER ARCHITECTURAL | B01141294-I1 MECHANICAL | PLUMBING | SPRINKLER | STRUCTURAL | B01141294-S2 FOUNDATION | SOE | [T-001.00]\nTABLE 506.2 ALLOWABLE AREA FACTOR GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER (SM) | TYPE OF CONSTRUCTION | | | TYPE I | | | A | B M | NS SM | UL UL | UL UL B | NS SM | UL UL | UL UL R-2 | NS SM | UL UL  [GN-001.00]\nAPPLICATIONS TO BE FILED SEPARATELY 1. | FENCE | JOB # B01141294-S1 2. 3. | PLUMBING / SPRINKLER MECHANICAL | JOB # B01141294-S2 JOB # B01141294-S3 4. | FOUNDATION | JOB # B01141294-S4 5. | STRUCTURAL [T-001.01]",
+      "known_failure": null
+    },
+    {
+      "id": "ac-type",
+      "kind": "answer",
+      "question": "what type of AC units are in the building",
+      "subject": "AC units",
+      "intent": "identify",
+      "outcome": "fail",
+      "reasons": [
+        "lead sheets ['M-100.00', 'M-101.00', 'A-105.01', 'A-400.00']; the expected sheet is further down",
+        "no returned record prints 'PTAC'"
+      ],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": false,
+        "expected_sheet_anywhere": true,
+        "text:PTAC": false,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "M-100.00",
+          "type": "note",
+          "tier": "vision_read",
+          "source": "vision",
+          "label": null,
+          "quote": "2. CONTRACTOR SHALL RUN REFRIGERANT PIPES UP TO ROOF AS PER MANUFACTURER'S REQUIREMENTS FROM EACH IN"
+        },
+        {
+          "sheet": "M-101.00",
+          "type": "note",
+          "tier": "vision_read",
+          "source": "vision",
+          "label": null,
+          "quote": "KEY NOTES:. SIZES OF REFRIGERANT HOT GAS PIPING AND LIQUID SUCTION PIPING AS PER MANUFACTURING REQUI"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS | | | | | PASSIVE | 1970 SF"
+        },
+        {
+          "sheet": "A-400.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE MATERIAL/ASSEMBLY | LOCATION | OCC. 1/2\u201d laminated glass with frit | All Balustrades | 20 3/4\u201d"
+        }
+      ],
+      "render": "2. CONTRACTOR SHALL RUN REFRIGERANT PIPES UP TO ROOF AS PER MANUFACTURER'S REQUIREMENTS FROM EACH INDOOR UNIT. EACH AC UNIT SHALL HAVE A MINI-CONDENSATE PUMP WHICH SHALL DISCHARGE INDIRECTLY INTO CORR [M-100.00 (+3 sheets)] \u2014 read from the drawing image, verify against the sheet\nKEY NOTES:. SIZES OF REFRIGERANT HOT GAS PIPING AND LIQUID SUCTION PIPING AS PER MANUFACTURING REQUIREMENTS. SEE PIPING LAYOUT AND PIPING DIAGRAMS ON MECHANICAL DRAWINGS. CONTRACTOR SHALL RUN REFRIGER [M-101.00 (+1 sheet)] \u2014 read from the drawing image, verify against the sheet\nTABLE OCCUPANCY LOAD (TALE 1004.1.3) 200 GROSS WITHIN THE DWELLING UNITS | | | | | PASSIVE | 1970 SF. | / 200 = | 10 | USE | 10 [A-105.01]",
+      "known_failure": "boilerplate_outranks_specific"
+    },
+    {
+      "id": "packaged-terminal-air-conditioners",
+      "kind": "answer",
+      "question": "do we have package terminal air conditioners",
+      "subject": "package terminal air conditioner",
+      "intent": "existence",
+      "outcome": "fail",
+      "reasons": [
+        "lead sheets ['A-400.00', 'GN-001.00', 'A-400.00', 'FA-001']; the expected sheet is nowhere in what came back",
+        "no returned record prints 'PACKAGED TERMINAL AIR CONDITIONERS'"
+      ],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": false,
+        "expected_sheet_anywhere": false,
+        "text:PACKAGED TERMINAL AIR CONDITIONERS": false,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "A-400.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE D1 NUMBER | | D2 NUMBER | APPLY EXPANDABLE SPRAY FOR ALL VERTICAL FENESTRATION BETWEEN WINDOW "
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "ENERGY CODE PROGRESS INSPECTION: TR-8 - PROTECTION OF EXPOSED FOUNDATION INSULATION | (IIA1) - INSUL"
+        },
+        {
+          "sheet": "A-400.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE W1 NUMBER | | W2 NUMBER | | W3 NUMBER | APPLY EXPANDABLE SPRAY FOR ALL VERTICAL FENESTRATION B"
+        },
+        {
+          "sheet": "FA-001",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "Schedule 1 (readings disagree) | AFF | | (readings disagree) | | (readings disagree) | | MINIMUM 36\""
+        }
+      ],
+      "render": "TABLE D1 NUMBER | | D2 NUMBER | APPLY EXPANDABLE SPRAY FOR ALL VERTICAL FENESTRATION BETWEEN WINDOW FRAMES AND ROUGH OPENINGS 4'-8\" 1'-4\" 3'-4\" \"0-'8 | | APPLY EXPANDABLE SPRAY FOR ALL VERTICAL FENEST [A-400.00]\nENERGY CODE PROGRESS INSPECTION: TR-8 - PROTECTION OF EXPOSED FOUNDATION INSULATION | (IIA1) - INSULATION PLACEMENT AND R VALUES | (IIA2) - FENESTRATION AND DOOR U-FACTOR AND PRODUCT RATING | (IIA3) - [GN-001.00]\nTABLE W1 NUMBER | | W2 NUMBER | | W3 NUMBER | APPLY EXPANDABLE SPRAY FOR ALL VERTICAL FENESTRATION BETWEEN WINDOW FRAMES AND ROUGH OPENINGS 5'-0\" 2'-6\" 2'-6\" \"0-'5 \"6-'2 FINISHED FLOOR | | APPLY EXPAN [A-400.00]",
+      "known_failure": null
+    },
+    {
+      "id": "stud-gauge",
+      "kind": "answer",
+      "question": "what gauge are the metal studs",
+      "subject": "metal stud gauge",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "text:20 GAUGE": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "A-500.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "3 1/2\" METAL STUD 16\" O.C. 20 GAUGE MIN."
+        },
+        {
+          "sheet": "A-500.00",
+          "type": "note",
+          "tier": "vision_read",
+          "source": "vision",
+          "label": null,
+          "quote": "P1. 3 1/2\" METAL STUD 16\" O.C. 20 GAUGE MIN."
+        },
+        {
+          "sheet": "A-500.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATED) UL DESIGN NO. U42 | WALL TYPE 2"
+        },
+        {
+          "sheet": "A-500.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE PARTITION TYPE 1 P1 INTERIOR STUD WALL (2HR FIRE RATED) MASONRY EQUIVALENT, STC | PARTITION TY"
+        }
+      ],
+      "render": "3 1/2\" METAL STUD 16\" O.C. 20 GAUGE MIN. [A-500.00]\nP1. 3 1/2\" METAL STUD 16\" O.C. 20 GAUGE MIN. [A-500.00] \u2014 read from the drawing image, verify against the sheet\nTABLE WALL TYPE 1 W1 EXTERIOR STUD WALL WITH STUCCO (1HR FIRE RATED) UL DESIGN NO. U42 | WALL TYPE 2 W2 EXTERIOR STUD WALL WITH STUCCO (2 HR FIRE RATED) UL DESIGN NO. U4 | WALL TYPE 3 W3 INTERIOR SHEA [A-500.00]",
+      "known_failure": null
+    },
+    {
+      "id": "sidewalk-shed-height",
+      "kind": "answer",
+      "question": "how high is the sidewalk shed",
+      "subject": "sidewalk shed",
+      "intent": "attribute",
+      "outcome": "fail",
+      "reasons": [
+        "the gate would refuse the true answer; nothing returned prints ['8']",
+        "no returned record prints 'HIGH SHED'"
+      ],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": false,
+        "text:HIGH SHED": false,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "SSP-009.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "SIDEWALK SHED"
+        },
+        {
+          "sheet": "SSP-010.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "SIDEWALK SHED PARAPET PANEL LAYOUT SCALE: N.T.S."
+        },
+        {
+          "sheet": "SSP-013.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "TYPICAL SIDEWALK SHED ELEVATION"
+        },
+        {
+          "sheet": "SSP-002.00",
+          "type": "note",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "5. PERMITS FOR SIDEWALK SHEDS SHALL BE OBTAINED AS REQUIRED IN CHAPTER 33 OF THE NYC BUILDING CODE."
+        }
+      ],
+      "render": "SIDEWALK SHED [SSP-009.00]\nSIDEWALK SHED PARAPET PANEL LAYOUT SCALE: N.T.S. [SSP-010.00]\nTYPICAL SIDEWALK SHED ELEVATION [SSP-013.00]",
+      "known_failure": "a_mention_outranks_the_measurement"
+    },
+    {
+      "id": "roof-protection",
+      "kind": "answer",
+      "question": "what roof protection is on the drawings",
+      "subject": "roof protection",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:ROOF PROTECTION": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "SSP-003.00",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ADJACENT BLDG. ROOF PROTECTION"
+        },
+        {
+          "sheet": "SSP-004.00",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ADJACENT BLDG. ROOF PROTECTION"
+        },
+        {
+          "sheet": "SSP-005.00",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ADJACENT BLDG. ROOF PROTECTION"
+        },
+        {
+          "sheet": "SSP-005.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "ADJACENT BUILDING. ROOF PROTECTION"
+        }
+      ],
+      "render": "ADJACENT BLDG. ROOF PROTECTION [SSP-003.00]\nADJACENT BLDG. ROOF PROTECTION [SSP-004.00]\nADJACENT BLDG. ROOF PROTECTION [SSP-005.00]",
+      "known_failure": null
+    },
+    {
+      "id": "ptac-2-contested",
+      "kind": "answer",
+      "question": "how many PTAC-2 units are there",
+      "subject": "PTAC-2",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:readings disagree": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "element",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "PTAC-2 \u2014 QTY on the sheet, readings disagree \u2014 ROOMS PTAC UNITS SCHEDULE"
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "ROOMS PTAC UNITS SCHEDULE UNIT NO. | QTY | MAKE | MODEL | ARRANGEMENT | NET COOLING CAPACITY (BTUH) "
+        },
+        {
+          "sheet": "M-104.00",
+          "type": "element",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "PTAC-2 \u2014 legend"
+        },
+        {
+          "sheet": "M-100.00",
+          "type": "legend_entry",
+          "tier": "vision_read",
+          "source": "vision",
+          "label": "PACKAGE TERMINAL AIR CONDITIONER",
+          "quote": "PTAC-2"
+        }
+      ],
+      "render": "PTAC-2 \u2014 QTY on the sheet, readings disagree \u2014 ROOMS PTAC UNITS SCHEDULE [M-200.00] \u2014 two readings of that cell say 6 and 9; verify against the sheet\nROOMS PTAC UNITS SCHEDULE UNIT NO. | QTY | MAKE | MODEL | ARRANGEMENT | NET COOLING CAPACITY (BTUH) | AUXILIARYHEATING CAPACITY (KW) | NET HEATING CAPACITY(BTUH) | DEHUMIDIFICATION PTS/HR | EER | COP  [M-200.00]\nPTAC-2 \u2014 legend [M-104.00]",
+      "known_failure": null
+    },
+    {
+      "id": "kicker-invented",
+      "kind": "absent",
+      "question": "what is a kicker",
+      "subject": "kicker",
+      "intent": "identify",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 0,
+        "no_label_in_render": true,
+        "gate_refuses_an_invented_number": true,
+        "nothing_quotes_it": true
+      },
+      "lead": [],
+      "render": "Not found.",
+      "known_failure": null
+    },
+    {
+      "id": "escalator-absent",
+      "kind": "absent",
+      "question": "where is the escalator",
+      "subject": "escalator",
+      "intent": "location",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 0,
+        "no_label_in_render": true,
+        "gate_refuses_an_invented_number": true,
+        "nothing_quotes_it": true
+      },
+      "lead": [],
+      "render": "Not found.",
+      "known_failure": null
+    },
+    {
+      "id": "solar-absent",
+      "kind": "absent",
+      "question": "are there solar panels on the roof",
+      "subject": "solar panels",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 0,
+        "no_label_in_render": true,
+        "gate_refuses_an_invented_number": true,
+        "nothing_quotes_it": true
+      },
+      "lead": [],
+      "render": "Not found.",
+      "known_failure": null
+    },
+    {
+      "id": "helipad-absent",
+      "kind": "absent",
+      "question": "is there a helipad",
+      "subject": "helipad",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 0,
+        "no_label_in_render": true,
+        "gate_refuses_an_invented_number": true,
+        "nothing_quotes_it": true
+      },
+      "lead": [],
+      "render": "Not found.",
+      "known_failure": null
+    },
+    {
+      "id": "chase-walls-absent",
+      "kind": "absent",
+      "question": "are there chase walls",
+      "subject": "chase wall",
+      "intent": "existence",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 0,
+        "no_label_in_render": true,
+        "gate_refuses_an_invented_number": true,
+        "nothing_quotes_it": true
+      },
+      "lead": [],
+      "render": "Not found.",
+      "known_failure": null
+    },
+    {
+      "id": "sprinkler-count-absent",
+      "kind": "absent",
+      "question": "how many sprinkler heads are there",
+      "subject": "sprinkler",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "nothing_states_a_count": true
+      },
+      "lead": [
+        {
+          "sheet": "T-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "LIST OF RELATED JOB NOS. JOB TYPE | JOB NUMBER ARCHITECTURAL | B01141294-I1 MECHANICAL | PLUMBING | "
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE 506.2 ALLOWABLE AREA FACTOR GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER (SM) | TYPE OF CONSTRUCTI"
+        },
+        {
+          "sheet": "T-001.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "APPLICATIONS TO BE FILED SEPARATELY 1. | FENCE | JOB # B01141294-S1 2. 3. | PLUMBING / SPRINKLER MEC"
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE 504.4 ALLOWABLE NUMBER OF STORIES ABOVE GRADE PLANE GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER ("
+        }
+      ],
+      "render": "LIST OF RELATED JOB NOS. JOB TYPE | JOB NUMBER ARCHITECTURAL | B01141294-I1 MECHANICAL | PLUMBING | SPRINKLER | STRUCTURAL | B01141294-S2 FOUNDATION | SOE | [T-001.00]\nTABLE 506.2 ALLOWABLE AREA FACTOR GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER (SM) | TYPE OF CONSTRUCTION | | | TYPE I | | | A | B M | NS SM | UL UL | UL UL B | NS SM | UL UL | UL UL R-2 | NS SM | UL UL  [GN-001.00]\nAPPLICATIONS TO BE FILED SEPARATELY 1. | FENCE | JOB # B01141294-S1 2. 3. | PLUMBING / SPRINKLER MECHANICAL | JOB # B01141294-S2 JOB # B01141294-S3 4. | FOUNDATION | JOB # B01141294-S4 5. | STRUCTURAL [T-001.01]",
+      "known_failure": null
+    },
+    {
+      "id": "door-size",
+      "kind": "answer",
+      "question": "what size are the doors",
+      "subject": "door schedule",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:3'-0\" X 7'-0\"": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "T-001.01",
+          "type": "note",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "DOOR AND WINDOW SCHEDULE 24 A-500"
+        },
+        {
+          "sheet": "A-400.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXTERIOR DOOR SCHEDULE"
+        },
+        {
+          "sheet": "A-400.00",
+          "type": "text",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "INTERIOR DOOR SCHEDULE"
+        },
+        {
+          "sheet": "RCP-002.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "LIGHTING SCHEDULE FIXTURE | LOCATION | MANUFACTURER | MODEL | LAMP TYPE | # OF FIXTURE | WATT | LUME"
+        }
+      ],
+      "render": "DOOR AND WINDOW SCHEDULE 24 A-500 [T-001.01]\nEXTERIOR DOOR SCHEDULE [A-400.00]\nINTERIOR DOOR SCHEDULE [A-400.00]",
+      "known_failure": null
+    },
+    {
+      "id": "ceiling-height",
+      "kind": "answer",
+      "question": "what is the ceiling height in the apartments",
+      "subject": "ceiling height",
+      "intent": "attribute",
+      "outcome": "fail",
+      "reasons": [
+        "lead sheets ['A-500.00', 'GN-001.00', 'Z-001.01', 'M-200.00']; the expected sheet is nowhere in what came back"
+      ],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": false,
+        "expected_sheet_anywhere": false,
+        "text:CEILING": true,
+        "render_carries_the_answer": false
+      },
+      "lead": [
+        {
+          "sheet": "A-500.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE PARTITION TYPE 1 P1 INTERIOR STUD WALL (2HR FIRE RATED) MASONRY EQUIVALENT, STC | PARTITION TY"
+        },
+        {
+          "sheet": "GN-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "TABLE 504.3 ALLOWABLE BUILDING HEIGHT IN FEET ABOVE GRADE PLANE GROUP | W/O SPRINKLERS (NS) W/ SPRIN"
+        },
+        {
+          "sheet": "Z-001.01",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "ZONING ANALYSIS: | ITEM | PERMITTED / REQUIRED | PROPOSED ZR 22-12 | USE PERMITTED | USE GROUP II | "
+        },
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | A"
+        }
+      ],
+      "render": "TABLE PARTITION TYPE 1 P1 INTERIOR STUD WALL (2HR FIRE RATED) MASONRY EQUIVALENT, STC | PARTITION TYPE 2 P2 INTERIOR STUD WALL (2HR FIRE RATED) STC 56 UL DESIGN NO. U41 | PARTITION TYPE 3 P3 INTERIOR  [A-500.00]\nTABLE 504.3 ALLOWABLE BUILDING HEIGHT IN FEET ABOVE GRADE PLANE GROUP | W/O SPRINKLERS (NS) W/ SPRINKLER (S) | TYPE OF CONSTRUCTION | | | TYPE I | | | A | B M | NS S | UL UL | 160 420 B | NS S | UL UL [GN-001.00]\nZONING ANALYSIS: | ITEM | PERMITTED / REQUIRED | PROPOSED ZR 22-12 | USE PERMITTED | USE GROUP II | USE GROUP II RESIDENTIAL ZR 23-22 | MAX FLOOR AREA | FLOOR AREA:3.0 3,654 SF. x 3.0 = 10,962 SF. | 1 [Z-001.01]",
+      "known_failure": null
+    },
+    {
+      "id": "pile-details",
+      "kind": "answer",
+      "question": "what are the pile details",
+      "subject": "pile",
+      "intent": "attribute",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "text:HELICAL PILES": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "S-001.00",
+          "type": "schedule",
+          "tier": "schedule_cell",
+          "source": "table_finder",
+          "label": null,
+          "quote": "SPECIAL INSPECTION CATEGORIES | ALTERNATIVE MATERIALS - OTCR BUILDING BULLETIN# ___________ | BC 170"
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "dimension",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "SUPPORT OF EXCAVATION AND PILES."
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "dimension",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "HELICAL PILES (BB # 2014-020)"
+        },
+        {
+          "sheet": "S-001.00",
+          "type": "note",
+          "tier": "text_layer",
+          "source": "text_layer",
+          "label": null,
+          "quote": "8.6. SUPPORT OF EXCAVATION AND PILES."
+        }
+      ],
+      "render": "SPECIAL INSPECTION CATEGORIES | ALTERNATIVE MATERIALS - OTCR BUILDING BULLETIN# ___________ | BC 1705.1.1 | STRUCTURAL STEEL -- WELDING | BC 1705.2.1 | STRUCTURAL STEEL -- DETAILS | BC 1705.2.2 | STRU [S-001.00]\nSUPPORT OF EXCAVATION AND PILES. [S-001.00]\nHELICAL PILES (BB # 2014-020) [S-001.00]",
+      "known_failure": null
+    },
+    {
+      "id": "vent-fan-count-not-stated",
+      "kind": "absent",
+      "question": "how many vent fans are there",
+      "subject": "exhaust fan",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 8,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "nothing_states_a_count": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | A"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": null,
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        }
+      ],
+      "render": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | AMP | MOTOR DATA ELEC. VOLTS | | WEIGHT LBS | REMARKS EF-1 | APARTMENTSBATHROOMS EXHAUST | NUTONE | A [M-200.00]\nEXHAUST FAN [A-100.01]\nEXHAUST FAN [A-105.01]",
+      "known_failure": null
+    }
+  ]
+}
