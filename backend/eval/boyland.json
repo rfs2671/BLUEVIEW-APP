@@ -629,6 +629,84 @@
         "source": "PyMuPDF text of all current pages, plus every stored record's count",
         "evidence": "SPRINKLER is printed on eight current sheets and no sheet states how many there are. Measured 2026-09-18: 26 fragments on the current pages put a digit within 40 characters of SPRINKLER and every one is a code citation (SEC. 903, Chapter 9, a numbered note); zero element records state a sprinkler count. THE CASE EXISTS BECAUSE OF A NEAR MISS: FA-001's fire-alarm matrix lists eight device types against checkmark columns, and the grid OCR merged the ROW NUMBER into the description, reading '6 SPRK, TAMPER VALVE' on one render and '9 SPRK, TAMPER VALVE' on another. A reader that turned that row into '6 sprinklers' would be inventing a quantity from a list index."
       }
+    },
+    {
+      "id": "door-size",
+      "question": "what size are the doors",
+      "subject": "door schedule",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-400.00"
+        ],
+        "text": [
+          "3'-0\" X 7'-0\""
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "AR - 3.28.25.pdf p23 (A-400.00), INTERIOR/EXTERIOR DOOR SCHEDULE",
+        "evidence": "The page's text layer carries both schedules with WIDTH, HEIGHT and THICKNESS headers, and the table finder reads SIZE 3'-0\" X 7'-0\" for doors A, B, C and D with TYPE F.P.S.C, MATERIAL HM and 1.5 HR FIRE RATED. Read off the table rows 2026-09-20. LIVE FAILURE 2026-09-19: asked for door sizes the bot gave WIDTH ONLY. The content is in the corpus and retrieval ranks the DRAWING LIST on T-001.01 above it - search_plans('door schedule') returns T-001.01 first. This is a RETRIEVAL failure, not extraction, and it is the boilerplate_outranks_specific class in the wild."
+      }
+    },
+    {
+      "id": "ceiling-height",
+      "question": "what is the ceiling height in the apartments",
+      "subject": "ceiling height",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "A-200.00"
+        ],
+        "text": [
+          "CEILING"
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "the AR elevations and the structural set",
+        "evidence": "The operator states ceiling heights are on the AR elevations and the structural set, and the bot answered 'not specified'. MEASURED 2026-09-19: 77 records mention CEILING and NOT ONE is a height - they are drawing-list entries and radiation-damper notes. 'CLG' appears three times, all inside an abbreviations table. So the content is NOT in the corpus and this is EXTRACTION, not retrieval. It is the outlined-vector-text class: the heights are dimension text on elevations, which the text layer does not carry. EXPECTED TO FAIL until outlined text can be read."
+      }
+    },
+    {
+      "id": "pile-details",
+      "question": "what are the pile details",
+      "subject": "pile",
+      "intent": "attribute",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "S-001.00"
+        ],
+        "text": [
+          "HELICAL PILES"
+        ]
+      },
+      "truth": {
+        "how": "text_layer",
+        "source": "ST - 7.29.26.pdf (S-001.00), general notes section 7",
+        "evidence": "S-001.00 prints 'HELICAL PILES (BB # 2014-020)' and notes 7.2-7.4 referring to a PILE LOCATION PLAN, PILE MATERIAL STRENGTHS AND LENGTHS and 'SEE ALSO SOE & PILE NOTES AND DETAILS'. MEASURED 2026-09-19: seven records match /PILE/ and every one is a NOTE or a DIMENSION on S-001.00 pointing elsewhere; search_plans('pile schedule') returns ZERO records and the floor correctly refuses. So the reference is in the corpus and the DETAILS are not - they are on sheets the reader cannot read, or not in the set at all. This case asserts only what IS printed."
+      }
+    },
+    {
+      "id": "vent-fan-count-not-stated",
+      "question": "how many vent fans are there",
+      "subject": "exhaust fan",
+      "intent": "count",
+      "kind": "absent",
+      "expect": {
+        "no_stated_count": true,
+        "text": [
+          "EF-1"
+        ]
+      },
+      "truth": {
+        "how": "absent",
+        "source": "MH - 7.2.26.pdf p9 (M-200.00), EXHAUST FAN SCHEDULE",
+        "evidence": "The EXHAUST FAN SCHEDULE has NO QTY COLUMN - its headers are TAG, SERVING, MANUF., MODEL, CFM, DRIVE, SP, TYPE ARRANGEMENT, SONES, AMP - so EF-1 and EF-2 are TYPES and the sheet states no quantity. The element records agree: both carry count_if_stated None with basis not_stated, and only SAF-1, whose FAN SCHEDULE does have a QTY column, carries count 1. LIVE FAILURE 2026-09-19: the bot answered '3 vent fans' on a building with 10+ units, by counting schedule ROWS. Extraction was correct throughout; composition was not. A row is a type."
+      }
     }
   ],
   "known_failures": [

@@ -48311,6 +48311,11 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
         return []
     ranked = [r for r in ranked
               if not plan_search.matched_only_through_label(r, terms)]
+    # An index of the set matches many subjects and answers none of them.
+    # Dropped AFTER the floor, so a question whose only match is the drawing
+    # list still counts as found — and kept when it is all there is, so the
+    # pointer survives.
+    ranked = plan_search.drop_indexes(ranked)
     return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
 
 
