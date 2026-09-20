@@ -133,7 +133,7 @@ class ALabelOpensTheDoor(unittest.TestCase):
         render = ps.render_records([LEGEND], "package terminal air conditioner")
         self.assertNotIn("PACKAGE TERMINAL AIR CONDITIONER", render)
         self.assertNotIn("PTAC-1", render)
-        self.assertIn("Not on the indexed drawings", render)
+        self.assertIn("Not found", render)
 
     def test_a_printed_record_still_renders(self):
         render = ps.render_records([SCHEDULE], "ROOMS PTAC UNITS SCHEDULE")

@@ -75,7 +75,7 @@ class WhatTheCrewIsShown(unittest.TestCase):
     def test_a_record_that_can_say_neither_is_not_quoted(self):
         out = ps.render_records(
             [_record(file_name=None, page_number=None)], "chase wall")
-        self.assertEqual(out, "Not on the indexed drawings.")
+        self.assertEqual(out, "Not found.")
 
     def test_one_uncitable_record_does_not_take_the_citable_one_with_it(self):
         out = ps.render_records(
@@ -113,7 +113,10 @@ class WhatTheModelIsShown(unittest.TestCase):
     def test_the_sheet_number_is_still_preferred(self):
         out = server._render_records_for_model(
             [_record(sheet_number="A-105.01")], "chase wall")
-        self.assertIn("[A-105.01 |", out)
+        # The line is `- <quote> [<sheet>]` now; the record type and tier
+        # were machinery for a log reader, not for the model composing a
+        # sentence, and a live GC got paragraphs while they were in there.
+        self.assertIn("[A-105.01]", out)
 
 
 class NoRenderPrintsALiteralQuestionMark(unittest.TestCase):

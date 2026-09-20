@@ -168,7 +168,7 @@ class TheOmissionIsSilent(unittest.TestCase):
         self.assertIn("Nothing to show for that", SRC,
                       "the sheet path has no honest empty answer -- an omitted "
                       "deleted file would send nothing with nothing said")
-        self.assertIn("No record on the current drawings mentions", SRC,
+        self.assertIn("Nothing on the current drawings mentions", SRC,
                       "the answer path has no honest empty answer -- the model "
                       "would be handed silence and would fill it")
         # And it still must not invite a retry that cannot succeed.

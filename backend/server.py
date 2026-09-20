@@ -48320,11 +48320,23 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     guess at — and the numbers it is allowed to use are the ones printed
     here."""
     if not records:
-        return (f"(No record on the current drawings mentions {subject!r}. "
-                f"Say it is not on the indexed drawings; do not estimate.)")
-    lines = [f"{len(records)} record(s) for {subject!r}. "
-             f"Use ONLY numbers that appear below; an answer containing any "
-             f"other number will be discarded and replaced."]
+        return (f"(Nothing on the current drawings mentions {subject!r}. "
+                f"Answer exactly: 'Not found.' Do not estimate, do not list "
+                f"sheets, do not explain.)")
+    # ── SHORT, AND THE RULE FIRST ──────────────────────────────────────
+    #
+    # This opened with a count of records and a paragraph of instruction, and
+    # every line carried the record type and tier as well as the sheet. Live
+    # test 2026-09-19: the model answered a fan question by writing one line
+    # per schedule ROW with a count of 1 on each - it read a list and produced
+    # a list. The gate caught it, and what the GC then received was the
+    # fallback render of an abbreviations table.
+    #
+    # The machinery - record type, tier - is for the reader of a log, not for
+    # the model composing a sentence. What it needs is the printed words, the
+    # sheet, and the two rules it keeps breaking.
+    lines = [f"Records for {subject!r}. Use ONLY numbers printed below. "
+             f"A schedule ROW is a TYPE, not a quantity: never count rows."]
     for r in records:
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
@@ -48340,7 +48352,7 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
         if more:
             where = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})"
         quote = re.sub(r"\s+", " ", (r.get("quote") or "")).strip()[:400]
-        line = f"- [{where} | {r.get('record_type')} | {r.get('tier')}] {quote}"
+        line = f"- {quote} [{where}]"
         readings = (r.get("payload") or {}).get("count_readings")
         if readings:
             # Say it plainly and early: a model shown two numbers for one cell
@@ -48362,6 +48374,60 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     return "\n".join(lines)
 
 
+#: Verbs and shapes that make a sentence a CLAIM about what is drawn, rather
+#: than a report that nothing was found. Deliberately small: the question is
+#: only whether the reply asserts, and a reply that does not assert is left
+#: alone.
+_ASSERTION_RE = re.compile(
+    r"\b(?:includes?|contains?|shows?|has|have|is|are|specif\w+|indicat\w+|"
+    r"call(?:s|ed)?\s+for|detail\s+[A-Z0-9]|per\s+(?:sheet|drawing))\b",
+    re.I)
+#: A reply that only reports absence is not an assertion about the drawings,
+#: however many of the words above it happens to use.
+_ABSENCE_RE = re.compile(
+    r"\bnot\s+(?:found|on|in|shown|specified|listed|indicated)\b"
+    r"|\bno\s+(?:record|result|match|mention)\b"
+    r"|\bcould\s*n[o']?t\s+find\b"
+    # `do` as well as `does`: 'the drawings do not specify' is the commonest
+    # honest absence the model writes, and matching only the singular made
+    # this refuse a truthful reply.
+    r"|\bdo(?:es)?\s+not\s+(?:say|show|specify|state|list|indicate|include)\b"
+    r"|\bnothing\s+(?:found|on|in)\b", re.I)
+
+
+#: Words that make a claim a claim ABOUT THE DRAWINGS. Without this the
+#: check fires on any assertion at all - 'There are 3 workers on site' is a
+#: roster answer that reaches this gate whenever a plan search also ran in the
+#: same turn, and replacing it with 'Not found.' would be a worse bug than the
+#: one being fixed. Caught by test_a_reply_with_no_plan_evidence_is_left_alone.
+_DRAWING_WORDS = re.compile(
+    r"(?:drawing|sheet|plan|detail|schedule|elevation|section|legend|"
+    r"dwg|spec(?:ification)?s?|A-\d|M-\d|P-\d|S-\d|E-\d|SP-\d|FA-\d)",
+    re.I)
+
+
+def _asserts_about_the_drawings(text: str, subject: str = "") -> bool:
+    """Does this reply state something as being ON the drawings?
+
+    Used only where there is NO evidence at all, so it errs toward refusing -
+    but it must first be about the drawings. A claim counts when it reads as
+    an assertion AND either names drawing vocabulary or names the subject that
+    was searched for.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _ABSENCE_RE.search(t):
+        return False
+    if not _ASSERTION_RE.search(t):
+        return False
+    if _DRAWING_WORDS.search(t):
+        return True
+    terms = plan_search.search_terms(subject or "")
+    return bool(terms) and any(
+        re.search(plan_search.term_pattern(w), t, re.I) for w in terms)
+
+
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
                      intent: str = "") -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
@@ -48374,8 +48440,32 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
 
     A vision-read label is checked the same way and for the same reason: those
     words came from a model looking at a picture, and KICKER and PACKAGE
-    TERMINAL AIR CONDITIONER arrived by the identical path."""
+    TERMINAL AIR CONDITIONER arrived by the identical path.
+
+    ── NO RECORDS IS THE CASE THAT NEEDED THE GATE MOST ───────────────────
+    #
+    # This returned the model's text untouched when the search came back
+    # empty, on the reasoning that there was nothing to check it against.
+    # That is exactly backwards: a claim with no evidence behind it is the
+    # one that must not be sent.
+    #
+    # LIVE TEST 2026-09-19, a real GC. The bot said there is no door with a
+    # glass panel window. He replied that there is. With NO new search and NO
+    # new records, it agreed and stated that door detail A includes a glass
+    # panel window. The claim carried no number, so `answer_is_grounded` had
+    # nothing to object to — and the empty-records branch meant the gate was
+    # never consulted at all.
+    #
+    # A contradiction from the user is not evidence. Neither is the model's
+    # willingness to agree. When the search returned nothing, the only
+    # sendable answer is that nothing was found.
+    """
     if not records:
+        if _asserts_about_the_drawings(text, subject):
+            logger.warning(
+                "plan answer asserted with NO records: subject=%r text=%r",
+                subject[:40], (text or "")[:200])
+            return "Not found.", "no_records_refused"
         return text, "no_records"
     grounded, unsupported = plan_search.answer_is_grounded(
         text, records, intent=intent)
@@ -49128,10 +49218,33 @@ _AGENT_TOOLS = [
                 "'what type of AC', 'stucco thickness', 'what is KE 1', 'are there "
                 "chase walls'. Call it BEFORE saying anything about the drawings, and "
                 "call it again with a different subject rather than guessing. "
-                "Compose your reply only from the lines it returns and cite the sheet. "
+                "Compose your reply only from the lines it returns. "
                 "Every number you write must appear in a returned line; an answer "
                 "containing any other number is discarded. Use query_plan instead when "
-                "the user wants the sheet IMAGE sent."
+                "the user wants the sheet IMAGE sent.\n"
+                "HOW TO WRITE IT — a busy GC reads the first line and stops:\n"
+                "- LEAD WITH THE ANSWER on its own line, or with 'Not found.'\n"
+                "- Cite the sheet INLINE in brackets: 'PTAC-1: 21 [M-200.00]'. "
+                "Never write a sentence about which sheets mention something.\n"
+                "- If you cannot answer, say 'Not found.' and name at most ONE "
+                "closest sheet: 'Not found. Closest: A-500.00.' Listing sheets "
+                "that merely MENTION the subject is noise and is worse than "
+                "nothing.\n"
+                "- 'NOT FOUND' AND 'NO QUANTITY STATED' ARE DIFFERENT ANSWERS. "
+                "If the subject IS on the drawings but no number is given, say "
+                "what IS there and that the quantity is not stated: 'EF-1, EF-2 "
+                "scheduled [M-200.00]. No quantity stated.' A schedule ROW is a "
+                "TYPE, not a count — never count rows to answer 'how many'. "
+                "Only a QTY column, or a record that already says 'count N', "
+                "is a quantity.\n"
+                "- No preamble, no 'based on the drawings', no restating the "
+                "question. Two short lines is a long answer.\n"
+                "IF THE USER CONTRADICTS YOU: that is not evidence. Do NOT "
+                "agree and do NOT revise the answer from their assertion. Call "
+                "search_plans again with THEIR words as the subject. If it "
+                "still returns nothing, say so plainly — 'Still not finding it. "
+                "It may be on a sheet I can't read.' Agreeing without new "
+                "records is how an invented fact reaches a jobsite."
             ),
             "parameters": {
                 "type": "object",
