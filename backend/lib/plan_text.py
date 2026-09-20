@@ -101,6 +101,183 @@ def split_stacked_fraction(digits: str) -> Optional[str]:
     return None
 
 
+# ── A STACKED FRACTION IS STACKED BY POSITION, NOT BY SIZE ────────────────
+#
+# `rebuild_line` below finds a stacked fraction by looking for a SMALLER span,
+# which is how some CAD fonts set one. On 588 Boyland they are not smaller:
+# measured on the section on p30 of the updated set, every character of
+# 9'-7 1/4" is size 3.448 and the fraction is stacked purely by offset - the
+# 9'-7" on the baseline, the 1 half a size above it and the 4 half a size
+# below, both at the same position along the line. So the size test never
+# fired, the pieces merged into their neighbours, and the line came out as
+#
+#     9'-714"
+#
+# THAT IS A FABRICATED NUMBER, NOT A MISSING ONE. 9'-714" is printed nowhere
+# on the drawing, it is stored as a record quote, and it is citable to a
+# superintendent as a dimension. Nothing downstream can catch it either: the
+# record genuinely contains 714, so an answer quoting it is correctly
+# grounded in its source. Both halves of the reader agreed on a number the
+# drawing does not say.
+#
+# So the fold happens HERE, on the characters, while the geometry still
+# exists - and it NEVER concatenates.
+_FRACTION_PERP_MIN = 0.18   # x its OWN size: farther off the baseline is stacked
+
+
+def _reading_sign(rows: List[Dict[str, Any]]) -> float:
+    """+1 when `along` grows down the list, -1 when the list was reversed.
+
+    A mirrored line is reversed before this runs, so list order is reading
+    order while `along` still runs the other way. Ordering on the raw value
+    would then put the fraction at the wrong end of the line.
+    """
+    seen = [r["along"] for r in rows if r.get("along") is not None]
+    if len(seen) < 2:
+        return 1.0
+    return 1.0 if seen[-1] >= seen[0] else -1.0
+
+
+def _size_clusters(live: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Characters grouped by type size.
+
+    A FRACTION IS OFFSET RELATIVE TO ITS OWN SIZE, not to the biggest type on
+    the line. Measured on SSP-003.00: a 5.18pt callout and a 0.94pt dimension
+    share one line, and judging the dimension's 0.35pt offset against the
+    callout's size hid the fraction completely. Each size is judged on its own.
+    """
+    out: List[List[Dict[str, Any]]] = []
+    for c in sorted(live, key=lambda c: float(c.get("size") or 0)):
+        size = float(c.get("size") or 0)
+        if out and abs(float(out[-1][0].get("size") or 0) - size) <= _SIZE_TOL:
+            out[-1].append(c)
+        else:
+            out.append([c])
+    return out
+
+
+def fold_stacked_fractions(chars: List[Dict[str, Any]]
+                           ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Characters with each stacked fraction spelled n/d, plus what looked odd.
+
+    A digit above the baseline paired with a digit below it, in the SAME GAP
+    between two baseline characters, is a stacked fraction - and the geometry
+    says which is the numerator, so this never has to guess a split the way
+    `split_stacked_fraction` does.
+
+    THE GAP IS THE PAIRING RULE, not a distance. A numerator is not reliably
+    centred over its denominator: on SSP-003.00 the 3 of 3/16 sits left of the
+    1, and any tolerance wide enough to catch that is wide enough to pair
+    digits that have nothing to do with each other. What IS always true is
+    that the whole fraction occupies one slot in the baseline text, between
+    the inches digit and the inch mark.
+
+    IT NEVER CONCATENATES, which is the whole point. When the pieces are
+    digits they are written n/d, because the offset already established that a
+    fraction is what they are; an unusual denominator is REPORTED rather than
+    silently accepted or silently dropped. When they are not digits the pieces
+    are removed from the line and reported, because running them into their
+    neighbours is what produced 9'-714".
+    """
+    live = [c for c in chars
+            if (c.get("text") or "").strip() and c.get("along") is not None]
+    if len(live) < 3:
+        return chars, []
+    sign = _reading_sign(live)
+
+    used: List[int] = []
+    inserts: List[Tuple[float, str]] = []
+    odd: List[str] = []
+
+    for group in _size_clusters(live):
+        if len(group) < 3:
+            continue
+        size = max(float(c.get("size") or 0) or 1.0 for c in group)
+        step = _FRACTION_PERP_MIN * size
+        buckets: Dict[int, int] = {}
+        for c in group:
+            k = int(round(c["perp"] / step)) if step else 0
+            buckets[k] = buckets.get(k, 0) + 1
+        base = max(buckets.items(), key=lambda kv: (kv[1], -abs(kv[0])))[0] * step
+        # ONLY A DIGIT CAN BE HALF OF A FRACTION, and the inch mark is the
+        # reason this is not merely tidiness: " sits high by design, so on
+        # A-500.00 it was read as a numerator over the 2 of an adjacent
+        # 2 1/2", and folding that pair REMOVED both from the line - 8" 21
+        # became 8 1. Dropping a character is the same class of harm as
+        # running two together. A non-digit is left exactly where it was.
+        up = [c for c in group
+              if c["perp"] < base - step and c["text"].isdigit()]
+        dn = [c for c in group
+              if c["perp"] > base + step and c["text"].isdigit()]
+        if not up or not dn:
+            continue
+        rail = sorted((sign * c["along"] for c in group
+                       if base - step <= c["perp"] <= base + step))
+
+        def slot(c):
+            """Which gap between baseline characters this one falls in."""
+            a = sign * c["along"]
+            lo = 0
+            for i, r in enumerate(rail):
+                if r < a:
+                    lo = i + 1
+            return lo
+
+        by_slot: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
+        for c in up:
+            by_slot.setdefault(slot(c), {}).setdefault("up", []).append(c)
+        for c in dn:
+            by_slot.setdefault(slot(c), {}).setdefault("dn", []).append(c)
+
+        for sl, parts in sorted(by_slot.items()):
+            u, d = parts.get("up") or [], parts.get("dn") or []
+            if not u or not d:
+                # Half a fraction with nothing under or over it. Reported,
+                # and left where it is rather than joined to a neighbour.
+                continue
+            u.sort(key=lambda c: sign * c["along"])
+            d.sort(key=lambda c: sign * c["along"])
+            num = "".join(c["text"] for c in u)
+            den = "".join(c["text"] for c in d)
+            at = min(sign * c["along"] for c in u + d)
+            # Both runs are digits by construction; the only judgement left
+            # is whether the denominator is one a drawing prints.
+            inserts.append((at, f"{num}/{den}"))
+            if int(den) not in DENOMINATORS or not 0 < int(num) < int(den):
+                odd.append(f"{num}/{den}")
+            used.extend(id(c) for c in u + d)
+
+    if not used:
+        return chars, []
+
+    drop = set(used)
+    keep = [c for c in chars if id(c) not in drop]
+    template = next((c for c in keep if (c.get("text") or "").strip()), None)
+    if template is None:
+        return chars, odd
+
+    out: List[Dict[str, Any]] = []
+
+    def put(txt: str) -> None:
+        """A fraction follows its inches digit with a space, as it is read."""
+        last = next((o["text"] for o in reversed(out)
+                     if (o.get("text") or "").strip()), "")
+        if last[-1:].isdigit():
+            out.append(dict(template, text=" ", along=None, perp=None))
+        for ch in txt:
+            out.append(dict(template, text=ch, along=None, perp=None))
+
+    pending = sorted(inserts)
+    for c in keep:
+        a = c.get("along")
+        while pending and a is not None and sign * a > pending[0][0]:
+            put(pending.pop(0)[1])
+        out.append(c)
+    while pending:
+        put(pending.pop(0)[1])
+    return out, odd
+
+
 def rebuild_line(spans: List[Dict[str, Any]]) -> Tuple[str, int]:
     """Join a line's spans, restoring stacked fractions. (text, fractions_fixed)."""
     sizes = [float(s.get("size") or 0) for s in spans if (s.get("text") or "").strip()]
@@ -175,6 +352,7 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
         "tables": tables or [],
         "fractions_rebuilt": fixed_total,
         "fractions_unverified": unverified[:200],
+        "fractions_odd": list(page.get("fractions_odd") or [])[:200],
         "lines_mirrored": int(page.get("lines_mirrored") or 0),
         "lines_dropped_mirrored": int(page.get("lines_dropped_mirrored") or 0),
     }
@@ -242,7 +420,8 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
                 gap = along - (cur["last_ext"] + ext) / 2
                 if gap > _SPACE_GAP * min(cur["last_size"], size) and text != " " \
                         and not cur["chars"][-1]["text"].endswith(" "):
-                    cur["chars"].append({"text": " ", "size": cur["last_size"]})
+                    cur["chars"].append({"text": " ", "size": cur["last_size"],
+                                         "along": None, "perp": None})
                 # WHICH WAY THE LINE IS BEING WRITTEN. A page rotated in the
                 # PDF can emit its glyphs right to left along the same text
                 # direction, and the line comes out mirrored: 'GNIDLIUB' for
@@ -256,13 +435,22 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
                    "top": float(ch["top"]), "bottom": float(ch["bottom"]),
                    "fwd": 0, "back": 0}
             lines.append(cur)
-        cur["chars"].append({"text": text, "size": size})
+        _sx, _sy = c[0] - cur["start_c"][0], c[1] - cur["start_c"][1]
+        cur["chars"].append({
+            "text": text, "size": size,
+            # WHERE THE CHARACTER SITS ON ITS LINE, kept because a stacked
+            # fraction is stacked by POSITION and nothing downstream can see
+            # it once these are merged into spans.
+            "along": _sx * cur["d"][0] + _sy * cur["d"][1],
+            "perp": -_sx * cur["d"][1] + _sy * cur["d"][0]})
         cur["last_c"], cur["last_ext"], cur["last_size"] = c, ext, size
         cur["max_size"] = max(cur["max_size"], size)
         cur["x0"] = min(cur["x0"], float(ch["x0"]))
         cur["x1"] = max(cur["x1"], float(ch["x1"]))
         cur["top"] = min(cur["top"], float(ch["top"]))
         cur["bottom"] = max(cur["bottom"], float(ch["bottom"]))
+
+    folded_odd: List[str] = []
 
     def spans_of(line_chars):
         spans: List[Dict[str, Any]] = []
@@ -301,6 +489,10 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
         # one block, and pairing whole blocks produced 'A = EXIT SIGN DOOR TAG
         # WINDOW TAG'. The line keeps its own box so a legend can be read row
         # by row.
+        # The fold runs on CHARACTERS, before spans_of drops the geometry.
+        # It is the last place a stacked fraction can still be recognised.
+        ln["chars"], _odd = fold_stacked_fractions(ln["chars"])
+        folded_odd.extend(_odd)
         entry = {"spans": spans_of(ln["chars"]), "bbox": list(bbox)}
         same_block = False
         if prev is not None and (ln["d"][0] * prev["d"][0] + ln["d"][1] * prev["d"][1]) > 0.98:
@@ -321,7 +513,8 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
             blocks.append({"type": 0, "bbox": bbox, "lines": [entry]})
         prev = ln
     return {"blocks": blocks, "lines_mirrored": mirrored,
-            "lines_dropped_mirrored": dropped}
+            "lines_dropped_mirrored": dropped,
+            "fractions_odd": folded_odd}
 
 
 def page_layouts(pdf_bytes: bytes, *, pages: Optional[Iterable[int]] = None,

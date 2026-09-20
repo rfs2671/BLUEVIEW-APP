@@ -226,6 +226,12 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
         # A tier that outranks its source is pulled down to what the source
         # supports. Enforced here rather than trusted at each call site.
         tier = tier_for_source(tier, source)
+        # ...and the same reasoning for a dimension that cannot exist. At the
+        # chokepoint, so no call site can route around it.
+        defect = dimension_defect(quote) if record_type == "dimension" else None
+        if defect:
+            payload = dict(payload or {}, dimension_defect=defect)
+            verified = False
         rec = dict(page)
         rec.update({
             "record_type": record_type,
@@ -239,6 +245,7 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
             "verified": verified,
             "bbox": _bbox(bbox),
             "payload": payload,
+            "dimension_defect": defect if record_type == "dimension" else None,
             "subject_terms": subject_terms or [],
             "record_version": RECORD_VERSION,
         })
@@ -359,6 +366,7 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
              subject_terms=[_clean(t.get("tag"))])
 
     for i, d in enumerate(fields.get("dimensions") or []):
+        # checked below, at the emit site, so nothing can route around it
         emit("dimension", i, _clean(d), {"value_text": _clean(d)},
              TIER_TEXT_LAYER, "text_layer", verified=True)
     for i, m in enumerate(fields.get("materials") or []):
@@ -375,6 +383,56 @@ def build_records(fields: Dict[str, Any], *, page: Dict[str, Any],
              TIER_TEXT_LAYER, "text_layer", bbox=tb.get("bbox"), verified=True)
 
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# A DIMENSION THAT CANNOT EXIST IS A DEFECT, NOT A FACT
+# ══════════════════════════════════════════════════════════════════════════
+#
+# THE DEFECT THIS EXISTS FOR. A stacked fraction whose pieces were run
+# together produced 9'-714" from a drawing that prints 9'-7 1/4". That is a
+# FABRICATED number - printed nowhere, stored as a record quote, citable to a
+# superintendent - and it is invisible to everything downstream, because the
+# record genuinely contains 714 and an answer quoting it is correctly
+# grounded in its source. Value-level grounding checks that a number came
+# from a record. It cannot check that the record is true.
+#
+# The reading is fixed in plan_text.fold_stacked_fractions. This is the
+# guard that would have caught it anyway, and that catches the next way a
+# dimension gets mangled: inches are 0-11 and a denominator is a power of two,
+# so the impossible cases are impossible BY CONSTRUCTION and need no
+# threshold, no vocabulary and no model.
+_DIM_FEET_INCHES = re.compile(r"(?<![\d./])(\d{1,3})\s*'\s*-\s*(\d+)")
+_DIM_FRACTION = re.compile(r"(?<![\d./])(\d{1,3})\s*/\s*(\d{1,3})(?![\d/])")
+_DIM_DENOMINATORS = (2, 4, 8, 16, 32, 64)
+
+
+def dimension_defect(text: str) -> Optional[str]:
+    """Why this dimension cannot be what it says, or None if it can be.
+
+    Deliberately narrow. It fires only on text already SHAPED like a
+    dimension, so a note, a model number or a date is never called a defect
+    for failing to be one.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    for m in _DIM_FEET_INCHES.finditer(t):
+        inches = m.group(2)
+        if len(inches) >= 3:
+            return f"{m.group(0)}: {inches} is not a number of inches"
+        if int(inches) >= 12:
+            return f"{m.group(0)}: {int(inches)} inches is a foot or more"
+    for m in _DIM_FRACTION.finditer(t):
+        num, den = int(m.group(1)), int(m.group(2))
+        if den == 0:
+            return f"{m.group(0)}: denominator is zero"
+        # A scale reads 3/16" = 1'-0" and a date reads 6/13/25; neither is a
+        # measurement, and neither is caught here, because both are proper
+        # fractions or are not fraction-shaped at all.
+        if den in _DIM_DENOMINATORS and num >= den:
+            return f"{m.group(0)}: {num}/{den} is not a fraction of an inch"
+    return None
 
 
 def page_authority(raw_text: str, title_text: str = "", file_name: str = ""

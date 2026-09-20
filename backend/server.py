@@ -48316,6 +48316,10 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # list still counts as found — and kept when it is all there is, so the
     # pointer survives.
     ranked = plan_search.drop_indexes(ranked)
+    # A dimension that cannot exist is a defect, not a fact. Dropped BEFORE
+    # best_per_attribute, so a fabricated value cannot win an attribute slot
+    # and cannot be the closest thing to an answer either.
+    ranked = plan_search.drop_impossible_dimensions(ranked)
     return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
 
 
