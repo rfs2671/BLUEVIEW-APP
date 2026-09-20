@@ -156,6 +156,46 @@ def _size_clusters(live: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     return out
 
 
+#: x size along the line: how far either way a character looks when working
+#: out where ITS OWN baseline sits. Wide enough to span a dimension and its
+#: inch mark, narrow enough to exclude the next label along.
+_FRACTION_LOCAL_SPAN = 2.5
+
+
+def _local_baseline(group: List[Dict[str, Any]], c: Dict[str, Any],
+                    size: float) -> Optional[float]:
+    """Where the baseline sits AROUND this character.
+
+    The first version took one baseline for the whole size cluster, as the
+    most common offset. On A-500.00 the line is
+
+        1 5/8" VARIES
+
+    and the six characters of VARIES, which sit lower than the dimension,
+    outvoted the two characters of the dimension's own baseline. The
+    numerator fell into the baseline bucket, `up` came out empty, nothing
+    folded, and the corpus kept 158" - a live, citable record for a drawing
+    that says 1 5/8".
+
+    A median over the characters NEAR this one along the line cannot be
+    outvoted by a word further down the line, and a median rather than a
+    mean so the numerator and denominator cannot drag it either.
+    """
+    near = [o for o in group
+            if abs(o["along"] - c["along"]) <= _FRACTION_LOCAL_SPAN * size]
+    if len(near) < 3:
+        return None
+    # A NON-DIGIT CANNOT BE HALF OF A FRACTION, so the inch mark, the foot
+    # mark and the dash are the one anchor that is always ON the baseline.
+    # Preferring them is what keeps a short label right: in `7 3/16"` the
+    # three fraction characters outnumber the two baseline ones, so a median
+    # over everything is dragged onto the denominator and the 7 is read as a
+    # numerator. The " cannot be, so it decides.
+    anchors = [o["perp"] for o in near if not o["text"].isdigit()]
+    perps = sorted(anchors) if anchors else sorted(o["perp"] for o in near)
+    return perps[len(perps) // 2]
+
+
 def fold_stacked_fractions(chars: List[Dict[str, Any]]
                            ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Characters with each stacked fraction spelled n/d, plus what looked odd.
@@ -194,11 +234,19 @@ def fold_stacked_fractions(chars: List[Dict[str, Any]]
             continue
         size = max(float(c.get("size") or 0) or 1.0 for c in group)
         step = _FRACTION_PERP_MIN * size
-        buckets: Dict[int, int] = {}
+        # EACH CHARACTER AGAINST ITS OWN NEIGHBOURHOOD, never against one
+        # baseline for the whole line. See _local_baseline.
+        where: Dict[int, str] = {}
         for c in group:
-            k = int(round(c["perp"] / step)) if step else 0
-            buckets[k] = buckets.get(k, 0) + 1
-        base = max(buckets.items(), key=lambda kv: (kv[1], -abs(kv[0])))[0] * step
+            lb = _local_baseline(group, c, size)
+            if lb is None:
+                where[id(c)] = "base"
+            elif c["perp"] < lb - step:
+                where[id(c)] = "up"
+            elif c["perp"] > lb + step:
+                where[id(c)] = "down"
+            else:
+                where[id(c)] = "base"
         # ONLY A DIGIT CAN BE HALF OF A FRACTION, and the inch mark is the
         # reason this is not merely tidiness: " sits high by design, so on
         # A-500.00 it was read as a numerator over the 2 of an adjacent
@@ -206,13 +254,13 @@ def fold_stacked_fractions(chars: List[Dict[str, Any]]
         # became 8 1. Dropping a character is the same class of harm as
         # running two together. A non-digit is left exactly where it was.
         up = [c for c in group
-              if c["perp"] < base - step and c["text"].isdigit()]
+              if where[id(c)] == "up" and c["text"].isdigit()]
         dn = [c for c in group
-              if c["perp"] > base + step and c["text"].isdigit()]
+              if where[id(c)] == "down" and c["text"].isdigit()]
         if not up or not dn:
             continue
         rail = sorted((sign * c["along"] for c in group
-                       if base - step <= c["perp"] <= base + step))
+                       if where[id(c)] == "base"))
 
         def slot(c):
             """Which gap between baseline characters this one falls in."""
