@@ -339,6 +339,35 @@ def is_index_record(record: Dict[str, Any]) -> bool:
     return sheetish / len(firsts) >= _INDEX_ROW_SHARE
 
 
+def dimension_is_impossible(record: Dict[str, Any]) -> bool:
+    """Has the writer marked this record's value structurally impossible?
+
+    Read off the record rather than recomputed, so search and the indexer can
+    never disagree about what counts as impossible. plan_records.emit is the
+    one place that decides.
+    """
+    if not isinstance(record, dict):
+        return False
+    if record.get("dimension_defect"):
+        return True
+    payload = record.get("payload")
+    return bool(isinstance(payload, dict) and payload.get("dimension_defect"))
+
+
+def drop_impossible_dimensions(records: Sequence[Dict[str, Any]]
+                               ) -> List[Dict[str, Any]]:
+    """Fabricated dimensions out, and UNLIKE drop_indexes, out unconditionally.
+
+    An index kept when nothing else matched still points somewhere useful, so
+    it survives as a pointer. A dimension that cannot exist points nowhere:
+    9'-714" is not a weaker reading of 9'-7 1/4", it is a different number
+    that the drawing does not contain. Keeping it because it was all we had
+    would be preferring a wrong answer to 'not found', which is the one trade
+    this reader does not make.
+    """
+    return [r for r in records or [] if not dimension_is_impossible(r)]
+
+
 def drop_indexes(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Indexes out, UNLESS they are all there is.
 
@@ -1059,6 +1088,7 @@ __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "is_index_record", "drop_indexes",
+           "dimension_is_impossible", "drop_impossible_dimensions",
            "dangling_callouts", "referenced_sheets_missing",
            "matched_only_through_label",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]
