@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 #
-# Phase C2.2 — pre-commit hook.
+# pre-commit hook. Two checks, each with its own fast path; both run, and
+# the commit is blocked if either fails.
+#
+#   1. requirements.txt resolves in a clean venv   (Phase C2.2)
+#   2. no bare absence literal in a staged test    (2026-09-20)
+#
+# Enable this hook locally:  bash scripts/install-hooks.sh
+# (sets git config core.hooksPath .githooks)
+
+set -euo pipefail
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
+
+# ══════════════════════════════════════════════════════════════════════
+# 1. DEPENDENCY RESOLUTION
+# ══════════════════════════════════════════════════════════════════════
 #
 # Catches dependency-resolution conflicts in requirements.txt
 # BEFORE they reach Railway. C2 added `limits>=3.13.0`; the
@@ -12,15 +27,13 @@
 # This hook prevents the pattern from recurring.
 #
 # Behavior:
-#   • Fast path — requirements.txt not staged → exit 0 silently.
+#   • Fast path — requirements.txt not staged → skip silently.
 #   • Slow path — requirements.txt staged:
 #       - Build a temp venv from the same `python` pip would use
 #         on Railway.
 #       - Run `pip install --dry-run -r requirements.txt`.
 #       - On ResolutionImpossible (or any non-zero exit): block
 #         the commit with a clear error pointing at the mismatch.
-#       - On success: print "✓ requirements.txt resolves cleanly"
-#         and let the commit through.
 #
 # Cross-platform: bash + python -m venv + pip. Runs from Git Bash
 # on Windows (where `python` resolves to the same Python the venv
@@ -30,93 +43,169 @@
 #
 # Cleanup: trap on EXIT removes the temp venv directory so a
 # Ctrl-C or pytest hard-fail doesn't leave junk in /tmp.
-#
-# Enable this hook locally:  bash scripts/install-hooks.sh
-# (sets git config core.hooksPath .githooks)
 
-set -euo pipefail
+check_requirements() {
+    # Match BOTH the current root-level path AND the future
+    # backend/-relative path so the hook keeps working if the file moves.
+    if ! printf '%s\n' "$STAGED" \
+            | grep -qE '^(backend/)?requirements\.txt$'; then
+        return 0
+    fi
 
-# ── Fast path: requirements.txt not staged → exit silently ─────────
-#
-# Match BOTH the current root-level path AND the future
-# backend/-relative path so the hook keeps working if the file
-# moves later.
-if ! git diff --cached --name-only \
-        | grep -qE '^(backend/)?requirements\.txt$'; then
-    exit 0
-fi
+    echo "[pre-commit] requirements.txt staged — running dependency-resolution check"
 
-echo "[pre-commit] requirements.txt staged — running dependency-resolution check"
+    # Locate the actual file (root or backend/, whichever exists).
+    local REQ_FILE=""
+    if [ -f "requirements.txt" ]; then
+        REQ_FILE="requirements.txt"
+    elif [ -f "backend/requirements.txt" ]; then
+        REQ_FILE="backend/requirements.txt"
+    else
+        echo "[pre-commit] ERROR: requirements.txt is staged but not found on disk."
+        return 1
+    fi
 
-# Locate the actual file (root or backend/, whichever exists).
-REQ_FILE=""
-if [ -f "requirements.txt" ]; then
-    REQ_FILE="requirements.txt"
-elif [ -f "backend/requirements.txt" ]; then
-    REQ_FILE="backend/requirements.txt"
-else
-    echo "[pre-commit] ERROR: requirements.txt is staged but not found on disk."
-    exit 1
-fi
+    VENV_DIR="$(mktemp -d)"
+    trap 'rm -rf "${VENV_DIR:-}" "${DRYRUN_LOG:-}"' EXIT
 
-# ── Spin up a temp venv ────────────────────────────────────────────
+    local START_TS END_TS ELAPSED PIP
+    START_TS=$(date +%s)
 
-VENV_DIR="$(mktemp -d)"
-trap 'rm -rf "$VENV_DIR"' EXIT
+    if ! python -m venv "$VENV_DIR" >/dev/null 2>&1; then
+        echo "[pre-commit] ERROR: failed to create temp venv at $VENV_DIR"
+        echo "  Make sure 'python' resolves to a working Python 3.11+."
+        return 1
+    fi
 
-START_TS=$(date +%s)
+    # Locate pip. Windows venvs use Scripts/, POSIX venvs use bin/.
+    if [ -x "$VENV_DIR/Scripts/pip.exe" ]; then
+        PIP="$VENV_DIR/Scripts/pip.exe"
+    elif [ -x "$VENV_DIR/bin/pip" ]; then
+        PIP="$VENV_DIR/bin/pip"
+    else
+        echo "[pre-commit] ERROR: cannot find pip in $VENV_DIR"
+        return 1
+    fi
 
-if ! python -m venv "$VENV_DIR" >/dev/null 2>&1; then
-    echo "[pre-commit] ERROR: failed to create temp venv at $VENV_DIR"
-    echo "  Make sure 'python' resolves to a working Python 3.11+."
-    exit 1
-fi
+    # Bring pip up-to-date so its resolver (which improved a lot in
+    # 22.x and 23.x) matches Railway's. Quiet — we only care about the
+    # resolver run, not pip's own upgrade noise.
+    "$PIP" install --upgrade --quiet pip 2>/dev/null || true
 
-# Locate pip. Windows venvs use Scripts/, POSIX venvs use bin/.
-if [ -x "$VENV_DIR/Scripts/pip.exe" ]; then
-    PIP="$VENV_DIR/Scripts/pip.exe"
-elif [ -x "$VENV_DIR/bin/pip" ]; then
-    PIP="$VENV_DIR/bin/pip"
-else
-    echo "[pre-commit] ERROR: cannot find pip in $VENV_DIR"
-    exit 1
-fi
+    DRYRUN_LOG="$(mktemp)"
 
-# Bring pip up-to-date so its resolver (which improved a lot in
-# 22.x and 23.x) matches Railway's. Quiet — we only care about the
-# resolver run, not pip's own upgrade noise.
-"$PIP" install --upgrade --quiet pip 2>/dev/null || true
+    if "$PIP" install --dry-run -r "$REQ_FILE" >"$DRYRUN_LOG" 2>&1; then
+        END_TS=$(date +%s)
+        ELAPSED=$((END_TS - START_TS))
+        echo "[pre-commit] ✓ requirements.txt resolves cleanly (${ELAPSED}s)"
+        return 0
+    fi
 
-# ── The check ──────────────────────────────────────────────────────
-
-DRYRUN_LOG="$(mktemp)"
-trap 'rm -rf "$VENV_DIR" "$DRYRUN_LOG"' EXIT
-
-if "$PIP" install --dry-run -r "$REQ_FILE" >"$DRYRUN_LOG" 2>&1; then
+    # Resolution failed. Surface the most useful chunk of pip's output
+    # (the conflict explanation), not the entire log — pip's full output
+    # is dozens of "depends on X" lines that obscure the headline.
     END_TS=$(date +%s)
     ELAPSED=$((END_TS - START_TS))
-    echo "[pre-commit] ✓ requirements.txt resolves cleanly (${ELAPSED}s)"
-    exit 0
-fi
+    echo
+    echo "[pre-commit] ✗ requirements.txt has a dependency conflict."
+    echo "[pre-commit]   (clean-venv resolution failed in ${ELAPSED}s)"
+    echo
+    echo "----- pip resolver output (last 30 lines) -----"
+    tail -n 30 "$DRYRUN_LOG"
+    echo "----- end -----"
+    echo
+    echo "[pre-commit] Fix the conflict before committing. The full log lives at:"
+    echo "[pre-commit]   $DRYRUN_LOG"
+    echo
+    echo "[pre-commit] Rationale (Phase C2.1 post-mortem): hard pins on transitive"
+    echo "[pre-commit]   deps are the usual cause. Use ranges (e.g. 'packaging>=22,<25')"
+    echo "[pre-commit]   so a sibling package widening its compat window doesn't break"
+    echo "[pre-commit]   the whole tree."
+    return 1
+}
 
-# Resolution failed. Surface the most useful chunk of pip's output
-# (the conflict explanation), not the entire log — pip's full output
-# is dozens of "depends on X" lines that obscure the headline.
-END_TS=$(date +%s)
-ELAPSED=$((END_TS - START_TS))
-echo
-echo "[pre-commit] ✗ requirements.txt has a dependency conflict."
-echo "[pre-commit]   (clean-venv resolution failed in ${ELAPSED}s)"
-echo
-echo "----- pip resolver output (last 30 lines) -----"
-tail -n 30 "$DRYRUN_LOG"
-echo "----- end -----"
-echo
-echo "[pre-commit] Fix the conflict before committing. The full log lives at:"
-echo "[pre-commit]   $DRYRUN_LOG"
-echo
-echo "[pre-commit] Rationale (Phase C2.1 post-mortem): hard pins on transitive"
-echo "[pre-commit]   deps are the usual cause. Use ranges (e.g. 'packaging>=22,<25')"
-echo "[pre-commit]   so a sibling package widening its compat window doesn't break"
-echo "[pre-commit]   the whole tree."
-exit 1
+# ══════════════════════════════════════════════════════════════════════
+# 2. BARE ABSENCE LITERALS
+# ══════════════════════════════════════════════════════════════════════
+#
+# `assertNotIn("Pass", html)` bans four characters, not a result cell: `in`
+# on a string is SUBSTRING containment, so the assertion says one thing and
+# checks another. "Passed", "Bypass", "Password", a CSS class, a worker
+# called Passarelli all satisfy — or break — it by accident.
+#
+# THE DETECTION ALREADY EXISTED and works; what it did not do is run early.
+# tests/test_absence_literals_are_specific.py caught this same reflex FOUR
+# separate times in one week, each time after a push, and each catch cost a
+# round trip. The rule is unchanged and the gate still owns it — this stage
+# just moves the one check that is local to a file in front of the commit.
+#
+# IT SCANS THE STAGED BLOBS, not the working tree. A partially staged file's
+# working copy is not what is being committed, and this repo stages by hunk
+# routinely. `git cat-file` writes each blob to a temp directory under its
+# own BASENAME, because the justified-bare allowlist keys on basename.
+#
+# NOT A SUBSTITUTE FOR THE GATE. The hook sees only this commit's files, so
+# it cannot tell that an allowlist entry has gone stale and cannot compute
+# the unclassified RATE — both need the whole suite. Those stay in the test.
+
+check_absence_literals() {
+    local FILES
+    FILES="$(printf '%s\n' "$STAGED" | grep -E '^backend/tests/test_.*\.py$' || true)"
+    if [ -z "$FILES" ]; then
+        return 0
+    fi
+
+    if [ ! -f backend/scripts/check_absence_literals.py ]; then
+        return 0
+    fi
+
+    local BLOBS
+    BLOBS="$(mktemp -d)"
+
+    # A COUNTER, not `${#args[@]}`: expanding an empty array under `set -u`
+    # is an error on bash 4.3 and earlier, which is what ships on macOS.
+    local args=()
+    local n=0 dest f
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        dest="$BLOBS/$(basename "$f")"
+        if git cat-file -p ":$f" > "$dest" 2>/dev/null; then
+            args+=("$dest")
+            n=$((n + 1))
+        fi
+    done <<< "$FILES"
+
+    if [ "$n" -eq 0 ]; then
+        rm -rf "$BLOBS"
+        return 0
+    fi
+
+    local out rc=0
+    out="$(python backend/scripts/check_absence_literals.py "${args[@]}" 2>&1)"         || rc=$?
+    rm -rf "$BLOBS"
+
+    if [ $rc -eq 0 ]; then
+        echo "$out"
+        return 0
+    fi
+
+    # The temp paths in the report would send the reader to a directory that
+    # no longer exists; the scanner prints BASENAMES, which is what the
+    # allowlist uses and what the reader needs to find the file.
+    echo "$out"
+    echo "[pre-commit] ✗ blocked by the absence-literal rule"
+    echo "[pre-commit]   (the same check runs in"
+    echo "[pre-commit]    tests/test_absence_literals_are_specific.py)"
+    return 1
+}
+
+# ══════════════════════════════════════════════════════════════════════
+
+FAILED=0
+check_requirements     || FAILED=1
+check_absence_literals || FAILED=1
+
+if [ "$FAILED" -ne 0 ]; then
+    exit 1
+fi
+exit 0
