@@ -32,6 +32,7 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 from lib import plan_eval as ev  # noqa: E402
+from lib import plan_search as ps  # noqa: E402
 from lib import plan_extract as pe  # noqa: E402
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -259,8 +260,11 @@ class AnAnswerThatRestsOnlyOnALabelFails(unittest.TestCase):
         self.assertEqual(r["checks"]["lead_matched_only_through_labels"], 2)
 
     def test_the_fallback_it_would_send_asserts_nothing(self):
+        """Through the CONSTANT: the refusal was reworded on 2026-09-20 to
+        stop claiming what the drawings contain, and what this test guards is
+        that the fallback asserts NOTHING — not which words it uses."""
         r = ev.score_case(self.CASE, self.KE, {})
-        self.assertEqual(r["render"], "Not found.")
+        self.assertEqual(r["render"], ps.NOT_FOUND)
 
 
 class StaleDataIsMarkedNotScored(unittest.TestCase):

@@ -168,7 +168,11 @@ class TheOmissionIsSilent(unittest.TestCase):
         self.assertIn("Nothing to show for that", SRC,
                       "the sheet path has no honest empty answer -- an omitted "
                       "deleted file would send nothing with nothing said")
-        self.assertIn("Nothing on the current drawings mentions", SRC,
+        # MOVED AGAIN, 2026-09-20, for the reason this test already records:
+        # the old copy told the model "nothing on the current drawings
+        # mentions X", which is a claim about the building that a search
+        # returning nothing cannot support. Anchored on the replacement.
+        self.assertIn("returned no records. That means ", SRC,
                       "the answer path has no honest empty answer -- the model "
                       "would be handed silence and would fill it")
         # And it still must not invite a retry that cannot succeed.
