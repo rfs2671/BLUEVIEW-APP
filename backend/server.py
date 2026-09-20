@@ -48336,10 +48336,28 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # after the filter would answer 'nothing found' for a building with 41 of
     # them — while the filter below still keeps those label-only records out
     # of the answer itself.
-    if not plan_search.meets_the_floor(ranked, terms):
+    # ── DOES THE CORPUS KNOW EVERY WORD OF THE SUBJECT? ────────────────────
+    #
+    # Asked per term against the WHOLE live scope, not against the candidate
+    # rows above: those are capped, so a term present on one sheet could be
+    # missing from the sample and read as unknown. One indexed existence query
+    # per subject word, on a path that already runs a vector search and a VLM
+    # call — the same trade `_live_plan_file_ids` makes, and for the same
+    # reason: a cached vocabulary would either resurrect a deleted sheet's
+    # words or hide a freshly indexed one.
+    known: set = set()
+    for t in plan_search.floor_terms(terms):
+        rx = {"$regex": plan_search.term_pattern(t), "$options": "i"}
+        if await db[PLAN_RECORDS].find_one(
+                {**scope, "$or": [{"quote": rx}, {"label": rx},
+                                  {"subject_terms": rx}]},
+                {"_id": 1}):
+            known.add(t)
+    if not plan_search.subject_is_known(terms, known):
+        unknown = [t for t in plan_search.floor_terms(terms) if t not in known]
         logger.info(
-            f"search_plans floor: nothing prints all of "
-            f"{plan_search.floor_terms(terms)} - returning no records")
+            f"search_plans floor: the drawings never use {unknown} "
+            f"- returning no records")
         return []
     ranked = [r for r in ranked
               if not plan_search.matched_only_through_label(r, terms)]

@@ -41,7 +41,8 @@ search finds. `render_records` reads `quote`; it has never read `label`.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (Any, Collection, Dict, Iterable, List, Optional,
+                    Sequence, Tuple)
 
 from lib.plan_records import TIER_ORDER, tier_rank
 from lib.plan_text import SHEET_ID_RE
@@ -138,12 +139,149 @@ def term_forms(term: str) -> List[str]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# A GC TYPES WORDS. THE DRAWING PRINTS ABBREVIATIONS.
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `apartment square footage` returned nothing while A-101.00 prints, and the
+# corpus stores verbatim, `2A 1 BEDROOM APT. NET: 482 SQ. FT.` — the record
+# matches none of those three words. Abbreviation is not an edge case; it is
+# how every sheet is written.
+#
+# TWO HALVES, and the split is structural rather than convenient.
+#
+#   TRUNCATIONS are derivable. MIN is the first three letters of MINIMUM,
+#   CONC of CONCRETE, ELEV of ELEVATION. No list is needed: generate the
+#   word's own prefixes and require a period, which is what marks the token
+#   abbreviated.
+#
+#   CONTRACTIONS are not. APT drops the middle of APARTMENT, FT the middle of
+#   FEET, GYB of GYPSUM BOARD. No rule derives them, so they are listed — and
+#   the list is the part that has to be disciplined, because a hand-kept list
+#   of word relationships is exactly what rotted before.
+#
+# ── WHY THREE LETTERS ──────────────────────────────────────────────────────
+#
+# Measured against 37 query words including deliberately risky ones. At a
+# two-letter minimum there are FOUR false bridges: `notes` -> NO. (which means
+# NUMBER), `stair`/`steel`/`story` -> ST. (STREET), `electrical` -> EL.
+# (ELEVATION). Drawings reuse that tiny namespace for unrelated words. At
+# three the collisions vanish and every remaining match is a true
+# abbreviation — STRUCT, SEC, PROV, INFO, CORP, PROP. At four, MIN, TYP, MAX,
+# DIM, DIA and COL are all lost.
+#
+# It is a threshold, and it is a break rather than an optimum: 4 errors at
+# two, 0 at three. The mechanism is namespace collision, not a fitted score.
+#
+# ── FORWARD DIRECTION ONLY, AND THIS MUST NOT BE RELAXED ───────────────────
+#
+# This maps A QUERY WORD to abbreviations of it. The reverse — expanding an
+# abbreviation found in a record into candidate words — is NOISY and must not
+# be added: measured on this corpus, NO. resolves to NOTE, SEC. to SECURED,
+# EL. to ELEMENT, ST. to STEP. The query word is given; that is what makes
+# this direction safe.
+_ABBREV_MIN_PREFIX = 3
+
+#: Generated prefixes that are ENGLISH WORDS, not abbreviations.
+#:
+#: `notes` generates the prefix NOT, and a sheet that ends a sentence with
+#: "...SHALL NOT." would be bridged to it. Latent false bridges are the ones
+#: that bite later and get diagnosed as something else, so this is closed
+#: before shipping rather than after.
+#:
+#: DERIVED, NOT HAND-PICKED. Counted across the 173-page corpus, every one of
+#: these appears ZERO times followed by a period and 14-414 times bare:
+#:
+#:     NOT 0/414   ARE 0/162   PER 0/117   OUT 0/59
+#:     SET 0/52    END 0/30    CAN 0/14
+#:
+#: while every real abbreviation appears at least once WITH one — SEC 53/0,
+#: CONC 18/0, PROV 32/0, MIN 65/28, MAX 38/13, TYP 19/11, DIA 6/1, CORP 14/1.
+#: The separation is total, so the exclusion costs nothing: no valid bridge
+#: is in this set. The same counting is how a future entry should be argued.
+_PROSE_PREFIXES = {
+    "not", "are", "per", "out", "set", "end", "can",
+    # the same shape, not observed as a prefix here but the same class
+    "the", "and", "for", "all", "any", "has", "was", "one", "two",
+    "new", "use", "see", "way", "top", "its", "may", "our",
+}
+
+
+#: Contractions, which no rule derives. Each entry earns its place by
+#: EVIDENCE, never by argument:
+#:
+#:   1. it appears N+ times in an indexed corpus, written as `ABBR.`;
+#:   2. its expansion is a word a GC demonstrably types;
+#:   3. it is a DRAWING CONVENTION, not a judgement about meaning.
+#:
+#: (3) is the one that matters. APT = APARTMENT is what every set on earth
+#: prints; nobody has to be persuaded of it. IF YOU FIND YOURSELF ARGUING FOR
+#: AN ENTRY, THAT IS THE SIGNAL IT IS A SYNONYM AND NOT A CONVENTION, and it
+#: does not belong here — that argument is how the deleted synonym table grew.
+#:
+#: AND IT NEVER GROWS IN A PR THAT IS NOT ABOUT THIS LIST. A contraction added
+#: while fixing something else is the other way that table grew.
+#:
+#: Counts are occurrences of `ABBR.` in the 588 Boyland corpus, 173 pages.
+CONVENTIONS = {
+    "ft":  ("feet", 422),
+    "sf":  ("square feet", 381),
+    "sq":  ("square", 417),
+    "apt": ("apartment", 94),
+    "gyb": ("gypsum board", 44),
+    "qty": ("quantity", 17),
+    "psf": ("pounds per square foot", 13),
+}
+
+#: expansion -> the abbreviations that stand for it.
+#:
+#: SINGLE-WORD EXPANSIONS ONLY, and the exclusion is not tidiness. Splitting
+#: `square feet` into its words and mapping each to SF made the query word
+#: `square` match `SF.` and `PSF.`, which is a bridge nobody asked for: SF
+#: stands for the PHRASE, not for either word in it. A per-term bridge cannot
+#: express a phrase, so the multi-word entries stay documented and unwired
+#: until something matches phrases. Listing them is still worth it — they are
+#: the evidence for what a phrase bridge would have to cover.
+_BY_WORD: Dict[str, List[str]] = {}
+for _ab, (_exp, _n) in CONVENTIONS.items():
+    if " " in _exp:
+        continue
+    _BY_WORD.setdefault(_exp, []).append(_ab)
+
+
+def abbreviation_forms(term: str) -> List[str]:
+    """How this word may appear ABBREVIATED, each needing a trailing period.
+
+    Truncations are generated from the word itself; contractions come from
+    CONVENTIONS. Returns the bare tokens — `term_pattern` adds the period,
+    which is what keeps `MIN` from matching the word MINE.
+    """
+    t = (term or "").lower()
+    if len(t) <= _ABBREV_MIN_PREFIX:
+        return []
+    out: List[str] = []
+    for n in range(_ABBREV_MIN_PREFIX, len(t)):
+        pre = t[:n]
+        if pre in _PROSE_PREFIXES:
+            continue          # an English word, not an abbreviation
+        out.append(pre)
+    for ab in _BY_WORD.get(t, ()):
+        if ab not in out:
+            out.append(ab)
+    return out
+
+
 def term_pattern(term: str) -> str:
     """A regular expression that matches `term` as a word, in either number.
 
     Written to mean the same thing to Python's `re` and to MongoDB's PCRE, and
     used by both — search_plans narrows with it, rank() matches with it."""
-    alts = "|".join(re.escape(f) for f in sorted(term_forms(term), key=len, reverse=True))
+    forms = [re.escape(f) for f in term_forms(term)]
+    # An abbreviation is only an abbreviation when the period says so. Without
+    # it `MIN` matches MINE and `CONC` matches nothing useful — the period is
+    # the whole signal that the token stands for a longer word.
+    forms += [re.escape(a) + r"\." for a in abbreviation_forms(term)]
+    alts = "|".join(sorted(forms, key=len, reverse=True))
     return f"{_ALNUM_BEFORE}(?:{alts}){_ALNUM_AFTER}"
 
 
@@ -225,6 +363,15 @@ def printed_score(record: Dict[str, Any], terms: Sequence[str]) -> Tuple[float, 
 # Removing a word from a subject only makes the floor MORE permissive — fewer
 # terms are required — so a wrong entry costs recall of the floor's strictness
 # and never costs an answer.
+# `big` — 2026-09-20. "how big are the apartments" refused, because `big`
+# appears in none of 12,031 records and the floor reads an unknown word as
+# evidence the drawings do not discuss the subject. That reading is right for
+# `solar` and wrong for `big`: one names a thing, the other asks about size.
+#
+# THIS IS THE SECOND WORD THIS LIST HAS MISSED, and the list is hand-kept by
+# design — small, closed, each entry justified. Two misses is not an argument
+# for a longer list; it is an argument that question words should come from
+# somewhere other than accretion. Recorded rather than solved here.
 ASKING_WORDS = {
     # asking for a position
     "where": "a sheet draws the thing; it does not print the word 'where'",
@@ -232,6 +379,7 @@ ASKING_WORDS = {
     "located": "as above, in verb form",
     # asking for a magnitude — the sheet prints the NUMBER, not the property
     "tall": "'how tall' asks for a height the sheet prints as a dimension",
+    "big": "'how big' asks for a size; no sheet in the corpus prints the word",
     "high": "the adjective form of the same question; HIGH SHED is printed on "
             "the shed drawing, and stripping a printed word only widens",
     "wide": "'how wide' asks for a width the sheet prints as a dimension",
@@ -263,6 +411,62 @@ def floor_terms(terms: Sequence[str]) -> List[str]:
     reading and the safe one."""
     kept = [t for t in terms if t not in ASKING_WORDS]
     return kept or list(terms)
+
+
+def subject_is_known(terms: Sequence[str],
+                     known: Collection[str]) -> bool:
+    """Does the corpus know EVERY word of the subject?
+
+    ── THE FLOOR ASKED THE WRONG QUESTION ─────────────────────────────────
+    #
+    # It asked whether ONE RECORD carried every word. Measured 2026-09-20,
+    # that refused `apartment square footage` while A-101.00 prints, and the
+    # corpus stores verbatim, `2A 1 BEDROOM APT. NET: 482 SQ. FT.` — because
+    # the sheet abbreviates and the GC does not. Six of eighteen ordinary
+    # phrasings returned nothing for content that was extracted, stored, on a
+    # live page and correct.
+    #
+    # ── WHY ABSENCE, AND NOT RARITY ────────────────────────────────────────
+    #
+    # The obvious alternative was to require the RAREST term rather than all
+    # of them. Measured and rejected: document frequency does not track
+    # discriminating power. On this corpus `concrete` appears in 121 records
+    # and `schedule` in 114, so "rarest" picks SCHEDULE for `concrete pour
+    # schedule` — the generic word, the one a LIGHTING SCHEDULE matched, which
+    # is the exact failure the floor exists to stop. No cutoff separates 114
+    # from 121 without being fitted to this corpus.
+    #
+    # What IS decisive is a word the corpus has never seen. `solar` appears in
+    # none of 12,031 records; so do `kicker`, `escalator`, `helipad`, `chase`
+    # and `pour`. That is not noise to be dropped — IT IS THE FINDING. A
+    # subject containing a word the drawings never use is a subject these
+    # drawings do not discuss.
+    #
+    # So the rule is a fact and not a threshold: every word of the subject
+    # must be one the corpus uses. 25 of 26 against 20 of 26 for the old
+    # rule, with every absent-case still refusing.
+    #
+    # ── WHAT THIS DELIBERATELY DOES NOT DO ────────────────────────────────
+    #
+    # It does not make the answer reachable. `apartment square footage` now
+    # passes and returns 8 records, NONE of which is the A-101.00 line that
+    # answers it — that record matches none of `apartment`, `square` or
+    # `footage`, so it is never in the candidate set at all. This removes a
+    # false refusal; it does not fix retrieval, and the two should not be
+    # confused because both end in a disappointed superintendent.
+    #
+    # `known` is computed over quote, label AND subject_terms — the same
+    # fields the candidate query narrows on. A label counts here for the
+    # reason it always has: PACKAGE TERMINAL AIR CONDITIONER is printed on no
+    # sheet in this corpus and lives only in labels, and a printed-only floor
+    # would refuse a building with 41 of them. What a label may never do is
+    # ANSWER, which `matched_only_through_label` still enforces.
+    """
+    want = floor_terms(terms)
+    if not want:
+        return True
+    have = {str(k).lower() for k in (known or ())}
+    return all(t.lower() in have for t in want)
 
 
 def meets_the_floor(records: Iterable[Dict[str, Any]],
@@ -1120,6 +1324,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
+           "subject_is_known", "abbreviation_forms", "CONVENTIONS",
            "NOT_FOUND", "not_found_text",
            "is_index_record", "drop_indexes",
            "dimension_is_impossible", "drop_impossible_dimensions",
