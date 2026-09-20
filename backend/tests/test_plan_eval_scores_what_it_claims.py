@@ -220,7 +220,16 @@ class TheRenderHeaderIsTheQuestionNotALeak(unittest.TestCase):
                 "truth": {"how": "absent", "evidence": "x"}}
         r = ev.score_case(case, [panels], {})
         self.assertEqual(r["outcome"], "pass", r["reasons"])
-        self.assertTrue(r["render"].upper().startswith("SOLAR PANELS"))
+        # The render no longer opens with the caller's words at all - the
+        # header was removed on 2026-09-19 because a GC would not read it -
+        # so the risk this class was written for cannot occur. What still
+        # matters, and is what is asserted, is that the case PASSES and the
+        # forbidden word appears nowhere in what would be sent.
+        # Checked as WORDS. assertNotIn on a bare word is a substring test
+        # that anything containing it satisfies or breaks, which
+        # test_absence_literals_are_specific bans - and caught here, on an
+        # assertion written minutes earlier. Third time in one session.
+        self.assertNotIn("SOLAR", r["render"].upper().split())
 
     def test_a_forbidden_word_in_a_returned_quote_is(self):
         vision = rec(quote="PACKAGE TERMINAL AIR CONDITIONER", tier=pe.TIER_VISION,
@@ -251,7 +260,7 @@ class AnAnswerThatRestsOnlyOnALabelFails(unittest.TestCase):
 
     def test_the_fallback_it_would_send_asserts_nothing(self):
         r = ev.score_case(self.CASE, self.KE, {})
-        self.assertEqual(r["render"], "Not on the indexed drawings.")
+        self.assertEqual(r["render"], "Not found.")
 
 
 class StaleDataIsMarkedNotScored(unittest.TestCase):

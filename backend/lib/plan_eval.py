@@ -320,15 +320,24 @@ def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
 
 
 def _render_parts(render: str) -> Tuple[str, str]:
-    """(header, body). render_records opens with `<subject> — on the drawings:`,
-    which repeats the CALLER'S words. Checking that line for forbidden text
-    reports the question back as a leak — measured on the first run, where
-    'Solar panels — on the drawings:' failed a case whose records printed no
-    such word."""
+    """(header, body).
+
+    THERE IS NO HEADER ANY MORE, and that is why this still exists rather than
+    being deleted. `render_records` used to open with
+    `<subject> — on the drawings:`, which repeated the CALLER'S words, and
+    checking that line for forbidden text reported the question back as a
+    leak — 'Solar panels — on the drawings:' failed a case whose records
+    printed no such word.
+
+    The header was removed on 2026-09-19 because a real GC would not read it.
+    Leaving this partitioning on the first newline then treated the first
+    RECORD LINE as a header and excluded it from the leak check, which is a
+    hole and not a cosmetic change. Every line is body now, and a header is
+    recognised only if one ever comes back."""
     head, _, body = (render or "").partition("\n")
-    if not body and not head.rstrip().endswith(":"):
-        return "", head
-    return head, body
+    if body and head.rstrip().endswith(":"):
+        return head, body
+    return "", render or ""
 
 
 def _matches_without_label(r: Dict[str, Any], terms: Sequence[str]) -> bool:

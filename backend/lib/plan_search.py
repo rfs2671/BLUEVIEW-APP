@@ -711,7 +711,19 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
 # in the next, so the TRUE answer was refused. Caught by the first smoke test
 # against real records, which is why the separators are written out one at a
 # time rather than reached for as a set.
-_CLAUSE_SPLIT = re.compile(r"[.;,!?\n\r]+|\s[-\u2013\u2014]\s|\s[\u2022*]\s")
+#
+# A FULL STOP ENDS A SENTENCE. A DECIMAL POINT DOES NOT.
+#
+# This split on any '.', so the citation '[M-200.00]' became the clauses
+# '[M-200' and '00]' \u2014 and the bare '00', in a clause naming nothing, was
+# reported as an unsupported number. Live test 2026-09-19: the model wrote
+# 'PTAC-1: 21 [M-200.00]', which is exactly right, and the gate replaced it
+# with a render of the same content because of the sheet number in it.
+#
+# A period only separates when whitespace or the end of the text follows it,
+# which is what makes it a full stop rather than part of a number.
+_CLAUSE_SPLIT = re.compile(
+    r"[;,!?\n\r]+|\.(?=\s|$)|\s[-\u2013\u2014]\s|\s[\u2022*]\s")
 
 
 def _clauses(text: str) -> List[str]:
@@ -923,7 +935,7 @@ def cite(r: Dict[str, Any]) -> Optional[str]:
 
 
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
-                   limit: int = 4) -> str:
+                   limit: int = 3) -> str:
     """What the records say, and nothing else. The fallback when the gate
     refuses a composed answer, and the only renderer that exists.
 
@@ -952,10 +964,8 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
-        return "Not on the indexed drawings."
-    label = (subject or "That").strip()
-    label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
-    lines = [f"{label} — on the drawings:"]
+        return "Not found."
+    lines: List[str] = []
     for r in records[:limit]:
         where = cite(r)
         if not where:
@@ -968,7 +978,16 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         # merge would make one stamping look like the only one.
         more = [w for w in (r.get("also_on") or []) if w]
         where_all = f"{where} (+{len(more)} sheet{'s' if len(more) > 1 else ''})" if more else where
-        line = f"{where_all} ({r.get('record_type')}): {quote[:200]}"
+        # ── THE SHEET IS A CITATION, NOT A SENTENCE ABOUT SHEETS ───────
+        #
+        # This printed a header naming the subject and then a line per record
+        # reading 'M-200.00 (schedule): ...'. Live test 2026-09-19, a real GC:
+        # every answer came back a paragraph hedging about which sheets
+        # mention things, and he would not read them.
+        #
+        # The record type is machinery and is gone. The sheet trails the line
+        # the way a citation does, so the eye reaches the content first.
+        line = f"{quote[:200]} [{where_all}]"
         readings = (r.get("payload") or {}).get("count_readings")
         if readings:
             said = " and ".join(str(x.get("value")) for x in readings)
@@ -977,7 +996,12 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
         if r.get("tier") == TIER_ORDER[-1]:
             line += " — read from the drawing image, verify against the sheet"
         lines.append(line)
-    return "\n".join(lines) if len(lines) > 1 else "Not on the indexed drawings."
+    if not lines:
+        return "Not found."
+    # THE CLOSEST THING, NAMED, RATHER THAN A LIST OF WHAT MENTIONS IT.
+    # A reader who cannot be answered is better served by one pointer than by
+    # four lines he has to triage himself.
+    return "\n".join(lines)
 
 
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
