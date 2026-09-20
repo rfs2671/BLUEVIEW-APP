@@ -1014,6 +1014,31 @@ def cite(r: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# ── A REFUSAL IS A CLAIM ABOUT THE SEARCH, NOT ABOUT THE DRAWINGS ─────────
+#
+# "The drawings do not specify the ceiling height" is a claim about the
+# building, and it is the ONLY output in this system with no evidence behind
+# it. Every number passes a gate that demands a record about its subject; a
+# refusal passed nothing. It was produced whenever retrieval returned nothing,
+# which happens for reasons that have nothing to do with the drawings — most
+# often because the questioner used their own words and the sheet uses its
+# abbreviations. Measured 2026-09-20: `apartment square footage` returns zero
+# records while A-101.00 prints `APT 2A / NET: 482 SQ. FT.` and the record for
+# it exists verbatim.
+#
+# A GC who checks the sheet and finds it there stops trusting the tool, and he
+# is right to. So the reply says what is true — that it was not found — and
+# points at the nearest thing, which he can check in seconds.
+NOT_FOUND = "I couldn't find that in the drawings I've indexed."
+
+
+def not_found_text(closest_sheet: str = "") -> str:
+    """The refusal, naming the nearest sheet when there is one."""
+    sheet = (closest_sheet or "").strip()
+    return (f"I couldn't find that — closest is {sheet}." if sheet
+            else NOT_FOUND)
+
+
 def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
                    limit: int = 3) -> str:
     """What the records say, and nothing else. The fallback when the gate
@@ -1044,7 +1069,15 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     if terms:
         records = [r for r in records if not matched_only_through_label(r, terms)]
     if not records:
-        return "Not found."
+        # NO SHEET IS NAMED HERE, and the first version of this named one.
+        # This branch is reached only when there were no records at all, or
+        # when every one of them matched through a LABEL — and "closest is
+        # M-104.00" for the subject 'kicker' asserts a relationship that
+        # exists only in a vision label, which is a quieter form of the leak
+        # this function refuses on the line above. Naming the nearest sheet
+        # belongs where candidates were dropped for a reason that IS about
+        # the sheets.
+        return NOT_FOUND
     lines: List[str] = []
     for r in records[:limit]:
         where = cite(r)
@@ -1087,6 +1120,7 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
 __all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
+           "NOT_FOUND", "not_found_text",
            "is_index_record", "drop_indexes",
            "dimension_is_impossible", "drop_impossible_dimensions",
            "dangling_callouts", "referenced_sheets_missing",

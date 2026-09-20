@@ -161,8 +161,7 @@ class NoLabelReachesTheFallbackRender(unittest.TestCase):
         from lib import plan_search as ps
         found = ps.rank(self.records(), ps.search_terms("kicker"))
         self.assertTrue(found)
-        self.assertEqual(ps.render_records(found, "kicker"),
-                         "Not found.")
+        self.assertEqual(ps.render_records(found, "kicker"), ps.NOT_FOUND)
 
     def test_the_mark_is_still_said_when_the_question_names_the_mark(self):
         # KE 1 is printed. Asked about KE 1, it may be shown — as a mark.

@@ -188,7 +188,10 @@ class TheFallbackCanOnlySayWhatTheSheetsSay(unittest.TestCase):
         # the line under it supplied the mark, which states the label's
         # meaning anyway. On 'kicker' that meaning was invented.
         out = ps.render_records([VISION_LEGEND], "air conditioner")
-        self.assertEqual(out, "Not found.")
+        # The WORDING changed on 2026-09-20 and the behaviour did not: a
+        # label-only match is still never offered. A refusal now reports the
+        # search rather than claiming what the drawings contain.
+        self.assertEqual(out, ps.NOT_FOUND)
 
     def test_the_renderer_reads_only_the_renderable_fields(self):
         src = inspect.getsource(ps.render_records)
@@ -200,7 +203,7 @@ class TheFallbackCanOnlySayWhatTheSheetsSay(unittest.TestCase):
         self.assertIn("verify", ps.render_records([VISION_LEGEND], "ptac").lower())
 
     def test_nothing_found_says_so_rather_than_saying_nothing(self):
-        self.assertIn("Not found", ps.render_records([], "ptac"))
+        self.assertEqual(ps.render_records([], "ptac"), ps.NOT_FOUND)
 
 
 class ALabelWidensTheSearchAndNeverBecomesTheAnswer(unittest.TestCase):

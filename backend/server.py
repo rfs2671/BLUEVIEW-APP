@@ -48361,9 +48361,14 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     guess at — and the numbers it is allowed to use are the ones printed
     here."""
     if not records:
-        return (f"(Nothing on the current drawings mentions {subject!r}. "
-                f"Answer exactly: 'Not found.' Do not estimate, do not list "
-                f"sheets, do not explain.)")
+        # NOT "nothing on the drawings mentions it" — that is a claim about
+        # the building, and what actually happened is that this search found
+        # nothing. The two are different and only one of them is knowable here.
+        return (f"(The search for {subject!r} returned no records. That means "
+                f"it was not FOUND — it does not mean the drawings do not "
+                f"show it. Answer exactly: {plan_search.NOT_FOUND!r} "
+                f"Do not estimate, do not list sheets, do not explain, and do "
+                f"not say what the drawings do or do not contain.)")
     # ── SHORT, AND THE RULE FIRST ──────────────────────────────────────
     #
     # This opened with a count of records and a paragraph of instruction, and
@@ -48419,21 +48424,36 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
 #: than a report that nothing was found. Deliberately small: the question is
 #: only whether the reply asserts, and a reply that does not assert is left
 #: alone.
+# `state`, `list`, `say` and `mention` added 2026-09-20. Without them
+# "The drawings do not STATE the ceiling height" read as a non-assertion and
+# went out unchanged — the claim this whole change exists to stop, slipping
+# past on a verb the list happened to miss. Safe to widen: an honest absence
+# is caught by _ABSENCE_RE before this check, and this predicate only runs
+# when NO records were returned at all.
 _ASSERTION_RE = re.compile(
     r"\b(?:includes?|contains?|shows?|has|have|is|are|specif\w+|indicat\w+|"
+    r"state[sd]?|list(?:s|ed)?|says?|mention(?:s|ed)?|"
     r"call(?:s|ed)?\s+for|detail\s+[A-Z0-9]|per\s+(?:sheet|drawing))\b",
     re.I)
 #: A reply that only reports absence is not an assertion about the drawings,
 #: however many of the words above it happens to use.
+#
+# NARROWED 2026-09-20, and the narrowing is the point. This used to admit
+# "the drawings do not specify", on the reasoning that it was "the commonest
+# honest absence the model writes". It is not honest — it is a claim about the
+# building made by a system that only knows what its own search returned. Now
+# that it is no longer waved through here, a reply making it is treated as an
+# assertion about the drawings and refused, which is the enforcement the
+# instruction alone never was.
+#
+# What remains are the phrasings that report the SEARCH: not found, no match,
+# couldn't find, nothing found. Those are knowable and stay.
 _ABSENCE_RE = re.compile(
-    r"\bnot\s+(?:found|on|in|shown|specified|listed|indicated)\b"
+    r"\bnot\s+found\b"
     r"|\bno\s+(?:record|result|match|mention)\b"
     r"|\bcould\s*n[o']?t\s+find\b"
-    # `do` as well as `does`: 'the drawings do not specify' is the commonest
-    # honest absence the model writes, and matching only the singular made
-    # this refuse a truthful reply.
-    r"|\bdo(?:es)?\s+not\s+(?:say|show|specify|state|list|indicate|include)\b"
-    r"|\bnothing\s+(?:found|on|in)\b", re.I)
+    r"|\bnothing\s+(?:found|matched)\b"
+    r"|\bdid\s*n[o']?t\s+find\b", re.I)
 
 
 #: Words that make a claim a claim ABOUT THE DRAWINGS. Without this the
@@ -48506,7 +48526,7 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
             logger.warning(
                 "plan answer asserted with NO records: subject=%r text=%r",
                 subject[:40], (text or "")[:200])
-            return "Not found.", "no_records_refused"
+            return plan_search.NOT_FOUND, "no_records_refused"
         return text, "no_records"
     grounded, unsupported = plan_search.answer_is_grounded(
         text, records, intent=intent)
@@ -49516,8 +49536,14 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "ANSWERING FROM search_plans:\n"
     "Every number, quantity and dimension you write must appear in a line "
     "search_plans returned. Quote the sheet and name it. If no line carries a "
-    "number, say the drawings do not state it and name the sheets that mention "
-    "the thing — never estimate, never round, never add up across sheets. "
+    "number, say YOU COULD NOT FIND ONE and name the sheets that mention the "
+    "thing — never estimate, never round, never add up across sheets. "
+    "NEVER write that the drawings do not specify, do not state or do not "
+    "show something. You cannot know that: a search returning nothing means "
+    "nothing was found, which is a fact about the search and not about the "
+    "building. Saying otherwise is the one claim here with no evidence behind "
+    "it, and a reader who opens the sheet and finds it there is entitled to "
+    "stop believing everything else you said. "
     "A line marked vision_read was read off the image, not the text: say so if "
     "you use it, and do not repeat wording it supplied as if the sheet printed "
     "it. A line marked 'a count of the symbol' counted a shape on the drawing "
