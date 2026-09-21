@@ -23,9 +23,13 @@ at the bottom of a scratch script.
 
 BASELINE, measured with THIS function: cited 30.0%, refusal 65.0%, hedge
 2.5%, fallback 2.5% on the 173-page corpus of 2026-09-20. The same questions
-and the same function on the 129-page corpus — before the combined set's 44
-pages were indexed — gave 25.0% cited, so the five points belong to the
-corpus and not to anything in this file.
+on the 129-page corpus — before the combined set's 44 pages were indexed —
+re-derive to 27.5% cited, so the corpus is worth +2.5 points.
+
+That run was first reported as 25.0%, from a stored bucket computed by a
+version of this function that required three surviving words and scored
+`AMANA PTH093K [M-200.00].` a hedge. A bucket in a data file is a reading,
+not a measurement: re-derive from the reply text when this function changes.
 
 The earlier "20.0% cited" came from an instrument that no longer exists.
 It is history, not a baseline, and so is the 87.5%.
@@ -41,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 
+from lib import plan_refusal  # noqa: E402
 from lib.plan_eval import classify_reply  # noqa: E402
 
 
@@ -139,6 +144,54 @@ class AnUnusableCitationIsNotACitation(unittest.TestCase):
         self.assertEqual(
             classify_reply('2" combined water service [1 OF 3].', "grounded"),
             "hedge")
+
+
+class TheWarrantMustNotPayTheInstrument(unittest.TestCase):
+    """A FEATURE THAT SCORES ITSELF IS WORSE THAN ONE THAT DOES NOT WORK.
+
+    The refusal check replaces a refusal with "It's on A-101.00 — I couldn't
+    read it off the sheet". That names a sheet and survives the citation test
+    with enough non-pointer words, so it scored CITED: wiring the warrant
+    would have appeared to RAISE the answer rate while delivering no value,
+    and the benchmark would have rewarded the system for pointing.
+
+    IT SCORES AS A REFUSAL. Every overturned refusal emits this sentence, so
+    whichever bucket it lands in becomes the warrant's output bucket — and in
+    `hedge` the refusal rate would fall by exactly the overturn count, making
+    the headline read as the warrant converting refusals into something
+    better. It does not. Nothing was read; the refusal is the same refusal
+    with a sheet attached. The feature is counted from the OUTCOME
+    (`refusal_overturned`), never from a bucket shrinking."""
+
+    def test_the_pointer_is_a_refusal_not_a_citation(self):
+        self.assertEqual(
+            classify_reply(plan_refusal.found_but_unreadable(
+                "A-101.00", "schedule top right"), "refusal_overturned"),
+            "refusal")
+
+    def test_with_no_location_too(self):
+        self.assertEqual(
+            classify_reply(plan_refusal.found_but_unreadable("A-101.00"),
+                           "refusal_overturned"), "refusal")
+
+    def test_the_refusal_rate_cannot_fall_because_the_warrant_fired(self):
+        """The property the bucket choice exists to protect, stated as the
+        thing that must not move: a run of pure overturns has the same refusal
+        count as a run of pure refusals."""
+        dark = ["Not found. Closest: A-101.00."] * 5
+        lit = [plan_refusal.found_but_unreadable("A-101.00")] * 5
+        self.assertEqual(
+            sum(1 for r in dark if classify_reply(r, "grounded") == "refusal"),
+            sum(1 for r in lit
+                if classify_reply(r, "refusal_overturned") == "refusal"))
+
+    def test_a_real_citation_is_untouched(self):
+        """THE NUMBER THAT SHOULD NOT MOVE. Measured on all 40 stored replies
+        of the split: this branch fires on 0 of them, so every baseline taken
+        before it stays comparable."""
+        self.assertEqual(
+            classify_reply("PTAC-1: 21 units [M-200.00].", "grounded"),
+            "cited")
 
 
 if __name__ == "__main__":  # pragma: no cover

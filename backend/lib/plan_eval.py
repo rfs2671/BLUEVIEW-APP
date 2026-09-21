@@ -56,6 +56,7 @@ import json
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from lib import plan_refusal
 from lib import plan_search as ps
 from lib.plan_extract import TIER_SCHEDULE_CELL
 from lib.plan_records import TIER_ORDER, tier_rank
@@ -612,12 +613,23 @@ def check_baseline(baseline: Dict[str, Any], observed: Dict[str, Any]
 # BASELINE, measured with THIS function on the 173-page corpus of
 # 2026-09-20: cited 30.0%, refusal 65.0%, hedge 2.5%, fallback 2.5%.
 #
-# Read that against the ONE other reading this function has produced: the
-# same 40 questions on the 129-page corpus, before the combined set's 44
-# pages were indexed, gave cited 25.0%, hedge 5.0%, fallback 2.5%, refusal
-# 67.5%. Same instrument, same questions, so the five points are real and
-# they are attributable to the CORPUS — no ranking or term-layer change sits
-# between the two runs.
+# Read that against the same 40 questions on the 129-page corpus, before the
+# combined set's 44 pages were indexed: cited 27.5%, refusal 67.5%, hedge
+# 2.5%, fallback 2.5%. So the corpus is worth +2.5 points, and no ranking or
+# term-layer change sits between the two runs.
+#
+# THAT 27.5% IS A RE-DERIVATION AND THE ORIGINAL READING SAID 25.0%. The
+# difference is one reply — `AMANA PTH093K [M-200.00].` — scored a hedge by a
+# version of this function that required three surviving words. Two words can
+# be a complete answer; the version here requires two and calls it cited, and
+# `test_a_short_answer_is_still_an_answer` pins that.
+#
+# The lesson is the reason this function lives in the library and is the only
+# one allowed to bucket a reply: 25.0% was a stored column, computed once by
+# an instrument that then changed underneath it, and it was quoted for hours
+# afterwards as though it were comparable. A bucket recorded in a data file
+# is a reading, not a measurement — RE-DERIVE IT FROM THE REPLY TEXT whenever
+# this function changes.
 #
 # The earlier "20.0% cited" was produced by an instrument that no longer
 # exists, and "87.5%" by the broken one described above. Both are history,
@@ -668,6 +680,34 @@ def classify_reply(sent: str, outcome: str = "") -> str:
     if not s:
         return "hedge"
     if _REPLY_REFUSAL.match(s):
+        return "refusal"
+    # ── THE WARRANT'S POINTER IS A REFUSAL THAT NAMES A SHEET ────────────
+    #
+    # "It's on A-101.00 — I couldn't read it off the sheet" names a sheet and
+    # states NO VALUE. It survives the citation test below with enough
+    # non-pointer words to score CITED, which would make wiring the refusal
+    # check appear to RAISE the cited rate while delivering nothing — the
+    # benchmark rewarding a feature for pointing.
+    #
+    # IT IS A REFUSAL, NOT A HEDGE, AND THAT IS THE LOAD-BEARING CHOICE.
+    # Every overturned refusal emits this sentence, so whichever bucket it
+    # lands in becomes the warrant's output bucket. In `hedge`, the refusal
+    # rate falls by exactly the overturn count and the headline reads as the
+    # warrant converting refusals into something better. IT DOES NOT. Nothing
+    # was read and no value was delivered; the refusal is the same refusal,
+    # now with a sheet worth opening attached. Keeping it in `refusal` holds
+    # the rate honest and is the conservative reading.
+    #
+    # The warrant's effect is counted from the OUTCOME - `refusal_overturned`
+    # - not from a bucket moving. A bucket says what the crew received; the
+    # outcome says what the system did. Measuring the feature by watching a
+    # bucket shrink is the same mistake one level up from scoring the pointer
+    # as a citation.
+    #
+    # The shape is asked of `plan_refusal`, not re-matched here, because a
+    # second regex over the same sentence is precisely how this measurement
+    # came to have three incomparable instruments.
+    if plan_refusal.is_found_but_unreadable(s):
         return "refusal"
     if outcome in ("ungrounded", "label_leak"):
         return "fallback"
