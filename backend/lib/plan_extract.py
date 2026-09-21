@@ -478,8 +478,28 @@ TIER_SCHEDULE_CELL = "schedule_cell"     # a detected grid, cells from the text 
 TIER_OCR_GRID = "ocr_grid_cell"          # cell rectangle from ruling lines, glyphs from OCR
 TIER_TAG_LEGEND = "tag_legend"           # a mark paired to a legend entry on its sheet
 TIER_TEXT_LAYER = "text_layer"           # a value printed in a note or a spec
+TIER_REGISTERED_GLYPH = "registered_glyph"  # a symbol located by registration,
+                                         # named by the label printed beside it
 TIER_OCR_FREEFORM = "ocr_freeform"       # OCR of a region with no grid behind it
 TIER_VISION = "vision_read"              # read off the image; lowest, never a value
+
+# ── WHY A REGISTERED GLYPH SITS WHERE IT DOES ──────────────────────────────
+#
+# It is BELOW text_layer because the sheet does not print "there is an EF-1 in
+# apartment 4A" anywhere. That sentence is assembled: a symbol located by
+# vector geometry, a unit established by registering two sheets and testing
+# containment, and a tag read off the label beside the symbol. Assembled is
+# weaker than printed, however good the assembly.
+#
+# It is ABOVE ocr_freeform because the same OCR is doubly constrained. WHERE
+# is fixed by the glyph, so the read cannot belong to a different object; WHAT
+# is fixed by the schedule's closed set, so `FF-1(50)` resolves to EF-1 and
+# `EF-7` resolves to nothing rather than being invented. Free OCR has neither
+# constraint and has to be believed on its own.
+#
+# And it is above vision_read for the reason every tier is: nothing here is a
+# model's impression of a picture. Every step is a measurement with a residual
+# or a character match against a printed list.
 
 # ── WHY OCR GETS TWO TIERS AND NOT ONE ─────────────────────────────────────
 #

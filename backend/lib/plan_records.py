@@ -53,8 +53,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.plan_extract import (
-    TIER_OCR_FREEFORM, TIER_OCR_GRID, TIER_SCHEDULE_CELL, TIER_TAG_LEGEND,
-    TIER_TEXT_LAYER, TIER_VISION, strip_boilerplate,
+    TIER_OCR_FREEFORM, TIER_OCR_GRID, TIER_REGISTERED_GLYPH,
+    TIER_SCHEDULE_CELL, TIER_TAG_LEGEND, TIER_TEXT_LAYER, TIER_VISION,
+    strip_boilerplate,
 )
 
 RECORD_VERSION = 1
@@ -63,7 +64,8 @@ RECORD_VERSION = 1
 # never cites a lower tier when a higher one exists for the same attribute on
 # the same sheet.
 TIER_ORDER = (TIER_SCHEDULE_CELL, TIER_OCR_GRID, TIER_TAG_LEGEND,
-              TIER_TEXT_LAYER, TIER_OCR_FREEFORM, TIER_VISION)
+              TIER_TEXT_LAYER, TIER_REGISTERED_GLYPH, TIER_OCR_FREEFORM,
+              TIER_VISION)
 
 # What stands in for a cell two readers could not agree on. Deliberately not a
 # number and not blank: blank reads as "the sheet says nothing there", and the

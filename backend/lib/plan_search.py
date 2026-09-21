@@ -1157,6 +1157,54 @@ def _idents_named_in(clause: str, idents: Iterable[str]) -> List[str]:
     return found
 
 
+def glyph_tallies(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """tag -> Tally, over the registered-glyph records only.
+
+    Separated so the gate and an answer composer see the SAME arithmetic. If
+    the composer counted records itself and the gate counted them here, the
+    two would disagree the first time one of them learned to skip an unread
+    glyph — which is the three-incomparable-instruments failure in a new
+    place.
+
+    Scope is the units those records mention, plus any unit the emitter
+    recorded as unregistered: a refusal to place is written as a record too,
+    because a unit that produced no record is indistinguishable from a unit
+    with nothing in it unless somebody says so.
+    """
+    from lib import plan_tally
+    from lib.plan_extract import TIER_REGISTERED_GLYPH
+
+    rows = [r for r in (records or [])
+            if r.get("tier") == TIER_REGISTERED_GLYPH]
+    if not rows:
+        return {}
+    scope = sorted({str(r.get("unit")) for r in rows if r.get("unit")})
+    unreg = sorted({str(r.get("unit")) for r in rows
+                    if r.get("glyph_status") == plan_tally.UNSUPPORTED_UNIT
+                    and r.get("unit")})
+    # An UNRESOLVED glyph has no tag, so it belongs to no tag's count and to
+    # every tag's doubt: it might be any of them. It therefore enters each
+    # tally as unresolved, which is what stops a total while leaving the
+    # resolved part of every tag intact.
+    unresolved = [{"tag": None, "unit": r.get("unit"),
+                   "status": r.get("glyph_status") or plan_tally.UNREAD}
+                  for r in rows
+                  if r.get("glyph_status") in (plan_tally.UNREAD,
+                                               plan_tally.CONTESTED)]
+    out: Dict[str, Any] = {}
+    for tag in sorted({str(r.get("label") or "") for r in rows
+                       if r.get("label")
+                       and r.get("glyph_status") == plan_tally.RESOLVED}):
+        mine = [{"tag": tag, "unit": r.get("unit"),
+                 "status": plan_tally.RESOLVED}
+                for r in rows
+                if r.get("label") == tag
+                and r.get("glyph_status") == plan_tally.RESOLVED]
+        out[tag] = plan_tally.tally(mine + unresolved, scope or None,
+                                    unregistered_units=unreg)
+    return out
+
+
 def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
                            ) -> Tuple[bool, List[str]]:
     """Every quantity must come from a record about the thing it counts.
@@ -1184,6 +1232,7 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     citations: set = set()
     for r in records or []:
         citations |= _citation_values(r)
+    tallies = glyph_tallies(records)
     unsupported: List[str] = []
     for clause in _clauses(text):
         said = _values(clause)
@@ -1192,6 +1241,27 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         allowed = set(citations)
         for ident in _idents_named_in(clause, by_ident.keys()):
             allowed |= by_ident[ident]
+        # A LOCATED SYMBOL'S COUNT IS ITS CARDINALITY, NOT A PRINTED DIGIT.
+        # A schedule cell prints `21` and the record carries it. Eight
+        # registered-glyph records carry no `8` anywhere — the eight IS how
+        # many of them there are, so it has to be counted here or the gate
+        # refuses a figure it fully supports.
+        #
+        # `glyph_tallies` returns nothing for a tag whose glyphs include one
+        # that could not name itself, or whose scope includes a unit that was
+        # never registered. So an unbindable total never reaches `allowed`
+        # and the clause stating it is refused, while the resolved part stays
+        # available through its own smaller total.
+        # WHAT IS ALLOWED IS THE RESOLVED COUNT, NOT THE TOTAL.
+        #
+        # Seven fans that each named themselves support the figure 7, whether
+        # or not an eighth glyph sits there unread. What the unread one
+        # removes is 8 — a number resting on a record that does not know what
+        # it is. So `resolved` is bound and nothing above it is, which is the
+        # difference between "7 located, 1 more unread" and a silent 7 or a
+        # confident 8.
+        for ident in _idents_named_in(clause, tallies.keys()):
+            allowed.add(str(tallies[ident].resolved))
         unsupported.extend(v for v in said if v not in allowed)
     return (not unsupported), unsupported
 
