@@ -172,16 +172,65 @@ def found_but_unreadable(sheet: str, location: str = "") -> str:
     return f"It's on {s}{where} — {UNREADABLE_TAIL} Worth opening that one."
 
 
-def candidate_sheet(records: Sequence[Dict[str, Any]]) -> Optional[str]:
-    """The sheet to look at: the highest-ranked record's, which is the same
-    ordering the answer would have been built from."""
+#: HOW MANY SHEETS THE WARRANT LOOKS AT. THIS NUMBER IS MEASURED.
+#:
+#: Looking at one sheet means looking at the TOP-RANKED record's sheet, which
+#: is not the sheet most likely to carry the answer. Measured on the 23
+#: eligible refusals of the 173-page run: three questions whose content a
+#: model confirms IS in the set came back NO, because the warrant rendered
+#: the wrong sheet — and in all three the right sheet was already in the
+#: candidate list, just not first.
+#:
+#:     what is the lot size          Z-001.01  was rank 2 of 4
+#:     who is the architect          GN-001.00 was rank 2 of 3
+#:     what is the wall assembly     A-500.00  was rank 4 of 7
+#:
+#: So this is not a retrieval problem and it needs no vocabulary. A mapping
+#: from question to discipline — "lot size means zoning" — would be a
+#: hand-written synonym table, and it is unnecessary when Z-001.01 is already
+#: sitting at rank 2.
+#:
+#: THE COST CURVE, over those 23 refusals at 2,626 input tokens per call:
+#:
+#:     N=1   23 calls    60,398 tokens   recovers 0 of the 3
+#:     N=2   46 calls   120,796 tokens   recovers 2 of the 3
+#:     N=3   67 calls   175,942 tokens   recovers 2 of the 3
+#:     N=4   85 calls   223,210 tokens   recovers 3 of the 3
+#:
+#: Two buys two thirds of the known misses for one extra call per refusal.
+#: Four buys the last one at nearly four times the cost, and three buys
+#: nothing over two. RAISE THIS AGAINST THOSE NUMBERS, not against a hunch —
+#: and re-measure the curve first, because it is a property of one corpus.
+CANDIDATE_SHEETS = 2
+
+
+def candidate_sheets(records: Sequence[Dict[str, Any]],
+                     limit: int = CANDIDATE_SHEETS) -> list:
+    """The sheets to look at, best-ranked first, de-duplicated.
+
+    Ranked order is the same ordering the answer would have been built from.
+    Page positions are skipped — see `_PAGE_POSITION`; a superintendent
+    cannot open "1 OF 1", and it was the top record for "what is the lot
+    size", which is how this was found.
+    """
+    out: list = []
     for r in records or []:
         s = str((r or {}).get("sheet_number") or "").strip()
-        if s and not _PAGE_POSITION.match(s):
-            return s
-    return None
+        if s and not _PAGE_POSITION.match(s) and s not in out:
+            out.append(s)
+            if len(out) >= max(1, limit):
+                break
+    return out
 
 
-__all__ = ["MAX_OUTPUT_TOKENS", "UNREADABLE_TAIL", "check_prompt",
-           "parse_verdict", "found_but_unreadable",
-           "is_found_but_unreadable", "candidate_sheet"]
+def candidate_sheet(records: Sequence[Dict[str, Any]]) -> Optional[str]:
+    """The single best sheet, for callers that want one. `candidate_sheets`
+    is what the warrant uses."""
+    got = candidate_sheets(records, limit=1)
+    return got[0] if got else None
+
+
+__all__ = ["MAX_OUTPUT_TOKENS", "UNREADABLE_TAIL", "CANDIDATE_SHEETS",
+           "check_prompt", "parse_verdict", "found_but_unreadable",
+           "is_found_but_unreadable", "candidate_sheet",
+           "candidate_sheets"]

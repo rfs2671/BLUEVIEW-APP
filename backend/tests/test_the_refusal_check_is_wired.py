@@ -202,25 +202,32 @@ class ItMayContradictButNeverSupply(unittest.TestCase):
 
 
 class TheCallIsCountedLikeEveryOtherOne(unittest.TestCase):
+    """Reads BOTH functions, because the per-sheet body was split out of
+    check_refusal_against_the_sheet into _check_one_sheet when the warrant
+    started looking at more than one sheet. These assertions are about the
+    CALL — metered, bounded, counted before it is made — and the call should
+    stay pinned wherever it lives, rather than the test breaking every time
+    the enclosing function is reorganised."""
+
+    def setUp(self):
+        self.src = (inspect.getsource(server.check_refusal_against_the_sheet)
+                    + inspect.getsource(server._check_one_sheet))
 
     def test_it_has_its_own_metered_endpoint(self):
         """Its volume is the REFUSAL rate, not the question rate, so it cannot
         share a name with the calls whose trigger is a question."""
         from lib import vision_meter as vm
         self.assertIn(vm.VISION_REFUSAL_CHECK, vm.VISION_ENDPOINTS)
-        src = inspect.getsource(server.check_refusal_against_the_sheet)
-        self.assertIn("VISION_REFUSAL_CHECK", src)
+        self.assertIn("VISION_REFUSAL_CHECK", self.src)
 
     def test_it_is_recorded_before_the_call_not_after(self):
         """A call that fails still cost money. Metering after the response
         would undercount exactly the failures worth knowing about."""
-        src = inspect.getsource(server.check_refusal_against_the_sheet)
-        self.assertLess(src.index("record_vision_call"),
-                        src.index("chat/completions"))
+        self.assertLess(self.src.index("record_vision_call"),
+                        self.src.index("chat/completions"))
 
     def test_the_output_is_bounded(self):
-        src = inspect.getsource(server.check_refusal_against_the_sheet)
-        self.assertIn("plan_refusal.MAX_OUTPUT_TOKENS", src)
+        self.assertIn("plan_refusal.MAX_OUTPUT_TOKENS", self.src)
         self.assertLessEqual(plan_refusal.MAX_OUTPUT_TOKENS, 60)
 
 

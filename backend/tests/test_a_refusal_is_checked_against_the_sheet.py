@@ -15,6 +15,7 @@ it was not. One verified case in a sample of two is not an error rate.
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import unittest
@@ -125,6 +126,59 @@ class WhatTheCrewIsTold(unittest.TestCase):
         self.assertEqual(pr.candidate_sheet(recs), "M-200.00")
         self.assertIsNone(pr.candidate_sheet([]))
         self.assertIsNone(pr.candidate_sheet([{"sheet_number": None}]))
+
+
+class RankOneIsNotWhereTheAnswerIs(unittest.TestCase):
+    """MEASURED: looking at one sheet missed three refusals whose content a
+    model confirms is in the set, and in all three the right sheet was
+    already in the candidate list — Z-001.01 at rank 2 for the lot size,
+    GN-001.00 at rank 2 for the architect, A-500.00 at rank 4 for the wall
+    assembly. Not retrieval. Selection."""
+
+    def test_it_returns_more_than_one(self):
+        recs = [{"sheet_number": "A-400.00"}, {"sheet_number": "Z-001.01"},
+                {"sheet_number": "M-200.00"}]
+        self.assertEqual(pr.candidate_sheets(recs), ["A-400.00", "Z-001.01"])
+
+    def test_page_positions_do_not_consume_a_slot(self):
+        """`1 OF 1` was the TOP record for "what is the lot size". If it ate
+        one of the two slots, the fix would buy nothing on the very question
+        that exposed the problem."""
+        recs = [{"sheet_number": "1 OF 1"}, {"sheet_number": "A-400.00"},
+                {"sheet_number": "Z-001.01"}]
+        self.assertEqual(pr.candidate_sheets(recs), ["A-400.00", "Z-001.01"])
+
+    def test_duplicates_do_not_consume_a_slot(self):
+        """Eight records commonly sit on three sheets. Rendering the same
+        sheet twice would pay for a call and ask a question already asked."""
+        recs = [{"sheet_number": "P-400.00"}, {"sheet_number": "P-400.00"},
+                {"sheet_number": "EN-001.00"}]
+        self.assertEqual(pr.candidate_sheets(recs), ["P-400.00", "EN-001.00"])
+
+    def test_the_single_sheet_helper_still_means_the_best_one(self):
+        recs = [{"sheet_number": "A-400.00"}, {"sheet_number": "Z-001.01"}]
+        self.assertEqual(pr.candidate_sheet(recs), "A-400.00")
+
+    def test_a_limit_below_one_still_returns_one(self):
+        self.assertEqual(
+            pr.candidate_sheets([{"sheet_number": "A-1.00"}], limit=0),
+            ["A-1.00"])
+
+
+class TheNumberOfSheetsIsMeasuredNotChosen(unittest.TestCase):
+    """The constant must carry the cost curve that produced it, so that
+    raising it is an argument against numbers rather than against a hunch.
+    This is the same rule the CONVENTIONS list lives under."""
+
+    def test_the_constant_is_two(self):
+        self.assertEqual(pr.CANDIDATE_SHEETS, 2)
+
+    def test_the_cost_curve_is_in_the_source(self):
+        src = inspect.getsource(pr)
+        head = src[:src.index("CANDIDATE_SHEETS = ")]
+        for marker in ("N=1", "N=2", "N=4", "2,626", "rank 2"):
+            self.assertIn(marker, head,
+                          f"the reasoning for N must name {marker!r}")
 
 
 class TheOutputIsCapped(unittest.TestCase):
