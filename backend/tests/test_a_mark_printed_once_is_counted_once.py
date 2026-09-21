@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 
+from tests.fixture_pdfs import require as require_pdf  # noqa: E402
 from lib import plan_text as pt  # noqa: E402
 
 VOCAB = frozenset({"AD", "RD", "PTAC-1"})
@@ -120,12 +121,10 @@ class OnTheRealSheet(unittest.TestCase):
     """The fixture above is a reduction. This reads the PDF itself when it is
     present, so the reduction cannot quietly stop matching reality."""
 
-    PDF = (Path(__file__).resolve().parents[3] / "pdfs" / "PL - 6.29.26.pdf")
+    PDF_NAME = "PL - 6.29.26.pdf"
 
     def test_p206_counts_two_area_drains(self):
-        if not self.PDF.exists():
-            self.skipTest("source PDF not present in this checkout")
-        layout = pt.page_layout_at(str(self.PDF), 14)
+        layout = pt.page_layout_at(str(require_pdf(self.PDF_NAME)), 14)
         vocab = pt.tag_vocabulary([layout])
         counts = {t["tag"]: t["count"] for t in pt.count_tags(layout, vocab)}
         self.assertEqual(counts.get("AD"), 2,
@@ -134,9 +133,7 @@ class OnTheRealSheet(unittest.TestCase):
     def test_the_roof_drains_are_invisible_to_the_text_layer(self):
         """Not a defect in THIS code, and the reason roof-drain-count is
         expected to fail: RD-1 and RD-2 are outlined vector text."""
-        if not self.PDF.exists():
-            self.skipTest("source PDF not present in this checkout")
-        layout = pt.page_layout_at(str(self.PDF), 14)
+        layout = pt.page_layout_at(str(require_pdf(self.PDF_NAME)), 14)
         text = " ".join(b["text"] for b in (layout.get("blocks") or []))
         self.assertNotIn("RD-1", text)
         self.assertNotIn("RD-2", text)
