@@ -705,7 +705,30 @@ def classify_reply(sent: str, outcome: str = "") -> str:
     `outcome` distinguishes a gate substitution from a composed answer, which
     text alone cannot.
     """
-    s = (sent or "").strip()
+    # ── A CURLY APOSTROPHE IS NOT A DIFFERENT WORD ────────────────────────
+    #
+    # `_REPLY_REFUSAL` spells the contraction `n[o']?t`, which matches the
+    # straight apostrophe and nothing else. Measured before this line existed:
+    #
+    #     "I couldn't find that - closest is A-101.00."   ->  refusal
+    #     "I couldn't find that in the drawings."         ->  refusal
+    #     "I couldn<U+2019>t find that - closest is A-101.00."  ->  CITED
+    #     "I couldn<U+2019>t find that in the drawings."        ->  hedge
+    #
+    # The cited case is the dangerous one and it is the 87.5% defect exactly:
+    # a refusal that names its closest sheet satisfies the citation test, and
+    # the anchored opener above was supposed to catch it first. The anchor was
+    # closed for one spelling of the word.
+    #
+    # THE BASELINE RESTED ON THIS. 30.0% assumed the agent model types a
+    # straight apostrophe — true in all 40 replies of all four stored runs,
+    # but a property of that model's output on that corpus, not of this
+    # function. Had the spelling ever changed, the cited rate would have risen
+    # on its own and read as a corpus or ranking win.
+    #
+    # Normalised rather than widened: see `plan_search.normalise_quotes`. The
+    # text below is only ever MATCHED, never sent or stored.
+    s = ps.normalise_quotes((sent or "").strip())
     if not s:
         return "hedge"
     if _REPLY_REFUSAL.match(s):
