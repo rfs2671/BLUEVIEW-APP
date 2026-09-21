@@ -70,13 +70,51 @@ class TheToleranceBelongsToTheQuestion(unittest.TestCase):
 
     def test_a_fit_good_enough_for_rooms_is_not_good_enough_for_clashes(self):
         self.assertTrue(reg.usable_for("room_membership", 4.0))
-        self.assertFalse(reg.usable_for("wall_side", 4.0))
-        self.assertFalse(reg.usable_for("clearance", 4.0))
+        self.assertFalse(reg.usable_for("wall_side", 4.0, max_residual_in=4.0))
+        self.assertFalse(reg.usable_for("clearance", 4.0, max_residual_in=4.0))
 
     def test_an_unnamed_question_is_refused_not_defaulted(self):
         """Defaulting to the loosest tolerance is how a clash question gets
         answered with a room-grade fit."""
         self.assertFalse(reg.usable_for("does it fit", 0.01))
+
+
+class APointQuestionIsJudgedOnTheWorstCase(unittest.TestCase):
+    """CORRECTION, 2026-09-21. `usable_for` originally compared RMS for every
+    question. An average over 562 anchors says nothing about the one anchor
+    nearest the thing being asked about, and a clash sits at ONE PLACE.
+
+    The case that exposed it, measured on A-103.00 -> P-103.00:
+    RMS 0.068in, max 0.812in. By RMS that pair clears the 0.5in clearance
+    tolerance. By worst case it does not."""
+
+    def test_the_real_pair_passes_on_rms_and_fails_on_worst_case(self):
+        self.assertTrue(0.068 <= reg.TOL_CLEARANCE_IN)      # the trap
+        self.assertFalse(reg.usable_for("clearance", 0.068,
+                                        max_residual_in=0.812))
+
+    def test_room_membership_still_uses_rms(self):
+        """A bulk property, and already refused near a boundary, so the
+        average is the honest summary."""
+        self.assertTrue(reg.usable_for("room_membership", 0.5,
+                                       max_residual_in=5.0))
+
+    def test_every_pointwise_question_uses_the_worst_case(self):
+        for kind in ("wall_side", "penetration", "clearance", "clash"):
+            self.assertIn(kind, reg.POINTWISE_QUESTIONS, kind)
+            self.assertFalse(
+                reg.usable_for(kind, 0.001, max_residual_in=9.0), kind)
+
+    def test_a_pointwise_question_without_a_worst_case_is_refused(self):
+        """Falling back to RMS is how the stricter test gets skipped exactly
+        when the caller did not have the number to pass."""
+        for kind in sorted(reg.POINTWISE_QUESTIONS):
+            self.assertFalse(reg.usable_for(kind, 0.001), kind)
+
+    def test_the_correction_is_stricter_not_looser(self):
+        """It flips answers from usable to refused, never the reverse."""
+        self.assertFalse(reg.usable_for("wall_side", 0.1, max_residual_in=3.0))
+        self.assertTrue(reg.usable_for("wall_side", 0.1, max_residual_in=1.0))
 
 
 class AMatchedAnchorIsTighterThanAnyUseOfIt(unittest.TestCase):

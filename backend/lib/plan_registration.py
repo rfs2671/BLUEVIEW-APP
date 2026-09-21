@@ -184,11 +184,40 @@ def registration_verdict(n_anchors: int, spread_frac_x: float,
     return ("coincidental" if thin else "failed"), reasons
 
 
-def usable_for(question_kind: str, rms_in: float) -> bool:
-    """Is a registration with this residual good enough for this question?
+#: Questions answered AT ONE LOCATION. For these the relevant statistic is
+#: the WORST residual, not the average.
+#:
+#: CORRECTION, 2026-09-21, after the first registration run. This function
+#: originally compared RMS for every question, which is a proxy substitution
+#: of exactly the kind this codebase keeps finding: an aggregate over 562
+#: anchors says nothing about the one anchor nearest the thing being asked
+#: about. Measured on A-103.00 -> P-103.00: RMS 0.068in, max 0.812in. By RMS
+#: that pair clears the 0.5in clearance tolerance; by worst case it does not,
+#: and a clash sits at ONE PLACE on the drawing.
+#:
+#: This is a correction, not a loosening - it makes the test stricter for
+#: four of the five question kinds.
+POINTWISE_QUESTIONS = frozenset({
+    "wall_side", "penetration", "clearance", "clash"})
 
-    The tolerance belongs to the question. Anything not named is refused
-    rather than defaulted to the loosest.
+
+def usable_for(question_kind: str, rms_in: float,
+               max_residual_in: Optional[float] = None) -> bool:
+    """Is a registration with these residuals good enough for this question?
+
+    The tolerance belongs to the question, and so does the STATISTIC:
+
+      room_membership   RMS      a bulk property, and already refused within
+                                 ROOM_EDGE_EXCLUSION_IN of a boundary, so the
+                                 average is the honest summary
+      everything else   MAX      answered at one location, where an average
+                                 over the whole sheet is not evidence
+
+    A pointwise question with no worst-case supplied is REFUSED rather than
+    falling back to RMS. Falling back is how the stricter test gets skipped
+    exactly when the caller did not have the number to pass.
+
+    Anything not named is refused rather than defaulted to the loosest.
     """
     limits = {"room_membership": TOL_ROOM_MEMBERSHIP_IN,
               "wall_side": TOL_WALL_SIDE_IN,
@@ -196,7 +225,13 @@ def usable_for(question_kind: str, rms_in: float) -> bool:
               "clearance": TOL_CLEARANCE_IN,
               "clash": TOL_CLEARANCE_IN}
     lim = limits.get(question_kind)
-    return False if lim is None else rms_in <= lim
+    if lim is None:
+        return False
+    if question_kind in POINTWISE_QUESTIONS:
+        if max_residual_in is None:
+            return False
+        return max_residual_in <= lim
+    return rms_in <= lim
 
 
 __all__ = [
@@ -207,5 +242,5 @@ __all__ = [
     "ANCHOR_MATCH_RADIUS_IN", "ANCHOR_MUST_BE_CORNER_LIKE",
     "MIN_ANCHORS", "MIN_ANCHOR_SPREAD_FRAC", "MAX_RMS_IN",
     "MAX_SINGLE_RESIDUAL_IN", "FLAG_ROTATION_DEG", "FLAG_SCALE_ANISOTROPY",
-    "registration_verdict", "usable_for",
+    "registration_verdict", "usable_for", "POINTWISE_QUESTIONS",
 ]
