@@ -1,0 +1,2097 @@
+[
+ {
+  "sheet": "A.3.0",
+  "grid": [
+   4,
+   5
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "\u4e2d",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "T",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "A.4.0",
+  "grid": [
+   7,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "2",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "C",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "FA-001",
+  "grid": [
+   2,
+   13
+  ],
+  "table": [
+   [
+    "48",
+    "AFF",
+    "",
+    "D NT MUNT DETECTORS CLSER THAN 4\" MANUAL PULL STATION",
+    "",
+    "54",
+    "66 AFF",
+    "MINIMUM 36\" T REMOTE ANNUN.",
+    "",
+    "60 AFF",
+    "",
+    "AIR DIFFUSER CONTROL PANEL",
+    ""
+   ],
+   [
+    "\u25b3",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "A",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "FA-001",
+  "grid": [
+   9,
+   12
+  ],
+  "table": [
+   [
+    "",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "",
+    "J",
+    "K"
+   ],
+   [
+    "1 MANUAL PULL STATION",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "2 SPRK, WATERFLOW/PRESSURE SW.",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "3 AREA SMOKE DETECTORS",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "4 AREA HEAT DETECTORS",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "5 CARBON MONOXIDE DET.",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "6 SPRK, TAMPER VALVE",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "ACPOWER FAIL& 7 GROUND FAULT & SHORT",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "8 TELCO & COMMON TRBL",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 6,
+  "after": 7
+ },
+ {
+  "sheet": "M-001.00",
+  "grid": [
+   3,
+   5
+  ],
+  "table": [
+   [
+    "FLUID OPERATING TEMPERATURE RANGE AND USAGE (F)",
+    "INSULATION CONDUCTIVITY (btu*in)/(h*ft2*degF)",
+    "CONDUCTIVITY MEAN RATING TEMPERATURE, DEG F",
+    "NOMINAL PIPE DIAMETER",
+    "(INCHES) 1 to <1.5"
+   ],
+   [
+    "141-200 (HOT WATER)",
+    "0.25-0.29",
+    "125",
+    "1.5",
+    "1.5"
+   ],
+   [
+    "40-60 (REFRIGERANT)",
+    "0.21-0.27",
+    "75",
+    "0.5",
+    "0.5"
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "M-001.00",
+  "grid": [
+   22,
+   4
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "SV-1",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-104.00",
+  "grid": [
+   5,
+   7
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "PTAC-1",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "TE 10\"X10\"UP\uff06DN 2 PTAC-1",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-104.00",
+  "grid": [
+   3,
+   7
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "PTAC-1",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "TE T 10\"X10\"UP\uff06DN 1 PTAC-1",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   5,
+   16
+  ],
+  "table": [
+   [
+    "",
+    "ROOMS",
+    "",
+    "PTAC",
+    "UNITS",
+    "SCHEDULE",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "UNIT NO.",
+    "QTY",
+    "MAKE",
+    "MODEL",
+    "ARRANGEMENT",
+    "NET COOLING CAPACITY (BTUH)",
+    "AUXILIARYHEATING CAPACITY(KW)",
+    "NET HEATING CAPACITY(BTUH)",
+    "DEHUMIDIFICATION PTS/HR",
+    "EER",
+    "COP",
+    "VOLTS",
+    "ELEC. MCA A",
+    "MOP A",
+    "NET WEIGHT LBS",
+    "REMARKS"
+   ],
+   [
+    "PTAC-1",
+    "21",
+    "AMANA",
+    "PTH093K",
+    "WALL",
+    "9,000",
+    "2.1",
+    "8,000",
+    "2.0",
+    "12.0",
+    "3.4",
+    "208/1/60",
+    "14.1",
+    "15",
+    "117",
+    "SEE NOTES"
+   ],
+   [
+    "PTAC-2",
+    "9",
+    "AMANA",
+    "PTH123K",
+    "WALL",
+    "11,400",
+    "3.0",
+    "10,500",
+    "1.7",
+    "11.1",
+    "3.2",
+    "208/1/60",
+    "19.5",
+    "20",
+    "125",
+    "SEE NOTES"
+   ],
+   [
+    "PTAC-3",
+    "11",
+    "AMANA",
+    "PTH153K",
+    "WALL",
+    "14,000",
+    "4.1",
+    "13,700",
+    "4.4",
+    "9.9",
+    "3.0",
+    "208/1/60",
+    "27.6",
+    "30",
+    "130",
+    "SEE NOTES"
+   ]
+  ],
+  "before": 3,
+  "after": 3
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   3,
+   12
+  ],
+  "table": [
+   [
+    "WALL",
+    "ELECTRIC",
+    "",
+    "UNIT",
+    "HEATER",
+    "",
+    "SCHEDULE",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "SYMBOL",
+    "LOCATION",
+    "QTY",
+    "MANUFACTURER",
+    "MODEL",
+    "KW",
+    "BTUH",
+    "CFM",
+    "VOLTAGE",
+    "AMPS",
+    "WEIGHT",
+    "REMARKS"
+   ],
+   [
+    "WH-1",
+    "PER PLANS",
+    "9",
+    "MARKEL 3320SERIES",
+    "E3323TD-RP",
+    "1.5",
+    "5120",
+    "175",
+    "120/1/60",
+    "12.5",
+    "26",
+    "SEE NOTE 1"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   3,
+   6
+  ],
+  "table": [
+   [
+    "",
+    "DUCT",
+    "",
+    "ELECTRIC",
+    "HEATER",
+    ""
+   ],
+   [
+    "MARK",
+    "BASIS OF DESIGN TPI",
+    "QTY",
+    "CAPACITY (KW)",
+    "VOLTAGE",
+    "AMPS"
+   ],
+   [
+    "DH-1",
+    "8PD15-1812-3",
+    "1",
+    "15.0",
+    "208/3/60",
+    "41.7"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   4,
+   8
+  ],
+  "table": [
+   [
+    "",
+    "DIFFUSER",
+    "&",
+    "REGISTER",
+    "",
+    "SCHEDULE",
+    "",
+    ""
+   ],
+   [
+    "",
+    "SYMBOL IMANUFACTURER",
+    "MODEL",
+    "CFM RANGE",
+    "SERVICE",
+    "NK.SIZE",
+    "PANEL SIZE",
+    "REMARKS SEE NOTES"
+   ],
+   [
+    "A1",
+    "CARNES",
+    "RSDB",
+    "125-235",
+    "SUPPLY",
+    "",
+    "8X6",
+    "1,2,3,4,5"
+   ],
+   [
+    "A2",
+    "CARNES",
+    "RSDB",
+    "210-350",
+    "SUPPLY",
+    "",
+    "10X8",
+    "1,2,3,4,5"
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   5,
+   15
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "FAN",
+    "",
+    "SCHEDULE",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "TAG",
+    "QTY",
+    "SERVING",
+    "MANUF.",
+    "MODEL",
+    "CFM",
+    "DRIVE",
+    "SP",
+    "TYPE ARRANGEMENT",
+    "DBA",
+    "HP",
+    "MOTORDATA ELEC. VOLTS",
+    "",
+    "WEIGHT LBS",
+    "REMARKS"
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "SAF-1",
+    "1",
+    "CORRIDORS",
+    "GREENHECK",
+    "QEI-12",
+    "900",
+    "BELT",
+    "0.6",
+    "MIXEDFLOW",
+    "61",
+    "1/3",
+    "208",
+    "3",
+    "200",
+    "SEE NOTES"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   6,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "EXHAUST",
+    "",
+    "FAN",
+    "",
+    "SCHEDULE",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "TAG",
+    "SERVING",
+    "MANUF.",
+    "MODEL",
+    "CFM",
+    "DRIVE",
+    "SP",
+    "TYPE ARRANGEMENT",
+    "SONES",
+    "AMP",
+    "MOTORDATA ELEC. VOLTS",
+    "",
+    "WEIGHT LBS",
+    "REMARKS"
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "EF-1",
+    "APARTMENTSBATHROOMS EXHAUST",
+    "NUTONE",
+    "AEN110",
+    "50",
+    "DIRECT",
+    "0.3",
+    "CEILING FAN",
+    "1.3",
+    "0.3",
+    "115",
+    "",
+    "10",
+    "SEE NOTES"
+   ],
+   [
+    "EF-2",
+    "APARTMENTSKITCHEN EXHAUST",
+    "BROAN",
+    "BRN503",
+    "100",
+    "DIRECT",
+    "0.35",
+    "CEILINGFAN",
+    "5.0",
+    "1.5",
+    "120",
+    "",
+    "7.85",
+    "SEE NOTES"
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "M-200.00",
+  "grid": [
+   2,
+   6
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "C408",
+    "MAINTENANCE INFORMATION AND SYSTEMCOMMISSIONING",
+    "",
+    ""
+   ],
+   [
+    "C408.2",
+    "SYSTEMCOMMISSIONING",
+    "TOTALSYSTEMCOOLING CAPACITY=445.6KBTU HEATINGSYSTEMHEATING CAPACITY=505.4KBTU WATERHEATERHEATING CAPACITY=143.5KBTU TOTAL =648.9KBTU",
+    "HVACSYSTEMREQUIRE COMMISSIONING",
+    "EVIDENCE OF MECHANICAL,RENEWABLE ENERGY,ANDSERVICEWATERHEATING SYSTEMSCOMMISSIONINGAND COMPLETIONTOBEPROVIDED EXCEPTION:MECHANICALSYSTEMSAND SERVICEWATERHEATINGSYSTEMSIN NEW BUILDINGS,ADDITIONS,OR ALTERATIONSWHERE THE TOTAL MECHANICALEQUIPMENTCAPACITYBEING INSTALLEDORTHETOTALMECHANICAL EQUIPMENTCONNECTEDLOADSERVING THEALTERATIONSPACEISLESSTHAN 480,000BTU/HCOOLINGCAPACITY& 600,000BTU/HCOMBINEDSERVICE WATERHEATING&SPACE-HEATING",
+    "SEEHVACSCHEDULES ONDRAWNG M-200.00"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "M-202.00",
+  "grid": [
+   13,
+   3
+  ],
+  "table": [
+   [
+    "WITH BLOCK",
+    "INCOMPRESSIBLE INSULATING AT HANGER",
+    ""
+   ],
+   [
+    "PIPE DIAMETER",
+    "SHIELD LENGTH",
+    "SHIELD THICKNESS USSG"
+   ],
+   [
+    "UP TO \u4e86\u201d",
+    "6\u201d",
+    "18"
+   ],
+   [
+    "4\" TO",
+    "8\"",
+    "16"
+   ],
+   [
+    "8\" &c : LARGER",
+    "12\"",
+    "16"
+   ],
+   [
+    "",
+    "",
+    ""
+   ],
+   [
+    "WITHOUT INSULATING",
+    "INCOMPRESSIBLE BLOCK AT HANGER",
+    ""
+   ],
+   [
+    "PIPE DIAMETER",
+    "SHIELD LENGTH",
+    "SHIELD THICKNESS USSG"
+   ],
+   [
+    "UP TO 3\"",
+    "12\"",
+    "18"
+   ],
+   [
+    "4\u201d",
+    "15\"",
+    "16"
+   ],
+   [
+    "5\"",
+    "18\"",
+    "16"
+   ],
+   [
+    "6\"",
+    "21\"",
+    "16"
+   ],
+   [
+    "8\u201d & LARGER",
+    "24\"",
+    "14"
+   ]
+  ],
+  "before": 10,
+  "after": 10
+ },
+ {
+  "sheet": "EN-001.00",
+  "grid": [
+   16,
+   11
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "ENERGY CODE TABULARANALYSIS",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "NYCECC CITATION",
+    "PROVISION",
+    "ITEM DESCRIPTION",
+    "",
+    "",
+    "PROPOSED DESIGN VALUE",
+    "",
+    "",
+    "CODE PRESCRIPTVE VALUE",
+    "",
+    "SUPPORTING DOCUMENTATION"
+   ],
+   [
+    "C403.1.1",
+    "CALCULATON OF HEATING AND COOUNG LOADS",
+    "DESIGN LOADS ASSOCIATED WITH HEATING, VENTILATING AND AIR CONDITIONING OF THE BUILDING SHALL BE DETERMINED IN ACCORDANCE WTH ANSI/ASHRAE/ACCA STANDARD 183 OR BY AN APPROVED EQUIVALENT COMPUTATIONAL PROCEDURE USING THE DESIGN PARAMETERS SPECIFIED IN CHAPTER C3.",
+    "",
+    "PROVIDED AS PER",
+    "HEATING AND COOLING LOAD CALCULATION HAS BEEN ANSI/ASHRAE STANDARD 183 OR BY AN APPROVED EQUIVALENT COMPUTATIONAL PROCEDURE USING THE DESIGN PARAMETERS SPECIFIED IN CHAPTER C3.",
+    "",
+    "AND EQUIPMENT HANDBOOK.",
+    "THE DESIGN LOADS SHALL ACCOUNT FOR THE BUILDING ENVELOPE, LIGHTING, VENTILATION AND OCCUPANCY LOADS BASED ON THE PROJECT DESIGN. HEATING AND COOLING LOADS SHALL BE ADJUSTED TO ACCOUNT FOR LOAD REDUCTIONS THAT ARE ACHIEVED WHERE ENERGY RECOVERY SYSTEMS ARE UTLIZED IN THE HVAC SYSTEM IN ACCORDANCE WITH THE ASHRAE HVAC SYSTEMS",
+    "",
+    "SEE HVAC SCHEDULE DRAWING M200.00"
+   ],
+   [
+    "C403.2.2",
+    "EQUIPMENT SIZING.",
+    "THE OUTPUT CAPACITY OF HEATING AND COOLING EQUIPMENT SHALL BE NOT GREATER THAN THAT OF THE SMALLEST AVAILABLE EQUIPMENT SIZE THAT EXCEEDS THE LOADS CALCULATED IN ACCORDANCE WITH SECTION C403.1.1",
+    "",
+    "LOAD CALCULATONS",
+    "EQUIPMENT SIZE IS BASED ON",
+    "",
+    "ACCORDANCE",
+    "THE OUTPUT CAPACITY OF HEATING AND COOLING EQUIPMENT AND SYSTEMS SHALL NOT EXCEED THE LOADS CALCULATED IN WTH SECTION C403.1.1.",
+    "",
+    "REFER TO HVAC SCHEDULES DRAWNG M200.00"
+   ],
+   [
+    "",
+    "",
+    "C403.3.2",
+    "",
+    "HVAC EQUIPMENT PERFORMANCE REQUIREMENTS",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "C403.3.2",
+    "HVAC EQUIPMENT PERFORMANCE REQUIREMENT",
+    "ELECTRICALLY OPERATED PACKAGED TERMINAL AIR CONDITIONERS, PACKAGED TERMINAL HEAT_PUMPS MINIMUM EFFICIENCY REQUIREMENTS: ELECTRICALLY OPERATED UNITARY AND APPLIED HEAT PUMPS MINIMUMEFFICIENCYREQUIREMENTS: ELECTRICALLY OPERATED UNITARY AIR CONDITIONERS.",
+    "",
+    "PTAC-1 PTAC-2 PTAC3",
+    "/12.0 -/11.1 -/9.9",
+    "SEER/EER HSPF/COP /3.4 /3.2 /3.0",
+    "11.3EER 10.6EER 9.8EER",
+    "3.3COP 3.2 COP 3.0 COP",
+    "C403.3.2 (3)",
+    "HVAC SCHEDULE ON DRAWING M200.00"
+   ],
+   [
+    "",
+    "",
+    "C403.4",
+    "",
+    "HVAC EQUIPMENT PERFORMANCE REQUIREMENTS",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "C403.4.1",
+    "THERMOSTATC CONTROLS",
+    "THE SUPPLY OF HEATING AND COOLING ENERGY TO EACH ZONE SHALL BE CONTROLLED BY INDIVDUAL THERMOSTATIC CONTROLS CAPABLE OF RESPONDING TO TEMPERATURE WTHIN THE ZONE.",
+    "",
+    "ONE THERMOSTAT IS",
+    "PROVDED FOR EACH ZONE",
+    "",
+    "REQUIRED PER ZONE",
+    "MINIMUM ONE THERMOSTAT",
+    "",
+    "THERMOSTATS SHOWN ON MECHANICAL PLAN DRAWING. SEE ALSO HVAC SPECIFICATIONS NOTES#7."
+   ],
+   [
+    "C403.4.1.1",
+    "HEAT PUMP SUPPLEMENTARY HEAT",
+    "HEAT PUMPS HAVING SUPPLEMENTARY ELECTRIC RESISTANCE HEAT SHALL HAVE CONTROLS THAT, EXCEPT DURING DEFROST, PREVENT SUPPLEMENTARY HEAT OPERATION WHERE THE HEAT PUMP CAN PROVDE THE HEATING LOAD.",
+    "",
+    "PROVIDED",
+    "NO SUPPLIMENTARY HEAT IS",
+    "",
+    "THE HEATING LOAD.",
+    "THERMOSTAT CONTROL FOR SUPPLEMENTARY ELECTRIC RESISTANCE HEAT TO PREVENT SUPPLEMENTARY HEAT OPERATION WHERE THE HEAT PUMP CAN PROVDE",
+    "",
+    "NO SUPPLIMENTARY HEAT IS PROVIDED"
+   ],
+   [
+    "C403.4.1.2",
+    "DEADBAND",
+    "WHERE USED TO CONTROL BOTH HEATING AND COOLING, ZONE THERMOSTATIC CONTROLS SHALL BE CONFIGURED TO PROVIDE A TEMPERATURE RANGE OR DEADBAND OF NOT LESS THAN 5'F (2.8\"C) MTHIN WHICH THE SUPPLY OF HEATING AND COOLING ENERGY TO THE ZONE IS SHUT OFF OR REDUCED TO A MINIMUM.",
+    "",
+    "EACH ZONE.",
+    "THERMOSTAT WTH DEADBAND CAPABILITY IS PROVDED FOR",
+    "",
+    "",
+    "THERMOSTAT WITH DEADBAND OF NOT LESS THAN 5F (2.8\"C) WITHIN WHICH THE SUPPLY OF HEATING AND COOLING ENERGY TO THE ZONE IS SHUT OFF OR REDUCED TO A MINIMUM.",
+    "",
+    "THERMOSTATS SHOWN ON MECHANICAL PLAN DRAWNG. SEE ALSO HVAC SPECIFICATIONS NOTES#7."
+   ],
+   [
+    "C403.4.1.3",
+    "SET POINT OVERLAP RESTRICTION",
+    "WHERE A ZONE HAS A SEPARATE HEATING AND A SEPARATE COOLING THERMOSTATIC CONTROL LOCATED WTHIN THE ZONE, A LIMIT SWITCH, MECHANICAL STOP OR DIRECT DIGITAL CONTROL SYSTEM WTH SOFTWARE PROGRAMMING SHALL BE CONFIGURED TO PREVENT THE HEATING SET POINT FROM EXCEEDING THE COOLING SETPOINT AND TO MAINTAIN A DEAD BAND IN ACCORDANCE WITH SECTION C403.4.1.2.",
+    "",
+    "",
+    "EACH THERMOSTAT SHALL BE PROGRAMMED AS REQUIRED",
+    "",
+    "",
+    "ZONE THERMOSTATIC CONTROLS SHALL PROVIDE A TEMPERATURE RANGE OR DEAD BAND OF AT LEAST 5F WITHIN WHICH THE SUPPLY OF HEATING AND COOLING ENERGY TO THE ZONE IS CAPABLE OF BEING SHUT OFF OR REDUCED TO A MINIMUM.",
+    "",
+    "SEE \"HVAC NOTES\" IN MECHANICAL DRAWING M-001.0O NOTES#7."
+   ],
+   [
+    "C403.4.1.4",
+    "HEATED OR COOLED VESTIBULES",
+    "THE HEATING SYSTEM FOR HEATED VESTBULES AND AIR CURTAINS WITH INTEGRAL HEATING SHALL BE PROVIDED WITH CONTROLS CONFIGURED TO SHUT OFF THE SOURCE OF HEATING WHEN THE OUTDOOR AIR TEMPERATURE IS GREATER THAN 45F (7'C). VESTBULE HEATING AND COOLING SYSTEMS SHALL BE CONTROLLED BY A THERMOSTAT LOCATED IN THE VESTIBULE CONFIGURED TO LIMIT HEATING TO A TEMPERATURE NOT GREATER THAN 60\u00b0F (16'C) AND C0OLING TO A TEMPERATURE NOT LESS THAN 85'F (29\"C).",
+    "",
+    "",
+    "EACH THERMOSTAT SHALL BE PROGRAMMED AS REQUIRED",
+    "",
+    "",
+    "PROVDE THERMOSTAT IN A VESTIBULE WITH CONTROLS CONFIGURED TO SHUT OFF THE HEATING TO A TEMPERATURE NOT GREATER THAN 60F (16'C) AND COOLING TO A TEMPERATURE NOT LESS THAN 85'F (29'C).",
+    "",
+    "SEE MECHANICAL DRAWNG M200.00 VESTIBULE CONTROL DETAILS."
+   ],
+   [
+    "C403.4.1.5",
+    "HOT WATER BOILER OUTDOOR TEMPERATURE SETBACK CONTROL",
+    "WHERE A ZONE HAS A SEPARATE HEATING AND A SEPARATE COOLING THERMOSTATIC CONTROL LOCATED WTHIN THE ZONE, A LIMIT SWITCH, MECHANICAL STOP OR DIRECT DIGITAL CONTROL SYSTEM WTH SOFTWARE PROGRAMMING SHALL BE CONFIGURED TO PREVENT THE HEATING SET POINT FROM EXCEEDING THE COOLING SETPOINT AND TO MAINTAIN A DEAD BAND IN ACCORDANCE WITH SECTION C403.4,1.2.",
+    "",
+    "PROJECT.",
+    "NO HOT WATER BOILER IN THIS",
+    "",
+    "C403.4.1.2.",
+    "A LIMIT SWTCH, MECHANICAL STOP OR DIRECT DIGITAL CONTROL SYSTEM WTH SOFTWARE PROGRAMMING SHALL BE CONFIGURED TO PREVENT THE HEATING SET POINT FROM EXCEEDING THE COOLING SETPOINT AND TO MAINTAIN A DEAD BAND IN ACCORDANCE WTH SECTION",
+    "",
+    "NO HOT WATER BOILER IN THIS PROJECT."
+   ],
+   [
+    "C403.4.2",
+    "OFF-HOUR CONTROLS, SETBACKS",
+    "EACH ZONE SHALL BE PROVDED WTH THERMOSTATIC SETBACK CONTROLS THAT ARE CONTROLLED BY EITHER AN AUTOMATIC TIME CLOCK OR PROGRAMMABLE CONTROL SYSTEM",
+    "",
+    "REQUIREMENTS",
+    "EACH THERMOSTAT SHALL BE PROGRAMMABLE TO MEET",
+    "",
+    "CONTROL SYSTEM.",
+    "EACH ZONE SHALL BE PROVDED WTH THERMOSTATC SETBACK CONTROLS THAT ARE CONTROLLED BY EITHER AN AUTOMATIC TIME CLOCK OR PROGRAMMABLE",
+    "",
+    "SEE\u201cHVAC NOTES\"IN MECHANICAL DRAWING M-001.00 NOTES#7."
+   ],
+   [
+    "C403.4.2.1",
+    "THERMOSTATIC SETBACK CAPABILITES",
+    "THERMOSTATIC SETBACK CONTROLS SHALL BE CONFIGURED TO SET BACK OR TEMPORARILY OPERATE THE SYSTEM TO MAINTAIN ZONE TEMPERATURES DOWN TO 55F OR UP TO 85F.",
+    "",
+    "REQUIREMENTS",
+    "EACH THERMOSTAT SHALL BE PROGRAMMABLE TO MEET",
+    "",
+    "ABILITY TO SETBACK F OR UP T0 85F",
+    "CONTROLS SHALL HAVE TEMPERATURE DOWN TO 55*",
+    "",
+    "SEE \u201cHVAC NOTES\" IN MECHANICAL DRAWING M-001.0O NOTES#7."
+   ],
+   [
+    "C403.4.2.2",
+    "AUTOMATIC SETBACK AND SHUTDOWN CAPABILITIES",
+    "AUTOMATIC TIME CLOCK OR PROGRAMMABLE CONTROLS SHALL BE CAPABLE OF STARTING AND STOPPING THE SYSTEM FOR SEVEN DIFFERENT DAILY SCHEDULES PER WEEK AND RETAINING THEIR PROGRAMMING AND TIME SETTING DURING A LOSS OF POWER FOR NOT FEWER THAN 10 HOURS. ADDITIONALLY, THE CONTROLS SHALL HAVE A MANUAL OVERRIDE THAT ALLOWS TEMPORARY OPERATION OF THE SYSTEM FOR UP TO 2 HOURS: A MANUALLY OPERATED TIMER CONFIGURED TO OPERATE THE SYSTEM FOR UP TO 2 HOURS; OR AN OCCUPANCY SENSOR.",
+    "",
+    "REQUIREMENTS",
+    "EACH THERMOSTAT SHALL BE PROGRAMMABLE TO MEET",
+    "",
+    "SENSOR",
+    "CONTROLS SHALL BE CAPABLE OF AUTOMATICALLY STARTING AND STOPPING THE SYSTEMS FOR SEVEN DIFFERENT DAILY SCHEDULES PER WEEK, CAPABLE OF HAVNG SETTINGS SAVED IN MEMORY FOR 10 HOURS DURING A LOSS OF POWER AND A MANUAL SYSTEM \"ON* OVERRIDE FOR UP TO TWO HOURS OR AN OCCUPANCY",
+    "",
+    "SEE \"HVAC NOTES\" IN MECHANICAL DRAWNG M-001.00 NOTES#7.SEE ALSO HVAC SPECIFICATIONS NOTES#10."
+   ]
+  ],
+  "before": 14,
+  "after": 14
+ },
+ {
+  "sheet": "P-001.00",
+  "grid": [
+   4,
+   9
+  ],
+  "table": [
+   [
+    "FLUIDOPERATING TEMPERATURE RANGE (\u00b0F) AND USAGE",
+    "INSULATION CONDUCTIVITY CONDUCTIVITY Btu-in.(h x ft.sq.x \u00b0F)",
+    "MEAN RATING TEMPERATURE\uff0c\u00b0F",
+    "<1",
+    "1to<1-1/2 INSULATION THICKNESS (in)",
+    "NOMINAL PIPE OR TUBE SIZE (in) 1-1/2to<4",
+    "4to<8",
+    ">=8",
+    "ACTUAL"
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "105\u00b0F-140\u00b0F",
+    "0.22-0.28",
+    "100",
+    "1.0",
+    "1.0",
+    "1.5",
+    "1.5",
+    "1.5",
+    "1.0 / 1.5"
+   ],
+   [
+    "a. b. C. d. E.",
+    "INDICATEDFORTHEAPPLICABLEFLUIDTEMPERATURE TABLEFORTHEAPPLICABLEFLUIDTEMPERATURE. THICKNESS ADJUSTMENT ON FOOTNOTE a)BUT NOT TO THICKNESS BELOW 1\".",
+    "T=r{1+t/r)-1} WHERE T=MINIMUM INSULATION THICKNESS (in.)\uff0cr= ACTUAL OUTSIDE RADIUS OF PIPE (in.)\uff0c t= INSULATION THICKNESS IN THIS FOR DIRECT BURIED HEATING AND HOT WATER SYSTEM PIPING,REDUCTION OF THIS THICKNESS BY 1.5\" SHALL BE PERMITTED (BEFORE THE TABLE IS BASED ON STEEL PIPE.NON-METALLIC PIPES SCHEDULE 8O THICKNESS OR LESS SHALL USE THE TABLE VALUES. FOR",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   13,
+   6
+  ],
+  "table": [
+   [
+    "PLUMBING",
+    "",
+    "ROUGH-IN",
+    "",
+    "SCHEDULE",
+    ""
+   ],
+   [
+    "",
+    "VERIFY ALL MODEL NUMBERS WITH OWNER OWNERS'S REP AD ARCH, PRIOR TO ORDERING.",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "FIXTURES",
+    "ABBR",
+    "H.W.",
+    "C.W.",
+    "WASTE",
+    "VENT"
+   ],
+   [
+    "LAVATORIES",
+    "LAV",
+    "1/2\"",
+    "1/2\"",
+    "1-1/4\"",
+    "1-1/4\""
+   ],
+   [
+    "KITCHEN SINK",
+    "KS",
+    "1/2\"",
+    "1/2\"",
+    "1-1/2\"",
+    "1-1/2\""
+   ],
+   [
+    "BATH TUB",
+    "BT",
+    "1/2\"",
+    "1/2\"",
+    "1-1/2\"",
+    "1-1/2\""
+   ],
+   [
+    "SHOWER",
+    "HS",
+    "1/2\"",
+    "1/2\"",
+    "1-1/2\"",
+    "1-1/2\""
+   ],
+   [
+    "ELECTRICDRINKINGFOUNTAIN",
+    "EDF",
+    "",
+    "1/2\"",
+    "1-1/4\"",
+    "1-1/4\""
+   ],
+   [
+    "WATER CLOSET (TANK)",
+    "WC",
+    "",
+    "1/2\"",
+    "4\u201d",
+    "2\u201d"
+   ],
+   [
+    "FLOOR DRAINS",
+    "FD",
+    "",
+    "",
+    "3\",4\"",
+    "2\""
+   ],
+   [
+    "ROOF DRAIN",
+    "RD-1",
+    "",
+    "",
+    "SEE SD-1&SD-2",
+    ""
+   ],
+   [
+    "OVERFLOWROOFDRAIN",
+    "RD-2",
+    "",
+    "",
+    "SEE SD-1&SD-2",
+    ""
+   ],
+   [
+    "",
+    "NOTE: PROVIDE TRAP PRIMERS FROM NEAREST COLD WATER LINE FOR EACH FLOOR DRAIN.",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 10,
+  "after": 12
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   2,
+   7
+  ],
+  "table": [
+   [
+    "UNIT NO.",
+    "LOCATION",
+    "QTY",
+    "GAS TYPE",
+    "INPUT MBH",
+    "TEMP. SETTING F",
+    "FLOW RATE GPM@67F"
+   ],
+   [
+    "GWH-1",
+    "ROOF",
+    "3",
+    "NATURAL",
+    "199",
+    "140",
+    "5.7"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   2,
+   3
+  ],
+  "table": [
+   [
+    "STORAGE TANK SCHEDULE",
+    "ST I#",
+    ""
+   ],
+   [
+    "MARK No. ST-1 LOCATION ROOF MECH. ROOM TYPE PACKAGED MANUFACTURER STATE INDUSTRIES MODEL PVG-0120-00VT VOLUME GALLONS 119 STANDARD WORKING PRESSURE PSI 150 DIAMETER INCH 29. 3/8\" HEIGHT INCH 62\" WEIGHT INSTALLED (DRY) LBS 320 \u00b0F 180 TEMPERATURE RATING",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   3,
+   9
+  ],
+  "table": [
+   [
+    "",
+    "WATER",
+    "BOOSTER",
+    "",
+    "PUMP",
+    "",
+    "SCHEDULE",
+    "",
+    ""
+   ],
+   [
+    "SYMBOL WBP-1",
+    "MANUFACTURER MODEL # GRUNDFOSCMBETWIN 10-54",
+    "AREALOCATION SPRINKLERRM",
+    "SYSTEM SERVED DOMESTIC WATER",
+    "DIMENSION (OVERALL) 21.1\"L x 26.81\"W \u00d7 22\"H",
+    "PUMP [GPM] 47",
+    "PUMP HEAD [PSI (FT)] 20 (46')",
+    "HP 2",
+    "MOTORDATA VOLT/PH 230V/3"
+   ],
+   [
+    "NOTES:",
+    "1.PROVDEAEXPANSIONTANKWELL-X-TROL",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   4,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "DOMESTIC HOT",
+    "",
+    "WATER",
+    "",
+    "",
+    "RECIRCULATION",
+    "",
+    "",
+    "",
+    "PUMP",
+    "",
+    "SCHEDULE"
+   ],
+   [
+    "UNIT NO.",
+    "QTY",
+    "LOCATION",
+    "PUMP STYLE",
+    "SERVICE",
+    "FLOW GPM",
+    "TEMP.",
+    "HEAD FEET",
+    "V",
+    "MOTOR PH",
+    "HZ",
+    "HP",
+    "CONNECTION SIZE INCH (DIA.)",
+    "BASIS OF DESIGN TACO"
+   ],
+   [
+    "HWRP-1",
+    "2",
+    "ROOFMECHROOM",
+    "IN-LINE",
+    "WATER HEATER",
+    "13",
+    "120",
+    "17.2",
+    "115",
+    "1",
+    "60",
+    "1/8",
+    "3/4\"",
+    "SERIES 011"
+   ],
+   [
+    "NOTES : 1.",
+    "2. 3. 4. 5.",
+    "",
+    "PROVIDE LED DISPLAY, REMOTE SENSOR, 6' LINE CORD.",
+    "PROVIDE ENERGYEFFICIENTAUTOMATICOPERATIONSMARTPLUSCIRCULATORPUMP. LEAD-FREEBRONZECONSTRUCTIONCERTIFIEDBYNSFFORPOTABLEWATERPUMPS. INSTALL CIRCULATOR PUMP AS PER MANUFACTURER RECOMMENDATION.",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "P-400.00",
+  "grid": [
+   13,
+   3
+  ],
+  "table": [
+   [
+    "",
+    "WITH INCOMPRESSIBLE INSULATING BLOCK AT HANGER",
+    ""
+   ],
+   [
+    "PIPE DIAMETER",
+    "SHIELD LENGTH",
+    "SHIELD THICKNESS USSG"
+   ],
+   [
+    "UP TO 3\"",
+    "6\u201d",
+    "18"
+   ],
+   [
+    "TO",
+    "8\"",
+    "16"
+   ],
+   [
+    "8\"& LARGER",
+    "12\"",
+    "16"
+   ],
+   [
+    "",
+    "",
+    ""
+   ],
+   [
+    "WITHOUT INSULATING",
+    "INCOMPRESSIBLE BLOCK AT HANGER",
+    ""
+   ],
+   [
+    "PIPE DIAMETER",
+    "SHIELD LENGTH",
+    "SHIELD THICKNESS USSG"
+   ],
+   [
+    "UP TO 3\u201d",
+    "12\"",
+    "18"
+   ],
+   [
+    "4\u201d",
+    "15\"",
+    "16"
+   ],
+   [
+    "",
+    "18\"",
+    "16"
+   ],
+   [
+    "",
+    "21\"",
+    "16"
+   ],
+   [
+    "8\"& LARGER",
+    "24\"",
+    "14"
+   ]
+  ],
+  "before": 10,
+  "after": 10
+ },
+ {
+  "sheet": "Page 2 of 2",
+  "grid": [
+   3,
+   4
+  ],
+  "table": [
+   [
+    "H.SEWERINFORMATION:ThissectiontobecompletedbyPE/RAforSelf-CertifiedApplicationsORDEPStaffforstandardapplications. Total Site Area (sq ft ): 3654 1. There O is is NOT a sanitary sewer fronting the property available for connections. 2. There O Is Ois NOT a storm sewer fronting the property available for connections. 3. There  Is Ois NOT a combined sewer fronting the property available for connections. Size: 4. Distance from the property line to nearest allowable sewer or drain: Distance: a) Sanitary N/A b) Storm N/A c) Combined N/A 5. Sanitary Discharge Tributary to: Owner Pumping Station: OPublic Private DEP",
+    "",
+    "Application Fee Amount: $325 Size: Size: 60\"! If Connecting to Sewer Not Fronting Property Location: Location 26thWardWRRF",
+    "OPublic O Private Public C  Private O Public COPrivate"
+   ],
+   [
+    "1. CERTIFICATION, RESTRICTIONS, SPECIAL CONDITIONS (FOR DEP USE ONLY): Conditions: No connection permit will be issued until: DOB certify that detention facility satisfactorily installed. Notes: THE FOLLOWINGSECTION IS TO BE COMPLETEDFORSELF-CERTIFIEDAPPLICATIONSONLY STATEMENTSANDSIGNATURES Complete the appropriate sections and sign below. All professionals must affix their seal.",
+    "",
+    "CITY OFNEWYORK DEPARTMENTOFENVIRONMENTAL Environmental Protection PROTECTION SEWERINFORMATIONCERTIFIED REVIEWUNIT DIGITALLYSIGNEDBY: Md Golam Farhad DATE CERTIFIED: CERTIFICATION 04/01/2027 EXPIRES:",
+    "04/01/2025"
+   ],
+   [
+    "APPLICANT IDENTIFICATIONOFRESPONSIBILITIES I hereby state that the above information is correct and complete to the best of my knowledge and is in compliance with all Falsification of any statement is a misdemeanor under section 26-124 of the Administrative Code and is punishable by a fine or imprisonment, or both. It is unlawful to give to a city employee, or for a city employee to accept, any benefit, monetary or imprisonment or fine, or both. Name of Applicant Signature",
+    "",
+    "Date",
+    "PE/RA Seal"
+   ]
+  ],
+  "before": 2,
+  "after": 2
+ },
+ {
+  "sheet": "SP-003.00",
+  "grid": [
+   3,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "CENTRAL MODEL",
+    "RELIABLE MANUFACTURER'S",
+    "VIKING No.",
+    "",
+    "PLAN DESIGNATION SYMBOL",
+    "CONCEALED RESIDENTIAL",
+    "SPRINKLER UPRIGHT",
+    "PENDENT CONCEALED",
+    "SIDEWALL DRY",
+    "RESIDENTIAL SIDEWALL",
+    "MAXIMUM SPRINKLER COVERAGE AREA",
+    "THIRD FLOOR",
+    "TOTAL HEADS FOURTH FLOOR"
+   ],
+   [
+    "RFC49",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT. (16FTx16FT)",
+    "7",
+    "8"
+   ],
+   [
+    "F1RES44",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT.",
+    "16",
+    "4"
+   ]
+  ],
+  "before": 1,
+  "after": 2
+ },
+ {
+  "sheet": "SP-002.00",
+  "grid": [
+   3,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "CENTRAL",
+    "RELIABLE MANUFACTURER'S MODEL No.",
+    "VIKING",
+    "",
+    "PLAN DESIGNATION SYMBOL",
+    "CONCEALED RESIDENTIAL",
+    "SPRINKLER UPRIGHT",
+    "PENDENT CONCEALED",
+    "SIDEWALL DRY",
+    "RESIDENTIAL SIDEWALL",
+    "MAXIMUM SPRINKLER COVERAGE AREA",
+    "FIRST FLOOR",
+    "TOTAL HEADS SECOND FLOOR"
+   ],
+   [
+    "RFC49",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT. (16FTx16FT)",
+    "16",
+    "7"
+   ],
+   [
+    "F1RES44",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT.",
+    "9",
+    "16"
+   ]
+  ],
+  "before": 1,
+  "after": 2
+ },
+ {
+  "sheet": "SP-004.00",
+  "grid": [
+   3,
+   14
+  ],
+  "table": [
+   [
+    "",
+    "CENTRAL",
+    "RELIABLE MANUFACTURER'S MODEL No.",
+    "VIKING",
+    "",
+    "PLAN DESIGNATION SYMBOL",
+    "CONCEALED RESIDENTIAL",
+    "SPRINKLER UPRIGHT",
+    "PENDENT CONCEALED",
+    "SIDEWALL DRY",
+    "RESIDENTIAL SIDEWALL",
+    "MAXIMUM SPRINKLER COVERAGE AREA",
+    "FLR MEZZANINE",
+    "TOTAL HEADS ROOF FLOOR"
+   ],
+   [
+    "RFC49",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT. (16FTx16FT)",
+    "3",
+    "6"
+   ],
+   [
+    "F1RES44",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "256 SQ.FT.",
+    "20",
+    ""
+   ]
+  ],
+  "before": 1,
+  "after": 2
+ },
+ {
+  "sheet": "SP-004.00",
+  "grid": [
+   3,
+   3
+  ],
+  "table": [
+   [
+    "-7'-2\"",
+    "0-. 8",
+    "-7'-2\""
+   ],
+   [
+    "",
+    "",
+    ""
+   ],
+   [
+    "-7'-2\"",
+    "0-. 8",
+    "7'-2\" \u201d"
+   ]
+  ],
+  "before": 1,
+  "after": 1
+ },
+ {
+  "sheet": "S-302.00",
+  "grid": [
+   3,
+   19
+  ],
+  "table": [
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   [
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ]
+  ],
+  "before": 0,
+  "after": 0
+ }
+]

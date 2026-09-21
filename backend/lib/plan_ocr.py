@@ -221,30 +221,126 @@ def place_in_grid(boxes: Sequence[Tuple], grid: Dict[str, Any],
     return table, strays, scores
 
 
+def _filled(row: Sequence[str]) -> int:
+    return sum(1 for c in row if c)
+
+
 def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
-    """A schedule's first row is often its name in one merged cell, which the
-    column rules cut into pieces. Rejoined left to right, and only when the
-    row has nothing under it to suggest it is data."""
+    """A schedule's CAPTION (its name, plus any note printed between the name
+    and the headings) split from the table it captions.
+
+    ── WHAT A CAPTION IS, AND WHAT A HEADING ROW IS ───────────────────────
+    #
+    # A caption is ONE piece of text laid over the whole table. The column
+    # rules cut it wherever its words happen to fall, so how many cells it
+    # fills comes from its letter spacing, not from the columns:
+    #
+    #   M-200.00  · | DUCT | · | ELECTRIC | HEATER | ·           3 of 6
+    #   M-200.00  FAN ... SCHEDULE, spread across               2 of 15
+    #   P-400.00  PLUMBING | · | ROUGH-IN | · | SCHEDULE | ·     3 of 6
+    #
+    # A heading row NAMES THE COLUMNS, one name over each, so it fills most
+    # of them, and under a caption it fills AT LEAST as many cells as the
+    # caption does. A caption can fill every cell of a narrow table ('ROOMS
+    # | PTAC | UNITS' over three columns), so fill alone cannot say which of
+    # two such rows is the heading. What says it is the row BELOW: a heading
+    # row is followed by data, and a row followed by another heading row is
+    # not the one naming the columns. A data row is neither: it fills
+    # whatever its item has values for. SP-003.00's sprinkler rows fill 4 of 14 under a heading that
+    # fills 12, because a sprinkler uses few of the schedule's columns, so a
+    # data row is never the thing a caption is compared with.
+    #
+    # A row is a caption when:
+    #
+    #   1. it is one piece of text in one cell with the table under it: the
+    #      column rules did not cut it at all; or
+    #   2. it is the top row, and the first row under it that names more
+    #      than one column is a HEADING row filling at least as many cells:
+    #      a caption sits over the headings, and the headings name the
+    #      columns. Only the top row: under a caption, a second heading band
+    #      is a two-tier heading (MOTOR DATA over HP | VOLTS), which
+    #      `schedule_from_table` merges, not more caption; or
+    #   3. it is the top row and fills fewer than half the cells. This one
+    #      stands without a heading underneath to compare with: on P-400.00's
+    #      WATER BOOSTER PUMP SCHEDULE the band under the caption is heading
+    #      and value fused into each cell ('SYMBOL WBP-1'), which is not a
+    #      heading row and cannot vouch for anything.
+    #
+    # After the top row the walk continues only through one-cell notes (1)
+    # and blank bands. P-400.00 needs that: its title is followed by a
+    # ONE-CELL NOTE ('VERIFY ALL MODEL NUMBERS WITH OWNER...') and only then
+    # the headings. Compared only with
+    # the row directly under it, the title looks dense (3 cells against 1)
+    # and becomes the column headings. Walked, the title is a caption by
+    # (2), the note by (1), and FIXTURES | ABBR | H.W. ... heads the table.
+    # The note joins the name: it is printed as part of the caption, and a
+    # record field for it would be one nothing reads.
+    #
+    # ── WHAT THIS REPLACED ──────────────────────────────────────────────
+    #
+    # First, "a title reads as words; a data row reads as values": any top
+    # row with no digit was the title. Column headings read as words too, so
+    # SP-002/003/004.00's heading row was taken as the name and the RFC49
+    # sprinkler row became the headings. Its 7 and 8 heads per floor were not
+    # in the record. Then density alone, fewer than half the cells, which
+    # recovered those and lost every caption that filled EXACTLY half: DUCT
+    # ELECTRIC HEATER, DIFFUSER & REGISTER SCHEDULE and PLUMBING ROUGH-IN
+    # SCHEDULE were merged into the column names. Rule (2) is what was
+    # missing: a caption is known by the HEADING ROW UNDER IT, and no fixed
+    # fraction of the width says that.
+    """
     if not table:
         return "", []
-    first = table[0]
-    filled = [c for c in first if c]
-    # A title the column rules did NOT cut up: one cell spanning the table.
-    # Without this it merges into the header and every column is renamed
-    # 'EXHAUST FAN SCHEDULE TAG'.
-    if len(filled) == 1 and len(table) > 2:
-        return re.sub(r"\s+", " ", filled[0]).strip(), table[1:]
-    if len(filled) >= 2 and len(table) > 1:
-        joined = " ".join(filled)
-        # A title reads as words; a data row reads as values.
-        if not re.search(r"\d", joined) or len(filled) < len(first) * 0.5:
-            return re.sub(r"\s+", " ", joined).strip(), table[1:]
-    return "", table
+    captions: List[List[str]] = []
+    i = 0
+    while i < len(table):
+        row = table[i]
+        filled = _filled(row)
+        if not filled:
+            # A blank band BETWEEN a caption and its headings is skipped (the
+            # FAN SCHEDULE's). A blank band at the top means the grid has no
+            # caption in it: a caption is printed at the top.
+            if not captions:
+                break
+            i += 1
+            continue
+        below = [r for r in table[i + 1:] if _filled(r)]
+        if not below:
+            break
+        # (1) One piece of text, uncut. With two rows under it, as before:
+        # over a single row, one cell is as likely a one-column heading.
+        if filled == 1 and len(table) - i > 2:
+            captions.append(row)
+            i += 1
+            continue
+        # (2) The top row, over the headings that name the columns.
+        heading = next((r for r in below if _filled(r) >= 2), None)
+        if (not captions and heading is not None
+                and _is_heading_row(heading) and _filled(heading) >= filled):
+            captions.append(row)
+            i += 1
+            continue
+        # (3) The top row, with too few cells to be naming the columns.
+        if not captions and 2 <= filled < len(row) * 0.5:
+            captions.append(row)
+            i += 1
+            continue
+        break
+    if not captions:
+        return "", table
+    name = " ".join(c for r in captions for c in r if c)
+    return re.sub(r"\s+", " ", name).strip(), table[i:]
 
 
 # A cell that is a VALUE rather than a heading. 'KW' and 'BTUH' are headings;
-# '900', '0.6' and '208/1/60' are not.
-_VALUE_CELL = re.compile(r"^[\d.,/\-]+$")
+# '900', '0.6' and '208/1/60' are not, and neither is a dimension: '1/2"',
+# '1-1/4"', '3",4"' and "7'-2\"" are pipe sizes and a length, digits with
+# separators and foot and inch marks. Without the marks P-400.00's
+# LAVATORIES | LAV | 1/2" | 1/2" | 1-1/4" | 1-1/4" read as a second band of
+# headings and was merged into the column names. No digit is required: '--'
+# (not applicable) and a lone '"' (ditto) are data too, and no column is
+# named by punctuation.
+_VALUE_CELL = re.compile(r"^[\d.,/\-\"”'’]+$")
 
 
 #: The longest a COLUMN HEADING gets. 'AUXILIARYHEATING CAPACITY (KW)' is 30
