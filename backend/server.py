@@ -3620,8 +3620,11 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PLAN_INDEX_PAGE,
     VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
+    VISION_REFUSAL_CHECK,
 )
 from lib import plan_extract  # noqa: E402
+from lib import plan_eval  # noqa: E402
+from lib import plan_refusal  # noqa: E402
 from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
@@ -48507,6 +48510,110 @@ def _asserts_about_the_drawings(text: str, subject: str = "") -> bool:
         re.search(plan_search.term_pattern(w), t, re.I) for w in terms)
 
 
+async def check_refusal_against_the_sheet(
+        project_id: str, user_words: str, records: List[dict],
+        ) -> Optional[str]:
+    """Look at the sheet before saying the drawings do not say it.
+
+    ── AN ABSENCE NEEDS A WARRANT ─────────────────────────────────────────
+    #
+    # `answer_is_grounded` refuses an answer whose figures no record prints.
+    # A REFUSAL passed nothing: it was the only output in this system with no
+    # evidence behind it, produced whenever retrieval came back empty - which
+    # happens for reasons that have nothing to do with the drawings.
+    #
+    # MEASURED BEFORE BUILDING, on the refusals of the 40-question split: the
+    # model said the content WAS on the sheet for 6 of them, and those six
+    # were false refusals being shipped.
+    #
+    # THE COVERAGE FIGURE THAT USED TO SIT HERE - "24 had a candidate sheet" -
+    # WAS NOT ABOUT THIS FUNCTION. It came from a regex over `Closest: X` in
+    # the reply text, and this takes its candidate from `candidate_sheet`
+    # instead. Re-measured against the records, on the 26 refusals of the
+    # 173-page run: 23 have a candidate sheet, and the 3 that do not are floor
+    # vetoes - `garage`, `dumpster`, `pour` appear nowhere in the corpus. A
+    # corpus-wide absence is a warrant too, and a stronger one than this, so
+    # those three are not a hole in the coverage.
+    #
+    # THE 18 CONFIRMED ABSENCES ARE AN UPPER BOUND, NOT AN ERROR RATE. Two
+    # were checked by rendering the sheet and reading it, and one of those two
+    # looked wrong until a phrasing probe showed it was not. One verified case
+    # in a sample of two is not a rate. See lib/plan_refusal.py.
+    #
+    # ── IT MAY CONTRADICT. IT MAY NEVER SUPPLY. ────────────────────────────
+    #
+    # The asymmetry is what makes this safe, and it is why the removed vision
+    # path is still removed:
+    #
+    #   says YES wrongly -> "it's on A-101.00, I couldn't read it". Someone
+    #                       opens the sheet and has lost two minutes.
+    #   says NO  wrongly -> the refusal ships exactly as it does today.
+    #
+    # Neither failure puts a fabricated number in front of anyone, and
+    # `parse_verdict` strips any digit out of the location phrase because the
+    # model writes the value when told not to.
+    #
+    # Returns the replacement text, or None to let the refusal stand. EVERY
+    # failure path returns None: a check that cannot run is not a reason to
+    # change what the crew is told.
+    """
+    sheet = plan_refusal.candidate_sheet(records)
+    if not sheet:
+        return None
+    if not (QWEN_API_KEY and QWEN_API_BASE and QWEN_MODEL):
+        return None
+    try:
+        page_ids = await _current_record_page_ids(str(project_id),
+                                                  sheet_number=sheet)
+        if not page_ids:
+            return None
+        page_rec = await db.document_page_index.find_one(
+            {"_id": {"$in": [to_query_id(p) for p in page_ids]}},
+            {"page_jpeg_r2_key": 1, "page_base_r2_key": 1, "file_id": 1,
+             "page_number": 1, "is_spec_page": 1, "sheet_number": 1},
+        )
+        if not page_rec:
+            return None
+        # The FULL page, not the list thumbnail: a thumbnail is sized to be
+        # recognisable in a row, and this has to be readable.
+        img = await _fetch_page_jpeg(page_rec)
+        if not img:
+            return None
+        await record_vision_call(db, endpoint=VISION_REFUSAL_CHECK,
+                                 project_id=str(project_id))
+        b64 = base64.b64encode(img).decode("ascii")
+        async with ServerHttpClient(timeout=45.0) as http:
+            resp = await http.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": QWEN_MODEL,
+                    "max_tokens": plan_refusal.MAX_OUTPUT_TOKENS,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64}"}},
+                        {"type": "text",
+                         "text": plan_refusal.check_prompt(user_words)},
+                    ]}],
+                })
+        if resp.status_code != 200:
+            logger.warning(f"refusal check returned {resp.status_code} "
+                           f"for {sheet}")
+            return None
+        reply = (resp.json()["choices"][0]["message"].get("content") or "")
+        verdict, where = plan_refusal.parse_verdict(reply)
+        logger.info(f"refusal check {sheet}: {verdict}"
+                    f"{' | ' + where if where else ''}")
+        if verdict != "yes":
+            return None
+        return plan_refusal.found_but_unreadable(sheet, where) or None
+    except Exception as e:
+        logger.warning(f"refusal check failed for {sheet}: {e!r}")
+        return None
+
+
 def gate_plan_answer(text: str, records: List[dict], subject: str = "",
                      intent: str = "") -> Tuple[str, str]:
     """(text_to_send, outcome). THE HARD GATE.
@@ -48556,6 +48663,60 @@ def gate_plan_answer(text: str, records: List[dict], subject: str = "",
         unsupported[:6], leaked[:3], subject[:40], (text or "")[:200])
     return plan_search.render_records(records, subject), (
         "ungrounded" if not grounded else "label_leak")
+
+
+async def gate_and_warrant(
+        text: str, records: List[dict], subject: str = "", *,
+        intent: str = "", user_words: str = "",
+        project_id: str = "") -> Tuple[str, str]:
+    """The gate, then the warrant, as ONE callable. Call this, not the gate.
+
+    ── WHY THIS EXISTS AND IS NOT JUST INLINE IN `_gated` ─────────────────
+    #
+    # The warrant was first wired inside `_gated`, which is a closure inside
+    # `_run_group_agent` and is the only caller of `gate_plan_answer` IN THE
+    # REPO. That looked like a chokepoint and was not one: the 40-question
+    # benchmark harness lives outside the repo and calls `gate_plan_answer`
+    # directly, because a closure is not reachable from outside its function.
+    #
+    #     So the benchmark measured a path with the warrant missing from it,
+    #     and would have reported this feature as changing nothing.
+    #
+    # A test over callers in the repo cannot catch that, because the harness
+    # is not in the repo. The fix is not a better test, it is a callable both
+    # can reach — and the rule it encodes is the same one that collapsed the
+    # two plan retrievals into one: WHEN THE MEASUREMENT AND THE PRODUCT RUN
+    # DIFFERENT SEQUENCES, THEY DISAGREE, AND THE MEASUREMENT IS BELIEVED.
+    #
+    # ── THE ORDER IS THE POINT ─────────────────────────────────────────────
+    #
+    # The gate decides whether the composed answer is carried by the records.
+    # The warrant only ever acts on what the gate has already turned into a
+    # refusal, and it may replace that refusal with a pointer — never with a
+    # value. `project_id` is required for the warrant to run at all, so a
+    # caller that has no project (the suite, most tests) gets the gate alone
+    # and identical behaviour to before.
+    """
+    sent, outcome = gate_plan_answer(text, records, subject, intent=intent)
+    if not project_id:
+        return sent, outcome
+    # TRIGGERED ON `classify_reply`, THE SAME INSTRUMENT THE BENCHMARK COUNTS
+    # WITH, so what fires the check and what measures it cannot drift apart.
+    # A fresh regex here would be a second definition of "refusal" and this
+    # measurement has already been through three incomparable instruments.
+    if plan_eval.classify_reply(sent, outcome) != "refusal":
+        return sent, outcome
+    # The question is asked in the USER'S OWN WORDS, not the retrieval
+    # subject: the subject is the model's paraphrase and it is the thing that
+    # just failed, so asking in its terms would inherit the failure. Measured:
+    # this model answers NO to "when was the architectural set issued" and YES
+    # to "the drawing date", on the same sheet and the same crop.
+    better = await check_refusal_against_the_sheet(
+        project_id, user_words or subject, records)
+    if not better:
+        return sent, outcome
+    logger.info("refusal check overturned a refusal subject=%r", subject[:40])
+    return better, "refusal_overturned"
 
 
 def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> None:
@@ -50460,7 +50621,7 @@ async def _run_group_agent(
             # prose the model was shown.
             plan_evidence: list = []
 
-            def _gated(reply: str) -> str:
+            async def _gated(reply: str) -> str:
                 if not plan_evidence:
                     return reply
                 records = [r for hit in plan_evidence for r in hit["records"]]
@@ -50468,9 +50629,11 @@ async def _run_group_agent(
                 # The intent rides with the subject, from the same hit. A
                 # count is the shape whose numbers must bind to a mark.
                 intent = plan_evidence[-1].get("intent") or ""
-                sent, outcome = gate_plan_answer(reply, records, subject,
-                                                 intent=intent)
-                if outcome not in ("grounded", "no_records"):
+                sent, outcome = await gate_and_warrant(
+                    reply, records, subject, intent=intent,
+                    user_words=body or subject, project_id=project_id)
+                if outcome not in ("grounded", "no_records",
+                                   "refusal_overturned"):
                     logger.warning(
                         f"plan gate replaced the reply group="
                         f"{group_id[-10:] if group_id else '?'} outcome={outcome}")
@@ -50528,7 +50691,7 @@ async def _run_group_agent(
                         return None
                     if not used_tool:
                         stripped = _cap_sentences(stripped, AGENT_KNOWLEDGE_MAX_SENTENCES)
-                    return _gated(stripped) or None
+                    return (await _gated(stripped)) or None
                 used_tool = True
 
                 # Short-circuit: query_plan and start_checklist both dispatch
@@ -50633,7 +50796,7 @@ async def _run_group_agent(
             # tool calls" message into the group chat.
             if last_content and last_content.strip().upper() != "NOREPLY":
                 # The overrun path sends text too, so it passes the same gate.
-                return _gated(last_content.strip())
+                return await _gated(last_content.strip())
             logger.warning(
                 f"agent: max turns hit for group={group_id} sender={sender} body={body[:80]!r}"
             )
