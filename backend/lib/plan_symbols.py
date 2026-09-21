@@ -176,16 +176,50 @@ def corroborated_tag(texts: Iterable[str],
     return hits.pop() if len(hits) == 1 else None
 
 
+def _printed_rating(texts: Iterable[str],
+                    corroborations: Dict[str, str]) -> Optional[str]:
+    """The tag whose rating appears in the LABEL'S OWN FORM, `(value)`.
+
+    Not anywhere a number appears: `100'-0" LOT` carries a 100.
+    """
+    blob = " ".join(normalise(t) for t in texts)
+    hits = {tag for tag, val in corroborations.items()
+            if val and re.search(rf"\(\s*{re.escape(normalise(val))}"
+                                 rf"(?![0-9])", blob)}
+    return hits.pop() if len(hits) == 1 else None
+
+
 def labels_in(reads: Iterable[Tuple[str, float, float]],
               closed_set: Sequence[str],
-              merge_pt: float = 30.0):
+              merge_pt: float = 30.0,
+              corroborations: Optional[Dict[str, str]] = None):
     """[(tag, x, y)] where a read snaps to a schedule tag, deduplicated.
 
     `reads` is (text, x, y) from any OCR pass over the sheet.
+
+    WITH A RATING COLUMN, A NEAR MISS NEEDS THE LABEL'S OWN RATING. On
+    M-103.00 the note "2 HOUR FIRE RATED ENCLOSURE" read as `F2 HOUR FIRE`,
+    one prefix edit from EF-2, and counted as a fan; 4A's real kitchen fan
+    read as `EF=2(1` + `2(100)`, snapped to nothing, and did not. The total
+    was 8 either way - only the per-unit split showed it. So: an exact snap
+    stands on the tag; a snap needing a prefix edit stands only if the reads
+    within `merge_pt` print the same tag's rating as `(value)`; a read that
+    snaps to nothing but itself prints a rating naming one tag is that tag.
+    No rating column (PTAC) - nothing to corroborate with, nothing changes.
     """
+    reads = list(reads)
+    corr = corroborations or {}
     out: List[Tuple[str, float, float]] = []
     for text, x, y in reads:
-        tag, _d = snap(text, closed_set)
+        tag, d = snap(text, closed_set)
+        if corr:
+            if tag and d:
+                near = [t for t, px, py in reads
+                        if abs(x - px) <= merge_pt and abs(y - py) <= merge_pt]
+                if _printed_rating(near, corr) != tag:
+                    tag = None
+            elif not tag:
+                tag = _printed_rating([text], corr)
         if not tag:
             continue
         if any(t == tag and abs(x - px) <= merge_pt and abs(y - py) <= merge_pt
