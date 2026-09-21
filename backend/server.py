@@ -48018,8 +48018,38 @@ async def _fetch_page_jpeg(page_rec: dict) -> Optional[bytes]:
     (legacy index), fall back to on-the-fly render of the source PDF —
     slower, but keeps the query path working during the migration.
     """
+    # ── NOT CONFIGURED IS A THING TO SAY, NOT A THING TO SKIP ──────────────
+    #
+    # Both paths below need the client. Until this guard existed the branches
+    # DISAGREED about whether it could be None: the jpeg branch tested it and
+    # skipped SILENTLY, the source-PDF fallback called `.get_object` on it and
+    # raised AttributeError, which was caught and logged.
+    #
+    # THAT ACCIDENT WAS THE ONLY REASON A BAD RUN WAS READABLE. A benchmark of
+    # the refusal warrant reported `0 overturns, reconciliation OK` on a run
+    # where the warrant never executed once, because `_r2_client` is assigned
+    # in `startup_event` and a script that imports this module never runs it.
+    # The 23 unguarded AttributeErrors in the log are what told us. Nothing in
+    # the summary did.
+    #
+    # So this does NOT simply guard. Guarding alone would trade a crash for a
+    # silence and the output would then be indistinguishable from success —
+    # which is the same defect one level up. It guards AND says so.
+    #
+    # ONE LINE PER CALL, deliberately. The COUNT is the signal: 23 lines meant
+    # 23 attempts, and a once-per-process warning would have thrown that away.
+    if not (_r2_client and R2_BUCKET_NAME):
+        logger.warning(
+            "R2 NOT CONFIGURED (client=%s bucket=%s) — cannot fetch a page "
+            "image for file=%s page=%s. Every caller that needs to LOOK at a "
+            "sheet silently does nothing: the refusal warrant cannot check an "
+            "absence, and no page image can be sent.",
+            bool(_r2_client), bool(R2_BUCKET_NAME),
+            page_rec.get("file_id"), page_rec.get("page_number"))
+        return None
+
     key = page_rec.get("page_jpeg_r2_key")
-    if key and _r2_client and R2_BUCKET_NAME:
+    if key:
         try:
             obj = await asyncio.to_thread(
                 _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key
