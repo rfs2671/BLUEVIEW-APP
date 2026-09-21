@@ -69,6 +69,50 @@ _STOP = frozenset({
 })
 
 
+#: CHARACTERS THAT LOOK LIKE A QUOTE AND ARE NOT ONE.
+#:
+#: Every pattern in this system that spells an English contraction wrote it
+#: as `n[o']?t` — which matches the STRAIGHT apostrophe and nothing else.
+#: Measured 2026-09-20, on `classify_reply`:
+#:
+#:     "I couldn't find that - closest is A-101.00."   ->  refusal
+#:     "I couldn’t find that - closest is A-101.00."   ->  CITED
+#:
+#: That is not a new defect. It IS the 87.5% defect, unfixed for one spelling:
+#: a refusal that names its closest sheet satisfies the citation test, and the
+#: anchored refusal opener was supposed to catch it first. The anchor closed
+#: the door for `couldn't` and left it open for `couldn’t`.
+#:
+#: NORMALISE THE CHARACTER, DO NOT WIDEN THE CLASS. Spelling the variants into
+#: `n[o'’]?t` would fix the sentence we happened to look at and leave the next
+#: pattern in the file — and there were four such spellings across two files
+#: when this was written. One normalisation in front of all of them cannot
+#: drift out of step with any of them.
+_QUOTE_LOOKALIKES = str.maketrans({
+    "\u2018": "'",   # U+2018  LEFT SINGLE QUOTATION MARK
+    "\u2019": "'",   # U+2019  RIGHT SINGLE QUOTATION MARK - the smart apostrophe
+    "\u02bc": "'",   # U+02BC  MODIFIER LETTER APOSTROPHE
+    "\u02b9": "'",   # U+02B9  MODIFIER LETTER PRIME
+    "\u2032": "'",   # U+2032  PRIME
+    "\u00b4": "'",   # U+00B4  ACUTE ACCENT
+    "\u0060": "'",   # U+0060  GRAVE ACCENT
+    "\u201c": '"',   # U+201C  LEFT DOUBLE QUOTATION MARK
+    "\u201d": '"',   # U+201D  RIGHT DOUBLE QUOTATION MARK
+    "\u2033": '"',   # U+2033  DOUBLE PRIME
+})
+
+
+def normalise_quotes(text: str) -> str:
+    """Fold quote-lookalikes to ASCII, FOR MATCHING ONLY.
+
+    The returned string is never what anyone is shown or what gets stored —
+    a drawing's `9'-2"` must reach the crew exactly as the sheet prints it.
+    This exists so that a pattern written with a straight apostrophe cannot
+    be defeated by a model that types a curly one.
+    """
+    return (text or "").translate(_QUOTE_LOOKALIKES)
+
+
 def search_terms(subject: str) -> List[str]:
     """The agent's subject, as words to match. No synonyms, no stemming, no
     typo tolerance: the agent has already decided what it is looking for, and
@@ -1321,7 +1365,8 @@ def render_records(records: Sequence[Dict[str, Any]], subject: str = "",
     return "\n".join(lines)
 
 
-__all__ = ["search_terms", "match_score", "rank", "best_per_attribute",
+__all__ = ["search_terms", "normalise_quotes",
+           "match_score", "rank", "best_per_attribute",
            "answer_is_grounded", "contains_label", "render_records", "cite",
            "meets_the_floor", "floor_terms", "ASKING_WORDS",
            "subject_is_known", "abbreviation_forms", "CONVENTIONS",

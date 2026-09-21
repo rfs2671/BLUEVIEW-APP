@@ -48526,7 +48526,15 @@ def _asserts_about_the_drawings(text: str, subject: str = "") -> bool:
     an assertion AND either names drawing vocabulary or names the subject that
     was searched for.
     """
-    t = (text or "").strip()
+    # THE SAME NORMALISATION `classify_reply` USES, and for the same defect:
+    # `_ABSENCE_RE` below spells `could\s*n[o']?t\s+find`, which a curly
+    # apostrophe walks straight past. Here the consequence is on the PRODUCT
+    # side rather than the instrument's — an unrecognised absence falls
+    # through to the assertion test, so "I couldn't find that on A-101.00"
+    # could be scored a CLAIM about the drawings and get replaced. Matching
+    # only; `text` itself is untouched and a drawing's 9'-2" still reaches the
+    # crew exactly as the sheet prints it.
+    t = plan_search.normalise_quotes((text or "").strip())
     if not t:
         return False
     if _ABSENCE_RE.search(t):
