@@ -48637,9 +48637,31 @@ async def _check_one_sheet(project_id: str, user_words: str,
         )
         if not page_rec:
             return None
-        # The FULL page, not the list thumbnail: a thumbnail is sized to be
-        # recognisable in a row, and this has to be readable.
-        img = await _fetch_page_jpeg(page_rec)
+        # ── THE 2048px BASE LAYER, NOT THE FULL PAGE. BIGGER READS WORSE. ──
+        #
+        # The full page JPEG is a 250-DPI render of an E-size sheet: 9000x6000,
+        # 54 MP, ~6.5 MB. Measured, two sheets, two calls each, temperature 0,
+        # identical prompt from `check_prompt` — the oversized image loses
+        # content the model reads easily at a twentieth of the pixels:
+        #
+        #   sheet       question              54 MP (full)   2.6 MP (2000px)
+        #   GN-001.00   architect of record   NO, NO         YES, YES
+        #   A-500.00    wall assembly         NO, NO         YES, YES
+        #
+        # Each image was self-consistent across repeats, so this is not
+        # nondeterminism, and the prompt is shared with production rather than
+        # copied, so it is not phrasing. It is the image.
+        #
+        # `_fetch_page_base` is the 2048px derivative the viewer already uses —
+        # within 2.4% of the size every successful measurement used, already
+        # written for every page, and NOT a new tuned number. Its ladder falls
+        # through to downscaling the full page and then to a re-render, so a
+        # page indexed before the derivative existed still works.
+        #
+        # This is why GN-001.00 stayed NO at N=2 even though the right sheet
+        # WAS rendered: selection and image size were two separate causes of
+        # the same gap.
+        img = await _fetch_page_base(page_rec)
         if not img:
             return None
         await record_vision_call(db, endpoint=VISION_REFUSAL_CHECK,
