@@ -45696,7 +45696,14 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
         "page_id": page_id, "page_number": page_number,
         "sheet_number": fields.get("sheet_number"),
         "sheet_title": fields.get("sheet_title"),
-        "discipline": discipline or fields.get("discipline"),
+        # Same order as the page row, so a record and the page it came from
+        # can never disagree about which discipline the sheet is. This read
+        # `discipline or fields.get("discipline")` — the FILE first, then the
+        # model's own guess, and the sheet's number nowhere.
+        "discipline": plan_text.discipline_for_page(
+            fields.get("sheet_number") or "",
+            fields.get("sheet_title") or "",
+            discipline or fields.get("discipline") or ""),
         "floors": fields.get("floors") or [],
         # Read off the title block. approval_status is deliberately absent:
         # it changes without the drawing changing, so dob_logs is the join.
@@ -46452,6 +46459,21 @@ async def _index_single_page(
         "is_document":        bool(legacy["sheet_number"]) and not
                               plan_text.looks_like_a_sheet_number(legacy["sheet_number"]),
         "sheet_title":        legacy["sheet_title"],
+        # ── THE SHEET DECIDES ITS DISCIPLINE, NOT THE FILE NAME ────────────
+        #
+        # `base_doc` carries `detect_discipline(file_name)`, which is one
+        # value stamped on every page of a file. On this project that value
+        # was `ST` for 44 architectural sheets, because the file is called
+        # "588 THOMAS BOYLAND ST SET_UPDATED .pdf" and `ST` is the street.
+        #
+        # Overridden here, where the sheet's own number and title are in
+        # hand. The file name survives ONLY inside `discipline_for_page`, as
+        # the last resort for a page carrying neither — which is what the
+        # two spec-page branches above still fall through to.
+        "discipline":         plan_text.discipline_for_page(
+                                  legacy["sheet_number"],
+                                  legacy["sheet_title"],
+                                  discipline),
         "floor":              legacy["floor"],
         "keywords":           legacy["keywords"],
         "summary":            legacy["summary"],

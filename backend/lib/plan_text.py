@@ -1875,6 +1875,125 @@ def _prefix(sheet_id: str) -> str:
     return sheet_id.split("-")[0].upper()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Which discipline a PAGE belongs to
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── IT USED TO BE THE FILE NAME, AND THE FILE NAME SAID "ST" ───────────────
+#
+# `detect_discipline(file_name)` ran a regex over the file name and stamped
+# one value on every page of the file. MEASURED on the 588 Boyland set:
+#
+#     "588 THOMAS BOYLAND ST SET_UPDATED .pdf"  ->  ST
+#                            ^^ the building's own street
+#
+# All 44 A.N.N sheets live in that file: FLOOR PLAN x7, RENDERS x9, PLUMBING
+# PLAN x5, KITCHEN KEY PLAN x4, SECTION x3, RCP AND LIGHTING x3. Every one
+# tagged structural, because of an address. 44 of the 58 ST pages were wrong,
+# and ST was the largest bucket in the corpus.
+#
+# It is not cosmetic. There are indexes on (project_id, discipline) and
+# `search_plans` takes a discipline argument, so a wrong value silently
+# narrows a filtered query — a plumbing question misses five plumbing sheets
+# filed under structural.
+#
+# ── THE ORDER OF EVIDENCE ──────────────────────────────────────────────────
+#
+#   1. THE SHEET NUMBER'S PREFIX. It is printed on the sheet, it is what the
+#      drafter assigned, and no fragment of an address can reach it.
+#   2. THE SHEET TITLE. Only when there is no usable prefix.
+#   3. THE FILE NAME, LAST AND NEVER FIRST — a tie-breaker for a page that
+#      has neither of the above, which is most spec pages.
+#
+# PREFIX BEATS TITLE ON PURPOSE. `A.4.1 PLUMBING PLAN` is an ARCHITECTURAL
+# sheet that shows plumbing; the drafter said so by numbering it A. Its title
+# stays "PLUMBING PLAN" in `sheet_title`, recorded as what the sheet SHOWS,
+# and is not re-derived into a discipline. Reversing these two would move 5
+# pages of the architectural set back out of it for the same reason the file
+# name moved all 44.
+
+#: The alphabetic head of a sheet number. `A.3.1` -> `A`, `SSP-009.00` ->
+#: `SSP`, `1 OF 3` -> `` — a page position has no prefix and must not get one.
+_SHEET_ALPHA = re.compile(r"^\s*([A-Za-z]{1,4})(?=[^A-Za-z]|$)")
+
+#: prefix -> discipline. SSP and FA are here because without them the site
+#: safety and fire alarm sets were `other` BY OMISSION rather than by error —
+#: 20 pages that no filter could reach.
+PREFIX_DISCIPLINE = {
+    "A": "AR", "AR": "AR", "RCP": "AR", "DM": "AR", "D": "AR",
+    "S": "ST", "ST": "ST", "STR": "ST", "STRL": "ST",
+    "M": "ME", "ME": "ME", "MH": "ME", "MECH": "ME",
+    "P": "PL", "PL": "PL", "PLB": "PL",
+    "E": "EL", "EL": "EL", "ELEC": "EL",
+    "SP": "SP", "FP": "SP", "SPK": "SP",
+    "FA": "FA",
+    "SSP": "SSP", "LS": "SSP",
+    # General: title sheets, zoning, energy, civil, landscape. Kept as one
+    # bucket rather than invented codes — a new code is a new filter value
+    # and every caller would have to learn it.
+    "T": "GN", "G": "GN", "GN": "GN", "Z": "GN", "EN": "GN",
+    "C": "GN", "CV": "GN", "L": "GN",
+}
+
+#: (keyword, discipline), FIRST MATCH WINS, so order is the specificity
+#: ordering. Only consulted when the sheet number gives nothing.
+TITLE_DISCIPLINE = (
+    ("SITE SAFETY", "SSP"), ("SIDEWALK SHED", "SSP"), ("CRANE", "SSP"),
+    ("FIRE ALARM", "FA"),
+    ("SPRINKLER", "SP"), ("STANDPIPE", "SP"), ("FIRE PROTECTION", "SP"),
+    ("PLUMBING", "PL"), ("SANITARY", "PL"), ("WATER SUPPLY", "PL"),
+    ("MECHANICAL", "ME"), ("HVAC", "ME"), ("VENTILATION", "ME"),
+    ("ELECTRICAL", "EL"), ("LIGHTING", "EL"), ("POWER", "EL"),
+    ("STRUCTURAL", "ST"), ("FOUNDATION", "ST"), ("FRAMING", "ST"),
+    ("ZONING", "GN"), ("ENERGY", "GN"), ("GENERAL NOTES", "GN"),
+    ("TITLE SHEET", "GN"), ("DRAWING LIST", "GN"),
+    ("FLOOR PLAN", "AR"), ("ELEVATION", "AR"), ("SECTION", "AR"),
+    ("REFLECTED CEILING", "AR"), ("FACADE", "AR"), ("RENDER", "AR"),
+    ("DETAIL", "AR"), ("SCHEDULE", "AR"),
+)
+
+
+def discipline_from_sheet_number(sheet_number: str) -> Optional[str]:
+    """The discipline the drafter assigned, read off the number they printed."""
+    m = _SHEET_ALPHA.match(str(sheet_number or ""))
+    if not m:
+        return None
+    return PREFIX_DISCIPLINE.get(m.group(1).upper())
+
+
+def discipline_from_title(sheet_title: str) -> Optional[str]:
+    t = str(sheet_title or "").upper()
+    if not t:
+        return None
+    for word, code in TITLE_DISCIPLINE:
+        if word in t:
+            return code
+    return None
+
+
+def discipline_for_page(sheet_number: str = "", sheet_title: str = "",
+                        file_discipline: str = "") -> str:
+    """Sheet number, then title, then the file — never the file first.
+
+    `file_discipline` is what `detect_discipline(file_name)` returned. It is
+    accepted only for a page that has neither a mappable prefix nor a
+    matching title, which in practice is spec pages and unnumbered sheets,
+    and it is ignored when it is `other`.
+    """
+    by_number = discipline_from_sheet_number(sheet_number)
+    if by_number:
+        return by_number
+    by_title = discipline_from_title(sheet_title)
+    if by_title:
+        return by_title
+    # THE FILE NAME, AND ONLY HERE. `other` is not evidence — it is the
+    # absence of a match, and passing it through as a value would make a
+    # page that could not be classified indistinguishable from one the file
+    # name classified as nothing.
+    from_file = str(file_discipline or "").strip()
+    return from_file if from_file and from_file != "other" else "other"
+
+
 def file_sheet_profile(layouts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
     """How much of a file carries its own sheet numbers, and which disciplines
     its text shows."""
@@ -1946,6 +2065,8 @@ def combined_set_decision(profile: Dict[str, Any],
 
 __all__ = [
     "file_sheet_profile", "looks_combined", "combined_set_decision", "DISCIPLINE_PREFIXES",
+    "discipline_for_page", "discipline_from_sheet_number",
+    "discipline_from_title", "PREFIX_DISCIPLINE", "TITLE_DISCIPLINE",
     "COMBINED_MAX_TITLE_ID_SHARE",
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",
     "page_layouts", "page_dict_from_chars", "drawing_list_index", "file_context", "page_layout_at",
