@@ -634,6 +634,35 @@ def check_baseline(baseline: Dict[str, Any], observed: Dict[str, Any]
 # The earlier "20.0% cited" was produced by an instrument that no longer
 # exists, and "87.5%" by the broken one described above. Both are history,
 # NOT baselines, and a comparison drawn against either is meaningless.
+#
+# ── THERE IS NO WARRANT-DARK RUN AFTER THIS CHANGE. IT WAS SKIPPED. ────────
+#
+# The plan was three runs: fix the instrument, RE-RUN WITH THE WARRANT DARK
+# to isolate the classifier, then wire the warrant and run again to isolate
+# the feature. The middle run was deliberately not taken, and this note
+# exists so that absence reads as a decision rather than an oversight.
+#
+# It was skipped because the change is INERT while the warrant is dark, shown
+# two ways:
+#
+#   structurally - the new branch can only fire on text containing
+#     UNREADABLE_TAIL, which only `found_but_unreadable` produces, which only
+#     runs when the warrant runs. Nothing else in the system emits it.
+#   empirically  - it fires on 0 of the 40 stored replies, and the tail
+#     appears 0 times across all four stored runs. Two sessions derived this
+#     independently and agreed.
+#
+# So the run could not have moved for the reason it would have been taken.
+# What it COULD have moved for is that this model is not deterministic at
+# temperature zero (see the memory of that name) - so the pass would have
+# sampled nondeterminism, and its delta would have been read as the
+# instrument's effect. A measurement whose only possible signal is noise is
+# worse than no measurement, because it looks like one.
+#
+# The pair - a structural argument plus an empirical check on stored data -
+# is the cheaper and stronger instrument here, and it is repeatable whenever
+# this function changes. RE-DERIVE FROM THE STORED REPLY TEXT; do not spend a
+# pass to establish comparability.
 
 #: A reply that reports the search rather than the drawings. Deliberately
 #: matched at the START: "Not found. Closest: A-400.00." is a refusal that
