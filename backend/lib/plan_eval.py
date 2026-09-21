@@ -585,8 +585,103 @@ def check_baseline(baseline: Dict[str, Any], observed: Dict[str, Any]
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# WHAT DID THE CREW ACTUALLY GET? ONE INSTRUMENT, KEPT.
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The 40-question superintendent split is the number this project steers by,
+# and it has now been measured with three different instruments, which makes
+# the readings incomparable. Worse, the third one was WRONG in a way that
+# flattered the result: it scored a reply as CITED when the text named a
+# sheet and contained a digit — and a sheet number CONTAINS DIGITS. So
+#
+#     "Not found. Closest: M-200.00."
+#
+# counted as a citation. Twenty-four refusals were scored as answers and the
+# run reported 87.5% cited against a known baseline of 20%. The implausibility
+# is what caught it; without a prior number to disbelieve, it would have
+# shipped.
+#
+# That is the fifth time in one session that a PROXY was measured and reported
+# as the thing — "has a digit" for "states a value", record COUNT for "found
+# the answer", a regex over extracted text for "what the drawing says". The
+# instrument lives here now so the next split uses the same one, and so that
+# changing it is a visible edit to a tested function rather than a fresh
+# classifier written at the bottom of a scratch script.
+#
+# BASELINE, measured with THIS function on the 173-page corpus of
+# 2026-09-20: cited 30.0%, refusal 65.0%, hedge 2.5%, fallback 2.5%.
+#
+# Read that against the ONE other reading this function has produced: the
+# same 40 questions on the 129-page corpus, before the combined set's 44
+# pages were indexed, gave cited 25.0%, hedge 5.0%, fallback 2.5%, refusal
+# 67.5%. Same instrument, same questions, so the five points are real and
+# they are attributable to the CORPUS — no ranking or term-layer change sits
+# between the two runs.
+#
+# The earlier "20.0% cited" was produced by an instrument that no longer
+# exists, and "87.5%" by the broken one described above. Both are history,
+# NOT baselines, and a comparison drawn against either is meaningless.
+
+#: A reply that reports the search rather than the drawings. Deliberately
+#: matched at the START: "Not found. Closest: A-400.00." is a refusal that
+#: names a sheet, and the sheet must not promote it to an answer.
+_REPLY_REFUSAL = re.compile(
+    r"^\s*(?:not\s+found|i\s+could\s*n[o']?t\s+find|nothing\s+found"
+    r"|no\s+match|i\s+did\s*n[o']?t\s+find)", re.I)
+
+# THE BOUNDARIES ARE LOAD BEARING. Without the leading one this matches
+# `TAC-1` inside `PTAC-1`, so stripping citations out of
+# "PTAC-1: 21 units [M-200.00]" left "P : 21 units" - two words - and a
+# real citation was scored a hedge. A MARK IS NOT A SHEET NUMBER.
+_REPLY_SHEET = re.compile(
+    r"(?<![A-Za-z0-9])[A-Z]{1,3}[-.]\d{1,3}(?:[-.]\d{1,3})*(?![A-Za-z0-9])")
+
+#: How many words must survive once the citations are stripped out, before a
+#: reply counts as having said something. "Not found. Closest: X" is caught by
+#: the refusal test above; this catches a reply that is citation and nothing
+#: else.
+_REPLY_MIN_WORDS = 2
+
+#: Words a POINTER uses. A hedge is not shorter than an answer — "See the
+#: details on M-200.00" has more words than "AMANA PTH093K [M-200.00]" — so
+#: counting words scored the pointer above the answer. What separates them is
+#: that a pointer is made ENTIRELY of these and a citation is not.
+_REPLY_POINTER_WORDS = {
+    "see", "refer", "refers", "check", "consult", "review", "per",
+    "details", "detail", "sheet", "sheets", "drawing", "drawings",
+    "plan", "plans", "schedule", "shown", "noted", "listed", "above",
+    "below", "the", "on", "in", "at", "to", "of", "for", "and", "or",
+    "is", "are", "as", "it", "this", "that", "there", "please",
+}
+
+
+def classify_reply(sent: str, outcome: str = "") -> str:
+    """refusal | fallback | cited | hedge — what the crew received.
+
+    `sent` is what was SENT, not what the model composed: when the gate
+    replaces an answer those differ, and the crew's experience is the former.
+    `outcome` distinguishes a gate substitution from a composed answer, which
+    text alone cannot.
+    """
+    s = (sent or "").strip()
+    if not s:
+        return "hedge"
+    if _REPLY_REFUSAL.match(s):
+        return "refusal"
+    if outcome in ("ungrounded", "label_leak"):
+        return "fallback"
+    body = _REPLY_SHEET.sub(" ", s)
+    body = re.sub(r"[\[\]().,:;]", " ", body)
+    words = [w for w in body.split()
+             if len(w) > 1 and w.lower().strip("'\"") not in _REPLY_POINTER_WORDS]
+    if _REPLY_SHEET.search(s) and len(words) >= _REPLY_MIN_WORDS:
+        return "cited"
+    return "hedge"
+
+
 __all__ = ["SCHEMA", "CITE_K", "record_key", "STALE_CLASSES", "VISION_PROMOTED",
            "stale_elements_from_vision", "stale_index", "load_suite",
            "validate_suite", "SuiteError", "score_case", "summarise",
            "known_failure_classes",
-           "check_baseline"]
+           "check_baseline", "classify_reply"]
