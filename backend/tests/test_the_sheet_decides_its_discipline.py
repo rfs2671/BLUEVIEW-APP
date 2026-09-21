@@ -31,6 +31,12 @@ would move those five pages out of the architectural set for the same reason
 the file name moved all 44 — a word about the content standing in for the
 sheet's identity.
 
+SUPERSEDED IN PART, 2026-09-21. That argument holds where the set numbers its
+sheets with more than one prefix. 588 Boyland's set numbers EVERY sheet `A.`,
+so there the prefix says nothing and the title decides: A.4.1 PLUMBING PLAN is
+PL when the indexer passes the set's prefixes. These tests pass no set, which
+keeps the order above. See test_a_prefix_is_evidence_where_the_set_has_two.
+
 A HYPOTHESIS THAT WAS WRONG, kept because it also explained the evidence:
 that the field came from the sheet-number prefix and failed on the `A.N.N`
 scheme. The sheet number was never consulted at all.
