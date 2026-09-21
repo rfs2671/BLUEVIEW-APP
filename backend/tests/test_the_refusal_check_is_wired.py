@@ -231,6 +231,43 @@ class TheCallIsCountedLikeEveryOtherOne(unittest.TestCase):
         self.assertLessEqual(plan_refusal.MAX_OUTPUT_TOKENS, 60)
 
 
+class TheImageIsTheBaseLayerNotTheFullPage(unittest.TestCase):
+    """BIGGER READS WORSE, AND THIS IS EASY TO REVERT BY ACCIDENT.
+
+    The full page JPEG is a 250-DPI render of an E-size sheet — 9000x6000,
+    54 MP. Measured on two sheets, two calls each, temperature 0, identical
+    prompt: the oversized image answers NO where the 2048px base layer
+    answers YES, and each image is self-consistent across repeats, so it is
+    neither nondeterminism nor phrasing.
+
+        GN-001.00  architect of record   54 MP: NO, NO   2.6 MP: YES, YES
+        A-500.00   wall assembly         54 MP: NO, NO   2.6 MP: YES, YES
+
+    `_fetch_page_jpeg` is the obvious-looking call and the wrong one. Its
+    name reads like "the page image", which is exactly why this is pinned."""
+
+    def setUp(self):
+        self.src = inspect.getsource(server._check_one_sheet)
+
+    def test_it_fetches_the_base_layer(self):
+        self.assertIn("_fetch_page_base(", self.src)
+
+    def test_it_does_not_fetch_the_full_page(self):
+        self.assertNotIn("_fetch_page_jpeg(", self.src)
+
+    def test_the_projection_carries_the_base_key(self):
+        """`_fetch_page_base` reads `page_base_r2_key` off the record. If the
+        projection drops it the ladder silently falls through to the full
+        page and the verdicts quietly get worse."""
+        self.assertIn("page_base_r2_key", self.src)
+
+    def test_the_base_fetch_still_has_a_fallback(self):
+        """A page indexed before the 2048px derivative existed must still be
+        checkable, so the ladder ends at a re-render rather than at None."""
+        base = inspect.getsource(server._fetch_page_base)
+        self.assertIn("_fetch_page_jpeg", base)
+
+
 class TheInstrumentAgreesWithItself(unittest.TestCase):
     """If `classify_reply` stopped calling these refusals, the check would
     stop firing and nothing else would notice."""
