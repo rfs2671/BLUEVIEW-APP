@@ -48557,11 +48557,36 @@ async def check_refusal_against_the_sheet(
     # failure path returns None: a check that cannot run is not a reason to
     # change what the crew is told.
     """
-    sheet = plan_refusal.candidate_sheet(records)
-    if not sheet:
+    # ── MORE THAN ONE SHEET, BECAUSE RANK 1 IS NOT WHERE THE ANSWER IS ───
+    #
+    # Measured on the 23 eligible refusals of the 173-page run: three whose
+    # content a model confirms IS in the set came back NO, because only the
+    # top-ranked record's sheet was rendered. In every one of the three the
+    # right sheet was already in the candidate list — Z-001.01 at rank 2 for
+    # the lot size, GN-001.00 at rank 2 for the architect, A-500.00 at rank 4
+    # for the wall assembly. Not a retrieval problem, and it needs no
+    # question-to-discipline vocabulary to fix. `CANDIDATE_SHEETS` carries
+    # the cost curve that chose the number.
+    sheets = plan_refusal.candidate_sheets(records)
+    if not sheets:
         return None
     if not (QWEN_API_KEY and QWEN_API_BASE and QWEN_MODEL):
         return None
+    for sheet in sheets:
+        found = await _check_one_sheet(project_id, user_words, sheet)
+        if found:
+            return found
+    return None
+
+
+async def _check_one_sheet(project_id: str, user_words: str,
+                           sheet: str) -> Optional[str]:
+    """One sheet, one bounded question. Returns the pointer text or None.
+
+    Split out of the loop above so that EVERY failure path still returns
+    None for THAT SHEET ONLY and the next candidate is still tried — a sheet
+    whose page is missing must not silently end the search.
+    """
     try:
         page_ids = await _current_record_page_ids(str(project_id),
                                                   sheet_number=sheet)
