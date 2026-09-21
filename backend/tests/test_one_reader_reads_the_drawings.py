@@ -125,9 +125,16 @@ class OneReaderOnly(unittest.TestCase):
     def test_both_paths_feed_the_same_gate(self):
         # One sink, one gate: whichever tool fetched the records, the composed
         # answer is checked against them.
+        #
+        # THE GATE IS REACHED THROUGH `gate_and_warrant` NOW, not called
+        # directly. That indirection is not cosmetic: the warrant that runs
+        # after the gate has to be reachable from the benchmark harness, which
+        # lives outside the repo and cannot call a closure. This assertion
+        # names the shared callable so the property it protects — every
+        # composed answer meets the gate — still holds through it.
         src = inspect.getsource(server._run_group_agent)
         self.assertIn("plan_evidence", src)
-        self.assertIn("gate_plan_answer(", src)
+        self.assertIn("gate_and_warrant(", src)
         self.assertIn("record_sink=plan_evidence", src)
 
     def test_the_prompt_sends_questions_to_the_reader(self):

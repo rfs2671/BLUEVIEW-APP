@@ -106,6 +106,19 @@ class WhatTheCrewIsTold(unittest.TestCase):
         self.assertIn("A-101.00", pr.found_but_unreadable("A-101.00", ""))
         self.assertEqual(pr.found_but_unreadable("", "somewhere"), "")
 
+    def test_a_page_position_is_not_a_sheet_to_open(self):
+        """`1 OF 1` is where a page sits in its file, not which sheet it is.
+        MEASURED: it is the top record for "what is the lot size", so as
+        written the crew would be told to open a sheet that cannot be opened —
+        worse than refusing. Same class as the supersession gap: a page
+        position standing in for an identity."""
+        self.assertIsNone(pr.candidate_sheet([{"sheet_number": "1 OF 1"}]))
+        self.assertIsNone(pr.candidate_sheet([{"sheet_number": "2 of 3"}]))
+        self.assertEqual(
+            pr.candidate_sheet([{"sheet_number": "1 OF 1"},
+                                {"sheet_number": "A-400.00"}]),
+            "A-400.00", "skip the page position, keep looking")
+
     def test_the_candidate_is_the_highest_ranked_record(self):
         recs = [{"sheet_number": ""}, {"sheet_number": "M-200.00"},
                 {"sheet_number": "A-101.00"}]

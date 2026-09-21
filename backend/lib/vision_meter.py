@@ -106,12 +106,23 @@ VISION_WHATSAPP_VQA = "whatsapp_visual_qa"
 # its trigger are both different from the vision-model calls beside it.
 VISION_PLAN_INDEX_OCR = "plan_index_ocr"
 
+# ── ONE CALL PER REFUSAL, AND ONLY PER REFUSAL ────────────────────────────
+#
+# Before a refusal is sent, the top candidate sheet is rendered and the model
+# is asked whether the sheet STATES the thing. Counted separately because its
+# trigger is unlike every other vision call here: it fires when retrieval
+# found NOTHING, so its volume is the refusal rate, not the question rate.
+# Measured on the 40-question split: 26 refusals, 24 with a candidate sheet,
+# ~2,626 input tokens and 6 output tokens each.
+VISION_REFUSAL_CHECK = "plan_refusal_check"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
     VISION_PLAN_INDEX_PAGE,
     VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
+    VISION_REFUSAL_CHECK,
 })
 
 COLLECTION = "vision_calls"
