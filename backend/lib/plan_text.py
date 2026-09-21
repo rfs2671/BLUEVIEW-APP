@@ -1936,20 +1936,40 @@ PREFIX_DISCIPLINE = {
 }
 
 #: (keyword, discipline), FIRST MATCH WINS, so order is the specificity
-#: ordering. Only consulted when the sheet number gives nothing.
+#: ordering.
+#:
+#: ── WHAT IS NOT HERE, DELIBERATELY ─────────────────────────────────────
+#:
+#: 'DETAIL' and 'SCHEDULE' mapped to AR. Every trade draws details and
+#: schedules, so the word says what KIND of sheet it is, not whose: on 588
+#: Boyland 'TYPICAL SAFETY DETAILS' is site safety and 'NOTES, LEGEND,
+#: DETAILS AND RISER DIAGRAM' is fire alarm. Measured before removing
+#: 'SCHEDULE': it decided no page in the corpus.
+#:
+#: 'WATER SERVICE' is not a plumbing term. A combined fire and domestic
+#: service sheet names both, and one discipline per sheet cannot hold both;
+#: see `discipline_for_page`.
+#:
+#: REFLECTED CEILING and RCP come BEFORE the electrical terms. A reflected
+#: ceiling plan carries its light fixtures and is architectural; 588
+#: Boyland's A.3.2-A.3.4 are titled "REFLECTED CEILING PLAN AND LIGHTING
+#: PLAN". Only LIGHTING, POWER and ELECTRICAL mean EL.
 TITLE_DISCIPLINE = (
     ("SITE SAFETY", "SSP"), ("SIDEWALK SHED", "SSP"), ("CRANE", "SSP"),
     ("FIRE ALARM", "FA"),
+    # A backflow / RPZ / cross-connection sheet is plumbing even when it
+    # names the sprinkler service the assembly protects.
+    ("RPZ", "PL"), ("BACKFLOW", "PL"), ("CROSS CONNECTION", "PL"),
     ("SPRINKLER", "SP"), ("STANDPIPE", "SP"), ("FIRE PROTECTION", "SP"),
     ("PLUMBING", "PL"), ("SANITARY", "PL"), ("WATER SUPPLY", "PL"),
     ("MECHANICAL", "ME"), ("HVAC", "ME"), ("VENTILATION", "ME"),
+    ("REFLECTED CEILING", "AR"), ("RCP", "AR"),
     ("ELECTRICAL", "EL"), ("LIGHTING", "EL"), ("POWER", "EL"),
     ("STRUCTURAL", "ST"), ("FOUNDATION", "ST"), ("FRAMING", "ST"),
     ("ZONING", "GN"), ("ENERGY", "GN"), ("GENERAL NOTES", "GN"),
     ("TITLE SHEET", "GN"), ("DRAWING LIST", "GN"),
     ("FLOOR PLAN", "AR"), ("ELEVATION", "AR"), ("SECTION", "AR"),
-    ("REFLECTED CEILING", "AR"), ("FACADE", "AR"), ("RENDER", "AR"),
-    ("DETAIL", "AR"), ("SCHEDULE", "AR"),
+    ("FACADE", "AR"), ("RENDER", "AR"),
 )
 
 
@@ -1971,21 +1991,61 @@ def discipline_from_title(sheet_title: str) -> Optional[str]:
     return None
 
 
+def set_prefix_count(set_prefixes: Optional[Iterable[str]]) -> Optional[int]:
+    """How many distinct discipline prefixes the SET (the file) numbers its
+    sheets with, or None when that is not known."""
+    if set_prefixes is None:
+        return None
+    return len({str(p or "").strip().upper() for p in set_prefixes}
+               & set(PREFIX_DISCIPLINE))
+
+
 def discipline_for_page(sheet_number: str = "", sheet_title: str = "",
-                        file_discipline: str = "") -> str:
-    """Sheet number, then title, then the file — never the file first.
+                        file_discipline: str = "",
+                        set_prefixes: Optional[Iterable[str]] = None) -> str:
+    """Sheet number, title, file — never the file first.
 
     `file_discipline` is what `detect_discipline(file_name)` returned. It is
     accepted only for a page that has neither a mappable prefix nor a
     matching title, which in practice is spec pages and unnumbered sheets,
     and it is ignored when it is `other`.
+
+    ── A PREFIX IS EVIDENCE ONLY WHERE THE SET HAS MORE THAN ONE ──────────
+    #
+    # `set_prefixes` is every sheet-number prefix the file uses (its
+    # profile's `title_prefixes`). A prefix distinguishes disciplines only if
+    # the set uses more than one: in AR - 3.28.25 (A, GN, RCP, T, Z) or MH
+    # (EN, M) the drafter chose a letter per discipline, and the prefix wins.
+    #
+    # 588 Boyland's design set numbers EVERY sheet 'A.' — floor plans, the
+    # lighting plans A.3.0-A.3.1 and the plumbing plans A.4.0-A.4.5 alike —
+    # so there 'A' says nothing about discipline, and the TITLE decides.
+    #
+    # The single prefix is then the fallback BEFORE the file name, not
+    # dropped. FA-001 'NOTES, LEGEND, DETAILS AND RISER DIAGRAM' and
+    # SSP-010.00 'TYPICAL SAFETY DETAILS-1' name no discipline; their sets'
+    # one prefix is right. Skipping it would reach the file name, which is
+    # `other` for those files and `ST` — the street — for 588 Boyland's
+    # KITCHEN PLAN and SITE PLAN sheets: the defect #642 fixed, back again.
+    #
+    # `None` means the set is unknown (no text layer): the prefix leads, as
+    # it did before this.
+    #
+    # ── ONE DISCIPLINE PER SHEET IS A KNOWN LIMIT ─────────────────────────
+    #
+    # A combined sheet gets one answer. 'REFLECTED CEILING PLAN AND
+    # LIGHTING PLAN' is AR; the cross-connection set's 3 OF 3, 'NEW 2"
+    # COMBINED WATER SERVICE, SPRINKLER WITH DOMESTIC TAKE-OFF PLAN', is SP.
     """
     by_number = discipline_from_sheet_number(sheet_number)
-    if by_number:
+    n = set_prefix_count(set_prefixes)
+    if by_number and (n is None or n >= 2):
         return by_number
     by_title = discipline_from_title(sheet_title)
     if by_title:
         return by_title
+    if by_number:
+        return by_number
     # THE FILE NAME, AND ONLY HERE. `other` is not evidence — it is the
     # absence of a match, and passing it through as a value would make a
     # page that could not be classified indistinguishable from one the file
@@ -2065,7 +2125,7 @@ def combined_set_decision(profile: Dict[str, Any],
 
 __all__ = [
     "file_sheet_profile", "looks_combined", "combined_set_decision", "DISCIPLINE_PREFIXES",
-    "discipline_for_page", "discipline_from_sheet_number",
+    "discipline_for_page", "discipline_from_sheet_number", "set_prefix_count",
     "discipline_from_title", "PREFIX_DISCIPLINE", "TITLE_DISCIPLINE",
     "COMBINED_MAX_TITLE_ID_SHARE",
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",

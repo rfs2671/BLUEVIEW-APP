@@ -45674,7 +45674,7 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
                               file_hash: str, page_number: int, fields: dict,
                               boilerplate, page_id: str, discipline=None,
                               file_name=None, raw_text: str = "",
-                              title_text: str = "") -> int:
+                              title_text: str = "", set_prefixes=None) -> int:
     """Replace this page's typed records.
 
     ── WHY THESE EXIST BESIDE THE CHUNKS, FOR NOW ─────────────────────────
@@ -45703,7 +45703,8 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
         "discipline": plan_text.discipline_for_page(
             fields.get("sheet_number") or "",
             fields.get("sheet_title") or "",
-            discipline or fields.get("discipline") or ""),
+            discipline or fields.get("discipline") or "",
+            set_prefixes=set_prefixes),
         "floors": fields.get("floors") or [],
         # Read off the title block. approval_status is deliberately absent:
         # it changes without the drawing changing, so dob_logs is the join.
@@ -45732,7 +45733,8 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
                              file_hash: str, page_number: int, fields: dict,
                              boilerplate, discipline: Optional[str] = None,
-                             file_name: Optional[str] = None) -> int:
+                             file_name: Optional[str] = None,
+                             set_prefixes=None) -> int:
     """Replace this page's chunks AND its typed records.
 
     One call site, deliberately: records and chunks describe the same page and
@@ -45749,7 +45751,7 @@ async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
             file_hash=file_hash, page_number=page_number, fields=fields,
             boilerplate=boilerplate, page_id=str(page["_id"]),
             discipline=discipline, file_name=file_name,
-            raw_text=page.get("raw_text") or "")
+            raw_text=page.get("raw_text") or "", set_prefixes=set_prefixes)
     except Exception as e:
         # Never fail the page over the new writer while the old one is what
         # answers questions.
@@ -46068,6 +46070,7 @@ async def _index_single_page(
     tag_vocab=None,
     drawing_index: Optional[dict] = None,
     pdf_path: Optional[str] = None,
+    set_prefixes: Optional[List[str]] = None,
 ):
     """Index one page: text layer + sectioned Qwen extraction + chunks + R2 JPEG.
 
@@ -46204,6 +46207,7 @@ async def _index_single_page(
                     project_id=project_id, company_id=company_id, file_id=file_id,
                     file_hash=file_hash, page_number=page_number, fields=spec_fields,
                     boilerplate=boilerplate, discipline=discipline, file_name=file_name,
+                    set_prefixes=set_prefixes,
                 )
             except Exception as e:
                 logger.exception("spec page chunks failed %s p%s: %r", file_name, page_number, e)
@@ -46473,7 +46477,8 @@ async def _index_single_page(
         "discipline":         plan_text.discipline_for_page(
                                   legacy["sheet_number"],
                                   legacy["sheet_title"],
-                                  discipline),
+                                  discipline,
+                                  set_prefixes=set_prefixes),
         "floor":              legacy["floor"],
         "keywords":           legacy["keywords"],
         "summary":            legacy["summary"],
@@ -46542,6 +46547,7 @@ async def _index_single_page(
             project_id=project_id, company_id=company_id, file_id=file_id,
             file_hash=file_hash, page_number=page_number, fields=fields,
             boilerplate=boilerplate, discipline=discipline, file_name=file_name,
+            set_prefixes=set_prefixes,
         )
         # ── COMPLETE MEANS COMPLETE ────────────────────────────────────────
         #
@@ -47286,6 +47292,12 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
             boilerplate = plan_extract.boilerplate_lines(texts)
             tag_vocab = ctx["tag_vocab"] if ctx else plan_text.SEED_TAGS
             drawing_index = ctx["drawing_index"] if ctx else {}
+            # The prefixes this SET numbers its sheets with, read off the
+            # title blocks before any page is extracted. A prefix decides a
+            # page's discipline only where the set uses two or more; None (no
+            # text layer) keeps the prefix first. See discipline_for_page.
+            set_prefixes = (list((ctx.get("profile") or {}).get("title_prefixes") or [])
+                            if ctx else None)
 
             # Before any page goes to the vision model.
             if ctx and not job.get("profile"):
@@ -47341,6 +47353,7 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                     tag_vocab=tag_vocab,
                     drawing_index=drawing_index,
                     pdf_path=pdf_path,
+                    set_prefixes=set_prefixes,
                 )
 
             # Three pages at a time, progress written after each batch.

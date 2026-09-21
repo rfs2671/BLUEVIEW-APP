@@ -1,0 +1,2399 @@
+[
+ {
+  "file": "3540K25_588 THOMAS S BOYLAND STREET-AS BUILT 08-24-26.pdf",
+  "page": 1,
+  "sheet": null,
+  "title": "MAP OF PROPERTY",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 1,
+  "sheet": "A.0.1",
+  "title": "RENDERS- EXTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 2,
+  "sheet": "A.0.2",
+  "title": "RENDERS- EXTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 3,
+  "sheet": "A.0.3",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 4,
+  "sheet": "A.0.4",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 5,
+  "sheet": "A.0.5",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 6,
+  "sheet": "A.0.6",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 7,
+  "sheet": "A.0.7",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 8,
+  "sheet": "A.0.8",
+  "title": "RENDERS- INTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 9,
+  "sheet": "A.0.9",
+  "title": "RENDERS- EXTERIOR",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 10,
+  "sheet": "A.1.0",
+  "title": "SITE PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 11,
+  "sheet": "A.1.1",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 12,
+  "sheet": "A.1.2",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 13,
+  "sheet": "A.1.3",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 14,
+  "sheet": "A.1.4",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 15,
+  "sheet": "A.1.5",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 16,
+  "sheet": "A.1.6",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 17,
+  "sheet": "A.1.7",
+  "title": "FLOOR PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 18,
+  "sheet": "A.2.0",
+  "title": "FACADE DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 19,
+  "sheet": "A.2.1",
+  "title": "FACADE DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 20,
+  "sheet": "A.2.2",
+  "title": "REAR ELEVATION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 21,
+  "sheet": "A.2.3",
+  "title": "ELEVATION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 22,
+  "sheet": "A.2.4",
+  "title": "ELEVATION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 23,
+  "sheet": "A.2.5",
+  "title": "SECTION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 24,
+  "sheet": "A.2.6",
+  "title": "SECTION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 25,
+  "sheet": "A.3.0",
+  "title": "LIGHTING AND APPLIANCES SCHEDULE",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "EL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 26,
+  "sheet": "A.3.1",
+  "title": "LIGHTING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "EL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 27,
+  "sheet": "A.3.2",
+  "title": "REFLECTED CEILING PLAN AND LIGHTING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 28,
+  "sheet": "A.3.3",
+  "title": "REFLECTED CEILING PLAN AND LIGHTING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 29,
+  "sheet": "A.3.4",
+  "title": "REFLECTED CEILING PLAN AND LIGHTING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 30,
+  "sheet": "A.3.5",
+  "title": "RCP- LOBBY",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 31,
+  "sheet": "A.4.0",
+  "title": "FINISHES SCHEDULE AND PLUMBING SPECS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 32,
+  "sheet": "A.4.1",
+  "title": "PLUMBING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 33,
+  "sheet": "A.4.2",
+  "title": "PLUMBING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 34,
+  "sheet": "A.4.3",
+  "title": "PLUMBING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 35,
+  "sheet": "A.4.4",
+  "title": "PLUMBING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 36,
+  "sheet": "A.4.5",
+  "title": "PLUMBING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 37,
+  "sheet": "A.4.6",
+  "title": "BATHROOM TILE LAYOUT",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 38,
+  "sheet": "A.5.0",
+  "title": "SECTION",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 39,
+  "sheet": "A.5.1",
+  "title": "KITCHEN KEY PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 40,
+  "sheet": "A.5.2",
+  "title": "KITCHEN KEY PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 41,
+  "sheet": "A.5.3",
+  "title": "KITCHEN KEY PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 42,
+  "sheet": "A.5.4",
+  "title": "KITCHEN KEY PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 43,
+  "sheet": "A.5.5",
+  "title": "KITCHEN PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 THOMAS BOYLAND ST SET_UPDATED .pdf",
+  "page": 44,
+  "sheet": "A.5.6",
+  "title": "KITCHEN PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "588 Thomas S Boyland Street shed-1.pdf",
+  "page": 1,
+  "sheet": null,
+  "title": "Inspection Letter",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 1,
+  "sheet": "T-001.00",
+  "title": "COVER SHEET",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 2,
+  "sheet": "Z-001.00",
+  "title": "PLOT PLAN, ZONING ANALYSIS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 3,
+  "sheet": "Z-002.00",
+  "title": "BUILDING HEIGHT AND SETBACK DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 4,
+  "sheet": "Z-003.00",
+  "title": "GROSS FLOOR AREA DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 5,
+  "sheet": "Z-004.00",
+  "title": "DEDUCTION DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 6,
+  "sheet": "GN-001.00",
+  "title": null,
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 7,
+  "sheet": "GN-002.00",
+  "title": "ADA COMPLIANCE TYPICAL DETAILS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 8,
+  "sheet": "GN-003.00",
+  "title": "ADA COMPLIANCE TYPICAL DETAILS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 9,
+  "sheet": "GN-004.00",
+  "title": "EGRESS PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 10,
+  "sheet": "GN-005.00",
+  "title": null,
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 11,
+  "sheet": "A-100.00",
+  "title": "FIRST FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 12,
+  "sheet": "A-101.00",
+  "title": "SECOND FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 13,
+  "sheet": "A-102.00",
+  "title": "THIRD FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 14,
+  "sheet": "A-103.00",
+  "title": "FOURTH FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 15,
+  "sheet": "A-104.00",
+  "title": "MEZZANINE PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 16,
+  "sheet": "A-105.00",
+  "title": "ROOF AND BULKEAD PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 17,
+  "sheet": "A-200.00",
+  "title": "FRONT AND REAR ELEVATIONS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 18,
+  "sheet": "A-201.00",
+  "title": "SIDE ELEVATION",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 19,
+  "sheet": "A-202.00",
+  "title": "SIDE ELEVATION",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 20,
+  "sheet": "A-300.00",
+  "title": "LONGITUDINAL SECTIONS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 21,
+  "sheet": "A-301.00",
+  "title": "CROSS SECTIONS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 22,
+  "sheet": "A-302.00",
+  "title": "SECTION DETAILS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 23,
+  "sheet": "A-400.00",
+  "title": "WINDOW SCHEDULE",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 24,
+  "sheet": "A-500.00",
+  "title": "WALL PARTITION",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 25,
+  "sheet": "RCP-001.00",
+  "title": "REFLECTED CEILING PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 3.28.25.pdf",
+  "page": 26,
+  "sheet": "RCP-002.00",
+  "title": "REFLECTED CEILING PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "GN",
+   "RCP",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 6.9.26 (Gas change).pdf",
+  "page": 1,
+  "sheet": "A-100.00",
+  "title": "FIRST FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "AR - 6.9.26 (Gas change).pdf",
+  "page": 2,
+  "sheet": null,
+  "title": "Roof Plan",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 1,
+  "sheet": "T-001.01",
+  "title": "COVER SHEET",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 2,
+  "sheet": "Z-001.01",
+  "title": "PLOT PLAN, ZONING ANALYSIS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 3,
+  "sheet": "Z-002.01",
+  "title": "BUILDING HEIGHT AND SETBACK DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 4,
+  "sheet": "Z-003.01",
+  "title": "GROSS FLOOR AREA DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 5,
+  "sheet": "Z-004.01",
+  "title": "DEDUCTION DIAGRAMS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 6,
+  "sheet": "A-100.01",
+  "title": "FIRST FLOOR PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 7,
+  "sheet": "A-105.01",
+  "title": "ROOF AND BULKEAD PLAN",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 8,
+  "sheet": "A-200.01",
+  "title": "FRONT AND REAR ELEVATIONS",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 9,
+  "sheet": "A-201.01",
+  "title": "SIDE ELEVATION",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "AR - 8.18.26.pdf",
+  "page": 10,
+  "sheet": "A-202.01",
+  "title": "SIDE ELEVATION",
+  "file_discipline": "AR",
+  "set_prefixes": [
+   "A",
+   "T",
+   "Z"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 1,
+  "sheet": "FA-001",
+  "title": "NOTES, LEGEND, DETAILS AND RISER DIAGRAM",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 2,
+  "sheet": "FA-002",
+  "title": "FIRST FLOOR FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 3,
+  "sheet": "FA-003",
+  "title": "SECOND FLOOR FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 4,
+  "sheet": "FA-004",
+  "title": "THIRD FLOOR FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 5,
+  "sheet": "FA-005",
+  "title": "FOURTH FLOOR FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 6,
+  "sheet": "FA-006",
+  "title": "MEZZANINE FLOOR FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "FA - 6.30.26.pdf",
+  "page": 7,
+  "sheet": "FA-007",
+  "title": "ROOF FIRE ALARM PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "FA"
+  ],
+  "was_642": "FA",
+  "now": "FA",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 1,
+  "sheet": "M-001.00",
+  "title": "GENERAL NOTES, HVAC NOTES AND SYMBOL LIST",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 2,
+  "sheet": "M-100.00",
+  "title": "FIRST FLOOR HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 3,
+  "sheet": "M-101.00",
+  "title": "SECOND FLOOR HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 4,
+  "sheet": "M-102.00",
+  "title": "THIRD FLOOR HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 5,
+  "sheet": "M-103.00",
+  "title": "FOURTH FLOOR HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 6,
+  "sheet": "M-104.00",
+  "title": "MEZZANINE FLOOR HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 7,
+  "sheet": "M-105.00",
+  "title": "ROOF HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 8,
+  "sheet": "M-106.00",
+  "title": "BULKHEAD HVAC PLANS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 9,
+  "sheet": "M-200.00",
+  "title": "HVAC SCHEDULES AND DETAILS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 10,
+  "sheet": "M-201.00",
+  "title": "HVAC DETAILS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 11,
+  "sheet": "M-202.00",
+  "title": "HVAC DETAILS",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "ME",
+  "now": "ME",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 12,
+  "sheet": "EN-001.00",
+  "title": "ENERGY COMPLIANCE",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "MH - 7.2.26.pdf",
+  "page": 13,
+  "sheet": "EN-002.00",
+  "title": "ENERGY COMPLIANCE",
+  "file_discipline": "ME",
+  "set_prefixes": [
+   "EN",
+   "M"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 1,
+  "sheet": "A-100.00",
+  "title": "FIRST FLOOR PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 2,
+  "sheet": "A-101.00",
+  "title": "SECOND FLOOR PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 3,
+  "sheet": "A-102.00",
+  "title": "THIRD FLOOR PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 4,
+  "sheet": "A-103.00",
+  "title": "FOURTH FLOOR PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 5,
+  "sheet": "A-104.00",
+  "title": "MEZZANINE PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": true
+ },
+ {
+  "file": "Owners set - 6.9.26.pdf",
+  "page": 6,
+  "sheet": "A-105.00",
+  "title": "ROOF AND BULKEAD PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "A"
+  ],
+  "was_642": "AR",
+  "now": "AR",
+  "current": false
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 1,
+  "sheet": "P-001.00",
+  "title": "PLUMBING SYMBOLS & LEGEND AND GENERAL NOTES",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 2,
+  "sheet": "P-100.00",
+  "title": "FIRST FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 3,
+  "sheet": "P-101.00",
+  "title": "SECOND FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 4,
+  "sheet": "P-102.00",
+  "title": "THIRD FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 5,
+  "sheet": "P-103.00",
+  "title": "FOURTH FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 6,
+  "sheet": "P-104.00",
+  "title": "MEZZANINE FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 7,
+  "sheet": "P-105.00",
+  "title": "ROOF FLOOR DOMESTIC WATER & GAS PLANS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 8,
+  "sheet": "P-200.00",
+  "title": "FIRST UNDERGROUND FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 9,
+  "sheet": "P-201.00",
+  "title": "FIRST FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 10,
+  "sheet": "P-202.00",
+  "title": "SECOND FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 11,
+  "sheet": "P-203.00",
+  "title": "THIRD FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 12,
+  "sheet": "P-204.00",
+  "title": "FOURTH FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 13,
+  "sheet": "P-205.00",
+  "title": "MEZZANINE FLOOR SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 14,
+  "sheet": "P-206.00",
+  "title": "ROOF SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 15,
+  "sheet": "P-207.00",
+  "title": "BULKHEAD SANITARY & STORM PLAN",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 16,
+  "sheet": "P-300.00",
+  "title": "DOMESTIC WATER RISER DIAGRAM",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 17,
+  "sheet": "P-301.00",
+  "title": "SANITARY RISER DIAGRAM",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 18,
+  "sheet": "P-302.00",
+  "title": "STORM RISER DIAGRAM",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 19,
+  "sheet": "P-303.00",
+  "title": "GAS RISER DIAGRAM",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 20,
+  "sheet": "P-400.00",
+  "title": "PLUMBING DETAILS",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "PL",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "PL - 6.29.26.pdf",
+  "page": 21,
+  "sheet": "EN-001.00",
+  "title": "ENERGY COMPLIANCE",
+  "file_discipline": "PL",
+  "set_prefixes": [
+   "EN",
+   "P"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "SD1-2 - 4.1.25.pdf",
+  "page": 1,
+  "sheet": "1",
+  "title": "SITE CONNECTION PROPOSAL/HOUSE CONNECTION PROPOSAL FORM",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "SD1-2 - 4.1.25.pdf",
+  "page": 2,
+  "sheet": "Page 2 of 2",
+  "title": "SITE CONNECTION PROPOSAL/HOUSE CONNECTION PROPOSAL FORM",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "SD1-2 - 4.1.25.pdf",
+  "page": 3,
+  "sheet": "F",
+  "title": "ATTACHMENT \"F\"",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "SD1-2 - 4.1.25.pdf",
+  "page": 4,
+  "sheet": "1 OF 1",
+  "title": "SEWER INFORMATION CERTIFIED REVIEW UNIT",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "SP - 6.24.26.pdf",
+  "page": 1,
+  "sheet": "SP-001.00",
+  "title": null,
+  "file_discipline": "SP",
+  "set_prefixes": [
+   "SP"
+  ],
+  "was_642": "SP",
+  "now": "SP",
+  "current": true
+ },
+ {
+  "file": "SP - 6.24.26.pdf",
+  "page": 2,
+  "sheet": "SP-002.00",
+  "title": "FIRST & SECOND FLOOR FIRE SPRINKLER PLANS",
+  "file_discipline": "SP",
+  "set_prefixes": [
+   "SP"
+  ],
+  "was_642": "SP",
+  "now": "SP",
+  "current": true
+ },
+ {
+  "file": "SP - 6.24.26.pdf",
+  "page": 3,
+  "sheet": "SP-003.00",
+  "title": "THIRD & FOURTH FLOOR FIRE SPRINKLER PLANS",
+  "file_discipline": "SP",
+  "set_prefixes": [
+   "SP"
+  ],
+  "was_642": "SP",
+  "now": "SP",
+  "current": true
+ },
+ {
+  "file": "SP - 6.24.26.pdf",
+  "page": 4,
+  "sheet": "SP-004.00",
+  "title": "MEZZANINE & ROOF FLOOR FIRE SPRINKLER PLANS",
+  "file_discipline": "SP",
+  "set_prefixes": [
+   "SP"
+  ],
+  "was_642": "SP",
+  "now": "SP",
+  "current": true
+ },
+ {
+  "file": "SP 4th floor after CO - 5.6.25.pdf",
+  "page": 1,
+  "sheet": "SP-003.00",
+  "title": "FOURTH FLOOR ALTERNATE SPRINKLER PLAN",
+  "file_discipline": "SP",
+  "set_prefixes": [
+   "SP"
+  ],
+  "was_642": "SP",
+  "now": "SP",
+  "current": false
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 1,
+  "sheet": "SSP-001.00",
+  "title": "COVER SHEET",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 2,
+  "sheet": "SSP-002.00",
+  "title": null,
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 3,
+  "sheet": "SSP-003.00",
+  "title": "SITE SAFETY PLAN - EXCAVATION-(PHASE-01)",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 4,
+  "sheet": "SSP-004.00",
+  "title": "SITE SAFETY PLAN - FOUNDATION-(PHASE-02)",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 5,
+  "sheet": "SSP-005.00",
+  "title": "SITE SAFETY PLAN - SUPERSTRUCTURE(PHASE-03)",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 6,
+  "sheet": "SSP-006.00",
+  "title": "FIRE SAFETY PLAN -01",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 7,
+  "sheet": "SSP-007.00",
+  "title": "FIRE SAFETY PLAN -02",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 8,
+  "sheet": "SSP-008.00",
+  "title": "FIRE SAFETY PLAN -03",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 9,
+  "sheet": "SSP-009.00",
+  "title": "SITE SAFETY PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 10,
+  "sheet": "SSP-010.00",
+  "title": "TYPICAL SAFETY DETAILS-1",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 11,
+  "sheet": "SSP-011.00",
+  "title": "TYPICAL SAFETY DETAILS-2",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 12,
+  "sheet": "SSP-012.00",
+  "title": "TYPICAL SAFETY DETAILS-3",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "SSP - 6.18.25.pdf",
+  "page": 13,
+  "sheet": "SSP-013.00",
+  "title": "TYPICAL SAFETY DETAILS-4",
+  "file_discipline": "other",
+  "set_prefixes": [
+   "SSP"
+  ],
+  "was_642": "SSP",
+  "now": "SSP",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 1,
+  "sheet": "T-001.00",
+  "title": "TITLE SHEET AND PLOT PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "GN",
+  "now": "GN",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 2,
+  "sheet": "S-001.00",
+  "title": null,
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 3,
+  "sheet": "S-002.00",
+  "title": "GENERAL NOTES",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 4,
+  "sheet": "S-003.00",
+  "title": "FLOOD INSURANCE RATE MAP",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 5,
+  "sheet": "S-101.00",
+  "title": "1ST FLOOR FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 6,
+  "sheet": "S-102.00",
+  "title": "2ND FLOOR FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 7,
+  "sheet": "S-103.00",
+  "title": "3RD FLOOR FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 8,
+  "sheet": "S-104.00",
+  "title": "4TH FLOOR FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 9,
+  "sheet": "S-105.00",
+  "title": "MEZZANINE FLOOR FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 10,
+  "sheet": "S-106.00",
+  "title": "ROOF FRAMING PLAN",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 11,
+  "sheet": "S-301.00",
+  "title": "SHEAR WALL SCHEDULE AND DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 12,
+  "sheet": "S-302.00",
+  "title": "SHEAR WALL SCHEDULE AND DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 13,
+  "sheet": "S-401.00",
+  "title": "TYPICAL CFS DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "ST - 7.29.26.pdf",
+  "page": 14,
+  "sheet": "S-402.00",
+  "title": "TYPICAL CFS DETAILS",
+  "file_discipline": "ST",
+  "set_prefixes": [
+   "S",
+   "T"
+  ],
+  "was_642": "ST",
+  "now": "ST",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 1,
+  "sheet": null,
+  "title": "Backflow Prevention Assembly Installation Approval",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 2,
+  "sheet": null,
+  "title": "APPLICATION FOR APPROVAL OF BACKFLOW PREVENTION ASSEMBLIES",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 3,
+  "sheet": null,
+  "title": null,
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "other",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 4,
+  "sheet": "1 OF 3",
+  "title": "PROPOSED DCDA & RPZ INSTALLATION AT:",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 5,
+  "sheet": "2 OF 3",
+  "title": "PROPOSED DCDA & RPZ INSTALLATION AT:",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "other",
+  "now": "PL",
+  "current": true
+ },
+ {
+  "file": "cross connection - 6.13.25.pdf",
+  "page": 6,
+  "sheet": "3 OF 3",
+  "title": "NEW 2\" COMBINED WATER SERVICE, SPRINKLER WITH DOMESTIC TAKE-OFF PLAN",
+  "file_discipline": "other",
+  "set_prefixes": [],
+  "was_642": "SP",
+  "now": "SP",
+  "current": true
+ }
+]
