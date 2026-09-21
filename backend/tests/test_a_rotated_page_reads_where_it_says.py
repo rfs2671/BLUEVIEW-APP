@@ -36,7 +36,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 
-PDFS = Path(__file__).resolve().parents[3] / "pdfs"
+# Anchored to a repo marker, not to a parent count. The old
+# `parents[3]` pointed OUTSIDE the checkout, so these tests have
+# never run in CI - see fixture_pdfs.
+from tests.fixture_pdfs import require as require_pdf  # noqa: E402
 #: A rotated page carrying words whose text the text layer also reports, so
 #: "what it should say" needs no human in the loop.
 ROTATED = ("PL - 6.29.26.pdf", 14)
@@ -61,9 +64,7 @@ class ABboxIndexesTheRender(unittest.TestCase):
         ok, why = _deps()
         if not ok:
             raise unittest.SkipTest(f"renderer/OCR unavailable: {why}")
-        cls.pdf = PDFS / ROTATED[0]
-        if not cls.pdf.exists():
-            raise unittest.SkipTest("source PDF not present in this checkout")
+        cls.pdf = require_pdf(ROTATED[0])
         import fitz
         from PIL import Image
         doc = fitz.open(cls.pdf)
@@ -156,9 +157,9 @@ class AnUnrotatedPageIsTheOtherHalfOfTheControl(unittest.TestCase):
         ok, why = _deps()
         if not ok:
             self.skipTest(f"renderer unavailable: {why}")
-        pdf = PDFS / "MH - 7.2.26.pdf"
-        if not pdf.exists():
-            self.skipTest("source PDF not present in this checkout")
+        # `require_pdf` skips with a message naming where it looked; the
+        # exists-check that used to follow is what it replaces.
+        pdf = require_pdf("MH - 7.2.26.pdf")
         import fitz
         import pdfplumber
         doc = fitz.open(pdf)
