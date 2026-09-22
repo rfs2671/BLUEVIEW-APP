@@ -7,9 +7,19 @@ TRUTH IS PINNED from render reads of each sheet (2026-09-21/22), not computed
 from any pipeline: (tag, position on the architectural sheet) -> the space the
 item serves. 47 items on three floors of the Boyland set.
 
-Scored before this port (scratch, identical code):
-    layers path   47 correct, 0 wrong
-    geometry path 29 correct, 0 wrong, 18 refused (A-101.00: units merge)
+Scored 2026-09-22, same lib code, two page readers:
+                  PyMuPDF extraction (scored)   lib.plan_page (shipped)
+    layers path   47 correct, 0 wrong           47 correct, 0 wrong
+    geometry path 29 correct, 18 refused        28 correct, 1 WRONG, 18 refused
+
+THE ONE WRONG IS KNOWN AND THIS FILE KEEPS FAILING ON IT until it is ruled
+on: A-100.01's EF-2(100) in 1D goes to 1C on the geometry fallback.
+plan_symbols.symbol_at_label takes the LABEL's own outline glyphs as the
+symbol (the fan is the nested square up-left of it). The PyMuPDF extraction
+dropped every rectangle ("qu") on these sheets, so the label's centroid sat
+inside 1D; with the rectangles seen it moves 5pt onto the counter line and
+the host-wall probe steps into 1C. Both readers share the defect; the reader
+change exposed it.
 
 Covered here:
   - the 47 truths on the PRIMARY (CAD-layer) path;
@@ -32,8 +42,9 @@ os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 
 try:                                     # absent on main: tests FAIL, not error
     from lib import plan_takeoff as T
+    from lib.plan_page import PlanPage
 except ImportError:                      # pragma: no cover
-    T = None
+    T = PlanPage = None
 
 from tests.fixture_pdfs import require as require_pdf  # noqa: E402
 
@@ -90,8 +101,9 @@ class _StrippedLayers:
     def __getattr__(self, name):
         return getattr(self._p, name)
 
-    def get_drawings(self, *a, **k):
-        return [dict(d, layer="") for d in self._p.get_drawings(*a, **k)]
+    @property
+    def drawings(self):
+        return [dict(d, layer="") for d in self._p.drawings]
 
 
 _CACHE = {}
@@ -101,10 +113,9 @@ def _run(floor, eq, stripped=False):
     assert T is not None, "lib.plan_takeoff is not in this tree"
     key = (floor, eq, stripped)
     if key not in _CACHE:
-        import fitz
         (afn, apn), (mfn, mpn), units = FLOORS[floor]
-        a = fitz.open(require_pdf(afn))[apn - 1]
-        m = fitz.open(require_pdf(mfn))[mpn - 1]
+        a = PlanPage(require_pdf(afn), apn)
+        m = PlanPage(require_pdf(mfn), mpn)
         tags, corr = EF if eq == "EF" else PTAC
         _CACHE[key] = T.run_takeoff(_StrippedLayers(a) if stripped else a, m,
                                     tags, corr, units, WIDEST_DOOR_IN)

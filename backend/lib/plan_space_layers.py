@@ -163,18 +163,16 @@ def validate(page, sheet: dict) -> dict:
     """Layer roles on the page and the validation verdict, no raster work."""
     roles = defaultdict(list)
     names = defaultdict(set)
-    for s, a in sheet["att"]:
-        r = role_of(a[0])
+    for s, layer in sheet["att"]:
+        r = role_of(layer)
         if r:
             roles[r].append(s)
-            names[r].add(a[0].split("|")[-1])
+            names[r].add(layer.split("|")[-1])
     door_boxes = []
-    for d in page.get_drawings():
-        if role_of(d.get("layer")) == "door":
-            names["door"].add((d.get("layer") or "").split("|")[-1])
-            r = d["rect"] * page.rotation_matrix
-            door_boxes.append((min(r.x0, r.x1), min(r.y0, r.y1),
-                               max(r.x0, r.x1), max(r.y0, r.y1)))
+    for d in page.drawings:
+        if role_of(d["layer"]) == "door":
+            names["door"].add(d["layer"].split("|")[-1])
+            door_boxes.append(d["rect"])
     thick_in = thickest_legend_wall_in(sheet["words"])
     frac, wall_ft = pair_fraction(roles["wall"], PT_PER_INCH, thick_in)
     ok = bool(roles["wall"]) and frac >= PAIR_MIN
