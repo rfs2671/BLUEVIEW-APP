@@ -79,6 +79,23 @@ function makeDevice(opts) {
   const setFails = () =>
     o.failSetItemAfter !== undefined && io.sets > o.failSetItemAfter;
 
+  // ONE TRANSPORT, TWO ENTRY POINTS. cacheDocFile goes through
+  // createDownloadResumable now; older paths still call downloadAsync. Both
+  // land here so the double cannot answer one of them differently from the
+  // other.
+  const rawDownload = async (url, dest) => {
+    const name = dest.split('/').pop();
+    // The downloader writes to a .part path and renames on success, so the
+    // name recorded here is the file the run is PULLING, not the temp path it
+    // lands in first. Nothing is hidden by stripping it: the promotion itself
+    // is asserted through `disk`, which only ever holds the final name if
+    // moveAsync actually ran.
+    downloaded.push({ url, name: name.replace(/\.part$/, '') });
+    if (o.failDownload) return { status: 500, uri: null };
+    disk.add(name);
+    return { status: 200, uri: dest };
+  };
+
   return {
     disk,
     store,
@@ -121,18 +138,21 @@ function makeDevice(opts) {
       },
       makeDirectoryAsync: async () => {},
       getFreeDiskStorageAsync: async () => (o.freeBytes === undefined ? 1e10 : o.freeBytes),
-      downloadAsync: async (url, dest) => {
-        const name = dest.split('/').pop();
-        // The downloader writes to a .part path and renames on success, so the
-        // name recorded here is the file the run is PULLING, not the temp path
-        // it lands in first. Nothing is hidden by stripping it: the promotion
-        // itself is asserted through `disk`, which only ever holds the final
-        // name if moveAsync actually ran.
-        downloaded.push({ url, name: name.replace(/\.part$/, '') });
-        if (o.failDownload) return { status: 500, uri: null };
-        disk.add(name);
-        return { status: 200, uri: dest };
-      },
+      // cacheDocFile races a stall guard around a RESUMABLE task now, so a
+      // double that offers only downloadAsync leaves it calling undefined.
+      // Delegated rather than reimplemented: these scenarios are about what
+      // the manifest run pulls and sweeps, not about transport mechanics, and
+      // a second copy of the download rules here is how two doubles start
+      // disagreeing about one module.
+      createDownloadResumable: (url, dest, _options, onProgress) => ({
+        cancelAsync: async () => {},
+        downloadAsync: async () => {
+          if (onProgress) onProgress({ totalBytesWritten: 1024 });
+          return rawDownload(url, dest);
+        },
+      }),
+
+      downloadAsync: rawDownload,
       // REAL expo-file-system/legacy HAS moveAsync. A double that omits it does
       // not test a downloader that renames — it makes one look broken.
       moveAsync: async ({ from, to }) => {
