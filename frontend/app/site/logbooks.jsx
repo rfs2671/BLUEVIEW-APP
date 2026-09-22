@@ -459,13 +459,38 @@ export default function SiteLogbooksViewer() {
     }
   };
 
-  // Filter dates by active tab — off the INDEX, which is why the index has to
-  // carry `log_type` at all. This is the (a) half of the split: 91 B a date,
-  // and it is what makes complete history renderable without the 95,829 B.
+  // ── ONLY THE LOG BOOKS THIS PROJECT HAS ACTUALLY FILED ────────────────────
+  //
+  // LOG_TABS is every type the registry knows, and until now every one of them
+  // was drawn -- twelve tabs on a project that files five, each a dead end
+  // reading "entries will appear here." The badge already hid a zero count;
+  // the tab itself did not. Operator: the tablet "should show only working
+  // ones."
+  //
+  // COUNTED OFF THE INDEX, the whole filed history, exactly as the badge is --
+  // so a type filed once in March still has its tab in September.
+  const tabCount = (key) => dateIndex
+    .reduce((n, row) => n + (row.logs || []).filter((l) => l.log_type === key).length, 0);
+  const visibleTabs = LOG_TABS.filter((tab) => tabCount(tab.key) > 0);
+
+  // THE TAB IN FORCE, WHICH IS NOT ALWAYS THE ONE SELECTED. `activeTab`
+  // defaults to daily_jobsite; on a project that has never filed one, hiding
+  // that tab would leave the screen filtered to a type with nothing in it and
+  // no tab lit to say so. So it falls to the first type that has records.
+  // With no records at all it stays as selected, and the existing empty state
+  // speaks -- which is what it already did.
+  const effectiveTab = visibleTabs.some((tab) => tab.key === activeTab)
+    ? activeTab
+    : (visibleTabs.length ? visibleTabs[0].key : activeTab);
+
+  // Filter dates by the tab in force — off the INDEX, which is why the index
+  // has to carry `log_type` at all. This is the (a) half of the split: 91 B a
+  // date, and it is what makes complete history renderable without the
+  // 95,829 B.
   const filteredIndex = dateIndex
     .map((row) => ({
       ...row,
-      logs: (row.logs || []).filter((l) => l.log_type === activeTab),
+      logs: (row.logs || []).filter((l) => l.log_type === effectiveTab),
     }))
     .filter((row) => row.logs.length > 0)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
@@ -1789,15 +1814,14 @@ export default function SiteLogbooksViewer() {
         {/* Tabs */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll}>
           <View style={s.tabRow}>
-            {LOG_TABS.map((tab) => {
+            {visibleTabs.map((tab) => {
               const Icon = tab.icon;
-              const isActive = activeTab === tab.key;
+              const isActive = effectiveTab === tab.key;
               // Counted off the INDEX, so the badge is the count over the
               // WHOLE filed history rather than over a sixty-day window that
-              // was never labelled as one.
-              const count = dateIndex
-                .reduce((n, row) => n + (row.logs || [])
-                  .filter((l) => l.log_type === tab.key).length, 0);
+              // was never labelled as one. The same count decides whether the
+              // tab is drawn at all -- see visibleTabs.
+              const count = tabCount(tab.key);
 
               return (
                 <Pressable
@@ -1846,7 +1870,7 @@ export default function SiteLogbooksViewer() {
                 <FileText size={40} strokeWidth={1} color={colors.text.muted} />
                 <Text style={s.emptyTitle}>No Submitted Logs</Text>
                 <Text style={s.emptyText}>
-                  Submitted {tabLabel(activeTab)} entries will appear here.
+                  Submitted {tabLabel(effectiveTab)} entries will appear here.
                 </Text>
               </GlassCard>
             ) : (
@@ -1867,7 +1891,7 @@ export default function SiteLogbooksViewer() {
               const logs = row.logs;
               const detail = dayLogs[date];
               const detailLogs = Array.isArray(detail)
-                ? detail.filter((l) => l.log_type === activeTab)
+                ? detail.filter((l) => l.log_type === effectiveTab)
                 : null;
               const isExpanded = expandedDate === date;
 

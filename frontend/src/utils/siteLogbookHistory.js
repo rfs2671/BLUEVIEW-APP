@@ -99,21 +99,75 @@ export function historyScope(projectId) {
 }
 
 /**
- * One page of dates. Sixty is not arbitrary: it is the window the current
- * screen already fetches and stores whole, so it is the page size this device
- * is measured to survive receiving — ~5.8 MB of body at the heaviest shape
- * observed. Smaller would cost round trips on a first fill; larger would
- * re-open the memory question the cap exists to close.
+ * One page of dates, and the reason it is TEN.
+ *
+ * It was sixty, sized as "the page this device is measured to survive
+ * receiving — ~5.8 MB of body at the heaviest shape observed." The body grew
+ * past that. Measured 2026-09-22 on 588 Thomas: sixty dates is the project's
+ * WHOLE history, and it came back as 9.86 MB in one response -- 5.57 MB of it
+ * pre-shift sheets, each carrying every worker's signature image inline.
+ *
+ * WHAT BROKE WAS THE CLOCK, NOT THE MEMORY. apiClient's default timeout is
+ * 25 s. 9.86 MB in 25 s is ~3.2 Mbps sustained, more than a jobsite tablet on
+ * cellular reliably gets. So the request timed out, isOfflineError read the
+ * ECONNABORTED as offline, the walk returned incomplete, and -- by the rule
+ * below -- nothing was committed. On a tablet with no earlier complete sync
+ * the index stayed EMPTY: "No Submitted Logs" in front of an inspector, while
+ * the server logged every one of those requests as 200 OK, because it finished
+ * sending after the tablet had already given up.
+ *
+ * A PAGE IS BOUNDED BY DATES, SO IT STAYS BOUNDED AS THE HISTORY GROWS. A new
+ * filing day adds a page, it never makes a page heavier. Ten dates averages
+ * ~2.6 MB on this corpus and ~5 MB at the ten heaviest days observed -- both
+ * under the 5.8 MB this pager was originally measured to survive, with the
+ * longer per-page timeout below as the margin.
+ *
+ * NOT "the smaller the better". Every page is a round trip, and a first fill
+ * of the server's 4000-date ceiling is 400 of them; MAX_HISTORY_PAGES is
+ * derived from this number so that ceiling stays covered.
  */
-export const HISTORY_PAGE_DATES = 60;
+export const HISTORY_PAGE_DATES = 10;
+
+/**
+ * THE IN-MEMORY WINDOW, WHICH IS NOT THE PAGE.
+ *
+ * These used to be the same number, because the first page WAS the window:
+ * the newest sixty dates, handed back as `recent` so a recent day opens with
+ * no disk read -- and on web, where nothing can be written to disk and
+ * readDayDetail can never answer, the ONLY day detail the screen has.
+ *
+ * Splitting the page from the window is what lets the page shrink without
+ * web losing fifty of its sixty days. `recent` is now filled from successive
+ * pages until it holds this many dates, which is exactly the window it held
+ * before -- the same memory, assembled in smaller requests.
+ */
+export const RECENT_WINDOW_DATES = 60;
+
+/**
+ * Per-page timeout, and why the default is not enough here.
+ *
+ * apiClient's own header says it: "Every endpoint that can legitimately exceed
+ * 25s carries its own `timeout:` at the call site... Adding a new endpoint
+ * that... carries a photo payload means adding one there." This one carries
+ * signature images and never had one. Sixty seconds matches the other
+ * long-payload override in api.js.
+ */
+export const HISTORY_PAGE_TIMEOUT_MS = 60000;
 
 /**
  * A server that never stops naming a cursor is a bug, and an unbounded walk
  * against one never returns. Stopping short reports INCOMPLETE, which by the
- * rule above means nothing is committed and nothing is removed. 200 pages at
- * 60 dates covers the server's own 4000-date ceiling three times over.
+ * rule above means nothing is committed and nothing is removed.
+ *
+ * DERIVED FROM THE PAGE SIZE, AND IT HAS TO BE. It was a literal 200, justified
+ * as "200 pages at 60 dates covers the server's 4000-date ceiling three times
+ * over." At ten dates that literal covers 2000 -- HALF the ceiling -- so a
+ * large project would hit the cap, report incomplete, commit nothing and show
+ * an empty screen: the exact failure this change exists to fix, reintroduced
+ * one layer down. Three times the ceiling, whatever the page is.
  */
-const MAX_HISTORY_PAGES = 200;
+const SERVER_DATE_CEILING = 4000;
+const MAX_HISTORY_PAGES = Math.ceil((SERVER_DATE_CEILING * 3) / HISTORY_PAGE_DATES);
 
 const DAY_DIR = (FileSystem.documentDirectory || '') + 'site_logdays/';
 const canUseFs = () => Platform.OS !== 'web' && !!FileSystem.documentDirectory;
@@ -338,15 +392,16 @@ export async function fetchSubmittedHistory(projectId, opts = {}) {
   const seen = new Set();
   let before = null;
   let pages = 0;
-  // THE FIRST PAGE IS KEPT, and only the first.
+  // THE NEWEST RECENT_WINDOW_DATES DATES ARE KEPT, across as many pages as
+  // that takes.
   //
-  // It is the newest `limit` dates — the same window this screen used to hold
-  // whole, so it is memory the device is already measured to survive, and it
-  // is the window an inspector actually asks for. Handing it back lets the
-  // caller open a recent day with no disk read at all, and it is the ONLY
-  // detail available on a platform that cannot hold files (web), where
-  // readDayDetail can never answer. Later pages are released as they are
-  // stored, which is what keeps one page the high-water mark.
+  // This used to keep "the first page, and only the first", which was right
+  // while the first page WAS the sixty-date window. The page is now ten, so
+  // keeping only the first would hand web -- where readDayDetail can never
+  // answer and `recent` is the only detail there is -- ten days instead of
+  // sixty. So pages are merged in until the window is full, and from then on
+  // released as they are stored. The high-water mark is the same sixty dates
+  // it always was; it simply arrives in smaller requests.
   let recent = null;
 
   for (;;) {
@@ -355,7 +410,11 @@ export async function fetchSubmittedHistory(projectId, opts = {}) {
     }
     let body;
     try {
-      const res = await apiClient.get(pagePath(projectId, limit, before));
+      const res = await apiClient.get(
+        pagePath(projectId, limit, before),
+        // A photo-bearing payload -- see HISTORY_PAGE_TIMEOUT_MS.
+        { timeout: HISTORY_PAGE_TIMEOUT_MS },
+      );
       body = res && res.data;
     } catch (error) {
       // A DROPPED PAGE IS INCOMPLETENESS, NOT AN EMPTY HISTORY. Whatever was
@@ -378,7 +437,14 @@ export async function fetchSubmittedHistory(projectId, opts = {}) {
     }
 
     const dates = body.dates || {};
-    if (recent === null) recent = dates;
+    // Fill the window, newest first -- pages arrive in descending date order,
+    // so the first dates merged are the newest. Stop adding once it is full;
+    // a date already in the window is never overwritten by a later page.
+    if (recent === null) recent = {};
+    for (const date of Object.keys(dates)) {
+      if (Object.keys(recent).length >= RECENT_WINDOW_DATES) break;
+      if (!(date in recent)) recent[date] = dates[date];
+    }
     if (onPage) {
       const wrote = await onPage(dates);
       if (wrote === false) {
@@ -482,6 +548,8 @@ export async function syncLogbookHistory(projectId, opts = {}) {
 export default {
   historyScope,
   HISTORY_PAGE_DATES,
+  RECENT_WINDOW_DATES,
+  HISTORY_PAGE_TIMEOUT_MS,
   dayReportId,
   dayReportVersion,
   identityRow,

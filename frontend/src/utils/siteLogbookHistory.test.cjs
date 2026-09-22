@@ -494,14 +494,70 @@ async function main() {
     ok(d.days.size === 6,
       'every page’s detail was written to disk before the next was asked for, '
       + 'so one page is the memory high-water mark');
-    ok(r.recent && Object.keys(r.recent).length === 2,
-      'the FIRST page is handed back — the newest dates, the window this screen '
-      + 'used to hold whole, so a recent day opens with no disk read');
-    ok(r.recent && Object.keys(r.recent).every((k) => k in p1),
-      'and it is the newest page, not the last one the walk happened to end on');
+    // THESE TWO USED TO ASSERT "THE FIRST PAGE, AND ONLY THE FIRST" --
+    // `length === 2` and `every key in p1`. Correct while the first page WAS
+    // the sixty-date window. The page shrank to ten (a 9.86 MB single page
+    // was timing out on jobsite signal and leaving the tablet empty), so
+    // `recent` now fills across pages up to RECENT_WINDOW_DATES. Six dates is
+    // under that window, so all six come back. The cap itself is exercised by
+    // the block below, which is the case these two could never reach.
+    ok(r.recent && Object.keys(r.recent).length === 6,
+      'recent is filled ACROSS pages up to the window — all six here, because '
+      + 'six is under it; keeping only the first page would hand web two days');
+    ok(r.recent && Object.keys(p1).every((k) => k in r.recent),
+      'and it holds the newest dates: the first page is in it, not dropped for '
+      + 'the last one the walk happened to end on');
     ok(Object.values(r.recent)[0][0].data.blob === FAT,
       'carrying the real rendered detail, which on a platform that cannot hold '
       + 'files is the only detail there will ever be');
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // THE WINDOW CAPS, AND IT KEEPS THE NEWEST.
+  //
+  // The block above cannot reach the cap: six dates is under a sixty-date
+  // window, so "keep everything" and "keep the newest sixty" give the same
+  // answer. Seventy dates in pages of ten is the first shape where they
+  // differ. A window that kept the LAST sixty would drop this week and keep
+  // last quarter -- the days an inspector asks for, lost to the ones he
+  // does not.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const pages = [];
+    for (let k = 0; k < 7; k += 1) pages.push(history(10, k * 10));
+    const cur = (o) => sortDates(o)[sortDates(o).length - 1];
+    const d = makeDevice({
+      pages: pages.map((pg, k) => (k < 6 ? page(pg, cur(pg)) : page(pg))),
+    });
+    const M = hist(d);
+    const r = await M.syncLogbookHistory(PID, { limit: 10 });
+    ok(r.complete === true, 'a seventy-date walk in pages of ten completes');
+    ok(M.RECENT_WINDOW_DATES === 60,
+      `the window is sixty dates (got ${M.RECENT_WINDOW_DATES})`);
+    ok(r.recent && Object.keys(r.recent).length === 60,
+      `recent caps at the window — got ${r.recent && Object.keys(r.recent).length}`);
+    const newestSixty = new Set(pages.slice(0, 6).flatMap((pg) => Object.keys(pg)));
+    ok(r.recent && Object.keys(r.recent).every((k) => newestSixty.has(k)),
+      'and every date in it is one of the NEWEST sixty');
+    ok(r.recent && Object.keys(pages[6]).every((k) => !(k in r.recent)),
+      'the oldest page is left out — the window is the newest days, not the '
+      + 'last ones the walk reached');
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // THE PAGE CAP STILL COVERS THE SERVER'S CEILING.
+  //
+  // It was a literal 200, justified as "200 pages at 60 dates covers the
+  // 4000-date ceiling three times over." At ten dates a literal 200 covers
+  // 2000 -- half the ceiling -- and a large project would hit it, report
+  // incomplete, commit nothing, and show an empty screen. The same failure
+  // this change fixes, one layer down.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const M = hist(makeDevice({ pages: [] }));
+    ok(M.HISTORY_PAGE_DATES === 10, `pages are ten dates (got ${M.HISTORY_PAGE_DATES})`);
+    ok(M.HISTORY_PAGE_TIMEOUT_MS >= 60000,
+      `and carry their own timeout, not the 25 s default (got ${M.HISTORY_PAGE_TIMEOUT_MS})`);
   }
 
   // ── E2. the walk is bounded, and stopping short reports incomplete ───────
