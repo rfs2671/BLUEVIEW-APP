@@ -55,7 +55,7 @@ def raw_equal(db, row) -> bool:
             and [d.raw for d in recs] == [d.raw for d in snap])
 
 
-def main(argv=None, client=None) -> int:
+def main(argv=None, client=None, name: str = NAME) -> int:
     refuse_legacy_flag(argv)
     args = build_parser().parse_args(argv)
     # Before the snapshot, before a connection: the database is named or the
@@ -71,7 +71,7 @@ def main(argv=None, client=None) -> int:
         client = MongoClient(url, document_class=RawBSONDocument)
     # Named, not read off sys.argv: the audit row must say which script wrote
     # it however it was launched.
-    db = audited(client[db_name], args, NAME)
+    db = audited(client[db_name], args, name)
 
     rows = P.survey(db, plan, pages, recs)
     P.print_table(rows, f"BEFORE ROLLBACK — {len(rows)} plan pages")
