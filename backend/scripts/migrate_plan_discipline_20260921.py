@@ -118,6 +118,9 @@ def _write_page(db, row) -> None:
 def main(argv=None, client=None) -> int:
     refuse_legacy_flag(argv)
     args = build_parser().parse_args(argv)
+    # Before the snapshot, before a connection: the database is named or the
+    # run stops. There is no default.
+    db_name = P.target_db()
     plan, pages, recs = P.load(args.snapshot_dir, args.plan)
     P.with_project(plan)
     # Declared here as well as in P.load: this file counts on them below.
@@ -128,7 +131,7 @@ def main(argv=None, client=None) -> int:
     client = client or _client()
     # Named, not read off sys.argv: the audit row must say which script wrote
     # it however it was launched.
-    db = audited(client[os.environ.get("DB_NAME", "test_database")], args, NAME)
+    db = audited(client[db_name], args, NAME)
 
     rows = P.survey(db, plan, pages, recs)
     before = P.collection_counts(db, plan)

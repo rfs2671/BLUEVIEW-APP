@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from scripts import migrate_plan_discipline_20260921 as M  # noqa: E402
 from scripts import plan_discipline_20260921 as P  # noqa: E402
 from scripts import rollback_plan_discipline_20260921 as R  # noqa: E402
 
-DB = os.environ["DB_NAME"]
+DB = P.EXPECTED_DB
 PID = "proj-1"
 T0 = datetime(2026, 9, 20, 22, 22, 34, 585000, tzinfo=timezone.utc)
 GUARD = ["--i-know", "--reason", "test", "--session", "s-test"]
@@ -117,9 +118,12 @@ class Fixture:
         return {c: list(self.db[c].raw_sorted())
                 for c in ("document_page_index", "plan_records", "audit_logs")}
 
-    def run(self, module, *extra):
+    def run(self, module, *extra, env_db=DB):
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        env = {"DB_NAME": env_db} if env_db is not None else {}
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out):
+            if env_db is None:
+                os.environ.pop("DB_NAME", None)
             code = module.main(["--snapshot-dir", self.dir, *extra],
                                client=self.client)
         return code, out.getvalue()
@@ -357,6 +361,41 @@ class RollbackIsByteIdentical(Base):
         self.assertEqual(code, 0)
         self.assertIn("Nothing to roll back", out)
         self.assertEqual(self.f.image(), before)
+
+
+class ItNeverDefaultsToADatabase(Base):
+    """DB_NAME must be exactly 'blueview'. Unset or anything else stops the run
+    before a connection, with nothing written, for BOTH scripts."""
+
+    def _refused(self, module, env_db, *extra):
+        before = self.f.image()
+        with self.assertRaises(SystemExit) as cm:
+            self.f.run(module, *extra, env_db=env_db)
+        self.assertEqual(self.f.image(), before)
+        return str(cm.exception.code)
+
+    def test_unset_is_refused(self):
+        for module in (M, R):
+            msg = self._refused(module, None, *GUARD)
+            self.assertIn("DB_NAME is not set", msg)
+            self.assertIn("Nothing was written", msg)
+
+    def test_the_old_default_is_refused(self):
+        for module in (M, R):
+            msg = self._refused(module, "test_database", *GUARD)
+            self.assertIn("runs only against 'blueview'", msg)
+
+    def test_a_dry_run_is_refused_too(self):
+        self._refused(M, None)
+        self._refused(M, "blueview_staging", "--verify")
+
+    def test_no_default_database_is_left_in_either_script(self):
+        from pathlib import Path
+        for name in ("migrate_plan_discipline_20260921.py",
+                     "rollback_plan_discipline_20260921.py"):
+            src = (_BACKEND / "scripts" / name).read_text(encoding="utf-8")
+            self.assertNotIn('"test_database"', src, name)
+            self.assertIn("P.target_db()", src, name)
 
 
 class TheGate(Base):
