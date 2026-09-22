@@ -1,0 +1,21 @@
+# VERSIONS FOR PACKAGES THIS APP DOES NOT ASK FOR BY NAME.
+#
+# A constraints file, installed with `pip install -r requirements.txt -c
+# backend/constraints.txt` (see the Dockerfile). A line here pins a package
+# ONLY IF something in requirements.txt already pulls it in; it never adds
+# one. That is why these live here and not in requirements.txt:
+# rapidocr-onnxruntime==1.4.4 depends on onnxruntime and opencv-python, and
+# pdfplumber==0.11.7 on pypdfium2, all three unpinned by those packages, so
+# each build took whatever was newest.
+#
+# They decide what the schedule OCR reads: pdftoppm renders each grid twice,
+# RapidOCR reads both on onnxruntime, opencv prepares the image, and a cell
+# the two reads disagree on is stored as "(readings disagree)". Pinned to the
+# versions that OCR'd 588 Boyland (deployment 6eea5ba4, 2026-09-20; inferred
+# from what PyPI served 2026-09-17..20, unchanged across that window).
+#
+# A BUMP IS A CHANGE TO STORED DATA. Re-run the ocr-repro harness at the new
+# version first; see the block at the top of the Dockerfile.
+onnxruntime==1.30.0
+opencv-python==4.14.0.94
+pypdfium2==5.13.0

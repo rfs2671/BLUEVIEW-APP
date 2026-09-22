@@ -58,7 +58,10 @@ class TheRuntimeCarriesWhatTheWheelsLinkAgainst(unittest.TestCase):
         """Every package name the Dockerfile apt-get installs.
 
         Continuations are joined first, so a package added on its own `\\` line
-        — which is how every one of them is written here — is seen."""
+        — which is how every one of them is written here — is seen. A PINNED
+        package (`poppler-utils=25.03.0-5+deb13u4`) is seen by its name: this
+        used to skip any token with `=`, so pinning a package made it vanish
+        from the set and read as uninstalled."""
         text = (REPO / "Dockerfile").read_text(encoding="utf-8")
         joined = re.sub(r"\\\s*\n", " ", text)
         got = set()
@@ -68,9 +71,45 @@ class TheRuntimeCarriesWhatTheWheelsLinkAgainst(unittest.TestCase):
             tail = line.split("apt-get install", 1)[1]
             tail = re.split(r"&&|\|\||;", tail)[0]
             for tok in tail.split():
-                if tok and not tok.startswith("-") and "=" not in tok:
-                    got.add(tok)
+                if tok and not tok.startswith("-"):
+                    got.add(tok.split("=", 1)[0])
         return got
+
+    def apt_pins(self):
+        """package -> pinned version, for every `name=version` installed."""
+        text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        return dict(re.findall(r"^\s*([a-z0-9][a-z0-9.+-]*)=(\S+)\s*\\?\s*$",
+                               text, re.M))
+
+    def test_the_renderer_is_pinned_to_the_one_that_read_the_corpus(self):
+        # pdftoppm 25.03.0 measured from deployment 6eea5ba4's startup log;
+        # the Debian revision inferred. A pin break means: re-run the
+        # ocr-repro harness before bumping (see the Dockerfile).
+        self.assertEqual(self.apt_pins().get("poppler-utils"), "25.03.0-5+deb13u4")
+
+    def test_the_base_image_is_pinned_by_digest(self):
+        text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$")
+
+    def test_the_ocr_runtime_is_pinned(self):
+        # Dependencies of dependencies, so CONSTRAINED rather than required:
+        # a line in constraints.txt pins a package only if requirements.txt
+        # already pulls it in. requirements.txt stays free of opencv (see
+        # test_photo_enhance.NoThirdPartyImageDependency).
+        cons = (REPO / "backend" / "constraints.txt").read_text(encoding="utf-8")
+        for pin in ("onnxruntime==1.30.0", "opencv-python==4.14.0.94",
+                    "pypdfium2==5.13.0"):
+            self.assertIn(pin, cons)
+        req = (REPO / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("rapidocr-onnxruntime==1.4.4", req)
+
+    def test_the_constraints_are_actually_applied(self):
+        # A constraints file nothing passes to pip is decoration: the image
+        # must COPY it before the install and hand it to pip with -c.
+        text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        copy = text.index("COPY backend/constraints.txt")
+        install = text.index("pip install --no-cache-dir -r requirements.txt -c backend/constraints.txt")
+        self.assertLess(copy, install)
 
     def test_opencv_s_system_libraries_are_installed(self):
         # The wheel links libGL.so.1 and libglib-2.0.so.0 and bundles neither.

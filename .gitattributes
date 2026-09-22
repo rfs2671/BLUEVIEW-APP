@@ -8,3 +8,9 @@
 # never transforms them: what we vetted is exactly what ships.
 frontend/assets/pdfjs/pdf.min.txt        -text
 frontend/assets/pdfjs/pdf.worker.min.txt -text
+
+# Test fixtures whose bytes are compared and hashed. core.autocrlf=true
+# checks them out CRLF on Windows, so the file a test ran on and the blob
+# that was committed hashed differently (2026-09-22, #650). LF everywhere.
+backend/tests/ocr_grid_tables.json   text eol=lf
+backend/tests/discipline_corpus.json text eol=lf
