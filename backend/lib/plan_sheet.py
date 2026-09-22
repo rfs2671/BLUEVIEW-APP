@@ -1,7 +1,7 @@
 """One architectural or mechanical sheet, read from its PDF page.
 
 Everything the space and takeoff steps need from a page, in DISPLAY space
-(the page rotation applied - get_drawings() returns unrotated coordinates):
+(the page rotation applied), from lib.plan_page - never PyMuPDF (AGPL):
 segments, segments with their PDF attributes (layer, width, dash, colour),
 perpendicular corners, the plan viewport, words, and the unit tags printed on
 the plan. Plus the raster helpers both space builders share, and the
@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 PT_PER_INCH = 72.0 / (12.0 * reg.PLAN_SCALE_DENOM)
 #: raster resolution of every space grid
 CELL_IN = 2.0
+#: a length compared to a threshold is equal to it within this
+LEN_TOL_PT = 1e-3
 #: wall materials the legend names after a thickness (6" STUD, 12" CONCRETE)
 WALL_WORDS = ("STUD", "STUD,", "CONCRETE", "CMU", "BRICK", "BLOCK")
 
@@ -42,43 +44,25 @@ def inches(pt: float) -> float:
 
 
 def display_segments(page):
-    """Segments in DISPLAY space, after the page rotation is applied."""
-    m = page.rotation_matrix
-    out = []
-    for d in page.get_drawings():
-        for it in d["items"]:
-            if it[0] == "l":
-                p1, p2 = it[1] * m, it[2] * m
-                out.append((p1.x, p1.y, p2.x, p2.y))
-            elif it[0] == "re":
-                r = it[1] * m
-                out += [(r.x0, r.y0, r.x1, r.y0), (r.x1, r.y0, r.x1, r.y1),
-                        (r.x1, r.y1, r.x0, r.y1), (r.x0, r.y1, r.x0, r.y0)]
-    return out
+    """Every straight segment on the page, in display space (plan_page)."""
+    return [(p[0], p[1], q[0], q[1]) for d in page.drawings
+            for it in d["items"] if it[0] == "l" for p, q in (it[1:3],)]
 
 def attributed_segments(page):
-    """Same list, same order as reg_scan.display_segments, plus attributes."""
-    m = page.rotation_matrix
-    out = []
-    for d in page.get_drawings():
-        a = (d.get("layer") or "", round(float(d.get("width") or 0.0), 2),
-             str(d.get("dashes")), tuple(round(c, 2) for c in (d.get("color") or ())))
-        for it in d["items"]:
-            if it[0] == "l":
-                p1, p2 = it[1] * m, it[2] * m
-                out.append(((p1.x, p1.y, p2.x, p2.y), a))
-            elif it[0] == "re":
-                r = it[1] * m
-                for s in ((r.x0, r.y0, r.x1, r.y0), (r.x1, r.y0, r.x1, r.y1),
-                          (r.x1, r.y1, r.x0, r.y1), (r.x0, r.y1, r.x0, r.y0)):
-                    out.append((s, a))
-    return out
+    """Same list, same order as display_segments, each with its CAD layer."""
+    return [((p[0], p[1], q[0], q[1]), d["layer"]) for d in page.drawings
+            for it in d["items"] if it[0] == "l" for p, q in (it[1:3],)]
 
 def corners(segs, min_len_pt=1.5, snap=0.25):
-    """Endpoints where two segments meet near-perpendicular."""
+    """Endpoints where two segments meet near-perpendicular.
+
+    min_len_pt is 1.5pt = ONE INCH at 1/4" = 1'-0", a length CAD draws
+    constantly, so segments sit exactly ON the threshold and float noise
+    (1.4999999 vs 1.5000000) decided them - 593 corners on A-103.00 flipped
+    between two PDF readers. Hence the tolerance: a drawn inch is kept."""
     inc = defaultdict(list)
     for x1, y1, x2, y2 in segs:
-        if math.hypot(x2 - x1, y2 - y1) < min_len_pt:
+        if math.hypot(x2 - x1, y2 - y1) < min_len_pt - LEN_TOL_PT:
             continue
         a = math.atan2(y2 - y1, x2 - x1)
         inc[(round(x1 / snap), round(y1 / snap))].append(a)
@@ -276,18 +260,11 @@ def viewport(pts_arr, page_w, segs, page_h):
 
 def load_sheet(page) -> dict:
     """segs, attributed segs, viewport corners, words and page size, all in
-    display space."""
-    import fitz
+    display space. `page` is a lib.plan_page.PlanPage."""
     segs = display_segments(page)
-    rm = page.rotation_matrix
-    words = []
-    for w in page.get_text("words"):
-        p = fitz.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2) * rm
-        words.append((w[4], p.x, p.y))
     return {"segs": segs, "att": attributed_segments(page),
-            "corners": viewport(corners(segs), page.rect.width, segs,
-                                page.rect.height),
-            "words": words, "page": (page.rect.width, page.rect.height),
+            "corners": viewport(corners(segs), page.width, segs, page.height),
+            "words": list(page.words), "page": (page.width, page.height),
             "rotation": page.rotation}
 
 

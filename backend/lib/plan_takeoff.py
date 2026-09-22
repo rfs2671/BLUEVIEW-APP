@@ -27,7 +27,6 @@ from collections import Counter
 from typing import Dict, Optional, Sequence
 
 import numpy as np
-from PIL import Image
 
 from lib import plan_cells as pc
 from lib import plan_ocr
@@ -90,24 +89,22 @@ def sweep(page, segs):
     Clips are in page space and results are used as display space, so a
     rotated page is refused rather than read in the wrong frame.
     """
-    import fitz
     if page.rotation:
         raise ValueError(f"sweep: page rotation {page.rotation} - clip and "
                          "display frames differ; not handled")
-    W, H = page.rect.width, page.rect.height
+    W, H = page.width, page.height
     edge = pc.title_block_edge(segs, W, H)
     log.info(f"SWEEP CROP  x 0..{edge:.0f} of {W:.0f}   y 0..{H:.0f}")
     out = []
     for x0 in range(0, int(edge), SWEEP_STEP_PT):
         for y0 in range(0, int(H), SWEEP_STEP_PT):
-            clip = fitz.Rect(x0, y0, min(x0 + SWEEP_STEP_PT + 20, edge),
-                             min(y0 + SWEEP_STEP_PT + 20, H))
-            pix = page.get_pixmap(dpi=SWEEP_DPI, clip=clip, annots=False)
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            x1, y1 = (min(x0 + SWEEP_STEP_PT + 20, edge),
+                      min(y0 + SWEEP_STEP_PT + 20, H))
+            img = page.render((x0, y0, x1, y1), SWEEP_DPI)
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            sx = clip.width / max(pix.width, 1)
-            sy = clip.height / max(pix.height, 1)
+            sx = (x1 - x0) / max(img.width, 1)
+            sy = (y1 - y0) / max(img.height, 1)
             for b in plan_ocr._boxes(buf.getvalue()):
                 out.append((b[2], x0 + b[0] * sx, y0 + b[1] * sy))
     return out

@@ -335,7 +335,6 @@ def door_closures(page, ppi, grid, lo, cell_pt, report=None, segs=None):
     jamb stub shorter than the 2ft wall filter. Only the closing radius is
     extended: extending the open leaf could cut a 4ft corridor in two.
     """
-    rm = page.rotation_matrix
     h, w = grid.shape
     reach = JAMB_IN * ppi
 
@@ -351,11 +350,11 @@ def door_closures(page, ppi, grid, lo, cell_pt, report=None, segs=None):
 
     segs_arr = None if segs is None else np.asarray(segs, dtype=float)
     out, n_sw = [], 0
-    for d in page.get_drawings():
+    for d in page.drawings:
         for it in d["items"]:
             if it[0] != "c":
                 continue
-            p0, c1, c2, p3 = (np.array(tuple(q * rm)) for q in it[1:5])
+            p0, c1, c2, p3 = (np.array(q, dtype=float) for q in it[1:5])
             C = _centre(p0, c1, c2, p3)
             if C is None:
                 continue
