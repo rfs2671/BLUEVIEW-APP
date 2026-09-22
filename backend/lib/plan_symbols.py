@@ -25,6 +25,7 @@ one in the prefix is not, because no `EP` family exists in the schedule.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from lib.plan_records import column_role
@@ -39,6 +40,33 @@ SYMBOL_NMS_IN = 24.0
 TEMPLATE_MATCH_TOL_IN = 1.5
 #: Fraction of a template's corners that must appear for a detection.
 TEMPLATE_MIN_SCORE = 0.70
+#: A point this close outside a label's text box is still the label's glyph.
+LABEL_BOX_PAD_IN = 1.0
+#: Two objects this close are one object (drawn as separate paths, touching).
+LINK_IN = 0.5
+#: Candidate objects whose distance to the label differs by less than this are
+#: a tie, and the tie is broken on the drawing pass (colour).
+TIE_IN = 3.0
+#: Smaller than this in both directions is dust - a hatch fragment, a stroke
+#: end - not a piece of equipment. The smallest symbol on these sheets is the
+#: exhaust fan at 15in; the fragments that beat it to the label were 0.4in.
+MIN_SYMBOL_IN = 6.0
+
+#: NCS equipment layers: M-EQPM, M-HVAC-EQPM, xref-prefixed, any case.
+_EQUIPMENT_LAYER = re.compile(r"(?i)(?:^|\|)M-(?:[A-Z0-9]+-)*EQPM(?:-[A-Z0-9]+)*$")
+#: Annotation: text, tags, dimensions, notes - M-EQPM-IDEN is the equipment's
+#: TAGS, so a text modifier wins over the equipment major group.
+_TEXT_LAYER = re.compile(
+    r"(?i)(?:^|[-|\s])(?:TEXT|TXT|ANNO|IDEN|NOTE|NOTES|DIM|DIMS|TAG|TAGS)(?:-|$)")
+
+
+def is_text_layer(name: Optional[str]) -> bool:
+    return bool(name) and bool(_TEXT_LAYER.search(name))
+
+
+def is_equipment_layer(name: Optional[str]) -> bool:
+    return (bool(name) and not is_text_layer(name)
+            and bool(_EQUIPMENT_LAYER.search(name)))
 
 #: Columns whose value can corroborate a tag read. A schedule that has none
 #: is not a failure: the snap then stands on the tag alone and the record
@@ -229,52 +257,225 @@ def labels_in(reads: Iterable[Tuple[str, float, float]],
     return out
 
 
+def _obj(o):
+    """(points, layer, colour) from an object given as a mapping or a tuple."""
+    if isinstance(o, dict):
+        return list(o.get("points") or ()), o.get("layer"), o.get("colour")
+    pts = list(o[0])
+    return pts, (o[1] if len(o) > 1 else None), (o[2] if len(o) > 2 else None)
+
+
+def _bbox(pts):
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _gap(a, b):
+    """Distance between two bounding boxes, 0 when they overlap."""
+    dx = max(a[0] - b[2], b[0] - a[2], 0.0)
+    dy = max(a[1] - b[3], b[1] - a[3], 0.0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _crosses(p1, p2, p3, p4):
+    d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
+    if abs(d) < 1e-12:
+        return False
+    t = ((p3[0] - p1[0]) * (p4[1] - p3[1])
+         - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d
+    u = ((p3[0] - p1[0]) * (p2[1] - p1[1])
+         - (p3[1] - p1[1]) * (p2[0] - p1[0])) / d
+    return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+
+
+def _touches(a, b, tol):
+    """Two polylines touch: a vertex within `tol`, or segments crossing."""
+    for x1, y1 in a:
+        for x2, y2 in b:
+            if abs(x1 - x2) <= tol and abs(y1 - y2) <= tol:
+                return True
+    for i in range(len(a) - 1):
+        for k in range(len(b) - 1):
+            if _crosses(a[i], a[i + 1], b[k], b[k + 1]):
+                return True
+    return False
+
+
 def symbol_at_label(label_xy: Tuple[float, float],
-                    points, search_pt: float, symbol_pt: float,
-                    min_points: int = 3):
-    """((x, y), n) for the geometry standing beside a label, or (None, 0).
+                    objects, search_pt: float, symbol_pt: float,
+                    min_points: int = 3,
+                    label_boxes: Sequence[Tuple[float, float, float, float]] = (),
+                    pad_pt: Optional[float] = None,
+                    link_pt: Optional[float] = None,
+                    tie_pt: Optional[float] = None,
+                    same_pass: bool = False,
+                    prefer_pass: bool = False,
+                    min_symbol_pt: Optional[float] = None,
+                    report: Optional[dict] = None):
+    """((x, y), n) for the OBJECT standing beside a label, or (None, 0).
 
     LABEL-ANCHORED, NOT DENSITY-ANCHORED, AND THAT IS THE WHOLE POINT.
 
     `candidate_symbols` below finds symbols by corner density, which silently
     assumes a corner-rich glyph. Measured: the EF fan carries 29 corners
     within 14in; a PTAC unit is a plain rectangle at the wall with 6 corners
-    within 60in. No density threshold finds both — PTAC cannot pass "12
-    corners in 14in" at any radius, because it does not have 12 corners.
+    within 60in. No density threshold finds both. Anchoring on the label
+    removes the assumption: the sheet says where its equipment is by printing
+    a tag beside it.
 
-    Anchoring on the label removes the assumption entirely. The sheet says
-    where its equipment is by printing a tag beside it, so the geometry
-    nearest that tag IS the symbol, whether it has four corners or forty.
+    A SYMBOL IS ONE CONNECTED OBJECT, NOT AN AVERAGE OF WHAT IS AROUND IT.
+    This used to return the centroid of every corner within `symbol_pt` of
+    the point nearest the label - the fan, its duct, the counter under it and
+    the architectural background in one number. Measured on the Boyland set:
+    A-100.01's EF-2(100) came back ON ITS OWN LABEL (143 corners averaged),
+    and each PTAC came back at the middle of whatever surrounded it. So:
 
-    The cluster is grown from the point NEAREST the label rather than from
-    the label itself, so a tag printed a few feet from its symbol still
-    lands on the symbol instead of on the midpoint between them.
+      - the SEED is the geometry nearest the label that is not the label:
+        never inside `label_boxes` (the tag is drawn as outlines on these
+        sheets, so its own glyphs are the nearest geometry there is), and
+        never on a text/annotation layer;
+      - the SYMBOL is the seed's object grown through geometry it TOUCHES -
+        a vertex within `link_pt`, or segments crossing - out to `symbol_pt`
+        from the seed, so a fan drawn as nested paths is one symbol and the
+        counter it hangs over is not;
+      - an object smaller than `min_symbol_pt`, or with fewer than
+        `min_points` vertices, is DUST - a hatch fragment, a stroke end, a
+        rule under a note - and the next candidate out is taken instead;
+      - geometry longer than `symbol_pt` in either direction is STRUCTURE,
+        never a symbol and never part of one: a wall line or a duct run
+        crosses the whole sheet, and one of them touching the seed dragged
+        the answer 400in away;
+      - the POSITION is the centre of that object's bounding box: a point ON
+        the object, not the mean of its parts;
+      - when any object carries an NCS equipment layer (M-EQPM,
+        M-HVAC-EQPM), only equipment-layer objects can be the symbol.
 
-    PASS ALL OF THE SHEET'S GEOMETRY, NOT A "MECHANICAL ONLY" SUBSET.
-    Filtering to points with no counterpart on the registered architectural
-    sheet is a scaffold for density search and it is WRONG here: measured on
-    M-103.00, the four PTAC units down one side survive that filter with 6
-    corners each and the four down the other do not survive it at all,
-    because their rectangles coincide with architectural window and wall
-    linework. The filter quietly deletes exactly the equipment that is drawn
-    over something. A label does not need the filter — it already says which
-    geometry is the equipment.
+    THE DRAWING PASS BREAKS TIES, AND ONLY TIES. Where candidates sit within
+    `tie_pt` of each other at the label, the one drawn in the same colour as
+    the label's own glyphs wins: the mechanical work and its tags are one
+    pass over an architectural background drawn in another. It decides
+    nothing on its own - a clearly nearer object of any colour still wins.
+
+    `objects` are {"points", "layer", "colour"} or (points, layer, colour),
+    `points` being a path's vertices in order. `report`, when given, is
+    filled with what was chosen and whether the tie-break fired.
     """
     lx, ly = float(label_xy[0]), float(label_xy[1])
-    near = [(float(p[0]), float(p[1])) for p in points
-            if abs(float(p[0]) - lx) <= search_pt
-            and abs(float(p[1]) - ly) <= search_pt]
-    if len(near) < min_points:
-        return None, len(near)
-    seed = min(near, key=lambda p: (p[0] - lx) ** 2 + (p[1] - ly) ** 2)
-    cluster = [p for p in near
-               if (p[0] - seed[0]) ** 2 + (p[1] - seed[1]) ** 2
-               <= symbol_pt ** 2]
-    if len(cluster) < min_points:
-        return None, len(cluster)
-    cx = sum(p[0] for p in cluster) / len(cluster)
-    cy = sum(p[1] for p in cluster) / len(cluster)
-    return (cx, cy), len(cluster)
+    pad = LABEL_BOX_PAD_IN * 1.5 if pad_pt is None else float(pad_pt)
+    link = LINK_IN * 1.5 if link_pt is None else float(link_pt)
+    tie = TIE_IN * 1.5 if tie_pt is None else float(tie_pt)
+    min_symbol = MIN_SYMBOL_IN * 1.5 if min_symbol_pt is None else float(min_symbol_pt)
+    boxes = [(min(b[0], b[2]) - pad, min(b[1], b[3]) - pad,
+              max(b[0], b[2]) + pad, max(b[1], b[3]) + pad)
+             for b in label_boxes]
+
+    def in_label(x, y):
+        return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in boxes)
+
+    near, label_colours = [], []
+    for o in objects:
+        pts, layer, colour = _obj(o)
+        if not pts:
+            continue
+        if any(in_label(x, y) for x, y in pts):
+            # ONLY GLYPHS, NOT WHAT CROSSES THE BOX. A hatched wall running
+            # through the tag put 169,169,169 in the majority and the
+            # tie-break then preferred the hatch over the equipment.
+            if all(in_label(x, y) for x, y in pts):
+                label_colours.append(colour)
+            continue
+        if is_text_layer(layer):
+            continue
+        if not any(abs(x - lx) <= search_pt and abs(y - ly) <= search_pt
+                   for x, y in pts):
+            continue
+        box = _bbox(pts)
+        # LONGER THAN ANY SYMBOL IS STRUCTURE, NOT SYMBOL. A wall line, a
+        # duct run or a match line crosses the whole sheet; one of them
+        # touching the seed made "the object beside the label" 400in wide.
+        if max(box[2] - box[0], box[3] - box[1]) > symbol_pt:
+            continue
+        near.append((pts, layer, colour, box))
+    if any(is_equipment_layer(q[1]) for q in near):
+        near = [q for q in near if is_equipment_layer(q[1])]
+    if report is not None:
+        report.update(candidates=len(near), tie=False, objects=0, seed=None)
+    if not near:
+        return None, 0
+    seen = Counter(c for c in label_colours if c)
+    label_colour = seen.most_common(1)[0][0] if seen else None
+
+    def to_label(q):
+        return min(((x - lx) ** 2 + (y - ly) ** 2) ** 0.5 for x, y in q[0])
+
+    dists = sorted((to_label(q), i) for i, q in enumerate(near))
+    best_d, best_i = dists[0]
+    tied = [i for d, i in dists if d <= best_d + tie]
+    fired = False
+    if len(tied) > 1 and label_colour is not None:
+        same = [i for i in tied if near[i][2] == label_colour]
+        if same and best_i not in same:
+            best_i, fired = same[0], True
+    def grow(start_i):
+        """The object at `start_i`: everything it touches, out to symbol_pt
+        from it and never wider than symbol_pt overall."""
+        taken, frontier = [start_i], [start_i]
+        box = near[start_i][3]
+        while frontier:
+            i = frontier.pop()
+            for k, q in enumerate(near):
+                if k in taken:
+                    continue
+                if _gap(near[i][3], q[3]) > link or _gap(near[start_i][3], q[3]) > symbol_pt:
+                    continue
+                if same_pass and q[2] != near[start_i][2]:
+                    continue
+                grown = (min(box[0], q[3][0]), min(box[1], q[3][1]),
+                         max(box[2], q[3][2]), max(box[3], q[3][3]))
+                # NEVER BIGGER THAN THE BIGGEST SYMBOL. A fan touches its
+                # duct, the duct touches the riser, the riser runs into the
+                # wall: unbounded, "one object" is the whole mechanical pass
+                # and its centre is nowhere in particular.
+                if max(grown[2] - grown[0], grown[3] - grown[1]) > symbol_pt:
+                    continue
+                if _touches(near[i][0], q[0], link):
+                    taken.append(k)
+                    frontier.append(k)
+                    box = grown
+        return taken, box
+
+    order = [i for _d, i in dists]
+    if prefer_pass and label_colour is not None:
+        same = [i for i in order if near[i][2] == label_colour]
+        if same:
+            order = same + [i for i in order if near[i][2] != label_colour]
+            fired = fired or order[0] != best_i
+    elif fired:
+        order = [best_i] + [i for i in order if i != best_i]
+    chosen, seed = None, None
+    for cand in order:
+        taken, box = grow(cand)
+        if chosen is None:
+            chosen, seed = taken, near[cand]
+        # A SYMBOL IS AT LEAST THIS BIG, AND IS NOT A LINE. Otherwise the
+        # nearest geometry to a label is a hatch fragment 0.4in across, or a
+        # two-point rule under a note, and that is what gets answered; the
+        # next candidate out is the equipment.
+        if (max(box[2] - box[0], box[3] - box[1]) >= min_symbol
+                and sum(len(near[i][0]) for i in taken) >= min_points):
+            chosen, seed = taken, near[cand]
+            break
+    pts = [p for i in chosen for p in near[i][0]]
+    if report is not None:
+        report.update(seed=seed[3], tie=fired, objects=len(chosen),
+                      colour=seed[2], label_colour=label_colour)
+    if len(pts) < min_points:
+        return None, len(pts)
+    x0, y0, x1, y1 = _bbox(pts)
+    if report is not None:
+        report.update(bbox=(x0, y0, x1, y1))
+    return ((x0 + x1) / 2, (y0 + y1) / 2), len(pts)
 
 
 def dedup(detections: Sequence[Tuple[float, object, str]],
@@ -310,5 +511,7 @@ __all__ = [
     "TEMPLATE_MATCH_TOL_IN", "TEMPLATE_MIN_SCORE",
     "corroborating_role", "closed_set_from_schedule",
     "normalise", "snap", "corroborated_tag", "dedup",
-    "labels_in", "symbol_at_label",
+    "labels_in", "symbol_at_label", "LABEL_BOX_PAD_IN",
+    "LINK_IN", "TIE_IN", "MIN_SYMBOL_IN",
+    "is_text_layer", "is_equipment_layer",
 ]
