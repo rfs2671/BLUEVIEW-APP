@@ -62,6 +62,10 @@ from scripts.prod_guard import (
 
 NAME = "migrate_plan_discipline_20260921"
 
+#: The plan this script runs: the 2026-09-21 discipline migration, 96 pages.
+#: See plan_discipline_20260921.plan_identity.
+EXPECT_PLAN = "b526bf87c96ed2acb66620a6c58984ce468e445cf2f77b10fa6c23693e935b3c"
+
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -115,13 +119,18 @@ def _write_page(db, row) -> None:
         db[P.PAGES].update_one({"_id": e["page_id"]}, {"$set": e["page_set"]})
 
 
-def main(argv=None, client=None, name: str = NAME) -> int:
+def main(argv=None, client=None, name: str = NAME,
+         expect_plan: str = "") -> int:
     refuse_legacy_flag(argv)
     args = build_parser().parse_args(argv)
     # Before the snapshot, before a connection: the database is named or the
     # run stops. There is no default.
     db_name = P.target_db()
     plan, pages, recs = P.load(args.snapshot_dir, args.plan)
+    refusal = P.plan_refusal(plan, expect_plan or EXPECT_PLAN)
+    if refusal:
+        print(refusal)
+        return 2
     P.with_project(plan)
     # Declared here as well as in P.load: this file counts on them below.
     require_fields(plan["pages"], "kind", "page_id")

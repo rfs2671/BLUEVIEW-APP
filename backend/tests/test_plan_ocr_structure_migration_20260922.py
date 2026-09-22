@@ -29,7 +29,13 @@ import bson  # noqa: E402
 
 from scripts import migrate_plan_ocr_structure_20260922 as M2  # noqa: E402
 from scripts import rollback_plan_ocr_structure_20260922 as R2  # noqa: E402
-from test_plan_discipline_migration_20260921 import GUARD, Base  # noqa: E402
+from unittest import mock  # noqa: E402
+
+from scripts import migrate_plan_discipline_20260921 as M1  # noqa: E402
+from scripts import rollback_plan_discipline_20260921 as R1  # noqa: E402
+from test_plan_discipline_migration_20260921 import (  # noqa: E402
+    GUARD, Base, Fixture,
+)
 
 
 class ItDrivesTheSameEngine(Base):
@@ -81,6 +87,57 @@ class ItDrivesTheSameEngine(Base):
                 self.f.run(module, *GUARD, env_db=None)
             self.assertIn("DB_NAME is not set", str(cm.exception.code))
             self.assertEqual(self.f.image(), before)
+
+
+class EachScriptOnlyRunsItsOwnPlan(unittest.TestCase):
+    """TWO migrations, two plans, and a matched snapshot/plan pair says nothing
+    about WHICH of them was asked for. Given the other migration's plan, a
+    script must refuse rather than apply it under its own name."""
+
+    def setUp(self):
+        self.a = Fixture()          # stands in for the OCR plan
+        self.b = Fixture()          # stands in for the discipline plan
+        self.addCleanup(self.a.close)
+        self.addCleanup(self.b.close)
+        self.assertNotEqual(self.a.identity, self.b.identity)
+
+    def test_the_ocr_script_refuses_the_other_plan(self):
+        before = self.b.image()
+        with mock.patch.object(M2, "EXPECT_PLAN", self.a.identity):
+            code, out = self.b.run(M2, *GUARD, bind=False)
+        self.assertEqual(code, 2)
+        self.assertIn("this is not the plan this script runs", out)
+        self.assertEqual(self.b.image(), before)
+
+    def test_the_discipline_script_refuses_the_other_plan(self):
+        before = self.a.image()
+        with mock.patch.object(M1, "EXPECT_PLAN", self.b.identity):
+            code, out = self.a.run(M1, *GUARD, bind=False)
+        self.assertEqual(code, 2)
+        self.assertIn("this is not the plan this script runs", out)
+        self.assertEqual(self.a.image(), before)
+
+    def test_the_rollbacks_refuse_it_too(self):
+        for module, other, fixture in ((R2, self.a.identity, self.b),
+                                       (R1, self.b.identity, self.a)):
+            before = fixture.image()
+            with mock.patch.object(module, "EXPECT_PLAN", other):
+                code, out = fixture.run(module, *GUARD, bind=False)
+            self.assertEqual(code, 2, module.NAME)
+            self.assertEqual(fixture.image(), before, module.NAME)
+
+    def test_the_right_pairing_still_applies(self):
+        for module, fixture in ((M2, self.a), (M1, self.b)):
+            code, out = fixture.run(module, *GUARD)
+            self.assertEqual(code, 0, out)
+            self.assertIn("'target': 2", out)
+
+    def test_the_shipped_scripts_are_bound_to_different_plans(self):
+        self.assertNotEqual(M2.EXPECT_PLAN, M1.EXPECT_PLAN)
+        self.assertEqual(M2.EXPECT_PLAN, R2.EXPECT_PLAN)   # one migration, one plan
+        self.assertEqual(M1.EXPECT_PLAN, R1.EXPECT_PLAN)
+        for h in (M1.EXPECT_PLAN, M2.EXPECT_PLAN):
+            self.assertRegex(h, r"^[0-9a-f]{64}$")
 
 
 class TheAuditRowsNameTheseScripts(Base):

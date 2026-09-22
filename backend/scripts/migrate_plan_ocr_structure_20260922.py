@@ -50,8 +50,15 @@ from scripts import migrate_plan_discipline_20260921 as engine
 NAME = "migrate_plan_ocr_structure_20260922"
 
 
+#: The plan this script runs: the 2026-09-22 OCR-structure migration, the
+#: two pages above. A plan that is not this one is refused before any write,
+#: so this script can never apply another migration under its own name.
+#: See plan_discipline_20260921.plan_identity.
+EXPECT_PLAN = "db9fcac190d273374a6ec387906a0f6a767d43cbf86e2c6a9c7c80ef151293ef"
+
+
 def main(argv=None, client=None) -> int:
-    return engine.main(argv, client, name=NAME)
+    return engine.main(argv, client, name=NAME, expect_plan=EXPECT_PLAN)
 
 
 if __name__ == "__main__":
