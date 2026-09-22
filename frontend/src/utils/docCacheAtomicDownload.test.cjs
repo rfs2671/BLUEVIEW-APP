@@ -83,10 +83,54 @@ function makeDevice(opts) {
       disk.delete(a);
     },
     getFreeDiskStorageAsync: async () => 1e10,
+
+    // THE REAL DOWNLOADER NOW, because cacheDocFile races a stall guard around
+    // a resumable task rather than calling downloadAsync bare. Every existing
+    // scenario below is driven through the SAME `script` steps as before -- the
+    // transport changed, the failures it has to survive did not.
+    //
+    // `kind: 'hang'` is the one this shape exists to express and the old stub
+    // could not: OkHttp logs the mid-body IOException and never settles the
+    // promise, so the step returns a promise that is never resolved AND never
+    // rejected. A `throw` cannot model that; only a promise nobody completes.
+    createDownloadResumable: (url, dest, _options, onProgress) => {
+      let cancelled = false;
+      return {
+        cancelAsync: async () => { cancelled = true; },
+        downloadAsync: async () => {
+          const target = nameOf(dest);
+          const step = script.length > 0 ? script[0] : { kind: 'ok', bytes: 12 * 1024 * 1024 };
+          if (step.kind === 'hang') {
+            script.shift();
+            downloads.push(target);
+            // Bytes land, then the connection dies silently. Progress fires
+            // once so a guard measuring BYTES (not elapsed time) has something
+            // to reset from, and then nothing, ever.
+            if (onProgress) onProgress({ totalBytesWritten: step.bytes || 1024 });
+            if (step.bytes) disk.set(target, step.bytes);
+            return new Promise(() => {});
+          }
+          // Anything else: a live transfer reporting progress, then the
+          // outcome the script asked for.
+          if (onProgress) onProgress({ totalBytesWritten: 1024 });
+          if (cancelled) return undefined;
+          return FileSystem.downloadAsync(url, dest, _options);
+        },
+      };
+    },
+
     downloadAsync: async (url, dest, _options) => {
       const target = nameOf(dest);
       downloads.push(target);
       const step = script.length > 0 ? script.shift() : { kind: 'ok', bytes: 12 * 1024 * 1024 };
+      // THE SAME HANG, ON THE OLD TRANSPORT. Here so the control run is
+      // honest: pointed at the pre-guard docCache -- which called this
+      // directly -- the hang scenario must actually hang, not fall through to
+      // a default 'ok' and pass for the wrong reason.
+      if (step.kind === 'hang') {
+        if (step.bytes) disk.set(target, step.bytes);
+        return new Promise(() => {});
+      }
       if (step.kind === 'throw-mid') {
         // Segments already flushed are on disk under `target`, then the
         // connection dies. This is the real Android failure, verbatim.
@@ -156,6 +200,50 @@ const FRAGMENT = 300 * 1024;
 const isRealName = (n) => n === REAL;
 
 async function main() {
+  // ═════════════════════════════════════════════════════════════════════════
+  // 0. A DOWNLOAD THAT NEVER SETTLES MUST STILL RETURN.
+  //
+  // Measured on the 588 Thomas tablet: "54 of 316 plans, documents and
+  // logbooks are on this tablet so far", unmoving for over half an hour. The
+  // filler downloads sequentially and is wrapped in an `inFlight` guard that
+  // answers `busy` to every later run, so ONE hanging transfer does not fail
+  // one file -- it blocks the 262 behind it and swallows every five-minute
+  // retry for the life of the process.
+  //
+  // The promise really does hang: OkHttp 4.9.2 sets signalledCallback before
+  // onResponse, so a mid-body IOException is logged and never rejected. No
+  // `catch` can fire. That is why the guard is a RACE and why this step is a
+  // promise nobody ever completes -- a `throw` would model the easy case and
+  // prove nothing about this one.
+  //
+  // THE ASSERTION IS THAT IT RETURNS AT ALL. Before the guard this awaited for
+  // ever and the test process itself would hang, which is the same failure the
+  // tablet had.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({ script: [{ kind: 'hang', bytes: FRAGMENT }] });
+    const started = Date.now();
+    const got = await Promise.race([
+      load(d).cacheDocFile({ fileId: 'a1', cacheVersion: 7, remoteUrl: URL }),
+      new Promise((r) => setTimeout(() => r('TEST-TIMED-OUT'), 90000)),
+    ]);
+    const waited = Date.now() - started;
+
+    ok(got !== 'TEST-TIMED-OUT',
+      'a transfer whose promise never settles still RETURNS — before the stall '
+      + 'guard this hung for ever, and one such file froze the whole fill');
+    ok(got === null,
+      'and reports failure, which is what the caller already knows how to '
+      + 'handle: it moves to the next file');
+    ok(!d.disk.has(REAL),
+      'nothing wears the real name — the bytes that did arrive stay in .part, '
+      + 'deterministic, never served, overwritten by the next attempt');
+    ok(waited >= 40000 && waited < 75000,
+      `it waited for the STALL window, not a flat deadline (waited ${waited}ms) `
+      + '— a 31.7 MB plan on site signal legitimately takes minutes and must '
+      + 'never be cancelled for being slow, only for being dead');
+  }
+
   // ═════════════════════════════════════════════════════════════════════════
   // 1. THE DEFECT ITSELF: a transfer that dies mid-body must leave NOTHING
   //    under the real filename.

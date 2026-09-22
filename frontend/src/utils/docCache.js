@@ -181,6 +181,90 @@ export async function getCachedDocFile(fileId, cacheVersion, ext = 'pdf', { expe
  * `expectedSize` is optional: the plans and documents screens carry `size` on
  * every record, the logbook screens carry none, and both must work.
  */
+/**
+ * A DOWNLOAD THAT NEVER SETTLES IS A TABLET THAT NEVER FILLS.
+ *
+ * ── WHAT HAPPENED, ON A REAL DEVICE ────────────────────────────────────────
+ *
+ * The 588 Thomas tablet sat at "54 of 316 plans, documents and logbooks are on
+ * this tablet so far" for over half an hour, unmoving. Nothing was wrong with
+ * the server, the list, or the remaining 262 files.
+ *
+ * The filler downloads SEQUENTIALLY (`for (const r of plan)` in
+ * siteManifestStore) and is wrapped in an `inFlight` guard that answers
+ * `busy` to every later run. So one download that never returns does not fail
+ * one file -- it blocks every file behind it, and then silently swallows each
+ * five-minute retry for the life of the process.
+ *
+ * AND THE PROMISE GENUINELY NEVER SETTLES. The header above this function
+ * already spells out why: OkHttp 4.9.2 sets `signalledCallback = true` before
+ * calling `onResponse`, so a connection dropped mid-body throws inside
+ * `writeAll`, the exception is only LOGGED, and the JS promise is left hanging
+ * forever. `catch` cannot run. There is no error to handle -- which is exactly
+ * why the fix cannot be a `catch` and has to be a race.
+ *
+ * That was known and defended against for the PARTIAL FILE (`.part`, atomic
+ * rename). The hanging PROMISE had nothing racing it. This is that race.
+ *
+ * ── A STALL, NOT A DEADLINE, AND THE DIFFERENCE MATTERS ────────────────────
+ *
+ * This project carries a 31.7 MB and a 24.9 MB plan set. On jobsite signal a
+ * legitimate download of those takes minutes, so any flat timeout big enough
+ * not to murder them is too big to notice a hang -- and any timeout small
+ * enough to notice a hang murders them. The instrument has to measure the
+ * right thing.
+ *
+ * So the clock is reset by BYTES ARRIVING. A transfer crawling at 20 kB/s is
+ * never cancelled, however long it runs; a transfer that has received nothing
+ * for STALL_MS is gone and is cancelled. That is the fact worth acting on.
+ *
+ * ── GIVING UP IS SAFE HERE, BY THIS MODULE'S EXISTING DESIGN ───────────────
+ *
+ * The caller treats `null` as "not downloaded" and moves to the next file --
+ * it already handles a failed download; only a hang defeated it. The bytes so
+ * far are in `.part`, which is deterministic, never served, outside the
+ * sweep's grammar, and overwritten by the next attempt. So an abandoned
+ * transfer costs one temp file and the next pass retries it from the start.
+ *
+ * `cancelAsync` is best-effort and its result is deliberately ignored: if the
+ * native side is wedged badly enough to hang that too, the race has already
+ * returned and the loop is already moving. Nothing waits on it.
+ */
+const STALL_MS = 45000;
+
+async function downloadOrGiveUp(url, part, headers) {
+  let lastByteAt = Date.now();
+  let timer = null;
+  const task = FileSystem.createDownloadResumable(
+    url, part, { headers },
+    // CALLED AS BYTES LAND. Any call at all is proof of life; the amount is
+    // not read, because a slow link and a fast one are both alive.
+    () => { lastByteAt = Date.now(); },
+  );
+
+  const stalled = new Promise((resolve) => {
+    timer = setInterval(() => {
+      if (Date.now() - lastByteAt >= STALL_MS) resolve(null);
+    }, 1000);
+  });
+
+  try {
+    const res = await Promise.race([task.downloadAsync(), stalled]);
+    if (!res) {
+      // Best-effort, unawaited on purpose -- see the note above.
+      try { task.cancelAsync().catch(() => {}); } catch (_e) {}
+      return null;
+    }
+    return res;
+  } catch (_e) {
+    // A download that fails LOUDLY is the easy case, and the one OkHttp does
+    // not give us. Treated the same as a stall: no file, caller moves on.
+    return null;
+  } finally {
+    if (timer) clearInterval(timer);
+  }
+}
+
 export async function cacheDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf', expectedSize } = {}) {
   if (!canUseFs() || !fileId || !remoteUrl) return null;
   const dest = DOC_DIR + safeName(fileId, cacheVersion, ext);
@@ -209,9 +293,8 @@ export async function cacheDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf
     const base = apiClient?.defaults?.baseURL || '';
     const url = /^https?:\/\//i.test(remoteUrl) ? remoteUrl : `${base}${remoteUrl}`;
     const token = await getToken();
-    const res = await FileSystem.downloadAsync(url, part, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await downloadOrGiveUp(
+      url, part, token ? { Authorization: `Bearer ${token}` } : {});
     if (res?.status !== 200 || !res?.uri) { await scrub(); return null; }
 
     // VERIFY BEFORE PROMOTING. A 200 whose body was cut short still resolves —
