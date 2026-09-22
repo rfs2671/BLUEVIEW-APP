@@ -185,15 +185,38 @@ jobs:
 
       # THE "NO INSTALL NEEDED" PREMISE WAS TRUE, AND IS NOT ANY MORE.
       #
-      # All but two of the JS tests are dependency-free harnesses (fs/path only)
-      # that parse real component source. The count is deliberately not written
-      # here — it was "26 of the 28" and was wrong within a day of being typed,
-      # because the runner below globs and the suite grows. What matters is the
-      # EXCEPTION, which is a closed set of two: logbookViewRenderers and
-      # reportPreviewPhotoIssue TRANSPILE the real JSX renderer blocks and
-      # EXECUTE them — strictly stronger than grepping source, and worth
-      # keeping — so they require @babel/core, which package.json has declared
-      # all along.
+      # Most JS tests are dependency-free harnesses (fs/path only) that parse
+      # real component source. The rest TRANSPILE real JSX and EXECUTE it —
+      # strictly stronger than grepping source, and worth keeping — so they
+      # need @babel/core, which package.json has declared all along.
+      #
+      # THE COUNT IS NOT WRITTEN HERE, AND THE LAST TWO ATTEMPTS ARE WHY. This
+      # comment already said "the count is deliberately not written here"
+      # because "26 of the 28" went stale in a day — and then wrote one anyway
+      # in the next sentence: "a closed set of two: logbookViewRenderers and
+      # reportPreviewPhotoIssue". Measured 2026-09-18, it was SIXTY-SEVEN of
+      # 178: forty require @babel/core directly and twenty-eight more reach it
+      # through src/utils/esmHarness.cjs, which requires it on their behalf.
+      # Wrong by sixty-five, in a sentence whose own subject was not writing
+      # counts.
+      #
+      # So: the PROPERTY, and the census that re-derives it on demand.
+      # A file needs node_modules if it transpiles JSX, directly or via the
+      # shared harness:
+      #
+      #   { grep -rlE "require\(['\"]@babel/core" frontend/src frontend/app
+      #     grep -rln esmHarness                   frontend/src frontend/app
+      #   } | grep -E "test\.(cjs|js)$" | sort -u | wc -l
+      #
+      # WHAT THE INSTALL STEP BELOW IS PROTECTING. With no node_modules those
+      # files die on "Cannot find module '@babel/core'" — and the last time
+      # that happened nobody saw it, because the runner halts on the FIRST
+      # non-zero exit and they sorted after an already-failing file. They had
+      # never executed in CI even once. Removing `npm ci` as an optimisation
+      # would silently stop running a THIRD of the frontend suite, and the job
+      # would still look green until the first survivor failed.
+      # backend/tests/test_the_js_suite_gets_its_dependencies.py asserts the
+      # install step is still there and still runs before the suite.
       #
       # With no node_modules those two die on "Cannot find module
       # '@babel/core'". Nobody saw it: the runner below halts on the FIRST
