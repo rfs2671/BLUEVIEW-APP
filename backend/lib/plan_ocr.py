@@ -225,6 +225,19 @@ def _filled(row: Sequence[str]) -> int:
     return sum(1 for c in row if c)
 
 
+def _next_multi(table: List[List[str]], i: int) -> Optional[int]:
+    """The index of the first row below `i` that fills more than one cell."""
+    return next((k for k in range(i + 1, len(table)) if _filled(table[k]) >= 2), None)
+
+
+def _is_note_band(table: List[List[str]], i: int) -> bool:
+    """A row of more than one cell whose next multi-cell row down is a heading
+    row filling MORE cells. See rule (4) in `_title_and_body`."""
+    k = _next_multi(table, i)
+    return (k is not None and _filled(table[i]) >= 2
+            and _is_heading_row(table[k]) and _filled(table[k]) > _filled(table[i]))
+
+
 def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
     """A schedule's CAPTION (its name, plus any note printed between the name
     and the headings) split from the table it captions.
@@ -266,15 +279,33 @@ def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
     #      and value fused into each cell ('SYMBOL WBP-1'), which is not a
     #      heading row and cannot vouch for anything.
     #
-    # After the top row the walk continues only through one-cell notes (1)
-    # and blank bands. P-400.00 needs that: its title is followed by a
-    # ONE-CELL NOTE ('VERIFY ALL MODEL NUMBERS WITH OWNER...') and only then
-    # the headings. Compared only with
-    # the row directly under it, the title looks dense (3 cells against 1)
-    # and becomes the column headings. Walked, the title is a caption by
-    # (2), the note by (1), and FIXTURES | ABBR | H.W. ... heads the table.
-    # The note joins the name: it is printed as part of the caption, and a
-    # record field for it would be one nothing reads.
+    #   4. it is a NOTE BAND under a caption: a row of more than one cell
+    #      whose next multi-cell row down is a HEADING row filling MORE
+    #      cells. That is rule (2) applied at every step of the walk, and
+    #      rule (2)'s own comparison looks past note bands to that heading.
+    #
+    # The walk continues from the top through captions, one-cell notes (1),
+    # note bands (4) and blank bands. P-400.00's PLUMBING ROUGH-IN SCHEDULE
+    # needs (4). Its note is printed on three lines, and PRODUCTION'S READ
+    # (reproduced in a container at production's poppler and OCR versions,
+    # 2026-09-22) puts two of them in TWO cells:
+    #
+    #   PLUMBING | · | ROUGH-IN | · | SCHEDULE | ·                   title
+    #   SIZES OR AS REQUIRED ... | VERIFY ALL MODEL NUMBERS ... | ·   note band
+    #   FIXTURES | ABBR | H.W. | C.W. | WASTE | VENT                  headings
+    #
+    # The note band is not a heading row (its cells are sentences), so rule
+    # (2) compared the title with it, found nothing, and the TITLE became
+    # the column names: the headings dropped into the data, 10 rows became
+    # 12 and the name was lost. An earlier capture (PyMuPDF, one read) had
+    # the note in ONE cell, which rule (1) handled, and the test built on it
+    # pinned the right answer for a read production never made.
+    #
+    # MORE, not at least as many: a two-tier heading (TAG | MOTOR DATA over
+    # · | HP | VOLTS) fills as many cells as the tier under it and is not a
+    # note; `schedule_from_table` merges it. The notes join the name: they
+    # are printed as part of the caption, and a record field for them would
+    # be one nothing reads.
     #
     # ── WHAT THIS REPLACED ──────────────────────────────────────────────
     #
@@ -313,15 +344,25 @@ def _title_and_body(table: List[List[str]]) -> Tuple[str, List[List[str]]]:
             captions.append(row)
             i += 1
             continue
-        # (2) The top row, over the headings that name the columns.
-        heading = next((r for r in below if _filled(r) >= 2), None)
-        if (not captions and heading is not None
-                and _is_heading_row(heading) and _filled(heading) >= filled):
-            captions.append(row)
-            i += 1
-            continue
-        # (3) The top row, with too few cells to be naming the columns.
-        if not captions and 2 <= filled < len(row) * 0.5:
+        if not captions:
+            # (2) The top row, over the headings that name the columns,
+            # looking past any note band between them.
+            k = _next_multi(table, i)
+            while k is not None and _is_note_band(table, k):
+                k = _next_multi(table, k)
+            if (k is not None and _is_heading_row(table[k])
+                    and _filled(table[k]) >= filled):
+                captions.append(row)
+                i += 1
+                continue
+            # (3) The top row, with too few cells to be naming the columns.
+            if 2 <= filled < len(row) * 0.5:
+                captions.append(row)
+                i += 1
+                continue
+            break
+        # (4) A note band under the caption.
+        if _is_note_band(table, i):
             captions.append(row)
             i += 1
             continue
