@@ -58,6 +58,9 @@ def raw_equal(db, row) -> bool:
 def main(argv=None, client=None) -> int:
     refuse_legacy_flag(argv)
     args = build_parser().parse_args(argv)
+    # Before the snapshot, before a connection: the database is named or the
+    # run stops. There is no default.
+    db_name = P.target_db()
     plan, pages, recs = P.load(args.snapshot_dir, args.plan)
     P.with_project(plan)
     if client is None:
@@ -68,7 +71,7 @@ def main(argv=None, client=None) -> int:
         client = MongoClient(url, document_class=RawBSONDocument)
     # Named, not read off sys.argv: the audit row must say which script wrote
     # it however it was launched.
-    db = audited(client[os.environ.get("DB_NAME", "test_database")], args, NAME)
+    db = audited(client[db_name], args, NAME)
 
     rows = P.survey(db, plan, pages, recs)
     P.print_table(rows, f"BEFORE ROLLBACK — {len(rows)} plan pages")

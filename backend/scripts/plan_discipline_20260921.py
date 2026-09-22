@@ -77,6 +77,32 @@ class SnapshotMismatch(SystemExit):
     pass
 
 
+#: The one database this migration and its rollback may touch.
+EXPECTED_DB = "blueview"
+
+
+def target_db() -> str:
+    """The database name, or a refusal. NEVER A DEFAULT.
+
+    Both scripts read `os.environ.get("DB_NAME", "test_database")`. Under a
+    `railway run` that did not inject DB_NAME that is a write to a database
+    nobody named, and a --verify against the same wrong database would have
+    agreed with it. So an unset or unexpected DB_NAME stops the run before a
+    connection is opened, and says so.
+    """
+    name = os.environ.get("DB_NAME", "").strip()
+    if not name:
+        raise SystemExit(
+            "\nREFUSED: DB_NAME is not set. This migration does not default to "
+            f"any database; run it under `railway run` so DB_NAME={EXPECTED_DB!r} "
+            "is injected. Nothing was written.\n")
+    if name != EXPECTED_DB:
+        raise SystemExit(
+            f"\nREFUSED: DB_NAME is {name!r}. This migration runs only against "
+            f"{EXPECTED_DB!r}. Nothing was written.\n")
+    return name
+
+
 def sha256(path: str) -> str:
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
