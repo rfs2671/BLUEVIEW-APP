@@ -146,6 +146,46 @@ def load(snapshot_dir: str, plan_path: str = "") -> Tuple[dict, dict, dict]:
     return plan, pages, recs
 
 
+def plan_identity(plan: dict) -> str:
+    """WHICH MIGRATION A PLAN IS: the migration it names, and exactly which
+    pages it moves, as one hash.
+
+    A snapshot and a plan check each other (`load`), but that pair says
+    nothing about WHICH migration was asked for. An operator who passes an
+    older --snapshot-dir hands a matched pair to whichever entry point they
+    typed: it would apply that plan and write every audit row under this
+    script's name, so the rows would name a migration that did not run and
+    the one that did would have no trace. Each entry point therefore declares
+    the identity it is for, and refuses anything else.
+
+    Page ids and kinds, not the whole file: `built_at`, the record _ids and
+    the comments differ every time a plan is rebuilt, and none of them says
+    which migration it is.
+    """
+    body = {
+        "migration": str(plan.get("migration") or ""),
+        "pages": sorted([str(e["page_id"]), str(e["kind"]),
+                         int(e.get("records_after") or 0)]
+                        for e in plan.get("pages") or []),
+    }
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def plan_refusal(plan: dict, expected: str) -> str:
+    """The message for a plan that is not this script's, or "" when it is."""
+    got = plan_identity(plan)
+    if got == expected:
+        return ""
+    return ("\nREFUSED: this is not the plan this script runs.\n"
+            f"  plan says : {str(plan.get('migration') or '')!r}, "
+            f"{len(plan.get('pages') or [])} pages\n"
+            f"  identity  : {got}\n"
+            f"  expected  : {expected}\n"
+            "Nothing was written. Check --snapshot-dir / --plan.\n")
+
+
 def plain(doc: Any) -> dict:
     """A document as ordinary dicts, whatever the driver handed back."""
     if isinstance(doc, RawBSONDocument):
