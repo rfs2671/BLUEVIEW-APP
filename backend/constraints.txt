@@ -18,4 +18,8 @@
 # version first; see the block at the top of the Dockerfile.
 onnxruntime==1.30.0
 opencv-python==4.14.0.94
+# pypdfium2 is ALSO called by name now: lib/plan_page.py reads path objects,
+# their CAD layer (optional-content marks) and OCR crops through it. It stays
+# pinned here, once: pdfplumber still brings it in, and this is the line the
+# image installs from.
 pypdfium2==5.13.0
