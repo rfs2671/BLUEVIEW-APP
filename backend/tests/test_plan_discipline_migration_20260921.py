@@ -104,6 +104,8 @@ class Fixture:
         with open(os.path.join(self.dir, "plan.json"), "w", encoding="utf-8") as f:
             f.write(json_util.dumps(plan, json_options=json_util.CANONICAL_JSON_OPTIONS))
         self.new_recs = new_recs
+        # What this fixture's plan IS, for the scripts' plan binding.
+        self.identity = P.plan_identity(json_util.loads(json_util.dumps(plan)))
         self.client = FakeClient()
         db = self.client[DB]
         db["document_page_index"].docs = list(self.page_raw)
@@ -118,14 +120,28 @@ class Fixture:
         return {c: list(self.db[c].raw_sorted())
                 for c in ("document_page_index", "plan_records", "audit_logs")}
 
-    def run(self, module, *extra, env_db=DB):
+    def run(self, module, *extra, env_db=DB, bind=True):
+        """Bound to this fixture's plan unless `bind=False`: the scripts ship
+        bound to the real plans, which are not in the repository."""
+        import scripts.migrate_plan_discipline_20260921 as _m1
+        import scripts.rollback_plan_discipline_20260921 as _r1
+        import scripts.migrate_plan_ocr_structure_20260922 as _m2
+        import scripts.rollback_plan_ocr_structure_20260922 as _r2
+        binds = [mock.patch.object(m, "EXPECT_PLAN", self.identity)
+                 for m in (_m1, _r1, _m2, _r2)] if bind else []
+        for b in binds:
+            b.start()
         out = io.StringIO()
         env = {"DB_NAME": env_db} if env_db is not None else {}
         with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out):
             if env_db is None:
                 os.environ.pop("DB_NAME", None)
-            code = module.main(["--snapshot-dir", self.dir, *extra],
-                               client=self.client)
+            try:
+                code = module.main(["--snapshot-dir", self.dir, *extra],
+                                   client=self.client)
+            finally:
+                for b in binds:
+                    b.stop()
         return code, out.getvalue()
 
     def close(self):
@@ -396,6 +412,47 @@ class ItNeverDefaultsToADatabase(Base):
             src = (_BACKEND / "scripts" / name).read_text(encoding="utf-8")
             self.assertNotIn('"test_database"', src, name)
             self.assertIn("P.target_db()", src, name)
+
+
+class APlanIsBoundToItsScript(Base):
+    """A snapshot and a plan check each other, which says nothing about WHICH
+    migration was asked for. An operator passing an older --snapshot-dir hands
+    a matched pair to whichever script they typed; without this, it would run
+    that plan and write every audit row under this script's name."""
+
+    def test_a_plan_this_script_is_not_for_is_refused(self):
+        before = self.f.image()
+        code, out = self.f.run(M, *GUARD, bind=False)   # ships bound to the real plan
+        self.assertEqual(code, 2)
+        self.assertIn("this is not the plan this script runs", out)
+        self.assertEqual(self.f.image(), before)
+
+    def test_the_rollback_refuses_it_too(self):
+        before = self.f.image()
+        code, out = self.f.run(R, *GUARD, bind=False)
+        self.assertEqual(code, 2)
+        self.assertIn("this is not the plan this script runs", out)
+        self.assertEqual(self.f.image(), before)
+
+    def test_a_dry_run_is_refused_too(self):
+        code, out = self.f.run(M, bind=False)
+        self.assertEqual(code, 2)
+        self.assertNotIn("DRY RUN", out)
+
+    def test_the_identity_is_the_migration_and_its_pages(self):
+        plan = json_util.loads(open(os.path.join(self.f.dir, "plan.json"),
+                                    encoding="utf-8").read())
+        same = P.plan_identity(plan)
+        self.assertEqual(same, self.f.identity)
+        moved = json_util.loads(json_util.dumps(plan))
+        moved["pages"] = moved["pages"][:1]             # one page fewer
+        self.assertNotEqual(P.plan_identity(moved), same)
+        renamed = json_util.loads(json_util.dumps(plan))
+        renamed["migration"] = "something else"
+        self.assertNotEqual(P.plan_identity(renamed), same)
+        rebuilt = json_util.loads(json_util.dumps(plan))
+        rebuilt["built_at"] = "2099-01-01T00:00:00Z"    # a rebuild is the same plan
+        self.assertEqual(P.plan_identity(rebuilt), same)
 
 
 class TheGate(Base):

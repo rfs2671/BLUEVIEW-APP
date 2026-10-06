@@ -35,6 +35,10 @@ from scripts.prod_guard import (
 
 NAME = "rollback_plan_discipline_20260921"
 
+#: The plan this script runs: the 2026-09-21 discipline migration, 96 pages.
+#: See plan_discipline_20260921.plan_identity.
+EXPECT_PLAN = "b526bf87c96ed2acb66620a6c58984ce468e445cf2f77b10fa6c23693e935b3c"
+
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -55,13 +59,18 @@ def raw_equal(db, row) -> bool:
             and [d.raw for d in recs] == [d.raw for d in snap])
 
 
-def main(argv=None, client=None) -> int:
+def main(argv=None, client=None, name: str = NAME,
+         expect_plan: str = "") -> int:
     refuse_legacy_flag(argv)
     args = build_parser().parse_args(argv)
     # Before the snapshot, before a connection: the database is named or the
     # run stops. There is no default.
     db_name = P.target_db()
     plan, pages, recs = P.load(args.snapshot_dir, args.plan)
+    refusal = P.plan_refusal(plan, expect_plan or EXPECT_PLAN)
+    if refusal:
+        print(refusal)
+        return 2
     P.with_project(plan)
     if client is None:
         url = os.environ.get("MONGO_URL")
@@ -71,7 +80,7 @@ def main(argv=None, client=None) -> int:
         client = MongoClient(url, document_class=RawBSONDocument)
     # Named, not read off sys.argv: the audit row must say which script wrote
     # it however it was launched.
-    db = audited(client[db_name], args, NAME)
+    db = audited(client[db_name], args, name)
 
     rows = P.survey(db, plan, pages, recs)
     P.print_table(rows, f"BEFORE ROLLBACK — {len(rows)} plan pages")
