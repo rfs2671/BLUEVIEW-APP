@@ -42188,6 +42188,10 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
     try:
         # Wait for screenshot to be generated (up to 30s)
         ann_id = annotation.get("id") or str(annotation.get("_id"))
+        # THE NOTE'S OWN PROJECT. This read `str(project_id)` with no
+        # project_id in scope: the NameError rose while building each send's
+        # arguments and the except below swallowed it - no email, no log.
+        project_id = annotation.get("project_id")
         screenshot_url = None
         for _ in range(15):
             await asyncio.sleep(2)
@@ -42255,18 +42259,18 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
                     text=text,
                     metadata={
                         "annotation_id": ann_id,
-                        "project_id": str(project_id),
+                        "project_id": str(project_id) if project_id else None,
                         "creator_name": creator_name,
                     },
                 )
             except Exception as e:
                 logger.error(
                     f"annotation send_notification error ann_id={ann_id} "
-                    f"recipient={recipient}: {e}"
+                    f"recipient={recipient}: {e!r}"
                 )
         logger.info(f"Annotation email dispatched to {len(recipient_emails)} recipient(s) for {ann_id}")
     except Exception as e:
-        logger.error(f"Failed to send annotation email: {e}")
+        logger.error(f"Failed to send annotation email: {e!r}")
 
 
 async def _send_reply_notification(annotation: dict, thread_entry: dict):
