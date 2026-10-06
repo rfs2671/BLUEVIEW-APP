@@ -1294,7 +1294,9 @@ git config --get core.hooksPath
 
 `.github/workflows/check-requirements.yml` runs the same
 clean-venv resolution check on every PR that touches
-`requirements.txt`. The path filter keeps it from running on
+`requirements.txt` or `backend/constraints.txt`, on the image's
+Python (3.12), with `-c backend/constraints.txt` as the Dockerfile
+installs. The path filter keeps it from running on
 PRs that don't touch deps (most of them). The check appears
 as a required status on the PR; resolution failures block
 the merge.

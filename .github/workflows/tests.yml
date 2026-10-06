@@ -156,8 +156,13 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      # -c backend/constraints.txt: the versions production runs, not PyPI's
+      # newest. The OCR stack (onnxruntime, opencv-python, pypdfium2) is not
+      # named in requirements.txt, so without it this job tested whatever
+      # shipped that morning -- pypdfium2 5.14.0 from 2026-10-04 while the
+      # image ran 5.13.0. See backend/constraints.txt and the Dockerfile.
       - name: Install backend dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -c backend/constraints.txt
 
       # Full suite, not a subset. Runs from backend/ so conftest's sys.path
       # insert resolves sibling imports the same way it does locally.
