@@ -27,12 +27,14 @@ from collections import Counter
 from typing import Dict, Optional, Sequence
 
 import numpy as np
+from PIL import Image
 
 from lib import plan_cells as pc
 from lib import plan_ocr
 from lib import plan_symbols as psym
 from lib import plan_tally as ptal
-from lib.plan_sheet import PT_PER_INCH, _pts, load_sheet, plan_unit_tags, register
+from lib.plan_sheet import (PT_PER_INCH, _pts, load_sheet, plan_unit_tags,
+                            register, symbol_objects)
 from lib.plan_space import build_space
 
 log = logging.getLogger(__name__)
@@ -79,8 +81,36 @@ def tag_only(text, tags, corr):
             ok |= {tok for tok in toks if psym._edit(tok, head) <= 1}
     return all(tok in ok for tok in toks)
 
+def _read(png: bytes):
+    """[(cx_px, cy_px, text, (x0, y0, x1, y1)_px)] - plan_ocr._boxes, keeping
+    each read's box. The tags on these sheets are drawn as outlines, so the
+    box is the only thing that says which geometry is the label's own (see
+    plan_symbols.symbol_at_label). Same engine, same bytes, same reads."""
+    eng = plan_ocr._load()
+    if eng is None or not png:
+        return []
+    try:
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        res, _elapsed = eng(np.asarray(img))
+    except Exception as e:
+        log.warning("OCR read failed: %r", e)
+        return []
+    out = []
+    for item in (res or []):
+        try:
+            box, text = item[0], item[1]
+            xs = [float(p[0]) for p in box]
+            ys = [float(p[1]) for p in box]
+            if text and text.strip():
+                out.append((sum(xs) / len(xs), sum(ys) / len(ys), text.strip(),
+                            (min(xs), min(ys), max(xs), max(ys))))
+        except Exception:
+            continue
+    return out
+
+
 def sweep(page, segs):
-    """[(text, x, y)] over the drawing, in display points.
+    """[(text, x, y, box)] over the drawing, in display points.
 
     THE CROP IS THE SHEET'S OWN: everything left of the title block's
     full-height rule (plan_cells.title_block_edge), full height. It was a
@@ -105,9 +135,19 @@ def sweep(page, segs):
             img.save(buf, format="PNG")
             sx = (x1 - x0) / max(img.width, 1)
             sy = (y1 - y0) / max(img.height, 1)
-            for b in plan_ocr._boxes(buf.getvalue()):
-                out.append((b[2], x0 + b[0] * sx, y0 + b[1] * sy))
+            for cx, cy, text, (bx0, by0, bx1, by1) in _read(buf.getvalue()):
+                out.append((text, x0 + cx * sx, y0 + cy * sy,
+                            (x0 + bx0 * sx, y0 + by0 * sy,
+                             x0 + bx1 * sx, y0 + by1 * sy)))
     return out
+
+
+def label_boxes(reads, lx, ly):
+    """The boxes of the reads that ARE the label at (lx, ly): kept reads
+    within LABEL_MERGE_IN of it - the same reads labels_in merged."""
+    m = _pts(LABEL_MERGE_IN)
+    return [r[3] for r in reads
+            if abs(r[1] - lx) <= m and abs(r[2] - ly) <= m]
 
 class Units:
     """Point-in-polygon against the confirmed apartment fills (polys2).
@@ -279,13 +319,18 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                       space["refused"], space, space["tags"])
 
     reads = sweep(mech_page, mech["segs"])
-    kept = [r for r in reads if tag_only(r[0], tags, corr)]
+    kept_boxed = [r for r in reads if tag_only(r[0], tags, corr)]
+    kept = [r[:3] for r in kept_boxed]
+    objects = symbol_objects(mech_page)
     labels = psym.labels_in(kept, tags, merge_pt=_pts(LABEL_MERGE_IN),
                             corroborations=corr)
     recs = []
     for tag, lx, ly in sorted(labels, key=lambda l: (l[2], l[1])):
-        pos, n = psym.symbol_at_label((lx, ly), mech["corners"],
-                                      _pts(LABEL_SEARCH_IN), _pts(SYMBOL_SPAN_IN))
+        # ONE CONNECTED OBJECT IN ONE DRAWING PASS, NEVER THE LABEL'S OWN
+        # GLYPHS (plan_symbols, #657). The same_pass growth is ruled.
+        pos, n = psym.symbol_at_label(
+            (lx, ly), objects, _pts(LABEL_SEARCH_IN), _pts(SYMBOL_SPAN_IN),
+            label_boxes=label_boxes(kept_boxed, lx, ly), same_pass=True)
         if pos is None:
             recs.append({"tag": None, "unit": None, "status": ptal.UNREAD,
                          "how": f"no geometry ({n} pts)", "label_at": (lx, ly)})

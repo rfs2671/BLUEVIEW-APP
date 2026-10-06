@@ -5,7 +5,7 @@ PyMuPDF is AGPL-3.0 and was ruled out for a hosted product
 steps need from a page comes from here instead, in DISPLAY space (the page's
 /Rotate applied, origin top-left, y down - the frame a person reads):
 
-    drawings  every painted path: {"layer", "items", "rect"}
+    drawings  every painted path: {"layer", "items", "rect", "colour"}
               items are ("l", p, q) straight segments and ("c", p0, c1, c2, p3)
               cubic curves; "layer" is the optional-content (CAD layer) name
               the path is marked with, "" when none; "rect" its bounding box
@@ -122,6 +122,7 @@ class PlanPage:
             d = self._path_items(obj, m)
             if d:
                 d["layer"] = layer or ""
+                d["colour"] = self._colour(obj, stroke.value)
                 out.append(d)
 
         pg = self._pg.raw
@@ -129,6 +130,20 @@ class PlanPage:
             walk(R.FPDFPage_GetObject(pg, i), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
                  None, 0)
         return out
+
+    @staticmethod
+    def _colour(obj, stroked) -> Optional[Tuple[int, int, int]]:
+        """(r, g, b) the path is drawn in - its stroke, or its fill when it is
+        only filled. Its drawing pass: the M sheets carry no layers, and the
+        architectural background under the mechanical work is drawn in
+        another colour (plan_symbols.symbol_at_label, same_pass)."""
+        import pypdfium2.raw as R
+        get = (R.FPDFPageObj_GetStrokeColor if stroked
+               else R.FPDFPageObj_GetFillColor)
+        vals = [ctypes.c_uint() for _ in range(4)]
+        if not get(obj, *(ctypes.byref(v) for v in vals)):
+            return None
+        return tuple(int(v.value) for v in vals[:3])
 
     def _path_items(self, obj, m) -> Optional[dict]:
         import pypdfium2.raw as R

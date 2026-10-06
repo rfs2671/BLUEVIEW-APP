@@ -1,30 +1,31 @@
 """EVERY ITEM IS ANSWERED RIGHT OR REFUSED - NEVER ANSWERED WRONG.
 
 The product metric for "which apartment does this exhaust fan / PTAC serve":
-per item, correct / wrong / UNKNOWN / refused. The bar is ZERO WRONG.
+per item, correct / wrong / UNKNOWN / refused.
+
+THE GATE IS ZERO WRONG ON THE LAYER PATH (operator ruling 2026-10-06). The
+geometric fallback is REPORTED, NOT GATED: it is the pipeline the layer path
+replaces, and its fail-safe refuses rather than guesses. Its one known wrong:
+A-100.01's EF-2(100) in 1D. The symbol is right - on the fan, since #657 -
+and the frozen geometric map assigns 1D's kitchen counter strip to 1C. The
+layer path answers 1D.
 
 TRUTH IS PINNED from render reads of each sheet (2026-09-21/22), not computed
-from any pipeline: (tag, position on the architectural sheet) -> the space the
-item serves. 47 items on three floors of the Boyland set.
+from any pipeline, and KEYED BY THE LABEL: (tag, the label's position on the
+MECHANICAL sheet) -> the space the item serves. 47 items on three floors.
 
-Scored 2026-09-22, same lib code, two page readers:
-                  PyMuPDF extraction (scored)   lib.plan_page (shipped)
-    layers path   47 correct, 0 wrong           47 correct, 0 wrong
-    geometry path 29 correct, 18 refused        28 correct, 1 WRONG, 18 refused
+It used to be keyed by the item's position on the architectural sheet,
+matched within 40pt. That position is the pipeline's own answer: when #657
+moved each symbol from its label onto its equipment, positions moved up to
+28in and the window stopped matching. The printed label does not move.
 
-THE ONE WRONG IS KNOWN AND THIS FILE KEEPS FAILING ON IT until it is ruled
-on: A-100.01's EF-2(100) in 1D goes to 1C on the geometry fallback.
-plan_symbols.symbol_at_label takes the LABEL's own outline glyphs as the
-symbol (the fan is the nested square up-left of it). The PyMuPDF extraction
-dropped every rectangle ("qu") on these sheets, so the label's centroid sat
-inside 1D; with the rectangles seen it moves 5pt onto the counter line and
-the host-wall probe steps into 1C. Both readers share the defect; the reader
-change exposed it.
+Scored 2026-10-06 on lib.plan_page after #657:
+    layers path   47 correct, 0 wrong
+    geometry path A-103.00 16/16, A-100.01 12 + 1 wrong, A-101.00 18 refused
 
 Covered here:
-  - the 47 truths on the PRIMARY (CAD-layer) path;
-  - the FALLBACK, by stripping every drawing's layer from the page: A-103.00
-    and A-100.01 still correct, A-101.00 fully refused, zero wrong;
+  - the 47 truths on the PRIMARY (CAD-layer) path - gated;
+  - the FALLBACK, by stripping every drawing's layer from the page - reported;
   - the fail-safe cases (9) that the geometric path's merged A-101.00 state,
     the M-100.00 prose/near-miss labels and the bike room pinned.
 
@@ -61,34 +62,39 @@ FLOORS = {
                  ("2A", "2B", "2C", "2D")),
 }
 
-#: PINNED from render reads: (tag, x, y on the architectural sheet) -> space
+#: PINNED from render reads: (tag, label x, label y ON THE MECHANICAL SHEET)
+#: -> the space the item serves. The label is what the sheet printed; it does
+#: not move when the symbol finder changes.
 TRUTH = {
-    "A-103.00": [("EF-2", 1108, 530, "4A"), ("EF-1", 1080, 710, "4A"),
-                 ("EF-1", 1078, 874, "4B"), ("EF-2", 1119, 1080, "4B"),
-                 ("EF-2", 1634, 516, "4C"), ("EF-1", 1679, 701, "4C"),
-                 ("EF-1", 1676, 872, "4D"), ("EF-2", 1630, 1077, "4D"),
-                 ("PTAC-3", 760, 552, "4A"), ("PTAC-1", 760, 709, "4A"),
-                 ("PTAC-1", 760, 862, "4B"), ("PTAC-3", 760, 1007, "4B"),
-                 ("PTAC-3", 2000, 567, "4C"), ("PTAC-1", 1999, 712, "4C"),
-                 ("PTAC-1", 1999, 858, "4D"), ("PTAC-3", 1999, 1016, "4D")],
-    "A-100.01": [("EF-1", 1095, 680, "1A"), ("EF-2", 1208, 711, "1A"),
-                 ("EF-1", 1159, 822, "1B"), ("EF-2", 1183, 978, "1B"),
-                 ("EF-2", 1598, 587, "1C"), ("EF-1", 1571, 814, "1C"),
-                 ("EF-2", 1710, 754, "1D"), ("EF-1", 1593, 941, "1D"),
-                 ("PTAC-3", 762, 571, "1A"),
-                 ("PTAC-1", 783, 663, "non-unit:BIKE ROOM"),
-                 ("PTAC-3", 759, 840, "1B"), ("PTAC-3", 1996, 632, "1C"),
-                 ("PTAC-2", 1989, 804, "1D")],
-    "A-101.00": [("EF-1", 1094, 675, "2A"), ("EF-2", 1170, 776, "2A"),
-                 ("EF-2", 1167, 807, "2B"), ("EF-1", 1109, 916, "2B"),
-                 ("EF-1", 1661, 674, "2C"), ("EF-2", 1585, 763, "2C"),
-                 ("EF-2", 1582, 814, "2D"), ("EF-1", 1659, 920, "2D"),
-                 ("PTAC-2", 999, 470, "2A"), ("PTAC-1", 761, 555, "2A"),
-                 ("PTAC-1", 761, 711, "2A"), ("PTAC-1", 761, 864, "2B"),
-                 ("PTAC-3", 759, 1010, "2B"), ("PTAC-2", 1661, 529, "2C"),
-                 ("PTAC-1", 2000, 567, "2C"), ("PTAC-1", 1999, 708, "2C"),
-                 ("PTAC-1", 1999, 858, "2D"), ("PTAC-3", 2000, 1013, "2D")],
+    "A-103.00": [("EF-2", 1089.0, 438.4, "4A"), ("EF-2", 1618.2, 439.5, "4C"),
+                 ("EF-1", 1647.7, 647.2, "4C"), ("EF-1", 1050.1, 655.0, "4A"),
+                 ("EF-1", 1643.1, 830.1, "4D"), ("EF-1", 1050.1, 832.5, "4B"),
+                 ("EF-2", 1617.3, 1040.9, "4D"), ("EF-2", 1089.5, 1041.1, "4B"),
+                 ("PTAC-3", 1923.2, 507.6, "4C"), ("PTAC-3", 783.2, 508.2, "4A"),
+                 ("PTAC-1", 1922.4, 660.9, "4C"), ("PTAC-1", 782.4, 666.3, "4A"),
+                 ("PTAC-1", 1922.5, 813.3, "4D"), ("PTAC-1", 782.6, 820.3, "4B"),
+                 ("PTAC-3", 1923.2, 967.5, "4D"), ("PTAC-3", 783.2, 968.7, "4B")],
+    "A-100.01": [("EF-2", 1571.9, 560.9, "1C"), ("EF-1", 1068.7, 606.8, "1A"),
+                 ("EF-2", 1189.0, 637.7, "1A"), ("EF-2", 1673.1, 703.9, "1D"),
+                 ("EF-1", 1536.6, 740.0, "1C"), ("EF-1", 1130.3, 798.4, "1B"),
+                 ("EF-2", 1159.2, 910.1, "1B"), ("EF-1", 1563.4, 918.7, "1D"),
+                 ("PTAC-3", 782.3, 517.4, "1A"), ("PTAC-3", 1922.4, 584.6, "1C"),
+                 ("PTAC-1", 781.2, 634.4, "non-unit:BIKE ROOM"),
+                 ("PTAC-2", 1922.1, 758.6, "1D"), ("PTAC-3", 782.1, 821.2, "1B")],
+    "A-101.00": [("EF-1", 1631.6, 645.9, "2C"), ("EF-1", 1067.5, 646.8, "2A"),
+                 ("EF-2", 1546.3, 690.2, "2C"), ("EF-2", 1150.7, 690.3, "2A"),
+                 ("EF-2", 1150.7, 803.7, "2B"), ("EF-2", 1546.2, 805.0, "2D"),
+                 ("EF-1", 1071.2, 849.1, "2B"), ("EF-1", 1632.6, 849.7, "2D"),
+                 ("PTAC-2", 965.3, 470.7, "2A"), ("PTAC-2", 1647.2, 470.8, "2C"),
+                 ("PTAC-1", 1923.3, 514.0, "2C"), ("PTAC-1", 783.1, 514.6, "2A"),
+                 ("PTAC-1", 1923.2, 667.1, "2C"), ("PTAC-1", 783.2, 672.6, "2A"),
+                 ("PTAC-1", 1923.2, 819.8, "2D"), ("PTAC-1", 783.0, 826.4, "2B"),
+                 ("PTAC-3", 1923.8, 973.7, "2D"), ("PTAC-3", 783.7, 974.8, "2B")],
 }
+
+#: a label is found where it was printed: OCR on the same render is
+#: deterministic, and two labels of one tag are never this close
+LABEL_MATCH_PT = 12.0
 
 
 class _StrippedLayers:
@@ -123,18 +129,19 @@ def _run(floor, eq, stripped=False):
 
 
 def _score(floor, stripped=False):
-    """{verdict: n} and the non-correct details, against the pinned truth."""
+    """{verdict: n} and the non-correct details, against the pinned truth,
+    each item matched to its truth BY ITS LABEL."""
     items = [r for eq in ("EF", "PTAC")
              for r in _run(floor, eq, stripped)["records"] if r.get("tag")]
     truth = TRUTH[floor]
     used, out, bad = set(), {"correct": 0, "wrong": 0, "unknown": 0,
                              "refused": 0, "unmatched": 0}, []
     for r in items:
-        x, y = r["at_arch"]
-        best = min(((abs(tx - x) + abs(ty - y), i) for i, (tg, tx, ty, _u)
+        x, y = r["label_at"]
+        best = min(((max(abs(tx - x), abs(ty - y)), i) for i, (tg, tx, ty, _u)
                     in enumerate(truth) if tg == r["tag"] and i not in used),
                    default=None)
-        if best is None or best[0] > 40:
+        if best is None or best[0] > LABEL_MATCH_PT:
             out["unmatched"] += 1
             bad.append((r["tag"], (round(x), round(y)), r["unit"], "unmatched"))
             continue
@@ -152,6 +159,7 @@ def _score(floor, stripped=False):
 
 
 class TheFortySevenTruthsOnTheLayerPath(unittest.TestCase):
+    """THE GATE: every item on the layer path answered, and answered right."""
 
     def _floor(self, floor, n):
         s, bad = _score(floor)
@@ -170,25 +178,31 @@ class TheFortySevenTruthsOnTheLayerPath(unittest.TestCase):
         self._floor("A-101.00", 18)
 
 
-class StrippedLayersFallBackToGeometry(unittest.TestCase):
-    """A sheet exported without layers: correct via geometry, or refused."""
+class TheFallbackIsReportedNotGated(unittest.TestCase):
+    """A sheet exported without layers goes to the geometric pipeline. Its
+    score is PRINTED, not asserted (operator ruling 2026-10-06): it is what
+    the layer path replaces. What is asserted is that it IS the fallback,
+    and that every item was matched to its label - a report over items it
+    never found would be a report of nothing."""
 
-    def test_a103_correct_via_geometry(self):
-        s, bad = _score("A-103.00", stripped=True)
-        res = _run("A-103.00", "EF", stripped=True)
+    def _report(self, floor, n):
+        s, bad = _score(floor, stripped=True)
+        res = _run(floor, "EF", stripped=True)
+        print(f"\n{floor} geometry fallback: {s}  not correct: {bad}")
         self.assertEqual(res["method"], "geometry")
         self.assertEqual(res["fallback_reason"], "no wall layer")
-        self.assertEqual((s["wrong"], s["correct"]), (0, 16), bad)
+        self.assertEqual((s["unmatched"], s["missed"]), (0, 0), bad)
+        self.assertEqual(sum(s[k] for k in ("correct", "wrong", "unknown",
+                                            "refused")), n)
 
-    def test_a100_correct_via_geometry(self):
-        s, bad = _score("A-100.01", stripped=True)
-        self.assertEqual((s["wrong"], s["correct"]), (0, 13), bad)
+    def test_a103(self):
+        self._report("A-103.00", 16)
 
-    def test_a101_fully_refused_never_wrong(self):
-        s, bad = _score("A-101.00", stripped=True)
-        self.assertEqual(s["wrong"], 0, bad)
-        self.assertEqual(s["correct"], 0)
-        self.assertEqual(s["refused"] + s["unknown"], 18, bad)
+    def test_a100(self):
+        self._report("A-100.01", 13)
+
+    def test_a101(self):
+        self._report("A-101.00", 18)
 
 
 # ── the fail-safe cases (formerly scratch test_failsafe, 9) ───────────────

@@ -53,6 +53,28 @@ def attributed_segments(page):
     return [((p[0], p[1], q[0], q[1]), d["layer"]) for d in page.drawings
             for it in d["items"] if it[0] == "l" for p, q in (it[1:3],)]
 
+def symbol_objects(page):
+    """[{"points", "layer", "colour"}] - ONE PER SUBPATH, one pen-down run,
+    for plan_symbols.symbol_at_label. A CAD export puts thousands of
+    unrelated strokes in one path operator; taken whole, "the object beside
+    the label" was half the sheet."""
+    out = []
+    for d in page.drawings:
+        run = []
+        for it in d["items"]:
+            pts = list(it[1:])
+            if run and (abs(run[-1][0] - pts[0][0]) > 1e-6
+                        or abs(run[-1][1] - pts[0][1]) > 1e-6):
+                out.append({"points": run, "layer": d["layer"],
+                            "colour": d.get("colour")})
+                run = []
+            run.extend(pts if not run else pts[1:])
+        if run:
+            out.append({"points": run, "layer": d["layer"],
+                        "colour": d.get("colour")})
+    return out
+
+
 def corners(segs, min_len_pt=1.5, snap=0.25):
     """Endpoints where two segments meet near-perpendicular.
 
