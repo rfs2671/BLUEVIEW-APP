@@ -214,6 +214,14 @@ class PlanPage:
         letters when chars are re-sorted by position; the content stream
         writes each line whole.
         """
+        return [(t, x, y) for t, x, y, _d in self.directed_words]
+
+    @property
+    def directed_words(self) -> List[Tuple[str, float, float, str]]:
+        """[(text, x, y, direction)] - `words`, keeping which way each one
+        reads (ltr / rtl / ttb / btt). A door elevation dimensions its width
+        horizontally and its height vertically; the direction is what tells
+        the two apart (plan_derive.widest_door_in)."""
         if self._words is None:
             import pdfplumber
             with pdfplumber.open(self.path) as pdf:
@@ -259,7 +267,7 @@ def _char_dir(c) -> str:
     return "ttb" if dy > 0 else "btt"
 
 
-def _words_by_direction(page) -> List[Tuple[str, float, float]]:
+def _words_by_direction(page) -> List[Tuple[str, float, float, str]]:
     groups = {}
     for c in page.chars:
         groups.setdefault(_char_dir(c), set()).add(id(c))
@@ -273,7 +281,7 @@ def _words_by_direction(page) -> List[Tuple[str, float, float]]:
                                    line_dir_rotated=line_dir,
                                    use_text_flow=True):
             out.append((w["text"], (w["x0"] + w["x1"]) / 2,
-                        (w["top"] + w["bottom"]) / 2))
+                        (w["top"] + w["bottom"]) / 2, d))
     return out
 
 
