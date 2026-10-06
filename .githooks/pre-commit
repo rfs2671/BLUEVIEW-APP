@@ -3,7 +3,8 @@
 # pre-commit hook. Two checks, each with its own fast path; both run, and
 # the commit is blocked if either fails.
 #
-#   1. requirements.txt resolves in a clean venv   (Phase C2.2)
+#   1. requirements.txt resolves in a clean venv,  (Phase C2.2)
+#      under backend/constraints.txt               (2026-10-06)
 #   2. no bare absence literal in a staged test    (2026-09-20)
 #
 # Enable this hook locally:  bash scripts/install-hooks.sh
@@ -27,11 +28,15 @@ STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
 # This hook prevents the pattern from recurring.
 #
 # Behavior:
-#   • Fast path — requirements.txt not staged → skip silently.
-#   • Slow path — requirements.txt staged:
+#   • Fast path — neither requirements.txt nor backend/constraints.txt
+#     staged → skip silently.
+#   • Slow path — either staged:
 #       - Build a temp venv from the same `python` pip would use
 #         on Railway.
-#       - Run `pip install --dry-run -r requirements.txt`.
+#       - Run `pip install --dry-run -r requirements.txt
+#         -c backend/constraints.txt`, as the Dockerfile installs. A
+#         constraint that conflicts with a requirement fails here, not
+#         in the Docker build.
 #       - On ResolutionImpossible (or any non-zero exit): block
 #         the commit with a clear error pointing at the mismatch.
 #
@@ -47,12 +52,13 @@ STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
 check_requirements() {
     # Match BOTH the current root-level path AND the future
     # backend/-relative path so the hook keeps working if the file moves.
+    # The constraints change what resolves just as much, so they count.
     if ! printf '%s\n' "$STAGED" \
-            | grep -qE '^(backend/)?requirements\.txt$'; then
+            | grep -qE '^((backend/)?requirements\.txt|backend/constraints\.txt)$'; then
         return 0
     fi
 
-    echo "[pre-commit] requirements.txt staged — running dependency-resolution check"
+    echo "[pre-commit] requirements.txt or constraints.txt staged — running dependency-resolution check"
 
     # Locate the actual file (root or backend/, whichever exists).
     local REQ_FILE=""
@@ -94,7 +100,8 @@ check_requirements() {
 
     DRYRUN_LOG="$(mktemp)"
 
-    if "$PIP" install --dry-run -r "$REQ_FILE" >"$DRYRUN_LOG" 2>&1; then
+    if "$PIP" install --dry-run -r "$REQ_FILE" -c backend/constraints.txt \
+            >"$DRYRUN_LOG" 2>&1; then
         END_TS=$(date +%s)
         ELAPSED=$((END_TS - START_TS))
         echo "[pre-commit] ✓ requirements.txt resolves cleanly (${ELAPSED}s)"

@@ -9,8 +9,8 @@ Pin the contracts:
   • scripts/install-hooks.sh sets core.hooksPath to .githooks
     and is idempotent.
   • .github/workflows/check-requirements.yml runs on PRs that
-    touch requirements.txt, sets up Python 3.11, builds a clean
-    venv, and runs pip install --dry-run.
+    touch requirements.txt, sets up the image's Python (3.12),
+    builds a clean venv, and runs pip install --dry-run.
   • Runbook §13 documents the C2 → C2.1 incident as the rationale
     so future operators understand WHY the hook exists.
 
@@ -94,8 +94,13 @@ class TestPreCommitHook(unittest.TestCase):
             self.text,
         )
         # Match BOTH root-level + backend/-relative paths, future-
-        # proofing if the file moves later.
-        self.assertIn("'^(backend/)?requirements\\.txt$'", self.text)
+        # proofing if the file moves later -- and the constraints, which
+        # change what resolves as much as requirements.txt does. The
+        # pattern's behaviour is pinned in
+        # test_ci_installs_what_production_installs.
+        self.assertIn(
+            "'^((backend/)?requirements\\.txt|backend/constraints\\.txt)$'",
+            self.text)
 
     def test_uses_dry_run_pip_install(self):
         # The actual check. --dry-run is what makes this fast (no
@@ -211,10 +216,12 @@ class TestCheckRequirementsWorkflow(unittest.TestCase):
         self.assertIn("paths:", self.text)
         self.assertIn("requirements.txt", self.text)
 
-    def test_runs_on_python_311(self):
-        # Pin to the same minor Railway uses. If Railway bumps,
-        # bump this in lockstep — see runbook §13.3.
-        self.assertIn("python-version: '3.11'", self.text)
+    def test_runs_on_the_image_s_python(self):
+        # Pin to the same minor the image uses (Dockerfile: python:3.12-slim).
+        # It said 3.11 for as long as the image said 3.12; the equality is
+        # derived from the Dockerfile in
+        # test_ci_installs_what_production_installs.
+        self.assertIn("python-version: '3.12'", self.text)
 
     def test_creates_clean_venv(self):
         self.assertIn("python -m venv", self.text)
