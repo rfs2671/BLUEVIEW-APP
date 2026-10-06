@@ -45689,6 +45689,12 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
     # destination: the chunks go when the reader does.
     """
     await db[PLAN_RECORDS].delete_many({"file_id": file_id, "page_number": page_number})
+    # A GLYPH ROW IS CITED TO ITS MECHANICAL SHEET, so the delete above clears
+    # it when that sheet is re-indexed. Its apartment came from an
+    # ARCHITECTURAL sheet too; re-indexing that one stales it as surely.
+    await db[PLAN_RECORDS].delete_many({
+        "record_type": "glyph", "payload.arch.file_id": file_id,
+        "payload.arch.page_number": page_number})
     authority = plan_records.page_authority(raw_text, title_text, file_name or "")
     page_ctx = {
         "project_id": project_id, "company_id": company_id,
@@ -45728,6 +45734,103 @@ async def _write_page_records(*, project_id: str, company_id: str, file_id: str,
         logger.exception("record write failed %s p%s: %r", file_name, page_number, e)
         return 0
     return len(records)
+
+
+async def _write_glyph_records(project_id: str, rows: List[dict]) -> int:
+    """Replace the project's glyph rows with one pass's rows.
+
+    WHOLE-PROJECT REPLACE, because a pass is whole-project: pairing, the door
+    width and the families are all derived across the set, so a row left
+    from an older pass would be an answer to a different set of inputs."""
+    await db[PLAN_RECORDS].delete_many(
+        {"project_id": str(project_id), "record_type": "glyph"})
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        r["created_at"] = now
+        r["index_version"] = PLAN_INDEX_VERSION
+        r["record_version"] = plan_records.RECORD_VERSION
+    await db[PLAN_RECORDS].insert_many(rows)
+    return len(rows)
+
+
+_GLYPH_PASS_RUNNING: set = set()
+_DOOR_SCHEDULE_TEXT = re.compile(r"DOOR\s+SCHEDULE", re.I)
+
+
+async def _plan_glyph_pass(project_id: str) -> dict:
+    """Run the equipment-placement pass over the project's current sheets
+    and write its rows (lib.plan_glyph_pass, lib.plan_emit).
+
+    NOT CALLED BY THE INDEXER. It runs when an operator starts it
+    (POST .../plan-glyphs/run): its rows change what the count-answer gate
+    allows (plan_search.glyph_tallies), and the first write is reviewed by
+    render before it is made."""
+    from lib.plan_glyph_pass import run_pass
+    from lib.plan_page import PlanPage
+
+    pid = str(project_id)
+    live = set(await _live_plan_file_ids(pid) or [])
+    raw = await db.document_page_index.find(
+        {"project_id": pid},
+        {"file_id": 1, "file_hash": 1, "file_name": 1, "page_number": 1,
+         "sheet_number": 1, "sheet_title": 1, "discipline": 1,
+         "company_id": 1, "superseded_by": 1, "raw_text": 1},
+    ).to_list(5000)
+    pages, door_pages = [], []
+    for p in raw:
+        if p.get("file_id") not in live or p.get("superseded_by") in live:
+            continue
+        row = {"project_id": pid, "company_id": p.get("company_id"),
+               "file_id": p.get("file_id"), "file_hash": p.get("file_hash"),
+               "file_name": p.get("file_name"), "page_id": str(p["_id"]),
+               "page_number": p.get("page_number"),
+               "sheet_number": p.get("sheet_number"),
+               "sheet_title": p.get("sheet_title"),
+               "discipline": p.get("discipline")}
+        pages.append(row)
+        if _DOOR_SCHEDULE_TEXT.search(p.get("raw_text") or ""):
+            door_pages.append(row)
+    current_ids = [r["page_id"] for r in pages]
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule",
+         "page_id": {"$in": current_ids}, "sheet_number": {"$regex": "^M-"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(2000)
+    schedules = [{"name": (s.get("payload") or {}).get("name"),
+                  "columns": (s.get("payload") or {}).get("columns"),
+                  "rows": (s.get("payload") or {}).get("rows"),
+                  "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
+                 for s in sched]
+
+    files = {str(f["_id"]): f for f in await db.project_files.find(
+        {"project_id": pid, "is_deleted": {"$ne": True}},
+        {"r2_key": 1, "name": 1}).to_list(2000)}
+    import tempfile as _tf
+    with _tf.TemporaryDirectory(prefix="glyphpass-") as tmp:
+        paths: Dict[str, str] = {}
+
+        def open_page(page):
+            fid = str(page["file_id"])
+            if fid not in paths:
+                rec = files.get(fid)
+                if not rec or not rec.get("r2_key") or not _r2_client:
+                    raise FileNotFoundError(f"no R2 object for {page.get('file_name')}")
+                path = os.path.join(tmp, f"{fid}.pdf")
+                obj = _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=rec["r2_key"])
+                with open(path, "wb") as fh:
+                    fh.write(obj["Body"].read())
+                paths[fid] = path
+            return PlanPage(paths[fid], int(page["page_number"]))
+
+        out = await asyncio.to_thread(run_pass, pages, open_page, schedules,
+                                      door_pages)
+    written = await _write_glyph_records(pid, out["rows"])
+    out["summary"]["written"] = written
+    logger.info("plan glyph pass %s: %s", pid, out["summary"])
+    return out["summary"]
 
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
@@ -54260,6 +54363,32 @@ async def list_failed_plan_index_jobs(current_user=Depends(get_admin_user)):
         })
     out.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
     return {"count": len(out), "jobs": out}
+
+
+@api_router.post("/projects/{project_id}/plan-glyphs/run",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def run_plan_glyph_pass(project_id: str, current_user=Depends(get_admin_user)):
+    """Start the equipment-placement pass for a project (admin only).
+
+    It WRITES plan_records rows the count-answer gate reads, so it is never
+    started by indexing - an operator starts it, after the pass has been run
+    over the set and reviewed. Runs in the background: the OCR sweep is
+    minutes per mechanical sheet."""
+    pid = str(project_id)
+    if pid in _GLYPH_PASS_RUNNING:
+        return {"started": False, "reason": "a pass is already running"}
+    _GLYPH_PASS_RUNNING.add(pid)
+
+    async def _go():
+        try:
+            await _plan_glyph_pass(pid)
+        except Exception as e:
+            logger.exception("plan glyph pass %s failed: %r", pid, e)
+        finally:
+            _GLYPH_PASS_RUNNING.discard(pid)
+
+    asyncio.create_task(_go())
+    return {"started": True}
 
 
 @api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",

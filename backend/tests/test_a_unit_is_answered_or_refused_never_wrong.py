@@ -219,7 +219,9 @@ class AMergedRegionIsRefused(unittest.TestCase):
             _placed(_run("A-101.00", "PTAC", True))
         self.assertEqual(len(items), 18)                  # 8 EF + 10 PTAC
         self.assertEqual([r["unit"] for r in items], [None] * 18)
-        self.assertTrue(all(r["glyph_status"] == "unplaced" for r in items))
+        # the glyph named itself (resolved); it is the PLACEMENT that refused
+        self.assertTrue(all(r["glyph_status"] == "resolved" for r in items))
+        self.assertTrue(all(r["placement"] == "refused" for r in items))
         self.assertTrue(all(r["reason"] for r in items))
 
     def test_a101_per_unit_split_is_unavailable_and_names_the_tags(self):

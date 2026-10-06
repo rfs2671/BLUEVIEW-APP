@@ -73,7 +73,10 @@ TIER_ORDER = (TIER_SCHEDULE_CELL, TIER_OCR_GRID, TIER_TAG_LEGEND,
 CONTESTED_CELL = "(readings disagree)"
 
 RECORD_TYPES = ("schedule", "element", "note", "legend_entry", "callout",
-                "dimension", "tag", "text")
+                "dimension", "tag", "text",
+                # a located symbol, assembled across two sheets (plan_emit) -
+                # written by the project's glyph pass, not by a page's index
+                "glyph")
 
 # A cell that identifies the row, and one that says how many. Everything else
 # is data the answer does not lead with.

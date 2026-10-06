@@ -168,6 +168,14 @@ class Units:
         self.lab = None
         shape = next((r.shape for r in regions.values() if r is not None),
                      next((m.shape for m, _h in refused), None))
+        if shape is None:
+            # A FLOOR WITH NO UNITS (A-105.01, the roof: a derived answer, not
+            # a refusal). Nothing is labelled a unit; the grid still says
+            # which named space a point is in.
+            grid = (status or {}).get("closed_lab")
+            if grid is None:
+                grid = (status or {}).get("grid")
+            shape = grid.shape if grid is not None else (0, 0)
         self.lab = np.full(shape, "", dtype=object)
         for m, h in refused:
             self.lab[m] = "!" + ",".join(h)
@@ -293,11 +301,34 @@ class Units:
                       "the wall normal" + (" (started outdoors)" if start_outdoors else ""))
 
 
+#: where a located symbol landed - kept apart from `glyph_status`, which is
+#: plan_tally's vocabulary (resolved / unread / contested / unsupported_unit)
+#: and says whether the GLYPH named itself, not where it is
+PLACED, PLACED_NON_UNIT, REFUSED = "placed", "placed-non-unit", "refused"
+
+
+def _union(boxes):
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
 def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                 corroborations: Optional[Dict[str, str]],
                 unit_tags: Sequence[str], widest_door_in: Optional[float],
-                force_geometry: bool = False) -> dict:
-    """The takeoff for one equipment type on one floor."""
+                force_geometry: bool = False, reads=None, space=None) -> dict:
+    """The takeoff for one equipment type on one floor.
+
+    `reads` is the mechanical sheet's sweep, when the caller already has it:
+    the sweep is most of the cost, and every equipment family on one sheet
+    reads the same pixels. `space` likewise: the architectural sheet's
+    membership map (plan_space.build_space) does not depend on the family.
+
+    Each record: tag, unit, glyph_status (plan_tally's vocabulary), placement
+    (placed / placed-non-unit / refused, None when no symbol was found), how,
+    reason, label_at, label_box, label_text, symbol_at, symbol_bbox,
+    at_arch."""
     ok, why = plan_ocr.probe()
     if not ok:
         return {"refused": f"no OCR engine ({why})"}
@@ -310,15 +341,17 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
     dx, dy = reg_["dx"], reg_["dy"]
     unit_labels = plan_unit_tags(arch["corners"], arch["words"], unit_tags) \
         if reg_["usable"] else {}
-    units, space = None, {"incomplete": {}, "refused": [], "ratio": {},
-                          "method": None, "fallback_reason": None}
+    units, given = None, space
+    space = {"incomplete": {}, "refused": [], "ratio": {},
+             "method": None, "fallback_reason": None}
     if reg_["usable"]:
-        space = build_space(arch_page, unit_tags, widest_door_in, arch,
-                            force_geometry)
+        space = given or build_space(arch_page, unit_tags, widest_door_in, arch,
+                                     force_geometry)
         units = Units(space["units"], space["lo"], space["cell_pt"],
                       space["refused"], space, space["tags"])
 
-    reads = sweep(mech_page, mech["segs"])
+    if reads is None:
+        reads = sweep(mech_page, mech["segs"])
     kept_boxed = [r for r in reads if tag_only(r[0], tags, corr)]
     kept = [r[:3] for r in kept_boxed]
     objects = symbol_objects(mech_page)
@@ -328,31 +361,49 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
     for tag, lx, ly in sorted(labels, key=lambda l: (l[2], l[1])):
         # ONE CONNECTED OBJECT IN ONE DRAWING PASS, NEVER THE LABEL'S OWN
         # GLYPHS (plan_symbols, #657). The same_pass growth is ruled.
+        boxes = label_boxes(kept_boxed, lx, ly)
+        # THE LABEL AS PRINTED: the reads that make it, left to right. This is
+        # the record's quote; `tag` is what it snapped to in the closed set.
+        m_ = _pts(LABEL_MERGE_IN)
+        printed = " ".join(r[0] for r in sorted(
+            (r for r in kept_boxed if abs(r[1] - lx) <= m_ and abs(r[2] - ly) <= m_),
+            key=lambda r: r[1]))
+        rep = {}
         pos, n = psym.symbol_at_label(
             (lx, ly), objects, _pts(LABEL_SEARCH_IN), _pts(SYMBOL_SPAN_IN),
-            label_boxes=label_boxes(kept_boxed, lx, ly), same_pass=True)
+            label_boxes=boxes, same_pass=True, report=rep)
         if pos is None:
-            recs.append({"tag": None, "unit": None, "status": ptal.UNREAD,
-                         "how": f"no geometry ({n} pts)", "label_at": (lx, ly)})
+            recs.append({"tag": None, "unit": None, "glyph_status": ptal.UNREAD,
+                         "placement": None, "how": f"no geometry ({n} pts)",
+                         "reason": f"no symbol beside the label ({n} pts)",
+                         "label_at": (lx, ly), "label_box": _union(boxes),
+                         "label_text": printed,
+                         "symbol_at": None, "symbol_bbox": None,
+                         "at_arch": None})
             continue
         back = (pos[0] - dx, pos[1] - dy)
         unit, how = units.unit_of_normal(*back) if units else (None, "refused: "
                                                                "registration not usable")
-        recs.append({"tag": tag, "unit": unit, "status": ptal.RESOLVED,
+        recs.append({"tag": tag, "unit": unit, "glyph_status": ptal.RESOLVED,
+                     "placement": (REFUSED if not unit else
+                                   PLACED_NON_UNIT if unit.startswith("non-unit:")
+                                   else PLACED),
                      "how": how,
-                     "glyph_status": ("unplaced" if not unit else
-                                      "placed-non-unit" if unit.startswith("non-unit:")
-                                      else "placed"),
                      "reason": None if unit else how,
-                     "label_at": (lx, ly), "symbol_at": tuple(pos),
+                     "label_at": (lx, ly), "label_box": _union(boxes),
+                     "label_text": printed,
+                     "symbol_at": tuple(pos),
+                     "symbol_bbox": tuple(rep["bbox"]) if rep.get("bbox") else None,
                      "at_arch": back})
 
-    t = ptal.tally(recs, sorted(unit_labels) if unit_labels else None)
+    t = ptal.tally([{"tag": r["tag"], "unit": r["unit"],
+                     "status": r["glyph_status"]} for r in recs],
+                   sorted(unit_labels) if unit_labels else None)
     why_ = []
     if space["incomplete"]:
         why_.append("sheet incomplete: " + "; ".join(
             f"{k} {v}" for k, v in sorted(space["incomplete"].items())))
-    ref = [r for r in recs if r.get("glyph_status") == "unplaced"
+    ref = [r for r in recs if r.get("placement") == REFUSED
            and (r.get("reason") or "").startswith("refused: ")]
     if ref:
         why_.append(f"{len(ref)} item(s) refused")
@@ -366,4 +417,12 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
             "method": space.get("method"),
             "fallback_reason": space.get("fallback_reason"),
             "registration": reg_,
+            # units whose region was refused (it held other than one tag) or
+            # incomplete: nothing in them can be answered, which the emitted
+            # rows must say rather than leave as silence
+            "refused_tags": sorted(({t_ for r_ in space.get("refused") or []
+                                     for t_ in (r_[1] if isinstance(r_, (list, tuple))
+                                                and len(r_) > 1 else [])}
+                                    | set(space.get("incomplete") or {}))
+                                   - {"UNKNOWN"}),
             "labels_by_tag": dict(Counter(t_ for t_, _x, _y in labels))}
