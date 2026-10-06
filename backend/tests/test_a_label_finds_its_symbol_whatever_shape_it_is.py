@@ -16,6 +16,10 @@ was the whole world.
 
 Anchoring on the printed label removes it: the sheet says where its
 equipment is by printing a tag beside it.
+
+`symbol_at_label` takes OBJECTS - a path's vertices, with its layer and
+colour - since a symbol is one connected object rather than an average of
+the corners around a point (see test_a_symbol_is_not_its_label.py).
 """
 
 from __future__ import annotations
@@ -51,23 +55,25 @@ class ALabelFindsARectangleAsWellAsAFan(unittest.TestCase):
     def test_a_corner_rich_glyph(self):
         """The EF shape: many corners in a small radius."""
         pts = _ring(1000.0, 1000.0, 29, 10.0)
-        got, n = ps.symbol_at_label((1030.0, 1000.0), pts,
+        got, n = ps.symbol_at_label((1030.0, 1000.0), [(pts,)],
                                     search_pt=60 * PPI, symbol_pt=20 * PPI)
         self.assertIsNotNone(got)
         self.assertEqual(n, 29)
-        self.assertAlmostEqual(got[0], 1000.0, places=6)
+        # the centre of the object's box, so a 29-gon's is 0.03pt off its
+        # centroid - a point ON the symbol either way
+        self.assertAlmostEqual(got[0], 1000.0, delta=0.05)
 
     def test_a_four_cornered_rectangle(self):
         """The PTAC shape. THIS IS THE CASE THE DENSITY FINDER CANNOT SEE."""
         pts = _rect(1000.0, 1000.0, 25.0, 6.0)
-        got, n = ps.symbol_at_label((1060.0, 1000.0), pts,
+        got, n = ps.symbol_at_label((1060.0, 1000.0), [(pts,)],
                                     search_pt=90 * PPI, symbol_pt=60 * PPI)
         self.assertIsNotNone(got)
         self.assertEqual(n, 4)
         self.assertAlmostEqual(got[0], 1000.0, places=6)
 
     def test_nothing_beside_the_label_returns_nothing(self):
-        got, n = ps.symbol_at_label((1000.0, 1000.0), [(5000.0, 5000.0)],
+        got, n = ps.symbol_at_label((1000.0, 1000.0), [([(5000.0, 5000.0)],)],
                                     search_pt=60 * PPI, symbol_pt=20 * PPI)
         self.assertIsNone(got)
 
@@ -75,13 +81,14 @@ class ALabelFindsARectangleAsWellAsAFan(unittest.TestCase):
         """The cluster grows from the point NEAREST the label, so a tag a few
         feet from its own symbol still lands on it rather than on the
         midpoint between two."""
-        pts = _rect(1000.0, 1000.0, 20.0, 6.0) + _rect(1400.0, 1000.0, 20.0, 6.0)
-        got, _n = ps.symbol_at_label((1040.0, 1000.0), pts,
+        objs = [(_rect(1000.0, 1000.0, 20.0, 6.0),),
+                (_rect(1400.0, 1000.0, 20.0, 6.0),)]
+        got, _n = ps.symbol_at_label((1040.0, 1000.0), objs,
                                      search_pt=600.0, symbol_pt=60.0)
         self.assertLess(abs(got[0] - 1000.0), 30.0)
 
     def test_a_lone_stray_point_is_not_a_symbol(self):
-        got, n = ps.symbol_at_label((1000.0, 1000.0), [(1005.0, 1000.0)],
+        got, n = ps.symbol_at_label((1000.0, 1000.0), [([(1005.0, 1000.0)],)],
                                     search_pt=60.0, symbol_pt=20.0)
         self.assertIsNone(got)
         self.assertEqual(n, 1)
