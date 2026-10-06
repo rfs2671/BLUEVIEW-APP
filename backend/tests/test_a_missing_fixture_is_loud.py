@@ -24,6 +24,7 @@ import sys
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
@@ -76,10 +77,14 @@ class TheSearchIncludesSomewhereACheckoutCanReach(unittest.TestCase):
         """The old expression could not express an in-checkout location at
         all, which is why committing the fixtures would not have helped."""
         root = fx.repo_root()
-        inside = [p for p in fx.search_paths()
-                  if root in p.parents or p == root]
+        # The DEFAULT search: a set PLAN_FIXTURE_PDFS is authoritative and
+        # replaces the list, so with it set this asked the wrong question.
+        with mock.patch.dict(os.environ):
+            os.environ.pop(fx.ENV_VAR, None)
+            paths = fx.search_paths()
+        inside = [p for p in paths if root in p.parents or p == root]
         self.assertTrue(inside, f"no candidate inside {root}: "
-                                f"{[str(p) for p in fx.search_paths()]}")
+                                f"{[str(p) for p in paths]}")
 
     def test_the_env_var_wins(self):
         saved = os.environ.get(fx.ENV_VAR)
