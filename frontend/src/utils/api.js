@@ -1741,6 +1741,12 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Phase 1: may this user connect WhatsApp, have they, and the wa.me link.
+  getMe: async () => {
+    const response = await apiClient.get('/api/whatsapp/me');
+    return response.data;
+  },
+
   activate: async () => {
     const response = await apiClient.post('/api/whatsapp/activate');
     return response.data;

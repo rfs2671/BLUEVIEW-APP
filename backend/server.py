@@ -67,6 +67,8 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
+from lib import wa_dm  # noqa: E402
+from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
 # one is edited, and this one is both printed on a compliance document and
@@ -1007,7 +1009,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 SCREENSHOT_ENABLED = False
 
-scheduler = AsyncIOScheduler()
+# Every async job added with an `id` is wrapped in a Mongo slot lease, so each
+# firing runs once across replicas (lib/scheduler_lease.py). The lambda reads
+# the module-level `db` at call time, so tests that patch server.db see it.
+from lib.scheduler_lease import make_leased_scheduler_class  # noqa: E402
+scheduler = make_leased_scheduler_class(AsyncIOScheduler, lambda: db)()
 
 # ── Phase C1: Sentry error tracking ───────────────────────────────
 #
@@ -16854,6 +16860,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     "whatsapp_groups", "whatsapp_checklists", "whatsapp_link_codes",
     "whatsapp_messages", "whatsapp_send_log", "whatsapp_conversation_state",
     "whatsapp_voice_events", "whatsapp_audio_probe", "whatsapp_webhook_log",
+    # Phase 1: proactive direct-message ledger rows carry the project they
+    # were about.
+    "whatsapp_notification_ledger",
 ]
 
 
@@ -43000,6 +43009,399 @@ def _group_history_filter(binding: dict, since: Optional[datetime] = None,
     }
 
 
+# ── DIRECT MESSAGES: OPT-IN, REPLY WINDOW, LEDGER, PACING ──────────────────
+#
+# The rules are in lib/wa_dm.py. These functions are the reads and writes.
+#
+#   whatsapp_optins             one row per PHONE (digits). status active |
+#                               opted_out | superseded. Written only by an
+#                               inbound START / STOP from that phone.
+#   whatsapp_dm_reply_windows   one row per phone, opened by that phone's own
+#                               inbound message; lets the bot REPLY a few
+#                               times for a few minutes. TTL on expires_at.
+#   whatsapp_notification_ledger
+#                               one row per PROACTIVE direct message, _id =
+#                               the dedupe key (user, project, kind, window).
+#                               The insert is the claim: a second send of the
+#                               same notification is a DuplicateKeyError and
+#                               is refused before WaAPI is called.
+#
+# WHY A NEW LEDGER AND NOT whatsapp_send_log. send_log is a group digest
+# ledger: its unique key is (group_id, job_type, sent_date_est), it has a
+# 45-day TTL, and widening that unique index to (user, project, kind, window)
+# means dropping and rebuilding it on a live collection — a migration. Its
+# rows also mean something else (a group digest went out today). The ledger
+# here is keyed on the dedupe key itself, so the claim is one atomic insert.
+
+WA_OPTINS = "whatsapp_optins"
+WA_DM_WINDOWS = "whatsapp_dm_reply_windows"
+WA_LEDGER = "whatsapp_notification_ledger"
+WA_MONITOR = "whatsapp_instance_monitor"
+WA_LEDGER_RETENTION_DAYS = 180
+
+# Which preference gates which kind of proactive message. A kind not listed
+# here is gated by `enabled` alone.
+_WA_KIND_PREF = {
+    "summary": "summary_frequency",
+    "reply_alert": "reply_alerts",
+    "reminder": "reminders",
+}
+
+
+async def _find_users_by_phone(phone: str, *, company_id: Any = None) -> list:
+    """Live users whose phone is this number in any stored spelling.
+
+    Empty input matches nobody: _contact_phone_variants("") is []. With
+    `company_id`, only that company's users — the resolver's scope."""
+    variants = _contact_phone_variants(phone)
+    if not variants:
+        return []
+    query: Dict[str, Any] = {"phone": {"$in": variants},
+                             "is_deleted": {"$ne": True}}
+    if company_id is not None:
+        if not str(company_id or "").strip():
+            return []
+        query["company_id"] = _company_id_filter(company_id)
+    try:
+        return await db.users.find(query, {"password": 0}).to_list(20)
+    except Exception as e:
+        logger.warning(f"user-by-phone lookup failed: {type(e).__name__}")
+        return []
+
+
+async def resolve_wa_identity(jid: Any, company_id: Any) -> dict:
+    """A sender, @mention or reply author -> a user of `company_id`, or why not.
+
+    Company-scoped by construction: the user query carries the company, so a
+    number registered in another tenant resolves to nobody here.
+
+    @c.us (and a bare number) is a phone and is matched against users.phone
+    in every spelling the app stores. @lid is WhatsApp's privacy identifier:
+    it is NOT derived from the phone and nothing in this system maps one to
+    the other, so it is reported unresolvable rather than guessed at."""
+    raw = str(jid or "").strip()
+    domain = raw.split("@", 1)[1].lower() if "@" in raw else ""
+    if not str(company_id or "").strip():
+        return {"resolved": False, "reason": "no_company", "kind": domain or "phone"}
+    if domain == "lid":
+        return {"resolved": False, "reason": "lid_unmapped", "kind": "lid"}
+    if domain not in ("", "c.us", "s.whatsapp.net"):
+        return {"resolved": False, "reason": "not_a_person", "kind": domain}
+    digits = wa_dm.phone_digits(raw)
+    if not digits:
+        return {"resolved": False, "reason": "no_phone", "kind": "phone"}
+    users = await _find_users_by_phone(digits, company_id=company_id)
+    if len(users) == 1:
+        u = users[0]
+        return {"resolved": True, "kind": "phone", "user_id": str(u.get("_id")),
+                "role": wa_dm.norm_role(u.get("role")),
+                "name": u.get("name") or ""}
+    return {"resolved": False, "kind": "phone",
+            "reason": "no_user_in_company" if not users else "ambiguous"}
+
+
+async def _open_dm_reply_window(phone: str) -> None:
+    digits = wa_dm.phone_digits(phone)
+    if not digits:
+        return
+    now = datetime.now(timezone.utc)
+    try:
+        await db[WA_DM_WINDOWS].update_one(
+            {"_id": digits},
+            {"$set": {"opened_at": now,
+                      "expires_at": now + timedelta(
+                          seconds=wa_dm.REPLY_WINDOW_SECONDS),
+                      "sends_left": wa_dm.REPLY_WINDOW_MAX_SENDS}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"reply window open failed: {type(e).__name__}")
+
+
+async def _consume_reply_window(phone: str) -> bool:
+    digits = wa_dm.phone_digits(phone)
+    if not digits:
+        return False
+    try:
+        row = await db[WA_DM_WINDOWS].find_one_and_update(
+            {"_id": digits,
+             "expires_at": {"$gt": datetime.now(timezone.utc)},
+             "sends_left": {"$gt": 0}},
+            {"$inc": {"sends_left": -1}},
+        )
+        return row is not None
+    except Exception:
+        return False
+
+
+async def _active_optin_for_phone(phone: str) -> Optional[dict]:
+    digits = wa_dm.phone_digits(phone)
+    if not digits:
+        return None
+    try:
+        return await db[WA_OPTINS].find_one({"phone": digits, "status": "active"})
+    except Exception:
+        return None
+
+
+async def _dm_send_verdict(chat_id: str, message: str,
+                           dm_meta: Optional[dict]) -> dict:
+    """May this direct message go out? {allowed, reason, ledger_id?}.
+
+    A REPLY (no dm_meta) rides the window the person's own message opened.
+    Anything else is PROACTIVE: it needs an active opt-in for this phone, and
+    it is claimed in the ledger before WaAPI is called."""
+    digits = wa_dm.phone_digits(chat_id)
+    if not digits:
+        return {"allowed": False, "reason": "no_phone"}
+    if dm_meta is None and await _consume_reply_window(digits):
+        return {"allowed": True, "reason": "reply"}
+
+    optin = await _active_optin_for_phone(digits)
+    if not optin:
+        return {"allowed": False, "reason": "no_active_optin"}
+    meta = dm_meta or {}
+    if meta.get("user_id") and str(optin.get("user_id")) != str(meta["user_id"]):
+        return {"allowed": False, "reason": "optin_user_mismatch"}
+
+    now = datetime.now(timezone.utc)
+    kind = str(meta.get("kind") or "adhoc")
+    window = str(meta.get("window") or wa_dm.adhoc_window(
+        message, now.strftime("%Y-%m-%d")))
+    key = wa_dm.ledger_key(str(optin.get("user_id")), meta.get("project_id"),
+                           kind, window)
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[WA_LEDGER].insert_one({
+            "_id": key,
+            "user_id": str(optin.get("user_id") or ""),
+            "company_id": str(optin.get("company_id") or ""),
+            "project_id": str(meta.get("project_id") or "") or None,
+            "kind": kind,
+            "window": window,
+            "phone_last4": digits[-4:],
+            "status": "sending",
+            "created_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS),
+        })
+    except DuplicateKeyError:
+        return {"allowed": False, "reason": "duplicate"}
+    except Exception as e:
+        logger.warning(f"ledger claim failed: {type(e).__name__}")
+        return {"allowed": False, "reason": "ledger_unavailable"}
+    return {"allowed": True, "reason": "optin", "ledger_id": key}
+
+
+async def _ledger_finish(ledger_id: str, ok: bool, err: Optional[str]) -> None:
+    try:
+        await db[WA_LEDGER].update_one(
+            {"_id": ledger_id},
+            {"$set": {"status": "sent" if ok else "failed",
+                      "finished_at": datetime.now(timezone.utc),
+                      "error": None if ok else (err or "unknown")[:200]}},
+        )
+    except Exception:
+        pass
+
+
+async def _waapi_post_raw(url: str, payload: dict, headers: dict):
+    """(status_code, json, exception). Never raises."""
+    try:
+        async with ServerHttpClient(timeout=15) as client_http:
+            resp = await client_http.post(url, json=payload, headers=headers)
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {}
+        return resp.status_code, body, None
+    except Exception as e:
+        return None, None, e
+
+
+async def _waapi_post_once(url: str, payload: dict, headers: dict):
+    """Groups: one attempt, exactly as before Phase 1. (ok, json, err)."""
+    code, body, exc = await _waapi_post_raw(url, payload, headers)
+    if exc is None and code is not None and code < 400:
+        return True, body, None
+    return False, None, (type(exc).__name__ if exc else f"http {code}")
+
+
+_DM_SEND_LOCK = asyncio.Lock()
+_DM_LAST_SENT = [0.0]
+
+
+async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict):
+    """Direct messages: one at a time, DM_MIN_INTERVAL_SECONDS apart, retried
+    with backoff on transient errors. (ok, json, err).
+
+    A retry after a timeout can deliver a message twice if the first attempt
+    reached WhatsApp; the alternative — never retrying — drops it. WaAPI
+    exposes no idempotency key to do better."""
+    loop = asyncio.get_running_loop()
+    async with _DM_SEND_LOCK:
+        wait = _DM_LAST_SENT[0] + wa_dm.DM_MIN_INTERVAL_SECONDS - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        err = None
+        try:
+            for attempt in range(wa_dm.DM_SEND_ATTEMPTS):
+                code, body, exc = await _waapi_post_raw(url, payload, headers)
+                if exc is None and code is not None and code < 400:
+                    return True, body, None
+                err = type(exc).__name__ if exc else f"http {code}"
+                if (not wa_dm.is_transient(code, exc)
+                        or attempt == wa_dm.DM_SEND_ATTEMPTS - 1):
+                    break
+                await asyncio.sleep(wa_dm.backoff_for(attempt))
+            return False, None, err
+        finally:
+            _DM_LAST_SENT[0] = loop.time()
+
+
+async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
+                           window: str, project_id: Any = None) -> Optional[dict]:
+    """The way to send a PROACTIVE direct message. None when refused.
+
+    Refused unless: the user is live and DM-eligible (company admin or PM),
+    has an ACTIVE opt-in whose phone is still the phone on their record, can
+    see `project_id` (company-scoped; a PM only on assigned projects), and
+    their preferences for that project allow this `kind`. Then
+    send_whatsapp_message claims the ledger key and sends — and checks the
+    opt-in again itself, so this function grants nothing it does not."""
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(str(user_id)), "is_deleted": {"$ne": True}})
+    except Exception:
+        user = None
+    if not wa_dm.is_dm_eligible(user):
+        return None
+    uid = str(user.get("_id"))
+    try:
+        optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"})
+    except Exception:
+        optin = None
+    if not optin:
+        return None
+    if optin.get("phone") not in [wa_dm.phone_digits(v) for v in
+                                  _contact_phone_variants(user.get("phone") or "")]:
+        return None  # the phone on the record changed since START
+    company_id = str(user.get("company_id"))
+    if project_id is not None:
+        if not await _bot_project_scope(company_id, project_id):
+            return None
+        if (wa_dm.norm_role(user.get("role")) == ROLE_PM
+                and str(project_id) not in {str(p) for p in
+                                            user.get("assigned_projects") or []}):
+            return None
+    prefs = await get_whatsapp_prefs(uid, project_id)
+    if not prefs.get("enabled"):
+        return None
+    pref_key = _WA_KIND_PREF.get(kind)
+    if pref_key == "summary_frequency":
+        if prefs.get("summary_frequency") in (None, "off"):
+            return None
+    elif pref_key and not prefs.get(pref_key):
+        return None
+    return await send_whatsapp_message(
+        wa_dm.dm_chat_id(optin["phone"]), message,
+        dm_meta={"user_id": uid, "company_id": company_id,
+                 "project_id": str(project_id) if project_id else None,
+                 "kind": kind, "window": window},
+    )
+
+
+async def get_whatsapp_prefs(user_id: Any, project_id: Any = None) -> dict:
+    """Effective WhatsApp preferences for one user on one project (or the
+    user-global ones when project_id is None). Reads notification_preferences;
+    writes nothing."""
+    from lib import notification_preferences as _nprefs
+    uid = str(user_id or "")
+    global_row = await _nprefs.fetch_preferences_record(
+        db, user_id=uid, project_id=None)
+    project_row = None
+    if project_id is not None:
+        project_row = await _nprefs.fetch_preferences_record(
+            db, user_id=uid, project_id=str(project_id))
+    return _nprefs.effective_whatsapp_prefs(project_row, global_row)
+
+
+async def _whatsapp_project_settings(project_id: Any) -> dict:
+    from lib import notification_preferences as _nprefs
+    out = _nprefs.default_whatsapp_project_settings()
+    pid = str(project_id or "")
+    try:
+        row = await db.notification_preferences.find_one(
+            {"user_id": None, "project_id": pid, "scope": "project"})
+    except Exception:
+        row = None
+    stored = (row or {}).get("whatsapp_project") or {}
+    if isinstance(stored.get("gc_group_id"), str) and stored["gc_group_id"]:
+        out["gc_group_id"] = stored["gc_group_id"]
+    out["gc_group_confirmed"] = bool(stored.get("gc_group_confirmed")) and bool(
+        out["gc_group_id"])
+    return out
+
+
+async def _handle_dm_start(phone: str) -> None:
+    """START from a phone: opt the matching eligible user in, or say nothing
+    that reveals whether the number is known."""
+    digits = wa_dm.phone_digits(phone)
+    users = await _find_users_by_phone(digits)
+    eligible = [u for u in users if wa_dm.is_dm_eligible(u)]
+    if len(users) != 1 or len(eligible) != 1:
+        _security_event("whatsapp_optin_refused",
+                        reason=("no_user" if not users else
+                                "ambiguous" if len(users) > 1 else
+                                "role_not_eligible"),
+                        row_count=len(users))
+        await send_whatsapp_message(wa_dm.dm_chat_id(digits),
+                                    wa_dm.NOT_ELIGIBLE_TEXT)
+        return
+    u = eligible[0]
+    uid, cid = str(u.get("_id")), str(u.get("company_id"))
+    now = datetime.now(timezone.utc)
+    try:
+        await db[WA_OPTINS].update_many(
+            {"user_id": uid, "phone": {"$ne": digits}, "status": "active"},
+            {"$set": {"status": "superseded", "updated_at": now}},
+        )
+        await db[WA_OPTINS].update_one(
+            {"phone": digits},
+            {"$set": {"phone": digits, "user_id": uid, "company_id": cid,
+                      "status": "active", "opted_in_at": now,
+                      "opted_out_at": None, "updated_at": now,
+                      "source": "start"}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"opt-in write failed: {type(e).__name__}")
+        return
+    _security_event("whatsapp_optin", user_id=uid, company_id=cid)
+    await send_whatsapp_message(wa_dm.dm_chat_id(digits), wa_dm.INTRO_TEXT)
+
+
+async def _handle_dm_stop(phone: str) -> None:
+    """STOP / PARAR: opted out, whoever it is — an unknown number is recorded
+    too, so a later lookup never mistakes silence for consent."""
+    digits = wa_dm.phone_digits(phone)
+    if not digits:
+        return
+    now = datetime.now(timezone.utc)
+    try:
+        await db[WA_OPTINS].update_one(
+            {"phone": digits},
+            {"$set": {"status": "opted_out", "opted_out_at": now,
+                      "updated_at": now},
+             "$setOnInsert": {"phone": digits, "user_id": None,
+                              "company_id": None, "source": "stop"}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"opt-out write failed: {type(e).__name__}")
+    _security_event("whatsapp_optout", reason="stop")
+    await send_whatsapp_message(wa_dm.dm_chat_id(digits), wa_dm.STOP_CONFIRM_TEXT)
+
+
 # -- ITEM 4: THE PROMPT BAN DID NOT HOLD, SO THIS IS NOT A PROMPT CHANGE ----
 #
 # The system prompt already says NEVER end with a generic offer and names
@@ -43046,8 +43448,15 @@ def _strip_generic_offer(text: str) -> str:
 
 async def send_whatsapp_message(
     chat_id: str, message: str, reply_to: Optional[str] = None,
+    *, dm_meta: Optional[dict] = None,
 ):
     """Send a WhatsApp message via WaAPI HTTP API.
+
+    Groups: one attempt, as before. Direct messages: gated on opt-in or a
+    live reply window (_dm_send_verdict), paced, and retried with backoff on
+    transient WaAPI errors. `dm_meta` ({user_id, project_id, company_id,
+    kind, window}) is how send_whatsapp_dm names a proactive send for the
+    ledger; it grants nothing on its own.
 
     ── A REPLY THAT DOES NOT QUOTE IS UNREADABLE IN A BUSY GROUP ──────────
     #
@@ -43075,30 +43484,64 @@ async def send_whatsapp_message(
     payload = {"chatId": chat_id, "message": message}
     if reply_to:
         payload["replyToMessageId"] = reply_to
+
+    is_dm = not wa_dm.is_group_chat(chat_id)
+    ledger_id = None
+    if is_dm:
+        # ── THE OPT-IN RULE LIVES HERE, NOT AT THE CALL SITES ──────────────
+        # A direct message goes out only as a reply inside the window the
+        # person's own message opened, or — proactively — to a phone with an
+        # active opt-in, recorded in the ledger before it is sent.
+        verdict = await _dm_send_verdict(chat_id, message, dm_meta)
+        if not verdict["allowed"]:
+            logger.info(f"WhatsApp DM refused ({verdict['reason']}) "
+                        f"to ...{wa_dm.phone_digits(chat_id)[-4:]}")
+            return None
+        ledger_id = verdict.get("ledger_id")
+
     try:
-        async with ServerHttpClient(timeout=15) as client_http:
-            resp = await client_http.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            # Log outbound bot turn into whatsapp_messages so the agent's
-            # history loader can recall it on the next user message (makes
-            # multi-turn clarifications work). Best-effort — never fail send.
-            try:
-                now = datetime.now(timezone.utc)
-                await db.whatsapp_messages.insert_one({
-                    "group_id":   chat_id,
-                    "sender":     "bot",
-                    "body":       message,
-                    "has_audio":  False,
-                    "message_id": "",
-                    "timestamp":  now,
-                    "created_at": now,
-                })
-            except Exception as _log_err:
-                logger.debug(f"whatsapp_messages bot-log skipped: {_log_err}")
-            return resp.json()
-    except Exception as e:
-        logger.error(f"WhatsApp send failed to {chat_id}: {e}")
+        if is_dm:
+            ok, resp_json, err = await _waapi_send_dm_paced(url, payload, headers)
+        else:
+            ok, resp_json, err = await _waapi_post_once(url, payload, headers)
+    except Exception as e:  # pragma: no cover - the helpers do not raise
+        ok, resp_json, err = False, None, f"{type(e).__name__}"
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.error(f"WhatsApp send failed to {chat_id}: {err}")
         return None
+
+    # Log outbound bot turn into whatsapp_messages so the agent's history
+    # loader can recall it on the next user message (makes multi-turn
+    # clarifications work). Best-effort — never fail send.
+    #
+    # A GROUP reply is stamped with the group's VERIFIED binding, so bot rows
+    # carry the company and project like human rows do. A group whose binding
+    # cannot be established gets neither — never a guess.
+    try:
+        now = datetime.now(timezone.utc)
+        row = {
+            "group_id":   chat_id,
+            "sender":     "bot",
+            "body":       message,
+            "has_audio":  False,
+            "message_id": "",
+            "from_me":    True,
+            "timestamp":  now,
+            "created_at": now,
+        }
+        if is_dm:
+            row["is_dm"] = True
+        else:
+            binding = await _resolve_group_binding(chat_id)
+            if binding.get("status") == wa_security.GROUP_OK:
+                row["company_id"] = binding["company_id"]
+                row["project_id"] = binding["project_id"]
+        await db.whatsapp_messages.insert_one(row)
+    except Exception as _log_err:
+        logger.debug(f"whatsapp_messages bot-log skipped: {_log_err}")
+    return resp_json
 
 
 # The WaAPI events that are about a GROUP rather than about a message. They
@@ -45502,6 +45945,55 @@ async def ensure_document_page_indexes():
         )
     except Exception as e:
         logger.warning(f"ensure_document_page_indexes: {e}")
+
+
+# Retention, by operator decision 2026-10-07.
+WA_WEBHOOK_LOG_RETENTION_DAYS = 30
+WA_MESSAGES_RETENTION_DAYS = 730  # 24 months
+
+
+async def ensure_whatsapp_phase1_indexes():
+    """Phase 1 indexes. Idempotent; safe every boot; never raises.
+
+    ── WHAT THE FIRST BOOT AFTER DEPLOY DOES TO DATA ─────────────────────
+    #
+    # The two retention TTLs are DELETIONS. Mongo's TTL monitor runs about
+    # once a minute after the index exists:
+    #   whatsapp_webhook_log  rows whose received_at is older than 30 days
+    #                         are removed, then every row at 30 days old.
+    #   whatsapp_messages     rows whose created_at is older than 24 months.
+    #                         The first message is 2026-04, so nothing yet.
+    # A row with no date field, or a non-date value there, is never expired.
+    """
+    # Literal key specs, one call each: scripts/find_unserved_sorts.py reads
+    # the declared indexes from the source, and a key list held in a variable
+    # is one it cannot read. _ensure_index_resilient never raises.
+    await _ensure_index_resilient(
+        db.whatsapp_webhook_log, keys=[("received_at", 1)],
+        name="whatsapp_webhook_log_ttl_30d",
+        expireAfterSeconds=60 * 60 * 24 * WA_WEBHOOK_LOG_RETENTION_DAYS)
+    await _ensure_index_resilient(
+        db.whatsapp_messages, keys=[("created_at", 1)],
+        name="whatsapp_messages_ttl_24m",
+        expireAfterSeconds=60 * 60 * 24 * WA_MESSAGES_RETENTION_DAYS)
+    await _ensure_index_resilient(
+        db["scheduler_leases"], keys=[("expires_at", 1)],
+        name="scheduler_leases_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[WA_DM_WINDOWS], keys=[("expires_at", 1)],
+        name="whatsapp_dm_reply_windows_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[WA_LEDGER], keys=[("expires_at", 1)],
+        name="whatsapp_notification_ledger_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[WA_LEDGER], keys=[("user_id", 1), ("created_at", -1)],
+        name="whatsapp_notification_ledger_by_user")
+    await _ensure_index_resilient(
+        db[WA_OPTINS], keys=[("phone", 1)],
+        name="whatsapp_optins_phone_unique", unique=True)
+    await _ensure_index_resilient(
+        db[WA_OPTINS], keys=[("user_id", 1), ("status", 1)],
+        name="whatsapp_optins_by_user")
 
 
 async def run_whatsapp_startup_migrations():
@@ -52304,6 +52796,17 @@ async def _process_whatsapp_message(payload: dict):
                 # parsed and thrown away, so any reply composed after the
                 # webhook had been forgotten could not quote anything.
                 "message_id_serialized": parsed.get("message_id_serialized") or "",
+                # WHO THIS MESSAGE IS ADDRESSED TO, KEPT. Mentions and the
+                # reply-to author were parsed and discarded, so nothing after
+                # the webhook could tell whom a message asked. They are the
+                # deterministic signals for "this needs YOUR answer"; the
+                # identities are resolved later, company-scoped, by
+                # resolve_wa_identity. from_me is always False here — the
+                # bot's own echoes are dropped above — and True on bot rows.
+                "mentioned_jids": list(parsed.get("mentioned_jids") or []),
+                "quoted_message_id": parsed.get("quoted_message_id") or "",
+                "quoted_author": parsed.get("quoted_author") or "",
+                "from_me": bool(parsed.get("from_me")),
                 "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
                 "created_at": now,
             })
@@ -52571,6 +53074,23 @@ async def _process_whatsapp_message(payload: dict):
             return
 
         # --- DIRECT message ---
+        # Their message opens the short window in which the bot may REPLY to
+        # them without an opt-in (lib/wa_dm.py). Opened for every inbound
+        # direct message, before anything that might reply.
+        await _open_dm_reply_window(sender)
+
+        # START / STOP / PARAR are handled for ANY number, before the contact
+        # lookup: STOP must work for someone the system has never heard of,
+        # and START decides eligibility from users.phone, not from contacts.
+        if not parsed.get("has_audio"):
+            command = wa_dm.parse_dm_command(parsed.get("body"))
+            if command == "start":
+                await _handle_dm_start(sender)
+                return
+            if command == "stop":
+                await _handle_dm_stop(sender)
+                return
+
         # Look up contact
         contact = await _find_whatsapp_contact(sender)
         if not contact:
@@ -54014,6 +54534,163 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
         "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
     }
+
+
+# ── PHASE 1: CONNECT WHATSAPP, PREFERENCES, GC GROUP ───────────────────────
+#
+# No feature sends anything yet. These routes record who may be messaged and
+# what they want, so the features that follow have somewhere to read it from.
+
+
+def _wa_bot_digits() -> str:
+    return re.sub(r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "") or "")
+
+
+@api_router.get("/whatsapp/me")
+async def whatsapp_me(current_user=Depends(get_current_user)):
+    """Whether this user may connect WhatsApp, whether they have, and the
+    wa.me link that starts it. The link only pre-fills START in the user's
+    own WhatsApp; the opt-in is recorded when that message ARRIVES from the
+    phone on their record, never by this endpoint."""
+    eligible = wa_dm.is_dm_eligible(current_user)
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    status = "none"
+    if eligible:
+        try:
+            row = await db[WA_OPTINS].find_one(
+                {"user_id": uid}, sort=[("updated_at", -1)])
+        except Exception:
+            row = None
+        if row:
+            status = row.get("status") or "none"
+    bot = _wa_bot_digits()
+    has_phone = bool(wa_dm.phone_digits(current_user.get("phone") or ""))
+    return {
+        "eligible": eligible,
+        "has_phone": has_phone,
+        "status": status,
+        "connected": status == "active",
+        "connect_url": (f"https://wa.me/{bot}?text=START"
+                        if eligible and bot and has_phone else None),
+    }
+
+
+async def _wa_prefs_project_or_403(project_id: str, current_user: dict) -> dict:
+    """The caller may set WhatsApp preferences on this project: DM-eligible,
+    the project is their company's, and a PM is assigned to it."""
+    if not wa_dm.is_dm_eligible(current_user):
+        raise HTTPException(status_code=403, detail="Not available for your role")
+    company_id = get_user_company_id(current_user)
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if (wa_dm.norm_role(current_user.get("role")) == ROLE_PM
+            and str(project_id) not in {str(p) for p in
+                                        current_user.get("assigned_projects") or []}):
+        raise HTTPException(status_code=403, detail="Not assigned to this project")
+    return project
+
+
+@api_router.get("/projects/{project_id}/whatsapp-preferences",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_my_project_whatsapp_prefs(project_id: str,
+                                        current_user=Depends(get_current_user)):
+    await _wa_prefs_project_or_403(project_id, current_user)
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    return {"project_id": project_id,
+            "whatsapp": await get_whatsapp_prefs(uid, project_id)}
+
+
+@api_router.patch("/projects/{project_id}/whatsapp-preferences",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def patch_my_project_whatsapp_prefs(project_id: str, body: dict,
+                                          current_user=Depends(get_current_user)):
+    from lib import notification_preferences as _nprefs
+    await _wa_prefs_project_or_403(project_id, current_user)
+    clean, errors = _nprefs.validate_whatsapp_prefs_patch(body)
+    if errors:
+        raise HTTPException(status_code=400, detail={
+            "message": "Invalid WhatsApp preferences", "errors": errors})
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    existing = await _nprefs.fetch_preferences_record(
+        db, user_id=uid, project_id=project_id)
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        doc = _nprefs.build_default_preferences(user_id=uid, project_id=project_id)
+        doc["whatsapp"] = {**_nprefs.default_whatsapp_prefs(), **clean}
+        doc["updated_at"] = now
+        await db.notification_preferences.insert_one(doc)
+    else:
+        await db.notification_preferences.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {**{f"whatsapp.{k}": v for k, v in clean.items()},
+                      "updated_at": now}})
+    return {"project_id": project_id,
+            "whatsapp": await get_whatsapp_prefs(uid, project_id)}
+
+
+@api_router.get("/projects/{project_id}/whatsapp-gc-group",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_whatsapp_gc_group(project_id: str,
+                                        current_user=Depends(get_current_user)):
+    if not await _bot_project_scope(get_user_company_id(current_user), project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"project_id": project_id,
+            **(await _whatsapp_project_settings(project_id))}
+
+
+@api_router.put("/projects/{project_id}/whatsapp-gc-group",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def put_project_whatsapp_gc_group(project_id: str, body: dict,
+                                        current_user=Depends(get_current_user)):
+    """Admin: name the project's GC group and confirm it.
+
+    The group must be bound — proven, by _resolve_group_binding — to THIS
+    project of THIS company. Changing the group clears the confirmation."""
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    if not await _bot_project_scope(company_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be an object")
+    gc = body.get("gc_group_id")
+    confirmed = body.get("gc_group_confirmed", False)
+    if gc is not None and not isinstance(gc, str):
+        raise HTTPException(status_code=422, detail="gc_group_id must be a string or null")
+    if not isinstance(confirmed, bool):
+        raise HTTPException(status_code=422, detail="gc_group_confirmed must be true or false")
+    if gc:
+        binding = await _resolve_group_binding(gc)
+        if (binding.get("status") != wa_security.GROUP_OK
+                or binding.get("project_id") != str(project_id)
+                or not wa_security.same_company(binding.get("company_id"),
+                                                company_id)):
+            _security_event("whatsapp_gc_group_refused", wa_group_id=gc,
+                            project_id=project_id, company_id=company_id,
+                            user_id=actor_id(current_user),
+                            reason=str(binding.get("status")))
+            raise HTTPException(status_code=403,
+                                detail="That group is not linked to this project.")
+    current = await _whatsapp_project_settings(project_id)
+    if gc != current.get("gc_group_id"):
+        confirmed = bool(confirmed and gc)
+    now = datetime.now(timezone.utc)
+    await db.notification_preferences.update_one(
+        {"user_id": None, "project_id": str(project_id), "scope": "project"},
+        {"$set": {"whatsapp_project": {
+                      "gc_group_id": gc or None,
+                      "gc_group_confirmed": bool(confirmed and gc),
+                      "updated_by": actor_id(current_user),
+                      "updated_at": now},
+                  "company_id": str(company_id),
+                  "updated_at": now},
+         "$setOnInsert": {"user_id": None, "project_id": str(project_id),
+                          "scope": "project", "created_at": now}},
+        upsert=True,
+    )
+    return {"project_id": project_id,
+            **(await _whatsapp_project_settings(project_id))}
 
 
 @api_router.post(
@@ -55673,6 +56350,123 @@ async def _send_whatsapp_daily_summaries():
                 logger.error(f"daily summary send failed for {group_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"WhatsApp daily summary job error: {e}", exc_info=True)
+
+
+# ── WAAPI DISCONNECT MONITOR ───────────────────────────────────────────────
+#
+# Every 15 minutes: is the WhatsApp-Web session alive? Two bad readings in a
+# row open an incident and email the platform operator(s) once; the first
+# good reading after that closes it with one recovery email. The state
+# machine is lib/waapi_monitor.py; the state is one document. The scheduler
+# lease means one replica takes each reading, and the email is idempotent
+# per incident and recipient in send_notification as a second guard.
+
+async def _waapi_read_status() -> Optional[Tuple[str, str]]:
+    """(reading, detail), or None when WaAPI is not configured at all.
+
+    WaAPI's documented status read is GET /instances/{id}/client/status; the
+    instance endpoint the debug route already uses is the fallback when that
+    path 404s, so a renamed path degrades to a coarser reading, not to a
+    false alarm on every check."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN):
+        return None
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}"}
+    base = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}"
+    for path in ("/client/status", ""):
+        try:
+            async with ServerHttpClient(timeout=15.0) as client_http:
+                resp = await client_http.get(base + path, headers=headers)
+        except Exception as e:
+            return waapi_monitor.UNKNOWN, f"unreachable:{type(e).__name__}"
+        if resp.status_code == 404 and path:
+            continue
+        if resp.status_code >= 400:
+            return waapi_monitor.UNKNOWN, f"http {resp.status_code}"
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {}
+        status = waapi_monitor.find_status(body)
+        return waapi_monitor.classify(status), (status or "no_status_field")
+    return waapi_monitor.UNKNOWN, "status_endpoint_not_found"
+
+
+async def _waapi_monitor_recipients() -> List[str]:
+    """Platform operators, by the DB flag only — the same rule the debug
+    routes follow. No role string and no email list."""
+    try:
+        rows = await db.users.find(
+            {"is_platform_operator": True, "is_deleted": {"$ne": True}},
+            {"email": 1}).to_list(20)
+    except Exception:
+        return []
+    return sorted({(r.get("email") or "").strip() for r in rows
+                   if (r.get("email") or "").strip()})
+
+
+async def _email_waapi_incident(action: str, state: dict) -> int:
+    from lib.notifications import send_notification
+    incident = str(state.get("incident_id") or "unknown")
+    down_since = state.get("down_since")
+    since = (down_since.strftime("%Y-%m-%d %H:%M UTC")
+             if isinstance(down_since, datetime) else "unknown")
+    detail = str(state.get("last_detail") or "")
+    if action == waapi_monitor.ACTION_ALERT_DOWN:
+        trigger = "waapi_disconnected"
+        subject = "WhatsApp bot is disconnected"
+        text = (f"The WaAPI WhatsApp instance stopped reporting ready at "
+                f"{since}. Last reading: {detail}.\n\nGroup answers, link "
+                f"confirmations and direct messages are not being delivered "
+                f"until it reconnects. Check the instance in the WaAPI "
+                f"dashboard (a QR re-scan may be needed).\n\nIncident {incident}.")
+    else:
+        trigger = "waapi_reconnected"
+        subject = "WhatsApp bot is connected again"
+        text = (f"The WaAPI WhatsApp instance is ready again. It was down "
+                f"since {since}.\n\nIncident {incident}.")
+    html = "<p>" + text.replace("\n\n", "</p><p>") + "</p>"
+    sent = 0
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=f"waapi_incident:{incident}",
+                trigger_type=trigger, recipient=recipient, subject=subject,
+                html=html, text=text,
+                metadata={"incident_id": incident, "detail": detail[:100]},
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning(f"waapi monitor email failed: {type(e).__name__}")
+    return sent
+
+
+async def _waapi_instance_monitor_tick() -> Optional[str]:
+    """One reading, one state step, at most one email batch. Returns the
+    action taken (for tests and the log)."""
+    reading = await _waapi_read_status()
+    if reading is None:
+        return None
+    observation, detail = reading
+    now = datetime.now(timezone.utc)
+    try:
+        state = await db[WA_MONITOR].find_one({"_id": "waapi"}) or {}
+    except Exception as e:
+        logger.warning(f"waapi monitor state read failed: {type(e).__name__}")
+        return None
+    state.pop("_id", None)
+    new_state, action = waapi_monitor.step(state, observation, now, detail)
+    try:
+        await db[WA_MONITOR].replace_one(
+            {"_id": "waapi"}, {"_id": "waapi", **new_state}, upsert=True)
+    except Exception as e:
+        # Unsaved state would re-alert next time; say nothing this time.
+        logger.warning(f"waapi monitor state write failed: {type(e).__name__}")
+        return None
+    if action != waapi_monitor.ACTION_NONE:
+        logger.warning(f"[waapi-monitor] {action} incident="
+                       f"{new_state.get('incident_id')} detail={detail}")
+        await _email_waapi_incident(action, new_state)
+    return action
 
 
 CHECKLIST_SYSTEM_PROMPT = """You are a construction project assistant analyzing WhatsApp group conversations from a NYC construction site.
@@ -58563,8 +59357,23 @@ async def startup_event():
     logger.info("💬 WhatsApp daily summary scheduled (every 30 min, per-group config)")
     logger.info("✅ WhatsApp checklist extraction scheduled (every 30 min, per-group config)")
 
+    # WaAPI disconnect monitor — one reading per 15 min across replicas
+    # (leased like every job), operator emailed once per incident.
+    scheduler.add_job(
+        _waapi_instance_monitor_tick,
+        IntervalTrigger(minutes=15),
+        id='waapi_instance_monitor',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+    )
+
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL
     await run_whatsapp_startup_migrations()
+    # Phase 1 indexes and retention TTLs. Its own await and its own try per
+    # index, for the reason ensure_dropbox_sync_indexes gives.
+    await ensure_whatsapp_phase1_indexes()
     # Separate await, so a failure in the WhatsApp migrations cannot skip it.
     await ensure_dropbox_sync_indexes()
     # Also separate, and it never belonged inside the WhatsApp runner at all —
