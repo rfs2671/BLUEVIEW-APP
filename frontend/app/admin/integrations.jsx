@@ -38,6 +38,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import WhatsAppConnectCard from '../../src/components/WhatsAppConnectCard';
 
 // Dropbox brand color
 const DROPBOX_BLUE = '#0061FF';
@@ -71,6 +72,10 @@ export default function AdminIntegrationsScreen() {
 
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
+  // A PM (Site Manager) sees this screen for ONE thing: their own WhatsApp
+  // connection. Dropbox and the company's group integration stay admin-only,
+  // and none of their reads are made for a PM.
+  const isPm = String(user?.role || '').trim().toLowerCase() === 'pm';
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -81,10 +86,10 @@ export default function AdminIntegrationsScreen() {
 
   // Fetch data on mount
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && isAdmin) {
       fetchData();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isAdmin]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -330,11 +335,13 @@ export default function AdminIntegrationsScreen() {
         >
           {/* Title */}
           <View style={s.titleSection}>
-            <Text style={s.titleLabel}>ADMIN</Text>
+            <Text style={s.titleLabel}>{isAdmin ? 'ADMIN' : 'YOUR ACCOUNT'}</Text>
             <Text style={s.titleText}>Integrations</Text>
           </View>
 
-          {!isAdmin ? (
+          {!isAdmin && isPm ? (
+            <WhatsAppConnectCard />
+          ) : !isAdmin ? (
             <GlassCard style={s.accessDeniedCard}>
               <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
               <Text style={s.accessDeniedTitle}>Admin Access Required</Text>
@@ -594,6 +601,10 @@ export default function AdminIntegrationsScreen() {
                   </View>
                 ) : null}
               </GlassCard>
+
+              {/* The admin's own WhatsApp (direct updates to them), separate
+                  from the company integration above, which links GROUPS. */}
+              <WhatsAppConnectCard />
 
               {/* Projects with Dropbox */}
               {dropboxStatus.connected && (

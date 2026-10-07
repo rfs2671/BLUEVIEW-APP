@@ -93,6 +93,47 @@ def is_dm_eligible(user: Optional[dict]) -> bool:
     return role in DM_ELIGIBLE_ROLES and role not in DM_NEVER_ROLES
 
 
+# What the Integrations screen shows, one value per situation. Each blocked
+# state names the one thing the user must fix; the copy lives in the app
+# (frontend/src/utils/whatsappConnect.js), keyed by these strings.
+CONNECT_NOT_ELIGIBLE = "not_eligible"
+CONNECT_UNAVAILABLE = "unavailable"          # no bot number configured
+CONNECT_PHONE_MISSING = "phone_missing"
+CONNECT_PHONE_SHARED = "phone_shared"        # START would be refused
+CONNECT_RECONNECT = "reconnect_needed"       # opted in from an old phone
+CONNECT_CONNECTED = "connected"
+CONNECT_NOT_CONNECTED = "not_connected"
+
+# The states in which pressing Connect can work.
+CONNECT_ACTIONABLE = frozenset({CONNECT_NOT_CONNECTED, CONNECT_RECONNECT})
+
+
+def connect_state(*, eligible: bool, bot_configured: bool, has_phone: bool,
+                  phone_shared: bool, optin_status: str) -> str:
+    """The one state the Integrations screen shows. Ordered: a state is only
+    reported when every state above it is clear, so the user is told the
+    first thing to fix, not the last.
+
+    `phone_shared` is START's own refusal rule seen from the screen: if any
+    other live account carries this number, START cannot tell whose it is
+    and opts nobody in. `optin_status` is the latest opt-in row's status,
+    with "phone_changed" when that row is active for a phone no longer on
+    the user's record."""
+    if not eligible:
+        return CONNECT_NOT_ELIGIBLE
+    if not bot_configured:
+        return CONNECT_UNAVAILABLE
+    if not has_phone:
+        return CONNECT_PHONE_MISSING
+    if phone_shared:
+        return CONNECT_PHONE_SHARED
+    if optin_status == "phone_changed":
+        return CONNECT_RECONNECT
+    if optin_status == "active":
+        return CONNECT_CONNECTED
+    return CONNECT_NOT_CONNECTED
+
+
 def phone_digits(chat_or_phone: Optional[str]) -> str:
     """Digits of a phone or a JID ('15551234567@c.us' -> '15551234567')."""
     head = str(chat_or_phone or "").split("@", 1)[0]

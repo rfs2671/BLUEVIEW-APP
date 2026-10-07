@@ -54551,10 +54551,18 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     """Whether this user may connect WhatsApp, whether they have, and the
     wa.me link that starts it. The link only pre-fills START in the user's
     own WhatsApp; the opt-in is recorded when that message ARRIVES from the
-    phone on their record, never by this endpoint."""
+    phone on their record, never by this endpoint.
+
+    `state` is the one thing the Integrations screen shows
+    (wa_dm.connect_state); the app polls this while the screen is open, so a
+    START that arrives flips it to "connected" without a reload."""
     eligible = wa_dm.is_dm_eligible(current_user)
     uid = str(current_user.get("id") or current_user.get("_id") or "")
+    phone = current_user.get("phone") or ""
+    digits = wa_dm.phone_digits(phone)
+    has_phone = bool(digits)
     status = "none"
+    row = None
     if eligible:
         try:
             row = await db[WA_OPTINS].find_one(
@@ -54563,22 +54571,34 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
             row = None
         if row:
             status = row.get("status") or "none"
-    bot = _wa_bot_digits()
-    has_phone = bool(wa_dm.phone_digits(current_user.get("phone") or ""))
     # An opt-in recorded for a phone the user has since changed delivers
     # nothing (send_whatsapp_dm refuses it), so it is not "connected": the
     # user must send START again from the new number.
     if status == "active" and row and row.get("phone") not in [
-            wa_dm.phone_digits(v) for v in
-            _contact_phone_variants(current_user.get("phone") or "")]:
+            wa_dm.phone_digits(v) for v in _contact_phone_variants(phone)]:
         status = "phone_changed"
+    # START's own rule: any OTHER live account on this number and it opts
+    # nobody in. Asked even when already connected: profile edits enforce
+    # phone uniqueness only within a company, so another company's account
+    # can take the number later, and from then on a STOP/START or a reply
+    # from this phone cannot be attributed to this user.
+    phone_shared = False
+    if eligible and has_phone:
+        phone_shared = any(str(u.get("_id")) != uid
+                           for u in await _find_users_by_phone(digits))
+    bot = _wa_bot_digits()
+    state = wa_dm.connect_state(
+        eligible=eligible, bot_configured=bool(bot), has_phone=has_phone,
+        phone_shared=phone_shared, optin_status=status)
     return {
         "eligible": eligible,
+        "state": state,
         "has_phone": has_phone,
         "status": status,
-        "connected": status == "active",
+        "connected": state == wa_dm.CONNECT_CONNECTED,
+        "phone": ("+" + digits) if (eligible and has_phone) else None,
         "connect_url": (f"https://wa.me/{bot}?text=START"
-                        if eligible and bot and has_phone else None),
+                        if state in wa_dm.CONNECT_ACTIONABLE else None),
     }
 
 
