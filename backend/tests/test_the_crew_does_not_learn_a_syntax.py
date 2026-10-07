@@ -337,10 +337,12 @@ class WhatAGroupGetsBeforeAnybodyConfiguresIt(unittest.TestCase):
         cfg = server._default_bot_config()
         self.assertEqual(cfg["features"]["address_mode"], "loose")
 
-    def test_checklists_are_on(self):
-        """Off-by-default and does-not-exist are the same thing to every user
-        who has not read the source, and no screen advertises the feature."""
-        self.assertTrue(server._default_bot_config()["checklist_extraction_enabled"])
+    def test_checklists_are_off(self):
+        """Reversed 2026-10-07. With frequency "daily" the scheduled job posts
+        an extracted checklist into the group every day there was chat —
+        unprompted, the class of send test_unprompted_sending_stays_off
+        already rules out for the digest. An admin turns it on per group."""
+        self.assertFalse(server._default_bot_config()["checklist_extraction_enabled"])
 
     def test_plan_queries_are_on(self):
         self.assertTrue(server._default_bot_config()["features"]["plan_queries"])

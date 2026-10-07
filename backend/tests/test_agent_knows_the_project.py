@@ -77,12 +77,21 @@ def _db(*, checkins_rows=None, last_checkin=None, sheets=None,
     return DB()
 
 
+_P1 = {"name": "588 Thomas S Boyland", "address": "588 Thomas S Boyland St",
+       "nyc_bin": "3255362", "company_id": "co"}
+
+
 def _block(**kw):
+    # The context block now reads nothing until the project is proven to be
+    # the group's company's. The fake db has no $in, so ownership is declared.
+    from tests._wa_scope import owned_by
     real = server.db
     server.db = _db(**kw)
     try:
-        return asyncio.run(server._agent_context_block(
-            "p1", {"who_on_site": True, "plan_queries": True}, "loose"))
+        with owned_by("co", "p1", project_docs={"p1": _P1}, module=server):
+            return asyncio.run(server._agent_context_block(
+                "p1", {"who_on_site": True, "plan_queries": True}, "loose",
+                company_id="co"))
     finally:
         server.db = real
 
@@ -216,10 +225,13 @@ class TheLogHasItsOwnHome(unittest.TestCase):
     def test_a_missing_log_names_the_day_it_looked_for(self):
         """"No daily log found" leaves the reader unsure which day was
         checked."""
+        from tests._wa_scope import owned_by
         real = server.db
         server.db = _db(log=None)
         try:
-            out = asyncio.run(server._handle_daily_log("p1", "2026-09-11"))
+            with owned_by("co", "p1", module=server):
+                out = asyncio.run(server._handle_daily_log(
+                    "p1", "2026-09-11", company_id="co"))
         finally:
             server.db = real
         self.assertIn("2026-09-11", out)

@@ -123,8 +123,13 @@ class _Db:
 
 
 def ask(project_id, date, logbooks=(), daily_logs=()):
-    with mock.patch.object(server, "db", _Db(logbooks, daily_logs)):
-        return asyncio.run(server._handle_daily_log(project_id, date))
+    # The handler reads only after proving the project is the group's
+    # company's; the fake db has no `projects`, so ownership is declared.
+    from tests._wa_scope import owned_by, TEST_COMPANY
+    with mock.patch.object(server, "db", _Db(logbooks, daily_logs)), \
+            owned_by(TEST_COMPANY, project_id, module=server):
+        return asyncio.run(server._handle_daily_log(
+            project_id, date, company_id=TEST_COMPANY))
 
 
 class BoylandFilesLogbooksAndNoDailyLogs(unittest.TestCase):
