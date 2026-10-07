@@ -326,14 +326,23 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
     ADMIN = (
         "update_password",
         "delete_logbook",
+        "whatsapp_update_group_config",
+        "debug_indexed_pages",
+        "bootstrap_checkin_point", "remove_cp_checkin_point",
+        "_get_checklist_candidates", "_process_whatsapp_message",
+    )
+
+    # → platform operator, by the DB FLAG ONLY (2026-10-07). These were in
+    #   ADMIN, but they read across every tenant (recent messages, raw
+    #   webhook payloads), and `is_company_admin` is a rank test every
+    #   customer's admin passes. They ask `_require_operator_flag`, which
+    #   reads `is_platform_operator is True` and no role string at all.
+    OPERATOR_FLAG = (
         "whatsapp_debug_audio_probe", "whatsapp_debug_audio_diag",
         "whatsapp_debug_bot_ids", "whatsapp_debug_page_index",
         "whatsapp_debug_convo_state_indexes", "whatsapp_debug_webhook_log",
         "whatsapp_debug_waapi_config", "whatsapp_debug_recent_messages",
-        "whatsapp_debug_pending_codes", "whatsapp_update_group_config",
-        "debug_indexed_pages",
-        "bootstrap_checkin_point", "remove_cp_checkin_point",
-        "_get_checklist_candidates", "_process_whatsapp_message",
+        "whatsapp_debug_pending_codes",
     )
 
     def _body(self, name):
@@ -356,13 +365,14 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
         """The instrument. A typo in a name above would make `_body` raise —
         but a name that silently matched a PREFIX of another function would
         not, so the census is pinned to its own size."""
-        self.assertEqual(len(self.PLATFORM) + len(self.ADMIN), 30)
-        for name in self.PLATFORM + self.ADMIN:
+        self.assertEqual(
+            len(self.PLATFORM) + len(self.ADMIN) + len(self.OPERATOR_FLAG), 30)
+        for name in self.PLATFORM + self.ADMIN + self.OPERATOR_FLAG:
             with self.subTest(fn=name):
                 self.assertTrue(self._body(name).strip())
 
     def test_none_of_them_still_names_the_retired_role(self):
-        for name in self.PLATFORM + self.ADMIN:
+        for name in self.PLATFORM + self.ADMIN + self.OPERATOR_FLAG:
             with self.subTest(fn=name):
                 self.assertNotIn('"owner"', self._body(name))
 
@@ -370,6 +380,13 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
         for name in self.PLATFORM:
             with self.subTest(fn=name):
                 self.assertIn("is_platform_operator(", self._body(name))
+
+    def test_the_debug_ones_ask_only_the_operator_flag(self):
+        for name in self.OPERATOR_FLAG:
+            with self.subTest(fn=name):
+                body = self._body(name)
+                self.assertIn("_require_operator_flag(current_user)", body)
+                self.assertNotIn("is_company_admin(", body)
 
     def test_the_admin_ones_ask_the_company_admin_question(self):
         for name in self.ADMIN:

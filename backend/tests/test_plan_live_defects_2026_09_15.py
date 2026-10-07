@@ -120,13 +120,16 @@ class _PlanQuery:
         async def never(*a, **k):
             raise AssertionError("a named sheet must not fall through to the search")
 
+        from tests._wa_scope import owned_by, TEST_COMPANY
         db = _Db(FILES, PAGES)
         with mock.patch.object(server, "db", db), \
                 mock.patch.object(server, "send_whatsapp_message", send), \
                 mock.patch.object(server, "_send_plan_image", send_image), \
-                mock.patch.object(server, "search_plans", never):
+                mock.patch.object(server, "search_plans", never), \
+                owned_by(TEST_COMPANY, "p1", module=server):
             _run(server._handle_plan_query("p1", "g1", parsed.get("synth", "plan"),
-                                           parsed_override=parsed, user_body=body))
+                                           parsed_override=parsed, user_body=body,
+                                           company_id=TEST_COMPANY))
         return sent, images
 
 

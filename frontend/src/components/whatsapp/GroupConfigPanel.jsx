@@ -30,7 +30,7 @@ const DEFAULT_CONFIG = {
     dob_status: true,
     open_items: true,
     material_detection: true,
-    plan_queries: false,
+    plan_queries: true,
   },
   cross_project_summary: false,
 };

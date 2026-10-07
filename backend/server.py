@@ -64,6 +64,9 @@ from lib.legal_render.formatters import (  # noqa: E402
 from lib.report import model as report_model
 from lib.report import renderer as report_renderer
 from lib.report import view as report_view
+# WhatsApp tenant boundary + webhook authentication. The rules are in the
+# module; server.py only supplies the database reads they need.
+from lib import wa_security  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
 # one is edited, and this one is both printed on a compliance document and
@@ -1042,6 +1045,9 @@ except ImportError:  # pragma: no cover — local dev path
 _SENTRY_REDACT_PATH_PREFIXES = (
     "/api/auth/",
     "/api/users/me/notification-preferences",
+    # Carries the webhook secret in its query string and chat content in its
+    # body. Both are scrubbed before an event leaves the process.
+    "/api/whatsapp/webhook",
 )
 
 # Bot user-agent fragments. Lower-cased contains-match.
@@ -1114,6 +1120,10 @@ def _sentry_redact_request_body(event):
         # be there, but defense in depth.
         if "query_string" in request:
             request["query_string"] = "[redacted by levelog scrubber]"
+        # The webhook secret rides in the query string; a URL that kept it
+        # would carry it into Sentry even with query_string scrubbed.
+        if isinstance(request.get("url"), str):
+            request["url"] = wa_security.redact_query_param(request["url"])
 
     # Always strip Authorization + Cookie headers regardless of path.
     headers = request.get("headers") or {}
@@ -1758,6 +1768,35 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class _RedactWebhookTokenFilter(logging.Filter):
+    """Strip the WhatsApp webhook secret out of uvicorn's access log line.
+
+    WaAPI offers no signature or custom-header option, so the secret is a
+    query parameter on the webhook URL, and uvicorn's access line prints the
+    full path WITH its query string. This rewrites the argument that carries
+    it before the line is formatted. Attached at import, which is after
+    uvicorn has applied its own logging config, so the config cannot drop it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.args, tuple) and record.args:
+                record.args = tuple(
+                    wa_security.redact_query_param(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+            if isinstance(record.msg, str):
+                record.msg = wa_security.redact_query_param(record.msg)
+        except Exception:
+            pass
+        return True
+
+
+_WEBHOOK_TOKEN_FILTER = _RedactWebhookTokenFilter()
+for _log_name in ("uvicorn.access", "uvicorn.error", "uvicorn", ""):
+    logging.getLogger(_log_name).addFilter(_WEBHOOK_TOKEN_FILTER)
 
 # ==================== RATE LIMITING (auth endpoints) ====================
 
@@ -38137,6 +38176,67 @@ def _humanize_record_type(rt: str) -> str:
     return pretty.get(rt, rt)
 
 
+async def _critical_dob_alert_recipients(project: dict) -> List[str]:
+    """Who is emailed about a DOB record on `project`.
+
+    ── WAS: role in ("admin", "owner") ACROSS THE COMPANY ─────────────────
+    #
+    # "owner" is retired (ROLE_* block, ~7838): nobody is assigned it any
+    # more, so it either matched nobody or matched a legacy account the
+    # retirement was meant to stop treating as a rank. PMs were never told.
+    #
+    # NOW: every ADMIN of the project's company, plus every PM of that company
+    # who is ASSIGNED TO THIS PROJECT. A PM on another of the company's
+    # projects is not mailed about this one. CP and superintendent are never
+    # selected — by role equality, not by an exclusion list — and the
+    # field-role guard in lib/notifications.send_notification would refuse
+    # them at send time anyway.
+    #
+    # Both queries carry the project's company_id, so an `assigned_projects`
+    # entry left on a user who moved to another company cannot pull him in.
+    """
+    company_id = str(project.get("company_id") or "")
+    project_id = str(project.get("_id") or "")
+    if not company_id or not project_id:
+        return []
+    company_filter = _company_id_filter(company_id)
+    pid_values: list = [project_id]
+    try:
+        pid_values.append(ObjectId(project_id))
+    except Exception:
+        pass
+
+    out: List[str] = []
+    seen: set = set()
+
+    def _add(u: dict) -> None:
+        role = str(u.get("role") or "").strip().lower()
+        if role in ("cp", ROLE_SUPERINTENDENT):
+            return
+        email = (u.get("email") or "").strip()
+        if email and email.lower() not in seen:
+            seen.add(email.lower())
+            out.append(email)
+
+    admins = await db.users.find({
+        "company_id": company_filter,
+        "role":       {"$in": list(COMPANY_ADMIN_ROLES)},
+        "is_deleted": {"$ne": True},
+    }).to_list(100)
+    for u in admins:
+        _add(u)
+
+    pms = await db.users.find({
+        "company_id":        company_filter,
+        "role":              ROLE_PM,
+        "assigned_projects": {"$in": pid_values},
+        "is_deleted":        {"$ne": True},
+    }).to_list(100)
+    for u in pms:
+        _add(u)
+    return out
+
+
 async def _send_critical_dob_alert(project: dict, dob_log: dict):
     """Send a notification email about a DOB record that needs attention.
 
@@ -38153,16 +38253,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     if not company_id:
         return
 
-    recipients = []
-    admin_users = await db.users.find({
-        "company_id": company_id,
-        "role":       {"$in": ["admin", "owner"]},
-        "is_deleted": {"$ne": True},
-    }).to_list(50)
-    for u in admin_users:
-        email = u.get("email")
-        if email:
-            recipients.append(email)
+    recipients = await _critical_dob_alert_recipients(project)
     if not recipients:
         return
 
@@ -38187,8 +38278,11 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
         f"Recommended next step: {next_action}\n\n"
         f"Detected {detected_str}."
         f"{link_line}\n\n"
-        f"You're receiving this because you're listed as an admin or owner "
-        f"on this Levelog project. Reply to this email if you have questions.\n\n"
+        f"You're receiving this because you're an admin of this company or the "
+        f"assigned project manager on this Levelog project. Reply to this email "
+        f"if you have questions.\n"
+        f"Recibe este correo porque es administrador de esta empresa o el "
+        f"gerente de proyecto asignado a este proyecto en Levelog.\n\n"
         f"— Levelog"
     )
 
@@ -38218,8 +38312,9 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
       {link_html}
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       <p style="margin:0;font-size:12px;color:#6b7280;">
-        You're receiving this because you're listed as an admin or owner on this Levelog project.
-        Reply to this email if you have questions.
+        You're receiving this because you're an admin of this company or the assigned project manager on this Levelog project.
+        Reply to this email if you have questions.<br>
+        Recibe este correo porque es administrador de esta empresa o el gerente de proyecto asignado a este proyecto en Levelog.
       </p>
     </td></tr>
   </table>
@@ -42701,10 +42796,209 @@ create_permit_renewal_routes(
 # ==================== WHATSAPP INTEGRATION ====================
 
 import random
+import secrets
 import string as _string
 import io
 
 # ---------- helpers ----------
+
+# ── THE TENANT BOUNDARY ────────────────────────────────────────────────────
+#
+#     WhatsApp group -> company -> project
+#
+# A group record names a company and a project, and neither is trusted on the
+# record's word. Every bot path that reads project data first reads the PROJECT
+# back with the group's company in the filter (`_bot_project_scope`). A record
+# that was written wrong — by an old bug, a future endpoint, or a hand edit —
+# then yields nothing instead of another customer's site.
+#
+# The classification rules live in lib/wa_security.py so they can be read and
+# tested without a database; these functions only supply the reads.
+
+def _security_event(kind: str, **fields) -> None:
+    """One structured line per security event: ids only, never content."""
+    try:
+        logger.warning(wa_security.format_security_event(kind, **fields))
+    except Exception:
+        pass
+
+
+def _company_id_filter(company_id: Any) -> dict:
+    """Match a company id stored as a string or as an ObjectId."""
+    cid = str(company_id or "").strip()
+    vals: list = [cid]
+    try:
+        vals.append(ObjectId(cid))
+    except Exception:
+        pass
+    return {"$in": vals}
+
+
+async def _bot_project_scope(company_id: Any, project_id: Any) -> Optional[dict]:
+    """The project document, ONLY if it belongs to `company_id`. Else None.
+
+    The single question every WhatsApp read asks before touching project data.
+    Empty on either side is None, not a wildcard."""
+    cid = str(company_id or "").strip()
+    pid = str(project_id or "").strip()
+    if not cid or not pid:
+        return None
+    try:
+        return await db.projects.find_one({
+            "_id": to_query_id(pid),
+            "company_id": _company_id_filter(cid),
+            "is_deleted": {"$ne": True},
+        })
+    except Exception as e:
+        logger.warning(f"bot project scope read failed: {type(e).__name__}")
+        return None
+
+
+async def _resolve_group_binding(wa_group_id: str) -> dict:
+    """What a WhatsApp group is bound to, established or refused.
+
+    Returns {"status": ...} and, for "ok", company_id, project_id, group and
+    project. Every other status means: answer nothing project-specific."""
+    if not wa_group_id:
+        return {"status": wa_security.GROUP_UNLINKED}
+    try:
+        rows = await db.whatsapp_groups.find(
+            {"wa_group_id": wa_group_id, "active": True}
+        ).to_list(20)
+    except Exception as e:
+        # Unknown is not "fine". A read that failed has established nothing.
+        logger.warning(f"group binding read failed: {type(e).__name__}")
+        return {"status": wa_security.GROUP_INVALID, "reason": "read_failed"}
+
+    status, row, reason = wa_security.classify_group_rows(rows)
+    if status == wa_security.GROUP_UNLINKED:
+        return {"status": status}
+    if status == wa_security.GROUP_DUPLICATE:
+        _security_event(
+            "whatsapp_duplicate_group_ownership",
+            wa_group_id=wa_group_id, reason=reason, row_count=len(rows),
+            companies=[r.get("company_id") for r in rows],
+            projects=[r.get("project_id") for r in rows],
+        )
+        return {"status": status, "reason": reason}
+    if status == wa_security.GROUP_INVALID:
+        _security_event(
+            "whatsapp_group_binding_invalid",
+            wa_group_id=wa_group_id, reason=reason, row_count=len(rows),
+        )
+        return {"status": status, "reason": reason}
+
+    company_id = str(row.get("company_id"))
+    project_id = str(row.get("project_id"))
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        _security_event(
+            "whatsapp_group_project_not_owned",
+            wa_group_id=wa_group_id, company_id=company_id,
+            project_id=project_id, reason="project_missing_or_other_company",
+        )
+        return {"status": wa_security.GROUP_INVALID,
+                "reason": "project_missing_or_other_company"}
+    return {
+        "status": wa_security.GROUP_OK,
+        "company_id": company_id,
+        "project_id": project_id,
+        "group": row,
+        "project": project,
+    }
+
+
+UNAVAILABLE_NOTICE_COOLDOWN_SECONDS = 60 * 60 * 24
+
+
+async def _announce_group_unavailable(wa_group_id: str) -> None:
+    """Say, at most once a day, that this group cannot be served. No data.
+
+    The cooldown is a stored row, not memory, for the reason _nudge_once gives:
+    two containers and a restart must not each announce it again."""
+    if not wa_group_id:
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        res = await db.whatsapp_conversation_state.update_one(
+            {"kind": "unavailable", "group_id": wa_group_id,
+             "$or": [{"expires_at": {"$lte": now}},
+                     {"expires_at": {"$exists": False}}]},
+            {"$set": {"kind": "unavailable", "group_id": wa_group_id,
+                      "expires_at": now + timedelta(
+                          seconds=UNAVAILABLE_NOTICE_COOLDOWN_SECONDS),
+                      "updated_at": now}},
+        )
+        if res.matched_count == 0:
+            existing = await db.whatsapp_conversation_state.find_one(
+                {"kind": "unavailable", "group_id": wa_group_id})
+            if existing is not None:
+                return  # inside the cooldown
+            try:
+                await db.whatsapp_conversation_state.insert_one({
+                    "kind": "unavailable", "group_id": wa_group_id,
+                    "expires_at": now + timedelta(
+                        seconds=UNAVAILABLE_NOTICE_COOLDOWN_SECONDS),
+                    "updated_at": now,
+                })
+            except Exception:
+                return  # another worker inserted it first
+        await send_whatsapp_message(
+            wa_group_id, wa_security.GROUP_UNAVAILABLE_TEXT)
+    except Exception as e:
+        logger.warning(f"unavailable notice skipped: {type(e).__name__}")
+
+
+async def _binding_for_history(group_id: str, company_id: Any,
+                               project_id: Any) -> dict:
+    """The minimal binding _group_history_filter needs, read company-scoped."""
+    row = None
+    try:
+        row = await db.whatsapp_groups.find_one({
+            "wa_group_id": group_id,
+            "company_id": _company_id_filter(company_id),
+            "project_id": str(project_id or ""),
+            "active": True,
+        })
+    except Exception:
+        row = None
+    return {"company_id": str(company_id or ""),
+            "project_id": str(project_id or ""),
+            "group": {"wa_group_id": group_id,
+                      "linked_at": (row or {}).get("linked_at")}}
+
+
+_HISTORY_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_HISTORY_NEVER = datetime(9999, 1, 1, tzinfo=timezone.utc)
+
+
+def _group_history_filter(binding: dict, since: Optional[datetime] = None,
+                          until: Optional[datetime] = None) -> dict:
+    """whatsapp_messages rows that belong to THIS binding of the group.
+
+    Human rows are stored with the binding's company and project. Bot rows are
+    stored by send_whatsapp_message, which knows neither, so they are admitted
+    only from the moment of this binding onward — a group that was bound to
+    another project before does not get that project's bot replies read back
+    into this one's context. A binding with no `linked_at` admits no bot rows.
+
+    ONE DICT LITERAL, RETURNED DIRECTLY, so scripts/find_unserved_sorts.py can
+    read the filter at every call site (it resolves a builder whose only
+    return is a literal) and check the sort against (group_id, created_at)."""
+    group = binding.get("group") or {}
+    linked_at = group.get("linked_at")
+    bot_since = linked_at if isinstance(linked_at, datetime) else _HISTORY_NEVER
+    return {
+        "group_id": group.get("wa_group_id"),
+        "created_at": {"$gte": since or _HISTORY_EPOCH,
+                       "$lt": until or _HISTORY_NEVER},
+        "$or": [
+            {"company_id": binding["company_id"],
+             "project_id": binding["project_id"]},
+            {"sender": "bot", "created_at": {"$gte": bot_since}},
+        ],
+    }
+
 
 # -- ITEM 4: THE PROMPT BAN DID NOT HOLD, SO THIS IS NOT A PROMPT CHANGE ----
 #
@@ -42856,6 +43150,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                 recipients, list) else []
             return {
                 "event":             event,
+                "from_me":           False,
                 "notification":      notification,
                 "notification_type": str(notification.get("type") or ""),
                 "group_id":          chat_id or None,
@@ -42891,11 +43186,16 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         # (fromMe=true) whose author JID is a @lid, that IS our bot's
         # LID. Learn it once; subsequent inbound @mentions will match
         # even without WAAPI_BOT_LID configured.
+        # `from_me` is also returned: the processor drops these before doing
+        # anything else (see _is_own_message). Read from the id blob first and
+        # then from the top-level flag some payload versions carry instead.
+        from_me = False
         try:
             msg_id_blob = msg.get("id") or inner.get("id") or {}
-            from_me = False
             if isinstance(msg_id_blob, dict):
                 from_me = bool(msg_id_blob.get("fromMe"))
+            if not from_me:
+                from_me = bool(msg.get("fromMe") or inner.get("fromMe"))
             if from_me:
                 for cand in (
                     msg.get("author"),
@@ -43132,6 +43432,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             # Present on every parsed payload so the processor can branch on it
             # without asking whether the key exists.
             "event": str(payload.get("event") or "").strip().lower() or "message",
+            "from_me": from_me,
             "message_id": msg_id,
             "message_id_serialized": msg_id_serialized,
             "from": from_field,
@@ -43156,6 +43457,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         }
     # Fallback — return as-is with safe defaults
     return {
+        "from_me": bool(payload.get("fromMe")),
         "message_id": str(payload.get("id", "")),
         "from": payload.get("from", ""),
         "sender": payload.get("from", ""),
@@ -43295,22 +43597,39 @@ def _contact_phone_variants(phone: str) -> list:
     return [p for p in out if not (p in seen or seen.add(p))]
 
 
-async def _find_whatsapp_contact(phone: str) -> Optional[dict]:
+async def _find_whatsapp_contact(phone: str, *, all_rows: bool = False):
     """A contact row for this number in any format a writer here can produce.
 
     `user_id: {$ne: None}` is carried from the original queries and matters:
     deleting a user nulls that field rather than dropping the row, so a
-    deleted user's number must not resolve to a live contact."""
+    deleted user's number must not resolve to a live contact.
+
+    `all_rows=True` returns every live row (a list) instead of one, for the
+    callers that must know whether the number belongs to more than one
+    company. It raises on a failed read so that caller can fail closed; the
+    single-row form keeps its old log-and-None behaviour."""
     variants = _contact_phone_variants(phone)
     if not variants:
-        return None
+        return [] if all_rows else None
+    query = {"phone": {"$in": variants}, "user_id": {"$ne": None}}
+    if all_rows:
+        return await db.whatsapp_contacts.find(
+            query, {"company_id": 1}).to_list(20)
     try:
-        return await db.whatsapp_contacts.find_one(
-            {"phone": {"$in": variants}, "user_id": {"$ne": None}},
-        )
+        return await db.whatsapp_contacts.find_one(query)
     except Exception as e:
         logger.warning(f"contact lookup failed for {phone[-4:]}: {e}")
         return None
+
+
+async def _contact_companies_ambiguous(phone: str) -> bool:
+    """True when this number has live contact rows under more than one company."""
+    try:
+        rows = await _find_whatsapp_contact(phone, all_rows=True)
+    except Exception:
+        return True  # unknown is not "one company"
+    companies = {str(r.get("company_id") or "") for r in rows}
+    return len(companies) > 1
 
 
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
@@ -43861,8 +44180,15 @@ async def _handle_who_on_site(
     project_id: str,
     trade: Optional[str] = None,
     company: Optional[str] = None,
+    *,
+    company_id: Optional[str] = None,
 ) -> str:
-    """Return formatted worker list on site. Optionally filter by trade or company."""
+    """Return formatted worker list on site. Optionally filter by trade or company.
+
+    `company_id` is the GROUP's company. Without proof the project is that
+    company's, nothing is read (see _bot_project_scope)."""
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
     today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -44009,11 +44335,12 @@ async def _handle_list_workers(
     return "\n".join(lines)
 
 
-async def _handle_dob_status(project_id: str) -> str:
+async def _handle_dob_status(project_id: str, *,
+                             company_id: Optional[str] = None) -> str:
     """Return project DOB info summary."""
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project = await _bot_project_scope(company_id, project_id)
     if not project:
-        return "Project not found."
+        return wa_security.BOT_SCOPE_REFUSAL
 
     # BIN lives at the top level as nyc_bin in current schema; fall back to
     # the legacy dob_config.bin_number for older records.
@@ -44033,6 +44360,7 @@ async def _handle_dob_status(project_id: str) -> str:
     # explicit None, and None[:80] raises TypeError).
     recent = await db.dob_logs.find({
         "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
         "record_type": "violation",
     }).sort("detected_at", -1).to_list(5)
     if recent:
@@ -44230,7 +44558,8 @@ def _render_daily_log_row(log: Dict[str, Any]) -> List[str]:
     return out
 
 
-async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
+async def _handle_daily_log(project_id: str, date: Optional[str] = None, *,
+                            company_id: Optional[str] = None) -> str:
     """Everything filed for one day, from both places a day can be filed.
 
     ── WHY THIS TOOL EXISTS ───────────────────────────────────────────────
@@ -44247,6 +44576,8 @@ async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
     # one."""
     if not project_id:
         return "Could not determine project."
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
     day = (date or "").strip() or eastern_today()
     books: List[Dict[str, Any]] = []
     legacy = None
@@ -44282,8 +44613,11 @@ async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
     return out if len(out) <= DAILY_LOG_MAX_CHARS else out[:DAILY_LOG_MAX_CHARS - 3] + "..."
 
 
-async def _handle_open_items(project_id: str) -> str:
+async def _handle_open_items(project_id: str, *,
+                             company_id: Optional[str] = None) -> str:
     """Return uncorrected observations from today's daily log."""
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
     # Eastern: `date` on daily_logs is a New York calendar day, so an evening
     # query on the UTC day looked for tomorrow's log and reported none found.
     today_str = eastern_today()
@@ -44346,11 +44680,14 @@ If NOT a material request, return: {"is_request": false}"""},
 async def _create_material_request(project_id: str, company_id: str, group_id: str,
                                      message_id: str, sender_phone: str, detection: dict) -> dict:
     """Create a material request document from detected request."""
+    if not await _bot_project_scope(company_id, project_id):
+        return {}
     now = datetime.now(timezone.utc)
 
     # Duplicate detection: check for similar request from same group in last 24h
     recent = await db.material_requests.find_one({
         "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
         "group_id": group_id,
         "status": {"$in": ["open", "partial"]},
         "created_at": {"$gte": now - timedelta(hours=24)}
@@ -44417,14 +44754,18 @@ async def _send_material_confirmation(group_id: str, request_doc: dict):
     await send_whatsapp_message(group_id, message)
 
 
-async def _handle_material_receipt(project_id: str, message_body: str, sender_phone: str) -> str:
+async def _handle_material_receipt(project_id: str, message_body: str, sender_phone: str,
+                                   *, company_id: Optional[str] = None) -> str:
     """Reconcile a delivery receipt against open material requests."""
     if not project_id or not OPENAI_API_KEY:
         return "I couldn't process this delivery receipt. Please log it manually."
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
 
     # Get open/partial requests
     requests = await db.material_requests.find({
         "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
         "status": {"$in": ["open", "partial"]},
         "is_deleted": {"$ne": True}
     }).to_list(20)
@@ -44517,16 +44858,14 @@ Return JSON: {{"matches": [{{"request_id": "id", "item_name": "name", "quantity_
     return "\n".join(report_lines)
 
 
-async def _handle_project_info(project_id: str) -> str:
+async def _handle_project_info(project_id: str, *,
+                               company_id: Optional[str] = None) -> str:
     """Return a short, human-readable summary of the project bound to this group."""
     if not project_id:
         return "Could not determine which project this group is linked to."
-    try:
-        project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    except Exception:
-        project = None
+    project = await _bot_project_scope(company_id, project_id)
     if not project:
-        return "Project not found."
+        return wa_security.BOT_SCOPE_REFUSAL
 
     name = project.get("name") or "(unnamed project)"
     address = project.get("address") or project.get("formatted_address") or "—"
@@ -44543,7 +44882,6 @@ async def _handle_project_info(project_id: str) -> str:
     try:
         from permit_renewal import _resolve_gc_legal_name
         company_for_gc = None
-        company_id = project.get("company_id")
         if company_id:
             try:
                 company_for_gc = await db.companies.find_one(
@@ -44631,16 +44969,20 @@ def _permit_matches_hint(permit: dict, hint: str) -> int:
 
 
 async def _handle_start_permit_renewal(
-    project_id: str, group_id: str, sender: str, permit_hint: str
+    project_id: str, group_id: str, sender: str, permit_hint: str,
+    *, company_id: Optional[str] = None,
 ) -> str:
     """Resolve permit → check eligibility → send deep link or blocker list."""
     if not project_id:
         return "Could not determine which project this is."
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
 
     # Load the same active-permit set the user sees.
     try:
         permits = await db.dob_logs.find({
             "project_id":  project_id,
+            "company_id":  _company_id_filter(company_id),
             "record_type": "permit",
             "is_deleted":  {"$ne": True},
         }).to_list(200)
@@ -44725,7 +45067,7 @@ async def _handle_start_permit_renewal(
     permit_id = str(target["_id"])
 
     # Eligibility — call the existing engine. Needs company name.
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project = await _bot_project_scope(company_id, project_id)
     company_doc = None
     if project and project.get("company_id"):
         company_doc = await db.companies.find_one(
@@ -44788,7 +45130,8 @@ async def _handle_start_permit_renewal(
     )
 
 
-async def _handle_active_permits(project_id: str) -> str:
+async def _handle_active_permits(project_id: str, *,
+                                 company_id: Optional[str] = None) -> str:
     """Return currently-active DOB permits for this project.
 
     Reads from db.dob_logs where record_type='permit' and the permit is
@@ -44796,9 +45139,12 @@ async def _handle_active_permits(project_id: str) -> str:
     """
     if not project_id:
         return "Could not determine project."
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
     try:
         permits = await db.dob_logs.find({
             "project_id":  project_id,
+            "company_id":  _company_id_filter(company_id),
             "record_type": "permit",
             "is_deleted":  {"$ne": True},
         }).sort("expiration_date", -1).to_list(100)
@@ -44880,13 +45226,17 @@ async def _handle_active_permits(project_id: str) -> str:
     return "\n".join(lines)
 
 
-async def _handle_material_status(project_id: str) -> str:
+async def _handle_material_status(project_id: str, *,
+                                  company_id: Optional[str] = None) -> str:
     """Return formatted status of open/partial material requests."""
     if not project_id:
         return "Could not determine project."
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
 
     requests = await db.material_requests.find({
         "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
         "status": {"$in": ["open", "partial"]},
         "is_deleted": {"$ne": True}
     }).to_list(20)
@@ -44911,23 +45261,33 @@ async def _handle_material_status(project_id: str) -> str:
     return "\n".join(lines)
 
 
-async def _find_project_for_contact(contact: dict) -> Optional[str]:
-    """Return first assigned project ID for a contact, or None."""
+async def _find_project_for_contact(contact: dict) -> Optional[Tuple[str, str]]:
+    """(company_id, project_id) a direct message may read, or None.
+
+    The company is the USER's, and must equal the contact row's: a contact row
+    is written per company, and one whose company is not its user's company is
+    stale (a user moved between tenants). The project must be that company's —
+    `assigned_projects` is not self-cleaning and can name another tenant's
+    project, so the first assigned id is no longer trusted on its own."""
     user_id = contact.get("user_id")
     if not user_id:
         return None
-    user = await db.users.find_one({"_id": to_query_id(user_id)})
+    user = await db.users.find_one(
+        {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}})
     if not user:
         return None
-    assigned = user.get("assigned_projects", [])
-    if assigned:
-        return str(assigned[0])
+    company_id = str(user.get("company_id") or "")
+    if not wa_security.same_company(company_id, contact.get("company_id")):
+        return None
+    for pid in user.get("assigned_projects", []) or []:
+        if await _bot_project_scope(company_id, pid):
+            return company_id, str(pid)
     # Fallback: first active project in company
-    company_id = user.get("company_id")
-    if company_id:
-        proj = await db.projects.find_one({"company_id": company_id, "is_deleted": {"$ne": True}})
-        if proj:
-            return str(proj["_id"])
+    proj = await db.projects.find_one({
+        "company_id": _company_id_filter(company_id),
+        "is_deleted": {"$ne": True}})
+    if proj:
+        return company_id, str(proj["_id"])
     return None
 
 
@@ -44948,19 +45308,20 @@ def _default_bot_config() -> dict:
         "daily_summary_enabled": False,
         "daily_summary_time": "17:00",       # 24h EST HH:MM
         "daily_summary_days": [1, 2, 3, 4, 5],  # ISO weekday Mon=1 Sun=7
-        # ── ON, BECAUSE NOBODY SWITCHES ON A FEATURE THEY DO NOT KNOW EXISTS ─
+        # ── OFF AGAIN: THE "ON" ARGUMENT WAS WRONG ABOUT WHAT THIS SENDS ────
         #
-        # This defaulted False and the reasoning was sound in isolation: do not
-        # surprise an existing group with behaviour it did not ask for. What it
-        # missed is that there is no screen that advertises the feature either,
-        # so "off by default" and "does not exist" are the same thing to every
-        # user who has not read the source.
+        # This was flipped to True on the reasoning that a checklist "only
+        # appears when somebody asks for one". It does not. With frequency
+        # "daily" the scheduled job (_run_whatsapp_checklist_extractions)
+        # posts an extracted checklist into the group at 16:00 every day there
+        # was chat — unprompted, which is exactly the class of send the same
+        # comment ruled out for the daily summary.
         #
-        # The surprise argument still holds for anything the bot sends
-        # UNPROMPTED, which is why daily_summary_enabled stays False: a digest
-        # arriving at 17:00 in a group that never asked for one is spam. A
-        # checklist only appears when somebody asks for one.
-        "checklist_extraction_enabled": True,
+        # So it defaults False, like the summary. An admin turns it on per
+        # group. Groups whose stored bot_config already says True keep True:
+        # the startup migration only fills groups with NO bot_config, and the
+        # merge in whatsapp_get_groups overlays stored values on these.
+        "checklist_extraction_enabled": False,
         "checklist_frequency": "daily",       # "daily" | "on_demand"
         "checklist_time": "16:00",
         "features": {
@@ -49005,7 +49366,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
                              question: Optional[str] = None,
                              parsed_override: Optional[dict] = None,
                              reply_to: Optional[str] = None,
-                             user_body: Optional[str] = None) -> None:
+                             user_body: Optional[str] = None,
+                             *, company_id: Optional[str] = None) -> None:
     """Send the sheet someone asked to see. It does not answer anything.
 
     ── WHAT THIS USED TO BE ───────────────────────────────────────────────
@@ -49025,6 +49387,13 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     # passes None, and a stale caller passing one must still get the sheet
     # rather than an error.
     """
+    # A drawing is project data. Nothing is sent unless the project is
+    # proven to be the group's company's.
+    if not await _bot_project_scope(company_id, project_id):
+        _security_event("whatsapp_plan_send_refused", wa_group_id=group_id,
+                        company_id=company_id, project_id=project_id)
+        _log_plan_timing(group_id, query, {}, "scope_refused")
+        return
     _t0 = perf_counter()
     _stage: Dict[str, Any] = {}
     spec = parsed_override or {}
@@ -50227,6 +50596,8 @@ async def _handle_start_checklist(
 
     Saves a conversation state with draft items + candidate list, then returns
     a prompt asking the user to assign each item."""
+    if not await _bot_project_scope(company_id, project_id):
+        return wa_security.BOT_SCOPE_REFUSAL
     items = [i for i in (items or []) if (i.get("text") or "").strip()]
     if not items:
         return "Tell me what items you want on the checklist."
@@ -50402,8 +50773,16 @@ async def _handle_checklist_assignment_reply(
             "completed_by":  None,
         })
 
-    project = await db.projects.find_one({"_id": to_query_id(project_id)}) if project_id else None
-    project_name = project.get("name", "Project") if project else "Project"
+    # The draft's (company, project) was checked against the group's binding
+    # before this was called; it is proven against the projects collection
+    # here too, so a forged or stale draft cannot write a checklist under a
+    # project its company does not own.
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        await db.whatsapp_conversation_state.delete_one(
+            {"kind": "checklist", "group_id": group_id})
+        return wa_security.BOT_SCOPE_REFUSAL
+    project_name = project.get("name", "Project")
 
     doc = {
         "project_id":           project_id or "",
@@ -50557,13 +50936,20 @@ async def _sheet_index_lines(project_id: str) -> list:
 
 async def _agent_context_block(
     project_id: str, features: Dict[str, Any], address_mode: str,
+    *, company_id: Optional[str] = None,
 ) -> str:
-    """The facts, assembled fresh for this message."""
+    """The facts, assembled fresh for this message.
+
+    Empty — no facts at all — unless the project is proven to belong to
+    `company_id`, the group's company. Every read below runs behind that."""
+    owned = await _bot_project_scope(company_id, project_id)
+    if not owned:
+        return ""
     lines = ["── WHAT YOU KNOW ABOUT THIS PROJECT RIGHT NOW ──"]
 
     # Project identity.
     try:
-        p = await db.projects.find_one({"_id": to_query_id(project_id)}) or {}
+        p = owned
         ident = [p.get("name") or "", p.get("address") or p.get("location") or ""]
         ident = [x for x in ident if x]
         if ident:
@@ -50575,8 +50961,7 @@ async def _agent_context_block(
             ids.append(f"BBL {p['bbl']}")
         if ids:
             lines.append(f"  {', '.join(ids)}")
-        co = await db.companies.find_one(
-            {"_id": to_query_id(p.get("company_id"))}) if p.get("company_id") else None
+        co = await db.companies.find_one({"_id": to_query_id(company_id)})
         if co and co.get("name"):
             lines.append(f"  GC: {co['name']}")
     except Exception as e:
@@ -50639,7 +51024,9 @@ async def _agent_context_block(
         logger.warning(f"context: open items failed: {e}")
     try:
         permits = await db.dob_logs.find(
-            {"project_id": str(project_id), "record_type": "permit",
+            {"project_id": str(project_id),
+             "company_id": _company_id_filter(company_id),
+             "record_type": "permit",
              "is_deleted": {"$ne": True}},
             {"expiration_date": 1},
         ).to_list(300)
@@ -50724,6 +51111,13 @@ async def _run_group_agent(
     if not OPENAI_API_KEY:
         return None
 
+    # The caller resolved the binding; this asks again, because a function
+    # that reads project data must not depend on every caller having done so.
+    if not await _bot_project_scope(company_id, project_id):
+        _security_event("whatsapp_agent_scope_refused", wa_group_id=group_id,
+                        company_id=company_id, project_id=project_id)
+        return None
+
     # Strip known prefixes
     trimmed = body.strip()
     low = trimmed.lower()
@@ -50740,8 +51134,10 @@ async def _run_group_agent(
     # the follow-up is read as a brand-new question with no context.
     history_msgs: List[Dict[str, str]] = []
     try:
+        _hist_binding = await _binding_for_history(
+            group_id, company_id, project_id)
         recent = await db.whatsapp_messages.find(
-            {"group_id": group_id}
+            _group_history_filter(_hist_binding)
         ).sort("created_at", -1).limit(10).to_list(10)
         recent.reverse()  # oldest → newest
         # Drop the in-flight current message if it's already logged (it is:
@@ -50802,7 +51198,7 @@ async def _run_group_agent(
     # what it had before this existed, which is where it was last week.
     try:
         context_block = await _agent_context_block(
-            project_id, features, address_mode,
+            project_id, features, address_mode, company_id=company_id,
         )
         if context_block:
             system_prompt = f"{system_prompt}\n\n{context_block}"
@@ -51044,6 +51440,15 @@ async def _dispatch_agent_tool(
     `record_sink` collects the records search_plans returned, because the gate
     that checks the composed answer needs the evidence, not the prose the model
     was shown. A tool that returns only a string cannot be checked against."""
+    # ONE GATE IN FRONT OF EVERY TOOL. Each handler below also checks for
+    # itself; this one covers the plan readers (search_plans,
+    # referenced_sheets_not_in_set) that are shared with the app and take a
+    # bare project_id, so they are only ever reached with a proven project.
+    if not await _bot_project_scope(company_id, project_id):
+        _security_event("whatsapp_tool_scope_refused", wa_group_id=group_id,
+                        company_id=company_id, project_id=project_id,
+                        reason=f"tool:{name}")
+        return wa_security.BOT_SCOPE_REFUSAL
     try:
         if name == "check_drawing_set":
             rows = await referenced_sheets_not_in_set(project_id)
@@ -51082,6 +51487,7 @@ async def _dispatch_agent_tool(
                 project_id,
                 trade=args.get("trade"),
                 company=args.get("company"),
+                company_id=company_id,
             )
         if name == "list_workers":
             return await _handle_list_workers(
@@ -51090,17 +51496,18 @@ async def _dispatch_agent_tool(
                 company=args.get("company"),
             )
         if name == "project_info":
-            return await _handle_project_info(project_id)
+            return await _handle_project_info(project_id, company_id=company_id)
         if name == "dob_status":
-            return await _handle_dob_status(project_id)
+            return await _handle_dob_status(project_id, company_id=company_id)
         if name == "active_permits":
-            return await _handle_active_permits(project_id)
+            return await _handle_active_permits(project_id, company_id=company_id)
         if name == "daily_log":
-            return await _handle_daily_log(project_id, args.get("date"))
+            return await _handle_daily_log(project_id, args.get("date"),
+                                           company_id=company_id)
         if name == "open_items":
-            return await _handle_open_items(project_id)
+            return await _handle_open_items(project_id, company_id=company_id)
         if name == "material_status":
-            return await _handle_material_status(project_id)
+            return await _handle_material_status(project_id, company_id=company_id)
         if name == "query_plan":
             # ── ONE READER, AND IT READS RECORDS ───────────────────────────
             #
@@ -51146,6 +51553,7 @@ async def _dispatch_agent_tool(
                     parsed_override=dict(parsed_override, question=None),
                     reply_to=reply_to,
                     user_body=user_body,
+                    company_id=company_id,
                 )
             )
             if not question:
@@ -51169,6 +51577,7 @@ async def _dispatch_agent_tool(
             return await _handle_start_permit_renewal(
                 project_id, group_id, sender,
                 permit_hint=args.get("permit_hint") or "",
+                company_id=company_id,
             )
         if name == "start_checklist":
             items = args.get("items") or []
@@ -51301,6 +51710,10 @@ async def _resolve_company_from_phone(phone_digits: str) -> Optional[str]:
     field rather than dropping the row, so a removed admin's number must not
     still resolve a company. None when unknown, which leaves the pending row
     visible to whoever added it and to nobody else."""
+    if await _contact_companies_ambiguous(phone_digits):
+        # Two companies know this number; a pending group is shown to
+        # neither on the strength of it.
+        return None
     contact = await _find_whatsapp_contact(phone_digits)
     if not contact:
         return None
@@ -51470,6 +51883,22 @@ async def _handle_group_lifecycle(parsed: dict) -> None:
             logger.warning(f"in-chat link invite failed for {group_id}: {e}")
 
 
+def _is_own_message(parsed: dict) -> bool:
+    """True for a webhook event describing a message this bot sent.
+
+    fromMe is the strong signal: WhatsApp sets it on every message the session
+    itself sent, whatever device typed it. The sender match is the fallback for
+    a payload that carries the author but not the flag, and uses the same
+    identifier set (phone, configured LID, auto-learned LIDs) an @mention is
+    matched against."""
+    if parsed.get("from_me"):
+        return True
+    author = str(parsed.get("sender") or "")
+    if "@g.us" in author:
+        return False
+    return _digits_match_bot(_jid_digits(author), _bot_identifier_digits())
+
+
 async def _process_whatsapp_message(payload: dict):
     """Background task to process an inbound WhatsApp message."""
     try:
@@ -51483,6 +51912,22 @@ async def _process_whatsapp_message(payload: dict):
         # string — a silent no-op on the one event that announces a new group.
         if parsed.get("event") in _GROUP_LIFECYCLE_EVENTS:
             await _handle_group_lifecycle(parsed)
+            return
+
+        # ── THE BOT'S OWN MESSAGES COME BACK, AND MUST GO NO FURTHER ──────
+        #
+        # WaAPI's `message_create` event fires for messages this instance
+        # SENDS as well as receives. If the instance is subscribed to it, every
+        # reply, digest and nudge returns here as an inbound message — and
+        # most of them contain "Levelog" (the welcome, the nudge, the pending
+        # greeting) or a soft-trigger word, so the addressing test would hand
+        # the bot its own words and it would answer them. Nothing stopped
+        # that: fromMe was read only to learn the LID.
+        #
+        # Dropped BEFORE anything is stored, detected or answered. The LID has
+        # already been learned by the parser, so nothing is lost. send_whatsapp_
+        # message logs the bot's turn itself; the echo is a duplicate of it.
+        if _is_own_message(parsed):
             return
 
         sender = parsed["sender"].split("@")[0]  # phone number
@@ -51563,8 +52008,22 @@ async def _process_whatsapp_message(payload: dict):
                     # is judged on.
                     logger.warning(f"duplicate check failed for {_mid[:24]}: {e}")
 
-            # Look up linked group
-            group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
+            # Look up linked group — and establish, not assume, whose it is.
+            binding = await _resolve_group_binding(group_id)
+            if binding["status"] in (wa_security.GROUP_DUPLICATE,
+                                     wa_security.GROUP_INVALID):
+                # ── NO GUESSING WHICH COMPANY WINS ─────────────────────────
+                #
+                # Two companies (or two projects) claim this group, or its
+                # record names a project its company does not own. Either way
+                # nothing here can say whose data this chat may see, so it
+                # sees none: the message is not stored under either tenant,
+                # no tool runs, nothing is detected, and the group is told —
+                # at most once a day, in words that name nobody — that it is
+                # not available. _resolve_group_binding logged the event.
+                await _announce_group_unavailable(group_id)
+                return
+            group_doc = binding.get("group")
             if not group_doc:
                 # ── THE PRIMARY FRONT DOOR ─────────────────────────────────
                 #
@@ -51581,8 +52040,10 @@ async def _process_whatsapp_message(payload: dict):
                 pending = await _upsert_pending_group(group_id)
                 await _greet_pending_group_once(pending)
                 return
-            project_id = group_doc["project_id"]
-            msg_company_id = group_doc.get("company_id")
+            # Both taken from the VERIFIED binding: the project was read back
+            # with this company in the filter before either reached here.
+            project_id = binding["project_id"]
+            msg_company_id = binding["company_id"]
 
             # Per-group bot config (legacy docs without a config get all-default
             # behavior via .get() defaults — the startup migration backfills.)
@@ -51791,6 +52252,17 @@ async def _process_whatsapp_message(payload: dict):
                         await db.whatsapp_conversation_state.delete_one(
             {"kind": "checklist", "group_id": group_id})
                         convo_state = None
+            # A draft written under a different binding is not this group's
+            # any more: it names another project's candidates. Dropped, never
+            # completed.
+            if convo_state and not (
+                wa_security.same_company(convo_state.get("company_id"),
+                                         msg_company_id)
+                and str(convo_state.get("project_id") or "") == str(project_id)
+            ):
+                await db.whatsapp_conversation_state.delete_one(
+                    {"kind": "checklist", "group_id": group_id})
+                convo_state = None
             if convo_state and convo_state.get("awaiting") == "checklist_assignment":
                 reply = await _handle_checklist_assignment_reply(
                     convo_state, body or "", group_id, sender
@@ -51811,7 +52283,10 @@ async def _process_whatsapp_message(payload: dict):
                         n = 0
                     # Find most recent non-deleted checklist for this group
                     latest = await db.whatsapp_checklists.find_one(
-                        {"group_id": group_id, "is_deleted": {"$ne": True}},
+                        {"group_id": group_id,
+                         "company_id": _company_id_filter(msg_company_id),
+                         "project_id": str(project_id),
+                         "is_deleted": {"$ne": True}},
                         sort=[("generated_at", -1)],
                     )
                     if not latest:
@@ -51883,7 +52358,12 @@ async def _process_whatsapp_message(payload: dict):
                         )
                         if user_doc:
                             sender_role = (user_doc.get("role") or "").lower()
-                    if not is_company_admin(user_doc) and sender_role != "cp":
+                    # Rank is not tenancy: an admin of ANOTHER company is not
+                    # an admin here. is_company_admin answers rank only.
+                    same_tenant = bool(user_doc) and wa_security.same_company(
+                        user_doc.get("company_id"), msg_company_id)
+                    if not same_tenant or (
+                            not is_company_admin(user_doc) and sender_role != "cp"):
                         await send_whatsapp_message(
                             group_id,
                             "You need admin or manager access to request a checklist. "
@@ -51893,10 +52373,10 @@ async def _process_whatsapp_message(payload: dict):
                         return
                     # Build conversation text for the last 24 hours (EST-today window)
                     today_start_od, today_end_od = get_today_range_est()
-                    msgs_od = await db.whatsapp_messages.find({
-                        "group_id": group_id,
-                        "created_at": {"$gte": today_start_od, "$lt": today_end_od},
-                    }).sort("created_at", 1).to_list(500)
+                    msgs_od = await db.whatsapp_messages.find(
+                        _group_history_filter(binding, today_start_od,
+                                              today_end_od),
+                    ).sort("created_at", 1).to_list(500)
                     convo_lines_od = []
                     for m in msgs_od:
                         if m.get("type") == "bot_plan_response":
@@ -51909,7 +52389,8 @@ async def _process_whatsapp_message(payload: dict):
                     # On-demand does NOT go through send_log dedup — user requested it
                     try:
                         await _extract_whatsapp_checklist(
-                            str(project_id), group_id, convo_text_od
+                            str(project_id), group_id, convo_text_od,
+                            company_id=msg_company_id,
                         )
                     except Exception as e:
                         logger.error(f"on-demand checklist failed: {e}", exc_info=True)
@@ -52016,6 +52497,13 @@ async def _process_whatsapp_message(payload: dict):
         contact = await _find_whatsapp_contact(sender)
         if not contact:
             # Unknown or unregistered number — stay silent
+            return
+        # ONE NUMBER, TWO COMPANIES, NO GUESS. The contact lookup is by phone
+        # across every tenant; a number registered under two companies cannot
+        # say which company's data a direct message may read, so it reads none.
+        if await _contact_companies_ambiguous(sender):
+            _security_event("whatsapp_dm_contact_ambiguous",
+                            reason="phone_in_multiple_companies")
             return
 
         # Transcribe audio if present.
@@ -52150,22 +52638,25 @@ async def _process_whatsapp_message(payload: dict):
         if not intent:
             return
 
-        project_id = await _find_project_for_contact(contact)
-        if not project_id:
+        scope = await _find_project_for_contact(contact)
+        if not scope:
             await send_whatsapp_message(parsed["from"], "No project found linked to your account.")
             return
+        dm_company_id, project_id = scope
 
-        # Execute intent
+        # Execute intent — every handler re-proves the project is this
+        # company's before it reads anything.
         if intent == "who_on_site":
-            reply = await _handle_who_on_site(project_id)
+            reply = await _handle_who_on_site(project_id, company_id=dm_company_id)
         elif intent == "dob_status":
-            reply = await _handle_dob_status(project_id)
+            reply = await _handle_dob_status(project_id, company_id=dm_company_id)
         elif intent == "open_items":
-            reply = await _handle_open_items(project_id)
+            reply = await _handle_open_items(project_id, company_id=dm_company_id)
         elif intent == "material_receipt":
-            reply = await _handle_material_receipt(project_id, body, sender)
+            reply = await _handle_material_receipt(project_id, body, sender,
+                                                   company_id=dm_company_id)
         elif intent == "material_status":
-            reply = await _handle_material_status(project_id)
+            reply = await _handle_material_status(project_id, company_id=dm_company_id)
         else:
             return
 
@@ -52185,28 +52676,64 @@ async def _process_whatsapp_message(payload: dict):
 
 
 # ---------- group link handler ----------
-
-async def _handle_bot_added_to_group(group_id: str):
-    """When bot is added to a group, send the pending link code into the group."""
-    # Find any pending link code that hasn't been group-verified
-    code_doc = await db.whatsapp_link_codes.find_one({
-        "verified": False,
-        "group_verified": {"$ne": True},
-    })
-    if code_doc:
-        code = code_doc["code"]
-        await send_whatsapp_message(
-            group_id,
-            f"Levelog bot has been added. To link this group, someone with access should paste this code in the Levelog app:\n\n*{code}*\n\nOr type the code in this group to auto-verify."
-        )
-
+#
+# `_handle_bot_added_to_group` was deleted here (2026-10-07). It was never
+# called, and if it had been it would have posted the oldest unverified link
+# code of ANY company into whatever group the bot had just joined — a
+# capability from one tenant handed to a chat that might belong to another.
+# Linking a newly joined group is _handle_group_lifecycle's job, and it posts
+# only the bilingual greeting and a tokenised link that binds nothing until a
+# signed-in admin of the right company confirms it.
 
 # ---------- webhook (PUBLIC — no JWT) ----------
+
+def _webhook_rejection_reason(provided: Optional[str], expected: Optional[str]) -> str:
+    if not wa_security.webhook_secret_usable(expected):
+        return "secret_not_configured"
+    if not provided:
+        return "missing_token"
+    return "bad_token"
+
 
 @api_router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
     """Public webhook for WaAPI — returns 200 immediately, processes in background.
-    Also logs every raw payload into whatsapp_webhook_log for debugging."""
+    Also logs every raw payload into whatsapp_webhook_log for debugging.
+
+    ── AUTHENTICATED BEFORE ANYTHING ELSE ─────────────────────────────────
+    #
+    # This route took any POST from anyone, stored it, and processed it as a
+    # message from WhatsApp. A forged payload naming a linked group's id could
+    # make the bot answer — with that project's roster, permits and drawings —
+    # into whatever chat the forger named.
+    #
+    # WaAPI offers no signature and no custom header on webhooks (its SDK's
+    # updateInstance takes a URL and an event list, nothing else), so the
+    # secret travels in the URL it is configured to call:
+    #
+    #     https://<host>/api/whatsapp/webhook?token=<WAAPI_WEBHOOK_SECRET>
+    #
+    # Compared in constant time. A missing, wrong or unconfigured secret is a
+    # 401 with nothing read, stored or processed: the body is not even read off
+    # the socket. An unconfigured secret rejects everything rather than
+    # trusting everything — an integration that cannot authenticate its
+    # sender must not fall back to believing it.
+    #
+    # The token is kept out of the logs: uvicorn's access line is rewritten
+    # by _RedactWebhookTokenFilter, Sentry's URL and query string are scrubbed
+    # for this path, the per-request [req] line prints the path only, and
+    # whatsapp_webhook_log stores headers and body, never the URL.
+    """
+    expected = os.environ.get("WAAPI_WEBHOOK_SECRET", "")
+    provided = request.query_params.get(wa_security.WEBHOOK_TOKEN_PARAM)
+    if not wa_security.webhook_token_ok(provided, expected):
+        _security_event(
+            "whatsapp_webhook_rejected",
+            reason=_webhook_rejection_reason(provided, expected),
+            remote_addr=request.client.host if request.client else None,
+        )
+        return JSONResponse(status_code=401, content={"status": "unauthorized"})
+
     raw_body = b""
     try:
         raw_body = await request.body()
@@ -52238,14 +52765,27 @@ async def whatsapp_webhook(request: Request):
     return {"status": "ok"}
 
 
+def _require_operator_flag(current_user: dict) -> None:
+    """The debug surfaces read across every tenant, so they answer the
+    platform operator and nobody else — decided by the DB flag alone.
+
+    Not `is_company_admin` (a rank test, not a tenant test: every customer's
+    admin passed it), not any role string, and not PLATFORM_OPERATOR_EMAILS:
+    the flag is in no API allow-list, so no request can grant it."""
+    if (current_user or {}).get("is_platform_operator") is not True:
+        raise HTTPException(
+            status_code=403,
+            detail=("Platform operator access required. / "
+                    "Se requiere acceso de operador de la plataforma."))
+
+
 @api_router.get("/whatsapp/debug/audio-probe")
 async def whatsapp_debug_audio_probe(
     current_user=Depends(get_current_user), limit: int = 10
 ):
     """Recent download-audio probe traces — which WaAPI endpoints were
     tried and what each returned."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     try:
         rows = await db.whatsapp_audio_probe.find().sort(
             "received_at", -1
@@ -52264,8 +52804,7 @@ async def whatsapp_debug_audio_diag(
     current_user=Depends(get_current_user), limit: int = 10
 ):
     """Recent voicenote download/transcription outcomes."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     try:
         rows = await db.whatsapp_audio_diag.find().sort(
             "received_at", -1
@@ -52288,8 +52827,7 @@ async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
     list this returns. A missing LID here = env var isn't loaded, or has
     whitespace/quote corruption.
     """
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     env_phone_raw = os.environ.get("WAAPI_DISPLAY_NUMBER", "")
     env_lid_raw = os.environ.get("WAAPI_BOT_LID", "")
     return {
@@ -52342,8 +52880,7 @@ async def whatsapp_debug_page_index(
     # NO EMBEDDING. It is 1536 floats that no human reads, and it would bury
     # the text this is here to show.
     """
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
 
     # SCOPED TO THE CALLER'S COMPANY. A project id in a query string is the
     # client's input, and a debug endpoint is still an endpoint.
@@ -52445,8 +52982,7 @@ async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_us
     Asked of production and unanswerable: the old unique-on-group_id index is
     what silently ate every bot session, the drop runs at boot inside a try,
     and "did it go?" had no answer short of a database shell."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     try:
         info = await db.whatsapp_conversation_state.index_information()
     except Exception as e:
@@ -52462,8 +52998,7 @@ async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_us
 @api_router.get("/whatsapp/debug/webhook-log")
 async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
     """Return the last 20 raw webhook hits so we can see what WaAPI is sending."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     rows = await db.whatsapp_webhook_log.find().sort("received_at", -1).limit(20).to_list(20)
     total = await db.whatsapp_webhook_log.estimated_document_count()
     return {
@@ -52483,6 +53018,95 @@ async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
 
 # ---------- group linking flow (auth required) ----------
 
+# Shown in the app as the error detail, so both languages travel together.
+LINK_PROJECT_REFUSED = (
+    "That project is not available to your company. / "
+    "Ese proyecto no está disponible para su empresa."
+)
+GROUP_OWNED_ELSEWHERE = (
+    "This WhatsApp group is already connected to another account. "
+    "Ask that account to disconnect it first. / "
+    "Este grupo de WhatsApp ya está conectado a otra cuenta. "
+    "Pida a esa cuenta que lo desconecte primero."
+)
+GROUP_CHECK_FAILED = (
+    "Could not verify the group. Try again. / "
+    "No se pudo verificar el grupo. Inténtelo de nuevo."
+)
+GROUP_NOT_THIS_PROJECT = (
+    "That group is not linked to this project. / "
+    "Ese grupo no está vinculado a este proyecto."
+)
+
+
+async def _assert_link_project_owned(project_id: Any, current_user: dict,
+                                     *, action: str) -> dict:
+    """The project, if and only if it belongs to the caller's company.
+
+    Every way of binding a group to a project goes through this, server-side.
+    A project of another company, a missing one and a deleted one all get the
+    same 403 so the answer does not confirm another tenant's project exists;
+    the security log records which it was."""
+    company_id = str(get_user_company_id(current_user) or "")
+    uid = actor_id(current_user)
+    project = None
+    if project_id:
+        try:
+            project = await db.projects.find_one({
+                "_id": to_query_id(str(project_id)),
+                "is_deleted": {"$ne": True},
+            })
+        except Exception:
+            project = None
+    if project:
+        # The shared strict check (both sides present and equal, no operator
+        # bypass) decides; this only adds the security log around it.
+        try:
+            _same_company_or_403(project, current_user,
+                                 detail=LINK_PROJECT_REFUSED)
+            return project
+        except HTTPException:
+            pass
+    _security_event(
+        "whatsapp_cross_company_link_attempt" if project
+        else "whatsapp_link_project_not_found",
+        company_id=company_id, project_id=project_id, user_id=uid,
+        caller_company_id=company_id,
+        project_company_id=(project or {}).get("company_id"),
+        reason=action,
+    )
+    raise HTTPException(status_code=403, detail=LINK_PROJECT_REFUSED)
+
+
+async def _assert_group_not_owned_elsewhere(wa_group_id: str, company_id: Any,
+                                            current_user: dict,
+                                            *, action: str) -> None:
+    """Refuse to create a second company's active binding for one group.
+
+    A group bound under two companies is a state the webhook can only refuse
+    to serve (see _resolve_group_binding); this keeps a link from creating it."""
+    if not wa_group_id:
+        return
+    try:
+        rows = await db.whatsapp_groups.find(
+            {"wa_group_id": wa_group_id, "active": True},
+            {"company_id": 1},
+        ).to_list(20)
+    except Exception:
+        raise HTTPException(status_code=503, detail=GROUP_CHECK_FAILED)
+    others = [r for r in rows
+              if not wa_security.same_company(r.get("company_id"), company_id)]
+    if others:
+        _security_event(
+            "whatsapp_duplicate_group_link_attempt",
+            wa_group_id=wa_group_id, company_id=company_id,
+            user_id=actor_id(current_user),
+            other_company_id=others[0].get("company_id"),
+            row_count=len(rows), reason=action,
+        )
+        raise HTTPException(status_code=409, detail=GROUP_OWNED_ELSEWHERE)
+
+
 @api_router.post("/whatsapp/group-link/initiate", dependencies=[Depends(require_approved)])
 async def whatsapp_group_link_initiate(
     body: dict,
@@ -52493,8 +53117,14 @@ async def whatsapp_group_link_initiate(
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id required")
     company_id = get_user_company_id(current_user)
-    # Generate unique 6-digit code
-    code = "".join(random.choices(_string.digits, k=6))
+    # The project must be the caller's company's — checked here, server-side,
+    # and again at verify, so a code can never be minted for another tenant's
+    # project however the request was built.
+    await _assert_link_project_owned(project_id, current_user,
+                                     action="group_link_initiate")
+    # Generate unique 6-digit code. secrets, not random: a link code is a
+    # short-lived capability, and Mersenne Twister output is predictable.
+    code = "".join(secrets.choice(_string.digits) for _ in range(6))
     now = datetime.now(timezone.utc)
     # get_current_user returns the user dict via serialize_id, which strips
     # _id and replaces it with id. Use .get('id') with a fallback so this
@@ -52518,8 +53148,7 @@ async def whatsapp_group_link_initiate(
 async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
     """Return which WaAPI instance the backend is actually pointing at.
     Helps diagnose mismatches between the dashboard and the env vars."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
 
     # Probe WaAPI for instance status
     status_data = None
@@ -52552,8 +53181,7 @@ async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
 async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user)):
     """Owner/admin: show the last 20 whatsapp_messages stored. Confirms whether
     the webhook is actually delivering events into the DB."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     msgs = await db.whatsapp_messages.find().sort("created_at", -1).limit(20).to_list(20)
     return {
         "count": await db.whatsapp_messages.estimated_document_count(),
@@ -52573,8 +53201,7 @@ async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user))
 async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
     """Owner/admin only: list un-verified codes for this company so we can
     see what the webhook actually stored vs what the user is typing."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _require_operator_flag(current_user)
     company_id = get_user_company_id(current_user)
     if not company_id and not is_platform_operator(current_user):
         # `company_id: None` IS NOT A TENANT FILTER -- it matches
@@ -52622,9 +53249,17 @@ async def whatsapp_group_link_verify(
     })
     if not code_doc:
         raise HTTPException(status_code=404, detail="Invalid or expired code")
+    # Re-checked at verify, not trusted from initiate: the project could have
+    # been deleted or moved since, and a code row is not proof of anything.
+    await _assert_link_project_owned(project_id, current_user,
+                                     action="group_link_verify")
     group_id = code_doc.get("group_id")
     if not group_id and not code_doc.get("group_verified"):
         raise HTTPException(status_code=400, detail="Code not yet verified by group. Send the code in the WhatsApp group first.")
+    if not group_id:
+        raise HTTPException(status_code=400, detail="Code not yet verified by group. Send the code in the WhatsApp group first.")
+    await _assert_group_not_owned_elsewhere(group_id, company_id, current_user,
+                                            action="group_link_verify")
     # Create group link. Seed bot_config on first insert only ($setOnInsert)
     # so re-linking an existing group doesn't clobber the admin's config.
     now = datetime.now(timezone.utc)
@@ -53047,11 +53682,10 @@ async def whatsapp_pending_group_link(
     # THE PROJECT MUST BE THEIRS. Checked against the database rather than
     # against anything the client sent, because the project id IS the client's
     # input and the whole tenancy decision rests on it.
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    _same_company_or_403(project, current_user,
-                         detail="That project belongs to another company")
+    project = await _assert_link_project_owned(project_id, current_user,
+                                               action="pending_group_link")
+    await _assert_group_not_owned_elsewhere(group_id, company_id, current_user,
+                                            action="pending_group_link")
 
     now = datetime.now(timezone.utc)
     linker_id = str(current_user.get("id") or current_user.get("_id") or "")
@@ -54102,7 +54736,11 @@ async def debug_probe_waapi_endpoints(
     which endpoint actually accepts our image sends. Returns {path: status}.
 
     Body: {"image_url": "<presigned_r2_url>", "group_id": "<wa_group_id>"}
+
+    PLATFORM OPERATOR ONLY. It posts into whatever group id it is handed, so a
+    company admin could otherwise send into another company's chat.
     """
+    _require_operator_flag(current_user)
     image_url = (body or {}).get("image_url", "").strip()
     group_id = (body or {}).get("group_id", "").strip()
     if not image_url or not group_id:
@@ -54161,6 +54799,27 @@ async def debug_test_plan_image_send(
     group_id = (body or {}).get("group_id", "").strip()
     if not sheet or not group_id:
         raise HTTPException(status_code=422, detail="sheet_number and group_id required")
+
+    # ── IT SENDS A DRAWING INTO WHATEVER GROUP ID IT IS HANDED ─────────────
+    #
+    # So it was a way to post one company's plans into another company's
+    # chat: project access was checked, the destination never was. Now the
+    # destination must be a group whose binding is proven to be THIS project
+    # of THIS project's company, and the caller must be the platform operator
+    # (it is a debug surface, like the /whatsapp/debug routes).
+    _require_operator_flag(current_user)
+    binding = await _resolve_group_binding(group_id)
+    project_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if (binding.get("status") != wa_security.GROUP_OK
+            or binding.get("project_id") != str(project_id)
+            or not project_doc
+            or not wa_security.same_company(binding.get("company_id"),
+                                            project_doc.get("company_id"))):
+        _security_event("whatsapp_plan_send_wrong_group",
+                        wa_group_id=group_id, project_id=project_id,
+                        user_id=actor_id(current_user),
+                        reason=str(binding.get("status")))
+        raise HTTPException(status_code=403, detail=GROUP_NOT_THIS_PROJECT)
 
     page = await db.document_page_index.find_one({
         "project_id": project_id,
@@ -54818,17 +55477,26 @@ def _within_30min_window(now_hhmm: str, target_hhmm: str) -> bool:
 
 
 async def _summarize_and_send_for_group(group_doc: dict) -> None:
-    """Build and send a daily summary for one group. Caller handles dedup."""
-    project_id = group_doc.get("project_id")
+    """Build and send a daily summary for one group. Caller handles dedup.
+
+    The group's binding is re-established here, not taken from `group_doc`:
+    a duplicate or mis-owned group gets no summary, and the messages read and
+    the project named are the ones its proven company owns."""
     group_id = group_doc.get("wa_group_id")
-    if not project_id or not group_id:
+    if not group_id:
         return
+    binding = await _resolve_group_binding(group_id)
+    if binding.get("status") != wa_security.GROUP_OK:
+        return
+    if str((binding.get("group") or {}).get("_id")) != str(group_doc.get("_id")):
+        # The row this job iterated is not the row that owns the group.
+        return
+    project_id = binding["project_id"]
 
     today_start, today_end = get_today_range_est()
-    messages = await db.whatsapp_messages.find({
-        "group_id": group_id,
-        "created_at": {"$gte": today_start, "$lt": today_end},
-    }).sort("created_at", 1).to_list(500)
+    messages = await db.whatsapp_messages.find(
+        _group_history_filter(binding, today_start, today_end),
+    ).sort("created_at", 1).to_list(500)
     if not messages:
         return
 
@@ -54850,8 +55518,8 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
         return
     conversation_text = "\n".join(convo_lines[:200])
 
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    project_name = project.get("name", "Project") if project else "Project"
+    project = binding["project"]
+    project_name = project.get("name", "Project")
 
     if not OPENAI_API_KEY:
         logger.info(f"Daily summary skipped for {project_name}: no OPENAI_API_KEY")
@@ -54994,12 +55662,21 @@ def _format_checklist_message(project_name: str, items: list) -> str:
     return "\n".join(lines).rstrip()
 
 
-async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversation_text: str):
+async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversation_text: str,
+                                      *, company_id: Optional[str] = None):
     """Call GPT-4o-mini to extract action items from a group conversation,
     persist to whatsapp_checklists, and send a formatted message back to
     the group. No-ops silently if no actionable items are found.
+
+    `company_id` is the GROUP's company. The checklist is stamped with it and
+    nothing is read, written or posted unless the project is that company's.
     """
     if not conversation_text or not conversation_text.strip():
+        return None
+    if not await _bot_project_scope(company_id, project_id):
+        _security_event("whatsapp_checklist_scope_refused",
+                        wa_group_id=group_id, company_id=company_id,
+                        project_id=project_id)
         return None
     if not OPENAI_API_KEY:
         logger.info(
@@ -55079,10 +55756,14 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
         )
         return None
 
-    # Lookup project + company info
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    project_name = project.get("name", "Project") if project else "Project"
-    company_id = (project.get("company_id") if project else None) or ""
+    # Lookup project + company info — the company is the GROUP's, and the
+    # project is read back under it (re-checked: the model call above took
+    # seconds, and a group can be unlinked in that time).
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        return None
+    project_name = project.get("name", "Project")
+    company_id = str(company_id)
 
     now_utc = datetime.now(timezone.utc)
     today_start, today_end = get_today_range_est()
@@ -55090,6 +55771,8 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
     # Count messages in scope for metadata
     source_count = await db.whatsapp_messages.count_documents({
         "group_id": group_id,
+        "company_id": company_id,
+        "project_id": str(project_id),
         "created_at": {"$gte": today_start, "$lt": today_end},
     })
 
@@ -55138,9 +55821,17 @@ async def _run_whatsapp_checklist_extractions():
                 continue
 
             group_id = group_doc.get("wa_group_id")
-            project_id = group_doc.get("project_id")
-            if not group_id or not project_id:
+            if not group_id:
                 continue
+            # Ownership established per group, every run. A duplicate or
+            # mis-owned group gets no auto-post, and the row iterated must be
+            # the row that owns the group.
+            binding = await _resolve_group_binding(group_id)
+            if binding.get("status") != wa_security.GROUP_OK:
+                continue
+            if str((binding.get("group") or {}).get("_id")) != str(group_doc.get("_id")):
+                continue
+            project_id = binding["project_id"]
 
             first_send = await _whatsapp_send_log_try_mark(
                 group_id, "checklist", today_est
@@ -55150,10 +55841,9 @@ async def _run_whatsapp_checklist_extractions():
 
             # Build conversation text for the last 24 hours
             today_start, today_end = get_today_range_est()
-            messages = await db.whatsapp_messages.find({
-                "group_id": group_id,
-                "created_at": {"$gte": today_start, "$lt": today_end},
-            }).sort("created_at", 1).to_list(500)
+            messages = await db.whatsapp_messages.find(
+                _group_history_filter(binding, today_start, today_end),
+            ).sort("created_at", 1).to_list(500)
             convo_lines = []
             for m in messages:
                 if m.get("type") == "bot_plan_response":
@@ -55167,7 +55857,9 @@ async def _run_whatsapp_checklist_extractions():
             convo_text = "\n".join(convo_lines[:400])
 
             try:
-                await _extract_whatsapp_checklist(project_id, group_id, convo_text)
+                await _extract_whatsapp_checklist(
+                    project_id, group_id, convo_text,
+                    company_id=binding["company_id"])
             except Exception as e:
                 logger.error(f"checklist extraction failed for {group_id}: {e}", exc_info=True)
     except Exception as e:

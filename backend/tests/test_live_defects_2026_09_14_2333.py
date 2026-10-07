@@ -140,8 +140,10 @@ class ARedeliveredWebhookIsNotASecondQuestion(unittest.TestCase):
 
     def test_it_checks_before_the_group_is_even_looked_up(self):
         code = _code_only(server._process_whatsapp_message)
+        # The group is now resolved by _resolve_group_binding (every active
+        # row, ownership proven), not a bare find_one; the order is the claim.
         self.assertLess(code.index("already processed"),
-                        code.index('find_one({"wa_group_id"'))
+                        code.index("_resolve_group_binding("))
 
     def test_it_reuses_the_row_it_was_going_to_store_anyway(self):
         """No new collection and no new write: whatsapp_messages already holds
@@ -294,13 +296,14 @@ class ThePageIndexIsInspectable(unittest.TestCase):
         paths = {r.path for r in server.app.routes if hasattr(r, "path")}
         self.assertIn("/api/whatsapp/debug/page-index", paths)
 
-    def test_it_is_company_admin_only(self):
-        """It read `role not in ("admin", "owner")` inline. The role is
-        retired -- every self-serve signup received it -- and the named rule
-        `is_company_admin` replaced it, which also admits the platform
-        operator on his flag rather than on any role string."""
+    def test_it_is_platform_operator_only(self):
+        """It read `role not in ("admin", "owner")` inline, then
+        `is_company_admin` -- a RANK test that every customer's admin passes.
+        The debug surfaces read across tenants, so they now answer the
+        platform operator's DB flag and nothing else (2026-10-07)."""
         code = _code_only(server.whatsapp_debug_page_index)
-        self.assertIn("is_company_admin(current_user)", code)
+        self.assertIn("_require_operator_flag(current_user)", code)
+        self.assertNotIn("is_company_admin(current_user)", code)
         self.assertNotIn('"owner"', code)
         self.assertIn("403", code)
 
