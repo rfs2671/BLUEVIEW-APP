@@ -51,7 +51,9 @@ execute path records them in the audit rows.
   * a group of this company is ALSO bound to another company or project
   * the bot cannot leave a group (name that group with --bot-not-in-group
     only if you have checked the bot is not a member)
-  * any R2 delete fails — rows are kept so the run can be repeated
+  * any R2 object is still there after its delete (each key is deleted on its
+    own, then HEAD must 404) or any R2 call errors — rows are kept so the run
+    can be repeated; keys already gone are skipped as absent
 
 Exit codes: 0 ok, 2 bad invocation / env, 3 refused, 4 failed (post-check).
 """
@@ -335,30 +337,79 @@ def _r2_listing(prefixes: List[str]) -> Dict[str, List[str]]:
     return out
 
 
-def _r2_delete(keys: Set[str]) -> List[str]:
-    """Delete by explicit key. Returns the keys that failed."""
+def _r2_target():
+    """(client, bucket_for) — the SAME client and bucket names the app writes
+    with. R2_ENDPOINT_URL ends in the bucket name, so every object's real key
+    carries a doubled `blueview/` segment; single-object calls (head, get,
+    put, delete_object) made through this client land on it, consistently.
+    Bucket-level calls (list_objects_v2, delete_objects) do NOT: they become
+    a request on an object named `blueview` and come back empty or as a
+    no-op. See server._r2_delete_prefix. So this script never uses them."""
     import server
     client = server._get_r2_client()
     main_bucket = server.R2_BUCKET_NAME
     card_bucket = (os.environ.get("CARD_AUDIT_BUCKET_NAME", "").strip()
                    or main_bucket)
-    if not client or not main_bucket:
-        return sorted(keys)
-    by_bucket: Dict[str, List[str]] = {}
+
+    def bucket_for(key: str) -> str:
+        return card_bucket if key.startswith("card-audit/") else main_bucket
+    return client, (bucket_for if main_bucket else None)
+
+
+def _r2_exists(client, bucket: str, key: str) -> Optional[bool]:
+    """True if HEAD finds the object, False on 404, None on any other error."""
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception as e:
+        resp = getattr(e, "response", None) or {}
+        code = str((resp.get("Error") or {}).get("Code") or "")
+        status = (resp.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        if status == 404 or code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        return None
+
+
+def r2_probe(client, bucket_for, keys) -> Dict[str, List[str]]:
+    """Read-only: HEAD every key. {present, absent, error}."""
+    out: Dict[str, List[str]] = {"present": [], "absent": [], "error": []}
     for k in sorted(keys):
-        bucket = card_bucket if k.startswith("card-audit/") else main_bucket
-        by_bucket.setdefault(bucket, []).append(k)
-    failed: List[str] = []
-    for bucket, ks in by_bucket.items():
-        for i in range(0, len(ks), 1000):
-            chunk = ks[i:i + 1000]
-            try:
-                resp = client.delete_objects(Bucket=bucket, Delete={
-                    "Objects": [{"Key": k} for k in chunk], "Quiet": True})
-                failed += [e.get("Key") for e in resp.get("Errors", []) or []]
-            except Exception:
-                failed += chunk
-    return failed
+        state = _r2_exists(client, bucket_for(k), k)
+        out["present" if state else "absent" if state is False else "error"].append(k)
+    return out
+
+
+def r2_delete_verified(client, bucket_for, keys) -> Dict[str, List[str]]:
+    """Delete each key ONE AT A TIME and prove it is gone.
+
+    Per key: HEAD (already absent → recorded, nothing to do), delete_object,
+    then HEAD again, which must be 404. Returns {deleted, absent_before,
+    still_present, error}; anything in still_present or error means the
+    caller must not touch the rows (they are what names these keys)."""
+    out: Dict[str, List[str]] = {"deleted": [], "absent_before": [],
+                                 "still_present": [], "error": []}
+    for k in sorted(keys):
+        b = bucket_for(k)
+        before = _r2_exists(client, b, k)
+        if before is False:
+            out["absent_before"].append(k)
+            continue
+        if before is None:
+            out["error"].append(k)
+            continue
+        try:
+            client.delete_object(Bucket=b, Key=k)
+        except Exception:
+            out["error"].append(k)
+            continue
+        after = _r2_exists(client, b, k)
+        if after is False:
+            out["deleted"].append(k)
+        elif after is True:
+            out["still_present"].append(k)
+        else:
+            out["error"].append(k)
+    return out
 
 
 def _leave_group(action: str, chat_id: str) -> Tuple[bool, str]:
@@ -381,6 +432,39 @@ def _leave_group(action: str, chat_id: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, type(e).__name__
 
+
+
+def _group_info(chat_id: str) -> Tuple[Optional[bool], str]:
+    """Read-only: is the bot still in this group? (True / False / None when
+    unknown) and a short note. Asks WaAPI get-group-info and looks for the
+    bot's number (WAAPI_DISPLAY_NUMBER) among the participants. The response
+    shape is not verified against WaAPI's docs, so the note carries what came
+    back for the operator to read."""
+    base = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
+    inst = os.environ.get("WAAPI_INSTANCE_ID", "")
+    token = os.environ.get("WAAPI_TOKEN", "")
+    bot = re.sub(r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "") or "")
+    if not (inst and token):
+        return None, "WAAPI_INSTANCE_ID / WAAPI_TOKEN not set"
+    req = urllib.request.Request(
+        f"{base}/instances/{inst}/client/action/get-group-info",
+        data=json.dumps({"chatId": chat_id}).encode(),
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(200000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return None, f"http {e.code}"
+    except Exception as e:
+        return None, type(e).__name__
+    raw_clean = raw.replace(token, "<token>")
+    if '"participants"' not in raw:
+        return None, f"no participant list in reply: {raw_clean[:300]}"
+    if not bot:
+        return None, "WAAPI_DISPLAY_NUMBER not set; cannot look for the bot"
+    return (bot in raw), (f"bot {'IS' if bot in raw else 'is NOT'} among the "
+                          f"participants ({len(raw)} bytes of group info)")
 
 def run(db, write: bool, args) -> int:
     # One handle. Through audited() every write below records an audit row
@@ -433,6 +517,16 @@ def run(db, write: bool, args) -> int:
     print(f"\nR2 objects named by those rows: {len(keys)}")
     for k in sorted(keys)[:200]:
         print(f"  {k}")
+    r2_client, bucket_for = _r2_target()
+    if keys and r2_client and bucket_for:
+        probe = r2_probe(r2_client, bucket_for, keys)
+        print(f"R2 HEAD (read-only, the same call the delete is verified with): "
+              f"present {len(probe['present'])}, absent {len(probe['absent'])}, "
+              f"error {len(probe['error'])}")
+        for k in probe["error"][:10]:
+            print(f"  HEAD error: {k}")
+    elif keys:
+        print("R2 is not configured here; the delete would refuse.")
     if len(keys) > 200:
         print(f"  ... and {len(keys) - 200} more")
     prefixes = []
@@ -442,6 +536,13 @@ def run(db, write: bool, args) -> int:
     print("\nR2 prefix listing (informational; see _r2_listing):")
     for prefix, found in _r2_listing(prefixes).items():
         print(f"  {prefix}: {len(found)}")
+    print("  (A listing returns 0 in this deployment whatever is stored; the "
+          "HEAD counts above are the real check.)")
+
+    print("\nWhatsApp groups — is the bot still in them? (read-only)")
+    for chat_id in facts["whatsapp_groups"]:
+        member, note = _group_info(chat_id)
+        print(f"  {chat_id}: {'member' if member else 'not a member' if member is False else 'unknown'} — {note}")
 
     if not write:
         print("\nDRY RUN — nothing was written. Re-run with --execute, all "
@@ -474,11 +575,25 @@ def run(db, write: bool, args) -> int:
         print("If a FAILED group is one the bot is not in, add it too.")
         return REFUSED
 
-    # 2. R2 first, while the rows that name the keys still exist.
-    failed = _r2_delete(keys)
-    if failed:
-        print(f"FAILED: {len(failed)} R2 deletes failed; rows kept so this "
-              f"can be re-run. First: {failed[:5]}")
+    # 2. R2 first, while the rows that name the keys still exist. One key at
+    #    a time, each followed by a HEAD that must 404. Any object still
+    #    there, or any call that errored, stops the run BEFORE the rows go:
+    #    the rows are the only record of which keys to delete.
+    r2 = {"deleted": [], "absent_before": [], "still_present": [], "error": []}
+    if keys:
+        r2_client, bucket_for = _r2_target()
+        if not (r2_client and bucket_for):
+            print("FAILED: R2 is not configured here; nothing deleted, rows kept.")
+            return FAILED
+        r2 = r2_delete_verified(r2_client, bucket_for, keys)
+    print(f"\nR2: deleted and verified gone {len(r2['deleted'])}, already absent "
+          f"{len(r2['absent_before'])}, STILL PRESENT {len(r2['still_present'])}, "
+          f"errors {len(r2['error'])}")
+    if r2["still_present"] or r2["error"]:
+        for k in (r2["still_present"] + r2["error"])[:20]:
+            print(f"  not deleted: {k}")
+        print("FAILED: some R2 objects were not deleted; NO rows were touched. "
+              "Fix and re-run — keys already deleted are skipped as absent.")
         return FAILED
 
     # 3. Rows, through the audited handle.
@@ -505,7 +620,9 @@ def run(db, write: bool, args) -> int:
     for pid in TARGET_PROJECTS:
         script_audit_sync(raw_db, "project_hard_delete", "project", pid,
                           {"facts": facts, "deleted": totals,
-                           "r2_keys_deleted": len(keys)}, args, script_name())
+                           "r2_keys_deleted": len(r2["deleted"]),
+                           "r2_keys_absent_before": len(r2["absent_before"])},
+                          args, script_name())
     script_audit_sync(raw_db, "company_hard_delete", "company", TARGET_COMPANY,
                       {"deleted": totals}, args, script_name())
     if left or left_pull:
