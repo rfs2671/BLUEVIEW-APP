@@ -41,11 +41,20 @@ import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import { useCheckIns } from '../src/hooks/useCheckIns';
 import { semantic, chrome, border, surface, text } from '../src/styles/semanticColors';
 
+// A PM (Site Manager) has one tool here: connecting their own WhatsApp, which
+// lives in Integrations. Without this tile the screen is reachable only by
+// typing its path — the "route with no link" failure described below.
+const pmActions = [
+  { title: 'Integrations', subtitle: 'Your WhatsApp', path: '/admin/integrations', icon: Cloud },
+];
+
+const isPmUser = (user) => String((user || {}).role || '').trim().toLowerCase() === 'pm';
+
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
-  { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
+  { title: 'Integrations', subtitle: 'Dropbox & WhatsApp', path: '/admin/integrations', icon: Cloud },
   // NARROWED, NOT REMOVED. A superintendent who holds an account is
   // registered from User Management now; this tile is what is left for the
   // one case that cannot go there — a super with no account, i.e. another
@@ -782,11 +791,11 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {isAdmin ? (
+        {isAdmin || isPmUser(user) ? (
           <>
-            <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>ADMIN TOOLS</Text>
+            <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>{isAdmin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
             <View style={deskStyles.adminRow}>
-              {adminActions.map((action) => (
+              {(isAdmin ? adminActions : pmActions).map((action) => (
                 <AdminRowTile
                   key={action.title}
                   action={action}
@@ -802,12 +811,13 @@ export default function DashboardScreen() {
 
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
-    if (!isCompanyAdmin(user)) return null;
+    const admin = isCompanyAdmin(user);
+    if (!admin && !isPmUser(user)) return null;
     return (
       <>
-        <Text style={[s.sectionLabel, { color: colors.text.muted }]}>ADMIN TOOLS</Text>
+        <Text style={[s.sectionLabel, { color: colors.text.muted }]}>{admin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
         <View style={s.adminGrid}>
-          {adminActions.map((action) => (
+          {(admin ? adminActions : pmActions).map((action) => (
             <ActionTile
               key={action.title}
               action={action}
