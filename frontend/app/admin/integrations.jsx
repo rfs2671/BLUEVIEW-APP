@@ -23,8 +23,6 @@ import {
   RefreshCw,
   ShieldAlert,
   Key,
-  MessageCircle,
-  UserPlus,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -33,17 +31,15 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { dropboxAPI, projectsAPI, whatsappAPI } from '../../src/utils/api';
+import { dropboxAPI, projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
-import WhatsAppConnectCard from '../../src/components/WhatsAppConnectCard';
+import WhatsAppCard from '../../src/components/WhatsAppCard';
 
 // Dropbox brand color
 const DROPBOX_BLUE = '#0061FF';
-// WhatsApp brand color
-const WHATSAPP_GREEN = '#25D366';
 
 export default function AdminIntegrationsScreen() {
   const { colors, isDark } = useTheme();
@@ -60,9 +56,6 @@ export default function AdminIntegrationsScreen() {
   const [projects, setProjects] = useState([]);
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [authCode, setAuthCode] = useState('');
-  const [whatsappStatus, setWhatsappStatus] = useState({ platform_configured: false, company_active: false });
-  const [activatingWhatsapp, setActivatingWhatsapp] = useState(false);
-  const [savingContact, setSavingContact] = useState(false);
 
   // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. These integrations are
   // inherently online (OAuth). The old `.catch(() => ({ connected: false }))`
@@ -73,8 +66,8 @@ export default function AdminIntegrationsScreen() {
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
   // A PM (Site Manager) sees this screen for ONE thing: their own WhatsApp
-  // connection. Dropbox and the company's group integration stay admin-only,
-  // and none of their reads are made for a PM.
+  // alerts. Dropbox and WhatsApp groups stay admin-only, and none of their
+  // reads are made for a PM.
   const isPm = String(user?.role || '').trim().toLowerCase() === 'pm';
 
   // Redirect if not authenticated
@@ -93,23 +86,20 @@ export default function AdminIntegrationsScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    const [statusRes, projectsRes, waRes] = await Promise.all([
+    // WhatsApp's own reads live in the WhatsAppCard component.
+    const [statusRes, projectsRes] = await Promise.all([
       settleFetch(() => dropboxAPI.getStatus()),
       settleFetch(() => projectsAPI.getAll()),
-      settleFetch(() => whatsappAPI.getStatus()),
     ]);
 
     if (statusRes.status === 'ok') setDropboxStatus(statusRes.data || { connected: false });
     if (projectsRes.status === 'ok') {
       setProjects(Array.isArray(projectsRes.data) ? projectsRes.data : []);
     }
-    if (waRes.status === 'ok') {
-      setWhatsappStatus(waRes.data || { platform_configured: false, company_active: false });
-    }
 
     // Any failed status read means the connection state below is UNKNOWN,
     // not "disconnected".
-    const failure = [statusRes, projectsRes, waRes].find(r => r.status !== 'ok');
+    const failure = [statusRes, projectsRes].find(r => r.status !== 'ok');
     setFetchState(failure ? failure.status : 'ok');
     if (failure) {
       console.error('Failed to fetch data:', failure.error);
@@ -260,57 +250,6 @@ export default function AdminIntegrationsScreen() {
     }
   };
 
-  const handleActivateWhatsapp = async () => {
-    setActivatingWhatsapp(true);
-    try {
-      await whatsappAPI.activate();
-      const waStatus = await whatsappAPI.getStatus();
-      setWhatsappStatus(waStatus);
-      toast.success('WhatsApp Activated', 'WhatsApp integration is now active');
-    } catch (error) {
-      console.error('Failed to activate WhatsApp:', error);
-      if (isOfflineError(error)) {
-        toast.error('Offline', 'Activating WhatsApp needs a connection. Nothing was activated.');
-      } else {
-        toast.error('Activation Error', error.response?.data?.detail || 'Could not activate WhatsApp');
-      }
-    } finally {
-      setActivatingWhatsapp(false);
-    }
-  };
-
-  const handleSaveContact = async () => {
-    setSavingContact(true);
-    try {
-      const result = await whatsappAPI.downloadVCard();
-      // On web, a download has been triggered -- give visible feedback.
-      // On native, the system "Add Contact" sheet speaks for itself.
-      const { Platform } = require('react-native');
-      if (Platform.OS === 'web') {
-        toast.success('Saved to Contacts', 'vCard downloaded. Open it to add the contact.');
-      }
-    } catch (error) {
-      console.error('Failed to save contact:', error);
-      if (isOfflineError(error)) {
-        toast.error('Offline', 'The contact card is fetched from the server — reconnect to save it.');
-      } else {
-        const detail = error?.response?.data?.detail;
-        toast.error('Error', detail || 'Could not save contact. Please try again.');
-      }
-    } finally {
-      setSavingContact(false);
-    }
-  };
-
-  const formatPhoneNumber = (number) => {
-    if (!number) return '';
-    const cleaned = number.replace(/\D/g, '');
-    if (cleaned.length === 11 && cleaned.startsWith('1')) {
-      return `+1 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
-    }
-    return `+${cleaned}`;
-  };
-
   const projectsWithDropbox = projects.filter((p) => p.dropbox_folder_path);
 
   return (
@@ -340,7 +279,7 @@ export default function AdminIntegrationsScreen() {
           </View>
 
           {!isAdmin && isPm ? (
-            <WhatsAppConnectCard />
+            <WhatsAppCard isAdmin={false} />
           ) : !isAdmin ? (
             <GlassCard style={s.accessDeniedCard}>
               <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
@@ -485,126 +424,9 @@ export default function AdminIntegrationsScreen() {
                 )}
               </GlassCard>
 
-              {/* WhatsApp Integration Card */}
-              <GlassCard style={s.integrationCard}>
-                <View style={s.integrationHeader}>
-                  <View style={[s.integrationIcon, { backgroundColor: 'rgba(37, 211, 102, 0.1)' /* brand: WhatsApp - intentional, not a token */ }]}>
-                    <MessageCircle size={28} strokeWidth={1.5} color={WHATSAPP_GREEN} />
-                  </View>
-                  <View style={s.integrationInfo}>
-                    <Text style={s.integrationName}>WhatsApp</Text>
-                    <Text style={s.integrationDesc}>
-                      {!whatsappStatus.platform_configured
-                        ? 'WhatsApp integration is managed by LeveLog. Contact support to enable.'
-                        : !whatsappStatus.company_active
-                        ? 'Connect WhatsApp to enable group messaging, site queries, and daily summaries.'
-                        : 'Connected to WhatsApp Business'}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      s.statusBadge,
-                      whatsappStatus.company_active && s.statusConnected,
-                    ]}
-                  >
-                    {whatsappStatus.company_active ? (
-                      <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />
-                    ) : (
-                      <XCircle size={14} strokeWidth={2} color={colors.text.muted} />
-                    )}
-                    <Text
-                      style={[
-                        s.statusText,
-                        whatsappStatus.company_active && s.statusTextConnected,
-                      ]}
-                    >
-                      {whatsappStatus.company_active
-                        ? 'Connected'
-                        : whatsappStatus.platform_configured
-                        ? 'Not Connected'
-                        : 'Not Available'}
-                    </Text>
-                  </View>
-                </View>
-
-                {whatsappStatus.company_active ? (
-                  <View style={s.connectedSection}>
-                    <View style={s.accountInfo}>
-                      <Text style={s.accountLabel}>YOUR LEVELOG ASSISTANT NUMBER</Text>
-                      <Text style={s.whatsappNumber}>
-                        {formatPhoneNumber(whatsappStatus.whatsapp_number)}
-                      </Text>
-                    </View>
-                    <Pressable
-                      onPress={handleSaveContact}
-                      disabled={savingContact}
-                      style={({ pressed }) => [
-                        s.whatsappButton,
-                        pressed && s.dropboxButtonPressed,
-                        savingContact && s.dropboxButtonDisabled,
-                        { marginTop: spacing.sm, marginBottom: spacing.sm },
-                      ]}
-                    >
-                      {savingContact ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <>
-                          <UserPlus size={20} strokeWidth={2} color="#fff" />
-                          <Text style={s.dropboxButtonText}>Save to Contacts</Text>
-                        </>
-                      )}
-                    </Pressable>
-                    <Text style={s.whatsappHint}>
-                      Add this number to a WhatsApp group and it appears under Groups
-                      waiting, where you pick which job it belongs to.
-                    </Text>
-                    {/* THE ENTRY POINT FOR THE NEW FLOW. Without a way in from
-                        here, the waiting list is a screen nobody knows exists
-                        -- which is the same failure the six-digit code flow
-                        had, and the reason it went unused. */}
-                    <Pressable
-                      onPress={() => router.push('/admin/whatsapp-groups')}
-                      style={({ pressed }) => [
-                        s.whatsappButton,
-                        pressed && s.dropboxButtonPressed,
-                        { marginTop: spacing.sm },
-                      ]}
-                    >
-                      <MessageCircle size={20} strokeWidth={2} color="#fff" />
-                      <Text style={s.dropboxButtonText}>Groups waiting</Text>
-                    </Pressable>
-                  </View>
-                ) : whatsappStatus.platform_configured ? (
-                  <View style={s.connectSection}>
-                    <Text style={s.connectDesc}>
-                      Activate WhatsApp to enable group messaging for your projects. Your team can
-                      ask site questions and receive daily summaries directly in WhatsApp.
-                    </Text>
-                    <Pressable
-                      onPress={handleActivateWhatsapp}
-                      disabled={activatingWhatsapp}
-                      style={({ pressed }) => [
-                        s.whatsappButton,
-                        pressed && s.dropboxButtonPressed,
-                        activatingWhatsapp && s.dropboxButtonDisabled,
-                      ]}
-                    >
-                      {activatingWhatsapp ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <>
-                          <MessageCircle size={22} strokeWidth={2} color="#fff" />
-                          <Text style={s.dropboxButtonText}>Activate WhatsApp</Text>
-                        </>
-                      )}
-                    </Pressable>
-                  </View>
-                ) : null}
-              </GlassCard>
-
-              {/* The admin's own WhatsApp (direct updates to them), separate
-                  from the company integration above, which links GROUPS. */}
-              <WhatsAppConnectCard />
+              {/* WhatsApp: ONE card — the Levelog number, this admin's own
+                  alerts, and linking job groups. */}
+              <WhatsAppCard isAdmin />
 
               {/* Projects with Dropbox */}
               {dropboxStatus.connected && (
@@ -996,27 +818,6 @@ function buildStyles(colors, isDark) {
   },
   createProjectBtn: {
     marginTop: spacing.md,
-  },
-  whatsappButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    backgroundColor: WHATSAPP_GREEN,
-    borderRadius: borderRadius.lg,
-    paddingVertical: spacing.md + 4,
-    paddingHorizontal: spacing.xl,
-  },
-  whatsappNumber: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: colors.text.primary,
-    letterSpacing: 1,
-  },
-  whatsappHint: {
-    fontSize: 13,
-    color: colors.text.muted,
-    marginTop: spacing.sm,
   },
 });
 }

@@ -58,6 +58,8 @@ class TheStates(unittest.TestCase):
     def test_not_connected_offers_the_link(self):
         out = _me(_admin())
         self.assertEqual(out["state"], "not_connected")
+        # Plain START: the coded, single-use link comes from POST
+        # /whatsapp/connect-link (test_whatsapp_start_lid.py).
         self.assertEqual(out["connect_url"], "https://wa.me/15550000000?text=START")
         self.assertFalse(out["connected"])
 

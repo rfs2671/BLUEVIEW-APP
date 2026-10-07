@@ -50,12 +50,43 @@ INTRO_TEXT = (
     "someone needs your answer, inspection and permit reminders, and new DOB "
     "violations. Change settings in the app. Reply STOP to turn off."
 )
+# EVERY START GETS A REPLY. Each refusal says, in plain words, what to do.
+# The one deliberately vague line is NOT_ELIGIBLE_TEXT: an unknown number and
+# a role that may not get alerts read the same, so a stranger cannot use
+# START to learn who has an account or what role they hold.
 NOT_ELIGIBLE_TEXT = (
-    "Blueview here. WhatsApp updates aren't available for this number."
+    "Blueview here. WhatsApp alerts aren't available for this number. If you "
+    "use Blueview, open Integrations in the app and tap Turn on alerts."
 )
 STOP_CONFIRM_TEXT = (
     "Blueview here. You won't get any more WhatsApp updates. "
     "Reply START to turn them back on."
+)
+# The sender arrived as a WhatsApp privacy id (@lid), not a phone number, no
+# phone could be found for it, and the message carried no connect code.
+NEED_APP_TEXT = (
+    "Blueview here. WhatsApp didn't share your phone number with us, so we "
+    "can't tell who you are yet. Open Integrations in the Blueview app, tap "
+    "Turn on alerts, and send the message it prepares."
+)
+CODE_EXPIRED_TEXT = (
+    "Blueview here. This link expired. Tap Turn on alerts again in the app."
+)
+WRONG_PHONE_TEXT = (
+    "Blueview here. Send this from the phone number saved on your Blueview "
+    "profile, or update that number in Settings first."
+)
+PHONE_MISSING_TEXT = (
+    "Blueview here. Add your mobile number in Settings in the Blueview app, "
+    "then tap Turn on alerts again."
+)
+PHONE_SHARED_TEXT = (
+    "Blueview here. This number is on more than one Blueview account, so "
+    "alerts can't be turned on. Contact Blueview support."
+)
+TRY_AGAIN_TEXT = (
+    "Blueview here. Something went wrong on our side. Please send START again "
+    "in a minute."
 )
 
 _START_WORDS = frozenset({"start"})
@@ -63,14 +94,32 @@ _STOP_WORDS = frozenset({"stop", "parar"})
 _PUNCT = re.compile(r"[^\w]+", re.UNICODE)
 
 
+# The connect code the app puts after START: "START K7Q2MX". Six characters
+# of base32 (no 0/1/8/9), so it survives being read aloud or retyped.
+CONNECT_CODE_LEN = 6
+_CODE_RE = re.compile(r"^[A-Z2-7]{%d}$" % CONNECT_CODE_LEN)
+
+
+def parse_start_code(body: Optional[str]) -> Optional[str]:
+    """The connect code in "START <code>", upper-cased, else None."""
+    parts = str(body or "").strip().split()
+    if len(parts) != 2 or _PUNCT.sub("", parts[0]).lower() not in _START_WORDS:
+        return None
+    code = _PUNCT.sub("", parts[1]).upper()
+    return code if _CODE_RE.match(code) else None
+
+
 def parse_dm_command(body: Optional[str]) -> Optional[str]:
     """'start' or 'stop' when the WHOLE message is the keyword, else None.
 
     "start" inside a sentence is not a command — "start the pour at 7" must
     not subscribe anyone. Punctuation and case are ignored, so "Stop." works.
+    "START <connect code>" (what the app's link prepares) is a start too.
     """
     if not body:
         return None
+    if parse_start_code(body):
+        return "start"
     word = _PUNCT.sub("", body.strip()).lower()
     if word in _START_WORDS:
         return "start"
@@ -145,7 +194,74 @@ def is_group_chat(chat_id: Optional[str]) -> bool:
 
 
 def dm_chat_id(phone: str) -> str:
-    return f"{phone_digits(phone)}@c.us"
+    """The chat id for a phone. A value that is already a JID (…@c.us,
+    …@lid) is returned unchanged: a reply goes back to the chat the message
+    came from, and rebuilding `<digits>@c.us` from a @lid sender's digits
+    names a chat that does not exist — the reply vanishes."""
+    raw = str(phone or "").strip()
+    if "@" in raw:
+        return raw
+    return f"{phone_digits(raw)}@c.us"
+
+
+def jid_kind(jid: Optional[str]) -> str:
+    """'lid' for a WhatsApp privacy id, 'c.us' for a phone-number id, '' else.
+    A bare number is treated as a phone."""
+    j = str(jid or "").strip().lower()
+    if j.endswith("@lid"):
+        return "lid"
+    if j.endswith("@c.us") or j.endswith("@s.whatsapp.net"):
+        return "c.us"
+    return "c.us" if phone_digits(j) and "@" not in j else ""
+
+
+# Where a WhatsApp-Web payload may carry the sender's real number when the
+# sender itself is a @lid. NOT VERIFIED against WaAPI (its docs are not
+# reachable from here); every name is tried and the first phone-shaped value
+# wins. A value that is itself a @lid is not a phone and is skipped.
+PHONE_PAYLOAD_KEYS = ("senderPn", "sender_pn", "participantPn",
+                      "participant_pn", "phoneNumber", "phone_number", "pn")
+
+
+def phone_from_payload(obj, depth: int = 0) -> str:
+    """Digits of a phone number named under one of PHONE_PAYLOAD_KEYS anywhere
+    in `obj`, else ''."""
+    if depth > 6 or obj is None:
+        return ""
+    if isinstance(obj, dict):
+        for key in PHONE_PAYLOAD_KEYS:
+            v = obj.get(key)
+            if isinstance(v, dict):
+                v = v.get("_serialized") or v.get("user")
+            if isinstance(v, str) and v.strip() and jid_kind(v) != "lid":
+                d = phone_digits(v)
+                if 10 <= len(d) <= 15:
+                    return d
+        for v in obj.values():
+            got = phone_from_payload(v, depth + 1)
+            if got:
+                return got
+    elif isinstance(obj, list):
+        for v in obj[:20]:
+            got = phone_from_payload(v, depth + 1)
+            if got:
+                return got
+    return ""
+
+
+_B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+# A connect code lives this long, and is good for ONE START.
+CONNECT_CODE_TTL_SECONDS = 15 * 60
+
+
+def new_connect_code() -> str:
+    """A random connect code. Stored server-side with its owner, a 15-minute
+    expiry and a used flag (server.py whatsapp_connect_link); the START that
+    carries it is what ties a WhatsApp chat — even a @lid one whose number
+    WhatsApp withholds — to the account that asked for it."""
+    import secrets
+    return "".join(secrets.choice(_B32) for _ in range(CONNECT_CODE_LEN))
 
 
 def ledger_key(user_id: str, project_id: Optional[str], kind: str,
