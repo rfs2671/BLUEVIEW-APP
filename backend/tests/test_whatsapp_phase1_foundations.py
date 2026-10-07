@@ -510,6 +510,116 @@ class TheDisconnectMonitorEmailsOncePerIncident(unittest.TestCase):
                                 ("waapi_disconnected", "sent")])
         self.assertNotIn("pending_alert", db[server.WA_MONITOR].rows[0])
 
+    def _ticks(self, readings, notify_status="sent"):
+        db = _db()
+        db.users.rows.append({"_id": "op", "is_platform_operator": True,
+                              "email": "ops@levelog.com"})
+        it = iter(readings)
+        sent = []
+
+        async def read():
+            return next(it)
+
+        async def notify(_db, **kw):
+            sent.append((kw["trigger_type"], kw["permit_renewal_id"],
+                         kw["subject"]))
+            return {"status": notify_status}
+
+        actions = []
+        with patch.object(server, "db", db), \
+                patch.object(server, "_waapi_read_status", read), \
+                patch("lib.notifications.send_notification", notify):
+            for _ in readings:
+                actions.append(_run(server._waapi_instance_monitor_tick()))
+        return db, actions, sent
+
+    def test_unknown_never_counts_as_disconnected(self):
+        """A wrong status path reads as unknown on every tick. That must
+        never produce a "disconnected" email: one "can't read status" email
+        for the incident, and one when a status is readable again."""
+        unknown = ("unknown", "status_endpoint_not_found")
+        db, actions, sent = self._ticks([unknown] * 10 + [("up", "ready")])
+        self.assertEqual(actions, ["none", "alert_unreadable"] + ["none"] * 8
+                         + ["alert_readable"])
+        self.assertEqual([t for t, _, _ in sent],
+                         ["waapi_status_unreadable", "waapi_status_readable"])
+        self.assertEqual(sent[0][2], "Monitor can't read WaAPI status")
+        self.assertEqual(sent[0][1], sent[1][1])  # one incident id
+        row = db[server.WA_MONITOR].rows[0]
+        self.assertEqual(row["status"], "up")
+        self.assertEqual(row["consecutive_bad"], 0)
+
+    def test_one_unknown_tick_sends_nothing(self):
+        _, actions, sent = self._ticks([("unknown", "http 502"), ("up", "ready")])
+        self.assertEqual(actions, ["none", "none"])
+        self.assertEqual(sent, [])
+
+    def test_unknown_neither_adds_to_nor_resets_the_down_count(self):
+        _, actions, _ = self._ticks([
+            ("down", "qr"), ("unknown", "http 502"), ("down", "qr")])
+        self.assertEqual(actions, ["none", "none", "alert_down"])
+
+    def test_unknown_does_not_close_a_disconnected_incident(self):
+        _, actions, sent = self._ticks([
+            ("down", "qr"), ("down", "qr"),
+            ("unknown", "http 502"), ("unknown", "http 502"),
+            ("up", "ready")])
+        self.assertEqual(actions, ["none", "alert_down", "none",
+                                   "alert_unreadable",
+                                   "alert_readable,alert_recovered"])
+        # Connection track is emailed before readability on the same tick.
+        self.assertEqual([t for t, _, _ in sent], [
+            "waapi_disconnected", "waapi_status_unreadable",
+            "waapi_reconnected", "waapi_status_readable"])
+        # Two separate incidents, two ids.
+        self.assertEqual(sent[0][1], sent[2][1])
+        self.assertEqual(sent[1][1], sent[3][1])
+        self.assertNotEqual(sent[0][1], sent[1][1])
+
+    def test_an_undelivered_unreadable_alert_is_retried(self):
+        db, _, sent = self._ticks([("unknown", "x")] * 4, notify_status="failed")
+        self.assertEqual([t for t, _, _ in sent],
+                         ["waapi_status_unreadable"] * 3)
+        self.assertEqual(db[server.WA_MONITOR].rows[0]["pending_read_alert"],
+                         "alert_unreadable")
+
+    def test_the_raw_response_is_logged_without_the_token(self):
+        class Resp:
+            status_code = 200
+            text = ('{"status":"success","clientStatus":{"instanceStatus":'
+                    '"ready","token":"tok-SECRET","instanceId":"inst-42"}}')
+            content = text.encode()
+
+            def json(self):
+                import json
+                return json.loads(self.text)
+
+        class Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None):
+                return Resp()
+
+        with patch.object(server, "WAAPI_INSTANCE_ID", "inst-42"), \
+                patch.object(server, "WAAPI_TOKEN", "tok-SECRET"), \
+                patch.object(server, "ServerHttpClient", Client), \
+                self.assertLogs(server.logger, level="INFO") as logs:
+            out = _run(server._waapi_read_status())
+        self.assertEqual(out, ("up", "ready"))
+        joined = "\n".join(logs.output)
+        self.assertIn("[waapi-monitor] raw GET instances/<id>/client/status "
+                      "-> http 200", joined)
+        self.assertIn('"instanceStatus":"ready"', joined)
+        self.assertNotIn("tok-SECRET", joined)
+        self.assertNotIn("inst-42", joined)
+
     def test_an_unconfigured_instance_is_silent(self):
         with patch.object(server, "WAAPI_INSTANCE_ID", ""), \
                 patch.object(server, "db", _db()):

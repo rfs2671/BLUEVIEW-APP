@@ -37,7 +37,18 @@ checks that:
 | `whatsapp_optins_phone_unique` (`phone`, unique) | same | New collection |
 | `whatsapp_optins_by_user` (`user_id`, `status`) | same | New collection |
 | Scheduler lease on all 26 jobs | `lib/scheduler_lease.py` | One small row per job firing in `scheduler_leases`. Each row expires on its own. |
-| Job `waapi_instance_monitor`, every 15 min | startup | Two WaAPI `GET` calls at most per run. Emails go only on state changes. |
+| Job `waapi_instance_monitor`, every 15 min | startup | Two WaAPI `GET` calls at most per run. Emails go only on state changes. Each tick logs `[waapi-monitor] raw GET instances/<id>/client/status -> http <code> body=<first 600 chars>`, with the token and instance id masked. Check this line in Railway to confirm the status path. |
+
+**Monitor rules.** A reading that can't be taken or has no status field is
+`unknown`, and unknown never counts as disconnected.
+- Two unknowns in a row: one "Monitor can't read WaAPI status" email for the
+  incident, and one recovery email when a status is readable again.
+- Two "not ready" readings in a row: one "disconnected" email, and one
+  recovery email on the first ready reading.
+- An unknown reading neither adds to nor resets the disconnected count.
+
+If the status path turns out to be wrong, expect the "can't read" email about
+30 minutes after deploy, not a false "disconnected".
 
 Nothing else writes production data until a person messages START or STOP,
 or an admin sets a GC group.

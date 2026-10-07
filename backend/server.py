@@ -56361,12 +56361,36 @@ async def _send_whatsapp_daily_summaries():
 
 # ── WAAPI DISCONNECT MONITOR ───────────────────────────────────────────────
 #
-# Every 15 minutes: is the WhatsApp-Web session alive? Two bad readings in a
-# row open an incident and email the platform operator(s) once; the first
-# good reading after that closes it with one recovery email. The state
+# Every 15 minutes: is the WhatsApp-Web session alive? Two "not ready"
+# readings in a row open a disconnected incident and email the platform
+# operator(s) once; the first ready reading closes it with one recovery
+# email. A reading that cannot be taken or understood is "unknown" and never
+# counts as disconnected: two in a row open a separate "can't read status"
+# incident (one email, one recovery email). Every tick logs the raw WaAPI
+# response, token-free, so the unverified status path can be checked. The state
 # machine is lib/waapi_monitor.py; the state is one document. The scheduler
 # lease means one replica takes each reading, and the email is idempotent
 # per incident and recipient in send_notification as a second guard.
+
+_WAAPI_MONITOR_LOG_BODY_MAX = 600
+
+
+def _waapi_monitor_log_body(resp) -> str:
+    """The response body for the log: truncated, and with the token and the
+    instance id scrubbed should WaAPI ever echo either back. A QR payload is
+    long and useless in a log, so the cap keeps it to a prefix."""
+    try:
+        text = resp.text if resp.content else ""
+    except Exception:
+        text = "<unreadable body>"
+    for secret, mask in ((WAAPI_TOKEN, "<token>"), (WAAPI_INSTANCE_ID, "<id>")):
+        if secret:
+            text = text.replace(secret, mask)
+    text = text.replace("\n", " ").replace("\r", " ")
+    if len(text) > _WAAPI_MONITOR_LOG_BODY_MAX:
+        text = text[:_WAAPI_MONITOR_LOG_BODY_MAX] + f"...(+{len(text) - _WAAPI_MONITOR_LOG_BODY_MAX} chars)"
+    return text or "<empty>"
+
 
 async def _waapi_read_status() -> Optional[Tuple[str, str]]:
     """(reading, detail), or None when WaAPI is not configured at all.
@@ -56384,7 +56408,14 @@ async def _waapi_read_status() -> Optional[Tuple[str, str]]:
             async with ServerHttpClient(timeout=15.0) as client_http:
                 resp = await client_http.get(base + path, headers=headers)
         except Exception as e:
+            logger.info(f"[waapi-monitor] raw GET instances/<id>{path or '/'} "
+                        f"-> no response ({type(e).__name__})")
             return waapi_monitor.UNKNOWN, f"unreachable:{type(e).__name__}"
+        # The status path is not verified against WaAPI's docs: log what came
+        # back on every tick so the path can be confirmed from Railway logs.
+        logger.info(f"[waapi-monitor] raw GET instances/<id>{path or '/'} -> "
+                    f"http {resp.status_code} body="
+                    f"{_waapi_monitor_log_body(resp)}")
         if resp.status_code == 404 and path:
             continue
         if resp.status_code >= 400:
@@ -56413,11 +56444,18 @@ async def _waapi_monitor_recipients() -> List[str]:
 
 async def _email_waapi_incident(action: str, state: dict) -> int:
     from lib.notifications import send_notification
-    incident = str(state.get("incident_id") or "unknown")
-    down_since = state.get("down_since")
-    since = (down_since.strftime("%Y-%m-%d %H:%M UTC")
-             if isinstance(down_since, datetime) else "unknown")
+
+    def _when(v):
+        return (v.strftime("%Y-%m-%d %H:%M UTC")
+                if isinstance(v, datetime) else "unknown")
+
     detail = str(state.get("last_detail") or "")
+    if action in waapi_monitor.READABILITY_ACTIONS:
+        incident = str(state.get("read_incident_id") or "unknown")
+        since = _when(state.get("unreadable_since"))
+    else:
+        incident = str(state.get("incident_id") or "unknown")
+        since = _when(state.get("down_since"))
     if action == waapi_monitor.ACTION_ALERT_DOWN:
         trigger = "waapi_disconnected"
         subject = "WhatsApp bot is disconnected"
@@ -56426,11 +56464,26 @@ async def _email_waapi_incident(action: str, state: dict) -> int:
                 f"confirmations and direct messages are not being delivered "
                 f"until it reconnects. Check the instance in the WaAPI "
                 f"dashboard (a QR re-scan may be needed).\n\nIncident {incident}.")
-    else:
+    elif action == waapi_monitor.ACTION_ALERT_RECOVERED:
         trigger = "waapi_reconnected"
         subject = "WhatsApp bot is connected again"
         text = (f"The WaAPI WhatsApp instance is ready again. It was down "
                 f"since {since}.\n\nIncident {incident}.")
+    elif action == waapi_monitor.ACTION_ALERT_UNREADABLE:
+        trigger = "waapi_status_unreadable"
+        subject = "Monitor can't read WaAPI status"
+        text = (f"The WhatsApp monitor has not been able to read the WaAPI "
+                f"instance status since {since}. Last result: {detail}.\n\n"
+                f"This does NOT mean the bot is disconnected — the monitor "
+                f"cannot tell either way. Check the '[waapi-monitor] raw' "
+                f"lines in the Railway logs for what WaAPI returned, and the "
+                f"instance in the WaAPI dashboard.\n\nIncident {incident}.")
+    else:
+        trigger = "waapi_status_readable"
+        subject = "Monitor can read WaAPI status again"
+        text = (f"The WhatsApp monitor is reading the WaAPI instance status "
+                f"again. It could not since {since}. Current reading: "
+                f"{detail}.\n\nIncident {incident}.")
     html = "<p>" + text.replace("\n\n", "</p><p>") + "</p>"
     # Delivered = send_notification did not raise and did not come back
     # "failed". A suppressed outcome (kill switch, no key, already sent for
@@ -56453,9 +56506,21 @@ async def _email_waapi_incident(action: str, state: dict) -> int:
     return delivered
 
 
+_WAAPI_PENDING_FIELDS = {
+    "connection": "pending_alert",
+    "readability": "pending_read_alert",
+}
+
+
+def _waapi_track(action: str) -> str:
+    return ("readability" if action in waapi_monitor.READABILITY_ACTIONS
+            else "connection")
+
+
 async def _waapi_instance_monitor_tick() -> Optional[str]:
-    """One reading, one state step, at most one email batch. Returns the
-    action taken (for tests and the log)."""
+    """One reading, one state step, at most one email batch per track.
+    Returns the actions taken, comma-joined, or "none" (for tests and the
+    log); None when WaAPI is not configured or the state is unreachable."""
     reading = await _waapi_read_status()
     if reading is None:
         return None
@@ -56467,16 +56532,23 @@ async def _waapi_instance_monitor_tick() -> Optional[str]:
         logger.warning(f"waapi monitor state read failed: {type(e).__name__}")
         return None
     state.pop("_id", None)
-    new_state, action = waapi_monitor.step(state, observation, now, detail)
-    if action != waapi_monitor.ACTION_NONE:
+    new_state, actions = waapi_monitor.step(state, observation, now, detail)
+    logger.info(f"[waapi-monitor] reading={observation} detail={detail} "
+                f"connection={new_state.get('status')} "
+                f"readable={new_state.get('readable')} "
+                f"actions={','.join(actions) or 'none'}")
+    for action in actions:
         # The alert stays PENDING until an email is delivered, so a mail
         # outage at the moment of the transition is retried next tick
         # instead of being lost with the state change. A newer transition
-        # replaces an unsent older one (the recovery email names when the
-        # outage began).
-        new_state["pending_alert"] = action
-        logger.warning(f"[waapi-monitor] {action} incident="
-                       f"{new_state.get('incident_id')} detail={detail}")
+        # on the same track replaces an unsent older one (each recovery
+        # email names when its incident began).
+        new_state[_WAAPI_PENDING_FIELDS[_waapi_track(action)]] = action
+        incident = new_state.get("read_incident_id"
+                                 if _waapi_track(action) == "readability"
+                                 else "incident_id")
+        logger.warning(f"[waapi-monitor] {action} incident={incident} "
+                       f"detail={detail}")
     try:
         await db[WA_MONITOR].replace_one(
             {"_id": "waapi"}, {"_id": "waapi", **new_state}, upsert=True)
@@ -56484,19 +56556,21 @@ async def _waapi_instance_monitor_tick() -> Optional[str]:
         # Unsaved state would re-alert next time; say nothing this time.
         logger.warning(f"waapi monitor state write failed: {type(e).__name__}")
         return None
-    pending = new_state.get("pending_alert")
-    if pending:
+    for field in _WAAPI_PENDING_FIELDS.values():
+        pending = new_state.get(field)
+        if not pending:
+            continue
         if await _email_waapi_incident(pending, new_state) > 0:
             try:
                 await db[WA_MONITOR].update_one(
-                    {"_id": "waapi"}, {"$unset": {"pending_alert": ""}})
+                    {"_id": "waapi"}, {"$unset": {field: ""}})
             except Exception as e:
                 logger.warning(f"waapi monitor pending clear failed: "
                                f"{type(e).__name__}")
         else:
             logger.warning(f"[waapi-monitor] {pending} not delivered; "
                            f"retrying next tick")
-    return action
+    return ",".join(actions) or waapi_monitor.ACTION_NONE
 
 
 CHECKLIST_SYSTEM_PROMPT = """You are a construction project assistant analyzing WhatsApp group conversations from a NYC construction site.
