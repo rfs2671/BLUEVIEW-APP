@@ -54565,6 +54565,13 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
             status = row.get("status") or "none"
     bot = _wa_bot_digits()
     has_phone = bool(wa_dm.phone_digits(current_user.get("phone") or ""))
+    # An opt-in recorded for a phone the user has since changed delivers
+    # nothing (send_whatsapp_dm refuses it), so it is not "connected": the
+    # user must send START again from the new number.
+    if status == "active" and row and row.get("phone") not in [
+            wa_dm.phone_digits(v) for v in
+            _contact_phone_variants(current_user.get("phone") or "")]:
+        status = "phone_changed"
     return {
         "eligible": eligible,
         "has_phone": has_phone,
@@ -56425,19 +56432,25 @@ async def _email_waapi_incident(action: str, state: dict) -> int:
         text = (f"The WaAPI WhatsApp instance is ready again. It was down "
                 f"since {since}.\n\nIncident {incident}.")
     html = "<p>" + text.replace("\n\n", "</p><p>") + "</p>"
-    sent = 0
+    # Delivered = send_notification did not raise and did not come back
+    # "failed". A suppressed outcome (kill switch, no key, already sent for
+    # this incident) is final, not retryable. The per-incident renewal id
+    # makes a retry re-send only to the recipients that did not get it.
+    delivered = 0
     for recipient in await _waapi_monitor_recipients():
         try:
-            await send_notification(
+            row = await send_notification(
                 db, permit_renewal_id=f"waapi_incident:{incident}",
                 trigger_type=trigger, recipient=recipient, subject=subject,
                 html=html, text=text,
                 metadata={"incident_id": incident, "detail": detail[:100]},
             )
-            sent += 1
         except Exception as e:
             logger.warning(f"waapi monitor email failed: {type(e).__name__}")
-    return sent
+            continue
+        if (row or {}).get("status") != "failed":
+            delivered += 1
+    return delivered
 
 
 async def _waapi_instance_monitor_tick() -> Optional[str]:
@@ -56455,6 +56468,15 @@ async def _waapi_instance_monitor_tick() -> Optional[str]:
         return None
     state.pop("_id", None)
     new_state, action = waapi_monitor.step(state, observation, now, detail)
+    if action != waapi_monitor.ACTION_NONE:
+        # The alert stays PENDING until an email is delivered, so a mail
+        # outage at the moment of the transition is retried next tick
+        # instead of being lost with the state change. A newer transition
+        # replaces an unsent older one (the recovery email names when the
+        # outage began).
+        new_state["pending_alert"] = action
+        logger.warning(f"[waapi-monitor] {action} incident="
+                       f"{new_state.get('incident_id')} detail={detail}")
     try:
         await db[WA_MONITOR].replace_one(
             {"_id": "waapi"}, {"_id": "waapi", **new_state}, upsert=True)
@@ -56462,10 +56484,18 @@ async def _waapi_instance_monitor_tick() -> Optional[str]:
         # Unsaved state would re-alert next time; say nothing this time.
         logger.warning(f"waapi monitor state write failed: {type(e).__name__}")
         return None
-    if action != waapi_monitor.ACTION_NONE:
-        logger.warning(f"[waapi-monitor] {action} incident="
-                       f"{new_state.get('incident_id')} detail={detail}")
-        await _email_waapi_incident(action, new_state)
+    pending = new_state.get("pending_alert")
+    if pending:
+        if await _email_waapi_incident(pending, new_state) > 0:
+            try:
+                await db[WA_MONITOR].update_one(
+                    {"_id": "waapi"}, {"$unset": {"pending_alert": ""}})
+            except Exception as e:
+                logger.warning(f"waapi monitor pending clear failed: "
+                               f"{type(e).__name__}")
+        else:
+            logger.warning(f"[waapi-monitor] {pending} not delivered; "
+                           f"retrying next tick")
     return action
 
 

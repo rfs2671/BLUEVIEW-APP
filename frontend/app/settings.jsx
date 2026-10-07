@@ -273,6 +273,9 @@ export default function SettingsScreen() {
   // WhatsApp connect (company admins and Site Managers only — the server
   // decides; the card renders only when it says `eligible`).
   const [waMe, setWaMe] = useState(null);
+  // Bumped after a phone save: the auth user object is not refreshed by the
+  // save, so user?.phone alone would not re-read the WhatsApp state.
+  const [waRefresh, setWaRefresh] = useState(0);
 
   // Password
   const [currentPw, setCurrentPw] = useState('');
@@ -332,7 +335,7 @@ export default function SettingsScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [isAuthenticated, authLoading, user?.phone]);
+  }, [isAuthenticated, authLoading, user?.phone, waRefresh]);
 
   // Load projects (admin only)
   useEffect(() => {
@@ -536,6 +539,7 @@ export default function SettingsScreen() {
     setSavingPhone(true);
     try {
       await authAPI.updateProfile({ phone: trimmed });
+      setWaRefresh((n) => n + 1);
       toast.success(
         'Saved',
         trimmed ? 'Phone number updated' : 'Phone number removed'
@@ -747,7 +751,9 @@ export default function SettingsScreen() {
                   {waMe.connected
                     ? 'Connected. Reply STOP in WhatsApp to turn updates off.'
                     : waMe.connect_url
-                      ? 'Opens WhatsApp with START ready to send. Send it from the phone number above.'
+                      ? (waMe.status === 'phone_changed'
+                        ? 'Your phone number changed. Send START again from the new number to keep getting updates.'
+                        : 'Opens WhatsApp with START ready to send. Send it from the phone number above.')
                       : 'Save your phone number first, then connect.'}
                 </Text>
                 {!waMe.connected && !!waMe.connect_url && (

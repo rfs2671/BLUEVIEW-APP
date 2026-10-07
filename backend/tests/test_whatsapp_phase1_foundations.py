@@ -350,6 +350,42 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         self.assertTrue(_run(scheduler_lease.try_acquire(
             db, "j", 900, now=t0 + timedelta(minutes=15))))
 
+    def test_offset_interval_replicas_do_not_both_run(self):
+        """Two 15-minute replicas ticking a minute apart, across what would
+        be a rounding boundary (12:07 / 12:08): only one runs each period,
+        and it keeps being the same one."""
+        db = FakeDb()
+        t0 = datetime(2026, 10, 7, 12, 7, tzinfo=timezone.utc)
+        won = []
+        for period in range(4):
+            a = t0 + timedelta(minutes=15 * period)
+            b = a + timedelta(minutes=1)
+            for name, t in (("a", a), ("b", b)):
+                if _run(scheduler_lease.try_acquire_spaced(db, "j", 900, now=t)):
+                    won.append((period, name))
+        self.assertEqual(won, [(0, "a"), (1, "a"), (2, "a"), (3, "a")])
+
+    def test_a_dead_interval_winner_is_taken_over(self):
+        db = FakeDb()
+        t0 = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(_run(scheduler_lease.try_acquire_spaced(db, "j", 900, now=t0)))
+        # The winner never ticks again; the other replica's ticks at +7.5
+        # and +22.5 minutes: the first is inside the gap, the second is not.
+        self.assertFalse(_run(scheduler_lease.try_acquire_spaced(
+            db, "j", 900, now=t0 + timedelta(minutes=7, seconds=30))))
+        self.assertTrue(_run(scheduler_lease.try_acquire_spaced(
+            db, "j", 900, now=t0 + timedelta(minutes=22, seconds=30))))
+
+    def test_concurrent_first_interval_claims_run_once(self):
+        db = FakeDb()
+        t = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+
+        async def both():
+            return await asyncio.gather(
+                scheduler_lease.try_acquire_spaced(db, "j", 900, now=t),
+                scheduler_lease.try_acquire_spaced(db, "j", 900, now=t))
+        self.assertEqual(sorted(_run(both())), [False, True])
+
     def test_a_replica_a_few_seconds_early_shares_the_cron_slot(self):
         t = datetime(2026, 10, 7, 3, 0, 0, tzinfo=timezone.utc)
         self.assertEqual(
@@ -385,6 +421,8 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         self.assertEqual(s.get_job("a").func.__lease_slot_seconds__, 900)
         self.assertEqual(s.get_job("b").func.__lease_slot_seconds__, 3600)
         self.assertEqual(s.get_job("c").func.__lease_slot_seconds__, 30)
+        self.assertTrue(s.get_job("a").func.__lease_spaced__)
+        self.assertFalse(s.get_job("b").func.__lease_spaced__)
 
     def test_the_server_scheduler_is_the_leased_one(self):
         self.assertEqual(type(server.scheduler).__name__,
@@ -442,6 +480,35 @@ class TheDisconnectMonitorEmailsOncePerIncident(unittest.TestCase):
         # The two incidents are distinct ids.
         self.assertNotEqual(sent[0][2], sent[2][2])
         self.assertEqual(sent[0][2], sent[1][2])
+
+    def test_a_failed_email_is_retried_until_delivered(self):
+        """send_notification reports a Resend failure as status=failed
+        rather than raising. The alert must stay pending, not be lost with
+        the state change."""
+        db = _db()
+        db.users.rows.append({"_id": "op", "is_platform_operator": True,
+                              "email": "ops@levelog.com"})
+        readings = iter([("down", "qr")] * 5)
+        outcomes = iter(["failed", "failed", "sent"])
+        sent = []
+
+        async def read():
+            return next(readings)
+
+        async def notify(_db, **kw):
+            status = next(outcomes)
+            sent.append((kw["trigger_type"], status))
+            return {"status": status}
+
+        with patch.object(server, "db", db), \
+                patch.object(server, "_waapi_read_status", read), \
+                patch("lib.notifications.send_notification", notify):
+            for _ in range(5):
+                _run(server._waapi_instance_monitor_tick())
+        self.assertEqual(sent, [("waapi_disconnected", "failed"),
+                                ("waapi_disconnected", "failed"),
+                                ("waapi_disconnected", "sent")])
+        self.assertNotIn("pending_alert", db[server.WA_MONITOR].rows[0])
 
     def test_an_unconfigured_instance_is_silent(self):
         with patch.object(server, "WAAPI_INSTANCE_ID", ""), \
@@ -658,6 +725,22 @@ class WhatsAppPreferences(unittest.TestCase):
         _, errs = nprefs.validate_whatsapp_prefs_patch(
             {"summary_frequency": "hourly", "x": 1, "enabled": "no"})
         self.assertEqual(len(errs), 3)
+
+    def test_an_opt_in_for_an_old_phone_is_not_connected(self):
+        db = _db()
+        db[server.WA_OPTINS].rows.append({
+            "_id": "o1", "phone": ADMIN_PHONE, "user_id": "u_admin",
+            "status": "active", "updated_at": datetime.now(timezone.utc)})
+        admin = dict(_users()[0], id="u_admin")
+        with patch.object(server, "db", db), \
+                patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": "+15550000000"}):
+            same = _run(server.whatsapp_me(current_user=admin))
+            moved = _run(server.whatsapp_me(
+                current_user=dict(admin, phone="+15557770000")))
+        self.assertTrue(same["connected"])
+        self.assertFalse(moved["connected"])
+        self.assertEqual(moved["status"], "phone_changed")
+        self.assertTrue(moved["connect_url"])
 
     def test_eligibility(self):
         self.assertTrue(wa_dm.is_dm_eligible({"role": "Admin", "company_id": "c"}))
