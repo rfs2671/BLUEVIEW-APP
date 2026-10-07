@@ -1,7 +1,7 @@
 """A small in-memory Mongo for WhatsApp tests. Enough operators, no more.
 
 Supports: equality (incl. a scalar against an array field), $in, $nin, $ne,
-$gt, $gte, $lt, $lte, $exists, $or; updates $set, $setOnInsert, $inc,
+$gt, $gte, $lt, $lte, $exists, $regex, $or; updates $set, $setOnInsert, $inc,
 $unset; unique `_id` and optional unique single fields; find / find_one /
 find_one_and_update / insert_one / update_one / update_many / replace_one /
 count_documents / delete_one / create_index (recorded, not enforced except
@@ -30,6 +30,10 @@ def _cmp(val, cond):
                     return False
             elif op == "$ne":
                 if val == arg:
+                    return False
+            elif op == "$regex":
+                import re as _re
+                if not isinstance(val, str) or not _re.search(arg, val):
                     return False
             elif op == "$exists":
                 if (val is not _MISSING) != bool(arg):
@@ -62,10 +66,18 @@ _MISSING = _Missing()
 
 
 def _get(doc, dotted):
+    """A dotted path, traversing arrays of documents the way Mongo does:
+    `a.b` on {"a": [{"b": 1}, {"b": 2}]} yields [1, 2]."""
     cur = doc
-    for part in dotted.split("."):
+    parts = dotted.split(".")
+    for i, part in enumerate(parts):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
+        elif isinstance(cur, list) and not part.isdigit():
+            rest = ".".join(parts[i:])
+            vals = [_get(x, rest) for x in cur if isinstance(x, dict)]
+            vals = [v for v in vals if v is not _MISSING]
+            return vals if vals else _MISSING
         else:
             return _MISSING
     return cur
