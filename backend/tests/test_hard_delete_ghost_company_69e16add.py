@@ -314,12 +314,41 @@ class TheSafetyChecks(unittest.TestCase):
         reason, _ = self._refused(db)
         self.assertIn("bound elsewhere", reason)
 
+    def test_every_leave_is_tried_and_the_rerun_names_those_left(self):
+        """A leave cannot be undone. One failure must not stop the others
+        halfway; the output names what was left so the re-run skips it."""
+        import io
+        from contextlib import redirect_stdout
+        db = _world()
+        before = {n: len(c.rows) for n, c in db._c.items()}
+        tried = []
+
+        def leave(action, chat_id):
+            tried.append(chat_id)
+            return (chat_id != SECOND_GROUP), "http 200"
+
+        buf = io.StringIO()
+        with patch.object(h, "_leave_group", leave), \
+                patch.object(h, "_r2_delete", lambda keys: []), \
+                patch.object(h, "_r2_listing", lambda prefixes: {}), \
+                redirect_stdout(buf):
+            code = h.run(db, True, _args())
+        out = buf.getvalue()
+        self.assertEqual(code, h.REFUSED)
+        self.assertEqual(set(tried), {h.TARGET_WA_GROUP, SECOND_GROUP, PENDING_GROUP})
+        self.assertEqual({n: len(c.rows) for n, c in db._c.items()
+                          if n in before}, before)
+        rerun = [ln for ln in out.splitlines() if ln.startswith("Re-run with")][0]
+        self.assertIn(f"--bot-not-in-group {h.TARGET_WA_GROUP}", rerun)
+        self.assertIn(f"--bot-not-in-group {PENDING_GROUP}", rerun)
+        self.assertNotIn(SECOND_GROUP, rerun)
+
     def test_a_failed_leave_refuses_before_any_delete(self):
         db = _world()
         before = {n: len(c.rows) for n, c in db._c.items()}
         code, left = _run(db, True, leave_ok=False)
         self.assertEqual(code, h.REFUSED)
-        self.assertEqual(len(left), 1)
+        self.assertEqual(len(left), 3)   # every leave is attempted
         self.assertEqual({n: len(c.rows) for n, c in db._c.items()
                           if n in before}, before)
 

@@ -449,21 +449,30 @@ def run(db, write: bool, args) -> int:
         return OK
 
     # 1. The bot leaves every group BEFORE its binding rows go, so the next
-    #    message cannot re-create a pending row and greet the chat. All
-    #    leaves happen before any delete: one failure refuses the whole run.
+    #    message cannot re-create a pending row and greet the chat. A leave
+    #    cannot be undone, so EVERY leave is attempted before deciding: one
+    #    failure must not strand the run halfway with an unclear record of
+    #    which groups the bot already left. If any failed, nothing is
+    #    deleted and the exact re-run command is printed, naming the groups
+    #    already left (a second leave of those would fail).
     print()
     skip = set(args.bot_not_in_group or [])
+    left, leave_failed = [], []
     for chat_id in facts["whatsapp_groups"]:
         if chat_id in skip:
             print(f"WhatsApp leave {chat_id}: skipped (--bot-not-in-group)")
             continue
         ok, detail = _leave_group(args.waapi_leave_action, chat_id)
         print(f"WhatsApp leave {chat_id}: {'ok' if ok else 'FAILED'} ({detail})")
-        if not ok:
-            print(f"REFUSED: the bot did not leave {chat_id}; nothing deleted. "
-                  f"If it is not a member, re-run with --bot-not-in-group "
-                  f"{chat_id}.")
-            return REFUSED
+        (left if ok else leave_failed).append(chat_id)
+    if leave_failed:
+        done = sorted(skip | set(left))
+        print(f"\nREFUSED: the bot did not leave {leave_failed}; nothing "
+              f"deleted. It DID leave {left or 'none'}.")
+        print("Re-run with the groups already left skipped:"
+              + "".join(f" --bot-not-in-group {g}" for g in done))
+        print("If a FAILED group is one the bot is not in, add it too.")
+        return REFUSED
 
     # 2. R2 first, while the rows that name the keys still exist.
     failed = _r2_delete(keys)
