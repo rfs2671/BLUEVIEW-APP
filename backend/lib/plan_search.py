@@ -44,7 +44,7 @@ import re
 from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
                     Optional, Sequence, Tuple)
 
-from lib.plan_records import TIER_ORDER, tier_rank
+from lib.plan_records import TIER_ORDER, column_role, tier_rank
 from lib.plan_text import SHEET_ID_RE
 
 # What a reader is entitled to see is a printed string. These are the fields a
@@ -1065,67 +1065,109 @@ def _clauses(text: str) -> List[str]:
     return [c for c in _CLAUSE_SPLIT.split(text or "") if c.strip()]
 
 
-def _record_values(r: Dict[str, Any]) -> set:
-    """Every number this one record can vouch for, from what it says."""
-    out = set(_values(r.get("quote") or ""))
-    payload = r.get("payload")
-    if isinstance(payload, dict):
-        for v in payload.values():
-            if isinstance(v, (str, int, float)):
-                out.update(_values(str(v)))
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, (str, int, float)):
-                        out.update(_values(str(item)))
-                    elif isinstance(item, list):
-                        for cell in item:
-                            out.update(_values(str(cell)))
+#: How an element's stated count was read. Only these two read it from a
+#: schedule's quantity cell; the rest are not counts of the thing at all.
+#: Excluded by operator ruling 2026-10-07: `tag_occurrences` / `glyph_match`
+#: (one sheet's printed labels, unscoped - 'SD x8 on A.1.2' is not how many
+#: smoke detectors the building has) and `vision_read` (the kind of count
+#: behind the 41 PTAC units).
+COUNTING_BASES = frozenset({"schedule_qty", "ocr_schedule_qty"})
+
+#: The fields a record cites itself by.
+_CITATION_FIELDS = ("sheet_number", "filing_id", "issued_date")
+
+
+def _quantity_columns(payload: Dict[str, Any]) -> List[int]:
+    """The columns of a schedule whose PRINTED header says quantity. The role
+    stored at extraction wins; a bare header string is read by the same
+    column_role, so there is one definition of what a quantity column is."""
+    out = []
+    for i, c in enumerate(payload.get("columns") or []):
+        if isinstance(c, dict):
+            role = (c.get("role") if c.get("role") is not None
+                    else column_role(c.get("header") or ""))
+        else:
+            role = column_role(str(c or ""))
+        if role == "quantity":
+            out.append(i)
     return out
 
 
-def _citation_values(r: Dict[str, Any]) -> set:
-    """A sheet number, a job number and an issue date are how an answer says
-    where it came from. A gate that reads them as claims fails every well-cited
-    answer, so they are allowed in any clause."""
-    out: set = set()
-    for field in ("sheet_number", "filing_id", "issued_date"):
-        out.update(_values(str(r.get(field) or "")))
-    return out
+def _citation_texts(records: Sequence[Dict[str, Any]]) -> List[str]:
+    """The citation strings an answer may carry - longest first, so a full
+    date is removed before any shorter string inside it.
+
+    A CITATION IS REMOVED AS TEXT; ITS DIGITS ARE NEVER WHITELISTED. These
+    were read with `_values` and every number in them allowed in every
+    clause: the AR set's issue date 8/18/2026 lent 8, 18 and 2026 to any
+    count, so "There are 8 exhaust fans." passed on the say-so of 1,264
+    Boyland records (measured 2026-10-07).
+
+    A citation that is only digits is never removed: 26 Boyland records
+    carry sheet_number '1', and removing '1' would wave any count of one
+    through unchecked. A citation must hold a letter or a separator to be
+    told apart from a count."""
+    out = set()
+    for r in records or []:
+        for f in _CITATION_FIELDS:
+            v = re.sub(r"\s+", " ", str(r.get(f) or "")).strip()
+            if len(v) >= 3 and re.search(r"[A-Za-z/.\-]", v):
+                out.add(v)
+    return sorted(out, key=len, reverse=True)
+
+
+def _strip_citations(clause: str, citations: Sequence[str]) -> str:
+    for c in citations:
+        clause = re.sub(_ALNUM_BEFORE + re.escape(c) + _ALNUM_AFTER, " ",
+                        clause, flags=re.I)
+    return clause
 
 
 def _values_by_ident(records: Sequence[Dict[str, Any]]) -> Dict[str, set]:
-    """What each named thing — a mark, a schedule — can vouch for.
+    """What each named thing - a mark, a schedule - can vouch for AS A COUNT.
 
-    ── A SCHEDULE IS ABOUT EVERY MARK IT LISTS, ROW BY ROW ────────────────
+    ── ONLY A COUNTING SOURCE, NEVER A NUMBER THAT HAPPENS TO BE THERE ────
     #
-    # Indexing a schedule under its NAME alone refused true answers. Measured
-    # 2026-09-18: asked "number of PTAC-2", retrieval returns the ROOMS PTAC
-    # UNITS SCHEDULE but not the individual PTAC-1 element, so a clause saying
-    # "PTAC-1: 21" named a thing no returned record was indexed under — and 21
-    # is printed in that schedule, in PTAC-1's own row.
+    # This lent every number a record carried. Measured on 588 Boyland
+    # 2026-10-07: 2,843 (mark, number) pairs could vouch for a count and 66
+    # were counts. "There are 10 EF-1." passed on EF-1's 10 lb weight, "50
+    # EF-1" on its CFM, "9000 PTAC-1" on a BTU rating, and a legend symbol
+    # 'A' - which the article "a" names - lent its own bbox coordinates.
     #
-    # So each ROW is indexed under the mark in its first cell. Row by row and
-    # not grid-wide, because grid-wide would let PTAC-3 borrow PTAC-1's 21 —
-    # a smaller hole than the one being closed, but the same kind, and the
-    # rows are right there.
+    # A count is now vouched for by (operator ruling 2026-10-07):
+    #   - the cell under a schedule column whose printed header says
+    #     quantity, in the named mark's own row;
+    #   - an element's count_if_stated when it was read from such a cell
+    #     (COUNTING_BASES);
+    #   - and, in the gate, a located-symbol tally (glyph_values).
+    # Nothing else: no other cell, no payload number, no schedule NAME (a
+    # schedule's rows are types, and counting them is what the render tells
+    # the model never to do). A thing that can be named but states no count
+    # is kept with an empty set: it is still named, and still lends nothing.
     #
-    # This does NOT reopen the contested cell. That schedule carries 21 and 11
-    # and neither 6 nor 9, because PTAC-2's QTY was written as '(readings
-    # disagree)' rather than as a digit. The rule that keeps a contested cell
-    # out of the grid is what makes this safe, and if it ever wrote a number
-    # there instead, this would leak.
+    # ── A SCHEDULE IS ABOUT EVERY MARK IT LISTS, ROW BY ROW ────────────────
+    #
+    # Each ROW is indexed under the mark in its first cell, not grid-wide,
+    # so PTAC-3 cannot borrow PTAC-1's 21. And this does NOT reopen the
+    # contested cell: PTAC-2's QTY is written '(readings disagree)', which
+    # carries no digit.
     """
     out: Dict[str, set] = {}
     for r in records or []:
-        if (r.get("payload") or {}).get("count_contested"):
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        if payload.get("count_contested"):
             continue
         if is_glyph_evidence(r):        # counted by glyph_values, nowhere else
             continue
         key = _attribute_key(r)
         if key is None:
             continue
-        out.setdefault(key[2], set()).update(_record_values(r))
-        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        mine = out.setdefault(key[2], set())
+        if (r.get("record_type") == "element"
+                and payload.get("count_basis") in COUNTING_BASES
+                and payload.get("count_if_stated") is not None):
+            mine.update(_values(str(payload["count_if_stated"])))
+        qty = _quantity_columns(payload) if r.get("record_type") == "schedule" else []
         for row in (payload.get("rows") or []):
             if not isinstance(row, list) or not row:
                 continue
@@ -1133,21 +1175,15 @@ def _values_by_ident(records: Sequence[Dict[str, Any]]) -> Dict[str, set]:
             # ── A ROW NUMBER IS NOT A SUBJECT ──────────────────────────────
             #
             # Many grids number their rows, so `row[0]` is often just '1', '2',
-            # '9'. Indexed as idents those are catastrophic and CIRCULAR: the
-            # clause "There are 9 PTAC-2 units" names the ident '9', which
-            # holds the value 9, and the number vouches for itself. Measured
-            # exactly that way on 'number of PTAC-2', where a numbered row let
-            # both 6 and 9 back through.
-            #
-            # This is the FA-001 mistake in a second place — there a row index
-            # merged into a description cell and read as a sprinkler count.
+            # '9'. Indexed as idents those are CIRCULAR: the clause "There are
+            # 9 PTAC-2 units" names the ident '9', which holds the value 9.
             # A thing a drawing NAMES has a letter in it.
             if not any(ch.isalpha() for ch in mark):
                 continue
-            vals: set = set()
-            for cell in row:
-                vals.update(_values(str(cell)))
-            out.setdefault(mark, set()).update(vals)
+            vals = out.setdefault(mark, set())
+            for i in qty:
+                if i < len(row):
+                    vals.update(_values(str(row[i])))
     return out
 
 
@@ -1737,9 +1773,12 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     # for the 6. Nothing about those records is about PTAC-2 — they merely
     # contained the digit.
     #
-    # So a quantity is checked against the values of the things its own clause
-    # NAMES. A clause that names nothing states a quantity of nothing, which
-    # is the exact shape of an invented count, and it is refused.
+    # So a quantity is checked against the COUNTS of the things its own clause
+    # NAMES - a quantity cell, a count read from one, a located-symbol tally
+    # (_values_by_ident, glyph_values) - never against any other number a
+    # record about them carries (2026-10-07: "10 EF-1" passed on a weight).
+    # A clause that names nothing states a quantity of nothing, which is the
+    # exact shape of an invented count, and it is refused.
     #
     # RESIDUE, recorded rather than papered over: a clause that names two marks
     # may borrow either one's numbers. Splitting further would break dimensions
@@ -1747,16 +1786,17 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     # explained to somebody holding the drawing.
     """
     by_ident = _values_by_ident(records)
-    citations: set = set()
-    for r in records or []:
-        citations |= _citation_values(r)
+    citations = _citation_texts(records)
     book = glyph_book(records)
     unsupported: List[str] = []
     for clause in _clauses(text):
-        said = _values(clause)
+        # A citation in the clause is removed as text before its numbers are
+        # read (_citation_texts): '[M-200.00]' and 'issued 8/18/2026' say
+        # where, and lend nothing to what is counted.
+        said = _values(_strip_citations(clause, citations))
         if not said:
             continue
-        allowed = set(citations)
+        allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
             allowed |= by_ident[ident]
         # A LOCATED SYMBOL'S COUNT IS ITS CARDINALITY, NOT A PRINTED DIGIT.
