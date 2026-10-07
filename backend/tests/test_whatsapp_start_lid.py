@@ -24,7 +24,7 @@ import asyncio
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,7 +42,8 @@ from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
 
 LID = "205842133426370"          # a privacy id, not a phone
 LID_CHAT = f"{LID}@lid"
-SECRET = server.JWT_SECRET or "test-secret-for-unit-tests-only"
+OTHER_LID_CHAT = "998877665544332@lid"
+BOT = "+15165494475"
 
 
 def _run(coro):
@@ -68,9 +69,19 @@ def _sends(c):
     return [p for p in c.wire.calls if "message" in p]
 
 
-def _code(uid="u_admin"):
-    return wa_dm.connect_code(
-        uid, datetime.now(timezone.utc).date().isoformat(), SECRET)
+def _admin(c):
+    return dict(next(u for u in c.db.users.rows if u["_id"] == "u_admin"),
+                id="u_admin")
+
+
+def _mint(c, user=None):
+    """What the app does before "Turn on alerts": POST /whatsapp/connect-link.
+    Returns the code from the link."""
+    with patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": BOT}):
+        out = _run(server.whatsapp_connect_link(current_user=user or _admin(c)))
+    prefix = "https://wa.me/15165494475?text=START%20"
+    assert out["url"].startswith(prefix), out["url"]
+    return out["url"][len(prefix):]
 
 
 class TheBugAsReported(unittest.TestCase):
@@ -90,7 +101,7 @@ class TheBugAsReported(unittest.TestCase):
     def test_the_connect_link_connects_a_lid_sender(self):
         """The fix for the same person: the app's link sends START <code>."""
         with _Ctx() as c:
-            _process(c, LID_CHAT, f"START {_code()}")
+            _process(c, LID_CHAT, f"START {_mint(c)}")
             rows = c.db[server.WA_OPTINS].rows
             self.assertEqual(len(rows), 1)
             row = rows[0]
@@ -100,9 +111,8 @@ class TheBugAsReported(unittest.TestCase):
             self.assertFalse(row["phone_verified"])
             self.assertEqual([(p["chatId"], p["message"]) for p in _sends(c)],
                              [(LID_CHAT, wa_dm.INTRO_TEXT)])
-            admin = dict(c.db.users.rows[0], id="u_admin")
-            with patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": "+15165494475"}):
-                me = _run(server.whatsapp_me(current_user=admin))
+            with patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": BOT}):
+                me = _run(server.whatsapp_me(current_user=_admin(c)))
             self.assertEqual(me["state"], "connected")
 
     def test_a_phone_in_the_payload_resolves_a_lid_sender(self):
@@ -129,7 +139,7 @@ class AfterOptingInFromALid(unittest.TestCase):
 
     def test_proactive_sends_go_to_the_lid_chat(self):
         with _Ctx() as c:
-            _process(c, LID_CHAT, f"START {_code()}")
+            _process(c, LID_CHAT, f"START {_mint(c)}")
             c.wire.calls.clear()
             out = _run(server.send_whatsapp_dm(
                 "u_admin", "summary", kind="summary", window="2026-10-07"))
@@ -138,7 +148,7 @@ class AfterOptingInFromALid(unittest.TestCase):
 
     def test_stop_from_the_lid_chat_ends_it(self):
         with _Ctx() as c:
-            _process(c, LID_CHAT, f"START {_code()}", "L1")
+            _process(c, LID_CHAT, f"START {_mint(c)}", "L1")
             _process(c, LID_CHAT, "STOP", "L2")
             self.assertEqual(c.db[server.WA_OPTINS].rows[0]["status"], "opted_out")
             self.assertEqual(_sends(c)[-1]["chatId"], LID_CHAT)
@@ -149,8 +159,10 @@ class AfterOptingInFromALid(unittest.TestCase):
 
 class EveryStartGetsAPlainReply(unittest.TestCase):
 
-    def _reply(self, chat, body, db=None, write_fails=False):
+    def _reply(self, chat, body, db=None, write_fails=False, mint=False):
         with _Ctx(db) as c:
+            if mint:
+                body = f"{body} {_mint(c)}"
             if write_fails:
                 async def boom(*a, **k):
                     raise RuntimeError("db down")
@@ -166,18 +178,14 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
     def test_an_unknown_code(self):
         msg, c = self._reply(LID_CHAT, "START AAAAAA")
         self.assertEqual(msg, wa_dm.CODE_EXPIRED_TEXT)
+        self.assertEqual(msg, "Blueview here. This link expired. Tap Turn on "
+                              "alerts again in the app.")
         self.assertEqual(c.db[server.WA_OPTINS].rows, [])
 
     def test_a_code_sent_from_another_phone(self):
-        msg, c = self._reply("15557770000@c.us", f"START {_code()}")
+        msg, c = self._reply("15557770000@c.us", "START", mint=True)
         self.assertEqual(msg, wa_dm.WRONG_PHONE_TEXT)
         self.assertEqual(c.db[server.WA_OPTINS].rows, [])
-
-    def test_a_code_for_an_account_with_no_phone(self):
-        db = _db()
-        db.users.rows[0]["phone"] = ""
-        msg, _ = self._reply(LID_CHAT, f"START {_code()}", db=db)
-        self.assertEqual(msg, wa_dm.PHONE_MISSING_TEXT)
 
     def test_a_shared_number(self):
         db = _db()
@@ -201,6 +209,76 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
         self.assertEqual(msg, wa_dm.NOT_ELIGIBLE_TEXT)
 
 
+class TheCodeIsSingleUseAndShortLived(unittest.TestCase):
+
+    def test_a_reused_code_from_another_chat_is_refused(self):
+        """Forwarded or pasted: the first START uses it, the second chat gets
+        the expired line and no opt-in."""
+        with _Ctx() as c:
+            code = _mint(c)
+            _process(c, LID_CHAT, f"START {code}", "L1")
+            _process(c, OTHER_LID_CHAT, f"START {code}", "L2")
+            rows = c.db[server.WA_OPTINS].rows
+            self.assertEqual([(r["chat_id"], r["status"]) for r in rows],
+                             [(LID_CHAT, "active")])
+            last = _sends(c)[-1]
+            self.assertEqual((last["chatId"], last["message"]),
+                             (OTHER_LID_CHAT, wa_dm.CODE_EXPIRED_TEXT))
+
+    def test_a_code_older_than_15_minutes_is_refused(self):
+        with _Ctx() as c:
+            code = _mint(c)
+            row = c.db[server.WA_CONNECT_CODES].rows[0]
+            self.assertAlmostEqual(
+                (row["expires_at"] - row["created_at"]).total_seconds(), 900, delta=1)
+            row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+            _process(c, LID_CHAT, f"START {code}")
+            self.assertEqual(c.db[server.WA_OPTINS].rows, [])
+            self.assertEqual(_sends(c)[-1]["message"], wa_dm.CODE_EXPIRED_TEXT)
+
+    def test_each_link_is_its_own_single_use_code(self):
+        """A refreshed link does not withdraw the one a START may already be
+        carrying; each still works once."""
+        with _Ctx() as c:
+            old = _mint(c)
+            new = _mint(c)
+            self.assertNotEqual(old, new)
+            _process(c, LID_CHAT, f"START {old}", "L1")
+            self.assertEqual(_sends(c)[-1]["message"], wa_dm.INTRO_TEXT)
+            _process(c, OTHER_LID_CHAT, f"START {old}", "L2")
+            self.assertEqual(_sends(c)[-1]["message"], wa_dm.CODE_EXPIRED_TEXT)
+
+    def test_a_wrong_phone_uses_up_the_code(self):
+        with _Ctx() as c:
+            code = _mint(c)
+            _process(c, "15557770000@c.us", f"START {code}", "L1")
+            _process(c, LID_CHAT, f"START {code}", "L2")
+            self.assertEqual(c.db[server.WA_OPTINS].rows, [])
+
+    def test_no_link_when_alerts_cannot_be_turned_on(self):
+        from fastapi import HTTPException
+        db = _db()
+        db.users.rows[0]["phone"] = ""
+        with _Ctx(db) as c:
+            with self.assertRaises(HTTPException) as e:
+                _mint(c)
+            self.assertEqual(e.exception.status_code, 409)
+            self.assertEqual(c.db[server.WA_CONNECT_CODES].rows, [])
+
+    def test_codes_are_random_and_well_formed(self):
+        codes = {wa_dm.new_connect_code() for _ in range(200)}
+        self.assertGreater(len(codes), 195)
+        for code in codes:
+            self.assertRegex(code, r"^[A-Z2-7]{6}$")
+
+    def test_the_ttl_index_is_declared(self):
+        db = _db()
+        with patch.object(server, "db", db):
+            _run(server.ensure_whatsapp_phase1_indexes())
+        names = {i["name"] for i in db[server.WA_CONNECT_CODES].indexes}
+        self.assertIn("whatsapp_connect_codes_ttl", names)
+
+
 class TheParts(unittest.TestCase):
 
     def test_reply_addresses(self):
@@ -214,14 +292,6 @@ class TheParts(unittest.TestCase):
         self.assertEqual(wa_dm.parse_start_code("start k7q2mx"), "K7Q2MX")
         self.assertIsNone(wa_dm.parse_dm_command("start the pour at 7"))
         self.assertIsNone(wa_dm.parse_start_code("START"))
-
-    def test_codes_are_per_user_and_per_day(self):
-        a = wa_dm.connect_code("u1", "2026-10-07", "s")
-        self.assertEqual(a, wa_dm.connect_code("u1", "2026-10-07", "s"))
-        self.assertNotEqual(a, wa_dm.connect_code("u2", "2026-10-07", "s"))
-        self.assertNotEqual(a, wa_dm.connect_code("u1", "2026-10-08", "s"))
-        self.assertNotEqual(a, wa_dm.connect_code("u1", "2026-10-07", "t"))
-        self.assertRegex(a, r"^[A-Z2-7]{6}$")
 
     def test_a_lid_in_a_phone_field_is_not_a_phone(self):
         self.assertEqual(wa_dm.phone_from_payload({"senderPn": "123@lid"}), "")

@@ -43036,6 +43036,10 @@ def _group_history_filter(binding: dict, since: Optional[datetime] = None,
 WA_OPTINS = "whatsapp_optins"
 WA_DM_WINDOWS = "whatsapp_dm_reply_windows"
 WA_LEDGER = "whatsapp_notification_ledger"
+# One row per connect code: {_id: code, user_id, expires_at, used_at}.
+# Single use, 15 minutes (wa_dm.CONNECT_CODE_TTL_SECONDS); a TTL index
+# removes rows once they expire.
+WA_CONNECT_CODES = "whatsapp_connect_codes"
 WA_MONITOR = "whatsapp_instance_monitor"
 WA_LEDGER_RETENTION_DAYS = 180
 
@@ -43413,27 +43417,32 @@ async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
     return await _waapi_contact_phone(chat_id)
 
 
-async def _user_for_connect_code(code: str) -> Optional[dict]:
-    """The DM-eligible user whose connect code (today's or yesterday's, UTC)
-    is `code`, else None. Codes are HMACs, so this checks each eligible
-    account rather than looking one up — admins and PMs only, a few hundred
-    rows at most."""
-    if not code or not JWT_SECRET:
+async def _redeem_connect_code(code: str, chat: str) -> Optional[dict]:
+    """Use a connect code: the DM-eligible user it was issued to, or None.
+
+    ONE atomic update marks it used, so a code works once — a code forwarded
+    or pasted into a second chat finds it already used. An expired code
+    matches nothing. The chat that used it is recorded on the row."""
+    if not code:
         return None
-    today = datetime.now(timezone.utc).date()
-    days = [today.isoformat(), (today - timedelta(days=1)).isoformat()]
+    now = datetime.now(timezone.utc)
     try:
-        rows = await db.users.find(
-            {"role": {"$in": ["admin", "pm", "Admin", "PM", "Pm", "ADMIN"]},
-             "is_deleted": {"$ne": True}},
-            {"password": 0}).to_list(2000)
-    except Exception:
+        row = await db[WA_CONNECT_CODES].find_one_and_update(
+            {"_id": code, "used_at": None, "expires_at": {"$gt": now}},
+            {"$set": {"used_at": now, "used_chat_digits": wa_dm.phone_digits(chat)}},
+        )
+    except Exception as e:
+        logger.warning(f"connect code redeem failed: {type(e).__name__}")
         return None
-    for u in rows:
-        uid = str(u.get("_id"))
-        if any(wa_dm.connect_code(uid, d, JWT_SECRET) == code for d in days):
-            return u if wa_dm.is_dm_eligible(u) else None
-    return None
+    if not row:
+        return None
+    try:
+        u = await db.users.find_one(
+            {"_id": to_query_id(str(row.get("user_id"))),
+             "is_deleted": {"$ne": True}}, {"password": 0})
+    except Exception:
+        u = None
+    return u if wa_dm.is_dm_eligible(u) else None
 
 
 async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
@@ -43466,7 +43475,7 @@ async def _handle_dm_start(chat_id: str, body: str = "START",
     code = wa_dm.parse_start_code(body)
 
     if code:
-        u = await _user_for_connect_code(code)
+        u = await _redeem_connect_code(code, chat)
         if not u:
             _security_event("whatsapp_optin_refused", reason="code_unknown",
                             jid_kind=kind)
@@ -46177,6 +46186,15 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[WA_OPTINS], keys=[("user_id", 1), ("status", 1)],
         name="whatsapp_optins_by_user")
+    await _ensure_index_resilient(
+        db[WA_OPTINS], keys=[("chat_digits", 1)],
+        name="whatsapp_optins_by_chat")
+    await _ensure_index_resilient(
+        db[WA_CONNECT_CODES], keys=[("expires_at", 1)],
+        name="whatsapp_connect_codes_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[WA_CONNECT_CODES], keys=[("user_id", 1)],
+        name="whatsapp_connect_codes_by_user")
 
 
 async def run_whatsapp_startup_migrations():
@@ -54786,14 +54804,11 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     state = wa_dm.connect_state(
         eligible=eligible, bot_configured=bool(bot), has_phone=has_phone,
         phone_shared=phone_shared, optin_status=status)
-    # THE CODE IN THE LINK. WhatsApp increasingly identifies a 1:1 sender by a
-    # privacy id (@lid) instead of their number, and then START cannot be
-    # matched to anyone by phone. The code names this account, so the START
-    # the link prepares connects whichever id WhatsApp uses. A plain "START"
-    # still works from a chat that shows its number.
-    code = (wa_dm.connect_code(uid, datetime.now(timezone.utc).date().isoformat(),
-                               JWT_SECRET)
-            if JWT_SECRET and state in wa_dm.CONNECT_ACTIONABLE else "")
+    # `connect_url` is plain START: it works from a chat that shows its number,
+    # and it is the fallback when a coded link cannot be minted. The app asks
+    # POST /whatsapp/connect-link for the link it actually opens — single-use,
+    # 15 minutes — which also connects a @lid sender. Not minted here: this
+    # read is polled every few seconds.
     return {
         "eligible": eligible,
         "state": state,
@@ -54802,12 +54817,43 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
         "connected": state == wa_dm.CONNECT_CONNECTED,
         "phone": ("+" + digits) if (eligible and has_phone) else None,
         "bot_number": ("+" + bot) if (eligible and bot) else None,
-        "connect_url": ((f"https://wa.me/{bot}?text=START%20{code}" if code
-                         else f"https://wa.me/{bot}?text=START")
+        "connect_url": (f"https://wa.me/{bot}?text=START"
                         if state in wa_dm.CONNECT_ACTIONABLE else None),
         "stop_url": (f"https://wa.me/{bot}?text=STOP"
                      if state == wa_dm.CONNECT_CONNECTED else None),
     }
+
+
+@api_router.post("/whatsapp/connect-link")
+async def whatsapp_connect_link(current_user=Depends(get_current_user)):
+    """A fresh "Turn on alerts" link: wa.me/<bot>?text=START%20<code>.
+
+    The code is random, stored with this user, good for ONE START and for
+    15 minutes. Earlier codes are NOT withdrawn: the app fetches a new link
+    shortly before the old one expires, and withdrawing it then would race a
+    START already on its way. Refused unless the user may turn alerts on
+    right now (the same state GET /whatsapp/me reports)."""
+    me = await whatsapp_me(current_user=current_user)
+    if me.get("state") not in wa_dm.CONNECT_ACTIONABLE:
+        raise HTTPException(status_code=409,
+                            detail=f"Alerts can't be turned on now ({me.get('state')})")
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    bot = _wa_bot_digits()
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=wa_dm.CONNECT_CODE_TTL_SECONDS)
+    from pymongo.errors import DuplicateKeyError
+    for _ in range(5):
+        code = wa_dm.new_connect_code()
+        try:
+            await db[WA_CONNECT_CODES].insert_one({
+                "_id": code, "user_id": uid,
+                "company_id": str(current_user.get("company_id") or ""),
+                "created_at": now, "expires_at": expires, "used_at": None})
+        except DuplicateKeyError:
+            continue
+        return {"url": f"https://wa.me/{bot}?text=START%20{code}",
+                "expires_at": expires.isoformat()}
+    raise HTTPException(status_code=503, detail="Could not create a link. Try again.")
 
 
 async def _wa_prefs_project_or_403(project_id: str, current_user: dict) -> dict:

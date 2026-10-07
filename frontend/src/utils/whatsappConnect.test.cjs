@@ -78,6 +78,21 @@ for (const st of ['phone_missing', 'phone_shared', 'unavailable']) {
 ok(card({ ...me('not_connected'), connect_url: null }).alerts.button === null,
    'no link from the server: no button, whatever the state');
 
+console.log('\nthe single-use link');
+{
+  const coded = 'https://wa.me/15165494475?text=START%20ABC234';
+  const a = W.whatsappCardView({ me: me('not_connected'), status: active, connectUrl: coded }).alerts;
+  ok(a.button.url === coded, 'Turn on alerts opens the fresh coded link when there is one');
+  const fb = card({ ...me('not_connected'), connect_url: 'https://wa.me/15165494475?text=START' }).alerts;
+  ok(fb.button.url === 'https://wa.me/15165494475?text=START', 'falls back to plain START');
+  const blocked = W.whatsappCardView({ me: me('phone_missing'), status: active, connectUrl: coded }).alerts;
+  ok(blocked.button === null, 'a coded link never shows where the server offers none');
+  const now = Date.parse('2026-10-07T21:00:00Z');
+  ok(W.needsFreshLink(null, now), 'no link: fetch one');
+  ok(!W.needsFreshLink({ url: coded, expires_at: '2026-10-07T21:14:00Z' }, now), '14 min left: keep it');
+  ok(W.needsFreshLink({ url: coded, expires_at: '2026-10-07T21:00:30Z' }, now), 'under a minute left: refresh');
+}
+
 console.log('\nwho sees what');
 {
   const pm = card(me('not_connected'), { isAdmin: false });
@@ -122,6 +137,9 @@ ok((cardSrc.match(/<MessageCircle /g) || []).length === 1, 'one WhatsApp icon in
 ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(cardSrc),
    'live refresh kept, and a failed first read is retried');
 ok(!/whatsappAPI|Connect WhatsApp|waMe/.test(read('app/settings.jsx')), 'nothing in Settings');
+ok(/whatsappAPI\.connectLink\(\)/.test(cardSrc) && /connectUrl: link && link\.url/.test(cardSrc),
+   'the card fetches the single-use link before the tap and uses it');
+ok(!/setLink\(null\)/.test(cardSrc), 'a tap does not throw the link away (no race with the send)');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

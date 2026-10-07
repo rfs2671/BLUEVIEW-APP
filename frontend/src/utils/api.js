@@ -1747,6 +1747,13 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // A fresh "Turn on alerts" link: START plus a single-use code that expires
+  // in 15 minutes. { url, expires_at }.
+  connectLink: async () => {
+    const response = await apiClient.post('/api/whatsapp/connect-link');
+    return response.data;
+  },
+
   activate: async () => {
     const response = await apiClient.post('/api/whatsapp/activate');
     return response.data;

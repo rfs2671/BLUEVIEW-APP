@@ -39,11 +39,26 @@ export function formatWaPhone(phone) {
 
 const chip = (label, tone) => ({ label, tone }); // tone: 'ok' | 'warn' | 'idle'
 
-/** The "Your alerts" section for a GET /whatsapp/me reading, or null. */
-export function alertsView(me) {
+// Ask for a new single-use link this long before the current one expires.
+export const WA_LINK_REFRESH_MS = 60 * 1000;
+
+/** True when the card should ask for a fresh connect link now. */
+export function needsFreshLink(link, now = Date.now()) {
+  if (!link || !link.url) return true;
+  const exp = Date.parse(link.expires_at || '');
+  return !Number.isFinite(exp) || exp - now < WA_LINK_REFRESH_MS;
+}
+
+/**
+ * The "Your alerts" section for a GET /whatsapp/me reading, or null.
+ * `connectUrl` is the single-use coded link from POST /whatsapp/connect-link;
+ * the plain-START `me.connect_url` is the fallback when none could be had.
+ */
+export function alertsView(me, connectUrl = null) {
   const state = me && me.state;
   if (!me || !me.eligible || !state || state === 'not_eligible') return null;
-  const on = me.connect_url ? { label: 'Turn on alerts', url: me.connect_url } : null;
+  const onUrl = me.connect_url ? (connectUrl || me.connect_url) : null;
+  const on = onUrl ? { label: 'Turn on alerts', url: onUrl } : null;
   switch (state) {
     case 'connected':
       return {
@@ -107,8 +122,10 @@ export function groupsView({ status, pendingCount, isAdmin }) {
  * The whole card. `visible` is false when there is nothing for this person:
  * not an Admin, and the server says alerts are not for them.
  */
-export function whatsappCardView({ me, status, pendingCount = 0, isAdmin = false }) {
-  const alerts = alertsView(me);
+export function whatsappCardView({
+  me, status, pendingCount = 0, isAdmin = false, connectUrl = null,
+}) {
+  const alerts = alertsView(me, connectUrl);
   const groups = groupsView({ status, pendingCount, isAdmin });
   if (!alerts && !isAdmin) return { visible: false };
   const number = (me && me.bot_number) || (status && status.whatsapp_number) || '';

@@ -92,9 +92,12 @@ db.whatsapp_messages.find({is_dm: true, created_at: {$gte: ISODate("2026-10-07T2
 3. WaAPI `client/action/get-contact-by-id {contactId}` (`_waapi_contact_phone`). **Unverified** action. Each call logs `[wa-dm] lid lookup ...` with the response, minus the token, so the shape can be confirmed.
 
 **The connect code works whatever WhatsApp withholds.** The app's "Turn on alerts" link sends `START <code>`.
-- The code is a per-user, per-day HMAC (`wa_dm.connect_code`) that names the account. Issuing it stores nothing.
+- The code is random and comes from `POST /whatsapp/connect-link`. It is stored in `whatsapp_connect_codes` with its owner.
+- It is **single-use** and **expires 15 minutes** after it is issued. A TTL index (`whatsapp_connect_codes_ttl`) removes expired rows.
+- Using it is one atomic update that marks it used, so a forwarded or re-pasted code fails. A used or expired code gets: "This link expired. Tap Turn on alerts again in the app."
 - It connects a `@lid` sender even when no phone can be found.
-- If the sender's phone *is* known and differs from the profile phone, the opt-in is refused.
+- If the sender's phone *is* known and differs from the profile phone, the opt-in is refused, and the code is used up.
+- The app fetches the link *before* the tap, so the tap opens WhatsApp at once. It fetches a new one about a minute before expiry. Older codes are not withdrawn, because that would race a START already on its way.
 
 **Where alerts go.** The opt-in records `chat_id` and `chat_digits`. Proactive sends (`send_whatsapp_dm`) go to that chat. STOP from that chat ends the opt-in, and the reply gate finds the opt-in by chat.
 

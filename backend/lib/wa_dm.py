@@ -70,8 +70,7 @@ NEED_APP_TEXT = (
     "Turn on alerts, and send the message it prepares."
 )
 CODE_EXPIRED_TEXT = (
-    "Blueview here. That link has expired. Open Integrations in the Blueview "
-    "app and tap Turn on alerts again."
+    "Blueview here. This link expired. Tap Turn on alerts again in the app."
 )
 WRONG_PHONE_TEXT = (
     "Blueview here. Send this from the phone number saved on your Blueview "
@@ -252,18 +251,17 @@ def phone_from_payload(obj, depth: int = 0) -> str:
 
 _B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
+# A connect code lives this long, and is good for ONE START.
+CONNECT_CODE_TTL_SECONDS = 15 * 60
 
-def connect_code(user_id: str, day: str, secret: str) -> str:
-    """The code the app appends to START for this user on this day (UTC
-    'YYYY-MM-DD'). An HMAC, so nothing is stored to issue it and a code
-    cannot be guessed for someone else. It ties the WhatsApp chat that sends
-    it to the account that showed it — the one way to know who a @lid
-    sender is when WhatsApp does not share their number."""
-    import hmac
-    mac = hmac.new(str(secret or "").encode(), f"wa-connect:{user_id}:{day}".encode(),
-                   hashlib.sha256).digest()
-    n = int.from_bytes(mac[:5], "big")
-    return "".join(_B32[(n >> (5 * i)) & 31] for i in range(CONNECT_CODE_LEN))
+
+def new_connect_code() -> str:
+    """A random connect code. Stored server-side with its owner, a 15-minute
+    expiry and a used flag (server.py whatsapp_connect_link); the START that
+    carries it is what ties a WhatsApp chat — even a @lid one whose number
+    WhatsApp withholds — to the account that asked for it."""
+    import secrets
+    return "".join(secrets.choice(_B32) for _ in range(CONNECT_CODE_LEN))
 
 
 def ledger_key(user_id: str, project_id: Optional[str], kind: str,

@@ -16,7 +16,7 @@ import { useToast } from './Toast';
 import { whatsappAPI } from '../utils/api';
 import { isOfflineError } from '../utils/offlineState';
 import {
-  whatsappCardView, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
+  whatsappCardView, needsFreshLink, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
 } from '../utils/whatsappConnect';
 import { spacing, borderRadius } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
@@ -51,6 +51,10 @@ export default function WhatsAppCard({ isAdmin = false }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [focused, setFocused] = useState(true);
   const [busy, setBusy] = useState(null); // 'activate' | 'contact' | null
+  // The single-use, 15-minute "Turn on alerts" link. Fetched BEFORE the tap,
+  // so the tap opens WhatsApp at once: a browser blocks a window opened
+  // after waiting on the network.
+  const [link, setLink] = useState(null);
   const pollStartedAt = useRef(Date.now());
   const mounted = useRef(true);
 
@@ -106,6 +110,27 @@ export default function WhatsAppCard({ isAdmin = false }) {
 
   const state = me && me.state;
   const shouldPoll = !me || WA_POLLING_STATES.has(state);
+  const canTurnOn = !!(me && me.connect_url);
+
+  const refreshLink = useCallback(async () => {
+    try {
+      const data = await whatsappAPI.connectLink();
+      if (mounted.current && data && data.url) setLink(data);
+    } catch (e) {
+      // Fall back to the plain START link the server already sent.
+    }
+  }, []);
+
+  // A fresh link whenever alerts can be turned on and the one held is
+  // missing or about to expire.
+  useEffect(() => {
+    if (!focused || !canTurnOn) return undefined;
+    if (needsFreshLink(link)) refreshLink();
+    const id = setInterval(() => {
+      if (needsFreshLink(link)) refreshLink();
+    }, 30 * 1000);
+    return () => clearInterval(id);
+  }, [focused, canTurnOn, link, refreshLink]);
   useEffect(() => {
     if (!focused || !shouldPoll) return undefined;
     const id = setInterval(() => {
@@ -115,11 +140,15 @@ export default function WhatsAppCard({ isAdmin = false }) {
     return () => clearInterval(id);
   }, [focused, shouldPoll, refreshMe]);
 
-  const view = whatsappCardView({ me, status, pendingCount, isAdmin });
+  const view = whatsappCardView({
+    me, status, pendingCount, isAdmin, connectUrl: link && link.url,
+  });
   if (!view.visible) return null;
 
   const openWhatsApp = (url) => {
     pollStartedAt.current = Date.now();
+    // The link is kept: until the START arrives the code is unused and
+    // still good, and fetching a new one here would race the send.
     Linking.openURL(url);
   };
 
