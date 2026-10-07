@@ -37,7 +37,10 @@ from lib import plan_tally as ptal
 
 RECORD_TYPE = "glyph"
 SOURCE = "plan_takeoff"
-EMIT_VERSION = 1
+#: 2 (2026-10-07): payload.units carries multi_level - per unit, what says
+#: it continues on another sheet. A version-1 row carries none, and the
+#: gate refuses unit scope on its floor.
+EMIT_VERSION = 2
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -105,7 +108,8 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
         "fallback_reason": result.get("fallback_reason"),
         "registration": {k: (result.get("registration") or {}).get(k)
                          for k in ("rms_in", "max_in", "anchors", "usable")},
-        "units": {k: units.get(k) for k in ("tags", "method", "zero_units")},
+        "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
+                                            "multi_level") if k in units},
         "widest_door_in": widest_door.get("inches"),
     }
     rows: List[Dict[str, Any]] = []

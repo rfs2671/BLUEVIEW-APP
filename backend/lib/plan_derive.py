@@ -242,3 +242,51 @@ def widest_door_in(directed_words: Sequence[Tuple[str, float, float, str]]) -> d
         return {"inches": None, "doors": {},
                 "why": "door panels carry no horizontal width dimension"}
     return {"inches": max(doors.values()), "doors": doors, "why": None}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# A unit that continues on another sheet
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MEASURED ON 588 BOYLAND, 2026-10-07. A-103.00's four apartments are the
+# LOWER halves of duplexes: each prints "1 BEDROOM APT. LOWER" inside it, and
+# each holds a private stair labelled "UP 16" that lands on the mezzanine,
+# where M-104.00 puts one more exhaust fan and two more PTACs in each. A count
+# of 4A's fans read off A-103.00 alone said 2; the apartment has 3.
+#
+# TWO SIGNALS, EITHER ONE (operator ruling 2026-10-07), each read INSIDE the
+# unit by the same membership map the pass places into:
+#   a level word  - LOWER / UPPER / DUPLEX / ... - printed in the unit;
+#   a stair label - UP / DN - printed in the unit: a stair leaving the
+#                   apartment. The core stair sits outside every unit, which
+#                   is what keeps floors 1-3 (every UP/DN outside a unit)
+#                   from firing.
+# On Boyland both signals agree: exactly 4A-4D, and nothing on floors 1-3.
+# Requiring both would miss a duplex whose stair is unlabelled or whose
+# level is unnamed, so either one marks the unit.
+
+MULTI_LEVEL_WORD = re.compile(r"^(LOWER|UPPER|DUPLEX|TRIPLEX|LOFT|MEZZANINE)\.?$", re.I)
+STAIR_LABEL = re.compile(r"^(UP|DN|DOWN)$", re.I)
+
+
+def multi_level_units(directed_words: Iterable[Tuple[str, float, float, str]],
+                      unit_at, tags: Sequence[str]) -> Dict[str, List[str]]:
+    """tag -> what on the sheet says the unit continues on another sheet;
+    an empty list for a unit nothing says so for. EVERY tag gets a key, so a
+    row can carry an affirmative "single-sheet" - absence of the key means
+    the evidence was never read, and the gate refuses on it.
+
+    `unit_at(x, y)` is the pass's membership map (plan_takeoff.Units.at): a
+    unit tag, or '' / '!<tags>' for no unit or a refused merged region -
+    neither of which is a unit a word can be inside."""
+    out: Dict[str, List[str]] = {str(t): [] for t in (tags or [])}
+    for text, x, y, _d in directed_words or []:
+        kind = ("level word" if MULTI_LEVEL_WORD.match(text) else
+                "stair label" if STAIR_LABEL.match(text) else None)
+        if kind is None:
+            continue
+        u = unit_at(x, y)
+        if u in out:
+            out[u].append(f"{kind} {text.upper()} at ({round(x)}, {round(y)})")
+    return out
+

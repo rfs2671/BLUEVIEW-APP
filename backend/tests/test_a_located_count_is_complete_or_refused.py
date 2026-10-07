@@ -58,9 +58,19 @@ def _present():
 
 # ── the rows, built by the real emitter ─────────────────────────────────────
 
-def _floor(level, family, placed, status="resolved"):
-    """`placed` is [(tag, unit)] - unit None for a symbol not placed."""
+def _floor(level, family, placed, status="resolved", multi="single"):
+    """`placed` is [(tag, unit)] - unit None for a symbol not placed.
+
+    `multi`: what the rows say about units continuing on another sheet
+    (emit_version 2). "single" - every unit single-sheet, as a rebuilt floor
+    with no duplexes; a dict - that evidence; None - a version-1 row that
+    never read it, on which the gate refuses unit scope."""
     title, units = FLOORS[level]
+    unit_info = {"tags": units, "method": "occupancy_table", "zero_units": False}
+    if multi == "single":
+        unit_info["multi_level"] = {u: [] for u in units}
+    elif multi is not None:
+        unit_info["multi_level"] = {u: list(multi.get(u, [])) for u in units}
     mech = {"project_id": PID, "company_id": "c1", "file_id": "f-mh", "file_hash": "h",
             "file_name": "MH.pdf", "page_id": f"pg-m{level}", "page_number": 5,
             "sheet_number": f"M-{level}.00", "sheet_title": title,
@@ -78,8 +88,7 @@ def _floor(level, family, placed, status="resolved"):
                                "usable": True}}
     return E.glyph_rows(result, mech=mech, arch=arch, family=family,
                         pass_key=f"A-{level}.00|M-{level}.00|{family}",
-                        units={"tags": units, "method": "occupancy_table",
-                               "zero_units": False},
+                        units=unit_info,
                         widest_door={"inches": 56.0})
 
 
