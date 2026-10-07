@@ -48770,6 +48770,61 @@ async def _current_record_page_ids(project_id: str, *, discipline: str = "",
     return [str(p["_id"]) for p in pages]
 
 
+async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
+    """Every located-symbol row a count question about `subject` could rest
+    on, and an independent census of each (plan_search, "Located symbols").
+
+    TWO READS OF ONE FILTER. `find` fetches the rows; `count_documents` asks
+    the database separately how many match. The gate binds a count only when
+    the rows in hand that satisfy the filter number exactly the census, so a
+    fetch cut short here - or rows dropped by any caller downstream - is a
+    refusal, never a smaller number. Neither read is cached or carried from
+    the pass.
+
+    WHOLE PROJECT, NOT THE SEARCH'S NARROWED SCOPE: a floor or discipline
+    filter on the question must not shrink the evidence a building total is
+    checked against. The families come from the schedules at question time,
+    the same way the pass derived them (plan_glyph_pass.families)."""
+    from lib.plan_glyph_pass import families as _families
+    pid = str(project_id)
+    page_ids = await _current_record_page_ids(pid)
+    if not page_ids:
+        return []
+    sched = await db[PLAN_RECORDS].find(
+        {"project_id": pid, "record_type": "schedule",
+         "page_id": {"$in": page_ids}, "sheet_number": {"$regex": "^M-"}},
+        {"sheet_number": 1, "tier": 1, "payload.name": 1, "payload.columns": 1,
+         "payload.rows": 1},
+    ).to_list(2000)
+    fams = _families([{"name": (s.get("payload") or {}).get("name"),
+                       "columns": (s.get("payload") or {}).get("columns"),
+                       "rows": (s.get("payload") or {}).get("rows"),
+                       "tier": s.get("tier"), "sheet_number": s.get("sheet_number")}
+                      for s in sched])
+    want = plan_search.glyph_families_for(
+        subject, {n: f.get("tags") or [] for n, f in fams.items()})
+    if not want:
+        return []
+    proj = {"_id": 0, "embedding": 0}
+    checks = [(plan_search.glyph_family_filter(pid, page_ids, name, tags),
+               ("family", name, tags)) for name, tags in sorted(want.items())]
+    checks.append((plan_search.glyph_refusal_filter(pid, page_ids),
+                   ("refusals", None, [])))
+    rows: List[dict] = []
+    census: List[dict] = []
+    for flt, (kind, name, tags) in checks:
+        rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
+        n = await db[PLAN_RECORDS].count_documents(flt)
+        census.append(plan_search.glyph_census(kind, pid, page_ids, n,
+                                               family=name, tags=tags))
+    return rows + census
+
+
+#: Rows fetched per filter. NOT a silent cap: a family with more rows than
+#: this reads short against its census and binds nothing.
+GLYPH_EVIDENCE_MAX = 5000
+
+
 async def search_plans(project_id: str, subject: str, *, intent: str = "",
                        discipline: str = "", floor: str = "",
                        sheet_number: str = "", limit: int = 8) -> List[dict]:
@@ -48902,7 +48957,23 @@ async def search_plans(project_id: str, subject: str, *, intent: str = "",
     # best_per_attribute, so a fabricated value cannot win an attribute slot
     # and cannot be the closest thing to an answer either.
     ranked = plan_search.drop_impossible_dimensions(ranked)
-    return plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
+    # ── A LOCATED SYMBOL IS ALL OF THEM OR NONE ────────────────────────────
+    #
+    # Glyph rows were ranked like any record and sliced to eight, and the
+    # count gate bound what survived: "There are 2 EF-1." with 16 in the
+    # database (2026-10-06). So none rides in the ranked slice; for a count,
+    # every row of the families the subject names follows it, with a census
+    # the gate checks them against.
+    ranked = [r for r in ranked if not plan_search.is_glyph_evidence(r)]
+    out = plan_search.best_per_attribute(ranked)[:max(1, min(limit, SEARCH_PLANS_MAX))]
+    if (intent or "").strip().lower() == "count":
+        try:
+            out += await _glyph_evidence(project_id, subject)
+        except Exception as e:
+            # Without the census nothing about a located symbol binds, so a
+            # failure here costs those figures and nothing else.
+            logger.warning(f"search_plans glyph evidence failed for {subject!r}: {e}")
+    return out
 
 
 def _render_records_for_model(records: List[dict], subject: str) -> str:
@@ -48934,6 +49005,10 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
     lines = [f"Records for {subject!r}. Use ONLY numbers printed below. "
              f"A schedule ROW is a TYPE, not a quantity: never count rows."]
     for r in records:
+        # Located symbols are shown as their scoped counts, below - one line
+        # per row would be 84 lines of OCR'd labels to count by hand.
+        if plan_search.is_glyph_evidence(r):
+            continue
         # The same citation the crew is shown, for the same reason: a model
         # given '?' or 'pNone' will write one into the answer. A record that
         # cannot say where it is is not offered as evidence at all.
@@ -48967,6 +49042,9 @@ def _render_records_for_model(records: List[dict], subject: str) -> str:
             # member. Saying 'two W1 windows' here would be the 41 again.
             line += " (a count of the symbol, not of any one marked type)"
         lines.append(line)
+    located = plan_search.render_glyph_evidence(records)
+    if located:
+        lines.append(located)
     return "\n".join(lines)
 
 

@@ -41,8 +41,8 @@ search finds. `render_records` reads `quote`; it has never read `label`.
 from __future__ import annotations
 
 import re
-from typing import (Any, Collection, Dict, Iterable, List, Optional,
-                    Sequence, Tuple)
+from typing import (Any, Collection, Dict, Iterable, List, NamedTuple,
+                    Optional, Sequence, Tuple)
 
 from lib.plan_records import TIER_ORDER, tier_rank
 from lib.plan_text import SHEET_ID_RE
@@ -998,6 +998,13 @@ def _supported_values(records: Sequence[Dict[str, Any]]) -> set:
     for r in records or []:
         if (r.get("payload") or {}).get("count_contested"):
             continue
+        # A LOCATED SYMBOL VOUCHES ONLY THROUGH ITS COMPLETE, SCOPED COUNT
+        # (glyph_values), and the union has no scope. A glyph row's payload
+        # is coordinates, a door width and an RMS: let in here, it would
+        # vouch for nearly any number. Measured: one EF-1 row carries 56,
+        # 908 and fourteen coordinates.
+        if is_glyph_evidence(r):
+            continue
         ok.update(_values(r.get("quote") or ""))
         # ── WHAT A CITATION MAY CONTAIN ────────────────────────────────────
         #
@@ -1112,6 +1119,8 @@ def _values_by_ident(records: Sequence[Dict[str, Any]]) -> Dict[str, set]:
     for r in records or []:
         if (r.get("payload") or {}).get("count_contested"):
             continue
+        if is_glyph_evidence(r):        # counted by glyph_values, nowhere else
+            continue
         key = _attribute_key(r)
         if key is None:
             continue
@@ -1205,6 +1214,515 @@ def glyph_tallies(records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Located symbols: a count binds only when every row is in hand
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ── A PARTIAL COUNT WAS BOUND AS A TOTAL ──────────────────────────────────
+#
+# Measured on 588 Boyland 2026-10-06, with the 84 rows of the placement pass
+# (#660) in production: search_plans returns 8 records, the glyph rows rank
+# below printed ones, and glyph_tallies counted the 2 of 16 EF-1 rows that
+# came back. "There are 2 EF-1." was allowed. A tally can only ever count
+# what it is handed, so it cannot be the thing that knows a total.
+#
+# So completeness is checked on the way in, by TWO INDEPENDENT READS of the
+# same scope: search_plans fetches every row of the family, and separately
+# asks the database how many there are (count_documents, at question time,
+# never carried from the pass). The gate binds a count only when the rows in
+# hand that satisfy the census's own filter number exactly the census. The
+# rows in hand are a subset of what the filter matches, so equal counts mean
+# equal sets - and any truncation anywhere downstream, by any caller, becomes
+# a mismatch and a refusal, never a smaller number.
+#
+# ── A FAMILY IS A SCHEDULE, AND TWO SCHEDULES ARE NEVER ADDED ─────────────
+#
+# 'fan' names the EXHAUST FAN SCHEDULE (EF-1, EF-2) and the FAN SCHEDULE
+# (SAF-1). A clause that names a family only by words both share says which
+# family it counts no better than the question did, so it binds nothing from
+# either; a clause that names one (exhaust fans) or a tag (EF-1) binds that
+# family's own count. No figure is ever summed across families.
+#
+# ── SCOPE IS THE FLOOR PAIR, NAMED BY ITS PRINTED TITLE ───────────────────
+#
+# A floor is the architectural/mechanical pair the pass placed against
+# (A-103.00 / M-103.00), and "fourth floor" maps to it through the printed
+# sheet title, not the index's vision-written `floors` field ('1', 'second',
+# 'Third Floor', ...). A sheet the pass refused names its floor the same way
+# when it is in the NCS plan series; one that is not (another architect's
+# A.1.x, an unnumbered page) cannot be placed on a floor and blocks only the
+# building total. A building total binds only when NOTHING was refused.
+
+from lib.plan_derive import PLAN_SHEET as _PLAN_SHEET  # noqa: E402
+from lib.plan_extract import TIER_REGISTERED_GLYPH as _GLYPH_TIER  # noqa: E402
+from lib import plan_tally as _tally  # noqa: E402
+
+#: record_type of the census search_plans attaches beside the glyph rows.
+#: Never written to the database: it exists only in a search's result.
+GLYPH_CENSUS = "glyph_census"
+
+#: Words a schedule name shares with every count question. "each UNIT has 2
+#: exhaust fans" must not name the ROOMS PTAC UNITS SCHEDULE, nor the WALL
+#: ELECTRIC UNIT HEATER SCHEDULE.
+_GENERIC_FAMILY_WORDS = frozenset({
+    "schedule", "unit", "room", "type", "equipment", "list", "table", "the",
+    "and", "of", "with",
+})
+
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12,
+}
+_ORDINAL_FLOOR = re.compile(
+    r"\b(" + "|".join(_ORDINALS) + r"|\d{1,2}(?:st|nd|rd|th))\s+"
+    r"(?:floor|fl\b\.?|level|storey|story)", re.I)
+_NAMED_LEVEL = re.compile(r"\b(roof|mezzanine|bulkhead|cellar|basement|penthouse)\b"
+                          r"(?:\s+(?:floor|level))?", re.I)
+_FLOOR_WORD = re.compile(r"\b(floor|floors|level|levels|storey|storeys|story|stories)\b",
+                         re.I)
+_SHEET_REF = re.compile(r"(?<![A-Za-z0-9])([A-Z])-(\d{3})(?:\.(\d{2}))?(?![A-Za-z0-9])",
+                        re.I)
+_UNIT_REF = re.compile(r"(?<![A-Za-z0-9.\-/])(\d{1,2}[A-Z]{1,2})(?![A-Za-z0-9])", re.I)
+_PER_UNIT = re.compile(r"\b(each|every|per|apiece)\b", re.I)
+
+
+def _stem(word: str) -> str:
+    w = word.lower()
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def family_words(name: str) -> frozenset:
+    """The words that make a schedule's name say WHICH equipment it lists."""
+    return frozenset(_stem(w) for w in re.findall(r"[A-Za-z]{2,}", name or "")
+                     if _stem(w) not in _GENERIC_FAMILY_WORDS)
+
+
+def _named_tags(text: str, tags: Iterable[str]) -> List[str]:
+    return [t for t in tags
+            if re.search(_ALNUM_BEFORE + re.escape(t) + _ALNUM_AFTER, text or "", re.I)]
+
+
+def glyph_families_for(subject: str, families: Dict[str, Sequence[str]]
+                       ) -> Dict[str, List[str]]:
+    """schedule name -> its tags, for every family the subject may be asking
+    about: one of its tags is named, or one of its distinguishing words is.
+
+    Deliberately WIDE. Fetching a family the question did not mean costs a
+    census; missing one the question did mean would let a clause name a family
+    the gate cannot see, which is how 'fans' could be bound to one schedule
+    while the other was out of view."""
+    words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", subject or "")}
+    out: Dict[str, List[str]] = {}
+    for name, tags in (families or {}).items():
+        tags = sorted({str(t).strip().upper() for t in (tags or []) if t})
+        if not tags:
+            continue
+        if _named_tags(subject, tags) or (family_words(name) & words):
+            out[name] = tags
+    return out
+
+
+def glyph_family_filter(project_id: str, page_ids: Sequence[str],
+                        family: str, tags: Sequence[str]) -> Dict[str, Any]:
+    """Every glyph row of one family on the project's current pages: rows
+    carrying one of its tags, and rows the pass ran for it that could not
+    name themselves. `glyph_in_census` is the same predicate in Python."""
+    return {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
+            "record_type": "glyph", "tier": _GLYPH_TIER,
+            "$or": [{"label": {"$in": list(tags)}}, {"payload.family": family}]}
+
+
+def glyph_refusal_filter(project_id: str, page_ids: Sequence[str]) -> Dict[str, Any]:
+    """Every sheet the pass refused, on the project's current pages."""
+    return {"project_id": str(project_id), "page_id": {"$in": list(page_ids)},
+            "record_type": "glyph", "tier": _GLYPH_TIER,
+            "glyph_status": _tally.UNSUPPORTED_UNIT,
+            "unit": {"$regex": "^sheet:"}}
+
+
+def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int,
+                 family: Optional[str] = None,
+                 tags: Sequence[str] = ()) -> Dict[str, Any]:
+    """What the database said, at question time, about one filter."""
+    return {"record_type": GLYPH_CENSUS, "kind": kind,
+            "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
+            "family": family, "tags": sorted(tags), "count": int(count)}
+
+
+def glyph_in_census(row: Dict[str, Any], census: Dict[str, Any]) -> bool:
+    """`row` satisfies the filter `census` counted. The Python twin of
+    glyph_family_filter / glyph_refusal_filter, clause for clause."""
+    if (str(row.get("project_id")) != census.get("project_id")
+            or str(row.get("page_id")) not in set(census.get("page_ids") or ())
+            or row.get("record_type") != "glyph"
+            or row.get("tier") != _GLYPH_TIER):
+        return False
+    if census.get("kind") == "refusals":
+        unit = row.get("unit")
+        return (row.get("glyph_status") == _tally.UNSUPPORTED_UNIT
+                and isinstance(unit, str) and unit.startswith("sheet:"))
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    return (row.get("label") in (census.get("tags") or ())
+            or payload.get("family") == census.get("family"))
+
+
+def is_glyph_evidence(r: Dict[str, Any]) -> bool:
+    """A located-symbol row or its census: evidence ONLY through a scoped,
+    complete count. Neither vouches for any number it happens to contain -
+    a row's payload holds coordinates, a door width and an RMS, and a census
+    holds the count that is the thing being checked."""
+    return r.get("tier") == _GLYPH_TIER or r.get("record_type") == GLYPH_CENSUS
+
+
+def _is_refusal(r: Dict[str, Any]) -> bool:
+    unit = r.get("unit")
+    return (r.get("glyph_status") == _tally.UNSUPPORTED_UNIT
+            and isinstance(unit, str) and unit.startswith("sheet:"))
+
+
+def _floor_key(sheet: Any) -> Optional[str]:
+    m = _PLAN_SHEET.match(str(sheet or "").strip().upper())
+    return m.group(2) if m else None
+
+
+def _row_floor(r: Dict[str, Any]) -> Optional[str]:
+    payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    arch = payload.get("arch") if isinstance(payload.get("arch"), dict) else {}
+    return _floor_key(arch.get("sheet_number")) or _floor_key(r.get("sheet_number"))
+
+
+def _title_level(title: Any) -> Optional[Any]:
+    """The level a printed sheet title names: an ordinal, or a level word."""
+    t = str(title or "")
+    m = _ORDINAL_FLOOR.search(t)
+    if m:
+        w = m.group(1).lower()
+        return _ORDINALS.get(w) or int(re.match(r"\d+", w).group(0))
+    m = _NAMED_LEVEL.search(t)
+    return m.group(1).lower() if m else None
+
+
+class GlyphFamily(NamedTuple):
+    name: str
+    tags: List[str]
+    rows: List[Dict[str, Any]]          # its glyph rows in hand, refusals excluded
+    why: Optional[str]                  # None when complete
+
+
+class GlyphBook(NamedTuple):
+    families: Dict[str, GlyphFamily]
+    refused: List[Dict[str, Any]]       # refusal rows in hand
+    refusals_complete: bool
+    levels: Dict[str, set]              # floor key -> names a clause may use
+    titles: Dict[str, str]              # floor key -> how it is printed
+    sheets: Dict[str, List[str]]        # floor key -> its sheet numbers
+    units: Dict[str, List[str]]         # floor key -> apartment tags
+
+
+def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
+    """Every family the census covers, and whether its rows are all in hand."""
+    rows, seen = [], set()
+    for r in records or []:
+        if r.get("tier") != _GLYPH_TIER or r.get("record_type") != "glyph":
+            continue
+        k = (str(r.get("page_id")), r.get("ordinal"))
+        if k in seen:
+            continue
+        seen.add(k)
+        rows.append(r)
+    censuses = [r for r in records or [] if r.get("record_type") == GLYPH_CENSUS]
+    ref_c = [c for c in censuses if c.get("kind") == "refusals"]
+    refused = [r for r in rows if _is_refusal(r)]
+    refusals_complete = (len(ref_c) == 1 and sum(
+        1 for r in rows if glyph_in_census(r, ref_c[0])) == ref_c[0].get("count"))
+
+    fam_c: Dict[str, List[Dict[str, Any]]] = {}
+    for c in censuses:
+        if c.get("kind") == "family" and c.get("family"):
+            fam_c.setdefault(c["family"], []).append(c)
+    families: Dict[str, GlyphFamily] = {}
+    for name, cs in fam_c.items():
+        c = cs[0]
+        mine = [r for r in rows if glyph_in_census(r, c)]
+        located = [r for r in mine if not _is_refusal(r)]
+        tags = list(c.get("tags") or [])
+        why = None
+        if len(cs) != 1:
+            why = "two censuses for one schedule"
+        elif len(mine) != c.get("count"):
+            why = f"{len(mine)} of {c.get('count')} rows in hand"
+        elif not refusals_complete:
+            why = "the sheets the pass refused are not all in hand"
+        elif any(r.get("glyph_status") == _tally.RESOLVED
+                 and (r.get("label") not in tags
+                      or (r.get("payload") or {}).get("family") != name)
+                 for r in located):
+            # A row whose tag is not in today's schedule, or that was run
+            # from another one: the pass and the schedule disagree.
+            why = "a row's tag and its schedule disagree"
+        elif not any(r.get("glyph_status") == _tally.RESOLVED for r in located):
+            why = "no located symbols"
+        families[name] = GlyphFamily(name, tags, located, why)
+
+    levels: Dict[str, set] = {}
+    titles: Dict[str, str] = {}
+    sheets: Dict[str, List[str]] = {}
+    units: Dict[str, List[str]] = {}
+    for r in rows:
+        k = _row_floor(r)
+        if k is None:
+            continue
+        names = levels.setdefault(k, set())
+        lvl = _title_level(r.get("sheet_title"))
+        if lvl is not None:
+            names.add(lvl)
+            titles.setdefault(k, str(r.get("sheet_title") or ""))
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        arch = payload.get("arch") if isinstance(payload.get("arch"), dict) else {}
+        for s in (r.get("sheet_number"), arch.get("sheet_number")):
+            if s and s not in sheets.setdefault(k, []):
+                sheets[k].append(s)
+        for u in ((payload.get("units") or {}).get("tags") or []):
+            if u not in units.setdefault(k, []):
+                units[k].append(u)
+    return GlyphBook(families, refused, refusals_complete, levels, titles,
+                     sheets, units)
+
+
+def _refused_floors(book: GlyphBook) -> set:
+    return {k for k in (_row_floor(r) for r in book.refused) if k}
+
+
+def _building_refused(book: GlyphBook) -> bool:
+    return bool(book.refused) or not book.refusals_complete
+
+
+def _resolved(fam: GlyphFamily, tags: Sequence[str]) -> List[Dict[str, Any]]:
+    return [r for r in fam.rows
+            if r.get("glyph_status") == _tally.RESOLVED and r.get("label") in tags]
+
+
+def _floor_count(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
+                 k: str) -> Optional[int]:
+    if fam.why or k in _refused_floors(book):
+        return None
+    n = sum(1 for r in _resolved(fam, tags) if _row_floor(r) == k)
+    return n or None                    # zero rows never binds
+
+
+def _building_count(book: GlyphBook, fam: GlyphFamily,
+                    tags: Sequence[str]) -> Optional[int]:
+    if fam.why or _building_refused(book):
+        return None
+    return len(_resolved(fam, tags)) or None
+
+
+def _unit_counts(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
+                 k: str) -> Optional[Dict[str, int]]:
+    """Per apartment on floor k, or None when the split may not be made: the
+    floor is not complete, a glyph of the family there cannot name itself or
+    its unit, or a symbol could not be placed (plan_tally.per_unit, here at
+    floor scope)."""
+    if _floor_count(book, fam, tags, k) is None or not book.units.get(k):
+        return None
+    on = [r for r in fam.rows if _row_floor(r) == k]
+    if any(r.get("glyph_status") != _tally.RESOLVED for r in on):
+        return None
+    mine = [r for r in on if r.get("label") in tags]
+    if any(not r.get("unit") or str(r.get("unit")).startswith("sheet:") for r in mine):
+        return None
+    return {u: sum(1 for r in mine if r.get("unit") == u) for u in book.units[k]}
+
+
+def _uniform(counts: Optional[Dict[str, int]]) -> Optional[int]:
+    if not counts:
+        return None
+    vals = set(counts.values())
+    return vals.pop() if len(vals) == 1 and min(counts.values()) > 0 else None
+
+
+def _clause_floors(clause: str, book: GlyphBook) -> Tuple[set, bool]:
+    """(floor keys the clause names, whether it names a level nothing maps
+    to). A level that maps to no floor is not 'no floor': it must not fall
+    back to the building."""
+    keys: set = set()
+    unknown = False
+    rest = clause
+    for m in _ORDINAL_FLOOR.finditer(clause):
+        w = m.group(1).lower()
+        n = _ORDINALS.get(w) or int(re.match(r"\d+", w).group(0))
+        hit = {k for k, names in book.levels.items() if n in names}
+        keys |= hit
+        unknown |= not hit
+    rest = _ORDINAL_FLOOR.sub(" ", rest)
+    for m in _NAMED_LEVEL.finditer(rest):
+        hit = {k for k, names in book.levels.items() if m.group(1).lower() in names}
+        keys |= hit
+        unknown |= not hit
+    rest = _NAMED_LEVEL.sub(" ", rest)
+    for m in _SHEET_REF.finditer(rest):
+        k = _floor_key(f"{m.group(1)}-{m.group(2)}.{m.group(3) or '00'}")
+        if k is None:
+            continue                    # a schedule or detail sheet: a citation
+        if k in book.levels or k in book.sheets:
+            keys.add(k)
+        else:
+            unknown = True
+    rest = _SHEET_REF.sub(" ", rest)
+    if _FLOOR_WORD.search(rest):
+        unknown = True                  # 'each floor', 'the upper floors'
+    return keys, unknown
+
+
+def _clause_units(clause: str, book: GlyphBook) -> Tuple[Dict[str, str], bool]:
+    """(unit -> its floor key, whether a unit-shaped token names no unit)."""
+    text = _ORDINAL_FLOOR.sub(" ", clause)
+    text = _SHEET_REF.sub(" ", text)
+    found: Dict[str, str] = {}
+    unknown = False
+    for m in _UNIT_REF.finditer(text):
+        tok = m.group(1).upper()
+        if re.fullmatch(r"\d{1,2}(ST|ND|RD|TH)", tok):
+            continue
+        where = [k for k, us in book.units.items() if tok in us]
+        if len(where) == 1:
+            found[tok] = where[0]
+        else:
+            unknown = True
+    return found, unknown
+
+
+def _clause_subjects(clause: str, book: GlyphBook
+                     ) -> Optional[List[Tuple[GlyphFamily, List[str]]]]:
+    """[(family, the tags counted)], or None when the clause names a family
+    only by words another family shares - 'fans' - which is never a count."""
+    # EACH TAG ITS OWN SUBJECT: "4A has 1 EF-1 and 1 EF-2" states two counts
+    # of one, not one count of two.
+    tagged = [(fam, [t]) for fam in book.families.values()
+              for t in _named_tags(clause, fam.tags)]
+    if tagged:
+        return tagged
+    words = {_stem(w) for w in re.findall(r"[A-Za-z]{2,}", clause)}
+    hits = {name: family_words(name) & words for name in book.families}
+    hits = {n: h for n, h in hits.items() if h}
+    if not hits:
+        return []
+    top = [n for n, h in hits.items() if not any(h < g for g in hits.values())]
+    if len(top) != 1:
+        return None
+    fam = book.families[top[0]]
+    return [(fam, list(fam.tags))]
+
+
+def glyph_values(clause: str, book: GlyphBook) -> set:
+    """The located-symbol counts this one clause may state.
+
+    Scope, most specific first: named units; 'each/every/per' (a uniform
+    per-apartment figure) on the floors named, or across the building when
+    none is; named floors; else the building. A clause naming a level or a
+    unit that maps to nothing gets nothing - it must not borrow a wider
+    scope's figure."""
+    out: set = set()
+    subjects = _clause_subjects(clause, book)
+    if not subjects:
+        return out
+    keys, floor_unknown = _clause_floors(clause, book)
+    named_units, unit_unknown = _clause_units(clause, book)
+    if floor_unknown or unit_unknown:
+        return out
+    for fam, tags in subjects:
+        if named_units:
+            if keys and any(k not in keys for k in named_units.values()):
+                continue                # '4A on the third floor'
+            for u, k in named_units.items():
+                counts = _unit_counts(book, fam, tags, k)
+                if counts and counts.get(u):
+                    out.add(str(counts[u]))
+        elif _PER_UNIT.search(clause):
+            if keys:
+                for k in keys:
+                    v = _uniform(_unit_counts(book, fam, tags, k))
+                    if v is not None:
+                        out.add(str(v))
+            elif not _building_refused(book) and not fam.why:
+                per = [_uniform(_unit_counts(book, fam, tags, k))
+                       for k in book.units if book.units.get(k)]
+                if per and None not in per and len(set(per)) == 1:
+                    out.add(str(per[0]))
+        elif keys:
+            for k in keys:
+                n = _floor_count(book, fam, tags, k)
+                if n is not None:
+                    out.add(str(n))
+        else:
+            n = _building_count(book, fam, tags)
+            if n is not None:
+                out.add(str(n))
+    return out
+
+
+def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
+    """What the agent is shown of the located symbols: per family, per floor,
+    only the figures glyph_values would bind, and why the rest are not."""
+    book = glyph_book(records)
+    if not book.families:
+        return ""
+    refused_k = _refused_floors(book)
+    lines = ["Located symbols (each found on the mechanical plan and named by "
+             "its schedule's tag). State a figure only at the scope shown, and "
+             "never add two schedules together:"]
+    for name in sorted(book.families):
+        fam = book.families[name]
+        head = f"{name} ({', '.join(fam.tags)})"
+        if fam.why:
+            lines.append(f"{head}: NOT COUNTED - {fam.why}. State no count of these.")
+            continue
+        lines.append(f"{head}:")
+        floors = sorted({_row_floor(r) for r in fam.rows if _row_floor(r)} | refused_k)
+        for k in floors:
+            where = " / ".join(sorted(book.sheets.get(k) or [])) or k
+            title = book.titles.get(k) or ""
+            label = f"{title} [{where}]" if title else f"[{where}]"
+            if k in refused_k:
+                why = "; ".join(sorted({str((r.get("payload") or {}).get("refusal") or "")
+                                        for r in book.refused if _row_floor(r) == k}))
+                lines.append(f"- {label}: not counted ({why})")
+                continue
+            total = _floor_count(book, fam, fam.tags, k)
+            if not total:
+                continue
+            per_tag = [(t, _floor_count(book, fam, [t], k)) for t in fam.tags]
+            per_tag = [(t, n) for t, n in per_tag if n]
+            line = f"- {label}: " + ", ".join(f"{t} {n}" for t, n in per_tag)
+            if len(per_tag) > 1:
+                line += f"; {total} in all"
+            counts = _unit_counts(book, fam, fam.tags, k)
+            if counts and _uniform(counts) is not None:
+                line += f"; each unit ({', '.join(counts)}) has {_uniform(counts)}"
+            elif counts:
+                # A zero is never bound (glyph_values), so it is not printed as
+                # a figure either.
+                line += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
+                none = [u for u, n in counts.items() if not n]
+                if none:
+                    line += f"; none placed in {', '.join(none)}"
+            else:
+                line += "; per-unit split not available"
+            lines.append(line)
+        n = _building_count(book, fam, fam.tags)
+        if n:
+            lines.append(f"- Whole building: {n}")
+        else:
+            lines.append(f"- Whole building: NOT AVAILABLE - {len(book.refused)} "
+                         f"sheet(s) were not counted")
+    return "\n".join(lines)
+
+
 def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
                            ) -> Tuple[bool, List[str]]:
     """Every quantity must come from a record about the thing it counts.
@@ -1232,7 +1750,7 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
     citations: set = set()
     for r in records or []:
         citations |= _citation_values(r)
-    tallies = glyph_tallies(records)
+    book = glyph_book(records)
     unsupported: List[str] = []
     for clause in _clauses(text):
         said = _values(clause)
@@ -1260,8 +1778,14 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         # it is. So `resolved` is bound and nothing above it is, which is the
         # difference between "7 located, 1 more unread" and a silent 7 or a
         # confident 8.
-        for ident in _idents_named_in(clause, tallies.keys()):
-            allowed.add(str(tallies[ident].resolved))
+        #
+        # AND ONLY WHEN EVERY ROW IS IN HAND, AT THE SCOPE THE CLAUSE NAMES.
+        # This counted whatever rows the search returned, and the search
+        # returns eight: "There are 2 EF-1." was allowed with 16 in the
+        # database (2026-10-06). glyph_values binds a figure only when the
+        # rows in hand equal an independent census, and only at a scope -
+        # unit, floor, building - nothing refused falls inside.
+        allowed |= glyph_values(clause, book)
         unsupported.extend(v for v in said if v not in allowed)
     return (not unsupported), unsupported
 
@@ -1304,6 +1828,12 @@ def contains_label(text: str, records: Sequence[Dict[str, Any]]) -> List[str]:
     printed = " | ".join((r.get("quote") or "").lower() for r in records or [])
     out = set()
     for r in records or []:
+        # A located symbol's label is not a vision word: it is the tag from
+        # the schedule's own closed set (plan_symbols), matched to the label
+        # printed beside the symbol - whose OCR ('EF -1(50)') rarely spells it
+        # exactly. Reading it as a leak would refuse every count of them.
+        if r.get("tier") == _GLYPH_TIER:
+            continue
         lab = (r.get("label") or "").strip().lower()
         if len(lab) >= 4 and lab in low and lab not in printed:
             out.add(r["label"].strip())
@@ -1445,4 +1975,8 @@ __all__ = ["search_terms", "normalise_quotes",
            "dimension_is_impossible", "drop_impossible_dimensions",
            "dangling_callouts", "referenced_sheets_missing",
            "matched_only_through_label",
+           "GLYPH_CENSUS", "glyph_families_for", "glyph_family_filter",
+           "glyph_refusal_filter", "glyph_census", "glyph_in_census",
+           "is_glyph_evidence", "glyph_book", "glyph_values",
+           "render_glyph_evidence",
            "INTENTS", "GEOMETRY_INTENT", "RENDERABLE"]
