@@ -4,12 +4,12 @@
     "id": "6a5f63bc147407d3261df2c7",
     "name": "588 Thomas S Boyland Street, Brooklyn",
     "baseline": {
-      "_note": "The corpus of the re-index of 2026-09-19 19:47-20:48Z on deployed build 8a9fb9df - the first pass carrying the heading-row fix (#624), which stopped `schedule_from_table` folding a table of prose into its own column headings. ZERO pages lost a section and ZERO section calls failed, for the second clean pass running. The 429 backoff was again NOT exercised: the provider refused nothing, so a clean pass is still no evidence that the backoff works. WHAT THIS BASELINE CLAIMS: that nothing wrote into the project between the start and the end of the run, and that the page set is unchanged. It does NOT claim two passes are comparable - `temperature: 0` is not reproducible on this provider, so `records` is INFORMATIONAL and a delta against a previous pass is within run-to-run noise, not evidence of contamination.",
-      "pages": 129,
-      "current_pages": 111,
-      "records": 15463,
-      "newest_page_indexed_at": "2026-09-19 20:43:27.405000",
-      "newest_record_created_at": "2026-09-19 20:43:34.593000"
+      "_note": "The corpus as it stood on 2026-10-07, ACCEPTED AS-IS by operator ruling rather than re-indexed. Its makeup, measured read-only: (1) ONE whole-project page pass, 2026-09-20 22:00-23:59Z - all 155 current pages carry an indexed_at in that window, and no file was uploaded after 2026-09-02; (2) FIVE WHOLE-PAGE RECORD REWRITES after that pass - FA-001 and SP-003.00/SP-004.00 at 2026-09-21 23:19Z, P-400.00 and SP-002.00 at 2026-09-22 20:12Z, 257 records in all, each page's records written in one minute with nothing from the 09-20 pass left beside them, so every page's records are still one write; (3) 84 GLYPH ROWS from the placement pass of 2026-10-07 12:50Z (#660, rebuilt after #664), read back identical by content to the reviewed local run; (4) THE SECOND ARCHITECT'S SET BECAME CURRENT in the 09-20 pass - '588 THOMAS BOYLAND ST SET_UPDATED .pdf', 44 pages in A.x numbering, which is the whole of the 111 -> 155 change in current pages. 3,347 records sit on non-current pages and are read by nothing. Scored on this corpus, the suite gives 25/30 IDENTICALLY on the code before #664 (357de57c), on #664 (feaa0da6) and on #666 (63395a9d), so the two verdicts that moved since the last recorded run (2026-09-20, 211f7489, on the 2026-09-19 corpus) moved with the corpus and not with the gate: door-size pass -> fail (known failure a_second_set_takes_the_slot) and packaged-terminal-air-conditioners fail -> pass. WHAT THIS BASELINE CLAIMS: that nothing writes into the project between the start and end of a scored run, and that the page set is this one. Any later write - a re-index, or the placement pass run again - moves newest_record_created_at, and the runner refuses until a new baseline is recorded.",
+      "pages": 173,
+      "current_pages": 155,
+      "records": 20495,
+      "newest_page_indexed_at": "2026-09-20 23:15:24.380000",
+      "newest_record_created_at": "2026-10-07 13:03:23.679000"
     },
     "stale": {
       "_note": "Measured on the 2026-09-19 clean corpus with plan_eval.stale_index. All three classes ZERO and the total stale record count is ZERO, so no case is excluded from scoring. Read off the module rather than assumed: an earlier census in this session reported zero because the function name was wrong, which is the same lie as a probe reading the wrong field.",
@@ -731,6 +731,16 @@
       "why_it_is_not_tuned_away": "Coverage counts WORDS, which is the rule that fixed the boilerplate cases and is not being special-cased for this one. Nothing in the ranker knows that a record carries a measurement, and teaching it the word 'height' is the attribute table again in a longer coat.",
       "evidence": "Measured 2026-09-17 on the post-deletion run. The matcher answered this question by looking for a value NEAR the term (answer_attribute, with a hand-written attribute vocabulary that also forgave the live typo 'hight'). Both halves went; this is the half worth rebuilding.",
       "lead_for_a_principled_fix": "The records already carry the shape of the answer: a quote with a number and a unit in it is a measurement, and an attribute-intent query wants one. Ranking is (coverage, tier, density, type prior); an intent-scoped preference for a record that STATES a value, applied at the same point as best_per_attribute, would order these correctly without a vocabulary of attribute words. It needs its own cases before it ships — a measurement is not always the answer."
+    },
+    {
+      "class": "a_second_set_takes_the_slot",
+      "cases": [
+        "door-size"
+      ],
+      "status": "open",
+      "what": "Asked for the door schedule, the reader still leads with A-400.00's EXTERIOR and INTERIOR DOOR SCHEDULE headings, but a LIGHTING SCHEDULE on A.3.0 - from the second architect's set, current since the 2026-09-20 pass - matches the word 'schedule' and takes one of the 8 slots, and the record that prints 3'-0\" X 7'-0\" no longer comes back.",
+      "why_it_is_not_tuned_away": "Corpus-driven: the same 25/30 on the code before #664, on #664 and on #666. The case passed on 2026-09-20 (211f7489) against the 2026-09-19 corpus, where the second set was not current. Ranking a sheet down because of the set it belongs to would be teaching the ranker this project.",
+      "evidence": "Preview runs 2026-10-07 against this baseline: lead A.3.0 LIGHTING SCHEDULE (schedule_cell, table_finder), T-001.01 'DOOR AND WINDOW SCHEDULE 24 A-500', A-400.00 'EXTERIOR DOOR SCHEDULE', A-400.00 'INTERIOR DOOR SCHEDULE'; no returned record prints 3'-0\" X 7'-0\". On 2026-09-20 the fourth lead was RCP-002.00's LIGHTING SCHEDULE and the case passed."
     }
   ]
 }
