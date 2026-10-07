@@ -54578,9 +54578,12 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
             wa_dm.phone_digits(v) for v in _contact_phone_variants(phone)]:
         status = "phone_changed"
     # START's own rule: any OTHER live account on this number and it opts
-    # nobody in. Only asked when it can change the answer.
+    # nobody in. Asked even when already connected: profile edits enforce
+    # phone uniqueness only within a company, so another company's account
+    # can take the number later, and from then on a STOP/START or a reply
+    # from this phone cannot be attributed to this user.
     phone_shared = False
-    if eligible and has_phone and status != "active":
+    if eligible and has_phone:
         phone_shared = any(str(u.get("_id")) != uid
                            for u in await _find_users_by_phone(digits))
     bot = _wa_bot_digits()

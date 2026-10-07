@@ -82,6 +82,10 @@ ok(!W.WA_POLLING_STATES.has('connected') && !W.WA_POLLING_STATES.has('phone_miss
    'does not poll when nothing can change it');
 ok(W.WA_POLL_MS >= 2000 && W.WA_POLL_MS <= 10000, 'interval is a few seconds');
 
+const card = fs.readFileSync(path.join(__dirname, '..', 'components', 'WhatsAppConnectCard.jsx'), 'utf8');
+ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(card),
+   'a failed first read is retried by the poll, not left blank');
+
 console.log('\nphone formatting');
 ok(W.formatWaPhone('+15551234567') === '+1 (555) 123-4567', '11-digit US');
 ok(W.formatWaPhone('5551234567') === '+1 (555) 123-4567', '10-digit US');

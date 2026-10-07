@@ -82,14 +82,18 @@ export default function WhatsAppConnectCard() {
   }, [refresh]);
 
   const state = me && me.state;
+  // Poll while a START may be on its way — and while there is no reading at
+  // all, so a first request that failed is retried rather than leaving the
+  // card hidden until the screen is left and re-entered.
+  const shouldPoll = !me || WA_POLLING_STATES.has(state);
   useEffect(() => {
-    if (!focused || !WA_POLLING_STATES.has(state)) return undefined;
+    if (!focused || !shouldPoll) return undefined;
     const id = setInterval(() => {
       if (Date.now() - pollStartedAt.current > WA_POLL_MAX_MS) return;
       refresh();
     }, WA_POLL_MS);
     return () => clearInterval(id);
-  }, [focused, state, refresh]);
+  }, [focused, shouldPoll, refresh]);
 
   const view = whatsappConnectView(me);
   if (!view.visible) return null;

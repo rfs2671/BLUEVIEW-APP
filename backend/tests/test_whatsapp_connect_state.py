@@ -80,6 +80,16 @@ class TheStates(unittest.TestCase):
         self.assertEqual(out["state"], "phone_shared")
         self.assertIsNone(out["connect_url"])
 
+    def test_a_number_shared_after_connecting_is_still_reported(self):
+        """Another company's account can take the number after the opt-in
+        (uniqueness is per company). START and STOP from it would then be
+        ambiguous, so the card says so instead of "Connected"."""
+        other = {"_id": "u_other", "company_id": "co_b", "role": "pm",
+                 "phone": "+" + PHONE}
+        out = _me(_admin(), users=[_admin(), other], optins=[_optin()])
+        self.assertEqual(out["state"], "phone_shared")
+        self.assertFalse(out["connected"])
+
     def test_a_deleted_account_on_the_number_does_not_count(self):
         gone = {"_id": "u_gone", "company_id": "co_b", "phone": PHONE,
                 "is_deleted": True}
