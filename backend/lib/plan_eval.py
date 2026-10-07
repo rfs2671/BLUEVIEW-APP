@@ -231,6 +231,11 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                     raise SuiteError(
                         f"{cid}: claim value {claim['value']!r} is not among "
                         f"the case's expected values")
+                _check_scope(cid, claim)
+        for claim in exp.get("refused") or []:
+            if not isinstance(claim, dict) or not claim.get("subject") or "value" not in claim:
+                raise SuiteError(f"{cid}: a refused claim names its subject and value")
+            _check_scope(cid, claim)
         if (c.get("intent") == "count" and exp.get("values") and not claims):
             # A count case whose numbers name no mark cannot exercise the rule
             # that binds a number to the thing it counts, and it is that rule
@@ -239,7 +244,8 @@ def validate_suite(suite: Dict[str, Any]) -> None:
                              f"which mark each one belongs to")
         if c["kind"] == "absent" and truth.get("how") != "absent":
             raise SuiteError(f"{cid}: an absent case's truth is 'absent'")
-        if exp.get("no_stated_count") and truth.get("how") != "absent":
+        if ((exp.get("no_stated_count") or exp.get("no_unscoped_count"))
+                and truth.get("how") != "absent"):
             raise SuiteError(f"{cid}: 'no count is stated' is an absence, and "
                              f"its truth is established the way absences are")
     for k in suite.get("known_failures") or []:
@@ -248,6 +254,24 @@ def validate_suite(suite: Dict[str, Any]) -> None:
         missing = [cid for cid in k.get("cases") or [] if cid not in seen]
         if missing:
             raise SuiteError(f"known failure {k['class']} names no such case: {missing}")
+
+
+#: What a claim's scope may say. A located-symbol count binds only at the
+#: scope its clause names (plan_search.glyph_values), so a case that claims
+#: one says which: the floor, by its architectural sheet number, and
+#: optionally `per: unit` for a figure every apartment on it shares.
+SCOPE_KEYS = ("floor", "per")
+
+
+def _check_scope(cid: str, claim: Dict[str, Any]) -> None:
+    scope = claim.get("scope")
+    if scope is None:
+        return
+    if (not isinstance(scope, dict) or set(scope) - set(SCOPE_KEYS)
+            or not str(scope.get("floor") or "").strip()
+            or scope.get("per") not in (None, "unit")):
+        raise SuiteError(f"{cid}: a claim's scope is {{floor, per: unit}}; "
+                         f"got {scope!r}")
 
 
 def known_failure_classes(suite: Dict[str, Any]) -> Dict[str, str]:
@@ -285,18 +309,28 @@ def _claims(case: Dict[str, Any]) -> List[Dict[str, Any]]:
             if isinstance(c, dict) and c.get("subject")]
 
 
-def _sentence(anchor: str, value: Any) -> str:
+def _sentence(anchor: str, value: Any, scope: Optional[Dict[str, Any]] = None) -> str:
     """One claim, written the way an answer writes it.
 
     `anchor: value` and not `there are <value>`, because a bound gate checks a
     number against the thing its clause NAMES, and a sentence that names
     nothing is refused for naming nothing — which would make every check below
     pass or fail for the wrong reason."""
+    # A SCOPED CLAIM IS WRITTEN AT ITS SCOPE. A located-symbol count binds
+    # only at the scope its clause names, so "exhaust fans: 2." is refused
+    # whatever the number - the check would be about the sentence's shape,
+    # which is the vacuous-probe mistake _invented_number's note records.
+    if scope and anchor:
+        floor = str(scope["floor"])
+        if scope.get("per") == "unit":
+            return f"Each unit on {floor} has {value} {anchor}."
+        return f"{anchor} on {floor}: {value}."
     return f"{anchor}: {value}." if anchor else f"There are {value}."
 
 
 def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
-                     intent: str = "") -> str:
+                     intent: str = "",
+                     scope: Optional[Dict[str, Any]] = None) -> str:
     """A number none of the returned records can vouch for FOR THIS SUBJECT.
 
     ── WHY THE PROBE CARRIES A MARK ───────────────────────────────────────
@@ -313,11 +347,29 @@ def _invented_number(records: Sequence[Dict[str, Any]], anchor: str = "",
     """
     n = _INVENTED_START
     while True:
-        ok, _bad = ps.answer_is_grounded(_sentence(anchor, n), records,
+        ok, _bad = ps.answer_is_grounded(_sentence(anchor, n, scope), records,
                                          intent=intent)
         if not ok:
             return str(n)
         n += 1
+
+
+def _candidate_numbers(records: Sequence[Dict[str, Any]]) -> List[str]:
+    """Every number the returned records carry anywhere, and 1 to 40: what an
+    invented count would be made of."""
+    out = {str(n) for n in range(1, 41)}
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif isinstance(v, (str, int, float)) and not isinstance(v, bool):
+            out.update(ps._values(str(v)))
+    walk(list(records))
+    return sorted(out, key=float)
 
 
 def _render_parts(render: str) -> Tuple[str, str]:
@@ -391,9 +443,10 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
     # so the refusal is about the VALUE being unsupported and nothing else.
     claims = _claims(case)
     anchor = str(claims[0]["subject"]) if claims else ""
+    scope = claims[0].get("scope") if claims else None
     intent = str(case.get("intent") or "")
-    invented = _invented_number(returned, anchor, intent)
-    allowed, _ = ps.answer_is_grounded(_sentence(anchor, invented), returned,
+    invented = _invented_number(returned, anchor, intent, scope)
+    allowed, _ = ps.answer_is_grounded(_sentence(anchor, invented, scope), returned,
                                        intent=intent)
     checks["gate_refuses_an_invented_number"] = not allowed
     if allowed:
@@ -429,11 +482,52 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
                 f"on {first.get('sheet_number')}, and no sheet states one")
 
 
+    # ── WHAT THE GATE MUST REFUSE ───────────────────────────────────────────
+    #
+    # A claim the case knows is wrong - the partial count the gate once bound
+    # ("There are 2 EF-1." with 16 in the database, 2026-10-06), a building
+    # total while sheets are refused. Each is put to the gate exactly as a
+    # true claim is, at the scope it names.
+    for claim in exp.get("refused") or []:
+        sent = _sentence(str(claim["subject"]), claim["value"], claim.get("scope"))
+        ok, _bad = ps.answer_is_grounded(sent, returned, intent=intent)
+        checks[f"refuses:{sent}"] = not ok
+        if ok:
+            reasons.append(f"the gate allowed {sent!r}, which the case says is wrong")
+
+    # ── NO UNSCOPED COUNT ──────────────────────────────────────────────────
+    #
+    # NARROWED FROM `no_stated_count` (2026-10-07). The drawings state no
+    # quantity of exhaust fans, and that is still true and still the thing
+    # worth protecting: the live failure was '3 vent fans', counted off
+    # schedule ROWS. But the located symbols now state SCOPED counts - each
+    # unit on the fourth floor has 2 - and an absence that forbade those
+    # would be false. So: no returned record states a count of it (the
+    # check above), and no number at all binds to it at building scope -
+    # every number the returned records carry, and 1 to 40.
+    if exp.get("no_unscoped_count"):
+        counted = [r for r in returned
+                   if (r.get("payload") or {}).get("count_if_stated") is not None
+                   and any(t.upper() in _norm(r.get("quote")) for t in terms)]
+        checks["no_record_states_a_count"] = not counted
+        if counted:
+            first = counted[0]
+            reasons.append(
+                f"{len(counted)} returned record(s) state a count of "
+                f"{subject!r} — first {(first.get('payload') or {}).get('count_if_stated')} "
+                f"on {first.get('sheet_number')}, and no sheet states one")
+        binds = [n for n in _candidate_numbers(returned)
+                 if ps.answer_is_grounded(f"There are {n} {subject}.", returned,
+                                          intent="count")[0]]
+        checks["no_unscoped_count_binds"] = not binds
+        if binds:
+            reasons.append(f"an unscoped count of {subject!r} binds: {binds[:6]}")
+
     if case["kind"] == "absent":
         # WHICH absence is claimed. A case with `no_stated_count` says the
         # subject IS on the drawings and no sheet says how many — so the
         # subject appearing in a quote is the expected state, not the failure.
-        if not exp.get("no_stated_count"):
+        if not (exp.get("no_stated_count") or exp.get("no_unscoped_count")):
             quoting = _has_text(returned, subject)
             checks["nothing_quotes_it"] = not quoting
             if quoting:
@@ -444,6 +538,13 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
 
     sheets = set(exp.get("sheets") or [])
     on_sheet = [r for r in lead if r.get("sheet_number") in sheets]
+    # A SCOPED CLAIM RESTS ON LOCATED SYMBOLS, which never lead: search_plans
+    # puts them after the ranked slice, whole, with their census. For such a
+    # claim the expected sheet is where the symbols are, and the glyph rows
+    # returned from it are what it rests on.
+    if any(c.get("scope") for c in claims):
+        on_sheet += [r for r in returned if r.get("record_type") == "glyph"
+                     and r.get("label") and r.get("sheet_number") in sheets]
     checks["expected_sheet_in_lead"] = bool(on_sheet)
     checks["expected_sheet_anywhere"] = any(
         r.get("sheet_number") in sheets for r in returned)
@@ -464,7 +565,8 @@ def _verdict(case: Dict[str, Any], returned: Sequence[Dict[str, Any]]
         # that is not there. A case that states counts says which mark each one
         # belongs to, and the sentence is built from those.
         if claims:
-            true_answer = " ".join(_sentence(str(c["subject"]), c["value"])
+            true_answer = " ".join(_sentence(str(c["subject"]), c["value"],
+                                             c.get("scope"))
                                    for c in claims)
         else:
             true_answer = "The drawings show " + ", ".join(values) + "."
