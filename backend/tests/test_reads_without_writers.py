@@ -87,8 +87,6 @@ BASELINE = {
     ("hot_work_days", "project_id"),
     ("filing_jobs", "is_deleted"),
     ("filing_jobs", "permit_renewal_id"),
-    ("notification_preferences", "project_id"),
-    ("notification_preferences", "user_id"),
     ("prediction_validation_ledger", "calendar_date"),
     ("prediction_validation_ledger", "project_id"),
     ("project_files", "is_deleted"),

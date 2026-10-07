@@ -1209,3 +1209,91 @@ def aggregate_preview_decisions(
             "total_signals_seen": total,
         },
     }
+
+
+# ── WhatsApp channel (Phase 1, 2026-10-07) ─────────────────────────
+#
+# Extends this collection rather than forking a second preferences store.
+#
+# Per user, per project — on the existing (user_id, project_id) row, or the
+# user-global row (project_id null) as the fallback:
+#
+#   whatsapp: {
+#     enabled:           bool,
+#     summary_frequency: "off" | "daily" | "weekly" | "biweekly" | "monthly",
+#     reply_alerts:      bool,
+#     reminders:         bool,
+#   }
+#
+# Per project — on a PROJECT row: user_id null, project_id set, scope
+# "project". The (user_id, project_id) unique index admits exactly one such
+# row per project, because user_id null is one value:
+#
+#   whatsapp_project: {
+#     gc_group_id:        str | None,   # a wa_group_id bound to this project
+#     gc_group_confirmed: bool,
+#   }
+#
+# Defaults are ALL ON (operator decision: after START every feature is on).
+# Nothing is written to apply them; they are what a missing field reads as.
+# Whether a message may be sent at all is a separate question — the opt-in
+# record, enforced in server.send_whatsapp_message.
+
+WHATSAPP_SUMMARY_FREQUENCIES = ("off", "daily", "weekly", "biweekly", "monthly")
+_WHATSAPP_BOOL_FIELDS = ("enabled", "reply_alerts", "reminders")
+
+
+def default_whatsapp_prefs() -> Dict[str, Any]:
+    return {
+        "enabled": True,
+        "summary_frequency": "daily",
+        "reply_alerts": True,
+        "reminders": True,
+    }
+
+
+def effective_whatsapp_prefs(project_row: Optional[dict],
+                             global_row: Optional[dict]) -> Dict[str, Any]:
+    """Defaults, overlaid by the user-global row, overlaid by the project row.
+    Unknown or ill-typed stored values are ignored, never trusted."""
+    out = default_whatsapp_prefs()
+    for row in (global_row, project_row):
+        stored = (row or {}).get("whatsapp")
+        if not isinstance(stored, dict):
+            continue
+        for k in _WHATSAPP_BOOL_FIELDS:
+            if isinstance(stored.get(k), bool):
+                out[k] = stored[k]
+        if stored.get("summary_frequency") in WHATSAPP_SUMMARY_FREQUENCIES:
+            out["summary_frequency"] = stored["summary_frequency"]
+    return out
+
+
+def validate_whatsapp_prefs_patch(patch: Any) -> Tuple[Dict[str, Any], List[str]]:
+    """(clean, errors). Unknown keys and wrong types are errors, not ignored:
+    a PATCH that silently drops a field returns 200 for a change that did not
+    happen."""
+    errors: List[str] = []
+    clean: Dict[str, Any] = {}
+    if not isinstance(patch, dict) or not patch:
+        return {}, ["body must be a non-empty object"]
+    for k, v in patch.items():
+        if k in _WHATSAPP_BOOL_FIELDS:
+            if not isinstance(v, bool):
+                errors.append(f"{k} must be true or false")
+            else:
+                clean[k] = v
+        elif k == "summary_frequency":
+            if v not in WHATSAPP_SUMMARY_FREQUENCIES:
+                errors.append(
+                    "summary_frequency must be one of "
+                    + ", ".join(WHATSAPP_SUMMARY_FREQUENCIES))
+            else:
+                clean[k] = v
+        else:
+            errors.append(f"unknown field: {k}")
+    return clean, errors
+
+
+def default_whatsapp_project_settings() -> Dict[str, Any]:
+    return {"gc_group_id": None, "gc_group_confirmed": False}

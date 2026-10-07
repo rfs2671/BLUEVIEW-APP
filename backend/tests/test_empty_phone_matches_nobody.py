@@ -246,6 +246,9 @@ class EveryCallSiteGoesThroughIt(unittest.TestCase):
     _PHONE_LOOKUP_HELPERS = (
         "async def _worker_by_phone",
         "async def _find_whatsapp_contact",
+        # Phase 1: users.phone, for WhatsApp START/opt-in and the company-
+        # scoped identity resolver. Same variants, same empty-matches-nobody.
+        "async def _find_users_by_phone",
     )
 
     def _helper_spans(self):

@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Pressable,
   Modal,
+  Linking,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -53,7 +54,7 @@ import { useToast, ToastHost } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
-import apiClient, { authAPI, versionAPI } from '../src/utils/api';
+import apiClient, { authAPI, versionAPI, whatsappAPI } from '../src/utils/api';
 import { buildVerdict } from '../src/utils/buildVerdict';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
@@ -269,6 +270,13 @@ export default function SettingsScreen() {
   const [phone, setPhone]           = useState('');
   const [savingPhone, setSavingPhone] = useState(false);
 
+  // WhatsApp connect (company admins and Site Managers only — the server
+  // decides; the card renders only when it says `eligible`).
+  const [waMe, setWaMe] = useState(null);
+  // Bumped after a phone save: the auth user object is not refreshed by the
+  // save, so user?.phone alone would not re-read the WhatsApp state.
+  const [waRefresh, setWaRefresh] = useState(0);
+
   // Password
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw]         = useState('');
@@ -313,6 +321,21 @@ export default function SettingsScreen() {
       setPhone(user.phone || '');
     }
   }, [user]);
+
+  // Re-read after a phone save: the connect link needs a phone on record.
+  useEffect(() => {
+    if (!isAuthenticated || authLoading) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await whatsappAPI.getMe();
+        if (!cancelled) setWaMe(me);
+      } catch (e) {
+        if (!cancelled) setWaMe(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, authLoading, user?.phone, waRefresh]);
 
   // Load projects (admin only)
   useEffect(() => {
@@ -516,6 +539,7 @@ export default function SettingsScreen() {
     setSavingPhone(true);
     try {
       await authAPI.updateProfile({ phone: trimmed });
+      setWaRefresh((n) => n + 1);
       toast.success(
         'Saved',
         trimmed ? 'Phone number updated' : 'Phone number removed'
@@ -716,6 +740,32 @@ export default function SettingsScreen() {
               icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
               style={s.saveBtn}
             />
+
+            {waMe?.eligible && (
+              <View style={[s.fieldGroup, { marginTop: spacing.md }]}>
+                <View style={s.fieldIconRow}>
+                  <Phone size={16} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={s.fieldLabel}>WhatsApp</Text>
+                </View>
+                <Text style={s.hintText}>
+                  {waMe.connected
+                    ? 'Connected. Reply STOP in WhatsApp to turn updates off.'
+                    : waMe.connect_url
+                      ? (waMe.status === 'phone_changed'
+                        ? 'Your phone number changed. Send START again from the new number to keep getting updates.'
+                        : 'Opens WhatsApp with START ready to send. Send it from the phone number above.')
+                      : 'Save your phone number first, then connect.'}
+                </Text>
+                {!waMe.connected && !!waMe.connect_url && (
+                  <GlassButton
+                    title="Connect WhatsApp"
+                    onPress={() => Linking.openURL(waMe.connect_url)}
+                    icon={<Phone size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                    style={s.saveBtn}
+                  />
+                )}
+              </View>
+            )}
 
             <View style={[s.fieldGroup, { marginTop: spacing.md }]}>
               <View style={s.fieldIconRow}>
