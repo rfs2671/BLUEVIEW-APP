@@ -66,7 +66,7 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     """Every glyph row for the project, and what was done and refused."""
     from lib.plan_sheet import load_sheet
     from lib.plan_space import build_space
-    from lib.plan_takeoff import run_takeoff, sweep
+    from lib.plan_takeoff import Units, run_takeoff, sweep
 
     rows: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {"pairs": [], "refused_sheets": [], "families": {},
@@ -110,6 +110,15 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         reads = sweep(mech_pg, mech_sheet["segs"])
         # one membership map per floor, whatever the family
         space = build_space(arch_pg, units["tags"], door["inches"], a_sheet_data)
+        # WHICH UNITS CONTINUE ON ANOTHER SHEET, read by the membership map
+        # the placements use (plan_derive.multi_level_units). Written on
+        # every row so the gate can refuse a whole-apartment count it cannot
+        # complete - and so a row that predates the reading says nothing.
+        member = Units(space["units"], space["lo"], space["cell_pt"],
+                       space["refused"], space, space["tags"])
+        units = dict(units, multi_level=derive.multi_level_units(
+            arch_pg.directed_words, member.at, units["tags"]))
+        floor["units"] = units
         floor["method"] = space.get("method")
         floor["fallback_reason"] = space.get("fallback_reason")
         for name, fam in run_fams.items():

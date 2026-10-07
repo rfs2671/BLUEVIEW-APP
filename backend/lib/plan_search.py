@@ -1458,6 +1458,9 @@ class GlyphBook(NamedTuple):
     titles: Dict[str, str]              # floor key -> how it is printed
     sheets: Dict[str, List[str]]        # floor key -> its sheet numbers
     units: Dict[str, List[str]]         # floor key -> apartment tags
+    #: floor key -> {unit: what says it continues on another sheet}, or None
+    #: when any row on the floor predates that reading (emit_version < 2).
+    multi: Dict[str, Optional[Dict[str, List[str]]]] = {}
 
 
 def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
@@ -1509,6 +1512,7 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
     titles: Dict[str, str] = {}
     sheets: Dict[str, List[str]] = {}
     units: Dict[str, List[str]] = {}
+    multi: Dict[str, Optional[Dict[str, List[str]]]] = {}
     for r in rows:
         k = _row_floor(r)
         if k is None:
@@ -1526,8 +1530,18 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
         for u in ((payload.get("units") or {}).get("tags") or []):
             if u not in units.setdefault(k, []):
                 units[k].append(u)
+        # FAIL CLOSED (operator ruling 2026-10-07): one row on the floor that
+        # never read the evidence makes the whole floor unknown.
+        ml = (payload.get("units") or {}).get("multi_level")
+        if not isinstance(ml, dict):
+            multi[k] = None
+        elif multi.get(k, {}) is not None:
+            merged = multi.setdefault(k, {})
+            for u, ev in ml.items():
+                merged.setdefault(str(u), [])
+                merged[str(u)] += [e for e in (ev or []) if e not in merged[str(u)]]
     return GlyphBook(families, refused, refusals_complete, levels, titles,
-                     sheets, units)
+                     sheets, units, multi)
 
 
 def _refused_floors(book: GlyphBook) -> set:
@@ -1558,13 +1572,34 @@ def _building_count(book: GlyphBook, fam: GlyphFamily,
     return len(_resolved(fam, tags)) or None
 
 
+def _continues(book: GlyphBook, k: str) -> Optional[Dict[str, List[str]]]:
+    """{unit: evidence it continues on another sheet} for floor k, or None
+    when the floor's rows never read it."""
+    return book.multi.get(k) if k in book.multi else None
+
+
 def _unit_counts(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
                  k: str) -> Optional[Dict[str, int]]:
     """Per apartment on floor k, or None when the split may not be made: the
     floor is not complete, a glyph of the family there cannot name itself or
     its unit, or a symbol could not be placed (plan_tally.per_unit, here at
-    floor scope)."""
+    floor scope).
+
+    ── A UNIT IS THE WHOLE APARTMENT ──────────────────────────────────────
+    #
+    # Measured 2026-10-07: "4A has 2 exhaust fans." bound, and 4A is a
+    # duplex - A-103.00 prints it LOWER, and its private stair lands on the
+    # mezzanine, where M-104.00 gives it a third fan. The mezzanine is
+    # refused, so the count was A-103.00's half of the apartment, stated as
+    # the apartment. A unit's count is now returned only for a unit the rows
+    # say is single-sheet; a unit anything says continues elsewhere is left
+    # out, and so is every unit on a floor whose rows never read that
+    # (operator ruling: fail closed until the rebuild).
+    """
     if _floor_count(book, fam, tags, k) is None or not book.units.get(k):
+        return None
+    cont = _continues(book, k)
+    if cont is None:
         return None
     on = [r for r in fam.rows if _row_floor(r) == k]
     if any(r.get("glyph_status") != _tally.RESOLVED for r in on):
@@ -1572,7 +1607,20 @@ def _unit_counts(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
     mine = [r for r in on if r.get("label") in tags]
     if any(not r.get("unit") or str(r.get("unit")).startswith("sheet:") for r in mine):
         return None
-    return {u: sum(1 for r in mine if r.get("unit") == u) for u in book.units[k]}
+    return {u: sum(1 for r in mine if r.get("unit") == u) for u in book.units[k]
+            if not cont.get(u)}
+
+
+def _per_unit(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
+              k: str) -> Optional[int]:
+    """The figure every apartment on floor k shares - only when EVERY one of
+    them is single-sheet. "Each unit on the fourth floor has 2" is read as
+    per apartment; a floor named alongside says which units, not which part
+    (operator ruling 2026-10-07)."""
+    counts = _unit_counts(book, fam, tags, k)
+    if counts is None or len(counts) != len(book.units.get(k) or []):
+        return None
+    return _uniform(counts)
 
 
 def _uniform(counts: Optional[Dict[str, int]]) -> Optional[int]:
@@ -1682,11 +1730,11 @@ def glyph_values(clause: str, book: GlyphBook) -> set:
         elif _PER_UNIT.search(clause):
             if keys:
                 for k in keys:
-                    v = _uniform(_unit_counts(book, fam, tags, k))
+                    v = _per_unit(book, fam, tags, k)
                     if v is not None:
                         out.add(str(v))
             elif not _building_refused(book) and not fam.why:
-                per = [_uniform(_unit_counts(book, fam, tags, k))
+                per = [_per_unit(book, fam, tags, k)
                        for k in book.units if book.units.get(k)]
                 if per and None not in per and len(set(per)) == 1:
                     out.add(str(per[0]))
@@ -1738,8 +1786,17 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
             if len(per_tag) > 1:
                 line += f"; {total} in all"
             counts = _unit_counts(book, fam, fam.tags, k)
-            if counts and _uniform(counts) is not None:
-                line += f"; each unit ({', '.join(counts)}) has {_uniform(counts)}"
+            cont = _continues(book, k)
+            per = _per_unit(book, fam, fam.tags, k)
+            if cont is None and book.units.get(k):
+                line += ("; per-apartment figures not available (these rows "
+                         "predate the reading of which units continue on "
+                         "another sheet)")
+            elif per is not None:
+                line += f"; each unit ({', '.join(counts)}) has {per}"
+            elif cont and any(cont.values()) and not counts:
+                line += (f"; {', '.join(u for u in book.units[k] if cont.get(u))} "
+                         f"continue on another sheet, so no per-apartment figure")
             elif counts:
                 # A zero is never bound (glyph_values), so it is not printed as
                 # a figure either.
@@ -1747,6 +1804,10 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                 none = [u for u, n in counts.items() if not n]
                 if none:
                     line += f"; none placed in {', '.join(none)}"
+                more = [u for u in book.units[k] if (cont or {}).get(u)]
+                if more:
+                    line += (f"; {', '.join(more)} continue on another sheet, "
+                             f"so no figure for them")
             else:
                 line += "; per-unit split not available"
             lines.append(line)
