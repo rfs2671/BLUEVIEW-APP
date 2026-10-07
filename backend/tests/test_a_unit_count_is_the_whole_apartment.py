@@ -219,13 +219,20 @@ class OnTheRealSheets(unittest.TestCase):
         from lib.plan_sheet import load_sheet
         from lib.plan_space import build_space
         from lib.plan_takeoff import Units
+        # CLOSED EXPLICITLY, page before document. Left to the garbage
+        # collector, the document can be freed before its page, and pdfium
+        # faults: the first fixture run of this file died with a Windows
+        # access violation inside pytest's unraisable-exception collector.
         pg = PlanPage(require_pdf(fname), page_no)
-        sheet = load_sheet(pg)
-        tags = D.unit_tags(sheet["words"], sheet["corners"])["tags"]
-        space = build_space(pg, tags, 56.0, sheet)
-        member = Units(space["units"], space["lo"], space["cell_pt"], space["refused"],
-                       space, space["tags"])
-        return D.multi_level_units(pg.directed_words, member.at, tags)
+        try:
+            sheet = load_sheet(pg)
+            tags = D.unit_tags(sheet["words"], sheet["corners"])["tags"]
+            space = build_space(pg, tags, 56.0, sheet)
+            member = Units(space["units"], space["lo"], space["cell_pt"], space["refused"],
+                           space, space["tags"])
+            return D.multi_level_units(pg.directed_words, member.at, tags)
+        finally:
+            pg.close()
 
     def test_a103_four_duplexes_by_both_signals(self):
         _present()
