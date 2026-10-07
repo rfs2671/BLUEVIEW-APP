@@ -1296,4 +1296,8 @@ def validate_whatsapp_prefs_patch(patch: Any) -> Tuple[Dict[str, Any], List[str]
 
 
 def default_whatsapp_project_settings() -> Dict[str, Any]:
-    return {"gc_group_id": None, "gc_group_confirmed": False}
+    """Per-project WhatsApp settings. The two alert switches default ON: they
+    do nothing until a GC group is confirmed, and confirming it is the opt-in."""
+    return {"gc_group_id": None, "gc_group_confirmed": False,
+            "violation_alerts": True, "permit_reminders": True,
+            "gc_proposal": None, "gc_declined": []}

@@ -1759,6 +1759,26 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Project → WhatsApp settings (admins). { gc_group, gc_pending_question,
+  // groups, violation_alerts, permit_reminders }.
+  getProjectSettings: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/whatsapp-settings`);
+    return response.data;
+  },
+
+  // { violation_alerts?: bool, permit_reminders?: bool }
+  setProjectAlerts: async (projectId, patch) => {
+    const response = await apiClient.patch(`/api/projects/${projectId}/whatsapp-alerts`, patch);
+    return response.data;
+  },
+
+  // Pick (and confirm) the project's GC group.
+  setGcGroup: async (projectId, waGroupId) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/whatsapp-gc-group`,
+      { gc_group_id: waGroupId, gc_group_confirmed: true });
+    return response.data;
+  },
+
   getGroups: async (projectId) => {
     const response = await apiClient.get(`/api/whatsapp/groups/${projectId}`);
     return response.data;
