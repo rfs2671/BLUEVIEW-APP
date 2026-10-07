@@ -81,7 +81,9 @@ class TheSuiteCannotClaimWhatItCannotJustify(unittest.TestCase):
 
     def test_the_shipped_suite_is_valid(self):
         s = ev.load_suite(str(BACKEND / "eval" / "boyland.json"))
-        self.assertEqual(s["project"]["baseline"]["pages"], 129)
+        # 173 since the baseline of 2026-10-07 (the second architect's set
+        # current since the 09-20 pass); 129 was the 2026-09-19 corpus.
+        self.assertEqual(s["project"]["baseline"]["pages"], 173)
         self.assertGreaterEqual(len(s["cases"]), 20)
 
     def test_every_case_says_how_its_truth_was_established(self):

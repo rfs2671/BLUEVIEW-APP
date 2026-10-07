@@ -30,10 +30,11 @@
     "door-size",
     "ceiling-height",
     "pile-details",
+    "exhaust-fans-per-unit-fourth-floor",
     "vent-fan-count-not-stated"
   ],
   "project": "6a5f63bc147407d3261df2c7",
-  "ran_at": "2026-10-07T18:18:19.622670+00:00",
+  "ran_at": "2026-10-07T18:25:46.266465+00:00",
   "corpus_before": {
     "pages": 173,
     "current_pages": 155,
@@ -52,17 +53,17 @@
   "stale_census": {},
   "stale_census_drift": [],
   "summary": {
-    "cases": 30,
+    "cases": 31,
     "failed_in_known_classes": 3,
-    "scored": 30,
-    "passed": 25,
+    "scored": 31,
+    "passed": 26,
     "failed": 5,
     "stale": 0,
-    "pass_rate": 0.833,
+    "pass_rate": 0.839,
     "by_kind": {
       "answer": {
-        "scored": 23,
-        "passed": 18
+        "scored": 24,
+        "passed": 19
       },
       "absent": {
         "scored": 7,
@@ -1565,6 +1566,65 @@
       "known_failure": null
     },
     {
+      "id": "exhaust-fans-per-unit-fourth-floor",
+      "kind": "answer",
+      "question": "how many exhaust fans does each apartment on the fourth floor have",
+      "subject": "exhaust fans",
+      "intent": "count",
+      "outcome": "pass",
+      "reasons": [],
+      "stale": [],
+      "without_stale": null,
+      "checks": {
+        "returned": 53,
+        "no_label_in_render": true,
+        "lead_matched_only_through_labels": 0,
+        "gate_refuses_an_invented_number": true,
+        "refuses:EF-1: 2.": true,
+        "refuses:exhaust fans: 32.": true,
+        "expected_sheet_in_lead": true,
+        "expected_sheet_anywhere": true,
+        "gate_allows_the_true_answer": true,
+        "render_carries_the_answer": true
+      },
+      "lead": [
+        {
+          "sheet": "M-200.00",
+          "type": "schedule",
+          "tier": "ocr_grid_cell",
+          "source": "ocr_grid",
+          "label": null,
+          "quote": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | A"
+        },
+        {
+          "sheet": "A-100.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": "A-105.01",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        },
+        {
+          "sheet": "A.1.1",
+          "type": "legend_entry",
+          "tier": "tag_legend",
+          "source": "text_layer",
+          "label": null,
+          "quote": "EXHAUST FAN"
+        }
+      ],
+      "render": "EXHAUST FAN SCHEDULE TAG | SERVNG | MANUF. | MODEL | CFM | DRIVE | SP | TYPE ARRANGEMENT | SONES | AMP | MOTOR DATA ELEC. VOLTS | | WEIGHT LBS | REMARKS EF-1 | APARTMENTSBATHROOMS EXHAUST | NUTONE | A [M-200.00]\nEXHAUST FAN [A-100.01]\nEXHAUST FAN [A-105.01]",
+      "known_failure": null
+    },
+    {
       "id": "vent-fan-count-not-stated",
       "kind": "absent",
       "question": "how many vent fans are there",
@@ -1579,7 +1639,8 @@
         "no_label_in_render": true,
         "lead_matched_only_through_labels": 0,
         "gate_refuses_an_invented_number": true,
-        "nothing_states_a_count": true
+        "no_record_states_a_count": true,
+        "no_unscoped_count_binds": true
       },
       "lead": [
         {

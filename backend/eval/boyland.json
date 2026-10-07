@@ -691,21 +691,62 @@
       }
     },
     {
+      "id": "exhaust-fans-per-unit-fourth-floor",
+      "question": "how many exhaust fans does each apartment on the fourth floor have",
+      "subject": "exhaust fans",
+      "intent": "count",
+      "kind": "answer",
+      "expect": {
+        "sheets": [
+          "M-103.00"
+        ],
+        "values": [
+          2
+        ],
+        "claims": [
+          {
+            "subject": "exhaust fans",
+            "value": 2,
+            "scope": {
+              "floor": "A-103.00",
+              "per": "unit"
+            }
+          }
+        ],
+        "refused": [
+          {
+            "subject": "EF-1",
+            "value": 2
+          },
+          {
+            "subject": "exhaust fans",
+            "value": 32
+          }
+        ]
+      },
+      "truth": {
+        "how": "by_eye",
+        "source": "MH - 7.2.26.pdf p5 (M-103.00, FOURTH FLOOR HVAC PLANS) against AR - 8.18.26.pdf (A-103.00, FOURTH FLOOR PLAN)",
+        "evidence": "M-103.00 prints 8 exhaust-fan symbols, each labelled beside it: four EF-1(50) at bathrooms and four EF-2(100) at kitchenettes. A-103.00's occupancy table lists four apartments, 4A-4D, each with one bathroom and one kitchenette. Pinned from render reads in tests/test_a_unit_is_answered_or_refused_never_wrong.py, TRUTH['A-103.00']: EF-1 and EF-2 once each in 4A, 4B, 4C and 4D. Re-read by eye 2026-10-07 on the placement review renders review_06/07.png, tiles #55-#62 - the kitchenette tiles show APT 4A, 4B, 4C, 4D printed beside the EF-2 placement. So 2 per unit, and the claim is SCOPED: the building total is not claimable, because M-104.00 (mezzanine, no unit tags) and M-106.00 (no architectural partner) were refused by the pass. Hence the two refused claims: 'There are 2 EF-1.' is the partial count the gate bound on 2026-10-06 (2 of 16 rows returned), and 32 is a building total over refused sheets."
+      }
+    },
+    {
       "id": "vent-fan-count-not-stated",
       "question": "how many vent fans are there",
       "subject": "exhaust fan",
       "intent": "count",
       "kind": "absent",
       "expect": {
-        "no_stated_count": true,
         "text": [
           "EF-1"
-        ]
+        ],
+        "no_unscoped_count": true
       },
       "truth": {
         "how": "absent",
         "source": "MH - 7.2.26.pdf p9 (M-200.00), EXHAUST FAN SCHEDULE",
-        "evidence": "The EXHAUST FAN SCHEDULE has NO QTY COLUMN - its headers are TAG, SERVING, MANUF., MODEL, CFM, DRIVE, SP, TYPE ARRANGEMENT, SONES, AMP - so EF-1 and EF-2 are TYPES and the sheet states no quantity. The element records agree: both carry count_if_stated None with basis not_stated, and only SAF-1, whose FAN SCHEDULE does have a QTY column, carries count 1. LIVE FAILURE 2026-09-19: the bot answered '3 vent fans' on a building with 10+ units, by counting schedule ROWS. Extraction was correct throughout; composition was not. A row is a type."
+        "evidence": "The EXHAUST FAN SCHEDULE has NO QTY COLUMN - its headers are TAG, SERVING, MANUF., MODEL, CFM, DRIVE, SP, TYPE ARRANGEMENT, SONES, AMP - so EF-1 and EF-2 are TYPES and the sheet states no quantity. The element records agree: both carry count_if_stated None with basis not_stated, and only SAF-1, whose FAN SCHEDULE does have a QTY column, carries count 1. LIVE FAILURE 2026-09-19: the bot answered '3 vent fans' on a building with 10+ units, by counting schedule ROWS. Extraction was correct throughout; composition was not. A row is a type.",
+        "narrowed": "NARROWED, NOT DELETED, 2026-10-07 (operator ruling). This case said nothing may state a count of exhaust fans. Since the placement pass (#660, rebuilt 2026-10-07) the located symbols state SCOPED counts - each unit on the fourth floor has 2 - and an absence forbidding those would be false. What stays true, and is the thing worth protecting: no sheet prints a QUANTITY of exhaust fans, so no returned record may carry one, and no number may bind to 'exhaust fan' at building scope. no_unscoped_count checks both - the record check that no_stated_count made, and the gate, for every number the returned records carry and 1 to 40. The live failure this case was written for, '3 vent fans' counted off schedule rows, is an unscoped count and is still refused."
       }
     }
   ],
