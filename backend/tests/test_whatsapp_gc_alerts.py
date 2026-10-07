@@ -191,6 +191,27 @@ class TheChecker(unittest.TestCase):
             with self.subTest(text):
                 self.assertFalse(wa_gc.check_summary(text, self.FACTS))
 
+    def test_a_date_is_checked_whole_not_part_by_part(self):
+        """Record date 2026-01-10: its 1, 10 and 2026 must not recombine
+        into "October 1, 2026" (the Codex finding)."""
+        facts = {"violation_date": "2026-01-10", "description": "x"}
+        for text in ("Levelog: a new DOB violation issued October 1, 2026.",
+                     "Levelog: a new DOB violation issued 1 October 2026.",
+                     "Levelog: a new DOB violation issued Oct 1.",
+                     "Levelog: a new DOB violation issued 10/01/2026.",
+                     "Levelog: a new DOB violation issued 2026-10-01.",
+                     "Levelog: a new DOB violation issued in October."):
+            with self.subTest(text):
+                self.assertFalse(wa_gc.check_summary(text, facts))
+        for text in ("Levelog: a new DOB violation issued January 10, 2026.",
+                     "Levelog: a new DOB violation issued Jan. 10th.",
+                     "Levelog: a new DOB violation issued 10 January 2026.",
+                     "Levelog: a new DOB violation issued 01/10/2026.",
+                     "Levelog: a new DOB violation issued 2026-01-10.",
+                     "Levelog: a new DOB violation; you may need to fix it."):
+            with self.subTest(text):
+                self.assertTrue(wa_gc.check_summary(text, facts))
+
     def test_record_values_pass(self):
         self.assertTrue(wa_gc.check_summary(
             "Levelog: a new DOB violation for failure to maintain, issued "
@@ -467,6 +488,46 @@ class TheAlerts(unittest.TestCase):
             _run(server._gc_alerts_tick(IN_WINDOW + timedelta(days=9)))
             self.assertIn("expires tomorrow", _group_sends(c)[-1]["message"])
             self.assertEqual(len(_group_sends(c)), 2)
+
+    def test_a_baseline_that_did_not_finish_posts_no_history(self):
+        """An item write fails during the first run: no marker is written,
+        and the next run baselines again instead of posting the history."""
+        db = _world(dob_logs=[_violation("20"), _violation("21")])
+        real = server._gc_ledger_insert
+        calls = {"n": 0}
+
+        async def flaky(lid, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return "error"
+            return await real(lid, **kw)
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            with patch.object(server, "_gc_ledger_insert", flaky):
+                r = _run(server._gc_alerts_tick(IN_WINDOW))
+            self.assertEqual(r["baselined"], 0)
+            self.assertIsNone(_run(db[server.WA_LEDGER].find_one(
+                {"_id": wa_gc.baseline_id("proj_a")})))
+            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            self.assertEqual((r["baselined"], r["posted"]), (1, 0))
+            _run(server._gc_alerts_tick(IN_WINDOW))
+            self.assertEqual(_group_sends(c), [])
+
+    def test_revoked_permits_get_no_reminders(self):
+        today = wa_gc.today_et(IN_WINDOW)
+        db = _world()
+        with _Ctx(db=db) as c:
+            _confirm()
+            _run(server._gc_alerts_tick(IN_WINDOW))
+            db.dob_logs.rows += [
+                _permit("30", (today + timedelta(days=5)).isoformat(),
+                        permit_status="REVOKED"),
+                _permit("31", (today + timedelta(days=5)).isoformat(),
+                        permit_status="ISSUED")]
+            _run(server._gc_alerts_tick(IN_WINDOW))
+            sends = _group_sends(c)
+            self.assertEqual(len(sends), 1)
+            self.assertIn("Permit: J31", sends[0]["message"])
 
     def test_switched_off_is_seen_not_posted_later(self):
         db = _world()

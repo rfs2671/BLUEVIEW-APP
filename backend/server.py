@@ -43676,19 +43676,24 @@ def _gc_latest_per_record(rows: list) -> list:
     return [best[k] for k in sorted(best)]
 
 
-async def _gc_ledger_claim(lid: str, **fields) -> bool:
-    """Insert the once-ever row. False if it already exists (or the write
-    failed — then nothing is posted)."""
+async def _gc_ledger_insert(lid: str, **fields) -> str:
+    """Insert the once-ever row: "ok", "dup" (already there) or "error"."""
     from pymongo.errors import DuplicateKeyError
     try:
         await db[WA_LEDGER].insert_one({"_id": lid, "created_at":
                                         datetime.now(timezone.utc), **fields})
-        return True
+        return "ok"
     except DuplicateKeyError:
-        return False
+        return "dup"
     except Exception as e:
         logger.warning(f"[wa-gc] ledger claim failed: {type(e).__name__}")
-        return False
+        return "error"
+
+
+async def _gc_ledger_claim(lid: str, **fields) -> bool:
+    """True only when this call wrote the row. A row already there, or a
+    failed write, is False — and nothing is posted."""
+    return await _gc_ledger_insert(lid, **fields) == "ok"
 
 
 async def _gc_project_items(project_id: str, today) -> dict:
@@ -43706,6 +43711,9 @@ async def _gc_project_items(project_id: str, today) -> dict:
     permits, no_expiry = [], 0
     for r in latest:
         if r.get("record_type") != "permit":
+            continue
+        # The same "active" rule as the permit counts: REVOKED is not one.
+        if str(r.get("permit_status") or "").strip().upper() == "REVOKED":
             continue
         exp = wa_gc.parse_dob_date(r.get("expiration_date"))
         if exp is None:
@@ -43758,23 +43766,36 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         report["permits_no_expiry"] += items["no_expiry"]
 
         # NO BACKFILL. The first run records everything that exists — open
-        # violations, every threshold a permit has already reached — as seen.
-        if await _gc_ledger_claim(wa_gc.baseline_id(project_id),
-                                  kind="gc_baseline", project_id=project_id,
-                                  company_id=company_id, status="baseline"):
-            for v in items["violations"]:
-                await _gc_ledger_claim(
-                    wa_gc.ledger_id(project_id, "violation", v["raw_dob_id"]),
-                    kind="gc_violation", project_id=project_id,
-                    company_id=company_id, status="baseline")
-            for p, exp in items["permits"]:
-                for t in wa_gc.thresholds_passed(exp, today):
-                    await _gc_ledger_claim(
-                        wa_gc.ledger_id(project_id, "permit",
-                                        f"{p['raw_dob_id']}:{t}"),
-                        kind="gc_permit", project_id=project_id,
-                        company_id=company_id, status="baseline")
-            report["baselined"] += 1
+        # violations, every threshold a permit has already reached — as seen,
+        # and only THEN writes the marker that says the baseline is done. A
+        # run that stops halfway, or an item write that fails, leaves no
+        # marker, so the next run baselines again (rows already written are
+        # duplicates, which is fine) instead of posting the history.
+        try:
+            baselined = await db[WA_LEDGER].find_one(
+                {"_id": wa_gc.baseline_id(project_id)})
+        except Exception as e:
+            logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
+            continue
+        if not baselined:
+            seen = [(wa_gc.ledger_id(project_id, "violation", v["raw_dob_id"]),
+                     "gc_violation") for v in items["violations"]]
+            seen += [(wa_gc.ledger_id(project_id, "permit",
+                                      f"{p['raw_dob_id']}:{t}"), "gc_permit")
+                     for p, exp in items["permits"]
+                     for t in wa_gc.thresholds_passed(exp, today)]
+            failed = False
+            for lid, kind in seen:
+                if await _gc_ledger_insert(
+                        lid, kind=kind, project_id=project_id,
+                        company_id=company_id, status="baseline") == "error":
+                    failed = True
+                    break
+            if not failed and await _gc_ledger_insert(
+                    wa_gc.baseline_id(project_id), kind="gc_baseline",
+                    project_id=project_id, company_id=company_id,
+                    status="baseline") != "error":
+                report["baselined"] += 1
             continue
 
         todo = []

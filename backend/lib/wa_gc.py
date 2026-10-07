@@ -206,21 +206,70 @@ def _tokens(text: str) -> set:
     return {_norm(t) for t in _TOKEN_RE.findall(text or "") if _norm(t)}
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate((
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december"))}
+_MONTH_ALT = "|".join(sorted({m for m in _MONTHS} | {m[:3] for m in _MONTHS}
+                             | {"sept"}, key=len, reverse=True))
+_MONTH_RE = re.compile(r"\b(" + _MONTH_ALT + r")\b\.?", re.IGNORECASE)
+# "October 1, 2026", "Oct. 1 2026", "October 1st" ...
+_MD_Y_RE = re.compile(
+    r"\b(" + _MONTH_ALT + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?",
+    re.IGNORECASE)
+# "1 October 2026", "1st of October"
+_D_MY_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + _MONTH_ALT + r")\b\.?(?:,?\s+(\d{4})\b)?",
+    re.IGNORECASE)
+
+
+def _month_no(word: str) -> int:
+    w = word.lower().rstrip(".")
+    return _MONTHS.get(w) or next(
+        (n for m, n in _MONTHS.items() if m.startswith(w[:3])), 0)
+
+
 def check_summary(text: str, facts: Dict[str, str]) -> bool:
-    """True only if every number, date, amount and code in `text` is a token
-    of the DOB record's facts — whole tokens, so an invented "$200" does not
-    pass because the record says "$1,200". A date may be re-spelled: its
-    year, month and day each count as record tokens."""
+    """True only if every number, date, amount and code in `text` is one the
+    DOB record carries.
+
+    Whole tokens: an invented "$200" does not pass because the record says
+    "$1,200". Whole DATES: a date in the text, however it is spelled, must be
+    one of the record's dates — its year, month and day are never accepted
+    one by one, so "October 1, 2026" does not pass against a record date of
+    2026-01-10. A month named alone must be the month of a record date."""
+    record_dates = set()
     allowed = set()
     for v in facts.values():
         allowed |= _tokens(v)
         d = parse_dob_date(v)
         if d:
-            allowed |= {str(d.year), str(d.month), f"{d.month:02d}",
-                        str(d.day), f"{d.day:02d}", d.isoformat(),
-                        _norm(d.strftime("%m/%d/%Y"))}
-    for t in _tokens(text):
-        if t in _ALLOWED_WORDS or t in allowed:
+            record_dates.add(d)
+    record_months = {d.month for d in record_dates}
+
+    def date_ok(month: int, day: int, year: Optional[str]) -> bool:
+        return any(d.month == month and d.day == day
+                   and (year is None or d.year == int(year))
+                   for d in record_dates)
+
+    rest = text or ""
+    for rx, m_i, d_i in ((_MD_Y_RE, 1, 2), (_D_MY_RE, 2, 1)):
+        for m in rx.finditer(rest):
+            if not date_ok(_month_no(m.group(m_i)), int(m.group(d_i)), m.group(3)):
+                return False
+        rest = rx.sub(" ", rest)
+    for m in _MONTH_RE.finditer(rest):
+        if m.group(1).lower() == "may":
+            continue  # "you may need to" — only a dated "May 3" is a claim
+        if _month_no(m.group(1)) not in record_months:
+            return False
+    for raw in _TOKEN_RE.findall(rest):
+        t = _norm(raw)
+        if not t or t in _ALLOWED_WORDS or t in allowed:
+            continue
+        d = parse_dob_date(raw.strip("$")) if re.search(r"[-/]", raw) or len(t) == 8 else None
+        if d is not None:
+            if d not in record_dates:
+                return False
             continue
         return False
     return True
