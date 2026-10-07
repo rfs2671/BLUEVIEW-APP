@@ -453,9 +453,9 @@ class R2DeleteVerified(unittest.TestCase):
     def test_each_key_is_deleted_one_at_a_time_then_headed(self):
         r2 = FakeR2(stored={"a", "card-audit/b"})
         out = h.r2_delete_verified(r2, _bucket_for, {"a", "card-audit/b", "gone"})
-        self.assertEqual(sorted(out["deleted"]), ["a", "card-audit/b"])
-        self.assertEqual(out["absent_before"], ["gone"])
-        self.assertEqual(out["still_present"] + out["error"], [])
+        self.assertEqual(sorted(out.deleted), ["a", "card-audit/b"])
+        self.assertEqual(out.absent_before, ["gone"])
+        self.assertEqual(out.still_present + out.error, [])
         self.assertEqual([c for c in r2.calls if c[2] == "a"],
                          [("head", "blueview", "a"), ("delete", "blueview", "a"),
                           ("head", "blueview", "a")])
@@ -463,7 +463,7 @@ class R2DeleteVerified(unittest.TestCase):
 
     def test_a_survivor_is_reported(self):
         out = h.r2_delete_verified(FakeR2(stored={"a"}, stuck={"a"}), _bucket_for, {"a"})
-        self.assertEqual(out["still_present"], ["a"])
+        self.assertEqual(out.still_present, ["a"])
 
     def test_only_a_404_counts_as_gone(self):
         self.assertIs(h._r2_exists(FakeR2(), "b", "x"), False)
@@ -473,7 +473,7 @@ class R2DeleteVerified(unittest.TestCase):
     def test_the_probe_is_read_only(self):
         r2 = FakeR2(stored={"a"})
         out = h.r2_probe(r2, _bucket_for, {"a", "b"})
-        self.assertEqual((out["present"], out["absent"]), (["a"], ["b"]))
+        self.assertEqual((out.present, out.absent), (["a"], ["b"]))
         self.assertTrue(all(c[0] == "head" for c in r2.calls))
 
     def test_the_script_never_calls_bucket_level_operations(self):

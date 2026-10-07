@@ -68,6 +68,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -370,45 +371,46 @@ def _r2_exists(client, bucket: str, key: str) -> Optional[bool]:
         return None
 
 
-def r2_probe(client, bucket_for, keys) -> Dict[str, List[str]]:
-    """Read-only: HEAD every key. {present, absent, error}."""
-    out: Dict[str, List[str]] = {"present": [], "absent": [], "error": []}
+def r2_probe(client, bucket_for, keys) -> SimpleNamespace:
+    """Read-only: HEAD every key. .present / .absent / .error (key lists)."""
+    out = SimpleNamespace(present=[], absent=[], error=[])
     for k in sorted(keys):
         state = _r2_exists(client, bucket_for(k), k)
-        out["present" if state else "absent" if state is False else "error"].append(k)
+        (out.present if state else out.absent if state is False
+         else out.error).append(k)
     return out
 
 
-def r2_delete_verified(client, bucket_for, keys) -> Dict[str, List[str]]:
+def r2_delete_verified(client, bucket_for, keys) -> SimpleNamespace:
     """Delete each key ONE AT A TIME and prove it is gone.
 
     Per key: HEAD (already absent → recorded, nothing to do), delete_object,
-    then HEAD again, which must be 404. Returns {deleted, absent_before,
-    still_present, error}; anything in still_present or error means the
-    caller must not touch the rows (they are what names these keys)."""
-    out: Dict[str, List[str]] = {"deleted": [], "absent_before": [],
-                                 "still_present": [], "error": []}
+    then HEAD again, which must be 404. Returns key lists .deleted,
+    .absent_before, .still_present, .error; anything in still_present or
+    error means the caller must not touch the rows (they name these keys)."""
+    out = SimpleNamespace(deleted=[], absent_before=[], still_present=[],
+                          error=[])
     for k in sorted(keys):
         b = bucket_for(k)
         before = _r2_exists(client, b, k)
         if before is False:
-            out["absent_before"].append(k)
+            out.absent_before.append(k)
             continue
         if before is None:
-            out["error"].append(k)
+            out.error.append(k)
             continue
         try:
             client.delete_object(Bucket=b, Key=k)
         except Exception:
-            out["error"].append(k)
+            out.error.append(k)
             continue
         after = _r2_exists(client, b, k)
         if after is False:
-            out["deleted"].append(k)
+            out.deleted.append(k)
         elif after is True:
-            out["still_present"].append(k)
+            out.still_present.append(k)
         else:
-            out["error"].append(k)
+            out.error.append(k)
     return out
 
 
@@ -521,9 +523,9 @@ def run(db, write: bool, args) -> int:
     if keys and r2_client and bucket_for:
         probe = r2_probe(r2_client, bucket_for, keys)
         print(f"R2 HEAD (read-only, the same call the delete is verified with): "
-              f"present {len(probe['present'])}, absent {len(probe['absent'])}, "
-              f"error {len(probe['error'])}")
-        for k in probe["error"][:10]:
+              f"present {len(probe.present)}, absent {len(probe.absent)}, "
+              f"error {len(probe.error)}")
+        for k in probe.error[:10]:
             print(f"  HEAD error: {k}")
     elif keys:
         print("R2 is not configured here; the delete would refuse.")
@@ -579,18 +581,18 @@ def run(db, write: bool, args) -> int:
     #    a time, each followed by a HEAD that must 404. Any object still
     #    there, or any call that errored, stops the run BEFORE the rows go:
     #    the rows are the only record of which keys to delete.
-    r2 = {"deleted": [], "absent_before": [], "still_present": [], "error": []}
+    r2 = SimpleNamespace(deleted=[], absent_before=[], still_present=[], error=[])
     if keys:
         r2_client, bucket_for = _r2_target()
         if not (r2_client and bucket_for):
             print("FAILED: R2 is not configured here; nothing deleted, rows kept.")
             return FAILED
         r2 = r2_delete_verified(r2_client, bucket_for, keys)
-    print(f"\nR2: deleted and verified gone {len(r2['deleted'])}, already absent "
-          f"{len(r2['absent_before'])}, STILL PRESENT {len(r2['still_present'])}, "
-          f"errors {len(r2['error'])}")
-    if r2["still_present"] or r2["error"]:
-        for k in (r2["still_present"] + r2["error"])[:20]:
+    print(f"\nR2: deleted and verified gone {len(r2.deleted)}, already absent "
+          f"{len(r2.absent_before)}, STILL PRESENT {len(r2.still_present)}, "
+          f"errors {len(r2.error)}")
+    if r2.still_present or r2.error:
+        for k in (r2.still_present + r2.error)[:20]:
             print(f"  not deleted: {k}")
         print("FAILED: some R2 objects were not deleted; NO rows were touched. "
               "Fix and re-run — keys already deleted are skipped as absent.")
@@ -620,8 +622,8 @@ def run(db, write: bool, args) -> int:
     for pid in TARGET_PROJECTS:
         script_audit_sync(raw_db, "project_hard_delete", "project", pid,
                           {"facts": facts, "deleted": totals,
-                           "r2_keys_deleted": len(r2["deleted"]),
-                           "r2_keys_absent_before": len(r2["absent_before"])},
+                           "r2_keys_deleted": len(r2.deleted),
+                           "r2_keys_absent_before": len(r2.absent_before)},
                           args, script_name())
     script_audit_sync(raw_db, "company_hard_delete", "company", TARGET_COMPANY,
                       {"deleted": totals}, args, script_name())
