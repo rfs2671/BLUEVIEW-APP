@@ -1,0 +1,374 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Linking,
+  AppState,
+  ActivityIndicator,
+  Platform,
+} from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { MessageCircle, UserPlus } from 'lucide-react-native';
+import { GlassCard } from './GlassCard';
+import { useToast } from './Toast';
+import { whatsappAPI } from '../utils/api';
+import { isOfflineError } from '../utils/offlineState';
+import {
+  whatsappCardView, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
+} from '../utils/whatsappConnect';
+import { spacing, borderRadius } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
+import { useTheme } from '../context/ThemeContext';
+
+// WhatsApp brand color — intentional, not a token.
+const WHATSAPP_GREEN = '#25D366';
+
+/**
+ * THE ONE WHATSAPP CARD on Integrations (replaces the company card and the
+ * "Your WhatsApp" card, which showed two icons and two titles for one thing).
+ *
+ *   header       Levelog number, company setup chip, Save to Contacts
+ *   Your alerts  this person's own updates — Admins and PMs
+ *   Groups       linking job groups — Admins only
+ *
+ * What it SAYS comes from utils/whatsappConnect.js (pure, tested). This file
+ * only fetches and draws.
+ *
+ * LIVE REFRESH. Turning alerts on happens in another app (WhatsApp). While
+ * the screen is open and a START may be on its way — or there is no reading
+ * yet — GET /whatsapp/me is read every few seconds, and again on focus and
+ * when the app returns to the foreground, so "Off" flips to "On" in place.
+ */
+export default function WhatsAppCard({ isAdmin = false }) {
+  const { colors } = useTheme();
+  const s = buildStyles(colors);
+  const router = useRouter();
+  const toast = useToast();
+  const [me, setMe] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [focused, setFocused] = useState(true);
+  const [busy, setBusy] = useState(null); // 'activate' | 'contact' | null
+  const pollStartedAt = useRef(Date.now());
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const refreshMe = useCallback(async () => {
+    try {
+      const data = await whatsappAPI.getMe();
+      if (mounted.current) setMe(data);
+    } catch (e) {
+      // Keep the last reading: a dropped poll is not a state change.
+    }
+  }, []);
+
+  const refreshCompany = useCallback(async () => {
+    try {
+      const st = await whatsappAPI.getStatus();
+      if (mounted.current) setStatus(st);
+      if (isAdmin && st && st.company_active) {
+        const res = await whatsappAPI.getPendingGroups();
+        const rows = (res && Array.isArray(res.pending)) ? res.pending : [];
+        if (mounted.current) setPendingCount(rows.length);
+      }
+    } catch (e) {
+      // Leave the last reading in place.
+    }
+  }, [isAdmin]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      pollStartedAt.current = Date.now();
+      refreshMe();
+      refreshCompany();
+      return () => setFocused(false);
+    }, [refreshMe, refreshCompany]),
+  );
+
+  // Back from WhatsApp: re-read at once.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        pollStartedAt.current = Date.now();
+        refreshMe();
+        refreshCompany();
+      }
+    });
+    return () => sub && sub.remove && sub.remove();
+  }, [refreshMe, refreshCompany]);
+
+  const state = me && me.state;
+  const shouldPoll = !me || WA_POLLING_STATES.has(state);
+  useEffect(() => {
+    if (!focused || !shouldPoll) return undefined;
+    const id = setInterval(() => {
+      if (Date.now() - pollStartedAt.current > WA_POLL_MAX_MS) return;
+      refreshMe();
+    }, WA_POLL_MS);
+    return () => clearInterval(id);
+  }, [focused, shouldPoll, refreshMe]);
+
+  const view = whatsappCardView({ me, status, pendingCount, isAdmin });
+  if (!view.visible) return null;
+
+  const openWhatsApp = (url) => {
+    pollStartedAt.current = Date.now();
+    Linking.openURL(url);
+  };
+
+  const activate = async () => {
+    setBusy('activate');
+    try {
+      await whatsappAPI.activate();
+      await refreshCompany();
+      toast.success('WhatsApp is on', 'You can now link job groups.');
+    } catch (error) {
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Turning on WhatsApp needs a connection. Nothing changed.');
+      } else {
+        toast.error('Could not turn on WhatsApp', error?.response?.data?.detail || 'Please try again.');
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveContact = async () => {
+    setBusy('contact');
+    try {
+      await whatsappAPI.downloadVCard();
+      if (Platform.OS === 'web') {
+        toast.success('Contact downloaded', 'Open the file to add the Levelog number.');
+      }
+    } catch (error) {
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Reconnect to save the contact.');
+      } else {
+        toast.error('Could not save contact', error?.response?.data?.detail || 'Please try again.');
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const Chip = ({ c }) => (c ? (
+    <View style={[s.chip, c.tone === 'ok' && s.chipOk, c.tone === 'warn' && s.chipWarn]}>
+      <View style={[s.dot, c.tone === 'ok' && s.dotOk, c.tone === 'warn' && s.dotWarn]} />
+      <Text style={[s.chipText, c.tone === 'ok' && s.chipTextOk, c.tone === 'warn' && s.chipTextWarn]}>
+        {c.label}
+      </Text>
+    </View>
+  ) : null);
+
+  const { header, alerts, groups } = view;
+
+  return (
+    <GlassCard style={s.card}>
+      {/* Header: one icon, one title, one chip. */}
+      <View style={s.headerRow}>
+        <View style={s.icon}>
+          <MessageCircle size={26} strokeWidth={1.5} color={WHATSAPP_GREEN} />
+        </View>
+        <Text style={s.title}>WhatsApp</Text>
+        <Chip c={header.chip} />
+      </View>
+      {header.number ? (
+        <View style={s.numberRow}>
+          <Text style={s.numberText}>
+            Levelog number: <Text style={s.numberValue}>{header.number}</Text>
+          </Text>
+          {header.canSaveContact ? (
+            <Pressable
+              onPress={saveContact}
+              disabled={busy === 'contact'}
+              accessibilityRole="button"
+              style={({ pressed }) => [s.smallButton, pressed && s.pressed]}
+            >
+              {busy === 'contact'
+                ? <ActivityIndicator size="small" color={colors.text.primary} />
+                : (
+                  <>
+                    <UserPlus size={16} strokeWidth={2} color={colors.text.primary} />
+                    <Text style={s.smallButtonText}>Save to Contacts</Text>
+                  </>
+                )}
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
+      {alerts ? (
+        <View style={s.section}>
+          <View style={s.sectionHead}>
+            <Text style={s.sectionTitle}>Your alerts</Text>
+            <Chip c={alerts.chip} />
+          </View>
+          <Text style={s.line}>{alerts.line}</Text>
+          {alerts.button ? (
+            <Pressable
+              onPress={() => openWhatsApp(alerts.button.url)}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                alerts.button.quiet ? s.quietButton : s.greenButton,
+                pressed && s.pressed,
+              ]}
+            >
+              <Text style={alerts.button.quiet ? s.quietButtonText : s.greenButtonText}>
+                {alerts.button.label}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
+      {groups ? (
+        <View style={s.section}>
+          <View style={s.sectionHead}>
+            <Text style={s.sectionTitle}>Groups</Text>
+          </View>
+          {groups.line ? <Text style={s.line}>{groups.line}</Text> : null}
+          {groups.action ? (
+            <Pressable
+              onPress={groups.action.kind === 'activate'
+                ? activate
+                : () => router.push('/admin/whatsapp-groups')}
+              disabled={busy === 'activate'}
+              accessibilityRole="button"
+              style={({ pressed }) => [s.greenButton, pressed && s.pressed]}
+            >
+              {busy === 'activate'
+                ? <ActivityIndicator size="small" color="#fff" />
+                : (
+                  <>
+                    <Text style={s.greenButtonText}>{groups.action.label}</Text>
+                    {groups.action.count ? (
+                      <View style={s.badge}>
+                        <Text style={s.badgeText}>{groups.action.count}</Text>
+                      </View>
+                    ) : null}
+                  </>
+                )}
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+    </GlassCard>
+  );
+}
+
+function buildStyles(colors) {
+  return StyleSheet.create({
+    card: { marginBottom: spacing.xl },
+    headerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    icon: {
+      width: 44,
+      height: 44,
+      borderRadius: borderRadius.lg,
+      backgroundColor: 'rgba(37, 211, 102, 0.1)', /* brand: WhatsApp - intentional, not a token */
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    title: { flex: 1, fontSize: 20, fontWeight: '600', color: colors.text.primary },
+    numberRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    numberText: { fontSize: 14, color: colors.text.muted },
+    numberValue: { color: colors.text.primary, fontWeight: '600' },
+    section: {
+      borderTopWidth: 1,
+      borderTopColor: colors.glass.border,
+      paddingTop: spacing.md,
+      marginTop: spacing.md,
+    },
+    sectionHead: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: spacing.xs,
+    },
+    sectionTitle: { fontSize: 16, fontWeight: '600', color: colors.text.primary },
+    line: { fontSize: 14, color: colors.text.muted, marginBottom: spacing.md },
+    chip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      backgroundColor: colors.glass.background,
+    },
+    chipOk: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
+    chipWarn: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
+    dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.text.muted },
+    dotOk: { backgroundColor: semantic.verified },
+    dotWarn: { backgroundColor: semantic.attention },
+    chipText: { fontSize: 12, fontWeight: '500', color: colors.text.muted },
+    chipTextOk: { color: semantic.verified },
+    chipTextWarn: { color: semantic.attention },
+    greenButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.sm,
+      backgroundColor: WHATSAPP_GREEN,
+      borderRadius: borderRadius.lg,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.xl,
+      minHeight: 48,
+    },
+    greenButtonText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+    quietButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: borderRadius.lg,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.xl,
+      minHeight: 48,
+    },
+    quietButtonText: { fontSize: 16, fontWeight: '600', color: colors.text.primary },
+    smallButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.md,
+      minHeight: 44,
+    },
+    smallButtonText: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
+    badge: {
+      minWidth: 22,
+      height: 22,
+      borderRadius: 11,
+      paddingHorizontal: 6,
+      backgroundColor: '#fff',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    badgeText: { fontSize: 12, fontWeight: '700', color: WHATSAPP_GREEN },
+    pressed: { opacity: 0.85 },
+  });
+}

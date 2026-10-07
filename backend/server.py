@@ -43135,11 +43135,16 @@ async def _consume_reply_window(phone: str) -> bool:
 
 
 async def _active_optin_for_phone(phone: str) -> Optional[dict]:
+    """The active opt-in for a phone, or for a chat: a person who opted in
+    from a WhatsApp privacy id (@lid) is keyed by `chat_digits`, because
+    their messages — and so the replies and sends to them — use that id."""
     digits = wa_dm.phone_digits(phone)
     if not digits:
         return None
     try:
-        return await db[WA_OPTINS].find_one({"phone": digits, "status": "active"})
+        return await db[WA_OPTINS].find_one(
+            {"status": "active",
+             "$or": [{"phone": digits}, {"chat_digits": digits}]})
     except Exception:
         return None
 
@@ -43302,8 +43307,11 @@ async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
             return None
     elif pref_key and not prefs.get(pref_key):
         return None
+    # Delivered to the chat the person opted in FROM. For a @lid sender that
+    # is the only id known to reach them; for a phone sender it is their
+    # phone's chat, as before.
     return await send_whatsapp_message(
-        wa_dm.dm_chat_id(optin["phone"]), message,
+        optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"]), message,
         dm_meta={"user_id": uid, "company_id": company_id,
                  "project_id": str(project_id) if project_id else None,
                  "kind": kind, "window": window},
@@ -43342,64 +43350,239 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
     return out
 
 
-async def _handle_dm_start(phone: str) -> None:
-    """START from a phone: opt the matching eligible user in, or say nothing
-    that reveals whether the number is known."""
-    digits = wa_dm.phone_digits(phone)
-    users = await _find_users_by_phone(digits)
-    eligible = [u for u in users if wa_dm.is_dm_eligible(u)]
-    if len(users) != 1 or len(eligible) != 1:
-        _security_event("whatsapp_optin_refused",
-                        reason=("no_user" if not users else
-                                "ambiguous" if len(users) > 1 else
-                                "role_not_eligible"),
-                        row_count=len(users))
-        await send_whatsapp_message(wa_dm.dm_chat_id(digits),
-                                    wa_dm.NOT_ELIGIBLE_TEXT)
+async def _waapi_contact_phone(jid: str) -> str:
+    """Ask WaAPI who a @lid is. NOT VERIFIED: WaAPI's docs are not reachable
+    from here, so this tries the whatsapp-web.js contact action by name, logs
+    what came back (no token) so the shape can be confirmed in Railway, and
+    reads the first phone-shaped value. '' when anything is off."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN) or not jid:
+        return ""
+    url = (f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}"
+           f"/client/action/get-contact-by-id")
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}",
+               "Content-Type": "application/json"}
+    code, body, exc = await _waapi_post_raw(url, {"contactId": jid}, headers)
+    try:
+        preview = json.dumps(body, default=str)[:400] if body is not None else ""
+    except Exception:
+        preview = "<unserialisable>"
+    logger.info(f"[wa-dm] lid lookup get-contact-by-id -> "
+                f"{'no response ' + type(exc).__name__ if exc else f'http {code}'} "
+                f"body={preview.replace(WAAPI_TOKEN, '<token>') if WAAPI_TOKEN else preview}")
+    if exc or code is None or code >= 400 or not isinstance(body, (dict, list)):
+        return ""
+    found = wa_dm.phone_from_payload(body)
+    if found:
+        return found
+    # whatsapp-web.js Contact: `number`, or `id` as {server: 'c.us', user}.
+    data = body.get("data") if isinstance(body, dict) else None
+    for node in (body, data, (data or {}).get("data") if isinstance(data, dict) else None):
+        if not isinstance(node, dict):
+            continue
+        nid = node.get("id")
+        if isinstance(nid, dict) and str(nid.get("server") or "") == "c.us":
+            d = wa_dm.phone_digits(str(nid.get("user") or ""))
+            if 10 <= len(d) <= 15:
+                return d
+        num = wa_dm.phone_digits(str(node.get("number") or ""))
+        if 10 <= len(num) <= 15 and num != wa_dm.phone_digits(jid):
+            return num
+    return ""
+
+
+async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
+    """The sender's real phone digits, or '' when it cannot be known.
+
+    A @c.us sender IS a phone. A @lid sender (WhatsApp's privacy id, which it
+    now uses for many 1:1 chats) is not: its digits match nobody's phone.
+    Tried in order: a phone field in the webhook payload, an earlier opt-in
+    from the same chat, then WaAPI's contact lookup."""
+    if wa_dm.jid_kind(chat_id) != "lid":
+        return wa_dm.phone_digits(chat_id)
+    found = wa_dm.phone_from_payload(raw)
+    if found:
+        return found
+    lid = wa_dm.phone_digits(chat_id)
+    try:
+        prior = await db[WA_OPTINS].find_one(
+            {"chat_digits": lid, "phone_verified": True})
+    except Exception:
+        prior = None
+    if prior and prior.get("phone"):
+        return str(prior["phone"])
+    return await _waapi_contact_phone(chat_id)
+
+
+async def _user_for_connect_code(code: str) -> Optional[dict]:
+    """The DM-eligible user whose connect code (today's or yesterday's, UTC)
+    is `code`, else None. Codes are HMACs, so this checks each eligible
+    account rather than looking one up — admins and PMs only, a few hundred
+    rows at most."""
+    if not code or not JWT_SECRET:
+        return None
+    today = datetime.now(timezone.utc).date()
+    days = [today.isoformat(), (today - timedelta(days=1)).isoformat()]
+    try:
+        rows = await db.users.find(
+            {"role": {"$in": ["admin", "pm", "Admin", "PM", "Pm", "ADMIN"]},
+             "is_deleted": {"$ne": True}},
+            {"password": 0}).to_list(2000)
+    except Exception:
+        return None
+    for u in rows:
+        uid = str(u.get("_id"))
+        if any(wa_dm.connect_code(uid, d, JWT_SECRET) == code for d in days):
+            return u if wa_dm.is_dm_eligible(u) else None
+    return None
+
+
+async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
+    """Every START/STOP ends here: one reply to the chat it came from, and one
+    log line naming the outcome (never the number)."""
+    logger.info(f"[wa-dm] {outcome} kind={wa_dm.jid_kind(chat_id) or 'unknown'} "
+                f"chat=...{wa_dm.phone_digits(chat_id)[-4:]}")
+    sent = await send_whatsapp_message(wa_dm.dm_chat_id(chat_id), text)
+    if sent is None:
+        logger.warning(f"[wa-dm] reply NOT delivered after {outcome} "
+                       f"(see 'WhatsApp DM refused' / 'send failed' above)")
+
+
+async def _handle_dm_start(chat_id: str, body: str = "START",
+                           raw: Any = None) -> None:
+    """START, from any chat: opt the right user in, or say plainly why not.
+
+    Two ways to know who is writing:
+      * the PHONE the message came from (a @c.us chat, or a @lid whose phone
+        could be resolved) matched against users.phone; or
+      * the CONNECT CODE the app put after START ("START K7Q2MX"), which
+        names the account that showed it. This is what makes a @lid sender
+        whose phone WhatsApp withholds connectable at all.
+    When both are present they must agree. Every path replies, to the chat
+    the START came from."""
+    chat = wa_dm.dm_chat_id(chat_id)
+    chat_digits = wa_dm.phone_digits(chat)
+    kind = wa_dm.jid_kind(chat)
+    phone = await _resolve_dm_phone(chat, raw)
+    code = wa_dm.parse_start_code(body)
+
+    if code:
+        u = await _user_for_connect_code(code)
+        if not u:
+            _security_event("whatsapp_optin_refused", reason="code_unknown",
+                            jid_kind=kind)
+            await _reply_dm(chat, wa_dm.CODE_EXPIRED_TEXT, "start_code_expired")
+            return
+        profile = wa_dm.phone_digits(u.get("phone") or "")
+        if not profile:
+            await _reply_dm(chat, wa_dm.PHONE_MISSING_TEXT, "start_phone_missing")
+            return
+        if phone and phone not in [wa_dm.phone_digits(v) for v in
+                                   _contact_phone_variants(u.get("phone") or "")]:
+            _security_event("whatsapp_optin_refused", reason="code_phone_mismatch",
+                            jid_kind=kind)
+            await _reply_dm(chat, wa_dm.WRONG_PHONE_TEXT, "start_wrong_phone")
+            return
+        others = [x for x in await _find_users_by_phone(profile)
+                  if str(x.get("_id")) != str(u.get("_id"))]
+        if others:
+            await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+            return
+        await _record_optin(u, profile, chat, chat_digits,
+                            phone_verified=bool(phone), source="start_code")
         return
-    u = eligible[0]
+
+    if not phone:
+        _security_event("whatsapp_optin_refused", reason="lid_unresolved",
+                        jid_kind=kind)
+        await _reply_dm(chat, wa_dm.NEED_APP_TEXT, "start_lid_unresolved")
+        return
+    users = await _find_users_by_phone(phone)
+    if len(users) > 1:
+        _security_event("whatsapp_optin_refused", reason="ambiguous",
+                        row_count=len(users), jid_kind=kind)
+        await _reply_dm(chat, wa_dm.PHONE_SHARED_TEXT, "start_phone_shared")
+        return
+    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+        _security_event("whatsapp_optin_refused",
+                        reason="no_user" if not users else "role_not_eligible",
+                        row_count=len(users), jid_kind=kind)
+        await _reply_dm(chat, wa_dm.NOT_ELIGIBLE_TEXT, "start_not_eligible")
+        return
+    await _record_optin(users[0], phone, chat, chat_digits,
+                        phone_verified=True, source="start")
+
+
+async def _record_optin(u: dict, phone: str, chat: str, chat_digits: str, *,
+                        phone_verified: bool, source: str) -> None:
+    """Write the opt-in (keyed by the profile phone) and send the intro to
+    the chat it came from. A write that fails is SAID, not swallowed."""
     uid, cid = str(u.get("_id")), str(u.get("company_id"))
     now = datetime.now(timezone.utc)
     try:
         await db[WA_OPTINS].update_many(
-            {"user_id": uid, "phone": {"$ne": digits}, "status": "active"},
+            {"user_id": uid, "phone": {"$ne": phone}, "status": "active"},
             {"$set": {"status": "superseded", "updated_at": now}},
         )
         await db[WA_OPTINS].update_one(
-            {"phone": digits},
-            {"$set": {"phone": digits, "user_id": uid, "company_id": cid,
+            {"phone": phone},
+            {"$set": {"phone": phone, "user_id": uid, "company_id": cid,
+                      "chat_id": chat, "chat_digits": chat_digits,
+                      "chat_kind": wa_dm.jid_kind(chat),
+                      "phone_verified": phone_verified,
                       "status": "active", "opted_in_at": now,
                       "opted_out_at": None, "updated_at": now,
-                      "source": "start"}},
+                      "source": source}},
             upsert=True,
         )
     except Exception as e:
         logger.warning(f"opt-in write failed: {type(e).__name__}")
+        await _reply_dm(chat, wa_dm.TRY_AGAIN_TEXT, "start_write_failed")
         return
-    _security_event("whatsapp_optin", user_id=uid, company_id=cid)
-    await send_whatsapp_message(wa_dm.dm_chat_id(digits), wa_dm.INTRO_TEXT)
+    _security_event("whatsapp_optin", user_id=uid, company_id=cid,
+                    jid_kind=wa_dm.jid_kind(chat), source=source)
+    await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
 
 
-async def _handle_dm_stop(phone: str) -> None:
+async def _handle_dm_stop(chat_id: str, raw: Any = None) -> None:
     """STOP / PARAR: opted out, whoever it is — an unknown number is recorded
-    too, so a later lookup never mistakes silence for consent."""
-    digits = wa_dm.phone_digits(phone)
+    too, so a later lookup never mistakes silence for consent.
+
+    Matched by the chat AND by the phone: someone who opted in from a @lid
+    chat is keyed by `chat_digits`, and a STOP from that chat must end it.
+    The confirmation goes back to the chat the STOP came from."""
+    chat = wa_dm.dm_chat_id(chat_id)
+    digits = wa_dm.phone_digits(chat)
     if not digits:
         return
+    phone = await _resolve_dm_phone(chat, raw)
     now = datetime.now(timezone.utc)
+    keys = [{"phone": digits}, {"chat_digits": digits}]
+    if phone and phone != digits:
+        keys.append({"phone": phone})
     try:
-        await db[WA_OPTINS].update_one(
-            {"phone": digits},
+        res = await db[WA_OPTINS].update_many(
+            {"$or": keys},
             {"$set": {"status": "opted_out", "opted_out_at": now,
-                      "updated_at": now},
-             "$setOnInsert": {"phone": digits, "user_id": None,
-                              "company_id": None, "source": "stop"}},
-            upsert=True,
+                      "updated_at": now}},
         )
+        if not getattr(res, "matched_count", 0):
+            await db[WA_OPTINS].update_one(
+                {"phone": phone or digits},
+                {"$set": {"status": "opted_out", "opted_out_at": now,
+                          "updated_at": now},
+                 "$setOnInsert": {"phone": phone or digits, "user_id": None,
+                                  "company_id": None, "chat_id": chat,
+                                  "chat_digits": digits, "source": "stop"}},
+                upsert=True,
+            )
     except Exception as e:
         logger.warning(f"opt-out write failed: {type(e).__name__}")
-    _security_event("whatsapp_optout", reason="stop")
-    await send_whatsapp_message(wa_dm.dm_chat_id(digits), wa_dm.STOP_CONFIRM_TEXT)
+        await _reply_dm(chat, wa_dm.TRY_AGAIN_TEXT.replace("START", "STOP"),
+                        "stop_write_failed")
+        return
+    _security_event("whatsapp_optout", reason="stop",
+                    jid_kind=wa_dm.jid_kind(chat))
+    await _reply_dm(chat, wa_dm.STOP_CONFIRM_TEXT, "stop_opted_out")
 
 
 # -- ITEM 4: THE PROMPT BAN DID NOT HOLD, SO THIS IS NOT A PROMPT CHANGE ----
@@ -53076,19 +53259,32 @@ async def _process_whatsapp_message(payload: dict):
         # --- DIRECT message ---
         # Their message opens the short window in which the bot may REPLY to
         # them without an opt-in (lib/wa_dm.py). Opened for every inbound
-        # direct message, before anything that might reply.
+        # direct message, before anything that might reply. Keyed by the
+        # chat's digits — the same digits the reply is addressed to.
+        dm_chat = parsed.get("from") or parsed.get("sender") or ""
         await _open_dm_reply_window(sender)
 
         # START / STOP / PARAR are handled for ANY number, before the contact
         # lookup: STOP must work for someone the system has never heard of,
         # and START decides eligibility from users.phone, not from contacts.
+        #
+        # THE CHAT ID, NOT THE DIGITS. A sender WhatsApp identifies by its
+        # privacy id arrives as `<lid>@lid`; its digits are not a phone, and
+        # a reply to `<lid>@c.us` names a chat that does not exist. START from
+        # such a sender was looked up as an unknown number and answered into
+        # nowhere — no opt-in, no reply.
         if not parsed.get("has_audio"):
             command = wa_dm.parse_dm_command(parsed.get("body"))
+            if command:
+                logger.info(f"[wa-dm] inbound {command} "
+                            f"kind={wa_dm.jid_kind(dm_chat) or 'unknown'} "
+                            f"chat=...{wa_dm.phone_digits(dm_chat)[-4:]}")
             if command == "start":
-                await _handle_dm_start(sender)
+                await _handle_dm_start(dm_chat, parsed.get("body") or "",
+                                       parsed.get("raw"))
                 return
             if command == "stop":
-                await _handle_dm_stop(sender)
+                await _handle_dm_stop(dm_chat, parsed.get("raw"))
                 return
 
         # Look up contact
@@ -54590,6 +54786,14 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
     state = wa_dm.connect_state(
         eligible=eligible, bot_configured=bool(bot), has_phone=has_phone,
         phone_shared=phone_shared, optin_status=status)
+    # THE CODE IN THE LINK. WhatsApp increasingly identifies a 1:1 sender by a
+    # privacy id (@lid) instead of their number, and then START cannot be
+    # matched to anyone by phone. The code names this account, so the START
+    # the link prepares connects whichever id WhatsApp uses. A plain "START"
+    # still works from a chat that shows its number.
+    code = (wa_dm.connect_code(uid, datetime.now(timezone.utc).date().isoformat(),
+                               JWT_SECRET)
+            if JWT_SECRET and state in wa_dm.CONNECT_ACTIONABLE else "")
     return {
         "eligible": eligible,
         "state": state,
@@ -54597,8 +54801,12 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
         "status": status,
         "connected": state == wa_dm.CONNECT_CONNECTED,
         "phone": ("+" + digits) if (eligible and has_phone) else None,
-        "connect_url": (f"https://wa.me/{bot}?text=START"
+        "bot_number": ("+" + bot) if (eligible and bot) else None,
+        "connect_url": ((f"https://wa.me/{bot}?text=START%20{code}" if code
+                         else f"https://wa.me/{bot}?text=START")
                         if state in wa_dm.CONNECT_ACTIONABLE else None),
+        "stop_url": (f"https://wa.me/{bot}?text=STOP"
+                     if state == wa_dm.CONNECT_CONNECTED else None),
     }
 
 

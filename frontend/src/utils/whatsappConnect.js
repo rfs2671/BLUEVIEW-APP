@@ -1,21 +1,29 @@
 /**
- * WHAT THE INTEGRATIONS → WHATSAPP CARD SAYS, for each state GET /whatsapp/me
- * returns (backend/lib/wa_dm.py::connect_state).
+ * WHAT THE ONE WHATSAPP CARD ON INTEGRATIONS SAYS.
  *
  * Pure, so it is tested under plain node (whatsappConnect.test.cjs) and the
- * card only renders what this returns. Every blocked state carries ONE plain
- * line naming the thing to fix; the Connect button appears only in the states
- * where pressing it can work, because the server sends `connect_url` only
- * then.
+ * card renders only what this returns. Three sections:
+ *
+ *   header      the Levelog number and whether WhatsApp is set up for the
+ *               company (GET /whatsapp/status), with Save to Contacts
+ *   Your alerts this person's own updates (GET /whatsapp/me state, from
+ *               backend lib/wa_dm.py::connect_state) — Admins and PMs
+ *   Groups      linking job groups — Admins only
+ *
+ * One status chip and one plain line per state. A button appears only where
+ * pressing it can work: the server sends `connect_url` / `stop_url` only then.
  */
 
 export const WA_POLL_MS = 4000;
 // Stop polling an idle screen after this long; focus, returning to the app,
-// or pressing Connect starts it again.
+// or pressing a button starts it again.
 export const WA_POLL_MAX_MS = 10 * 60 * 1000;
 
 // States in which a START may be on its way, so the card polls.
 export const WA_POLLING_STATES = new Set(['not_connected', 'reconnect_needed']);
+
+export const GROUPS_EMPTY_LINE =
+  "Add the Levelog number to a job's WhatsApp group. It will appear here to link.";
 
 /** "+15551234567" -> "+1 (555) 123-4567"; anything else as given. */
 export function formatWaPhone(phone) {
@@ -29,67 +37,89 @@ export function formatWaPhone(phone) {
   return d ? `+${d}` : '';
 }
 
-/**
- * { visible, status, tone, line, button } for the card.
- *   tone: 'ok' | 'warn' | 'idle'
- *   button: null, or { label, url }
- */
-export function whatsappConnectView(me) {
+const chip = (label, tone) => ({ label, tone }); // tone: 'ok' | 'warn' | 'idle'
+
+/** The "Your alerts" section for a GET /whatsapp/me reading, or null. */
+export function alertsView(me) {
   const state = me && me.state;
-  if (!me || !me.eligible || !state || state === 'not_eligible') {
-    return { visible: false };
-  }
-  const url = me.connect_url || null;
-  const button = (label) => (url ? { label, url } : null);
+  if (!me || !me.eligible || !state || state === 'not_eligible') return null;
+  const on = me.connect_url ? { label: 'Turn on alerts', url: me.connect_url } : null;
   switch (state) {
     case 'connected':
       return {
-        visible: true,
-        status: `Connected (${formatWaPhone(me.phone)})`,
-        tone: 'ok',
-        line: 'Reply STOP in WhatsApp to turn updates off.',
-        button: null,
+        chip: chip('On', 'ok'),
+        line: `You'll get updates for your projects at ${formatWaPhone(me.phone)}.`,
+        button: me.stop_url ? { label: 'Turn off', url: me.stop_url, quiet: true } : null,
+      };
+    case 'reconnect_needed':
+      return {
+        chip: chip('Reconnect needed', 'warn'),
+        line: 'Your phone number changed. Turn alerts on again from your new number.',
+        button: on,
       };
     case 'phone_missing':
       return {
-        visible: true,
-        status: 'Phone missing',
-        tone: 'warn',
-        line: 'Add your mobile number in Settings, then come back here to connect.',
+        chip: chip('Phone missing', 'warn'),
+        line: 'Add your mobile number in Settings, then turn alerts on.',
         button: null,
       };
     case 'phone_shared':
       return {
-        visible: true,
-        status: 'Phone shared',
-        tone: 'warn',
+        chip: chip('Phone shared', 'warn'),
         line: 'This number is also on another Blueview account. Change your number in Settings, or ask Blueview support to remove it from the other account.',
         button: null,
       };
-    case 'reconnect_needed':
-      return {
-        visible: true,
-        status: 'Reconnect needed (phone changed)',
-        tone: 'warn',
-        line: `Your phone number changed. Tap Connect and send START from ${formatWaPhone(me.phone)}.`,
-        button: button('Reconnect WhatsApp'),
-      };
     case 'unavailable':
       return {
-        visible: true,
-        status: 'Not available',
-        tone: 'warn',
-        line: 'WhatsApp updates are not set up yet. Contact Blueview support.',
+        chip: chip('Not available', 'warn'),
+        line: "WhatsApp alerts aren't set up yet. Contact Blueview support.",
         button: null,
       };
     case 'not_connected':
     default:
       return {
-        visible: true,
-        status: 'Not connected',
-        tone: 'idle',
-        line: `Tap Connect, then send the START message from ${formatWaPhone(me.phone)}.`,
-        button: button('Connect WhatsApp'),
+        chip: chip('Off', 'idle'),
+        line: 'Get updates for your projects on WhatsApp.',
+        button: on,
       };
   }
+}
+
+/** The Groups section (Admins only), or null. */
+export function groupsView({ status, pendingCount, isAdmin }) {
+  if (!isAdmin || !status) return null;
+  if (!status.platform_configured) {
+    return { line: "WhatsApp isn't available yet. Contact Blueview support.", action: null };
+  }
+  if (!status.company_active) {
+    return {
+      line: 'Turn on WhatsApp for your company to link job groups.',
+      action: { kind: 'activate', label: 'Turn on WhatsApp' },
+    };
+  }
+  if (pendingCount > 0) {
+    return { line: null, action: { kind: 'link', label: 'Link new groups', count: pendingCount } };
+  }
+  return { line: GROUPS_EMPTY_LINE, action: null };
+}
+
+/**
+ * The whole card. `visible` is false when there is nothing for this person:
+ * not an Admin, and the server says alerts are not for them.
+ */
+export function whatsappCardView({ me, status, pendingCount = 0, isAdmin = false }) {
+  const alerts = alertsView(me);
+  const groups = groupsView({ status, pendingCount, isAdmin });
+  if (!alerts && !isAdmin) return { visible: false };
+  const number = (me && me.bot_number) || (status && status.whatsapp_number) || '';
+  const header = {
+    chip: !status ? null
+      : status.company_active ? chip('Connected', 'ok')
+        : status.platform_configured ? chip('Not set up', 'idle')
+          : chip('Not available', 'warn'),
+    number: number ? formatWaPhone(number) : '',
+    // The contact card is served only to a company with WhatsApp set up.
+    canSaveContact: !!(status && status.company_active && number),
+  };
+  return { visible: true, header, alerts, groups };
 }
