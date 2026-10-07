@@ -275,11 +275,20 @@ class TheConsumerReadsThem(unittest.TestCase):
         self.assertEqual((t.total, T.per_unit(t)), (8, {"4A": 2, "4B": 2, "4C": 2, "4D": 2}))
 
     def test_the_gate_binds_the_count(self):
+        """With the census search_plans attaches beside the rows - and not
+        without it: rows alone were how a partial 2 of 16 was bound as a
+        total (test_a_located_count_is_complete_or_refused)."""
         _present()
-        ok, bad = S._count_answer_is_bound(
-            "There are 8 EF-1 exhaust fans.",
-            _rows(["4A", "4A", "4B", "4B", "4C", "4C", "4D", "4D"]))
+        self.assertTrue(hasattr(S, "glyph_census"), "no census in this tree")
+        rows = _rows(["4A", "4A", "4B", "4B", "4C", "4C", "4D", "4D"])
+        pages = sorted({r["page_id"] for r in rows})
+        census = [S.glyph_census("family", "p1", pages, 8,
+                                 family="EXHAUST FAN SCHEDULE", tags=["EF-1", "EF-2"]),
+                  S.glyph_census("refusals", "p1", pages, 0)]
+        ok, bad = S._count_answer_is_bound("There are 8 EF-1 exhaust fans.", rows + census)
         self.assertEqual((ok, bad), (True, []))
+        ok, bad = S._count_answer_is_bound("There are 8 EF-1 exhaust fans.", rows)
+        self.assertEqual((ok, bad), (False, ["8"]))
 
     def test_a_refused_unit_withholds_the_split(self):
         _present()
