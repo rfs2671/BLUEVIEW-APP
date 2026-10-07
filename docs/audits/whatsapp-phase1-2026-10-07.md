@@ -149,22 +149,42 @@ user record. So an old number cannot receive a proactive DM after a phone
 change. The DM intents and the checklist permission check still use
 `whatsapp_contacts`.
 
-## 12. Hard delete of 638 Lafayette Avenue: the script, and why it was needed
+## 12. Hard delete of the ghost company 69e16add (638 Lafayette and the rest)
 
-**Script:** `backend/scripts/hard_delete_638_lafayette.py`
+The first script covered 638 Lafayette alone. It refused on its first run
+because company `69e16add079abf2b78ee08ce` owns three more projects. The
+operator checked them: 3846 Bailey Ave, 533 Concord Ave and 852 E 176th St, all
+`is_deleted: true`, created 2026-04-16 23:03:58–59 (seed data). It was replaced
+by a script that deletes the whole company.
+
+**Script:** `backend/scripts/hard_delete_ghost_company_69e16add.py`
+- Projects: `69e16adf079abf2b78ee08d4` (638 Lafayette), `69e16adf079abf2b78ee08d6`
+  (852 E 176th St), `69e16ade079abf2b78ee08d0` (3846 Bailey Ave),
+  `69e16ade079abf2b78ee08d2` (533 Concord Ave), `69f8fb5e9429c5be4b2fcb66`
+  (638 Lafayette duplicate, no `company_id`).
+- Every row in every collection with this `company_id` or one of these
+  `project_id`s.
 - It is a dry run by default.
-- `--execute` also requires both project ids typed out exactly, plus
+- `--execute` also requires all five project ids typed out exactly, plus
   `--i-know --reason --session`.
 - Every write goes through `audited()`.
 - It refuses if any premise is false:
   - the company has a `companies` document;
-  - the company owns another project;
-  - the group is bound elsewhere;
-  - a project's `company_id` is not the expected one.
-- The bot **leaves** `120363424969499174@g.us` first. The WaAPI action is
+  - the company owns a project that is not one of the five;
+  - a listed project's `company_id` is anything other than `69e16add…` or
+    empty;
+  - an active user (`is_deleted` not true) still belongs to the company. They
+    are listed;
+  - a group of the company is also bound to another company or project.
+- Groups: the known `120363424969499174@g.us`, plus every `whatsapp_groups`
+  row bound to the company or to one of the five projects, plus every pending
+  group recorded for the company. The dry run lists them.
+- The bot **leaves every group** first. The WaAPI action is
   `client/action/leave-group` (flag `--waapi-leave-action`). WaAPI's docs are
-  not reachable from here, so that action name is **unverified**. If the leave
-  fails, the script deletes nothing.
+  not reachable from here, so that action name is **unverified**.
+  - If any leave fails, the script deletes nothing.
+  - `--bot-not-in-group <wa_group_id>` (repeatable) skips one group. Use it
+    only after checking the bot isn't a member.
 - Order of operations:
   1. Collect every R2 key the rows name.
   2. Delete those objects by key. If any delete fails, the script stops and

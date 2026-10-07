@@ -1,24 +1,34 @@
-"""HARD DELETE: 638 Lafayette Avenue (closed project) and its orphan company.
+"""HARD DELETE: the ghost company 69e16add079abf2b78ee08ce and all five of its
+projects. The company has no `companies` document; its projects are 638
+Lafayette Avenue (closed), a 638 Lafayette duplicate with no company_id, and
+three seed projects created 2026-04-16 and already soft-deleted.
 
     # 1. Dry run (default). Prints what would go, per collection, plus R2.
-    railway run python -m scripts.hard_delete_638_lafayette
+    railway run python -m scripts.hard_delete_ghost_company_69e16add
 
-    # 2. Execute. The two project ids must be typed out, exactly.
-    railway run python -m scripts.hard_delete_638_lafayette --execute \\
-        --project 69e16adf079abf2b78ee08d4 --project 69f8fb5e9429c5be4b2fcb66 \\
-        --i-know --reason "638 Lafayette closed, operator hard delete" \\
+    # 2. Execute. All five project ids must be typed out, exactly.
+    railway run python -m scripts.hard_delete_ghost_company_69e16add --execute \\
+        --project 69e16adf079abf2b78ee08d4 --project 69e16adf079abf2b78ee08d6 \\
+        --project 69e16ade079abf2b78ee08d0 --project 69e16ade079abf2b78ee08d2 \\
+        --project 69f8fb5e9429c5be4b2fcb66 \\
+        --i-know --reason "ghost company 69e16add, operator hard delete" \\
         --session <id>
 
 ── WHAT THIS DELETES, AND IT IS A HARD DELETE ─────────────────────────────────
 
-  projects      69e16adf079abf2b78ee08d4 (company 69e16add079abf2b78ee08ce)
-                69f8fb5e9429c5be4b2fcb66 (no company_id)
-  whatsapp_groups 69e1bee42bfc871b5d3db427 (wa_group_id
-                120363424969499174@g.us) — the bot LEAVES the group first
-  every row, in EVERY collection, whose project_id is one of those projects or
-  whose company_id is 69e16add079abf2b78ee08ce; plus the rows keyed some other
-  way (file_id, logbook_id, group_id, permit_renewal_id, system_config keys)
-  that the app's own hard delete misses; plus every R2 object those rows name.
+  projects      69e16adf079abf2b78ee08d4  638 Lafayette Avenue
+                69e16adf079abf2b78ee08d6  852 E 176th St
+                69e16ade079abf2b78ee08d0  3846 Bailey Ave
+                69e16ade079abf2b78ee08d2  533 Concord Ave
+                69f8fb5e9429c5be4b2fcb66  638 Lafayette duplicate (no company_id)
+  company       69e16add079abf2b78ee08ce  every row, in EVERY collection, with
+                                          this company_id
+  WhatsApp      69e1bee42bfc871b5d3db427 (120363424969499174@g.us) and every
+                other group bound to this company or to these projects, or
+                pending with this company — the bot LEAVES each one first
+  plus the rows keyed some other way (file_id, logbook_id, group_id,
+  permit_renewal_id, system_config keys) that the app's own hard delete
+  misses; plus every R2 object those rows name.
 
   KEPT: audit_logs. It is the compliance trail, and this script adds to it.
 
@@ -28,17 +38,19 @@
 signature events, and `retention_refusal` refuses a completed project until
 completion + 7 years. This script does not consult either. The dry run PRINTS
 both counts so the operator sees exactly what record is being destroyed; the
-execute path records them in the audit row.
+execute path records them in the audit rows.
 
 ── REFUSALS (nothing is written) ─────────────────────────────────────────────
 
-  * --execute without both project ids, or with any other id
+  * --execute without all five project ids, or with any other id
   * the company has a `companies` document (the premise is that it has none)
-  * the company owns a project other than the two targets
-  * the WhatsApp group is bound to any project or company other than these
-  * a target project's company_id is not what this docstring says
-  * the bot cannot leave the group (use --bot-not-in-group only if you have
-    checked it is not a member)
+  * the company owns any project not in the five
+  * a listed project's company_id is anything but 69e16add... or empty
+  * any active user (is_deleted is not true) still belongs to the company —
+    they are listed
+  * a group of this company is ALSO bound to another company or project
+  * the bot cannot leave a group (name that group with --bot-not-in-group
+    only if you have checked the bot is not a member)
   * any R2 delete fails — rows are kept so the run can be repeated
 
 Exit codes: 0 ok, 2 bad invocation / env, 3 refused, 4 failed (post-check).
@@ -65,19 +77,24 @@ from scripts.prod_guard import (  # noqa: E402
 
 OK, BAD, REFUSED, FAILED = 0, 2, 3, 4
 
-TARGET_PROJECTS = ("69e16adf079abf2b78ee08d4", "69f8fb5e9429c5be4b2fcb66")
+TARGET_PROJECTS = (
+    "69e16adf079abf2b78ee08d4",  # 638 Lafayette Avenue
+    "69e16adf079abf2b78ee08d6",  # 852 E 176th St
+    "69e16ade079abf2b78ee08d0",  # 3846 Bailey Ave
+    "69e16ade079abf2b78ee08d2",  # 533 Concord Ave
+    "69f8fb5e9429c5be4b2fcb66",  # 638 Lafayette duplicate, no company_id
+)
 TARGET_COMPANY = "69e16add079abf2b78ee08ce"
-EXPECTED_PROJECT_COMPANY = {
-    "69e16adf079abf2b78ee08d4": TARGET_COMPANY,
-    "69f8fb5e9429c5be4b2fcb66": None,
-}
+# A listed project may carry this company or none; anything else refuses.
+ALLOWED_PROJECT_COMPANIES = (TARGET_COMPANY, None)
+# The group known before the run. Others are discovered (_discover_groups).
 TARGET_GROUP_DOC = "69e1bee42bfc871b5d3db427"
 TARGET_WA_GROUP = "120363424969499174@g.us"
 
 KEEP_COLLECTIONS = frozenset({"audit_logs", "system.views", "system.profile"})
 
 
-# ── pure helpers (tested in tests/test_hard_delete_638_lafayette.py) ────────
+# ── pure helpers (tested in tests/test_hard_delete_ghost_company_69e16add.py)
 
 def id_values(raw: str) -> List[Any]:
     """An id as it may be stored: the string, and the ObjectId when valid."""
@@ -103,7 +120,7 @@ def validate_execute_args(execute: bool, projects: List[str]) -> Optional[str]:
         return None
     given = sorted(set(projects or []))
     if given != sorted(TARGET_PROJECTS):
-        return ("--execute requires exactly --project "
+        return ("--execute requires exactly these five: --project "
                 + " --project ".join(TARGET_PROJECTS) + f" (got {given})")
     return None
 
@@ -135,7 +152,7 @@ def system_config_filter(project_ids: Iterable[str]) -> Dict[str, Any]:
 
 
 def build_selectors(*, project_ids, company_id, file_ids, logbook_ids,
-                    renewal_ids, wa_group, group_doc_id,
+                    renewal_ids, wa_groups, group_doc_ids,
                     collection_names) -> List[Tuple[str, Dict[str, Any], str]]:
     """(collection, filter, why) for every delete. A collection may appear
     more than once; deletes are idempotent."""
@@ -158,14 +175,14 @@ def build_selectors(*, project_ids, company_id, file_ids, logbook_ids,
             sel.append((c, any_id("logbook_id", logbook_ids), "by logbook_id"))
     sel.append(("report_number_counters", any_id("_id", pids), "_id = project id"))
     sel.append(("system_config", system_config_filter(pids), "per-project keys"))
+    groups = sorted(set(wa_groups))
     for c in ("whatsapp_messages", "whatsapp_send_log",
               "whatsapp_conversation_state", "whatsapp_link_codes",
-              "whatsapp_voice_events"):
-        sel.append((c, {"group_id": wa_group}, "by group_id"))
-    sel.append(("whatsapp_pending_groups", {"group_id": wa_group}, "by group_id"))
-    sel.append(("whatsapp_groups", {"$or": [any_id("_id", [group_doc_id]),
-                                            {"wa_group_id": wa_group}]},
-                "the group binding"))
+              "whatsapp_voice_events", "whatsapp_pending_groups"):
+        sel.append((c, {"group_id": {"$in": groups}}, "by group_id"))
+    sel.append(("whatsapp_groups", {"$or": [any_id("_id", group_doc_ids),
+                                            {"wa_group_id": {"$in": groups}}]},
+                "the group bindings"))
     meta = any_id("metadata.project_id", pids)
     sel.append(("notification_log", {"$or": [
         meta, {"permit_renewal_id": {"$in": [f"project:{p}" for p in pids]
@@ -187,6 +204,28 @@ def _count(db, coll, flt) -> int:
         return -1
 
 
+def _discover_groups(db) -> Tuple[List[str], List[str]]:
+    """(group doc ids, wa group ids) of every WhatsApp group this deletion
+    touches: the known group, every whatsapp_groups row bound to the company
+    or to a target project, and every pending group recorded for the
+    company."""
+    pids = list(TARGET_PROJECTS)
+    doc_ids: Set[str] = {TARGET_GROUP_DOC}
+    wa_ids: Set[str] = {TARGET_WA_GROUP}
+    for g in db.whatsapp_groups.find({"$or": [
+            any_id("company_id", [TARGET_COMPANY]), any_id("project_id", pids),
+            any_id("_id", [TARGET_GROUP_DOC]), {"wa_group_id": TARGET_WA_GROUP}]},
+            {"_id": 1, "wa_group_id": 1}):
+        doc_ids.add(str(g["_id"]))
+        if g.get("wa_group_id"):
+            wa_ids.add(str(g["wa_group_id"]))
+    for g in db.whatsapp_pending_groups.find(
+            any_id("company_id", [TARGET_COMPANY]), {"group_id": 1}):
+        if g.get("group_id"):
+            wa_ids.add(str(g["group_id"]))
+    return sorted(doc_ids), sorted(wa_ids)
+
+
 def _preflight(db) -> Tuple[Optional[str], Dict[str, Any]]:
     """Facts, and a refusal reason when the premises do not hold."""
     facts: Dict[str, Any] = {}
@@ -195,15 +234,17 @@ def _preflight(db) -> Tuple[Optional[str], Dict[str, Any]]:
     facts["projects"] = [{k: (str(v) if k in ("_id", "company_id") else v)
                           for k, v in p.items()
                           if k in ("_id", "name", "address", "company_id",
-                                   "job_completion_date", "completion_source",
-                                   "legal_hold", "marked_for_deletion",
-                                   "is_deleted")} for p in projects]
+                                   "created_at", "job_completion_date",
+                                   "completion_source", "legal_hold",
+                                   "marked_for_deletion", "is_deleted")}
+                         for p in projects]
+    found = {str(p["_id"]) for p in projects}
+    facts["listed_projects_not_found"] = [p for p in pids if p not in found]
     for p in projects:
-        want = EXPECTED_PROJECT_COMPANY[str(p["_id"])]
         have = str(p.get("company_id") or "") or None
-        if have != want:
-            return (f"project {p['_id']} has company_id {have!r}, expected "
-                    f"{want!r}"), facts
+        if have not in ALLOWED_PROJECT_COMPANIES:
+            return (f"project {p['_id']} has company_id {have!r}; only "
+                    f"{TARGET_COMPANY!r} or none is allowed"), facts
     if db.companies.count_documents(any_id("_id", [TARGET_COMPANY])):
         return (f"company {TARGET_COMPANY} HAS a companies document; this "
                 "script assumes it does not"), facts
@@ -212,24 +253,40 @@ def _preflight(db) -> Tuple[Optional[str], Dict[str, Any]]:
          "_id": {"$nin": [v for i in pids for v in id_values(i)]}}, {"_id": 1})]
     facts["other_projects_of_company"] = others
     if others:
-        return (f"company {TARGET_COMPANY} owns other projects {others}; "
-                "refusing to delete them by company_id"), facts
+        return (f"company {TARGET_COMPANY} owns projects not in the list "
+                f"{others}; refusing to delete them by company_id"), facts
+    active_users = [
+        {"_id": str(u.get("_id")), "name": u.get("name"),
+         "email": u.get("email"), "role": u.get("role")}
+        for u in db.users.find({**any_id("company_id", [TARGET_COMPANY]),
+                                "is_deleted": {"$ne": True}},
+                               {"name": 1, "email": 1, "role": 1})]
+    facts["active_users_of_company"] = active_users
+    if active_users:
+        return (f"{len(active_users)} active user(s) still belong to company "
+                f"{TARGET_COMPANY}: {active_users}"), facts
+    group_doc_ids, wa_groups = _discover_groups(db)
+    facts["whatsapp_group_docs"] = group_doc_ids
+    facts["whatsapp_groups"] = wa_groups
     stray_groups = [
-        {"_id": str(g.get("_id")), "company_id": g.get("company_id"),
-         "project_id": g.get("project_id")}
-        for g in db.whatsapp_groups.find({"wa_group_id": TARGET_WA_GROUP})
-        if str(g.get("project_id") or "") not in pids
+        {"_id": str(g.get("_id")), "wa_group_id": g.get("wa_group_id"),
+         "company_id": str(g.get("company_id") or ""),
+         "project_id": str(g.get("project_id") or "")}
+        for g in db.whatsapp_groups.find({"wa_group_id": {"$in": wa_groups}})
+        if str(g.get("project_id") or "") not in ["", *pids]
         or str(g.get("company_id") or "") not in ("", TARGET_COMPANY)]
     facts["group_rows_elsewhere"] = stray_groups
     if stray_groups:
-        return (f"{TARGET_WA_GROUP} is bound elsewhere too: {stray_groups}"), facts
+        return (f"groups of this company are bound elsewhere too: "
+                f"{stray_groups}"), facts
     facts["filed_logbooks"] = db.logbooks.count_documents({
         **any_id("project_id", pids),
         "$or": [{"status": "submitted"}, {"is_locked": True}]})
     facts["signature_events"] = db.signature_events.count_documents(
         any_id("project_id", pids))
     facts["audit_logs_kept"] = db.audit_logs.count_documents({"$or": [
-        any_id("resource_id", pids), any_id("details.project_id", pids)]})
+        any_id("resource_id", pids + [TARGET_COMPANY]),
+        any_id("details.project_id", pids)]})
     return None, facts
 
 
@@ -304,7 +361,7 @@ def _r2_delete(keys: Set[str]) -> List[str]:
     return failed
 
 
-def _leave_group(action: str) -> Tuple[bool, str]:
+def _leave_group(action: str, chat_id: str) -> Tuple[bool, str]:
     base = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
     inst = os.environ.get("WAAPI_INSTANCE_ID", "")
     token = os.environ.get("WAAPI_TOKEN", "")
@@ -312,7 +369,7 @@ def _leave_group(action: str) -> Tuple[bool, str]:
         return False, "WAAPI_INSTANCE_ID / WAAPI_TOKEN not set"
     req = urllib.request.Request(
         f"{base}/instances/{inst}/client/action/{action}",
-        data=json.dumps({"chatId": TARGET_WA_GROUP}).encode(),
+        data=json.dumps({"chatId": chat_id}).encode(),
         headers={"Authorization": f"Bearer {token}",
                  "Content-Type": "application/json"}, method="POST")
     try:
@@ -329,8 +386,9 @@ def run(db, write: bool, args) -> int:
     # One handle. Through audited() every write below records an audit row
     # (without --i-know it is the bare handle and nothing writes anyway).
     raw_db = db
-    print(f"Targets: projects {', '.join(TARGET_PROJECTS)}; company "
-          f"{TARGET_COMPANY}; group {TARGET_GROUP_DOC} ({TARGET_WA_GROUP})\n")
+    print(f"Targets: company {TARGET_COMPANY}; projects "
+          f"{', '.join(TARGET_PROJECTS)}; known group {TARGET_GROUP_DOC} "
+          f"({TARGET_WA_GROUP}) plus any other group of the company\n")
     refusal, facts = _preflight(raw_db)
     print(json.dumps(facts, indent=2, default=str))
     if refusal:
@@ -347,7 +405,8 @@ def run(db, write: bool, args) -> int:
     selectors = build_selectors(
         project_ids=TARGET_PROJECTS, company_id=TARGET_COMPANY,
         file_ids=file_ids, logbook_ids=logbook_ids, renewal_ids=renewal_ids,
-        wa_group=TARGET_WA_GROUP, group_doc_id=TARGET_GROUP_DOC,
+        wa_groups=facts["whatsapp_groups"],
+        group_doc_ids=facts["whatsapp_group_docs"],
         collection_names=names)
 
     try:
@@ -385,21 +444,35 @@ def run(db, write: bool, args) -> int:
         print(f"  {prefix}: {len(found)}")
 
     if not write:
-        print("\nDRY RUN — nothing was written. Re-run with --execute, both "
-              "--project ids, --i-know --reason --session.")
+        print("\nDRY RUN — nothing was written. Re-run with --execute, all "
+              "five --project ids, --i-know --reason --session.")
         return OK
 
-    # 1. The bot leaves the group BEFORE its binding row goes, so the next
-    #    message cannot re-create a pending row and greet the chat.
-    if args.bot_not_in_group:
-        print("\nSkipping WhatsApp leave (--bot-not-in-group).")
-    else:
-        ok, detail = _leave_group(args.waapi_leave_action)
-        print(f"\nWhatsApp leave {TARGET_WA_GROUP}: {'ok' if ok else 'FAILED'} "
-              f"({detail})")
-        if not ok:
-            print("REFUSED: the bot did not leave the group; nothing deleted.")
-            return REFUSED
+    # 1. The bot leaves every group BEFORE its binding rows go, so the next
+    #    message cannot re-create a pending row and greet the chat. A leave
+    #    cannot be undone, so EVERY leave is attempted before deciding: one
+    #    failure must not strand the run halfway with an unclear record of
+    #    which groups the bot already left. If any failed, nothing is
+    #    deleted and the exact re-run command is printed, naming the groups
+    #    already left (a second leave of those would fail).
+    print()
+    skip = set(args.bot_not_in_group or [])
+    left, leave_failed = [], []
+    for chat_id in facts["whatsapp_groups"]:
+        if chat_id in skip:
+            print(f"WhatsApp leave {chat_id}: skipped (--bot-not-in-group)")
+            continue
+        ok, detail = _leave_group(args.waapi_leave_action, chat_id)
+        print(f"WhatsApp leave {chat_id}: {'ok' if ok else 'FAILED'} ({detail})")
+        (left if ok else leave_failed).append(chat_id)
+    if leave_failed:
+        done = sorted(skip | set(left))
+        print(f"\nREFUSED: the bot did not leave {leave_failed}; nothing "
+              f"deleted. It DID leave {left or 'none'}.")
+        print("Re-run with the groups already left skipped:"
+              + "".join(f" --bot-not-in-group {g}" for g in done))
+        print("If a FAILED group is one the bot is not in, add it too.")
+        return REFUSED
 
     # 2. R2 first, while the rows that name the keys still exist.
     failed = _r2_delete(keys)
@@ -449,12 +522,14 @@ def main(argv=None) -> int:
     ap.add_argument("--execute", action="store_true",
                     help="hard delete (also needs --i-know, --reason, --session)")
     ap.add_argument("--project", action="append", default=[],
-                    help="each target project id, typed out; both are required")
+                    help="each target project id, typed out; all five are "
+                         "required")
     ap.add_argument("--waapi-leave-action", default="leave-group",
                     help="WaAPI client/action used to leave the group")
-    ap.add_argument("--bot-not-in-group", action="store_true",
-                    help="skip the leave call; only if you checked the bot is "
-                         "not a member")
+    ap.add_argument("--bot-not-in-group", action="append", default=[],
+                    metavar="WA_GROUP_ID",
+                    help="skip the leave call for this group (repeatable); "
+                         "only if you checked the bot is not a member")
     add_guard_args(ap)
     args = ap.parse_args(argv)
     problem = validate_execute_args(args.execute, args.project)
