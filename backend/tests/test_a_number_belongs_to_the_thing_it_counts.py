@@ -54,8 +54,12 @@ BOYLAND = [
     _element("PTAC-2", "PTAC-2 - QTY on the sheet, readings disagree",
              count_contested=True,
              count_readings=[{"value": 6}, {"value": 9}]),
-    _element("PTAC-1", "PTAC-1 - count 21", count_if_stated=21),
-    _element("PTAC-3", "PTAC-3 - count 11", count_if_stated=11),
+    # count_basis as production carries it (2026-10-07): read off the
+    # schedule's QTY cell. A count with no basis no longer binds.
+    _element("PTAC-1", "PTAC-1 - count 21", count_if_stated=21,
+             count_basis="ocr_schedule_qty"),
+    _element("PTAC-3", "PTAC-3 - count 11", count_if_stated=11,
+             count_basis="ocr_schedule_qty"),
     _schedule("ZONING ANALYSIS",
               "ZONING ANALYSIS: | PERMITTED | PROPOSED | 6 DWELLING UNITS"),
     _schedule("PROPOSED DCDA & RPZ INSTALLATION",
@@ -113,10 +117,20 @@ class ATrueCountStillPasses(unittest.TestCase):
             "See M-200.00 for the schedule.", BOYLAND, intent="count")
         self.assertTrue(ok, f"a sheet number was read as a quantity: {bad}")
 
-    def test_a_record_vouches_for_its_own_subject(self):
-        ok, _bad = ps.answer_is_grounded(
+    def test_a_schedule_name_does_not_vouch_for_a_count(self):
+        """REVERSED 2026-10-07 (operator ruling: a count binds only from a
+        counting source). This asserted that a record vouches for any number
+        under its own name - the zoning table's 6 - which is the same path by
+        which EF-1's 10 lb weight became "There are 10 EF-1." The 6 sits in
+        no quantity column, so as a count it is refused; an attribute answer
+        quoting it keeps the union rule."""
+        ok, bad = ps.answer_is_grounded(
             "The zoning analysis shows 6 dwelling units.", BOYLAND,
             intent="count")
+        self.assertEqual((ok, bad), (False, ["6"]))
+        ok, _bad = ps.answer_is_grounded(
+            "The zoning analysis shows 6 dwelling units.", BOYLAND,
+            intent="attribute")
         self.assertTrue(ok)
 
 
@@ -205,6 +219,11 @@ class AScheduleIsAboutEveryMarkItLists(unittest.TestCase):
         {"record_type": "schedule", "tier": "ocr_grid_cell", "page_id": "p1",
          "sheet_number": "M-200.00", "quote": "ROOMS PTAC UNITS SCHEDULE",
          "payload": {"name": "ROOMS PTAC UNITS SCHEDULE",
+                     # The printed headers, as production stores them: the
+                     # QTY header is what makes 21 a count.
+                     "columns": [{"header": "UNIT NO.", "role": "identifier"},
+                                 {"header": "QTY", "role": "quantity"},
+                                 {"header": "MAKE", "role": "make"}],
                      "rows": [["PTAC-1", "21", "AMANA"],
                               ["PTAC-2", "(readings disagree", "AMANA"],
                               ["PTAC-3", "11", "AMANA"]]}},
