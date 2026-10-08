@@ -1747,6 +1747,12 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Morning brief: { brief_time?: 'off'|'07:00'|'08:00'|'09:00', brief_saturday?: bool }.
+  setBrief: async (patch) => {
+    const response = await apiClient.put('/api/whatsapp/brief', patch);
+    return response.data;
+  },
+
   // A fresh "Turn on Levelog Assistant" link: START plus a single-use code that expires
   // in 15 minutes. { url, expires_at }.
   connectLink: async () => {
