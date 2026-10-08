@@ -9,6 +9,13 @@
  * The card shows the two identities TOGETHER, because the bundle alone does
  * not tell you whether it matches the server.
  *
+ * IT IS ONE LINE NOW. Operator ruling, 2026-10-07: "BUILD: shrink it. Drop App
+ * version and Bundle built. Keep backend commit + verdict as one line." The
+ * card displays one identity; the copy string still carries all of them. Those
+ * are two different facts and this file now tests them separately — see
+ * "One line on screen, the whole identity in the copy" below for why the
+ * whole-file greps that used to stand in for both could not fail.
+ *
  * Run:  node src/utils/buildIdentity.test.cjs
  */
 const fs = require('fs');
@@ -28,8 +35,27 @@ const code = settings
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/.*$/gm, '');
 
-console.log('\n-- Both identities, on one card --');
+// ── THE CARD REGION, NOT THE WHOLE FILE ──────────────────────────────────────
+//
+// settings.jsx READS every build value for the copy string whether or not it
+// displays any of them, so a whole-file grep for `Updates.updateId` stays
+// green on a card that renders nothing at all. It could not fail for the
+// reason its label gave. The region is extracted first, and the claims below
+// say which of the two destinations they are about.
+const _cardAt = code.indexOf('sectionLabel}>BUILD<');
+const buildCard = _cardAt > -1
+  ? code.slice(_cardAt, code.indexOf('</GlassCard>', _cardAt))
+  : '';
+// The argument to the one-tap copy. Displayed and copied are now different
+// sets, deliberately — the reasoning is in the BUILD comment of settings.jsx.
+const copyArg = (code.match(/Clipboard\.setStringAsync\(\s*([\s\S]*?)\s*\);/) || [, ''])[1];
 
+console.log('\n-- Every identity is still READ --');
+
+// WHAT THIS SECTION DOES NOT CLAIM. It asserts the values are still read out
+// of the build config and expo-updates. It says NOTHING about where they land;
+// that is the section further down. The heading here was "Both identities, on
+// one card" until the 2026-10-07 ruling left one on the card.
 ok(/const response = await apiClient\.get\('\/api\/version'\)/.test(api),
   'the client can read the backend commit at all');
 ok(/versionAPI/.test(code), 'settings consumes it');
@@ -172,6 +198,58 @@ ok(/not injected at build time/.test(verdictSrc),
 ok(/deployed_at|backendDeployedAt/.test(code),
   'the card reads the backend deploy time it now compares against');
 ok(!/buildMatches = true/.test(code), 'nothing hard-codes a pass');
+
+console.log('\n-- One line on screen, the whole identity in the copy --');
+
+// THE RULING, 2026-10-07: "BUILD: shrink it. Drop App version and Bundle
+// built. Keep backend commit + verdict as one line."
+//
+// WHY THOSE AND NOT THE SURVIVORS. The dropped rows were the DUPLICATED ones.
+// The app version is stamped on every user as `client_version` and printed by
+// BuildMarker as `v{version}`; the bundle build time is BuildMarker's
+// `bundle: {id} · {created}` line, which also ages it in words. BuildMarker
+// renders on the CP surfaces, so the phone was saying both of them twice. The
+// backend commit is read nowhere else in the product, and the verdict is the
+// only thing that reads the two identities AS A PAIR — which is the whole
+// subject of src/utils/buildVerdict.js.
+ok(/label="Backend"/.test(buildCard),
+  'the backend commit is the line that survived');
+ok((buildCard.match(/<BuildInfoRow/g) || []).length === 1,
+  'and it is the ONLY row — four rows became one');
+ok(!/label="App version"/.test(buildCard),
+  'the App version row is gone: BuildMarker prints it and every user carries '
+  + 'it as client_version');
+ok(!/label="Bundle built"/.test(buildCard),
+  'the Bundle built row is gone: BuildMarker prints the same timestamp and an '
+  + 'age in words beside it');
+// THE JS BUNDLE ROW WENT TOO, AND THE RULING DID NOT NAME IT. "Keep backend
+// commit + verdict as one line" leaves room for one line, and the bundle id is
+// BuildMarker's `bundle: {updateId}` — it fails the same duplication test the
+// other two failed. Asserted by name rather than left to the row count above,
+// so the next reader can see it was a decision and not a miscount.
+ok(!/label="JS bundle"/.test(buildCard), 'and the JS bundle row with them');
+ok(/buildVerdictText/.test(buildCard),
+  'the verdict stays on the card beside the commit — an id with no verdict is '
+  + 'the stale-bundle incident over again');
+
+// THE DISPLAY SHRANK AND THE COPY DID NOT. That is a decision, not a leftover.
+// The rows went because the phone's own screen already repeats them; a pasted
+// string is read by somebody who cannot see that screen, and a support call is
+// the only reason the copy exists. So the copy still carries all four
+// identities, and now the deploy time and the verdict state as well — the two
+// values that say WHICH SIDE moved.
+ok(/appVersion/.test(copyArg),
+  'the copy keeps the app version even though the row is gone');
+ok(/jsBundle/.test(copyArg), 'and the bundle id');
+ok(/jsBuiltAt/.test(copyArg), 'and when that bundle was built');
+ok(/backendCommit/.test(copyArg),
+  'and the backend commit those are compared against');
+ok(/backendDeployedAt/.test(copyArg),
+  'plus the backend deploy time — half of the pair buildVerdict compares, and '
+  + 'unavailable to a support thread while only the card could see it');
+ok(/verdict\.state/.test(copyArg),
+  'and the verdict STATE rather than its prose: a support thread greps '
+  + '"backend_ahead", while the sentence is for the person holding the phone');
 
 console.log('\n-- Reachable, readable, copyable --');
 

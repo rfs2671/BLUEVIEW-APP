@@ -241,10 +241,16 @@ const ROUTES = [
   // <Image> per plan — a thumbnail component that throws takes the whole list
   // with it, and every static gate here would still be green.
   '/projects/p1/files',
-  // The capability read. It mounts a WebView and drives it, so an import or a
-  // style it gets wrong is a screen the operator finds broken on the tablet he
-  // took to site — which is the one place this instrument has to work.
-  '/admin/device-capabilities',
+  // NO '/admin/device-capabilities' HERE ANY MORE. The capability-read screen
+  // was removed on the operator's ruling of 2026-10-07, and this list is not
+  // optional bookkeeping: a route whose file is gone mounts the unmatched
+  // screen and fails this job outright — it did, 76/78 with both themes of
+  // that one path red, which is how the removal was checked.
+  //
+  // THE LIVE COUNT IS BELOW, NOT IN THE PROSE ABOVE. The two "78"s in the
+  // header and in the stub-principal note are accounts of earlier runs and
+  // stay as written. ROUTES is 38 entries, so a clean run prints 76/76
+  // route-mounts — 38 paths across light and dark.
   '/workers',
   '/workers/w1',                        // worker detail — cert/OSHA expiry
   '/logbooks',
