@@ -124,8 +124,8 @@ export function promoteToSuperintendentBody(name, { hasLicenceNumber = false } =
   if (!hasLicenceNumber) {
     parts.push(
       'Next: record his DOB registration number. A registration cannot be '
-      + 'saved without one, because the one-job rule is checked on the licence '
-      + 'number.',
+      + 'saved without one, because the one-job rule is checked on the '
+      + 'registration number.',
     );
   }
   // THE UNDO IS NAMED AND SO IS ITS COST. `update_admin_user` $unsets

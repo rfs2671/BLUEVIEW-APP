@@ -24,10 +24,16 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Set
 DOB_VIOLATIONS = "dob_violations"
 DOB_COMPLAINTS = "dob_complaints"
 DOB_PERMITS = "dob_permits"
+DOB_JOB_FILINGS = "dob_job_filings"
+DOB_COFO = "dob_cofo"
+DOB_FACADE = "dob_facade"
+DOB_BOILER = "dob_boiler"
+DOB_ELEVATOR = "dob_elevator"
 DOT_OATH = "dot_oath"
 DOT_PERMITS = "dot_permits"
-SOURCES = (DOB_VIOLATIONS, DOB_COMPLAINTS, DOB_PERMITS, DOT_OATH, DOT_PERMITS)
-DOB_SOURCES = (DOB_VIOLATIONS, DOB_COMPLAINTS, DOB_PERMITS)
+DOB_SOURCES = (DOB_VIOLATIONS, DOB_COMPLAINTS, DOB_PERMITS, DOB_JOB_FILINGS,
+               DOB_COFO, DOB_FACADE, DOB_BOILER, DOB_ELEVATOR)
+SOURCES = DOB_SOURCES + (DOT_OATH, DOT_PERMITS)
 
 # Stored record_type → its source. A stop-work order comes from the DOB
 # violation datasets and the SWO dataset; both count as dob_violations.
@@ -35,6 +41,11 @@ RECORD_SOURCE = {
     "violation": DOB_VIOLATIONS, "swo": DOB_VIOLATIONS,
     "complaint": DOB_COMPLAINTS,
     "permit": DOB_PERMITS,
+    "job_status": DOB_JOB_FILINGS,
+    "cofo": DOB_COFO,
+    "facade_fisp": DOB_FACADE,
+    "boiler": DOB_BOILER,
+    "elevator": DOB_ELEVATOR,
     "dot_violation": DOT_OATH,
     "dot_permit": DOT_PERMITS,
 }

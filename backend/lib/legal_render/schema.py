@@ -963,10 +963,11 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "note": None,
             },
             {
-                # HOW THE SUPERINTENDENT WAS MATCHED TO THIS FILING, carried
-                # verbatim. The sentence describes the match "by licence
-                # number" and the DOB card carries a REGISTRATION number --
-                # defect A2, reported and not corrected inside a conversion.
+                # HOW THE SUPERINTENDENT WAS MATCHED TO THIS FILING. Formerly
+                # defect A2 (it called his DOB registration number a
+                # "licence"); corrected in `attribution_sentence` on the
+                # operator's ruling, 2026-10-08. Derived at render time, so a
+                # sheet already filed reprints with the corrected sentence.
                 "n": 5, "title": "Attribution", "primitive": "narrative",
                 "scope": "context", "path": "cs_attribution_sentence",
                 "formatter": "sentence",
