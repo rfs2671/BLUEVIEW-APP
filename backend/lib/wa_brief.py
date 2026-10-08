@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import dot_sync, wa_gc
+from lib import dot_sync, source_sync, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -188,22 +188,39 @@ def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
 
 def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
               now_utc: datetime,
-              dot_rows: Iterable[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+              dot_rows: Iterable[Dict[str, Any]] = (),
+              synced: Optional[Dict[str, datetime]] = None) -> List[Dict[str, Any]]:
     """The items one job has today: [{rank, order, text}]. Pure. `dot_rows`
-    are the job's dot_logs rows (DOT summonses and permits)."""
+    are the job's dot_logs rows (DOT summonses and permits).
+
+    `synced` is {source: first_synced_at} (lib/source_sync.first_synced).
+    When given, a source not in it gives no item at all, and nothing its
+    first sync stored is "new" or a "change"."""
     today = wa_gc.today_et(now_utc)
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
+
+    def _cutoff(rt: str) -> Optional[datetime]:
+        """`since`, moved up to the source's first sync; None: skip the row."""
+        src = source_sync.RECORD_SOURCE.get(rt)
+        if synced is None or src is None:
+            return since
+        first = synced.get(src)
+        return None if first is None else max(since, first)
+
     items: List[Dict[str, Any]] = []
     for rid, hist in group_records(rows).items():
         first, latest = hist[0], hist[-1]
         rt = _text(latest.get("record_type")).lower()
+        cutoff = _cutoff(rt)
+        if cutoff is None:
+            continue
 
         # 🔴 new violation / complaint / stop-work order
         if rt in _NEW_KINDS:
             label, num_f, date_f, verb = _NEW_KINDS[rt]
             seen = _detected(first)
-            if (seen and seen > since and not first.get("is_seed_transition")
+            if (seen and seen > cutoff and not first.get("is_seed_transition")
                     and first.get("previous_status") is None):
                 # A stop-work order found by text in a violation dataset is
                 # stored with the violation's fields: its number is there.
@@ -231,7 +248,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
         before = _text(latest.get("previous_status"))
         after = _text(latest.get("current_status"))
         if (len(hist) > 1 and before and after and before != after
-                and not latest.get("is_seed_transition") and _stamp(latest) > since):
+                and not latest.get("is_seed_transition") and _stamp(latest) > cutoff):
             up = after.upper()
             permit_change = rt == "permit" and any(
                 w in up for w in ("ISSUED", "EXPIRED", "REVOKED"))
@@ -251,11 +268,14 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
     # DOT (dot_logs: one row per record, already matched to this job)
     for r in dot_rows:
         rt = _text(r.get("record_type")).lower()
+        cutoff = _cutoff(rt)
+        if cutoff is None:
+            continue
         if rt == "dot_violation":
             seen = _detected(r)
             num = _text(r.get("number"))
             issued = wa_gc.parse_dob_date(r.get("issue_date"))
-            if (seen and seen > since and num and issued and not _is_closed(r)
+            if (seen and seen > cutoff and num and issued and not _is_closed(r)
                     and timedelta(0) <= today - issued
                     <= timedelta(days=NEW_ISSUED_WITHIN_DAYS)):
                 status = _text(r.get("status"))

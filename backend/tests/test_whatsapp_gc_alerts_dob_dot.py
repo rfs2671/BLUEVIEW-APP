@@ -20,7 +20,7 @@ import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
@@ -32,18 +32,9 @@ import server  # noqa: E402
 from lib import dot_sync, wa_alerts, wa_brief, wa_gc  # noqa: E402
 from tests.test_whatsapp_gc_alerts import (  # noqa: E402
     CO_A, CO_B, G_GC, NOON, NIGHT, _Ctx, _confirm, _group_sends, _no_ai,
-    _permit, _violation, _world as _base_world,
+    _permit, _violation, _world, synced_state,
 )
-
-SYNCED = NOON - timedelta(days=30)
-
-
-def _world(**extra):
-    """proj_a has had its first DOT sync long ago, unless a test says not."""
-    extra.setdefault(server.DOT_SYNC_STATE, [
-        {"_id": "proj_a", "company_id": CO_A,
-         "first_synced_at": SYNCED, "synced_at": SYNCED}])
-    return _base_world(**extra)
+from lib import source_sync  # noqa: E402
 
 TODAY = wa_gc.today_et(NOON)
 
@@ -225,7 +216,9 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
                 "violation_location_block_no": "1523", "violation_location_lot_no": "1"}
 
     def _db(self, **kw):
-        db = _world(**{server.DOT_SYNC_STATE: [], **kw})
+        # DOB synced long ago; DOT never yet.
+        db = _world(**{"source_sync_state": [synced_state(
+            "proj_a", ("proj_a", CO_A), sources=source_sync.DOB_SOURCES)], **kw})
         p = next(p for p in db.projects.rows if p["_id"] == "proj_a")
         p.update({"address": "588 Thomas S Boyland St, Brooklyn, NY",
                   "bbl": "3015230001"})
@@ -243,7 +236,7 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
             r = _run(server._gc_alerts_tick(NOON))                  # boot + 4 min
-            self.assertEqual(r["dot_waiting_sync"], 1)
+            self.assertEqual(r["kinds_waiting_sync"], len(wa_alerts.DOT_KINDS))
             ids = {x["_id"] for x in db[server.WA_LEDGER].rows}
             self.assertNotIn(wa_alerts.kind_baseline_id("proj_a", "dot_violation"), ids)
             _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
@@ -274,20 +267,24 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
             _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([], ok=False)))
-            self.assertEqual(db[server.DOT_SYNC_STATE].rows, [])
+            self.assertFalse(set(source_sync.first_synced(
+                db[server.SOURCE_SYNC_STATE].rows[0])) & {"dot_oath", "dot_permits"})
             db.dot_logs.rows.append(_dot("D1"))
             r = _run(server._gc_alerts_tick(NOON))
-        self.assertEqual((r["dot_waiting_sync"], _group_sends(c)), (1, []))
+        self.assertEqual((r["kinds_waiting_sync"], _group_sends(c)), (len(wa_alerts.DOT_KINDS), []))
 
     def test_first_synced_at_is_kept_on_later_syncs(self):
         db = self._db()
         with patch.object(server, "db", db):
             _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
-            first = db[server.DOT_SYNC_STATE].rows[0]["first_synced_at"]
+            first = db[server.SOURCE_SYNC_STATE].rows[0]["sources"]["dot_oath"][
+                "first_synced_at"]
             _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
-        row = db[server.DOT_SYNC_STATE].rows[0]
-        self.assertEqual((row["first_synced_at"], row["company_id"]), (first, CO_A))
-        self.assertGreaterEqual(row["synced_at"], first)
+        row = db[server.SOURCE_SYNC_STATE].rows[0]
+        oath = row["sources"]["dot_oath"]
+        self.assertEqual((oath["first_synced_at"], row["company_id"]), (first, CO_A))
+        self.assertGreaterEqual(oath["synced_at"], first)
+        self.assertIn("dot_permits", row["sources"])
 
     def test_first_sync_finishing_mid_tick_waits_for_the_next_tick(self):
         """The state is read before the DOT rows: a sync that completes
@@ -304,7 +301,7 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
             _confirm()
             with patch.object(server, "_gc_project_records", records_then_sync):
                 r = _run(server._gc_alerts_tick(NOON))
-            self.assertEqual(r["dot_waiting_sync"], 1)
+            self.assertEqual(r["kinds_waiting_sync"], len(wa_alerts.DOT_KINDS))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
             _run(server._gc_alerts_tick(NOON + timedelta(minutes=30)))
         self.assertEqual(_group_sends(c), [])
@@ -329,8 +326,156 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
         marker = next(x for x in db[server.WA_LEDGER].rows if x["_id"]
                       == wa_alerts.kind_baseline_id("proj_a", "dot_violation"))
         self.assertGreater(server._as_utc(marker["created_at"]),
-                           server._as_utc(db[server.DOT_SYNC_STATE].rows[0]
-                                          ["first_synced_at"]))
+                           server._as_utc(db[server.SOURCE_SYNC_STATE].rows[0]
+                                          ["sources"]["dot_oath"]["first_synced_at"]))
+
+
+def _raw_dob_violation(n):
+    """A DOB NOW Safety violation as _query_dob_apis emits it."""
+    return {"_id_field": "violation_number", "_record_type": "violation",
+            "_dataset": "855j-jady", "violation_number": f"NV{n}",
+            "violation_issue_date": "2026-09-15T00:00:00.000",
+            "violation_status": "Active", "violation_type": "Failure to maintain",
+            "bin": "3012345"}
+
+
+class DobWaitsForTheFirstSync(unittest.TestCase):
+    """The same race for DOB on a NEW project: the GC tick runs before the
+    project's first DOB sync, which then stores the project's history."""
+
+    PROJECT = {"_id": "proj_a", "company_id": CO_A, "name": "Main St",
+               "nyc_bin": "3012345", "address": "588 Thomas S Boyland St, Brooklyn, NY"}
+
+    def _db(self):
+        return _world(source_sync_state=[])          # a new project: nothing synced
+
+    def _sync(self, records, ok=True):
+        async def query(nyc_bin, address="", answered=None):
+            if answered is not None:
+                for rt in ("violation", "swo", "complaint", "permit"):
+                    answered[rt] = answered.get(rt, True) and ok
+            return [dict(r) for r in records] if ok else []
+        with patch.object(server, "_query_dob_apis", query), \
+                patch.object(server, "_send_critical_dob_alert_throttled",
+                             AsyncMock()):
+            return _run(server.run_dob_sync_for_project(dict(self.PROJECT)))
+
+    def test_new_project_first_dob_sync_posts_nothing(self):
+        db = self._db()
+        history = [_raw_dob_violation(i) for i in range(20)]
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            r = _run(server._gc_alerts_tick(NOON))                 # before any sync
+            self.assertEqual(r["kinds_waiting_sync"],
+                             len(wa_alerts.KIND_SWITCH))
+            self._sync(history)
+            self.assertEqual(sum(1 for x in db.dob_logs.rows
+                                 if x["record_type"] == "violation"), 20)
+            r = _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=30)))
+            self.assertEqual(_group_sends(c), [])
+            self.assertEqual(r["posted"], 0)
+            # The gate opens: a violation found by a LATER sync posts.
+            self._sync(history + [_raw_dob_violation(99)])
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=45)))
+        texts = [s["message"] for s in _group_sends(c)]
+        self.assertEqual(len(texts), 1, texts)
+        self.assertIn("NV99", texts[0])
+
+    def test_a_failed_dob_request_is_not_a_first_sync(self):
+        db = self._db()
+        with _Ctx(db=db):
+            self._sync([], ok=False)
+        self.assertEqual(db[server.SOURCE_SYNC_STATE].rows, [])
+
+    def test_only_the_sources_that_answered_count(self):
+        answered = {"violation": True, "swo": False, "complaint": True,
+                    "permit": True, "job_status": False}
+        self.assertEqual(source_sync.answered_sources(answered),
+                         {"dob_complaints", "dob_permits"})
+        self.assertEqual(source_sync.answered_sources(answered, ["permit"]),
+                         {"dob_complaints"})
+
+    def test_legacy_projects_use_their_first_poll(self):
+        old = source_sync.LEGACY_FIRST_POLL_BEFORE - timedelta(days=200)
+        new = source_sync.LEGACY_FIRST_POLL_BEFORE + timedelta(minutes=1)
+        self.assertEqual(set(source_sync.first_synced(
+            None, {"first_poll_completed_at": old})), set(source_sync.DOB_SOURCES))
+        self.assertEqual(source_sync.first_synced(
+            None, {"first_poll_completed_at": new}), {})
+        # After deploy the DOB sync writes rows stamped now; the legacy first
+        # poll still wins, so existing markers are not re-baselined.
+        state = {"sources": {"dob_violations": {
+            "first_synced_at": source_sync.LEGACY_FIRST_POLL_BEFORE + timedelta(days=1)}}}
+        self.assertEqual(source_sync.first_synced(
+            state, {"first_poll_completed_at": old})["dob_violations"], old)
+
+    def test_existing_project_keeps_posting_after_deploy(self):
+        """A legacy project (first polled before tracking shipped, markers
+        long since written): its first new-style sync does not swallow the
+        next real alert."""
+        old = source_sync.LEGACY_FIRST_POLL_BEFORE - timedelta(days=200)
+        db = _world(source_sync_state=[])
+        next(p for p in db.projects.rows if p["_id"] == "proj_a")[
+            "first_poll_completed_at"] = old
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _run(server._gc_alerts_tick(NOON))             # baselines DOB kinds
+            self._sync([])                                  # rows stamped now
+            db.dob_logs.rows.append(_violation("77"))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+        texts = [s["message"] for s in _group_sends(c)]
+        self.assertEqual(len(texts), 1, texts)
+        self.assertIn("V77", texts[0])
+
+    def test_stale_legacy_marker_is_rebaselined(self):
+        """violation + permit share the original marker; one taken before the
+        first DOB sync is redone, so the sync's rows are not posted."""
+        db = self._db()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            db[server.WA_LEDGER].rows.append({
+                "_id": wa_gc.baseline_id("proj_a"), "kind": "gc_baseline",
+                "project_id": "proj_a", "company_id": CO_A, "status": "baseline",
+                "created_at": NOON - timedelta(days=1)})
+            self._sync([_raw_dob_violation(i) for i in range(5)])
+            r = _run(server._gc_alerts_tick(NOON))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+        self.assertEqual((_group_sends(c), r["baselined"]), ([], 1))
+
+
+class BriefWaitsForTheFirstSync(unittest.TestCase):
+
+    def _rows(self):
+        return [_violation("1", detected_at=NOON - timedelta(hours=1),
+                           violation_date=TODAY.isoformat()),
+                _permit("P1", (TODAY + timedelta(days=5)).isoformat())]
+
+    def test_no_items_from_a_source_before_its_first_sync(self):
+        since = NOON - timedelta(days=1)
+        items = wa_brief.job_items(self._rows(), since, NOON, (), synced={})
+        self.assertEqual(items, [])
+
+    def test_nothing_the_first_sync_stored_is_new(self):
+        since = NOON - timedelta(days=1)
+        first = NOON - timedelta(minutes=30)          # after the row was stored
+        synced = {s: first for s in source_sync.SOURCES}
+        texts = [i["text"] for i in wa_brief.job_items(
+            self._rows(), since, NOON, (), synced=synced)]
+        self.assertFalse(any("New violation" in t for t in texts), texts)
+        self.assertTrue(any("expires" in t for t in texts), texts)   # state, not "new"
+        # Found after the first sync: new.
+        later = {s: NOON - timedelta(hours=2) for s in source_sync.SOURCES}
+        texts = [i["text"] for i in wa_brief.job_items(
+            self._rows(), since, NOON, (), synced=later)]
+        self.assertTrue(any("New violation" in t for t in texts), texts)
+
+    def test_brief_job_reads_the_project_state(self):
+        db = _world(source_sync_state=[], dob_logs=self._rows())
+        with _Ctx(db=db):
+            job = _run(server._brief_job({"_id": "proj_a", "name": "Main St"},
+                                         CO_A, NOON - timedelta(days=1), NOON))
+        self.assertEqual(job["items"], [])
 
 
 class DotPermitStatuses(unittest.TestCase):
