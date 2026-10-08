@@ -24,15 +24,13 @@ function injectMontserrat() {
  * (not below 14pt); only a name too long even then ends in "…"
  * (utils/brandLabel.js).
  */
-const BRAND_SIDE_ROOM = 150;
-
 export default function HeaderBrand({ style }) {
   useEffect(() => { injectMontserrat(); }, []);
   const { user } = useAuth();
   const { colors } = useTheme();
   const { width } = useWindowDimensions();
   const label = brandLabel(user);
-  const { fontSize, letterSpacing, minimumFontScale } = brandSizing(label);
+  const { fontSize, letterSpacing, minimumFontScale, maxWidth } = brandSizing(label, width);
 
   return (
     <Text
@@ -56,7 +54,7 @@ export default function HeaderBrand({ style }) {
           textTransform: 'uppercase',
           // The headers' rows do not shrink, so the room is set here: the
           // screen less the back button, padding and a right-side control.
-          maxWidth: Math.max(160, width - BRAND_SIDE_ROOM),
+          maxWidth,
         },
         style,
       ]}

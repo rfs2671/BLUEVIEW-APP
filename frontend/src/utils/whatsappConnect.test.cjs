@@ -175,10 +175,13 @@ ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(card
   ok(B.brandLabel({ company_name: 'Acme' }) === 'Acme', 'company_name when no GC name');
   ok(B.brandLabel({ company_name: '  ' }) === 'Levelog' && B.brandLabel(null) === 'Levelog',
      '"Levelog" only when the company name is empty');
-  ok(B.brandSizing('ACME').fontSize === 27, 'a short name keeps the full size');
-  const long = B.brandSizing('BLUEVIEW CONSTRUCTION');
+  ok(B.brandSizing('ACME', 393).fontSize === 27, 'a short name keeps the full size');
+  const long = B.brandSizing('BLUEVIEW CONSTRUCTION', 393);
   ok(long.fontSize < 27 && long.fontSize >= 14, 'a long name starts smaller');
-  ok(B.brandSizing('X'.repeat(80)).fontSize === 14, 'never below 14');
+  ok(21 * (long.fontSize * 0.68 + long.letterSpacing) <= long.maxWidth,
+     'BLUEVIEW CONSTRUCTION fits a 393pt phone on one line, uncut');
+  ok(B.brandSizing('BLUEVIEW CONSTRUCTION', 1200).fontSize === 27, 'wide screen: full size');
+  ok(B.brandSizing('X'.repeat(80), 393).fontSize === 14, 'never below 14');
   ok(Math.abs(long.fontSize * long.minimumFontScale - 14) < 0.01,
      'shrink-to-fit stops at 14pt');
   ok(/numberOfLines=\{1\}/.test(brand) && /adjustsFontSizeToFit/.test(brand)
