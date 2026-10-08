@@ -1300,4 +1300,6 @@ def default_whatsapp_project_settings() -> Dict[str, Any]:
     do nothing until a GC group is confirmed, and confirming it is the opt-in."""
     return {"gc_group_id": None, "gc_group_confirmed": False,
             "violation_alerts": True, "permit_reminders": True,
-            "gc_proposal": None, "gc_declined": []}
+            "gc_proposal": None, "gc_declined": [],
+            # When alerts and the GC-group question may go out (lib/wa_gc).
+            "send_window": {"mode": "anytime", "start": "07:00", "end": "19:00"}}

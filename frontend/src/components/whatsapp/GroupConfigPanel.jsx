@@ -8,33 +8,18 @@ import {
   FlatList,
   ActivityIndicator,
 } from 'react-native';
-import { Clock, Calendar, ListChecks, Users, Building2, Package, FileText, Compass } from 'lucide-react-native';
 import { GlassCard } from '../GlassCard';
 import GlassButton from '../GlassButton';
 import { useToast } from '../Toast';
 import { whatsappAPI } from '../../utils/api';
+import { BOT_SETTINGS, botSettingValue, withBotSetting, configForSave } from '../../utils/whatsappSettings';
 import { spacing, borderRadius, typography } from '../../styles/theme';
 import { useTheme } from '../../context/ThemeContext';
 
-// ─── Defaults matching backend _default_bot_config ──────────────────
-const DEFAULT_CONFIG = {
-  bot_enabled: true,
-  daily_summary_enabled: false,
-  daily_summary_time: '17:00',
-  daily_summary_days: [1, 2, 3, 4, 5],
-  checklist_extraction_enabled: false,
-  checklist_frequency: 'daily',
-  checklist_time: '16:00',
-  features: {
-    who_on_site: true,
-    dob_status: true,
-    open_items: true,
-    material_detection: true,
-    plan_queries: true,
-  },
-  cross_project_summary: false,
-};
-
+// What the panel shows is the server's EFFECTIVE config (GET
+// /api/whatsapp/groups/{project_id} merges stored values over defaults, the
+// same merge the bot reads). The rows are BOT_SETTINGS: only settings the bot
+// acts on today, each with a plain name and one line.
 // 30-min increments from 06:00 to 22:00
 const TIME_SLOTS = (() => {
   const out = [];
@@ -68,7 +53,7 @@ const formatTimeLabel = (hhmm) => {
 };
 
 // ─── Time picker (horizontal scroll of chips) ───────────────────────
-function TimePickerRow({ value, onChange, colors }) {
+export function TimePickerRow({ value, onChange, colors, slots = TIME_SLOTS }) {
   const s = useMemo(() => buildInnerStyles(colors), [colors]);
   const renderChip = ({ item }) => {
     const isActive = item === value;
@@ -90,7 +75,7 @@ function TimePickerRow({ value, onChange, colors }) {
   return (
     <FlatList
       horizontal
-      data={TIME_SLOTS}
+      data={slots}
       keyExtractor={(item) => item}
       renderItem={renderChip}
       showsHorizontalScrollIndicator={false}
@@ -130,244 +115,128 @@ function DaySelector({ days, onChange, colors }) {
   );
 }
 
-// ─── Feature toggle row ─────────────────────────────────────────────
-function FeatureRow({ label, icon, value, onChange, disabled, badge, colors }) {
+// ─── One setting: plain name, one line, a switch ────────────────────
+function SettingRow({ setting, value, onChange, colors, disabled }) {
   const s = useMemo(() => buildInnerStyles(colors), [colors]);
   return (
     <View style={[s.featureRow, disabled && { opacity: 0.55 }]}>
-      <View style={s.featureLeft}>
-        {icon}
-        <Text style={s.featureLabel}>{label}</Text>
+      <View style={{ flex: 1, marginRight: spacing.sm }}>
+        <Text style={s.featureLabel}>{setting.label}</Text>
+        <Text style={s.masterHint}>{setting.line}</Text>
       </View>
-      {badge ? (
-        <View style={s.badge}>
-          <Text style={s.badgeText}>{badge}</Text>
-        </View>
-      ) : (
-        <Switch
-          value={!!value}
-          onValueChange={onChange}
-          disabled={disabled}
-          trackColor={{ false: colors.glass.border, true: colors.primary }}
-          thumbColor={colors.white}
-        />
-      )}
+      <Switch
+        value={!!value}
+        onValueChange={onChange}
+        disabled={disabled}
+        accessibilityLabel={setting.label}
+        trackColor={{ false: colors.glass.border, true: colors.primary }}
+        thumbColor={colors.white}
+      />
     </View>
   );
 }
 
-// ─── Main panel ─────────────────────────────────────────────────────
-export default function GroupConfigPanel({
-  group,
-  onSaved,
-  onClose,
-  qwenConfigured = false,
-  hasIndexedDocs = false,
-}) {
+// ─── What the bot does in one group ─────────────────────────────────
+export default function GroupConfigPanel({ group, onSaved, onClose }) {
   const { colors } = useTheme();
   const s = useMemo(() => buildInnerStyles(colors), [colors]);
   const toast = useToast();
 
-  // Merge incoming config over defaults so any missing field is safe.
-  const initial = useMemo(() => {
-    const src = group?.bot_config || {};
-    return {
-      ...DEFAULT_CONFIG,
-      ...src,
-      features: { ...DEFAULT_CONFIG.features, ...(src.features || {}) },
-    };
-  }, [group?.id]);
-
-  const [config, setConfig] = useState(initial);
+  const [config, setConfig] = useState(() => group?.bot_config || {});
   const [saving, setSaving] = useState(false);
 
+  const set = (setting, on) => setConfig((prev) => withBotSetting(prev, setting, on));
   const updateField = (patch) => setConfig((prev) => ({ ...prev, ...patch }));
-  const updateFeature = (key, val) =>
-    setConfig((prev) => ({
-      ...prev,
-      features: { ...prev.features, [key]: val },
-    }));
-
-  const isDimmed = !config.bot_enabled;
+  const answering = config.bot_enabled !== false;
 
   const handleSave = async () => {
-    // Client-side validation mirrors server rules for instant feedback
     if (
       config.daily_summary_enabled &&
       (!Array.isArray(config.daily_summary_days) || config.daily_summary_days.length === 0)
     ) {
-      toast.error('Pick at least one day', 'Daily Summary requires at least one weekday.');
+      toast.error('Pick at least one day', 'The daily summary needs at least one day.');
       return;
     }
-
     setSaving(true);
     try {
-      const res = await whatsappAPI.updateGroupConfig(group.id || group._id, config);
-      toast.success('Saved', 'Bot configuration updated.');
+      const res = await whatsappAPI.updateGroupConfig(group.id || group._id, configForSave(config));
+      toast.success('Saved', 'Group settings updated.');
       if (onSaved) onSaved(res);
       if (onClose) onClose();
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not save configuration.');
+      toast.error('Not saved', e?.response?.data?.detail || 'Could not save these settings.');
     } finally {
       setSaving(false);
     }
   };
 
-  // Plan queries toggle behavior:
-  // - No Qwen key on server → show "Requires Qwen API" badge, no toggle
-  // - Qwen configured but no indexed docs → "Index documents first" badge, no toggle
-  // - Qwen configured AND at least one indexed page → real Switch
-  let planQueriesBadge = null;
-  if (!qwenConfigured) planQueriesBadge = 'Requires Qwen API';
-  else if (!hasIndexedDocs) planQueriesBadge = 'Index documents first';
-
   return (
     <GlassCard style={s.panel}>
-      {/* Master switch */}
-      <View style={s.masterRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={s.masterLabel}>Bot Enabled</Text>
-          <Text style={s.masterHint}>
-            Master switch. When off, the bot is silent in this group.
-          </Text>
-        </View>
-        <Switch
-          value={!!config.bot_enabled}
-          onValueChange={(v) => updateField({ bot_enabled: v })}
-          trackColor={{ false: colors.glass.border, true: colors.primary }}
-          thumbColor={colors.white}
-        />
-      </View>
-
-      <View style={[s.sectionsWrap, isDimmed && s.dimmed]} pointerEvents={isDimmed ? 'none' : 'auto'}>
-        {/* ── Daily Summary ── */}
-        <Text style={s.sectionLabel}>DAILY SUMMARY</Text>
-        <View style={s.settingRow}>
-          <View style={s.settingRowLeft}>
-            <Clock size={18} strokeWidth={1.5} color={colors.text.secondary} />
-            <Text style={s.settingTitle}>Send Daily Summary</Text>
-          </View>
-          <Switch
-            value={!!config.daily_summary_enabled}
-            onValueChange={(v) => updateField({ daily_summary_enabled: v })}
-            trackColor={{ false: colors.glass.border, true: colors.primary }}
-            thumbColor={colors.white}
+      {BOT_SETTINGS.map((setting) => (
+        <View key={setting.key}>
+          <SettingRow
+            setting={setting}
+            value={botSettingValue(config, setting)}
+            onChange={(v) => set(setting, v)}
+            disabled={setting.key !== 'bot_enabled' && !answering}
+            colors={colors}
           />
-        </View>
-        {config.daily_summary_enabled && (
-          <View style={s.sectionInner}>
-            <Text style={s.subLabel}>Time (EST)</Text>
-            <TimePickerRow
-              value={config.daily_summary_time}
-              onChange={(v) => updateField({ daily_summary_time: v })}
-              colors={colors}
-            />
-            <Text style={[s.subLabel, { marginTop: spacing.md }]}>Days</Text>
-            <DaySelector
-              days={config.daily_summary_days}
-              onChange={(v) => updateField({ daily_summary_days: v })}
-              colors={colors}
-            />
-          </View>
-        )}
-
-        {/* ── Automated Checklist ── */}
-        <Text style={s.sectionLabel}>AUTOMATED CHECKLIST</Text>
-        <View style={s.settingRow}>
-          <View style={s.settingRowLeft}>
-            <ListChecks size={18} strokeWidth={1.5} color={colors.text.secondary} />
-            <Text style={s.settingTitle}>Extract Action Items</Text>
-          </View>
-          <Switch
-            value={!!config.checklist_extraction_enabled}
-            onValueChange={(v) => updateField({ checklist_extraction_enabled: v })}
-            trackColor={{ false: colors.glass.border, true: colors.primary }}
-            thumbColor={colors.white}
-          />
-        </View>
-        {config.checklist_extraction_enabled && (
-          <View style={s.sectionInner}>
-            <Text style={s.subLabel}>Frequency</Text>
-            <View style={s.freqRow}>
-              {[
-                { value: 'daily', label: 'Daily Auto' },
-                { value: 'on_demand', label: 'On Demand' },
-              ].map((opt) => {
-                const active = config.checklist_frequency === opt.value;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => updateField({ checklist_frequency: opt.value })}
-                    style={({ pressed }) => [
-                      s.freqPill,
-                      active && s.freqPillActive,
-                      pressed && { opacity: 0.8 },
-                    ]}
-                  >
-                    <Text style={[s.freqText, active && s.freqTextActive]}>
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+          {setting.key === 'daily_summary_enabled' && answering && config.daily_summary_enabled ? (
+            <View style={s.sectionInner}>
+              <Text style={s.subLabel}>Time (Eastern)</Text>
+              <TimePickerRow
+                value={config.daily_summary_time}
+                onChange={(v) => updateField({ daily_summary_time: v })}
+                colors={colors}
+              />
+              <Text style={[s.subLabel, { marginTop: spacing.md }]}>Days</Text>
+              <DaySelector
+                days={config.daily_summary_days}
+                onChange={(v) => updateField({ daily_summary_days: v })}
+                colors={colors}
+              />
             </View>
-            {config.checklist_frequency === 'daily' && (
-              <>
-                <Text style={[s.subLabel, { marginTop: spacing.md }]}>Time (EST)</Text>
-                <TimePickerRow
-                  value={config.checklist_time}
-                  onChange={(v) => updateField({ checklist_time: v })}
-                  colors={colors}
-                />
-              </>
-            )}
-          </View>
-        )}
+          ) : null}
+          {setting.key === 'checklist_extraction_enabled' && answering && config.checklist_extraction_enabled ? (
+            <View style={s.sectionInner}>
+              <Text style={s.subLabel}>When</Text>
+              <View style={s.freqRow}>
+                {[
+                  { value: 'daily', label: 'Every day' },
+                  { value: 'on_demand', label: 'Only when asked' },
+                ].map((opt) => {
+                  const active = config.checklist_frequency === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      onPress={() => updateField({ checklist_frequency: opt.value })}
+                      style={({ pressed }) => [s.freqPill, active && s.freqPillActive, pressed && { opacity: 0.8 }]}
+                    >
+                      <Text style={[s.freqText, active && s.freqTextActive]}>{opt.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {config.checklist_frequency === 'daily' ? (
+                <>
+                  <Text style={[s.subLabel, { marginTop: spacing.md }]}>Time (Eastern)</Text>
+                  <TimePickerRow
+                    value={config.checklist_time}
+                    onChange={(v) => updateField({ checklist_time: v })}
+                    colors={colors}
+                  />
+                </>
+              ) : (
+                <Text style={s.masterHint}>Ask for it in the group: "@levelog checklist".</Text>
+              )}
+            </View>
+          ) : null}
+        </View>
+      ))}
 
-        {/* ── Active features ── */}
-        <Text style={s.sectionLabel}>BOT RESPONDS TO</Text>
-        <FeatureRow
-          label="Who's On Site"
-          icon={<Users size={18} strokeWidth={1.5} color={colors.text.secondary} />}
-          value={config.features?.who_on_site}
-          onChange={(v) => updateFeature('who_on_site', v)}
-          colors={colors}
-        />
-        <FeatureRow
-          label="DOB Status"
-          icon={<Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />}
-          value={config.features?.dob_status}
-          onChange={(v) => updateFeature('dob_status', v)}
-          colors={colors}
-        />
-        <FeatureRow
-          label="Open Items"
-          icon={<FileText size={18} strokeWidth={1.5} color={colors.text.secondary} />}
-          value={config.features?.open_items}
-          onChange={(v) => updateFeature('open_items', v)}
-          colors={colors}
-        />
-        <FeatureRow
-          label="Material Requests"
-          icon={<Package size={18} strokeWidth={1.5} color={colors.text.secondary} />}
-          value={config.features?.material_detection}
-          onChange={(v) => updateFeature('material_detection', v)}
-          colors={colors}
-        />
-        <FeatureRow
-          label="Plan Queries"
-          icon={<Compass size={18} strokeWidth={1.5} color={colors.text.secondary} />}
-          value={config.features?.plan_queries}
-          onChange={(v) => updateFeature('plan_queries', v)}
-          badge={planQueriesBadge}
-          colors={colors}
-        />
-      </View>
-
-      {/* Save */}
       <View style={s.footerRow}>
         <GlassButton
-          title={saving ? 'Saving…' : 'Save Configuration'}
+          title={saving ? 'Saving…' : 'Save'}
           loading={saving}
           onPress={handleSave}
           disabled={saving}
@@ -376,17 +245,6 @@ export default function GroupConfigPanel({
       </View>
     </GlassCard>
   );
-}
-
-// Helper exported so the parent can show an indicator dot without
-// duplicating the "non-default" logic.
-export function isConfigNonDefault(cfg) {
-  if (!cfg) return false;
-  if (!cfg.bot_enabled) return false;
-  if (cfg.daily_summary_enabled) return true;
-  if (cfg.checklist_extraction_enabled) return true;
-  if (cfg.features?.plan_queries) return true;
-  return false;
 }
 
 const buildInnerStyles = (colors) =>

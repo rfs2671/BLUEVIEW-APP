@@ -50,6 +50,7 @@ import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { whatsappAPI } from '../../src/utils/api';
+import { groupLabel } from '../../src/utils/whatsappSettings';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -132,9 +133,9 @@ export default function WhatsappPendingGroupsScreen() {
   const projectLabel = (id) => {
     const p = projects.find((x) => x.id === id);
     if (!p) return t('choose');
-    // name is required on every project, so this chain cannot fall through
-    // to a literal — which is why there is no untranslated fallback here.
-    return p.address || p.nickname || p.name;
+    // The job's address, as everywhere in WhatsApp; name is required on
+    // every project, so this chain cannot fall through to a literal.
+    return p.address || p.name;
   };
 
   const confirmOne = async (groupId) => {
@@ -174,7 +175,7 @@ export default function WhatsappPendingGroupsScreen() {
         await whatsappAPI.linkPendingGroup(row.group_id, choice[row.group_id]);
         done += 1;
       } catch (error) {
-        failed.push(row.group_name || row.group_id);
+        failed.push(groupLabel(row.group_name));
       }
     }
     setConfirmingAll(false);
@@ -276,7 +277,7 @@ export default function WhatsappPendingGroupsScreen() {
                     <View style={s.groupHead}>
                       <MessageCircle size={18} strokeWidth={1.5} color={WHATSAPP_GREEN} />
                       <Text style={s.groupName} numberOfLines={1}>
-                        {row.group_name || t('unnamed')}
+                        {groupLabel(row.group_name)}
                       </Text>
                     </View>
 
@@ -314,9 +315,6 @@ export default function WhatsappPendingGroupsScreen() {
                             <Text style={s.pickerOptionText} numberOfLines={1}>
                               {p.address || p.name}
                             </Text>
-                            {p.nickname ? (
-                              <Text style={s.pickerOptionSub}>{p.nickname}</Text>
-                            ) : null}
                           </Pressable>
                         ))}
                       </View>

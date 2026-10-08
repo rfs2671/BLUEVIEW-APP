@@ -313,7 +313,7 @@ class StartAndStop(unittest.TestCase):
         """Phase 2: GC group alerts are live; summaries, reply alerts and
         reminders are not, so the intro must not promise them."""
         text = wa_dm.INTRO_TEXT
-        self.assertTrue(text.startswith("Levelog here."))
+        self.assertTrue(text.startswith("Levelog Assistant here."))
         self.assertIn("DOB violations", text)
         self.assertIn("permit expiry reminders", text)
         for not_live in ("summar", "needs your answer", "inspection"):
@@ -323,6 +323,17 @@ class StartAndStop(unittest.TestCase):
         for name in dir(wa_dm):
             if name.endswith("_TEXT"):
                 self.assertNotIn("Blueview", getattr(wa_dm, name), name)
+
+    def test_the_bot_calls_itself_levelog_assistant(self):
+        """Every DM text names the bot "Levelog Assistant", never bare
+        "Levelog here" and never "alerts" as the thing to turn on."""
+        for name in dir(wa_dm):
+            if name.endswith("_TEXT"):
+                text = getattr(wa_dm, name)
+                self.assertNotIn("Levelog here", text, name)
+                self.assertNotIn("Turn on alerts", text, name)
+                if "here." in text:
+                    self.assertTrue(text.startswith("Levelog Assistant here."), name)
                 self.assertTrue(getattr(wa_dm, name).startswith(("Levelog", "Done", "OK", "That")), name)
 
 

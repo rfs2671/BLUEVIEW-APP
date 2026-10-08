@@ -3,7 +3,7 @@
  * who sees which section, and where it lives.
  *
  *   header       Levelog number + one chip + Save to Contacts
- *   Your alerts  one chip + one plain line per state; Turn on / Turn off only
+ *   Levelog Assistant  one chip + one plain line per state; Turn on / Turn off only
  *                when the server sent the link
  *   Groups       Admins only; "Link new groups" with a count, or one line
  *
@@ -49,15 +49,15 @@ console.log('header');
 console.log('\nyour alerts: one chip, one line per state');
 {
   const a = card(me('not_connected')).alerts;
-  ok(a.chip.label === 'Off', 'off');
-  ok(a.line === 'Get updates for your projects on WhatsApp.', 'off: the line');
-  ok(a.button && a.button.label === 'Turn on alerts' && a.button.url === ON,
-     'off: Turn on alerts opens wa.me with START and the code');
+  ok(a.chip.label === 'Assistant off', 'off');
+  ok(a.line === 'Get updates for your projects on WhatsApp from Levelog Assistant.', 'off: the line');
+  ok(a.button && a.button.label === 'Turn on Levelog Assistant' && a.button.url === ON,
+     'off: Turn on Levelog Assistant opens wa.me with START and the code');
 }
 {
   const a = card(me('connected')).alerts;
-  ok(a.chip.label === 'On' && a.chip.tone === 'ok', 'on');
-  ok(a.button && a.button.label === 'Turn off' && a.button.url === OFF, 'on: Turn off opens wa.me STOP');
+  ok(a.chip.label === 'Assistant on' && a.chip.tone === 'ok', 'on');
+  ok(a.button && a.button.label === 'Turn off Assistant' && a.button.url === OFF, 'on: Turn off opens wa.me STOP');
   ok(a.line.includes('+1 (516) 301-8154'), 'on: names the phone');
 }
 for (const [st, label, fixWord] of [
@@ -71,7 +71,7 @@ for (const [st, label, fixWord] of [
   ok(typeof a.line === 'string' && a.line.includes(fixWord) && !a.line.includes('\n'),
      `${st}: one line saying what to fix`);
 }
-ok(card(me('reconnect_needed')).alerts.button.label === 'Turn on alerts', 'reconnect: button to turn on again');
+ok(card(me('reconnect_needed')).alerts.button.label === 'Turn on Levelog Assistant', 'reconnect: button to turn on again');
 for (const st of ['phone_missing', 'phone_shared', 'unavailable']) {
   ok(card(me(st)).alerts.button === null, `${st}: no button`);
 }
@@ -82,7 +82,7 @@ console.log('\nthe single-use link');
 {
   const coded = 'https://wa.me/15165494475?text=START%20ABC234';
   const a = W.whatsappCardView({ me: me('not_connected'), status: active, connectUrl: coded }).alerts;
-  ok(a.button.url === coded, 'Turn on alerts opens the fresh coded link when there is one');
+  ok(a.button.url === coded, 'Turn on Levelog Assistant opens the fresh coded link when there is one');
   const fb = card({ ...me('not_connected'), connect_url: 'https://wa.me/15165494475?text=START' }).alerts;
   ok(fb.button.url === 'https://wa.me/15165494475?text=START', 'falls back to plain START');
   const blocked = W.whatsappCardView({ me: me('phone_missing'), status: active, connectUrl: coded }).alerts;

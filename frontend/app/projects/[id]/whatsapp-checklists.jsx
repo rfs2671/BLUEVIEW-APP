@@ -22,6 +22,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistAPI, whatsappAPI } from '../../../src/utils/api';
+import { groupLabel } from '../../../src/utils/whatsappSettings';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -129,7 +130,7 @@ export default function WhatsAppChecklistsScreen() {
   const groupNameById = useMemo(() => {
     const m = {};
     (groups || []).forEach((g) => {
-      m[g.wa_group_id] = g.group_name || g.name || 'WhatsApp Group';
+      m[g.wa_group_id] = groupLabel(g.group_name);
     });
     return m;
   }, [groups]);

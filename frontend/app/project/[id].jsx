@@ -661,7 +661,7 @@ export default function ProjectDetailScreen() {
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: semantic.neutral },
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
-    ...(isAdmin ? [{ title: 'WhatsApp settings', icon: MessageCircle, path: `/project/${projectId}/whatsapp-settings`, color: '#25D366' /* brand: WhatsApp */ }] : []),
+    ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +

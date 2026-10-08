@@ -30,7 +30,7 @@ const WHATSAPP_GREEN = '#25D366';
  * "Your WhatsApp" card, which showed two icons and two titles for one thing).
  *
  *   header       Levelog number, company setup chip, Save to Contacts
- *   Your alerts  this person's own updates — Admins and PMs
+ *   Levelog Assistant  this person's own updates — Admins and PMs
  *   Groups       linking job groups — Admins only
  *
  * What it SAYS comes from utils/whatsappConnect.js (pure, tested). This file
@@ -51,7 +51,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [focused, setFocused] = useState(true);
   const [busy, setBusy] = useState(null); // 'activate' | 'contact' | null
-  // The single-use, 15-minute "Turn on alerts" link. Fetched BEFORE the tap,
+  // The single-use, 15-minute "Turn on Levelog Assistant" link. Fetched BEFORE the tap,
   // so the tap opens WhatsApp at once: a browser blocks a window opened
   // after waiting on the network.
   const [link, setLink] = useState(null);
@@ -236,7 +236,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
       {alerts ? (
         <View style={s.section}>
           <View style={s.sectionHead}>
-            <Text style={s.sectionTitle}>Your alerts</Text>
+            <Text style={s.sectionTitle}>Levelog Assistant</Text>
             <Chip c={alerts.chip} />
           </View>
           <Text style={s.line}>{alerts.line}</Text>

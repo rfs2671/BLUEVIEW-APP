@@ -69,6 +69,8 @@ from lib.report import view as report_view
 from lib import wa_security  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
+from lib import wa_groups  # noqa: E402
+from lib import wa_react  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
@@ -43359,6 +43361,8 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
         out["gc_proposal"] = stored["gc_proposal"]
     if isinstance(stored.get("gc_declined"), list):
         out["gc_declined"] = [str(x) for x in stored["gc_declined"]]
+    out["send_window"] = (wa_gc.clean_send_window(stored.get("send_window"))
+                          or wa_gc.default_send_window())
     return out
 
 
@@ -43401,7 +43405,8 @@ async def _set_whatsapp_project_fields(project_id: Any, company_id: Any,
 #      No answer: the proposal expires and nothing is ever posted to that
 #      group until an admin picks it in the app.
 #   3. _gc_alerts_tick posts new violations and permit reminders to the
-#      CONFIRMED group only, 7 AM – 7 PM ET, each item once ever (ledger rows
+#      CONFIRMED group only, inside the project's send window (Anytime by
+#      default; lib/wa_gc.in_send_window), each item once ever (ledger rows
 #      with no expires_at). The first run for a project records what already
 #      exists as seen and posts nothing.
 
@@ -43477,10 +43482,7 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
     """Ask main admins to confirm an obvious GC group. Returns counts."""
     now = now or datetime.now(timezone.utc)
     report = {"asked": 0, "no_pick": 0, "no_admin": 0, "busy": 0,
-              "not_sent": 0, "outside_window": 0}
-    if not wa_gc.in_post_window(now):
-        report["outside_window"] = 1
-        return report
+              "not_sent": 0, "held": 0}
     test_ids = {str(x) for x in await test_company_ids()}
     try:
         groups = await db.whatsapp_groups.find(
@@ -43517,12 +43519,19 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
         settings = await _whatsapp_project_settings(project_id)
         if settings.get("gc_group_confirmed"):
             continue
+        if not wa_gc.in_send_window(now, settings.get("send_window")):
+            report["held"] += 1   # asked at the start of the project's window
+            continue
         prop = settings.get("gc_proposal")
         if isinstance(prop, dict) and prop.get("status") in (
                 "pending", "expired", "declined", "answered_in_app"):
             continue  # asked once; from here the admin picks in the app
+        # A group with no known name cannot be judged by its name, so it is
+        # never the auto-pick (the admin can still choose it in the app).
+        await _ensure_group_names(rows)
         candidates = [g for g in rows
-                      if str(g.get("wa_group_id")) not in settings["gc_declined"]]
+                      if str(g.get("wa_group_id")) not in settings["gc_declined"]
+                      and wa_groups.is_real_name(g.get("group_name"))]
         pick = wa_gc.pick_gc_group(candidates)
         if not pick:
             report["no_pick"] += 1
@@ -43540,8 +43549,8 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
         if admin_id in busy_admins:
             report["busy"] += 1
             continue
-        group_name = str(pick.get("group_name") or "this group")
-        project_name = str(project.get("name") or "your project")
+        group_name = wa_groups.display_name(pick.get("group_name"))
+        project_name = wa_groups.project_label(project)
         sent = await send_whatsapp_dm(
             admin_id,
             wa_dm.GC_CONFIRM_TEXT.format(group=group_name, project=project_name),
@@ -43585,7 +43594,7 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
     project_id = str(row.get("project_id") or "")
     company_id = str(row.get("company_id") or "")
     group_id = str(prop.get("group_id") or "")
-    group_name = str(prop.get("group_name") or "the group")
+    group_name = wa_groups.display_name(prop.get("group_name"))
 
     # Everything re-checked at the moment of the answer, fail closed.
     admin = await _company_main_admin(company_id)
@@ -43600,7 +43609,7 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
         await _set_whatsapp_project_fields(project_id, company_id, {
             "gc_proposal": {**prop, "status": "void", "answered_at": now}})
         return False
-    project_name = str(project.get("name") or "your project")
+    project_name = wa_groups.project_label(project)
     if not await _gc_group_bound_to(group_id, company_id, project_id):
         await _set_whatsapp_project_fields(project_id, company_id, {
             "gc_proposal": {**prop, "status": "void", "answered_at": now}})
@@ -43729,11 +43738,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
               "permits_no_expiry": 0, "skipped_unbound": 0,
-              "outside_window": 0, "seen_while_off": 0}
-    if not wa_gc.in_post_window(now):
-        # Nothing posted and nothing marked: the 7 AM run picks it all up.
-        report["outside_window"] = 1
-        return report
+              "seen_while_off": 0, "held": 0}
     today = wa_gc.today_et(now)
     test_ids = {str(x) for x in await test_company_ids()}
     try:
@@ -43757,7 +43762,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             report["skipped_unbound"] += 1
             continue
         report["projects"] += 1
-        project_name = str(project.get("name") or "the project")
+        project_name = wa_groups.project_label(project)
         try:
             items = await _gc_project_items(project_id, today)
         except Exception as e:
@@ -43796,6 +43801,12 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                     project_id=project_id, company_id=company_id,
                     status="baseline") != "error":
                 report["baselined"] += 1
+            continue
+
+        # The project's send window. Outside it nothing is posted and nothing
+        # is marked: the first run inside it posts what waited.
+        if not wa_gc.in_send_window(now, settings.get("send_window")):
+            report["held"] += 1
             continue
 
         todo = []
@@ -44146,6 +44157,53 @@ def _strip_generic_offer(text: str) -> str:
     # empty send is a bot that looks broken, and silence is never the better
     # repair for a badly-shaped reply.
     return out if out.strip() else text
+
+
+async def _react_to_message(chat_id: str, message_id: Optional[str],
+                            emoji: str) -> bool:
+    """React to one message (lib/wa_react.py). True when WaAPI accepted it.
+
+    WaAPI client action `react-to-message` {messageId, reaction}; an empty
+    reaction removes ours. `messageId` is the serialized id the webhook gave
+    (message_id_serialized). Never raises."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and chat_id and message_id):
+        return False
+    url = (f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}"
+           f"/client/action/react-to-message")
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}",
+               "Content-Type": "application/json"}
+    code, body, exc = await _waapi_post_raw(
+        url, {"messageId": message_id, "reaction": emoji}, headers)
+    status = str((body or {}).get("status") or "").lower() if isinstance(body, dict) else ""
+    ok = (exc is None and code is not None and code < 400
+          and status not in ("error", "failed"))
+    logger.info(f"[wa-react] {emoji or 'remove'} on ...{str(message_id)[-10:]} "
+                f"-> {'ok' if ok else (type(exc).__name__ if exc else f'http {code} {status}')}")
+    return ok
+
+
+async def _react_or_say(chat_id: str, message_id: Optional[str], emoji: str,
+                        fallback_text: str) -> None:
+    """React; if the reaction cannot be sent, say the old text instead — the
+    action is acknowledged one way, never both."""
+    if await _react_to_message(chat_id, message_id, emoji):
+        return
+    await send_whatsapp_message(chat_id, fallback_text)
+
+
+async def _praise_reaction_allowed(group_id: str, sender: str) -> bool:
+    """❤️ at most once per person per day (New York date), per group."""
+    key = {"kind": "praise_react", "group_id": group_id,
+           "sender": str(sender or ""), "day": eastern_today()}
+    try:
+        if await db.whatsapp_conversation_state.find_one(key):
+            return False
+        await db.whatsapp_conversation_state.insert_one({
+            **key, "updated_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=36)})
+        return True
+    except Exception:
+        return False
 
 
 async def send_whatsapp_message(
@@ -46503,16 +46561,35 @@ def _default_bot_config() -> dict:
             # off, and why it is worth another try before the trial.
             "voice_notes": True,
         },
-        "cross_project_summary": False,
     }
+
+
+# ── ONE CONFIG, READ THE SAME WAY BY THE APP AND BY THE BOT ────────────────
+#
+# The app showed defaults merged over what was stored; the bot read the stored
+# dict with its OWN per-key fallbacks, and two of them disagreed with the
+# defaults (plan_queries fell back to False, address_mode to "strict"). A
+# group stored with a partial `features` showed one thing and did another.
+# Both now read this.
+def _effective_bot_config(stored: Any) -> dict:
+    cfg = _default_bot_config()
+    stored = stored if isinstance(stored, dict) else {}
+    cfg.update({k: v for k, v in stored.items()
+                if k in _WHATSAPP_CONFIG_KEYS and k != "features"})
+    if isinstance(stored.get("features"), dict):
+        cfg["features"].update({k: v for k, v in stored["features"].items()
+                                if k in _WHATSAPP_FEATURE_KEYS})
+    return cfg
 
 
 _WHATSAPP_CONFIG_KEYS = {
     "bot_enabled", "daily_summary_enabled", "daily_summary_time",
     "daily_summary_days", "checklist_extraction_enabled",
     "checklist_frequency", "checklist_time", "features",
-    "cross_project_summary",
 }
+# Accepted on PUT and ignored. `cross_project_summary` was stored and never
+# read by anything; app builds before its removal still send it.
+_WHATSAPP_RETIRED_CONFIG_KEYS = {"cross_project_summary"}
 _WHATSAPP_FEATURE_KEYS = {
     "who_on_site", "dob_status", "open_items", "material_detection", "plan_queries",
     "address_mode", "voice_notes",
@@ -51981,6 +52058,9 @@ def _parse_assignment_reply(body: str, num_items: int) -> list:
     return out
 
 
+CHECKLIST_DISCARDED_TEXT = "✓ Checklist discarded."
+
+
 async def _handle_checklist_assignment_reply(
     state: dict, body: str, group_id: str, sender: str,
 ) -> Optional[str]:
@@ -51999,7 +52079,7 @@ async def _handle_checklist_assignment_reply(
     if parsed and parsed[0][0] == "CANCEL":
         await db.whatsapp_conversation_state.delete_one(
             {"kind": "checklist", "group_id": group_id})
-        return "✓ Checklist discarded."
+        return CHECKLIST_DISCARDED_TEXT
 
     # Apply assignments — last one wins per index
     assigned = {}  # idx -> candidate | 'SKIP'
@@ -52215,6 +52295,10 @@ async def _sheet_index_lines(project_id: str) -> list:
     return sorted(out)
 
 
+class _SkipSection(Exception):
+    """A context section whose switch is off."""
+
+
 async def _agent_context_block(
     project_id: str, features: Dict[str, Any], address_mode: str,
     *, company_id: Optional[str] = None,
@@ -52253,8 +52337,19 @@ async def _agent_context_block(
     lines.append(
         f"NOW: {now.strftime('%A %Y-%m-%d %H:%M')} America/New_York")
 
+    # A switch that is off removes the FACTS too, not only the tool: the
+    # roster, open items and permit counts below are what those switches
+    # govern, and a context block that still carried them let the agent
+    # answer the question the admin had turned off.
+    feats = features or {}
+    show_roster = feats.get("who_on_site", True) is not False
+    show_open = feats.get("open_items", True) is not False
+    show_permits = feats.get("dob_status", True) is not False
+
     # Roster, today and on the last day anybody was here.
     try:
+        if not show_roster:
+            raise _SkipSection()
         today = await _roster_snapshot(project_id, now)
         if today:
             bits = [f"{today['count']} checked in today"]
@@ -52277,6 +52372,8 @@ async def _agent_context_block(
                 lines.append("LAST WORKING DAY: " + "; ".join(bits))
         elif not today.get("count"):
             lines.append("LAST WORKING DAY: no check-ins on record for this project")
+    except _SkipSection:
+        pass
     except Exception as e:
         logger.warning(f"context: roster section failed: {e}")
 
@@ -52289,6 +52386,8 @@ async def _agent_context_block(
     # queried a collection nobody writes is worse than no context block, since
     # the model reports the zero as fact.
     try:
+        if not show_open:
+            raise _SkipSection()
         log = await db.daily_logs.find_one(
             {"project_id": str(project_id), "date": eastern_today()},
             {"observations": 1},
@@ -52301,9 +52400,13 @@ async def _agent_context_block(
             lines.append(
                 f"OPEN ITEMS: {len(open_obs)} uncorrected of {len(obs)} "
                 f"observations on today's log")
+    except _SkipSection:
+        pass
     except Exception as e:
         logger.warning(f"context: open items failed: {e}")
     try:
+        if not show_permits:
+            raise _SkipSection()
         permits = await db.dob_logs.find(
             {"project_id": str(project_id),
              "company_id": _company_id_filter(company_id),
@@ -52321,6 +52424,8 @@ async def _agent_context_block(
                     soon += 1
         lines.append(
             f"PERMITS: {len(permits)} on file, {soon} expiring within 30 days")
+    except _SkipSection:
+        pass
     except Exception as e:
         logger.warning(f"context: permits failed: {e}")
 
@@ -52902,9 +53007,9 @@ PENDING_GROUPS = "whatsapp_pending_groups"
 # Bilingual because the crew is. Spanish second and separated by a blank line
 # so neither language reads as a footnote to the other.
 PENDING_GREETING = (
-    "I'm Levelog. I'm not connected to a project yet — "
+    "I'm Levelog Assistant. I'm not connected to a project yet — "
     "an admin can connect me from the Levelog app.\n\n"
-    "Soy Levelog. Todavía no estoy conectado a un proyecto — "
+    "Soy Levelog Assistant. Todavía no estoy conectado a un proyecto — "
     "un administrador puede conectarme desde la app de Levelog."
 )
 
@@ -52923,6 +53028,59 @@ def _bot_was_added(parsed: dict) -> bool:
         if _digits_match_bot(_jid_digits(str(jid)), ids):
             return True
     return False
+
+
+async def _ensure_group_names(rows: list, *, coll: str = "whatsapp_groups",
+                              key: str = "wa_group_id") -> list:
+    """Fill in the WhatsApp subject for rows that have none, and store it.
+
+    For each row whose `group_name` is missing (or is only an id), asks WaAPI
+    get-group-info — at most NAME_FETCH_LIMIT per call, and at most once an
+    hour per group (`name_checked_at`), so a list read never hammers WaAPI.
+    Returns the rows with `group_name` filled where it was learned. Never
+    raises; a row it could not name stays unnamed and is shown as UNNAMED."""
+    now = datetime.now(timezone.utc)
+    todo: Dict[str, list] = {}
+    for r in rows:
+        if wa_groups.is_real_name(r.get("group_name")):
+            continue
+        gid = str(r.get(key) or "")
+        if not gid:
+            continue
+        checked = r.get("name_checked_at")
+        if isinstance(checked, datetime):
+            c = checked if checked.tzinfo else checked.replace(tzinfo=timezone.utc)
+            if (now - c).total_seconds() < wa_groups.NAME_RETRY_SECONDS:
+                continue
+        if gid in todo or len(todo) < wa_groups.NAME_FETCH_LIMIT:
+            todo.setdefault(gid, []).append(r)
+    if not todo:
+        return rows
+
+    # All lookups at once, under one deadline. A lookup that has not answered
+    # by then is dropped for this read (and not marked, so the next read
+    # tries again); the row is shown as UNNAMED meanwhile.
+    tasks = {asyncio.ensure_future(_fetch_group_subject(gid)): gid for gid in todo}
+    done, pending = await asyncio.wait(
+        tasks, timeout=wa_groups.NAME_FETCH_DEADLINE_SECONDS)
+    for t in pending:
+        t.cancel()
+    for t in done:
+        gid = tasks[t]
+        try:
+            name = t.result() or ""
+        except Exception:
+            name = ""
+        fields: Dict[str, Any] = {"name_checked_at": now}
+        if wa_groups.is_real_name(name):
+            fields["group_name"] = name.strip()
+            for r in todo[gid]:
+                r["group_name"] = name.strip()
+        try:
+            await db[coll].update_many({key: gid}, {"$set": fields})
+        except Exception as e:
+            logger.info(f"group name store failed: {type(e).__name__}")
+    return rows
 
 
 async def _fetch_group_subject(group_id: str) -> str:
@@ -53328,9 +53486,9 @@ async def _process_whatsapp_message(payload: dict):
 
             # Per-group bot config (legacy docs without a config get all-default
             # behavior via .get() defaults — the startup migration backfills.)
-            bot_config = group_doc.get("bot_config", {}) or {}
-            features = bot_config.get("features", {}) or {}
-            bot_enabled = bot_config.get("bot_enabled", True)
+            bot_config = _effective_bot_config(group_doc.get("bot_config"))
+            features = bot_config["features"]
+            bot_enabled = bot_config["bot_enabled"]
 
             # ── VOICE IS HOW THE TARGET USER TALKS ─────────────────────────
             #
@@ -53559,6 +53717,12 @@ async def _process_whatsapp_message(payload: dict):
                 reply = await _handle_checklist_assignment_reply(
                     convo_state, body or "", group_id, sender
                 )
+                if reply == CHECKLIST_DISCARDED_TEXT:
+                    # Done, nothing to add: 👍 on their message, not text.
+                    await _react_or_say(group_id,
+                                        parsed.get("message_id_serialized"),
+                                        wa_react.DONE, reply)
+                    return
                 if reply:
                     await send_whatsapp_message(group_id, reply)
                     return
@@ -53618,10 +53782,11 @@ async def _process_whatsapp_message(payload: dict):
                             label = "today's"
                     except Exception:
                         label = "today's"
-                    await send_whatsapp_message(
-                        group_id,
-                        f"✓ Item {n} of {label} checklist marked complete.",
-                    )
+                    # Closed, nothing to add: ✅ on the "done N" message.
+                    await _react_or_say(
+                        group_id, parsed.get("message_id_serialized"),
+                        wa_react.COMPLETE,
+                        f"✓ Item {n} of {label} checklist marked complete.")
                     return
 
             # ── On-demand @levelog checklist / !checklist trigger ──
@@ -53737,7 +53902,17 @@ async def _process_whatsapp_message(payload: dict):
                 quoted_from_bot=quoted_from_bot,
             )
             if is_addressed:
-                reply = await _run_group_agent(
+                # Only a thank-you or a compliment: a reaction, no text.
+                social = wa_react.social_reaction(body)
+                if social == "thanks":
+                    await _react_to_message(group_id, reply_to, wa_react.THANKS)
+                    return
+                if social == "praise":
+                    if await _praise_reaction_allowed(group_id, sender):
+                        await _react_to_message(group_id, reply_to,
+                                                wa_react.PRAISE)
+                    return
+                agent_task = asyncio.ensure_future(_run_group_agent(
                     project_id=str(project_id),
                     group_id=group_id,
                     company_id=msg_company_id,
@@ -53747,10 +53922,24 @@ async def _process_whatsapp_message(payload: dict):
                     explicit_mention=explicit_mention,
                     reply_to=reply_to,
                     address_mode=address_mode,
-                )
+                ))
+                # A slow answer: 👀 on the question first, the answer after.
+                eyes = False
+                try:
+                    reply = await asyncio.wait_for(
+                        asyncio.shield(agent_task),
+                        wa_react.WORKING_AFTER_SECONDS)
+                except asyncio.TimeoutError:
+                    eyes = await _react_to_message(group_id, reply_to,
+                                                   wa_react.WORKING)
+                    reply = await agent_task
                 if reply:
                     await send_whatsapp_message(group_id, reply,
                                                 reply_to=reply_to)
+                elif eyes:
+                    # Nothing came of it: take the 👀 back rather than leave
+                    # a promise of an answer that is not coming.
+                    await _react_to_message(group_id, reply_to, "")
                 return
 
             # ── A QUESTION NOBODY ANSWERED IS WORSE THAN A WRONG ANSWER ────
@@ -54613,6 +54802,15 @@ async def whatsapp_group_link_verify(
         {"_id": code_doc["_id"]},
         {"$set": {"verified": True}},
     )
+    # The group's real name, and it is no longer waiting to be linked. A
+    # code-linked group used to keep no name and stay under "waiting".
+    try:
+        await _ensure_group_names([{"wa_group_id": group_id}])
+        await db[PENDING_GROUPS].update_one(
+            {"group_id": group_id, "status": "pending"},
+            {"$set": {"status": "linked", "linked_at": now}})
+    except Exception as e:
+        logger.info(f"code-link tidy-up skipped: {type(e).__name__}")
 
     # ── THE FIRST SIXTY SECONDS DECIDE WHETHER ANYONE ASKS A SECOND TIME ────
     #
@@ -54634,7 +54832,7 @@ async def whatsapp_group_link_verify(
     try:
         await send_whatsapp_message(
             group_id,
-            "Levelog here. I can tell you who's on site, permit and DOB "
+            "Levelog Assistant here. I can tell you who's on site, permit and DOB "
             "status, what's still open, and where materials are.\n"
             "Just ask — no special format. Voice notes work too.",
         )
@@ -54664,29 +54862,21 @@ async def whatsapp_get_groups(project_id: str, current_user=Depends(get_current_
         "company_id": company_id,
         "active": True,
     }).to_list(50)
+    await _ensure_group_names(groups)
     results = []
     for g in groups:
-        msg_count = await db.whatsapp_messages.count_documents({"group_id": g["wa_group_id"]})
-        # Merge stored config over defaults so legacy docs without one still
-        # return a complete object — frontend never has to handle missing fields.
-        cfg = _default_bot_config()
-        stored = g.get("bot_config") or {}
-        cfg.update({k: v for k, v in stored.items() if k in _WHATSAPP_CONFIG_KEYS})
-        # Merge features subdoc specifically so partial feature dicts work too.
-        if "features" in stored and isinstance(stored["features"], dict):
-            merged_features = dict(cfg["features"])
-            merged_features.update({
-                k: v for k, v in stored["features"].items() if k in _WHATSAPP_FEATURE_KEYS
-            })
-            cfg["features"] = merged_features
+        # People's messages only: the bot's own rows are not "messages".
+        msg_count = await db.whatsapp_messages.count_documents(
+            {"group_id": g["wa_group_id"], "sender": {"$ne": "bot"}})
         results.append({
             "id": str(g["_id"]),
             "wa_group_id": g["wa_group_id"],
             "project_id": g["project_id"],
             "linked_at": g.get("linked_at"),
             "message_count": msg_count,
-            "group_name": g.get("group_name"),
-            "bot_config": cfg,
+            "group_name": wa_groups.display_name(g.get("group_name")),
+            "has_name": wa_groups.is_real_name(g.get("group_name")),
+            "bot_config": _effective_bot_config(g.get("bot_config")),
         })
     return results
 
@@ -54721,7 +54911,7 @@ async def whatsapp_update_group_config(
     if not isinstance(body, dict) or not body:
         raise HTTPException(status_code=422, detail="Request body must be a non-empty object")
 
-    unknown = set(body.keys()) - _WHATSAPP_CONFIG_KEYS
+    unknown = set(body.keys()) - _WHATSAPP_CONFIG_KEYS - _WHATSAPP_RETIRED_CONFIG_KEYS
     if unknown:
         raise HTTPException(
             status_code=422,
@@ -54776,10 +54966,6 @@ async def whatsapp_update_group_config(
             raise HTTPException(status_code=422, detail="checklist_time must be HH:MM (24h)")
         set_ops["bot_config.checklist_time"] = t
 
-    if "cross_project_summary" in body:
-        if not isinstance(body["cross_project_summary"], bool):
-            raise HTTPException(status_code=422, detail="cross_project_summary must be a boolean")
-        set_ops["bot_config.cross_project_summary"] = body["cross_project_summary"]
 
     if "features" in body:
         f = body["features"]
@@ -54851,30 +55037,21 @@ async def whatsapp_update_group_config(
     updated = await db.whatsapp_groups.find_one({"_id": to_query_id(group_doc_id)})
 
     # Return the same shape as the list endpoint entry for this group
-    cfg = _default_bot_config()
-    stored = updated.get("bot_config") or {}
-    cfg.update({k: v for k, v in stored.items() if k in _WHATSAPP_CONFIG_KEYS})
-    if "features" in stored and isinstance(stored["features"], dict):
-        merged_features = dict(cfg["features"])
-        merged_features.update({
-            k: v for k, v in stored["features"].items() if k in _WHATSAPP_FEATURE_KEYS
-        })
-        cfg["features"] = merged_features
-
     return {
         "id": str(updated["_id"]),
         "wa_group_id": updated.get("wa_group_id"),
         "project_id": updated.get("project_id"),
-        "group_name": updated.get("group_name"),
+        "group_name": wa_groups.display_name(updated.get("group_name")),
+        "has_name": wa_groups.is_real_name(updated.get("group_name")),
         "linked_at": updated.get("linked_at"),
-        "bot_config": cfg,
+        "bot_config": _effective_bot_config(updated.get("bot_config")),
     }
 
 
 @api_router.delete("/whatsapp/groups/{group_doc_id}")
 async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_current_user)):
-    """Unlink (deactivate) a WhatsApp group."""
-    company_id = get_user_company_id(current_user)
+    """Unlink (deactivate) a WhatsApp group. Same roles as linking one."""
+    company_id = _require_link_role(current_user)
     result = await db.whatsapp_groups.update_one(
         {"_id": to_query_id(group_doc_id), "company_id": company_id},
         {"$set": {"active": False, "unlinked_at": datetime.now(timezone.utc)}},
@@ -54947,6 +55124,7 @@ async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
     rows = await db[PENDING_GROUPS].find(
         _pending_visible_query(company_id, phone)
     ).sort("first_seen", -1).to_list(200)
+    await _ensure_group_names(rows, coll=PENDING_GROUPS, key="group_id")
 
     projects = await db.projects.find(
         {"company_id": company_id, "is_deleted": {"$ne": True}},
@@ -54961,7 +55139,8 @@ async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
         suggestion = suggest_project_for_group(projects, r.get("group_name"))
         out.append({
             "group_id":       r.get("group_id"),
-            "group_name":     r.get("group_name") or "",
+            "group_name":     wa_groups.display_name(r.get("group_name")),
+            "has_name":       wa_groups.is_real_name(r.get("group_name")),
             "added_by_phone": r.get("added_by_phone") or "",
             "first_seen":     (r.get("first_seen").isoformat()
                                if isinstance(r.get("first_seen"), datetime)
@@ -55183,7 +55362,8 @@ async def whatsapp_pending_group_by_token(
     return {
         "pending": [{
             "group_id":   row.get("group_id"),
-            "group_name": row.get("group_name") or "",
+            "group_name": wa_groups.display_name(row.get("group_name")),
+            "has_name":   wa_groups.is_real_name(row.get("group_name")),
             "added_by_phone": row.get("added_by_phone") or "",
             "suggested_project_id": (suggestion or {}).get("project_id"),
             "suggested_confidence": (suggestion or {}).get("confidence"),
@@ -55499,8 +55679,11 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
     for g in rows:
         gid = str(g.get("wa_group_id") or "")
         if gid and await _gc_group_bound_to(gid, company_id, project_id):
-            groups.append({"wa_group_id": gid,
-                           "group_name": str(g.get("group_name") or gid)})
+            groups.append(g)
+    await _ensure_group_names(groups)
+    groups = [{"wa_group_id": str(g.get("wa_group_id")),
+               "group_name": wa_groups.display_name(g.get("group_name"))}
+              for g in groups]
     groups.sort(key=lambda g: g["group_name"].lower())
     current = next((g for g in groups
                     if g["wa_group_id"] == settings.get("gc_group_id")), None)
@@ -55514,6 +55697,7 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
         "groups": groups,
         "violation_alerts": bool(settings["violation_alerts"]),
         "permit_reminders": bool(settings["permit_reminders"]),
+        "send_window": settings["send_window"],
     }
 
 
@@ -55541,14 +55725,24 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    allowed = ("violation_alerts", "permit_reminders")
+    switches = ("violation_alerts", "permit_reminders")
     if (not isinstance(body, dict) or not body
-            or any(k not in allowed for k in body)
-            or any(not isinstance(v, bool) for v in body.values())):
+            or any(k not in switches + ("send_window",) for k in body)
+            or any(not isinstance(body[k], bool) for k in switches if k in body)):
         raise HTTPException(
             status_code=422,
-            detail="Send violation_alerts and/or permit_reminders as true or false.")
-    await _set_whatsapp_project_fields(project_id, company_id, dict(body),
+            detail="Send violation_alerts and/or permit_reminders as true or "
+                   "false, and/or send_window.")
+    fields = {k: body[k] for k in switches if k in body}
+    if "send_window" in body:
+        window = wa_gc.clean_send_window(body["send_window"])
+        if window is None:
+            raise HTTPException(
+                status_code=422,
+                detail="send_window: mode is anytime, work_hours or custom; "
+                       "custom needs different start and end times as HH:MM.")
+        fields["send_window"] = window
+    await _set_whatsapp_project_fields(project_id, company_id, fields,
                                        actor=actor_id(current_user))
     return await _wa_settings_view(project_id, str(company_id))
 
@@ -57134,7 +57328,8 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
     conversation_text = "\n".join(convo_lines[:200])
 
     project = binding["project"]
-    project_name = project.get("name", "Project")
+    # Named by its address in the group, like every other bot message.
+    project_name = wa_groups.project_label(project)
 
     if not OPENAI_API_KEY:
         logger.info(f"Daily summary skipped for {project_name}: no OPENAI_API_KEY")
@@ -57591,7 +57786,7 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
     project = await _bot_project_scope(company_id, project_id)
     if not project:
         return None
-    project_name = project.get("name", "Project")
+    project_name = wa_groups.project_label(project)
     company_id = str(company_id)
 
     now_utc = datetime.now(timezone.utc)
@@ -60327,7 +60522,8 @@ async def startup_event():
     )
 
     # GC group: confirm-by-DM questions and DOB alerts. Every 15 minutes;
-    # both halves post only 7 AM – 7 PM ET (lib/wa_gc.in_post_window).
+    # each project's send window (Anytime by default) decides what goes now
+    # and what waits for the window to open.
     scheduler.add_job(
         _whatsapp_gc_tick,
         IntervalTrigger(minutes=15),

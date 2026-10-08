@@ -178,8 +178,8 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
     def test_an_unknown_code(self):
         msg, c = self._reply(LID_CHAT, "START AAAAAA")
         self.assertEqual(msg, wa_dm.CODE_EXPIRED_TEXT)
-        self.assertEqual(msg, "Levelog here. This link expired. Tap Turn on "
-                              "alerts again in the app.")
+        self.assertEqual(msg, "Levelog Assistant here. This link expired. Tap "
+                              "Turn on Levelog Assistant again in the app.")
         self.assertEqual(c.db[server.WA_OPTINS].rows, [])
 
     def test_a_code_sent_from_another_phone(self):
