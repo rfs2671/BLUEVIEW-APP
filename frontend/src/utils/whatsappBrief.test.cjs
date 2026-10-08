@@ -50,8 +50,8 @@ ok(B.briefRow({ connected: true, brief: null }) === null, 'no brief from server:
 
 console.log('\nwiring');
 {
-  const card = read('src/components/WhatsAppCard.jsx');
-  ok(/const brief = briefRow\(me\);/.test(card), 'card reads the row from /whatsapp/me');
+  const card = read('src/components/WhatsAppAssistantPanel.jsx');
+  ok(/const brief = briefRow\(me\);/.test(card), 'the Personal assistant screen reads the row from /whatsapp/me');
   ok(/saveBrief\(\{ brief_time: o\.value \}\)/.test(card), 'picking a time saves it');
   ok(/saveBrief\(\{ brief_weekend: v \}\)/.test(card), 'weekend switch saves it');
   ok(/Also on weekends/.test(card), 'weekend label');

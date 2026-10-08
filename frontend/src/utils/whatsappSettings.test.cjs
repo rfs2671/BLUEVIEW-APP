@@ -118,7 +118,8 @@ ok(/const canUnlink = \['admin', 'pm'\]\.includes\(role\)/.test(tab) && /\{canUn
    'unlink: admin and PM only (never CP, superintendent or owner)');
 ok(/DOB alerts/.test(W.BOT_SETTINGS.find((s) => s.key === 'bot_enabled').line),
    'Answer in this group: off silences DOB alerts too');
-const integrationsCard = read('src/components/WhatsAppCard.jsx') + read('src/utils/whatsappConnect.js');
+const integrationsCard = read('src/components/WhatsAppCard.jsx') + read('src/components/WhatsAppAssistantPanel.jsx')
+  + read('src/components/WhatsAppGroupsPanel.jsx') + read('src/utils/whatsappConnect.js');
 ok(!/Turn on alerts|Your alerts|'Off'|'On'/.test(integrationsCard), 'the Integrations card says Levelog Assistant, never alerts');
 ok(/<Redirect href=\{`\/projects\/\$\{id\}\/whatsapp-groups`\}/.test(read('app/project/[id]/whatsapp-settings.jsx')),
    'the old settings route lands on the tab');

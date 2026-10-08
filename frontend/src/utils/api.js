@@ -1916,32 +1916,6 @@ export const whatsappAPI = {
    * OTA-safe: uses only the existing core libraries (axios + Platform + Linking).
    * No expo-sharing dependency -- that would require a native rebuild.
    */
-  // Web: the Levelog contact card as a download. (Phones go through
-  // utils/saveContact.js, which uses getVCardText.)
-  downloadVCard: async () => {
-    const response = await apiClient.get('/api/whatsapp/contact.vcf', {
-      responseType: 'blob',
-    });
-    const blob = new Blob([response.data], { type: 'text/vcard' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'levelog-assistant.vcf';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    return { ok: true };
-  },
-
-  // The .vcf text itself (authenticated), for the phone's share sheet.
-  getVCardText: async () => {
-    const response = await apiClient.get('/api/whatsapp/contact.vcf', {
-      responseType: 'text',
-      transformResponse: [(data) => data], // keep as raw text
-    });
-    return response.data;
-  },
 };
 
 /**
