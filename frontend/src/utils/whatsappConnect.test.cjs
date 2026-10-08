@@ -161,6 +161,8 @@ ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(cardSrc),
 ok(/DOB\/DOT alert switches are in each project's WhatsApp tab\./.test(cardSrc)
    && /router\.push\('\/projects'\)/.test(cardSrc),
    'Levelog Assistant: where the DOB/DOT switches are, linking to the project list');
+ok(/\{isAdmin \? \(\s*<Text style=\{s\.line\}>\s*DOB\/DOT alert switches/.test(cardSrc),
+   'that line is for admins only (the project WhatsApp tab is admin-only)');
 ok(/whatsappAPI\.getCompanyGroups\(\)/.test(cardSrc) && /groups\.rows\.map/.test(cardSrc),
    'Groups: every group from /whatsapp/company-groups, one row each');
 ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(cardSrc),

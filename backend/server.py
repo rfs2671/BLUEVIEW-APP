@@ -57316,6 +57316,23 @@ async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_curr
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Group not found")
+    # The bot is still in the group: put it back where it can be linked
+    # again (Integrations → Groups, the link screen), for this company only.
+    # A row created here is marked greeted and invited — the group already
+    # had both, and must not be sent them a second time.
+    now = datetime.now(timezone.utc)
+    try:
+        await db[PENDING_GROUPS].update_one(
+            {"group_id": row.get("wa_group_id")},
+            {"$set": {"status": "pending", "company_id": company_id,
+                      "unlinked_at": now, "linked_project_id": None},
+             "$setOnInsert": {"group_name": row.get("group_name") or "",
+                              "added_by_phone": "", "first_seen": now,
+                              "last_seen": now, "greeted_at": now,
+                              "invite_sent_at": now}},
+            upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa] unlinked group not returned to pending: {type(e).__name__}")
     return {"status": "unlinked"}
 
 

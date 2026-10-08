@@ -97,6 +97,33 @@ class CompanyGroups(unittest.TestCase):
         next(p for p in db.projects.rows if p["_id"] == "proj_a")["is_deleted"] = True
         self.assertFalse({G_GC, G_PLUMB} & {g["group_id"] for g in _groups(db)})
 
+    def test_an_unlinked_group_comes_back_as_not_linked(self):
+        """Unlinking only deactivates the binding; the bot is still in the
+        group, so it must show as Not linked (and be linkable), not vanish."""
+        db = _db()
+        db[server.PENDING_GROUPS].rows.append(
+            {"_id": "pgx", "group_id": G_PLUMB, "group_name": "Main St Plumbing",
+             "company_id": CO_A, "status": "linked", "linked_project_id": "proj_a",
+             "greeted_at": NOON, "invite_sent_at": NOON})
+        with _Ctx(db=db):
+            _run(server.whatsapp_unlink_group("g2", current_user=ADMIN))
+            pending = _run(server.whatsapp_pending_groups(current_user=ADMIN))["pending"]
+        got = {g["group_id"]: g for g in _groups(db)}
+        self.assertEqual(got[G_PLUMB]["status"], server.GROUP_NOT_LINKED)
+        self.assertIn(G_PLUMB, {p["group_id"] for p in pending})     # the Link screen sees it
+        self.assertEqual(got[G_GC]["status"], server.GROUP_TRADE)    # the other is untouched
+
+    def test_unlink_with_no_registry_row_adds_one_without_greeting_again(self):
+        db = _db()
+        with _Ctx(db=db):
+            _run(server.whatsapp_unlink_group("g2", current_user=ADMIN))
+        row = next(r for r in db[server.PENDING_GROUPS].rows if r["group_id"] == G_PLUMB)
+        self.assertEqual((row["status"], row["company_id"]), ("pending", CO_A))
+        self.assertIsNotNone(row["greeted_at"])
+        self.assertIsNotNone(row["invite_sent_at"])
+        self.assertIn(G_PLUMB, {g["group_id"] for g in _groups(db)})
+        self.assertNotIn(G_PLUMB, {g["group_id"] for g in _groups(db, ADMIN_B)})
+
     def test_only_link_roles(self):
         with self.assertRaises(HTTPException) as e:
             _groups(_db(), PM)

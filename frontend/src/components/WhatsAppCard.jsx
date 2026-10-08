@@ -267,16 +267,19 @@ export default function WhatsAppCard({ isAdmin = false }) {
             <Chip c={alerts.chip} />
           </View>
           <Text style={s.line}>{alerts.line}</Text>
-          <Text style={s.line}>
-            DOB/DOT alert switches are in each project's WhatsApp tab.{' '}
-            <Text
-              style={s.inlineLink}
-              onPress={() => router.push('/projects')}
-              accessibilityRole="link"
-            >
-              Go to projects
+          {/* Admins only: the project WhatsApp tab is admin-only. */}
+          {isAdmin ? (
+            <Text style={s.line}>
+              DOB/DOT alert switches are in each project's WhatsApp tab.{' '}
+              <Text
+                style={s.inlineLink}
+                onPress={() => router.push('/projects')}
+                accessibilityRole="link"
+              >
+                Go to projects
+              </Text>
             </Text>
-          </Text>
+          ) : null}
           {alerts.button ? (
             <Pressable
               onPress={() => openWhatsApp(alerts.button.url)}
