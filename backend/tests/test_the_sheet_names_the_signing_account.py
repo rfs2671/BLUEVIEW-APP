@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -235,7 +236,11 @@ class RegistrationNotLicence(unittest.TestCase):
                       CA.REGISTERED_LATER, CA.UNDETERMINED):
             with self.subTest(state):
                 s = CA.attribution_sentence({**lic, "state": state})
-                self.assertNotIn("licen", s.lower())
+                # THE WORD, ANCHORED, either spelling -- not the substring,
+                # which test_absence_literals_are_specific rightly refuses.
+                self.assertIsNone(
+                    re.search(r"\blicen[cs]e\b", s, re.I),
+                    f"{state}: the sentence calls a DOB registration a licence")
 
     def test_the_two_server_sentences_that_name_the_number(self):
         code = code_of("server.py", raw=True)
