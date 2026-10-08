@@ -60,12 +60,10 @@ WEBSITE = "https://levelog.com"
 
 def waapi_vcard(digits: str) -> Dict[str, Any]:
     """The `vCard` object for WaAPI's client/action/send-vcard, as its
-    OpenAPI spec defines it — WITHOUT `waid`. With it, WhatsApp treats the
-    card as a WhatsApp account and offers "Message / View business"; without
-    it, the card offers "Add contact", which is the point of Save to
-    Contacts."""
+    OpenAPI spec defines it."""
     d = digits_of(digits)
     return {
+        "waid": d,
         "internationalnumber": f"+{d}",
         "firstname": FIRST_NAME,
         "lastname": LAST_NAME,

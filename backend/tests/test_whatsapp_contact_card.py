@@ -77,7 +77,7 @@ class Keyword(unittest.TestCase):
         self.assertIn("waid=15165494475:+1 516-549-4475", v)
         self.assertTrue(v.endswith("END:VCARD\r\n"))
         self.assertEqual(wa_contact.waapi_vcard(BOT), {
-            "internationalnumber": "+15165494475",
+            "waid": "15165494475", "internationalnumber": "+15165494475",
             "firstname": "Levelog", "lastname": "Assistant",
             "displayname": "Levelog Assistant", "organization": "Levelog",
             "website": "https://levelog.com"})
@@ -105,8 +105,6 @@ class CardSent(unittest.TestCase):
         action, payload = wire.calls[0]
         self.assertEqual(payload["chatId"], f"{STRANGER}@c.us")
         self.assertEqual(payload["vCard"], wa_contact.waapi_vcard(BOT))
-        # No waid: WhatsApp offers "Add contact", not "Message / View business".
-        self.assertNotIn("waid", payload["vCard"])
 
     def test_an_opted_in_admin_gets_only_the_card_no_assistant_reply(self):
         wire = _UrlWire()
