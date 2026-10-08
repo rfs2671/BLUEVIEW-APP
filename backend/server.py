@@ -71,6 +71,7 @@ from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_react  # noqa: E402
+from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
@@ -44207,17 +44208,423 @@ async def _react_or_say(chat_id: str, message_id: Optional[str], emoji: str,
 
 async def _praise_reaction_allowed(group_id: str, sender: str) -> bool:
     """❤️ at most once per person per day (New York date), per group."""
+    # ONE row per (group, person): the collection is unique on (kind,
+    # group_id, sender), so the day is a field on it, not part of the key —
+    # a new row per day would hit that index from the second day on.
     key = {"kind": "praise_react", "group_id": group_id,
-           "sender": str(sender or ""), "day": eastern_today()}
+           "sender": str(sender or "")}
+    today = eastern_today()
+    now = datetime.now(timezone.utc)
     try:
-        if await db.whatsapp_conversation_state.find_one(key):
+        row = await db.whatsapp_conversation_state.find_one(key)
+        if row and row.get("day") == today:
             return False
-        await db.whatsapp_conversation_state.insert_one({
-            **key, "updated_at": datetime.now(timezone.utc),
-            "expires_at": datetime.now(timezone.utc) + timedelta(hours=36)})
+        await db.whatsapp_conversation_state.update_one(
+            key, {"$set": {"day": today, "updated_at": now,
+                           "expires_at": now + timedelta(hours=36)}},
+            upsert=True)
         return True
     except Exception:
         return False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LEVELOG ASSISTANT IN A DIRECT MESSAGE (lib/wa_assistant.py is the logic)
+# ══════════════════════════════════════════════════════════════════════════
+#
+#   who     an opted-in Admin or PM (the opt-in for THIS chat; @lid works),
+#           phone still the one on the profile. Everyone else: one line.
+#   scope   admin → every live project of their company; PM → their
+#           assigned projects of their company. Never another company.
+#   job     named in the message → that job; a bare number → the open menu;
+#           else the last job used here (30 min); else the only job; else
+#           "Which job? 1) … 2) …". Cross-project questions → all jobs.
+#   answer  one job: the group agent's tools, read-only, scoped; all jobs:
+#           a facts block per job, the model may use nothing else; general:
+#           no data at all.
+
+_DM_STATE = "whatsapp_conversation_state"
+DM_VOICE_HEARD_PREFIX = "Heard: "
+
+
+async def _dm_assistant_identity(chat_id: str) -> Optional[dict]:
+    """{user, user_id, company_id, role, projects} for an opted-in Admin/PM
+    writing from this chat, or None. Fail closed on anything unresolved."""
+    digits = wa_dm.phone_digits(chat_id)
+    optin = await _active_optin_for_phone(digits)
+    if not optin or not optin.get("user_id"):
+        return None
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(str(optin["user_id"])), "is_deleted": {"$ne": True}})
+    except Exception:
+        return None
+    if not wa_dm.is_dm_eligible(user):
+        return None
+    company_id = str(user.get("company_id") or "").strip()
+    if not company_id:
+        return None
+    if optin.get("company_id") and not wa_security.same_company(
+            optin.get("company_id"), company_id):
+        return None
+    # The phone on the record must still be the one that opted in (the same
+    # rule as a proactive send): a number changed since START is not them.
+    if optin.get("phone") not in [wa_dm.phone_digits(v) for v in
+                                  _contact_phone_variants(user.get("phone") or "")]:
+        return None
+    role = wa_dm.norm_role(user.get("role"))
+    projects = await _dm_assistant_projects(user, company_id, role)
+    return {"user": user, "user_id": str(user.get("_id")),
+            "company_id": company_id, "role": role, "projects": projects}
+
+
+async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list:
+    """The jobs this person may ask about, each re-proven to be the company's."""
+    out = []
+    try:
+        if role == ROLE_PM:
+            for pid in user.get("assigned_projects") or []:
+                p = await _bot_project_scope(company_id, pid)
+                if p:
+                    out.append(p)
+        else:
+            out = await db.projects.find(
+                {"company_id": _company_id_filter(company_id),
+                 "is_deleted": {"$ne": True}}).to_list(200)
+    except Exception as e:
+        logger.warning(f"[wa-assistant] project read failed: {type(e).__name__}")
+        return []
+    seen, jobs = set(), []
+    for p in out:
+        pid = str(p.get("_id"))
+        if pid not in seen:
+            seen.add(pid)
+            jobs.append(p)
+    jobs.sort(key=lambda p: wa_assistant.street_label(p).lower())
+    return jobs
+
+
+async def _dm_jobs(ident: dict) -> list:
+    """[{id, label, aliases, project}] — aliases include group names."""
+    pids = [str(p.get("_id")) for p in ident["projects"]]
+    names: Dict[str, list] = {}
+    try:
+        rows = await db.whatsapp_groups.find(
+            {"project_id": {"$in": pids}, "active": True,
+             "company_id": _company_id_filter(ident["company_id"])}).to_list(500)
+        for g in rows:
+            if wa_groups.is_real_name(g.get("group_name")):
+                names.setdefault(str(g.get("project_id")), []).append(g["group_name"])
+    except Exception:
+        pass
+    return [{"id": str(p.get("_id")), "label": wa_assistant.street_label(p),
+             "aliases": wa_assistant.job_aliases(p, names.get(str(p.get("_id")), [])),
+             "project": p} for p in ident["projects"]]
+
+
+async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
+    try:
+        row = await db[_DM_STATE].find_one(
+            {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""})
+    except Exception:
+        return None
+    if not row:
+        return None
+    exp = row.get("expires_at")
+    if isinstance(exp, datetime):
+        exp = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+        if exp <= datetime.now(timezone.utc):
+            return None
+    return row
+
+
+async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
+    now = datetime.now(timezone.utc)
+    try:
+        await db[_DM_STATE].update_one(
+            {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
+            {"$set": {**fields, "updated_at": now,
+                      "expires_at": now + timedelta(seconds=seconds)}},
+            upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-assistant] state write failed: {type(e).__name__}")
+
+
+async def _dm_state_clear(kind: str, chat: str) -> None:
+    try:
+        await db[_DM_STATE].delete_one(
+            {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""})
+    except Exception:
+        pass
+
+
+async def _dm_scope(body: str) -> str:
+    """project / all / general — by rule, else one small model call, else
+    project (the safe default: it asks which job rather than guessing)."""
+    rule = wa_assistant.question_scope(body)
+    if rule:
+        return rule
+    if not OPENAI_API_KEY:
+        return wa_assistant.SCOPE_PROJECT
+    try:
+        async with ServerHttpClient(timeout=10) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={"model": "gpt-4o-mini", "temperature": 0, "max_tokens": 3,
+                      "messages": [
+                          {"role": "system", "content": wa_assistant.SCOPE_CLASSIFIER_PROMPT},
+                          {"role": "user", "content": body}]},
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"})
+        word = str(resp.json()["choices"][0]["message"]["content"]).strip().lower()
+    except Exception:
+        return wa_assistant.SCOPE_PROJECT
+    return word if word in (wa_assistant.SCOPE_ALL, wa_assistant.SCOPE_GENERAL,
+                            wa_assistant.SCOPE_PROJECT) else wa_assistant.SCOPE_PROJECT
+
+
+async def _dm_llm(system: str, user_text: str) -> Optional[str]:
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=30) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
+                      "messages": [{"role": "system", "content": system},
+                                   {"role": "user", "content": user_text}]},
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"})
+        return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
+    except Exception as e:
+        logger.warning(f"[wa-assistant] model call failed: {type(e).__name__}")
+        return None
+
+
+async def _dm_job_facts(company_id: str, project: dict, now: datetime) -> str:
+    """One job's facts for a cross-job answer. Every read carries the job's
+    project id and is behind _bot_project_scope; nothing here is guessed."""
+    pid = str(project.get("_id"))
+    if not await _bot_project_scope(company_id, pid):
+        return ""
+    lines = [f"JOB: {wa_assistant.street_label(project)}"]
+    try:
+        snap = await _roster_snapshot(pid, _eastern_now())
+        lines.append(f"  on site today: {snap.get('count', 0)}"
+                     + (f" ({snap['tally']})" if snap.get("tally") else ""))
+    except Exception:
+        pass
+    try:
+        rows = await db.dob_logs.find({
+            "project_id": pid, "company_id": _company_id_filter(company_id),
+            "record_type": {"$in": ["violation", "permit"]},
+            "is_deleted": {"$ne": True}}).to_list(2000)
+        latest = _gc_latest_per_record(rows)
+        week_ago = now - timedelta(days=7)
+        open_v = [r for r in latest if r.get("record_type") == "violation"
+                  and str(r.get("resolution_state") or "").lower()
+                  not in _GC_CLOSED_STATES]
+
+        def _when(r):
+            v = r.get("detected_at")
+            return (v if getattr(v, "tzinfo", None) else v.replace(tzinfo=timezone.utc)) \
+                if isinstance(v, datetime) else None
+        new_v = [r for r in open_v if (_when(r) or now) >= week_ago and _when(r)]
+        lines.append(f"  open violations: {len(open_v)}; new in the last 7 days: {len(new_v)}")
+        for r in new_v[:5]:
+            facts = wa_gc.violation_facts(r)
+            lines.append(f"    new violation {facts.get('violation_number', '')} "
+                         f"issued {facts.get('violation_date', 'date not on record')}: "
+                         f"{facts.get('description', '')[:120]}")
+        today = wa_gc.today_et(now)
+        expiring = []
+        for r in latest:
+            if r.get("record_type") != "permit":
+                continue
+            if str(r.get("permit_status") or "").strip().upper() == "REVOKED":
+                continue
+            exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+            if exp and 0 <= (exp - today).days <= 31:
+                expiring.append((exp, r))
+        expiring.sort(key=lambda x: x[0])
+        lines.append(f"  permits expiring in the next 31 days: {len(expiring)}")
+        for exp, r in expiring[:6]:
+            lines.append(f"    permit {r.get('job_number') or r.get('raw_dob_id')} "
+                         f"({r.get('work_type') or 'permit'}) expires {exp.isoformat()}")
+    except Exception as e:
+        logger.warning(f"[wa-assistant] dob facts failed: {type(e).__name__}")
+    try:
+        start = now - timedelta(hours=24)
+        groups = await db.whatsapp_groups.find(
+            {"project_id": pid, "active": True,
+             "company_id": _company_id_filter(company_id)}).to_list(20)
+        gids = [g.get("wa_group_id") for g in groups if g.get("wa_group_id")]
+        if gids:
+            msgs = await db.whatsapp_messages.find(
+                {"group_id": {"$in": gids}, "project_id": pid,
+                 "sender": {"$ne": "bot"},
+                 "created_at": {"$gte": start}}).sort("created_at", 1).to_list(60)
+            lines.append(f"  group messages in the last 24 h: {len(msgs)}")
+            for m in msgs[-12:]:
+                b = str(m.get("body") or "").strip().replace("\n", " ")
+                if b:
+                    lines.append(f"    - {b[:140]}")
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
+async def _dm_answer_all(ident: dict, body: str) -> str:
+    now = datetime.now(timezone.utc)
+    blocks = []
+    for p in ident["projects"][:15]:
+        f = await _dm_job_facts(ident["company_id"], p, now)
+        if f:
+            blocks.append(f)
+    facts = "\n\n".join(blocks) or "(no jobs)"
+    reply = await _dm_llm(
+        wa_assistant.CROSS_SYSTEM_PROMPT,
+        f"FACTS (as of {_eastern_now().strftime('%A %Y-%m-%d %H:%M')} New York):\n"
+        f"{facts}\n\nQUESTION: {body}")
+    return reply or "Levelog Assistant couldn't put that together right now. Try again in a minute."
+
+
+async def _dm_answer_general(body: str) -> str:
+    reply = await _dm_llm(wa_assistant.GENERAL_SYSTEM_PROMPT, body)
+    return reply or "Levelog Assistant couldn't answer that right now. Try again in a minute."
+
+
+async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
+                         message_id: str) -> Optional[str]:
+    """One job, through the group agent's tools — read-only, scoped."""
+    return await _run_group_agent(
+        project_id=str(project.get("_id")), group_id=dm_chat,
+        company_id=ident["company_id"], sender=wa_dm.phone_digits(dm_chat),
+        body=body, features=_default_bot_config()["features"],
+        explicit_mention=True, reply_to=message_id or None,
+        address_mode="loose", dm=True)
+
+
+async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
+                              message_id: str, heard: Optional[str] = None) -> None:
+    """Answer one DM from an Admin/PM (see the block comment above)."""
+    text = (body or "").strip()
+    if not text:
+        return
+    social = wa_react.social_reaction(text)
+    if social:
+        # 🙏 for a thank-you; a compliment gets the same here — a private
+        # chat has no "once a day per person" audience to spare.
+        await _react_to_message(dm_chat, message_id, wa_react.THANKS
+                                if social == "thanks" else wa_react.PRAISE)
+        return
+    if not ident["projects"]:
+        await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
+        return
+    jobs = await _dm_jobs(ident)
+    by_id = {j["id"]: j for j in jobs}
+
+    # A bare number answers the open "Which job?" menu.
+    menu = await _dm_state_get("dm_menu", dm_chat)
+    question, job = text, None
+    if menu:
+        pick = wa_assistant.parse_menu_choice(text, len(menu.get("options") or []))
+        if pick is not None:
+            jid = str(menu["options"][pick])
+            if jid in by_id:                      # still theirs, still live
+                job = by_id[jid]
+                question = str(menu.get("question") or "")
+            await _dm_state_clear("dm_menu", dm_chat)
+            if job is None:
+                await send_whatsapp_message(dm_chat, wa_assistant.MENU_EXPIRED_TEXT)
+                return
+
+    if job is None:
+        named = [by_id[i] for i in wa_assistant.match_jobs(text, jobs)]
+        if not named and ident["role"] == ROLE_PM:
+            # A PM naming one of the company's OTHER jobs gets told so, not an
+            # answer about their own job. Only their own company is looked at.
+            other = await _dm_other_company_job(ident, text)
+            if other:
+                await send_whatsapp_message(dm_chat, (
+                    f"You're not on {other} in Levelog, so Levelog Assistant "
+                    f"can't answer about it. Your jobs: "
+                    + ", ".join(j["label"] for j in jobs) + "."))
+                return
+        if len(named) == 1:
+            job = named[0]
+        elif len(named) > 1:
+            await _dm_ask_which(dm_chat, named, text)
+            return
+        else:
+            scope = await _dm_scope(text)
+            if scope == wa_assistant.SCOPE_GENERAL:
+                await _dm_send_answer(dm_chat, message_id, _dm_answer_general(text),
+                                      heard)
+                return
+            if scope == wa_assistant.SCOPE_ALL:
+                await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, text),
+                                      heard)
+                return
+            remembered = await _dm_state_get("dm_job", dm_chat)
+            if remembered and str(remembered.get("project_id")) in by_id:
+                job = by_id[str(remembered["project_id"])]
+            elif len(jobs) == 1:
+                job = jobs[0]
+            else:
+                await _dm_ask_which(dm_chat, jobs, text)
+                return
+
+    await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                        project_id=job["id"])
+    await _dm_send_answer(dm_chat, message_id,
+                          _dm_answer_job(ident, job["project"], dm_chat,
+                                         question, message_id), heard)
+
+
+async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
+    """The label of a job of the PM's OWN company that the message names but
+    the PM is not on, else None."""
+    mine = {str(p.get("_id")) for p in ident["projects"]}
+    try:
+        rows = await db.projects.find(
+            {"company_id": _company_id_filter(ident["company_id"]),
+             "is_deleted": {"$ne": True}}).to_list(200)
+    except Exception:
+        return None
+    others = [{"id": str(p.get("_id")), "label": wa_assistant.street_label(p),
+               "aliases": wa_assistant.job_aliases(p)}
+              for p in rows if str(p.get("_id")) not in mine]
+    hit = wa_assistant.match_jobs(text, others)
+    return next((o["label"] for o in others if o["id"] in hit), None) if hit else None
+
+
+async def _dm_ask_which(dm_chat: str, jobs: list, question: str) -> None:
+    shown = jobs[:wa_assistant.MENU_MAX]
+    await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
+                        options=[j["id"] for j in shown], question=question)
+    await send_whatsapp_message(dm_chat, wa_assistant.menu_text(shown))
+
+
+async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
+                          heard: Optional[str] = None) -> None:
+    """Send the answer; 👀 on the question first if it takes over 5 s, and
+    taken back if no answer comes. A voice note's answer opens with
+    `Heard: "…"`."""
+    task = asyncio.ensure_future(answer_coro)
+    eyes = False
+    try:
+        reply = await asyncio.wait_for(asyncio.shield(task),
+                                       wa_react.WORKING_AFTER_SECONDS)
+    except asyncio.TimeoutError:
+        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
+        reply = await task
+    if reply:
+        if heard:
+            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+        await send_whatsapp_message(dm_chat, reply)
+    elif eyes:
+        await _react_to_message(dm_chat, message_id, "")
 
 
 async def send_whatsapp_message(
@@ -52488,6 +52895,8 @@ async def _agent_context_block(
 # source is longer than a reply that does neither, and a truncated answer is
 # worse than a slightly slower one.
 AGENT_MODEL = "gpt-4o"
+# Tools that change something or start a flow; never offered in a DM.
+_DM_WRITE_TOOLS = frozenset({"start_permit_renewal", "start_checklist"})
 AGENT_MAX_TOKENS = 800
 
 
@@ -52502,7 +52911,10 @@ async def _run_group_agent(
     explicit_mention: bool = False,
     reply_to: Optional[str] = None,
     address_mode: str = "loose",
+    dm: bool = False,
 ) -> Optional[str]:
+    # `dm`: Levelog Assistant in a private chat (_dm_answer_job). No group
+    # history, no tool that writes, and the DM voice in the prompt.
     # `body` is already a parameter of this function — the user's message, as
     # sent. It is passed down to the tool dispatcher below so the plan handler
     # can route on the sentence rather than on the agent's rebuilt keywords.
@@ -52534,6 +52946,8 @@ async def _run_group_agent(
     # the follow-up is read as a brand-new question with no context.
     history_msgs: List[Dict[str, str]] = []
     try:
+        if dm:
+            raise _SkipSection()   # a DM has no group history to recall
         _hist_binding = await _binding_for_history(
             group_id, company_id, project_id)
         recent = await db.whatsapp_messages.find(
@@ -52576,6 +52990,8 @@ async def _run_group_agent(
                     "role":    "user",
                     "content": f"[{who}] {msg_body}",
                 })
+    except _SkipSection:
+        pass
     except Exception as e:
         logger.warning(f"agent: loading history failed: {e}")
 
@@ -52586,6 +53002,8 @@ async def _run_group_agent(
         system_prompt = _AGENT_SYSTEM_PROMPT_BASE + _AGENT_EXPLICIT_CLAUSE
     else:
         system_prompt = _AGENT_SYSTEM_PROMPT_BASE + _AGENT_NOREPLY_CLAUSE
+    if dm:
+        system_prompt += wa_assistant.DM_AGENT_CLAUSE
 
     # ── BUILT FRESH, AND APPENDED RATHER THAN PREPENDED ────────────────────
     #
@@ -52615,6 +53033,9 @@ async def _run_group_agent(
     enabled_tools = []
     for t in _AGENT_TOOLS:
         name = t["function"]["name"]
+        # Read-only in a DM: nothing that files, renews or starts a flow.
+        if dm and name in _DM_WRITE_TOOLS:
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -54023,17 +54444,16 @@ async def _process_whatsapp_message(payload: dict):
             if answer and await _handle_gc_confirm_reply(dm_chat, answer):
                 return
 
-        # Look up contact
-        contact = await _find_whatsapp_contact(sender)
-        if not contact:
-            # Unknown or unregistered number — stay silent
-            return
-        # ONE NUMBER, TWO COMPANIES, NO GUESS. The contact lookup is by phone
-        # across every tenant; a number registered under two companies cannot
-        # say which company's data a direct message may read, so it reads none.
-        if await _contact_companies_ambiguous(sender):
-            _security_event("whatsapp_dm_contact_ambiguous",
-                            reason="phone_in_multiple_companies")
+        # ── LEVELOG ASSISTANT IN A DM ─────────────────────────────────────
+        # Only an opted-in Admin or PM, found through the opt-in for THIS
+        # chat (so a @lid sender resolves), whose phone is still the one on
+        # their profile. Anyone else — unknown number, CP, superintendent,
+        # not opted in — gets the same one line and no data. The old path
+        # looked the sender's digits up in whatsapp_contacts, which a @lid
+        # sender never matched, checked no role, and picked one project.
+        ident = await _dm_assistant_identity(dm_chat)
+        if ident is None:
+            await send_whatsapp_message(dm_chat, wa_assistant.NOT_FOR_YOU_TEXT)
             return
 
         # Transcribe audio if present.
@@ -54163,43 +54583,12 @@ async def _process_whatsapp_message(payload: dict):
         if not body:
             return
 
-        # Classify intent
-        intent = await classify_intent(body)
-        if not intent:
-            return
-
-        scope = await _find_project_for_contact(contact)
-        if not scope:
-            await send_whatsapp_message(parsed["from"], "No project found linked to your account.")
-            return
-        dm_company_id, project_id = scope
-
-        # Execute intent — every handler re-proves the project is this
-        # company's before it reads anything.
-        if intent == "who_on_site":
-            reply = await _handle_who_on_site(project_id, company_id=dm_company_id)
-        elif intent == "dob_status":
-            reply = await _handle_dob_status(project_id, company_id=dm_company_id)
-        elif intent == "open_items":
-            reply = await _handle_open_items(project_id, company_id=dm_company_id)
-        elif intent == "material_receipt":
-            reply = await _handle_material_receipt(project_id, body, sender,
-                                                   company_id=dm_company_id)
-        elif intent == "material_status":
-            reply = await _handle_material_status(project_id, company_id=dm_company_id)
-        else:
-            return
-
-        # Phase F1 — voice-note acknowledgment UX (path B). When the
-        # input arrived as audio, append the explicit confirmation
-        # cue so the user can sanity-check the extraction. Text
-        # messages stay unchanged.
-        if parsed.get("has_audio") and reply:
-            reply = reply.rstrip() + (
-                "\n\nReply CORRECT to confirm or describe what's wrong."
-            )
-
-        await send_whatsapp_message(parsed["from"], reply)
+        # A voice note's answer starts with what was heard, so a misheard
+        # question is visible (it replaces the old "Reply CORRECT" cue,
+        # which confirmed a write this assistant no longer makes).
+        await _dm_assistant_reply(
+            ident, dm_chat, body, parsed.get("message_id_serialized") or "",
+            heard=body if parsed.get("has_audio") else None)
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)

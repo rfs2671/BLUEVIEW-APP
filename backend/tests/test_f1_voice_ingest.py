@@ -752,12 +752,13 @@ class TestServerIntegrationPins(unittest.TestCase):
         self.assertIn("del audio_bytes", self.text)
 
     def test_path_b_acknowledgment_cue_appended_for_voice(self):
-        # Pin the spec's path-B copy so a future reply-format
-        # refactor doesn't drop the confirmation prompt.
-        self.assertIn(
-            "Reply CORRECT to confirm or describe what's wrong.",
-            self.text,
-        )
+        # A voice DM's answer opens with what was heard, so a misheard
+        # question is visible. It replaced "Reply CORRECT to confirm…", which
+        # confirmed a material-receipt WRITE the read-only Levelog Assistant
+        # in a DM no longer makes (tests/test_whatsapp_dm_assistant.py).
+        self.assertIn('DM_VOICE_HEARD_PREFIX = "Heard: "', self.text)
+        self.assertIn("heard=body if parsed.get(\"has_audio\") else None",
+                      self.text)
 
     def test_no_r2_writes_in_voice_path(self):
         """Hard rule: audio bytes never written to R2. Pin via

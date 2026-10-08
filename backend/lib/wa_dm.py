@@ -46,17 +46,20 @@ DM_SEND_ATTEMPTS = 3
 DM_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 
 # ONLY WHAT IS LIVE. The intro names features that exist today and nothing
-# planned: GC group alerts (new DOB violations, permit expiry reminders) and
-# the confirm-by-DM that picks the GC group. The settings it mentions exist:
+# planned: questions about your jobs in this chat (server.py
+# _dm_assistant_reply), GC group alerts (new DOB violations, permit expiry
+# reminders) and the confirm-by-DM that picks the GC group. The settings it mentions exist:
 # the project's WhatsApp tab (admins). Add a feature here the day it ships.
 # The bot is "Levelog Assistant" in every message it sends.
 ASSISTANT = "Levelog Assistant"
 INTRO_TEXT = (
-    "Levelog Assistant here. You're connected. Levelog Assistant posts new "
-    "DOB violations and permit expiry reminders to each project's GC WhatsApp "
-    "group. If you are your company's main admin, Levelog Assistant will ask "
-    "you here which group that is. Admins can turn these alerts on or off in "
-    "the app: open the project, then WhatsApp. Reply STOP to turn this off."
+    "Levelog Assistant here. You're connected. Ask me about your jobs right "
+    "here: who's on site, open items, violations, permits, or what happened "
+    "today. Levelog Assistant also posts new DOB violations and permit expiry "
+    "reminders to each project's GC WhatsApp group. If you are your company's "
+    "main admin, Levelog Assistant will ask you here which group that is. "
+    "Admins can turn these alerts on or off in the app: open the project, "
+    "then WhatsApp. Reply STOP to turn this off."
 )
 # EVERY START GETS A REPLY. Each refusal says, in plain words, what to do.
 # The one deliberately vague line is NOT_ELIGIBLE_TEXT: an unknown number and
