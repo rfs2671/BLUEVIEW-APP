@@ -52,7 +52,7 @@ FAMS = {EF: ["EF-1", "EF-2"], PTAC: ["PTAC-1", "PTAC-2", "PTAC-3"],
         WH: ["WH-1"], SAF: ["SAF-1"], DH: ["DH-1"]}
 #: what the schedules print in their QTY column (PTAC-2's cell is contested)
 QTY = {PTAC: {"PTAC-1": "21", "PTAC-2": "(readings disagree)", "PTAC-3": "11"},
-       WH: {"WH-1": "9"}, SAF: {"SAF-1": "1"}}
+       WH: {"WH-1": "9"}, SAF: {"SAF-1": "1"}, DH: {"DH-1": "1"}}
 
 
 def _present():
@@ -240,7 +240,11 @@ class TheBuildingTotalIsCheckedAgainstTheSchedule(unittest.TestCase):
         recs = _boyland()
         for s in ("There are 0 DH-1.", "There is 1 DH-1.", "The bulkhead has 1 DH-1."):
             self.assertFalse(_ok(s, recs), s)
-        self.assertIn(f"{DH} (DH-1): NOT COUNTED", S.render_glyph_evidence(recs))
+        text = S.render_glyph_evidence(recs)
+        self.assertIn(f"{DH} (DH-1): NOT COUNTED", text)
+        # production's schedule prints DH-1 QTY 1, and none is located: said
+        self.assertIn("The schedule's QTY prints DH-1 1 and none were located - THEY DISAGREE",
+                      text)
 
 
 class TheScheduleQuantityIsReadAtQuestionTime(unittest.TestCase):

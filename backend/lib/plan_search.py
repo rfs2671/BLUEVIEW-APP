@@ -1828,7 +1828,17 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
         fam = book.families[name]
         head = f"{name} ({', '.join(fam.tags)})"
         if fam.why:
-            lines.append(f"{head}: NOT COUNTED - {fam.why}. State no count of these.")
+            line = f"{head}: NOT COUNTED - {fam.why}. State no count of these."
+            # A SCHEDULE THAT PRINTS A QUANTITY NOTHING WAS FOUND FOR IS A
+            # DISAGREEMENT TOO, and is said (operator ruling 2026-10-07).
+            # Measured: DH-1's schedule prints QTY 1; its label reads
+            # "DH-1. DUCT HEATER" and the pass locates none.
+            printed = [f"{t} {fam.qty[t]}" for t in fam.tags
+                       if re.fullmatch(r"\d+", fam.qty.get(t) or "") and int(fam.qty[t]) > 0]
+            if printed and not any(_resolved(fam, [t]) for t in fam.tags):
+                line += (f" The schedule's QTY prints {', '.join(printed)} and none "
+                         f"were located - THEY DISAGREE.")
+            lines.append(line)
             continue
         lines.append(f"{head}:")
         floors = sorted({_row_floor(r) for r in fam.rows if _row_floor(r)} | refused_k)
