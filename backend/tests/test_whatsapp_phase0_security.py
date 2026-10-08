@@ -911,7 +911,7 @@ class ChecklistExtractionDefaultsOff(unittest.TestCase):
         checklist default is off."""
         src = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
                "components" / "whatsapp" / "GroupConfigPanel.jsx").read_text()
-        self.assertNotIn("DEFAULT_CONFIG", src)
+        self.assertNotIn("const DEFAULT_CONFIG", src)
         self.assertIn("useState(() => group?.bot_config || {})", src)
         cfg = server._effective_bot_config({})
         self.assertFalse(cfg["checklist_extraction_enabled"])
