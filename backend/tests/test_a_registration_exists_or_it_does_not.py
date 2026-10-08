@@ -342,7 +342,7 @@ class TheGrantEndsWithTheRegistration(_Fixture):
         self.run_with(db, lambda: S.delete_cs_registration("r1", admin=ADMIN))
         self.assertEqual(_assigned(db, MICHAEL), [P12])
 
-    def test_re_registering_the_same_man_keeps_his_access(self):
+    def test_registering_the_same_man_again_keeps_his_access(self):
         """His new row is live on the same job, so the grant stands."""
         db = _DB([_reg()], users=[_super(MICHAEL, [P588])])
         self.register(db, P588, MICHAEL)
