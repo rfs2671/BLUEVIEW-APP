@@ -695,7 +695,6 @@ refuses a CP flipping an admin-gated type (server.py:26012-26016).
 | `/admin/insurance` | frontend/app/admin/insurance.jsx | SHIPPED |
 | `/admin/integrations` | frontend/app/admin/integrations.jsx | SHIPPED |
 | `/admin/checklists` | frontend/app/admin/checklists/index.jsx | SHIPPED |
-| `/admin/device-capabilities` | frontend/app/admin/device-capabilities.jsx | SHIPPED |
 | `/owner` | frontend/app/owner/index.jsx | SHIPPED |
 | `/owner/pending-deletion` | frontend/app/owner/pending-deletion.jsx | SHIPPED |
 | `/settings/notifications` | frontend/app/settings/notifications.jsx | SHIPPED |

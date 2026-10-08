@@ -43,7 +43,11 @@ import { semantic, chrome, border, surface, text } from '../src/styles/semanticC
 
 // A PM (Site Manager) has one tool here: connecting their own WhatsApp, which
 // lives in Integrations. Without this tile the screen is reachable only by
-// typing its path — the "route with no link" failure described below.
+// typing its Expo Router path: A ROUTE WITH NO LINK IS NOT SHIPPED. The
+// `levelog://` deep link is registered (app.json `scheme`) but a messaging app
+// does not render a custom scheme as tappable, and there is no https App Link
+// to fall back on — `android.intentFilters` is null. So the entry point ships
+// with the screen or the screen is not reachable.
 const pmActions = [
   { title: 'Integrations', subtitle: 'Your WhatsApp', path: '/admin/integrations', icon: Cloud },
 ];
@@ -62,19 +66,15 @@ const adminActions = [
   // for why the tab is not retired yet.
   { title: 'Outside supers', subtitle: 'No-account CS registration', path: '/admin/superintendent', icon: HardHat },
   { title: 'Safety Staff', subtitle: 'SSC / SSM registry', path: '/admin/safety-staff', icon: Shield },
-  // A ROUTE WITH NO LINK IS NOT SHIPPED. `app/admin/device-capabilities.jsx`
-  // has existed and worked since the viewer probe landed, and NOTHING
-  // REFERENCED IT — zero occurrences of the path outside the screen's own
-  // file. It was reachable only by someone who already knew the Expo Router
-  // path, which meant the one measurement that decides whether off-thread
-  // rasterisation is available could not be taken by the person holding the
-  // phone. The `levelog://` deep link is registered (app.json `scheme`) but a
-  // messaging app does not render a custom scheme as tappable, and there is
-  // no https App Link to fall back on: `android.intentFilters` is null.
-  //
-  // So the entry point ships with the screen. It is the fourth thing this week
-  // that was complete, correct and invisible.
-  { title: 'Device Check', subtitle: 'Viewer capabilities', path: '/admin/device-capabilities', icon: Smartphone },
+  // NO 'Device Check' TILE, and the screen behind it is gone too (operator
+  // ruling, 2026-10-07: "remove the tile. Nothing depends on it, and it can't
+  // run on the device it was built for"). It read six viewer capabilities off
+  // a 1x1 WebView and wrote nothing anywhere — the only egress was a share
+  // sheet the reader tapped. The reason it gave for existing was the site
+  // device, a locked-down tablet that may never take a Play Store update; but
+  // a `site_device` session is held inside /site/* by
+  // src/utils/inspectorConfinement.js and cannot reach /admin/* at all, so it
+  // could never run on the device it named. See the commit for the full note.
 ];
 
 // 2-column grid tile
