@@ -222,10 +222,38 @@ const clickByText = (page, text) => page.evaluate((needle) => {
  * an icon and no text, rightmost of the two (the other is Back). Narrow on
  * purpose — if the header gains a third icon this stops finding it and says
  * so, rather than clicking something else.
+ *
+ * ── "IN THE HEADER" IS ASKED DIRECTLY NOW, NOT BY POSITION ──────────────────
+ *
+ * `top < 80` was a PROXY for "not in the list", and the proxy broke on a change
+ * that had nothing to do with the header. This file scrolls the roster down 600px
+ * before it probes, deliberately — see the note at the wheel. A user card grew
+ * taller (the "Make superintendent" line), the same 600px landed somewhere else,
+ * and A CARD'S 48x48 DELETE BIN came to rest at top:24 — unlabelled, focusable,
+ * icon-only, 48px wide: every one of this filter's criteria. The count became 3
+ * and all twenty Add checks in both themes were refused.
+ *
+ * Measured, not guessed: the two header controls report a nearest scrollable
+ * ancestor of NONE, and the bin reports the roster's ScrollView. So the question
+ * is asked that way round. The band is kept — it is a second, independent reason
+ * and costs nothing — but it is no longer the whole answer, and a control in the
+ * list can no longer impersonate a header button by being near the top of it.
  */
 const clickAddOpener = (page) => page.evaluate(() => {
+  // The header is a SIBLING of the roster's ScrollView, not a child of it, so
+  // "has no scrolling ancestor" separates the two without naming either.
+  const inAScroller = (node) => {
+    for (let p = node.parentElement; p; p = p.parentElement) {
+      const s = getComputedStyle(p);
+      if (/auto|scroll/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 4) {
+        return true;
+      }
+    }
+    return false;
+  };
   const icons = [...document.querySelectorAll('[tabindex="0"]')]
     .filter((n) => !(n.innerText || '').trim() && n.querySelector('svg'))
+    .filter((n) => !inAScroller(n))
     .map((n) => ({ n, r: n.getBoundingClientRect() }))
     .filter((x) => x.r.top >= 0 && x.r.top < 80 && x.r.width > 20);
   if (icons.length !== 2) return icons.length;

@@ -394,6 +394,13 @@ jobs:
       # "Assign" was six, and whether that wraps at the operator's 443px window
       # is the product of the font, the icon, the gap and the card width: not a
       # fact any source-text check can reach. Reuses the same dist and Chromium.
+      #
+      # IT ALSO COUNTS THE "Make superintendent" LINE, which is a SIBLING of that
+      # row and so outside the row census above. It must appear on the CP's card
+      # and on no other: the confirmation behind it states the consequences of
+      # promotion FROM cp, and three of them are false from pm. The mount smoke
+      # cannot see any of this — it signs in as an owner and renders the
+      # access-denied panel on this route, as the next step's note explains.
       - name: The user-card action row fits, and holds the right buttons
         working-directory: frontend
         run: node scripts/admin-users-card-actions.cjs --dist dist --port 5812
