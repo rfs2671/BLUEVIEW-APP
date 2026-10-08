@@ -61,8 +61,10 @@ function viewerScript() {
 function boot({
   search = '', scale = 1, visualViewport = true,
   // Same three knobs `bootLive` carries, for the cases that only need the
-  // capability read: `?caps=1` runs `probeBoot` and `probeEnv` and stops, and
-  // those two rows are where the device-derived budgets are declared.
+  // capability read: `?probe=1` with no document runs `probeBoot` and
+  // `probeEnv`, and those two rows are where the device-derived budgets are
+  // declared. THIS SAID `?caps=1` until that mode was retired — the rows are
+  // the same rows, read off the caller that is left.
   cssWidth = 390, dpr = 3, deviceMemory = 4,
 } = {}) {
   const posted = [];
@@ -238,24 +240,40 @@ ok(!!run.listeners['vv:resize'],
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. CAPS MODE RUNS AND STOPS.
-//    The capability screen opens this page with ?caps=1 and no document, and
-//    waits for the completion marker. Without it the screen cannot tell "still
-//    running" from "this WebView answered nothing".
+// 7. THE DEVICE READ RUNS AT BOOT, BEFORE ANY DOCUMENT.
+//
+//    RESTATED OFF A RETIRED CALLER, NOT DELETED. This was "CAPS MODE RUNS AND
+//    STOPS": the capability screen opened this page with ?caps=1 and no
+//    document and waited for a completion marker. #677 deleted that screen and
+//    nothing else in the product ever built that url — but the SUBJECT of the
+//    assertions below was never the mode. `capabilityRead` is still called at
+//    boot, the order of the six is still the measurement, and `probe=1` is the
+//    caller that remains, so the same claims are made through it.
+//
+//    THE COMPLETION MARKER IS GONE AND IS NOT MISSED HERE. The old header
+//    explained the mode by that marker — a `caps` row letting the screen tell
+//    "still running" from "this WebView answered nothing". Nothing in THIS
+//    block ever asserted it; the assertion that did lives in
+//    pdfRenderProbe.test.cjs, and is retired there, because a marker exists
+//    for a reader of it and the reader was that screen.
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const caps = boot({ search: '?caps=1' });
-  ok(!caps.threw,
-    `caps mode executes without throwing${
-      caps.threw ? ` — ${String(caps.threw && caps.threw.stack).split('\n')[0]}` : ''}`);
-  const kinds = caps.posted.filter((m) => m && m.type === 'pdf-probe').map((m) => m.probe);
+  const read = boot({ search: '?probe=1' });
+  ok(!read.threw,
+    `the device read executes without throwing${
+      read.threw ? ` — ${String(read.threw && read.threw.stack).split('\n')[0]}` : ''}`);
+  const kinds = read.posted.filter((m) => m && m.type === 'pdf-probe').map((m) => m.probe);
   ok(kinds.indexOf('boot') === 0,
-    `caps mode reports the boot cost first (got: ${kinds.join(', ') || 'nothing'})`);
+    `the device read reports the boot cost first (got: ${kinds.join(', ') || 'nothing'})`);
   ok(kinds.includes('env') && kinds.includes('canvas-lim'),
     'and the device measurements');
-  // No document is opened, so nothing may be posted about one.
-  ok(!caps.posted.some((m) => m && (m.type === 'pdf-ready' || m.type === 'pdf-error')),
-    'and never touches a document');
+  // ⚠️ THIS NO LONGER RESTS ON AN EARLY RETURN. Caps mode guaranteed it by
+  // short-circuiting before the document path; with that return gone the claim
+  // rests on the page taking its document by postMessage and none having been
+  // sent. Worth keeping either way: the six run BEFORE a file is looked at, so
+  // a device read must not conjure a document to report on.
+  ok(!read.posted.some((m) => m && (m.type === 'pdf-ready' || m.type === 'pdf-error')),
+    'and claims nothing about a document, because none was posted in');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1741,10 +1759,12 @@ async function workerPath() {
   //
   // `probeCanvasLimits` walks a ladder to 16384x16384 — a gigabyte of
   // allocation — and `probeImageFilters` scans every operator of page 1.
-  // Both are behind `MEASURE = PROBE || CAPS`, both from URL params, so
-  // neither can run for a reader who did not ask. ASSERTED BY RUNNING, not by
-  // reading the guard: a normal open is driven to completion and the rows it
-  // would have emitted are counted.
+  // Both are behind `PROBE`, which comes from a URL param, so neither can run
+  // for a reader who did not ask. (It read `MEASURE = PROBE || CAPS` until the
+  // caps flag was retired; one flag now, same reach.)
+  //
+  // ASSERTED BY RUNNING, not by reading the guard: a normal open is driven to
+  // completion and the rows it would have emitted are counted.
   {
     const s = bootLive({ search: '?file=file%3A%2F%2F%2Fplan.pdf' });
     await s.pump();
@@ -2853,9 +2873,12 @@ async function previewFitWidth() {
       + `device reports a version it is not running (module ${
         MODULE_VIEWER_VERSION}, page ${m ? m[1] : 'none'})`);
 
-    const caps = boot({ search: '?caps=1' });
-    const bootRow = probeData(caps.posted, 'boot')[0] || {};
-    const envRow = probeData(caps.posted, 'env')[0] || {};
+    // OFF THE PROBE OPEN, NOT THE RETIRED CAPS MODE. The subject here is the
+    // boot and env ROWS carrying the stamp, which is `probeBoot`/`probeEnv`'s
+    // property and not the mode's.
+    const read = boot({ search: '?probe=1' });
+    const bootRow = probeData(read.posted, 'boot')[0] || {};
+    const envRow = probeData(read.posted, 'env')[0] || {};
     ok(bootRow.viewerVersion === MODULE_VIEWER_VERSION,
       `the boot row says which viewer answered (${bootRow.viewerVersion})`);
     ok(envRow.viewerVersion === MODULE_VIEWER_VERSION,
@@ -2940,13 +2963,19 @@ async function previewFitWidth() {
 
   // ── (e) THE BUDGETS ARE READ OFF THE DEVICE, AND FALL BACK OUT LOUD ───
   //
+  // READ THROUGH `?probe=1`, WHICH USED TO BE `?caps=1`. Only the url changed:
+  // the subject is `applyDeviceBudgets` — which runs unconditionally for EVERY
+  // reader and is what `trim()` evicts against — reported through `probeEnv`.
+  // That is the coverage the retired mode happened to be carrying, and it is
+  // why the mode's deletion could not take the measurements with it.
+  //
   // ⚠️ `navigator.deviceMemory` IS CLAMPED TO 8 BY THE SPEC AND IS ABSENT ON
   // MOST ANDROID WEBVIEWS. Both facts matter: a 16 GB Pixel reports exactly
   // what a 64 GB desktop reports, so memory ALONE must never be what raises
   // the sharp budget — 64 MP is 256 MB of RGBA and renderer kills on this
   // device were reported at 250-350 MB. The viewport is the second term.
   {
-    const phone = boot({ search: '?caps=1', cssWidth: 443, dpr: 2.4375, deviceMemory: 8 });
+    const phone = boot({ search: '?probe=1', cssWidth: 443, dpr: 2.4375, deviceMemory: 8 });
     const phoneEnv = probeData(phone.posted, 'env')[0] || {};
     ok(phoneEnv.CANVAS_BUDGET_MP === 32,
       `a phone-width viewport keeps the 32 MP sharp budget even when deviceMemory `
@@ -2955,7 +2984,7 @@ async function previewFitWidth() {
       `and previews at ${Math.round(443 * 2.4375)} px, the operator's real screen (got ${
         phoneEnv.previewWidthPx})`);
 
-    const desk = boot({ search: '?caps=1', cssWidth: 1920, dpr: 1, deviceMemory: 8 });
+    const desk = boot({ search: '?probe=1', cssWidth: 1920, dpr: 1, deviceMemory: 8 });
     const deskEnv = probeData(desk.posted, 'env')[0] || {};
     ok(deskEnv.CANVAS_BUDGET_MP > 32,
       `a wide viewport with 8 GB to back it gets more (got ${deskEnv.CANVAS_BUDGET_MP} MP)`);
@@ -2963,13 +2992,13 @@ async function previewFitWidth() {
       `but never past the kill threshold the budget was derived against (${
         deskEnv.CANVAS_BUDGET_MP} MP = ${deskEnv.CANVAS_BUDGET_MP * 4} MB)`);
 
-    const small = boot({ search: '?caps=1', cssWidth: 1920, dpr: 1, deviceMemory: 2 });
+    const small = boot({ search: '?probe=1', cssWidth: 1920, dpr: 1, deviceMemory: 2 });
     const smallEnv = probeData(small.posted, 'env')[0] || {};
     ok(smallEnv.CANVAS_BUDGET_MP === 32,
       `a wide viewport on a 2 GB device does NOT (got ${smallEnv.CANVAS_BUDGET_MP} MP)`);
 
     // THE API IS ABSENT, WHICH IS THE COMMON CASE ON ANDROID WEBVIEW.
-    const blind = boot({ search: '?caps=1', cssWidth: 443, dpr: 2.4375, deviceMemory: null });
+    const blind = boot({ search: '?probe=1', cssWidth: 443, dpr: 2.4375, deviceMemory: null });
     const blindEnv = probeData(blind.posted, 'env')[0] || {};
     ok(blindEnv.deviceMemoryKnown === false,
       'a WebView with no deviceMemory says so rather than inventing a number');
@@ -2982,7 +3011,7 @@ async function previewFitWidth() {
       + `the memory API (got ${blindEnv.previewWidthPx})`);
 
     // 5% OF WHAT THE DEVICE REPORTS, when it reports anything.
-    const known = boot({ search: '?caps=1', deviceMemory: 4 });
+    const known = boot({ search: '?probe=1', deviceMemory: 4 });
     const knownEnv = probeData(known.posted, 'env')[0] || {};
     ok(knownEnv.deviceMemoryKnown === true
       && knownEnv.previewBudgetBytes === Math.round(4 * 1e9 * 0.05),

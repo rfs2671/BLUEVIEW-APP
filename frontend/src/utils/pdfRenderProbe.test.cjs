@@ -139,13 +139,19 @@ try {
 
 // ── 3. EVERY EMITTER IS BEHIND probePost ─────────────────────────────────
 {
-  // MEASURE, not PROBE — caps mode has to be able to emit, and it carries no
-  // feature flag. The property is unchanged: with neither mode on, nothing
-  // is posted.
-  ok(/function probePost\(kind, data\)\{[\s\S]{0,60}if \(!MEASURE\) return;/.test(script),
-    'probePost returns early when neither probe nor caps mode is on');
-  ok(/var MEASURE = PROBE \|\| CAPS;/.test(script),
-    'MEASURE is exactly "probe mode or caps mode"');
+  // PROBE, and this used to be `MEASURE = PROBE || CAPS` — caps mode had to be
+  // able to emit and carried no feature flag. #677 deleted the only caller that
+  // ever built a `?caps=1` url, so the flag and its alias are retired and this
+  // is the whole gate. THE PROPERTY ASSERTED IS UNCHANGED: with the flag off,
+  // nothing is posted.
+  ok(/function probePost\(kind, data\)\{[\s\S]{0,60}if \(!PROBE\) return;/.test(script),
+    'probePost returns early unless probe mode is on');
+  // AND THE RETIRED FLAG CANNOT CREEP BACK. `script` is the JOINED ARRAY OF
+  // STRING LITERALS, not the file, so this scans code and cannot pass on the
+  // comment two lines above that recounts the old name — which is the only
+  // reason a banned-token scan is honest here.
+  ok(!/\bCAPS\b|\bMEASURE\b/.test(script),
+    'neither the caps url flag nor the MEASURE alias survives in the page');
 
   // Any raw pdf-probe post that did not go through probePost.
   const rawEmits = script
@@ -249,40 +255,33 @@ try {
     'the source read runs inside the capability sequence');
 }
 
-// ── 12. CAPS MODE: ONE IMPLEMENTATION, AND IT CANNOT TOUCH A DOCUMENT ────
+// ── 12. THE DEVICE READ, WHICH OUTLIVED THE MODE THAT ASKED FOR IT ───────
 {
-  // The site device is offline by design and may never take a flag refresh, so
-  // the capability read cannot depend on the feature flag. A SECOND page would
-  // drift from the viewer's copy and stop the two devices being comparable
-  // line for line — hence a mode, not a page.
-  ok(/var CAPS = param\("caps"\) === "1";/.test(script),
-    'caps mode is its own url flag, independent of the feature flag');
-
-  // WAS: "caps runs before the no-file guard". That guard is gone — the page
-  // no longer takes its document from the url at all, because a url that
-  // changed per document made every open a WebView NAVIGATION and re-parsed
-  // 1.5 MB of pdf.js. The PROPERTY is unchanged and is what is asserted here:
-  // caps mode returns before anything that touches a document can run.
-  const capsAt = script.indexOf('if (CAPS) {');
-  const libAt = script.indexOf('if (typeof pdfjsLib === "undefined")');
-  const openAt = script.indexOf('function openDocument(url){');
-  ok(capsAt > 0 && libAt > capsAt && openAt > capsAt,
-    'the caps short-circuit runs BEFORE the library guard and before any '
-    + 'document can be opened',
-    `caps@${capsAt} lib@${libAt} open@${openAt}`);
-  // The short-circuit is only a short-circuit if it returns.
-  const capsBlock = script.slice(capsAt, capsAt + 400);
-  ok(/\n\s*return;\n\s*\}/.test(capsBlock),
-    'and it returns rather than falling through into the document path');
-  ok(/probePost\("caps", \{ done: true \}\)/.test(script),
-    'caps mode posts a completion marker — "still running" and "answered nothing" must differ');
+  // WHAT WAS HERE, AND WHY IT IS NOT. This section asserted CAPS MODE: that
+  // `?caps=1` was its own url flag independent of the feature flag, that the
+  // short-circuit ran before the library guard and before `openDocument`, that
+  // it returned rather than falling through, and that it posted a `caps`
+  // completion marker so the admin screen could tell "still running" from "this
+  // WebView answered nothing". #677 deleted that screen — the only thing in the
+  // product that ever built that url — and every one of those assertions had
+  // THE MODE ITSELF as its subject. They are retired with it, including the
+  // marker: a marker exists for a reader of it, and there is no reader.
+  //
+  // WHAT SURVIVES IS THE SEQUENCER, asserted below unchanged. `capabilityRead`
+  // is still called at boot and still runs under `probe=1`, so deleting the six
+  // measurements alongside the mode would have been the defect in this change:
+  // `probeEnv` is where the device-derived budgets are REPORTED, and
+  // `applyDeviceBudgets` settles them for every reader, flag or no flag.
 
   // The one guard that must NOT have been widened. probeSuite opens a page and
-  // renders it; caps mode has no document and must never reach it.
+  // renders it, so a reader who did not ask must never reach it.
   ok(/function probeSuite\(\)\{[\s\S]{0,40}if \(!PROBE\) return;/.test(script),
-    'probeSuite is still PROBE-only, so caps mode cannot reach a render');
-  ok(!/function probeSuite\(\)\{[\s\S]{0,40}if \(!MEASURE\)/.test(script),
-    'probeSuite was not widened to MEASURE');
+    'probeSuite is behind the url flag, so no reader pays for an A/B render');
+  // ITS COMPANION IS DELETED RATHER THAN RESTATED. It read "probeSuite was not
+  // widened to MEASURE", and with the alias retired there is no wider gate left
+  // to widen to: it could not go red in any edit it was written to catch. A
+  // check that cannot fail is not a check, so it goes rather than passing
+  // vacuously beside the ones that still bind.
 
   // Three of the six issue an XHR; in viewer mode the document read starts in
   // the same breath. Firing them together would distort the throughput figure
@@ -416,26 +415,31 @@ try {
 //
 // ITEM 5, PINNED. `probeCanvasLimits` walks a ladder to 16384x16384 — about a
 // gigabyte of allocation — and `probeImageFilters` scans every operator of
-// page 1. Both are gated on `MEASURE = PROBE || CAPS`, both of which come from
-// URL params, so neither can run in the shipping viewer. That was already true
-// and nothing asserted it; this is what stops a later edit widening one of
-// them without noticing.
+// page 1. Both are gated on `PROBE`, which comes from a URL param, so neither
+// can run in the shipping viewer. That was already true and nothing asserted
+// it; this is what stops a later edit widening one of them without noticing.
 {
-  ok(/function probeCanvasLimits\(\)\{\s*if \(!MEASURE\) return;/.test(script),
-    'the canvas-limit ladder refuses to run unless probe=1 or caps=1');
+  ok(/function probeCanvasLimits\(\)\{\s*if \(!PROBE\) return;/.test(script),
+    'the canvas-limit ladder refuses to run unless probe=1');
+  // NO LONGER "NARROWER STILL". The image-filter scan was narrower than the
+  // ladder only because caps mode could reach the ladder and not this; with
+  // one flag left they are the same gate, and the claim is just that it IS
+  // gated.
   ok(/function probeImageFilters\(next\)\{\s*if \(!PROBE\) \{ if \(next\) next\(\); return; \}/.test(script),
-    'and the image-filter scan is narrower still — PROBE only');
+    'and the image-filter scan sits behind the same flag');
   // AND NOTHING ELSE MAY CALL THEM. A guard is only as good as the set of
   // callers it covers, so the callers are counted rather than assumed.
   const ladderCalls = (script.match(/probeCanvasLimits\(\)/g) || []).length;
   ok(ladderCalls === 2,
     'the ladder has exactly one call site besides its declaration',
     `found ${ladderCalls} occurrences`);
-  const capsBody = script.slice(script.indexOf('function capabilityRead(after){'),
+  // `readBody`, not `capsBody`: this is `capabilityRead`'s body, which survives
+  // the retired mode that used to be its second caller.
+  const readBody = script.slice(script.indexOf('function capabilityRead(after){'),
     script.indexOf('function capabilityRead(after){') + 600);
-  ok(/if \(!MEASURE\) \{ if \(after\) after\(\); return; \}/.test(capsBody)
-    && /probeCanvasLimits\(\);/.test(capsBody),
-    'and that call site is inside capabilityRead, behind the same MEASURE gate');
+  ok(/if \(!PROBE\) \{ if \(after\) after\(\); return; \}/.test(readBody)
+    && /probeCanvasLimits\(\);/.test(readBody),
+    'and that call site is inside capabilityRead, behind the same PROBE gate');
 }
 
 // ── 7. THE SUITE FREES WHAT IT ALLOCATES ─────────────────────────────────
