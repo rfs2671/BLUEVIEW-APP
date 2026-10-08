@@ -43,6 +43,14 @@ export const ROLE_SUPERINTENDENT = 'superintendent';
 /** Site Manager / PM. Admin powers on assigned projects; signs nothing. */
 export const ROLE_PM = 'pm';
 
+/**
+ * Competent person. Named because `canBecomeSuperintendent` asks about this role
+ * BY NAME rather than about a set — see the reason written there. Three of the
+ * consequences the promotion confirmation states hold from `cp` and not from any
+ * other role, so the one it is offered from has to be nameable.
+ */
+export const ROLE_CP = 'cp';
+
 export const ASSIGNABLE_ROLES = [
   {
     value: 'admin',
@@ -58,11 +66,22 @@ export const ASSIGNABLE_ROLES = [
   {
     value: ROLE_SUPERINTENDENT,
     label: 'Superintendent',
-    blurb: 'Everything a CP has, plus the construction superintendent log and '
-      + 'a DOB registration on this account.',
+    // THIS SAID "EVERYTHING A CP HAS, PLUS", AND THAT WAS FALSE THREE TIMES.
+    // A superintendent is absent from `_PENDING_LINK_ROLES`, from the on-demand
+    // checklist check in the WhatsApp webhook, and from the "company admin or
+    // cp" test on the emergency check-in point — so the role SHEDS powers as
+    // well as gaining one. An admin choosing the role from this line was being
+    // told it was additive.
+    //
+    // HELD IN STEP WITH THE PROMOTION CONFIRMATION by
+    // superintendentPromotion.test.cjs, because the picker and the confirmation
+    // describe one role and two wordings of one fact drift apart.
+    blurb: 'Files the construction superintendent log and holds a DOB '
+      + 'registration on this account. His projects come from Registration, '
+      + 'not Assign. Cannot connect a WhatsApp group or mint a check-in point.',
   },
   {
-    value: 'cp',
+    value: ROLE_CP,
     label: 'CP',
     blurb: 'Competent person. Files the logs for the projects assigned to them.',
   },
@@ -78,7 +97,7 @@ export const ASSIGNABLE_ROLE_VALUES = ASSIGNABLE_ROLES.map((r) => r.value);
  * the Site Managers, superintendents and CPs of his own company. Admin accounts
  * are the platform operator's, in the owner panel.
  */
-export const ADMIN_MANAGED_ROLE_VALUES = ['pm', ROLE_SUPERINTENDENT, 'cp'];
+export const ADMIN_MANAGED_ROLE_VALUES = [ROLE_PM, ROLE_SUPERINTENDENT, ROLE_CP];
 
 /**
  * The roles THIS principal may hand out.
@@ -153,6 +172,57 @@ export function roleLabel(role) {
 /** Does this role carry a DOB registration? */
 export function roleHasLicence(role) {
   return String(role || '').trim().toLowerCase() === ROLE_SUPERINTENDENT;
+}
+
+/**
+ * May User Management offer to make THIS account a superintendent?
+ *
+ * ── WHY THE QUESTION IS ABOUT THE ROLE BEING REPLACED ───────────────────────
+ *
+ * `assert_role_assignable_by` on the server validates the role being WRITTEN
+ * and asks nothing at all about the one being replaced. So the server would
+ * cheerfully turn a `site_device` row — a tablet bolted to a hoarding, with no
+ * person behind it — into a superintendent, and `demo`, `worker` and the retired
+ * `owner` the same way. THIS IS THE ONLY GATE ON THAT, which is the opposite of
+ * the usual arrangement in this file and is why it is written down here rather
+ * than as a condition inside the JSX.
+ *
+ * ── `cp` AND ONLY `cp`, AND THE REASON IS THE CONFIRMATION COPY ─────────────
+ *
+ * This started as "every role a company admin manages", which is wrong, and the
+ * measurement is what says so. The confirmation in
+ * src/utils/superintendentPromotionCopy.js states the consequences of becoming a
+ * superintendent FROM `cp`. Three of its lines are false from `pm`:
+ *
+ *   EMAIL. `EMAIL_EXCLUDED_ROLES` is {cp, superintendent}. A CP's email is
+ *   already suppressed, so "nothing starts or stops arriving" is true of him and
+ *   a LIE about a Site Manager, whose mail would start being suppressed.
+ *
+ *   WHATSAPP. `_PENDING_LINK_ROLES` is (owner, admin, cp). A Site Manager cannot
+ *   connect a group today, so telling his admin he would lose the power names a
+ *   loss that is not happening.
+ *
+ *   THE EMERGENCY CHECK-IN POINT. A company admin or a cp, and
+ *   `COMPANY_ADMIN_ROLES` is ("admin",) — so again, nothing for a pm to lose.
+ *
+ * A confirmation that is wrong in the admin's favour is still wrong, and this is
+ * a change he can only partly undo. The honest scope is the role the operator
+ * asked about and the role the copy was measured against. A Site Manager can
+ * still be made a superintendent by hand with the role picker under Edit, which
+ * makes no claims about consequences at all.
+ *
+ * ADMIN IS EXCLUDED FOR A SECOND REASON. A role string holds ONE answer, so
+ * making an admin a superintendent takes his admin access away: a demotion
+ * wearing a promotion's label.
+ *
+ * NOT A REFUSAL AND NOT THE ROLE GATE EITHER. The gate is
+ * `_assert_superintendent_under_admin`, which 422s a CS registration on any
+ * non-superintendent account and tells the admin to change the role first. This
+ * decides who is OFFERED the shortcut to satisfying it; the role picker remains
+ * the general way to do the same thing by hand.
+ */
+export function canBecomeSuperintendent(role) {
+  return String(role || '').trim().toLowerCase() === ROLE_CP;
 }
 
 /**
