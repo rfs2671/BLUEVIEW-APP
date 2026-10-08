@@ -45890,7 +45890,8 @@ async def _contact_card_claim(chat: str, now: datetime) -> bool:
 
 async def _send_contact_card(chat: str) -> Optional[str]:
     """Send the card to this DM chat (the same chat id START replies to,
-    @lid chats included): "vcard" or "document"; None if neither went.
+    @lid chats included): "vcard" or "document"; "waapi_429" when WaAPI
+    rate-limited it; None if nothing went for any other reason.
 
     WaAPI's send-vcard (verified against its OpenAPI spec) answers HTTP 200
     either way; only data.status == "success" (data.data.sendVcard true) is
@@ -45916,7 +45917,7 @@ async def _send_contact_card(chat: str) -> Optional[str]:
         return "vcard"
     if err == "http 429":
         logger.warning("[wa-contact] send-vcard rate-limited by WaAPI (429); nothing more sent")
-        return None
+        return "waapi_429"
     logger.warning(f"[wa-contact] send-vcard not sent ({wa_contact.waapi_failure(body, err)}); "
                    f"sending the .vcf as a document")
     ok, body, err = await _waapi_send_dm_paced(
@@ -45935,10 +45936,20 @@ async def _send_contact_card(chat: str) -> Optional[str]:
 
 async def _handle_dm_contact(chat_id: str) -> None:
     chat = wa_dm.dm_chat_id(chat_id)
-    if not await _contact_card_claim(chat, datetime.now(timezone.utc)):
+    now = datetime.now(timezone.utc)
+    if not await _contact_card_claim(chat, now):
         logger.info(f"[wa-contact] rate-limited chat=...{wa_dm.phone_digits(chat)[-4:]}")
         return
-    await _send_contact_card(chat)
+    result = await _send_contact_card(chat)
+    if result is None:
+        # Nothing was delivered: give the hour back, so asking again works.
+        # (The claim still did its job of stopping a duplicate webhook.) A
+        # WaAPI 429 keeps it — asking again within the hour would hit it too.
+        try:
+            await db[WA_CONTACT_CARD_LOG].delete_one(
+                {"_id": wa_dm.phone_digits(chat) or str(chat or ""), "sent_at": now})
+        except Exception as e:
+            logger.warning(f"[wa-contact] claim release failed: {type(e).__name__}")
 
 
 @api_router.api_route(f"/whatsapp/{wa_contact.VCF_FILENAME}", methods=["GET", "HEAD"])

@@ -84,6 +84,10 @@ class Keyword(unittest.TestCase):
         self.assertFalse(wa_contact.waapi_succeeded(REFUSED_200[1]))
         self.assertFalse(wa_contact.waapi_succeeded({}))
         self.assertFalse(wa_contact.waapi_succeeded({"status": "success"}))  # top level is not data.status
+        self.assertFalse(wa_contact.waapi_succeeded(
+            {"status": "error", "message": "Instance not ready"}))   # outer envelope
+        self.assertFalse(wa_contact.waapi_succeeded(
+            {"status": "error", "data": {"status": "success"}}))    # either envelope fails it
         self.assertEqual(wa_contact.waapi_failure(REFUSED_200[1], None),
                          "status error: Invalid vCard / waid is not a WhatsApp number")
 
@@ -127,6 +131,29 @@ class CardSent(unittest.TestCase):
     def test_429_is_not_retried_and_sends_nothing_more(self):
         _wire, actions = self._send({"send-vcard": (429, {"message": "slow down"}, None)})
         self.assertEqual(actions, ["send-vcard"])
+
+    def test_outer_status_error_falls_back(self):
+        _wire, actions = self._send({"send-vcard": (200, {"status": "error",
+                                                          "message": "Instance not ready"}, None)})
+        self.assertEqual(actions, ["send-vcard", "send-media"])
+
+    def test_nothing_delivered_gives_the_hour_back(self):
+        wire = _UrlWire({"send-vcard": REFUSED_200, "send-media": (503, None, None)})
+        with _ctx(wire) as c:
+            _dm(STRANGER, "contact", "F1")
+            self.assertEqual(c.db[server.WA_CONTACT_CARD_LOG].rows, [])
+            wire.answers = {}
+            _dm(STRANGER, "contact", "F2")            # asking again works
+        self.assertEqual([a for a, _p in wire.calls],
+                         ["send-vcard", "send-media", "send-vcard"])
+
+    def test_a_waapi_429_keeps_the_hour(self):
+        wire = _UrlWire({"send-vcard": (429, None, None)})
+        with _ctx(wire) as c:
+            _dm(STRANGER, "contact", "G1")
+            self.assertEqual(len(c.db[server.WA_CONTACT_CARD_LOG].rows), 1)
+            _dm(STRANGER, "contact", "G2")
+        self.assertEqual([a for a, _p in wire.calls], ["send-vcard"])
 
     def test_a_failed_fallback_is_not_retried_either(self):
         _wire, actions = self._send({"send-vcard": REFUSED_200,

@@ -75,7 +75,13 @@ def waapi_vcard(digits: str) -> Dict[str, Any]:
 def waapi_succeeded(body: Any) -> bool:
     """WaAPI answers HTTP 200 for failures too: sent only when
     data.status == "success"."""
-    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return False
+    # An error in EITHER envelope is a failed action (as WaAPI's own SDK
+    # reads it): the outer status, then data.status.
+    if str(body.get("status") or "").lower() == "error":
+        return False
+    data = body.get("data")
     return isinstance(data, dict) and str(data.get("status") or "").lower() == "success"
 
 
@@ -83,6 +89,10 @@ def waapi_failure(body: Any, err: Optional[str]) -> str:
     """What WaAPI said, for the log: its message and explanation, or the
     HTTP error. Never the chat id or the number."""
     data = body.get("data") if isinstance(body, dict) else None
+    if (isinstance(body, dict) and str(body.get("status") or "").lower() == "error"
+            and not (isinstance(data, dict) and data.get("status"))):
+        bits = [str(body.get(k)) for k in ("message", "explanation") if body.get(k)]
+        return "status error" + (": " + " / ".join(bits) if bits else "")
     if isinstance(data, dict) and data.get("status"):
         bits = [str(data.get(k)) for k in ("message", "explanation") if data.get(k)]
         return "status " + str(data.get("status")) + (": " + " / ".join(bits) if bits else "")

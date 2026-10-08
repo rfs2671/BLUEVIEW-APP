@@ -96,7 +96,8 @@ export default function WhatsAppGroupsPanel({ canLink = false }) {
     <GlassCard style={s.card}>
       {view.line ? <Text style={s.line}>{view.line}</Text> : null}
       {view.rows.map((g) => {
-        const path = projectWhatsAppPath(g.projectId);
+        // A PM (no linking) reads the project tab view-only.
+        const path = projectWhatsAppPath(g.projectId, { readOnly: !canLink });
         const body = (
           <>
             <View style={s.groupText}>

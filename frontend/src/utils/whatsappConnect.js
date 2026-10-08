@@ -131,9 +131,14 @@ export function groupRows(groups, { canLink = true } = {}) {
   });
 }
 
-/** Where a group row goes: its project's WhatsApp tab. */
-export function projectWhatsAppPath(projectId) {
-  return projectId ? `/projects/${projectId}/whatsapp-groups` : null;
+/**
+ * Where a group row goes: its project's WhatsApp tab. `readOnly` (a PM, from
+ * Project groups) opens it view-only — no Unlink.
+ */
+export function projectWhatsAppPath(projectId, { readOnly = false } = {}) {
+  if (!projectId) return null;
+  const p = `/projects/${projectId}/whatsapp-groups`;
+  return readOnly ? `${p}?view=readonly` : p;
 }
 
 /**

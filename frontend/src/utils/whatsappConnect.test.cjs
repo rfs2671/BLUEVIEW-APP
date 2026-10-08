@@ -140,6 +140,8 @@ console.log('\nProject groups');
   ok(W.projectWhatsAppPath(g.rows[0].projectId) === '/projects/p1/whatsapp-groups'
      && g.rows[3].projectId === null,
      "a linked row opens its project's WhatsApp tab; an unlinked one goes nowhere");
+  ok(W.projectWhatsAppPath('p1', { readOnly: true }) === '/projects/p1/whatsapp-groups?view=readonly',
+     "a PM opens the project's WhatsApp tab view-only");
   const pm = view({ groups: list.slice(0, 3), canLink: false });
   ok(pm.rows.every((r) => r.link === false), 'PM: read-only, no Link button');
   const pmUnlinked = view({ groups: [list[3]], canLink: false });
@@ -186,8 +188,14 @@ ok(/<WhatsAppGroupsPanel canLink=\{canLink\} \/>/.test(read('app/whatsapp/groups
 ok(/<WhatsAppAssistantPanel \/>/.test(read('app/whatsapp/assistant.jsx')), 'Personal assistant screen');
 ok(/whatsappAPI\.getCompanyGroups\(\)/.test(groupsSrc) && /view\.rows\.map/.test(groupsSrc),
    'Project groups: every group from /whatsapp/company-groups, one row each');
-ok(/projectWhatsAppPath\(g\.projectId\)/.test(groupsSrc) && /router\.push\(path\)/.test(groupsSrc),
-   "a row opens its project's WhatsApp tab");
+ok(/projectWhatsAppPath\(g\.projectId, \{ readOnly: !canLink \}\)/.test(groupsSrc)
+   && /router\.push\(path\)/.test(groupsSrc),
+   "a row opens its project's WhatsApp tab (view-only for a PM)");
+{
+  const tab = read('app/projects/[id]/whatsapp-groups.jsx');
+  ok(/const viewOnly = view === 'readonly';/.test(tab) && /\{canUnlink && !viewOnly \? \(/.test(tab),
+     'view-only: no Unlink on the project tab');
+}
 ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(groupsSrc),
    'a group not linked yet has a Link button');
 ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(assistantSrc),

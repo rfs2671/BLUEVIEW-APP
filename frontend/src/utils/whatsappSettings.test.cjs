@@ -114,7 +114,7 @@ ok(/isAdmin && !readOnly \? \(\s*<LevelogAssistantCard/.test(tab), 'Levelog Assi
 ok(/What the bot does in groups/.test(tab) && /isAdmin && !readOnly && groups.length > 0/.test(tab),
    'What the bot does: admins only');
 ok(/BOT_SETTINGS\.map/.test(panel), 'the group panel renders exactly BOT_SETTINGS');
-ok(/const canUnlink = \['admin', 'pm'\]\.includes\(role\)/.test(tab) && /\{canUnlink \? \(/.test(tab),
+ok(/const canUnlink = \['admin', 'pm'\]\.includes\(role\)/.test(tab) && /\{canUnlink && !viewOnly \? \(/.test(tab),
    'unlink: admin and PM only (never CP, superintendent or owner)');
 ok(/DOB alerts/.test(W.BOT_SETTINGS.find((s) => s.key === 'bot_enabled').line),
    'Answer in this group: off silences DOB alerts too');

@@ -50,7 +50,10 @@ export default function WhatsAppGroupsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { id: projectId } = useLocalSearchParams();
+  // `view=readonly`: opened from Integrations → WhatsApp → Project groups by
+  // someone who may only read there (a PM) — no Unlink.
+  const { id: projectId, view } = useLocalSearchParams();
+  const viewOnly = view === 'readonly';
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   // Admins see the Levelog Assistant settings and the per-group settings.
   // Owner / admin / CP may link a group with a code; only an admin or the
@@ -346,7 +349,7 @@ export default function WhatsAppGroupsScreen() {
                             </Text>
                             <Text style={s.groupMeta}>{messageCountLabel(group.message_count)}</Text>
                           </View>
-                          {canUnlink ? (
+                          {canUnlink && !viewOnly ? (
                             <Pressable
                               onPress={() => handleUnlinkGroup(groupId)}
                               disabled={unlinking === groupId || readOnly}
