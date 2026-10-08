@@ -16,7 +16,8 @@ import { initSentry, captureException as sentryCaptureException } from '../src/l
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { setupFiledPhotoAutoDrain } from '../src/utils/filedPhotoQueue';
-import { setupSiteManifestSync } from '../src/utils/siteManifestStore';
+import { setupSiteManifestSync, syncSiteManifest } from '../src/utils/siteManifestStore';
+import { awaitQuiet } from '../src/utils/syncPriority';
 import { setupAdminPlanPrefetch } from '../src/utils/adminPlanPrefetch';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
@@ -303,14 +304,36 @@ function RouteGuard() {
  * auth bootstrap, so a run at mount would find no project and the first fill
  * would wait out a whole interval. Re-running when the id appears is also what
  * lets a device re-provisioned to another project switch without a restart.
+ *
+ * AND IT GOES SECOND WHEN SOMEBODY IS BEING READ TO.
+ *
+ * MEASURED ON 588 THOMAS. The fill queue is ~105 MB, including a 31.7 MB and a
+ * 24.9 MB plan set, downloaded SEQUENTIALLY -- and it started here, on open,
+ * the moment the project id resolved. The gate tablet has one radio, so the
+ * site logbooks screen's own list request was issued into that fill and lost to
+ * it: an inspector waited ten minutes for a list of dates while the device
+ * pre-loaded documents nobody had asked for.
+ *
+ * NOT A DELAY AND NOT A SWITCH. `awaitQuiet` waits on the actual foreground
+ * read -- the screen claims the link for exactly as long as it is reading -- and
+ * it is awaited BETWEEN files, so a read that arrives in the middle of a fill
+ * gets the radio too. SITE_FILL_DEFERRAL_MS is the cap, not the delay: it is
+ * what guarantees a leaked claim costs one deferral rather than a tablet that
+ * quietly stopped filling. Nothing is cancelled; every file is still fetched.
  */
+const SITE_FILL_DEFERRAL_MS = 20000;
+
 function SiteManifestSync() {
   const { siteMode, siteProject } = useAuth();
   const projectId = siteMode && siteProject?.id ? siteProject.id : null;
 
   useEffect(() => {
     if (!projectId) return undefined;
-    const stop = setupSiteManifestSync(() => projectId);
+    const stop = setupSiteManifestSync(() => projectId, {
+      run: (pid) => syncSiteManifest(pid, {
+        beforeEachDownload: () => awaitQuiet(SITE_FILL_DEFERRAL_MS),
+      }),
+    });
     return () => { if (typeof stop === 'function') stop(); };
   }, [projectId]);
 

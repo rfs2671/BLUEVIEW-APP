@@ -315,12 +315,34 @@ function main() {
   // ═══════════════════════════════════════════════════════════════════════
   {
     const src = read(path.join(FRONTEND, 'app', 'site', 'logbooks.jsx'));
+    // THE ANCHOR MOVED BECAUSE THE SCREEN GREW A REFRESH CONTROL.
+    //
+    // It used to be the whole one-line opening tag,
+    // `<ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent}>`.
+    // The content ScrollView now carries `refreshControl={...}` and spans
+    // several lines, so the start anchor is the LAST line of the opening tag
+    // instead: the `>` that closes it, at this JSX's indentation. Still a
+    // literal — a regex here would quietly match the tabs ScrollView above and
+    // slice the wrong region.
     const block = slice(
       src,
-      '<ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent}>\n',
+      '\n        >\n',
       '\n        </ScrollView>',
       'app/site/logbooks.jsx',
     );
+    // AND THE SLICE PROVES WHICH REGION IT TOOK.
+    //
+    // `slice` uses indexOf, so a short anchor takes the FIRST match. The old
+    // anchor named its element; this one does not, and a second multi-line tag
+    // appearing earlier at this indentation would silently move the slice —
+    // which on a file like this means every assertion below passes against the
+    // wrong markup. Two facts pin it: the content region's first child is the
+    // readiness notice, and the TABS ScrollView above it is the only other
+    // candidate, identified by the row it wraps.
+    ok(block.includes('<SiteReadinessNotice readiness={readiness} />')
+      && !block.includes('s.tabRow'),
+      'app/site/logbooks.jsx: the sliced region is the CONTENT ScrollView, not '
+      + 'the tab strip above it');
     const render = (over) => {
       const seed = {
         ...commonSeed,
@@ -340,6 +362,15 @@ function main() {
         tabLabel: () => 'Daily Log',
         formatDate: (d) => String(d),
         readiness: READY,
+        // SILENT ON A CURRENT TABLET, which is the normal case and the one
+        // every assertion below is about. The progress line itself — what its
+        // numbers are and that none of them is animated — is
+        // siteLogbookIndex.test.cjs's subject, not this file's.
+        progress: null,
+        // AND THE INDEX IS WHOLE unless a case says otherwise. `indexPartial`
+        // is true only while the screen is drawing pages as they arrive on a
+        // tablet that had nothing stored.
+        indexPartial: false,
         ...over,
       };
       seed.mayClaimEmpty = canClaimEmpty(seed.readiness);
@@ -419,6 +450,22 @@ function main() {
     ok(!readyEmptyOffline.includes('No Submitted Logs'),
       'logbooks: PRESERVED — and never says "No Submitted Logs" to an inspector '
       + 'on a read it did not get');
+
+    // ── A FRAGMENT IS A THIRD WAY OF NOT KNOWING ─────────────────────────
+    //
+    // The screen now draws index pages AS THEY ARRIVE on a tablet that had
+    // nothing stored — that is the fix for "nothing renders until every page
+    // lands". But `filteredIndex` is filtered BY TAB, so the first page of a
+    // partial load can hold no record of the tab in force while a later page
+    // does. `fetchState` is still 'ok' at that moment (the walk has not
+    // failed), the device may be perfectly healthy, and neither of the two
+    // existing refusals above covers it. "No Submitted Logs" is a claim about
+    // the RECORD, and this screen may not make it while it knows it is holding
+    // part of the history.
+    const loadingPartial = render({ indexPartial: true });
+    ok(!loadingPartial.includes('No Submitted Logs'),
+      'logbooks: a PARTIAL index does not claim the record is empty, even with '
+      + 'the read succeeding and the device healthy');
   }
 
   // ═══════════════════════════════════════════════════════════════════════
