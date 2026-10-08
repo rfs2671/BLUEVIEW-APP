@@ -151,6 +151,45 @@ export function deferredSignaturePaths(log) {
 }
 
 /** Whether ANY record in this day is still owed an image. */
+/**
+ * Every photo thumbnail `photos=deferred` left out of one record.
+ *
+ * `data.activities[ai].photos[pi].thumb_base64_deferred === true` means the
+ * ~400px inline copy exists on the stored record and was held back from the
+ * day download; it is fetched with the record's signature marks
+ * (`include=photos`) and stored on disk with them. NOT a claim about the photo:
+ * until it arrives the reader falls through to the served URL, exactly as it
+ * does for a photo that never had an inline copy.
+ */
+export function deferredPhotoPaths(log) {
+  const out = [];
+  const data = (log && log.data && typeof log.data === 'object') ? log.data : null;
+  const acts = data && Array.isArray(data.activities) ? data.activities : null;
+  if (!acts) return out;
+  acts.forEach((act, ai) => {
+    const photos = act && Array.isArray(act.photos) ? act.photos : null;
+    if (!photos) return;
+    photos.forEach((p, pi) => {
+      if (p && typeof p === 'object'
+          && p[`thumb_base64${SIG_DEFERRED_SUFFIX}`] === true) {
+        out.push(`data.activities.${ai}.photos.${pi}.thumb_base64`);
+      }
+    });
+  });
+  return out;
+}
+
+/** Everything a record still owes this device: signature marks and photo thumbnails. */
+export function deferredImagePaths(log) {
+  return deferredSignaturePaths(log).concat(deferredPhotoPaths(log));
+}
+
+/** Does any record of the day owe an image of either kind? */
+export function dayHasDeferredImages(logs) {
+  return (Array.isArray(logs) ? logs : [])
+    .some((l) => deferredImagePaths(l).length > 0);
+}
+
 export function dayHasDeferredSignatures(logs) {
   return (Array.isArray(logs) ? logs : [])
     .some((l) => deferredSignaturePaths(l).length > 0);
@@ -191,6 +230,31 @@ export function applySignatureImages(log, images) {
       if (!(`${field}${SIG_DEFERRED_SUFFIX}` in out.data)) continue;
       delete out.data[`${field}${SIG_DEFERRED_SUFFIX}`];
       out.data[field] = map[path];
+      touched = true;
+      continue;
+    }
+    // A PHOTO THUMBNAIL: data.activities.<ai>.photos.<pi>.thumb_base64.
+    if (parts.length === 6 && parts[0] === 'data' && parts[1] === 'activities'
+        && parts[3] === 'photos') {
+      const ai = Number(parts[2]);
+      const pi = Number(parts[4]);
+      const field = parts[5];
+      const acts = out.data.activities;
+      if (!Array.isArray(acts) || !Number.isInteger(ai) || ai < 0 || ai >= acts.length) continue;
+      if (!copied.activities) {
+        copied.activities = acts.slice();
+        out.data.activities = copied.activities;
+      }
+      const act = { ...(copied.activities[ai] || {}) };
+      const photos = Array.isArray(act.photos) ? act.photos.slice() : null;
+      if (!photos || !Number.isInteger(pi) || pi < 0 || pi >= photos.length) continue;
+      const photo = { ...(photos[pi] || {}) };
+      if (!(`${field}${SIG_DEFERRED_SUFFIX}` in photo)) continue;
+      delete photo[`${field}${SIG_DEFERRED_SUFFIX}`];
+      photo[field] = map[path];
+      photos[pi] = photo;
+      act.photos = photos;
+      copied.activities[ai] = act;
       touched = true;
       continue;
     }
