@@ -114,11 +114,12 @@ ok(/isAdmin && !readOnly \? \(\s*<LevelogAssistantCard/.test(tab), 'Levelog Assi
 ok(/What the bot does in groups/.test(tab) && /isAdmin && !readOnly && groups.length > 0/.test(tab),
    'What the bot does: admins only');
 ok(/BOT_SETTINGS\.map/.test(panel), 'the group panel renders exactly BOT_SETTINGS');
-ok(/const canUnlink = \['admin', 'pm'\]\.includes\(role\)/.test(tab) && /\{canUnlink \? \(/.test(tab),
+ok(/const canUnlink = \['admin', 'pm'\]\.includes\(role\)/.test(tab) && /\{canUnlink && !viewOnly \? \(/.test(tab),
    'unlink: admin and PM only (never CP, superintendent or owner)');
 ok(/DOB alerts/.test(W.BOT_SETTINGS.find((s) => s.key === 'bot_enabled').line),
    'Answer in this group: off silences DOB alerts too');
-const integrationsCard = read('src/components/WhatsAppCard.jsx') + read('src/utils/whatsappConnect.js');
+const integrationsCard = read('src/components/WhatsAppCard.jsx') + read('src/components/WhatsAppAssistantPanel.jsx')
+  + read('src/components/WhatsAppGroupsPanel.jsx') + read('src/utils/whatsappConnect.js');
 ok(!/Turn on alerts|Your alerts|'Off'|'On'/.test(integrationsCard), 'the Integrations card says Levelog Assistant, never alerts');
 ok(/<Redirect href=\{`\/projects\/\$\{id\}\/whatsapp-groups`\}/.test(read('app/project/[id]/whatsapp-settings.jsx')),
    'the old settings route lands on the tab');

@@ -2,15 +2,18 @@
  * WHAT THE ONE WHATSAPP CARD ON INTEGRATIONS SAYS.
  *
  * Pure, so it is tested under plain node (whatsappConnect.test.cjs) and the
- * card renders only what this returns. Three sections:
+ * card and its two screens render only what this returns.
  *
- *   header      the Levelog number and whether WhatsApp is set up for the
- *               company (GET /whatsapp/status), with Save to Contacts
- *   Levelog Assistant  this person's own updates (GET /whatsapp/me state, from
- *               backend lib/wa_dm.py::connect_state) — Admins and PMs
- *   Groups      every group the Levelog number is in (GET
- *               /whatsapp/company-groups): name → job address and what it is
- *               to that job, or "Not linked" + Link — Admins only
+ *   the card    Connected status, the Levelog number, Save to Contacts, and
+ *               two buttons — nothing else:
+ *   Project groups      (app/whatsapp/groups.jsx) every group the Levelog
+ *               number is in (GET /whatsapp/company-groups): name, job
+ *               address, status; a row opens that project's WhatsApp tab.
+ *               Admins (and CPs) also see groups not linked yet; a PM sees
+ *               their own projects' groups, read-only.
+ *   Personal assistant  (app/whatsapp/assistant.jsx) this person's own
+ *               Levelog Assistant: on/off, morning brief time, weekends
+ *               (GET /whatsapp/me, from backend lib/wa_dm.py::connect_state).
  *
  * One status chip and one plain line per state. A button appears only where
  * pressing it can work: the server sends `connect_url` / `stop_url` only then.
@@ -109,8 +112,12 @@ export const GROUP_STATUS = {
   trade: chip('Trade group', 'idle'),
 };
 
-/** One row per group: its WhatsApp name, then the job or "Not linked". */
-export function groupRows(groups) {
+/**
+ * One row per group: its WhatsApp name, then the job or "Not linked". A
+ * linked row opens its project's WhatsApp tab (`projectId`); a group not
+ * linked yet has a Link button only for someone who may link (`canLink`).
+ */
+export function groupRows(groups, { canLink = true } = {}) {
   return (Array.isArray(groups) ? groups : []).map((g) => {
     const linked = g.status !== 'not_linked' && !!g.project_label;
     return {
@@ -118,43 +125,62 @@ export function groupRows(groups) {
       name: g.group_name || 'WhatsApp group',
       place: linked ? g.project_label : 'Not linked',
       chip: linked ? (GROUP_STATUS[g.status] || GROUP_STATUS.trade) : null,
-      link: !linked,
+      link: !linked && canLink,
+      projectId: linked ? g.project_id : null,
     };
   });
 }
 
 /**
- * The Groups section (Admins only), or null. `groups` is the
- * /whatsapp/company-groups list, or null while it has not loaded.
+ * Where a group row goes: its project's WhatsApp tab. `readOnly` (a PM, from
+ * Project groups) opens it view-only — no Unlink.
  */
-export function groupsView({ status, groups = null, isAdmin }) {
-  if (!isAdmin || !status) return null;
+export function projectWhatsAppPath(projectId, { readOnly = false } = {}) {
+  if (!projectId) return null;
+  const p = `/projects/${projectId}/whatsapp-groups`;
+  return readOnly ? `${p}?view=readonly` : p;
+}
+
+/**
+ * Save to Contacts: WhatsApp, with "contact" typed to the Levelog number
+ * (as "Turn on Levelog Assistant" types START). The bot answers with its
+ * contact card, which WhatsApp saves in one tap.
+ */
+export function contactCardUrl(number) {
+  const d = String(number || '').replace(/\D/g, '');
+  return d ? `https://wa.me/${d}?text=contact` : null;
+}
+
+/**
+ * The Project groups screen, or null. `groups` is the
+ * /whatsapp/company-groups list, or null while it has not loaded. `canLink`:
+ * Admins (and CPs) link groups and turn WhatsApp on; a PM reads only.
+ */
+export function groupsView({ status, groups = null, canLink = false }) {
+  if (!status) return null;
   if (!status.platform_configured) {
     return { line: "WhatsApp isn't available yet. Contact Levelog support.", action: null, rows: [] };
   }
   if (!status.company_active) {
-    return {
+    return canLink ? {
       line: 'Turn on WhatsApp for your company to link job groups.',
       action: { kind: 'activate', label: 'Turn on WhatsApp' },
       rows: [],
-    };
+    } : { line: "WhatsApp isn't set up for your company yet.", action: null, rows: [] };
   }
   if (groups === null) return { line: null, action: null, rows: [] };
-  const rows = groupRows(groups);
+  const rows = groupRows(groups, { canLink });
   // The empty line only when the number is in no group at all.
   return { line: rows.length ? null : GROUPS_EMPTY_LINE, action: null, rows };
 }
 
 /**
- * The whole card. `visible` is false when there is nothing for this person:
- * not an Admin, and the server says alerts are not for them.
+ * The card. `visible` is false when there is nothing for this person: not
+ * an Admin, and the server says the assistant is not for them.
  */
-export function whatsappCardView({
-  me, status, groups: groupList = null, isAdmin = false, connectUrl = null,
-}) {
-  const alerts = alertsView(me, connectUrl);
-  const groups = groupsView({ status, groups: groupList, isAdmin });
-  if (!alerts && !isAdmin) return { visible: false };
+export function whatsappCardView({ me, status, isAdmin = false }) {
+  const assistant = alertsView(me);
+  if (!assistant && !isAdmin) return { visible: false };
   const number = (me && me.bot_number) || (status && status.whatsapp_number) || '';
   const header = {
     chip: !status ? null
@@ -162,8 +188,15 @@ export function whatsappCardView({
         : status.platform_configured ? chip('Not set up', 'idle')
           : chip('Not available', 'warn'),
     number: number ? formatWaPhone(number) : '',
-    // The contact card is served only to a company with WhatsApp set up.
-    canSaveContact: !!(status && status.company_active && number),
+    contactUrl: status && status.company_active ? contactCardUrl(number) : null,
   };
-  return { visible: true, header, alerts, groups };
+  return {
+    visible: true,
+    header,
+    // Admins and PMs both see the groups (a PM read-only).
+    groupsButton: { label: 'Project groups', path: '/whatsapp/groups' },
+    assistantButton: assistant
+      ? { label: 'Personal assistant', path: '/whatsapp/assistant', chip: assistant.chip }
+      : null,
+  };
 }

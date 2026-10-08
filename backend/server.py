@@ -76,6 +76,7 @@ from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
+from lib import wa_contact  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
@@ -44419,9 +44420,11 @@ _DM_SEND_LOCK = asyncio.Lock()
 _DM_LAST_SENT = [0.0]
 
 
-async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict):
+async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
+                               attempts: Optional[int] = None):
     """Direct messages: one at a time, DM_MIN_INTERVAL_SECONDS apart, retried
-    with backoff on transient errors. (ok, json, err).
+    with backoff on transient errors. (ok, json, err). `attempts=1` sends
+    once and never retries.
 
     A retry after a timeout can deliver a message twice if the first attempt
     reached WhatsApp; the alternative — never retrying — drops it. WaAPI
@@ -44433,13 +44436,14 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict):
             await asyncio.sleep(wait)
         err = None
         try:
-            for attempt in range(wa_dm.DM_SEND_ATTEMPTS):
+            tries = attempts or wa_dm.DM_SEND_ATTEMPTS
+            for attempt in range(tries):
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
                     return True, body, None
                 err = type(exc).__name__ if exc else f"http {code}"
                 if (not wa_dm.is_transient(code, exc)
-                        or attempt == wa_dm.DM_SEND_ATTEMPTS - 1):
+                        or attempt == tries - 1):
                     break
                 await asyncio.sleep(wa_dm.backoff_for(attempt))
             return False, None, err
@@ -45909,6 +45913,117 @@ async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
     if sent is None:
         logger.warning(f"[wa-dm] reply NOT delivered after {outcome} "
                        f"(see 'WhatsApp DM refused' / 'send failed' above)")
+
+
+# ── "contact": THE LEVELOG ASSISTANT CONTACT CARD (lib/wa_contact.py) ───
+#
+# The app's "Save to Contacts" opens WhatsApp with "contact" typed to the
+# Levelog number; the bot answers with its contact card. Any sender (the
+# number is public), at most once per sender per hour, and nothing else
+# answers that message.
+WA_CONTACT_CARD_LOG = "whatsapp_contact_card_log"
+CONTACT_CARD_EVERY = timedelta(hours=1)
+
+
+async def _contact_card_claim(chat: str, now: datetime) -> bool:
+    """True when this sender has had no card in the last hour; claims the
+    hour atomically (two webhooks for one message send one card)."""
+    key = wa_dm.phone_digits(chat) or str(chat or "")
+    if not key:
+        return False
+    from pymongo.errors import DuplicateKeyError
+    try:
+        res = await db[WA_CONTACT_CARD_LOG].update_one(
+            {"_id": key, "sent_at": {"$lt": now - CONTACT_CARD_EVERY}},
+            {"$set": {"sent_at": now}})
+        if res.modified_count == 1:
+            return True
+        await db[WA_CONTACT_CARD_LOG].insert_one({"_id": key, "sent_at": now})
+        return True
+    except DuplicateKeyError:
+        return False          # a card within the hour
+    except Exception as e:
+        logger.warning(f"[wa-contact] claim failed: {type(e).__name__}")
+        return False
+
+
+async def _send_contact_card(chat: str) -> Optional[str]:
+    """Send the card to this DM chat (the same chat id START replies to,
+    @lid chats included): "vcard" or "document"; "waapi_429" when WaAPI
+    rate-limited it; None if nothing went for any other reason.
+
+    WaAPI's send-vcard (verified against its OpenAPI spec) answers HTTP 200
+    either way; only data.status == "success" (data.data.sendVcard true) is
+    sent. Every request is made ONCE: WaAPI counts retries toward its
+    reach-out limit. A refusal (200 + status "error", a 422, any other
+    failure) falls back to the .vcf as a document, once. A 429 is logged and
+    nothing more is sent."""
+    digits = _wa_bot_digits()
+    if not digits or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        logger.warning("[wa-contact] not sent: WhatsApp number or WaAPI not configured")
+        return None
+    verdict = await _dm_send_verdict(chat, "[contact card]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[wa-contact] refused ({verdict['reason']})")
+        return None
+    base = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action"
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{base}/send-vcard",
+        {"chatId": chat, "vCard": wa_contact.waapi_vcard(digits)}, headers, attempts=1)
+    if ok and wa_contact.waapi_succeeded(body):
+        logger.info("[wa-contact] sent as vcard")
+        return "vcard"
+    if err == "http 429":
+        logger.warning("[wa-contact] send-vcard rate-limited by WaAPI (429); nothing more sent")
+        return "waapi_429"
+    logger.warning(f"[wa-contact] send-vcard not sent ({wa_contact.waapi_failure(body, err)}); "
+                   f"sending the .vcf as a document")
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{base}/send-media",
+        {"chatId": chat,
+         "mediaUrl": f"{PUBLIC_API_BASE_URL}/api/whatsapp/{wa_contact.VCF_FILENAME}",
+         "mediaName": wa_contact.VCF_FILENAME,
+         "asDocument": True,
+         "caption": wa_contact.CONTACT_NAME}, headers, attempts=1)
+    if ok and wa_contact.waapi_succeeded(body):
+        logger.info("[wa-contact] sent as document")
+        return "document"
+    logger.error(f"[wa-contact] not delivered: {wa_contact.waapi_failure(body, err)}")
+    return None
+
+
+async def _handle_dm_contact(chat_id: str) -> None:
+    chat = wa_dm.dm_chat_id(chat_id)
+    now = datetime.now(timezone.utc)
+    if not await _contact_card_claim(chat, now):
+        logger.info(f"[wa-contact] rate-limited chat=...{wa_dm.phone_digits(chat)[-4:]}")
+        return
+    result = await _send_contact_card(chat)
+    if result is None:
+        # Nothing was delivered: give the hour back, so asking again works.
+        # (The claim still did its job of stopping a duplicate webhook.) A
+        # WaAPI 429 keeps it — asking again within the hour would hit it too.
+        try:
+            await db[WA_CONTACT_CARD_LOG].delete_one(
+                {"_id": wa_dm.phone_digits(chat) or str(chat or ""), "sent_at": now})
+        except Exception as e:
+            logger.warning(f"[wa-contact] claim release failed: {type(e).__name__}")
+
+
+@api_router.api_route(f"/whatsapp/{wa_contact.VCF_FILENAME}", methods=["GET", "HEAD"])
+async def whatsapp_public_vcard():
+    """The Levelog Assistant contact card as a file, for WaAPI to fetch when
+    it sends the card as a document. Public: it holds only the bot's own,
+    public number."""
+    digits = _wa_bot_digits()
+    if not digits:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return Response(
+        content=wa_contact.vcard_text(digits), media_type="text/vcard",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{wa_contact.VCF_FILENAME}"',
+                 "Cache-Control": "public, max-age=300"})
 
 
 async def _handle_dm_start(chat_id: str, body: str = "START",
@@ -56422,6 +56537,12 @@ async def _process_whatsapp_message(payload: dict):
             if command == "stop":
                 await _handle_dm_stop(dm_chat, parsed.get("raw"))
                 return
+            # "contact": the Levelog Assistant contact card, for any sender.
+            # Answered (or, within the hour, silently skipped) here and
+            # nowhere else.
+            if wa_contact.is_contact_request(parsed.get("body")):
+                await _handle_dm_contact(dm_chat)
+                return
             # "1" / "2" to an open GC group question from Levelog. Anything
             # else, or no open question for this person, carries on below.
             answer = wa_gc.parse_confirm_reply(parsed.get("body"))
@@ -57598,13 +57719,28 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
 
     Linked groups (this company's whatsapp_groups) with their job's address
     and what they are to it; then groups not linked yet (the same rows
-    /whatsapp/pending-groups shows). Another company's groups never appear."""
-    company_id = _require_link_role(current_user)
+    /whatsapp/pending-groups shows). Another company's groups never appear.
+
+    A PM reads it too (Integrations → Project groups, read-only): only the
+    linked groups of their own assigned projects, and no unlinked ones —
+    linking is for owners, admins and CPs."""
+    role = wa_dm.norm_role(current_user.get("role"))
+    is_pm = role == ROLE_PM and not is_company_admin(current_user)
+    if is_pm:
+        company_id = get_user_company_id(current_user)
+        if not company_id:
+            raise HTTPException(status_code=403,
+                                detail="This account is not linked to a company yet.")
+    else:
+        company_id = _require_link_role(current_user)
     phone = _caller_phone_digits(current_user)
     now = datetime.now(timezone.utc)
 
-    linked = await db.whatsapp_groups.find(
-        {"company_id": company_id, "active": True}).to_list(200)
+    query = {"company_id": company_id, "active": True}
+    if is_pm:
+        query["project_id"] = {"$in": [str(p) for p in
+                                       current_user.get("assigned_projects") or []]}
+    linked = await db.whatsapp_groups.find(query).to_list(200)
     await _ensure_group_names(linked)
     pids = list({str(g.get("project_id") or "") for g in linked} - {""})
     projects = {}
@@ -57640,6 +57776,8 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
             "status": status,
         })
     out.sort(key=lambda r: (r["project_label"].lower(), r["group_name"].lower()))
+    if is_pm:
+        return {"groups": out}
 
     pending = await db[PENDING_GROUPS].find(
         _pending_visible_query(company_id, phone)

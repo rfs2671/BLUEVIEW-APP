@@ -1,11 +1,13 @@
 /**
- * INTEGRATIONS → THE ONE WHATSAPP CARD: what it says for each server state,
- * who sees which section, and where it lives.
+ * INTEGRATIONS → THE ONE WHATSAPP CARD and its two screens: what each says
+ * for each server state, who sees what, and where it lives.
  *
- *   header       Levelog number + one chip + Save to Contacts
- *   Levelog Assistant  one chip + one plain line per state; Turn on / Turn off only
- *                when the server sent the link
- *   Groups       Admins only; every group the number is in, or one line
+ *   the card     Connected chip, Levelog number, Save to Contacts, and the
+ *                Project groups / Personal assistant buttons — nothing else
+ *   Personal assistant  one chip + one plain line per state; Turn on / Turn
+ *                off only when the server sent the link
+ *   Project groups      every group the number is in, or one line; a row
+ *                opens its project's WhatsApp tab; a PM reads only
  *
  * Run:  node src/utils/whatsappConnect.test.cjs
  */
@@ -34,28 +36,36 @@ const me = (state, extra = {}) => ({
 const active = { platform_configured: true, company_active: true, whatsapp_number: '+15165494475' };
 const card = (m, opts = {}) => W.whatsappCardView({ me: m, status: active, ...opts });
 
-console.log('header');
+console.log('the card');
 {
   const v = card(me('not_connected'), { isAdmin: true });
   ok(v.header.number === '+1 (516) 549-4475', 'Levelog number formatted');
   ok(v.header.chip.label === 'Connected' && v.header.chip.tone === 'ok', 'company set up: Connected');
-  ok(v.header.canSaveContact === true, 'Save to Contacts when set up');
+  ok(v.header.contactUrl === 'https://wa.me/15165494475?text=contact',
+     'Save to Contacts opens WhatsApp with "contact" to the Levelog number');
   const notSetUp = W.whatsappCardView({ me: me('not_connected'),
     status: { platform_configured: true, company_active: false }, isAdmin: true });
-  ok(notSetUp.header.chip.label === 'Not set up' && !notSetUp.header.canSaveContact,
-     'company not set up: chip says so, no contact card');
+  ok(notSetUp.header.chip.label === 'Not set up' && !notSetUp.header.contactUrl,
+     'company not set up: chip says so, no Save to Contacts');
+  ok(Object.keys(v).sort().join() === 'assistantButton,groupsButton,header,visible',
+     'nothing else on the card: header and the two buttons');
+  ok(v.groupsButton.label === 'Project groups' && v.groupsButton.path === '/whatsapp/groups',
+     'Project groups button');
+  ok(v.assistantButton.label === 'Personal assistant'
+     && v.assistantButton.path === '/whatsapp/assistant'
+     && v.assistantButton.chip.label === 'Assistant off', 'Personal assistant button, with its state');
 }
 
 console.log('\nLevelog Assistant: one chip, one line per state');
 {
-  const a = card(me('not_connected')).alerts;
+  const a = W.alertsView(me('not_connected'));
   ok(a.chip.label === 'Assistant off', 'off');
   ok(a.line === 'Get updates for your projects on WhatsApp from Levelog Assistant.', 'off: the line');
   ok(a.button && a.button.label === 'Turn on Levelog Assistant' && a.button.url === ON,
      'off: Turn on Levelog Assistant opens wa.me with START and the code');
 }
 {
-  const a = card(me('connected')).alerts;
+  const a = W.alertsView(me('connected'));
   ok(a.chip.label === 'Assistant on' && a.chip.tone === 'ok', 'on');
   ok(a.button && a.button.label === 'Turn off Assistant' && a.button.url === OFF, 'on: Turn off opens wa.me STOP');
   ok(a.line.includes('+1 (516) 301-8154'), 'on: names the phone');
@@ -66,26 +76,26 @@ for (const [st, label, fixWord] of [
   ['reconnect_needed', 'Reconnect needed', 'new number'],
   ['unavailable', 'Not available', 'support'],
 ]) {
-  const a = card(me(st)).alerts;
+  const a = W.alertsView(me(st));
   ok(a.chip.label === label && a.chip.tone === 'warn', `${st}: chip "${label}"`);
   ok(typeof a.line === 'string' && a.line.includes(fixWord) && !a.line.includes('\n'),
      `${st}: one line saying what to fix`);
 }
-ok(card(me('reconnect_needed')).alerts.button.label === 'Turn on Levelog Assistant', 'reconnect: button to turn on again');
+ok(W.alertsView(me('reconnect_needed')).button.label === 'Turn on Levelog Assistant', 'reconnect: button to turn on again');
 for (const st of ['phone_missing', 'phone_shared', 'unavailable']) {
-  ok(card(me(st)).alerts.button === null, `${st}: no button`);
+  ok(W.alertsView(me(st)).button === null, `${st}: no button`);
 }
-ok(card({ ...me('not_connected'), connect_url: null }).alerts.button === null,
+ok(W.alertsView({ ...me('not_connected'), connect_url: null }).button === null,
    'no link from the server: no button, whatever the state');
 
 console.log('\nthe single-use link');
 {
   const coded = 'https://wa.me/15165494475?text=START%20ABC234';
-  const a = W.whatsappCardView({ me: me('not_connected'), status: active, connectUrl: coded }).alerts;
+  const a = W.alertsView(me('not_connected'), coded);
   ok(a.button.url === coded, 'Turn on Levelog Assistant opens the fresh coded link when there is one');
-  const fb = card({ ...me('not_connected'), connect_url: 'https://wa.me/15165494475?text=START' }).alerts;
+  const fb = W.alertsView({ ...me('not_connected'), connect_url: 'https://wa.me/15165494475?text=START' });
   ok(fb.button.url === 'https://wa.me/15165494475?text=START', 'falls back to plain START');
-  const blocked = W.whatsappCardView({ me: me('phone_missing'), status: active, connectUrl: coded }).alerts;
+  const blocked = W.alertsView(me('phone_missing'), coded);
   ok(blocked.button === null, 'a coded link never shows where the server offers none');
   const now = Date.parse('2026-10-07T21:00:00Z');
   ok(W.needsFreshLink(null, now), 'no link: fetch one');
@@ -96,13 +106,15 @@ console.log('\nthe single-use link');
 console.log('\nwho sees what');
 {
   const pm = card(me('not_connected'), { isAdmin: false });
-  ok(pm.visible && pm.alerts && pm.groups === null, 'PM: header + alerts, no Groups');
+  ok(pm.visible && pm.groupsButton && pm.assistantButton, 'PM: both buttons (groups read-only)');
   const admin = card(me('not_connected'), { isAdmin: true });
-  ok(admin.alerts && admin.groups, 'Admin: all sections');
+  ok(admin.groupsButton && admin.assistantButton, 'Admin: both buttons');
+  const notForMe = card(me('not_eligible'), { isAdmin: true });
+  ok(notForMe.visible && notForMe.assistantButton === null, 'assistant not for them: no Personal assistant button');
   ok(card(me('not_eligible'), { isAdmin: false }).visible === false, 'anyone else: no card');
 }
 
-console.log('\ngroups (admin)');
+console.log('\nProject groups');
 {
   const list = [
     { group_id: 'a', group_name: '588 Thomas Project', project_id: 'p1',
@@ -114,7 +126,8 @@ console.log('\ngroups (admin)');
     { group_id: 'd', group_name: 'New Job Crew', project_id: null,
       project_label: null, status: 'not_linked' },
   ];
-  const g = card(me('connected'), { isAdmin: true, groups: list }).groups;
+  const view = (opts) => W.groupsView({ status: active, ...opts });
+  const g = view({ groups: list, canLink: true });
   ok(g.line === null && g.rows.length === 4, 'every group is a row, no empty line');
   ok(g.rows[0].name === '588 Thomas Project' && g.rows[0].place === '588 Thomas S Boyland St',
      'linked: group name, then the job address');
@@ -124,19 +137,29 @@ console.log('\ngroups (admin)');
   ok(g.rows[3].place === 'Not linked' && g.rows[3].link === true && g.rows[3].chip === null,
      'not linked: says so, with a Link button');
   ok(g.rows.slice(0, 3).every((r) => r.link === false), 'linked groups have no Link button');
-  const one = card(me('connected'), { isAdmin: true, groups: [list[0]] }).groups;
+  ok(W.projectWhatsAppPath(g.rows[0].projectId) === '/projects/p1/whatsapp-groups'
+     && g.rows[3].projectId === null,
+     "a linked row opens its project's WhatsApp tab; an unlinked one goes nowhere");
+  ok(W.projectWhatsAppPath('p1', { readOnly: true }) === '/projects/p1/whatsapp-groups?view=readonly',
+     "a PM opens the project's WhatsApp tab view-only");
+  const pm = view({ groups: list.slice(0, 3), canLink: false });
+  ok(pm.rows.every((r) => r.link === false), 'PM: read-only, no Link button');
+  const pmUnlinked = view({ groups: [list[3]], canLink: false });
+  ok(pmUnlinked.rows[0].link === false, 'never a Link button without the right to link');
+  const one = view({ groups: [list[0]], canLink: true });
   ok(one.rows.length === 1 && one.line === null,
      'one linked group and nothing pending is NOT the empty state (the 588 Thomas bug)');
-  const e = card(me('connected'), { isAdmin: true, groups: [] }).groups;
+  const e = view({ groups: [], canLink: true });
   ok(e.rows.length === 0 && e.line === W.GROUPS_EMPTY_LINE, 'in no group at all: the empty line');
-  const loading = card(me('connected'), { isAdmin: true }).groups;
+  const loading = view({ canLink: true });
   ok(loading.rows.length === 0 && loading.line === null, 'not loaded yet: no empty line');
   ok(W.GROUPS_EMPTY_LINE ===
      "Add the Levelog number to a job's WhatsApp group. It will appear here to link.",
      'the empty line, word for word');
-  const off = W.whatsappCardView({ me: me('connected'),
-    status: { platform_configured: true, company_active: false }, isAdmin: true }).groups;
-  ok(off.action && off.action.kind === 'activate', 'company not set up: Turn on WhatsApp');
+  const off = W.groupsView({ status: { platform_configured: true, company_active: false }, canLink: true });
+  ok(off.action && off.action.kind === 'activate', 'company not set up: Turn on WhatsApp (admins)');
+  const offPm = W.groupsView({ status: { platform_configured: true, company_active: false }, canLink: false });
+  ok(offPm.action === null, 'a PM cannot turn WhatsApp on');
 }
 
 console.log('\npolling');
@@ -145,28 +168,48 @@ ok(W.WA_POLLING_STATES.has('not_connected') && W.WA_POLLING_STATES.has('reconnec
 ok(!W.WA_POLLING_STATES.has('connected'), 'not once on');
 ok(W.formatWaPhone('5551234567') === '+1 (555) 123-4567', 'phone formatting');
 
-console.log('\nwhere the card lives');
+console.log('\nwhere it lives');
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', '..', p), 'utf8');
 const integrations = read('app/admin/integrations.jsx');
 const cardSrc = read('src/components/WhatsAppCard.jsx');
+const groupsSrc = read('src/components/WhatsAppGroupsPanel.jsx');
+const assistantSrc = read('src/components/WhatsAppAssistantPanel.jsx');
 ok((integrations.match(/<WhatsAppCard /g) || []).length === 2,
    'Integrations renders the one card (admin and PM views)');
 ok(/<WhatsAppCard isAdmin \/>/.test(integrations) && /<WhatsAppCard isAdmin=\{false\} \/>/.test(integrations),
    'admin gets isAdmin, PM does not');
-ok(!/WhatsApp Integration Card|whatsappStatus|handleActivateWhatsapp|WhatsAppConnectCard/.test(integrations),
-   'the old company card is gone (no second WhatsApp title or icon)');
 ok((cardSrc.match(/<MessageCircle /g) || []).length === 1, 'one WhatsApp icon in the card');
-ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(cardSrc),
-   'live refresh kept, and a failed first read is retried');
-ok(/DOB\/DOT alert switches are in each project's WhatsApp tab\./.test(cardSrc)
-   && /router\.push\('\/projects'\)/.test(cardSrc),
-   'Levelog Assistant: where the DOB/DOT switches are, linking to the project list');
-ok(/\{isAdmin \? \(\s*<Text style=\{s\.line\}>\s*DOB\/DOT alert switches/.test(cardSrc),
-   'that line is for admins only (the project WhatsApp tab is admin-only)');
-ok(/whatsappAPI\.getCompanyGroups\(\)/.test(cardSrc) && /groups\.rows\.map/.test(cardSrc),
-   'Groups: every group from /whatsapp/company-groups, one row each');
-ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(cardSrc),
+ok(!/Switch|briefRow|getCompanyGroups|groups\.rows|alerts\.line/.test(cardSrc),
+   'the card holds no assistant settings and no group list');
+ok(/Linking\.openURL\(header\.contactUrl\)/.test(cardSrc), 'Save to Contacts opens the wa.me "contact" link');
+ok(/router\.push\(b\.path\)/.test(cardSrc), 'the two buttons open their screens');
+ok(/<WhatsAppGroupsPanel canLink=\{canLink\} \/>/.test(read('app/whatsapp/groups.jsx')),
+   'Project groups screen');
+ok(/<WhatsAppAssistantPanel \/>/.test(read('app/whatsapp/assistant.jsx')), 'Personal assistant screen');
+ok(/whatsappAPI\.getCompanyGroups\(\)/.test(groupsSrc) && /view\.rows\.map/.test(groupsSrc),
+   'Project groups: every group from /whatsapp/company-groups, one row each');
+ok(/projectWhatsAppPath\(g\.projectId, \{ readOnly: !canLink \}\)/.test(groupsSrc)
+   && /router\.push\(path\)/.test(groupsSrc),
+   "a row opens its project's WhatsApp tab (view-only for a PM)");
+{
+  const tab = read('app/projects/[id]/whatsapp-groups.jsx');
+  ok(/const viewOnly = view === 'readonly';/.test(tab) && /\{canUnlink && !viewOnly \? \(/.test(tab),
+     'view-only: no Unlink on the project tab');
+}
+ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(groupsSrc),
    'a group not linked yet has a Link button');
+ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(assistantSrc),
+   'Personal assistant: live refresh kept, and a failed first read is retried');
+ok(/whatsappAPI\.connectLink\(\)/.test(assistantSrc) && /alertsView\(me, link && link\.url\)/.test(assistantSrc),
+   'the single-use link is fetched before the tap and used');
+ok(!/setLink\(null\)/.test(assistantSrc), 'a tap does not throw the link away (no race with the send)');
+{
+  const pkg = read('package.json');
+  const app = read('app.json');
+  ok(!/expo-contacts/.test(pkg + app) && !/CONTACTS/.test(app),
+     'expo-contacts and the Contacts permissions are gone');
+  ok(!fs.existsSync(path.join(__dirname, 'saveContact.js')), 'the .vcf / share helper is gone');
+}
 {
   const brand = read('src/components/HeaderBrand.js');
   const B = loadEsm('src/utils/brandLabel.js');
@@ -191,9 +234,6 @@ ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(card
      'header uses the company name; the fixed 280px cap is gone');
 }
 ok(!/whatsappAPI|Connect WhatsApp|waMe/.test(read('app/settings.jsx')), 'nothing in Settings');
-ok(/whatsappAPI\.connectLink\(\)/.test(cardSrc) && /connectUrl: link && link\.url/.test(cardSrc),
-   'the card fetches the single-use link before the tap and uses it');
-ok(!/setLink\(null\)/.test(cardSrc), 'a tap does not throw the link away (no race with the send)');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

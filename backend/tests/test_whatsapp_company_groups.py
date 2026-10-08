@@ -124,10 +124,19 @@ class CompanyGroups(unittest.TestCase):
         self.assertIn(G_PLUMB, {g["group_id"] for g in _groups(db)})
         self.assertNotIn(G_PLUMB, {g["group_id"] for g in _groups(db, ADMIN_B)})
 
-    def test_only_link_roles(self):
-        with self.assertRaises(HTTPException) as e:
-            _groups(_db(), PM)
-        self.assertEqual(e.exception.status_code, 403)
+    def test_a_pm_reads_only_their_projects_linked_groups(self):
+        db = _db()
+        got = _groups(db, PM)                       # PM: assigned to proj_a
+        self.assertEqual({g["group_id"] for g in got}, {G_GC, G_PLUMB})
+        self.assertNotIn(server.GROUP_NOT_LINKED, {g["status"] for g in got})
+        other = dict(PM, assigned_projects=["proj_x"])
+        self.assertEqual(_groups(db, other), [])
+
+    def test_other_roles_are_refused(self):
+        for role in ("superintendent", "worker"):
+            with self.assertRaises(HTTPException) as e:
+                _groups(_db(), dict(PM, role=role))
+            self.assertEqual(e.exception.status_code, 403, role)
 
 
 if __name__ == "__main__":
