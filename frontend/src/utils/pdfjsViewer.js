@@ -816,23 +816,28 @@ const VIEWER_SCRIPT = [
   // retaining the bytes, because holding a second 30 MB buffer on a device
   // that is already being killed for memory would change the thing under test.
   '  var PROBE = param("probe") === "1";',
-  // ── THE CAPABILITY READ, WITHOUT A DOCUMENT AND WITHOUT THE FLAG ───────
+  // ── ONE MEASURING FLAG, AND IT USED TO BE TWO ──────────────────────────
   //
-  // `?caps=1` runs the six DEVICE measurements and stops. No file, no pdf.js
-  // parse, no A/B suite, and -- deliberately -- no feature-flag dependency, so
-  // it works on a site device that is offline by design and may never take a
-  // flag refresh.
+  // A `caps` url flag and a `PROBE || CAPS` alias stood here. `?caps=1` ran the
+  // six DEVICE measurements and STOPPED — no document, no A/B suite — for an
+  // admin screen that opened this page purely to read what a site device could
+  // do. #677 deleted that screen, and with it the only thing in the product that
+  // ever built a `?caps=1` url; the branch went on working for a while,
+  // reachable from nothing but its own tests. So the second flag is retired and
+  // `PROBE` is the whole gate.
   //
-  // ONE IMPLEMENTATION, TWO CALLERS, and that is the whole reason this is a
-  // MODE rather than a second HTML page. These answers only mean anything when
-  // the operator's phone and the site device can be compared line for line, and
-  // a separate capability page would drift from the viewer's copy until the
-  // comparison quietly stopped being like-for-like.
-  '  var CAPS = param("caps") === "1";',
-  // Either mode turns the measurements on. Everything that touches the
-  // DOCUMENT stays gated on PROBE alone at its call site, so caps mode cannot
-  // reach a render, a timing, or the A/B suite.
-  '  var MEASURE = PROBE || CAPS;',
+  // THIS IS NOT THE TWO MODES MERGED, and `probe=1` is unchanged in what it does
+  // and when. `capabilityRead` still runs the device read FIRST, before the file
+  // is looked at, so the six rows still arrive for a plan that fails to parse —
+  // that was never a property of caps mode, it is the sequencer's. What is gone
+  // is the ability to ask for those six AND NOTHING ELSE; nobody can ask now.
+  //
+  // THE COLLAPSE IS BEHAVIOUR-PRESERVING BY CONSTRUCTION, which is the only
+  // reason it belongs in the same change: the alias could be true while `PROBE`
+  // was false in caps mode and NOWHERE else, so with caps gone the two are one
+  // predicate and every site that read the alias now reads `PROBE`. An alias
+  // kept for a caller that no longer exists is the switch under a new name, not
+  // a retirement — which is why it did not survive as `= PROBE`.
   '  function pnow(){ try { return performance.now(); } catch (e) { return Date.now(); } }',
   '  function r1(x){ return Math.round(x * 10) / 10; }',
   // THE MIDDLE VALUE, WHICH IS THE WHOLE POINT OF TAKING THREE.
@@ -853,7 +858,7 @@ const VIEWER_SCRIPT = [
   '  function minOf(a){ if (!a || !a.length) return null; return a.reduce(function(x, y){ return x < y ? x : y; }); }',
   '  function maxOf(a){ if (!a || !a.length) return null; return a.reduce(function(x, y){ return x > y ? x : y; }); }',
   '  function probePost(kind, data){',
-  '    if (!MEASURE) return;',
+  '    if (!PROBE) return;',
   '    try { post({ type: "pdf-probe", probe: kind, data: data }); } catch (e) {}',
   '  }',
   '',
@@ -884,7 +889,7 @@ const VIEWER_SCRIPT = [
   // — the 1.1 MB worker is the one that would move off-thread if the
   // blob-worker probe comes back supported.
   '  function probeBoot(){',
-  '    if (!MEASURE) return;',
+  '    if (!PROBE) return;',
   // ⚠️ FIRST FIELD OF THE FIRST ROW THE PROBE EMITS. Everything else in this
   // file is a measurement of a viewer, and this says WHICH viewer. Without it
   // "the change made no difference" and "the OTA did not apply" are the same
@@ -913,7 +918,7 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   '  function probeEnv(){',
-  '    if (!MEASURE) return;',
+  '    if (!PROBE) return;',
   '    var d = { viewerVersion: VIEWER_VERSION };',
   '    try { d.ua = String(navigator.userAgent || "").slice(0, 200); } catch (e) {}',
   '    try { d.dpr = window.devicePixelRatio || 1; } catch (e) {}',
@@ -954,7 +959,7 @@ const VIEWER_SCRIPT = [
   // getImageData is the part that proves the backing store is real — a canvas
   // can accept width/height and hand back a context that draws nothing.
   '  function probeCanvasLimits(){',
-  '    if (!MEASURE) return;',
+  '    if (!PROBE) return;',
   '    function tryEdge(edge){',
   '      var c = null;',
   '      try {',
@@ -997,7 +1002,7 @@ const VIEWER_SCRIPT = [
   // every tiling design that puts work on a worker is dead in this delivery
   // model and the report has to say so.
   '  function probeBlobWorker(done){',
-  '    if (!MEASURE) { if (done) done(false); return; }',
+  '    if (!PROBE) { if (done) done(false); return; }',
   '    var r = { supported: false, error: "" };',
   '    var settled = false;',
   '    function finish(){',
@@ -1064,7 +1069,7 @@ const VIEWER_SCRIPT = [
   // than read from disk. Different plumbing, its own cost, and this is the
   // measurement that says whether it is needed.
   '  function probeWorkerSource(done){',
-  '    if (!MEASURE) { if (done) done(); return; }',
+  '    if (!PROBE) { if (done) done(); return; }',
   '    var out = { path: "' + WORKER_NAME + '", xhr: false, xhrBytes: 0, xhrMs: null,',
   '                xhrError: "", fetchSupported: (typeof fetch === "function"),',
   '                fetch: false, fetchMs: null, fetchError: "" };',
@@ -1118,7 +1123,7 @@ const VIEWER_SCRIPT = [
   // answer a question gated on a probe that has not run yet is the wrong
   // order. If these two come back green it is its own small trip.
   '  function probeWasm(done){',
-  '    if (!MEASURE) { if (done) done(); return; }',
+  '    if (!PROBE) { if (done) done(); return; }',
   '    var out = { hasWebAssembly: (typeof WebAssembly !== "undefined"), instantiated: false, ms: null, error: "" };',
   '    if (!out.hasWebAssembly) { probePost("wasm", out); if (done) done(); return; }',
   '    try {',
@@ -1136,7 +1141,7 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   '  function probeBinaryRead(done){',
-  '    if (!MEASURE) { if (done) done(); return; }',
+  '    if (!PROBE) { if (done) done(); return; }',
   '    var out = { path: "' + WORKER_NAME + '", ok: false, bytes: 0, ms: null, mbPerSec: null, error: "" };',
   '    var t0 = pnow();',
   '    try {',
@@ -1182,30 +1187,21 @@ const VIEWER_SCRIPT = [
   '',
   // ── THE BUDGETS ARE SETTLED BEFORE ANYTHING READS THEM ────────────────
   //
-  // ⚠️ HERE AND NOT BESIDE THE VIEWER'S OWN `capabilityRead` CALL, BECAUSE
-  // CAPS MODE RETURNS TWENTY LINES BELOW AND NEVER REACHES IT. The capability
-  // screen opens this page with `?caps=1` precisely to read what this device
-  // resolved to, so a budget applied after that return would have the one
-  // caller that exists to report it reporting the declared fallback instead —
-  // an instrument confidently stating the wrong number.
+  // THIS LINE IS ON THE UNCONDITIONAL BOOT PATH AND IT IS NOT AN INSTRUMENT.
+  // `applyDeviceBudgets()` resolves `CANVAS_BUDGET_MP`, which `trim()` reads on
+  // EVERY eviction for EVERY reader. It is not gated on `PROBE` and must not
+  // become so while the measuring code around it is being thinned; `probeEnv`
+  // only REPORTS the value this settles.
   //
-  // Both callers of `capabilityRead` are therefore downstream of this line,
-  // and `trim()` — the other reader — cannot run until a document arrives.
+  // IT USED TO SIT HERE TO BEAT AN EARLY RETURN. Caps mode returned twenty lines
+  // below, and a budget applied after that return would have had the one caller
+  // that existed to report it reporting the declared fallback instead — an
+  // instrument confidently stating the wrong number. That return went with the
+  // mode, so the ordering requirement is now the plain one, and worth stating
+  // rather than inheriting: both readers of the budget are downstream of this
+  // line — `probeEnv`, through the single `capabilityRead` call at boot, and
+  // `trim()`, which cannot run until a document arrives.
   '  applyDeviceBudgets();',
-  '',
-  // ── CAPS MODE ENDS HERE ────────────────────────────────────────────────
-  //
-  // No document is read, so there is nothing to fail on and nothing to clean
-  // up. The `caps` marker is what the admin screen waits for; without it the
-  // screen cannot tell "still running" from "this WebView answered nothing".
-  '  if (CAPS) {',
-  '    if (msgEl) msgEl.textContent = "Reading device capabilities\\u2026";',
-  '    capabilityRead(function(){',
-  '      if (msgEl) msgEl.textContent = "Device capability read complete.";',
-  '      probePost("caps", { done: true });',
-  '    });',
-  '    return;',
-  '  }',
   '',
   // ── THE DOCUMENT IS NO LONGER PART OF THE URL ──────────────────────────
   //
@@ -2444,7 +2440,7 @@ const VIEWER_SCRIPT = [
   '    var pgen = slot.pgen;',
   '    var settledOut = false;',
   '    var slotHeld = true;',
-  '    var pv0 = MEASURE ? pnow() : 0;',
+  '    var pv0 = PROBE ? pnow() : 0;',
   // ── GIVING THE RENDER SLOT BACK, EXACTLY ONCE ──────────────────────────
   //
   // Called from the draw on the happy path and from `done()` on every other
@@ -2503,20 +2499,20 @@ const VIEWER_SCRIPT = [
   '      var ctx = c.getContext("2d");',
   '      if (!ctx) { try { c.width = 0; c.height = 0; } catch (e) {} giveUp("no-2d-context"); return null; }',
   '      var task = page.render({ canvasContext: ctx, viewport: vp });',
-  '      var r0 = MEASURE ? pnow() : 0;',
+  '      var r0 = PROBE ? pnow() : 0;',
   '      return task.promise.then(function(){',
-  '        var renderMs = MEASURE ? r1(pnow() - r0) : 0;',
+  '        var renderMs = PROBE ? r1(pnow() - r0) : 0;',
   '        try { page.cleanup(); } catch (e) {}',
   '        if (slot.pgen !== pgen) { try { c.width = 0; c.height = 0; } catch (e) {} done(); return; }',
   // ⚠️ THE ONE LINE THE LOADING BUG WAS ABOUT. The bitmap exists; the only
   // thing this job still needs is a few tens of milliseconds of thread to
   // turn it into bytes, and that does not require the renderer. Whatever the
   // reader is waiting for goes next.
-  '        var slotHeldMs = MEASURE ? r1(pnow() - pv0) : 0;',
+  '        var slotHeldMs = PROBE ? r1(pnow() - pv0) : 0;',
   '        releaseRenderSlot();',
   '        encQueue.push({ slot: slot, c: c, info: info, rawBytes: rawBytes,',
   '          renderMs: renderMs, slotHeldMs: slotHeldMs, t0: pv0, pgen: pgen,',
-  '          queuedAt: MEASURE ? pnow() : 0,',
+  '          queuedAt: PROBE ? pnow() : 0,',
   '          isSettled: function(){ return settledOut; }, done: done });',
   '        pumpEncode();',
   '      });',
@@ -2593,7 +2589,7 @@ const VIEWER_SCRIPT = [
   // the first real encode, so it reports the canvas that was actually encoded
   // rather than a feature-detect on a canvas nobody drew into.
   '  function encoderReport(c){',
-  '    if (!MEASURE || encoderPosted) return;',
+  '    if (!PROBE || encoderPosted) return;',
   '    encoderPosted = true;',
   '    var hasOff = false, hasConv = false;',
   '    try { hasOff = (typeof OffscreenCanvas !== "undefined"); } catch (e) { hasOff = false; }',
@@ -2700,15 +2696,15 @@ const VIEWER_SCRIPT = [
   // count a completion twice. The canvas goes back and nothing else happens.
   '  function runEncode(job){',
   '    var slot2 = job.slot, c = job.c, cw = c.width, ch = c.height;',
-  '    var waitMs = MEASURE ? r1(pnow() - job.queuedAt) : 0;',
+  '    var waitMs = PROBE ? r1(pnow() - job.queuedAt) : 0;',
   '    if (job.isSettled() || slot2.pgen !== job.pgen) {',
   '      try { c.width = 0; c.height = 0; } catch (e) {}',
   '      job.done();',
   '      return;',
   '    }',
-  '    var e0 = MEASURE ? pnow() : 0;',
+  '    var e0 = PROBE ? pnow() : 0;',
   '    var enc = encodeToUrl(c, job.rawBytes);',
-  '    var encodeMs = MEASURE ? r1(pnow() - e0) : 0;',
+  '    var encodeMs = PROBE ? r1(pnow() - e0) : 0;',
   '    encoderReport(c);',
   // ── A REBUILD REPLACES THE BYTES IN THE ELEMENT THAT IS ALREADY THERE ──
   //
@@ -2821,7 +2817,7 @@ const VIEWER_SCRIPT = [
   // design would have paid, and a report that only states the winner's figure
   // leaves nobody able to check the decision.
   '  function maybeReportPreviewMemory(){',
-  '    if (!MEASURE || !doc) return;',
+  '    if (!PROBE || !doc) return;',
   '    var i, built = 0, stored = 0, storage = "", mixed = false;',
   '    var pixels = 0, stale = 0;',
   '    for (i = 0; i < slots.length; i++) {',
@@ -3866,7 +3862,7 @@ const VIEWER_SCRIPT = [
   // fails to parse. That is exactly when someone wants to know what this
   // WebView can and cannot do.
   '  function capabilityRead(after){',
-  '    if (!MEASURE) { if (after) after(); return; }',
+  '    if (!PROBE) { if (after) after(); return; }',
   // FIRST, AND THAT ORDER IS THE MEASUREMENT. probeCanvasLimits() below walks
   // a ladder up to 16384x16384 and is the most expensive thing on this page;
   // reading the boot cost after it would fold the probe's own allocations
