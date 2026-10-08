@@ -118,7 +118,7 @@ export function assistantView(data) {
 
 export const BOT_SETTINGS = [
   { key: 'bot_enabled', label: 'Answer in this group',
-    line: "When off, Levelog Assistant doesn't reply, summarize or post checklists here. DOB alerts to the GC group are set above." },
+    line: "When off, Levelog Assistant is silent here: no replies, summaries, checklists or DOB alerts." },
   { key: 'features.address_mode', label: 'Only answer when called by name',
     line: 'On: answers only when someone says "Levelog", @mentions it, or replies to it. Off: also answers questions it clearly can help with.',
     on: 'strict', off: 'loose' },

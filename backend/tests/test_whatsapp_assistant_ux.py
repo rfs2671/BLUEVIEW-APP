@@ -436,18 +436,89 @@ class AddressAndRoles(unittest.TestCase):
             _arun(server._gc_alerts_tick(NOON))
             self.assertIn("12 Main St", _group_sends(c)[0]["message"])
 
-    def test_only_linkers_may_unlink(self):
+    def test_only_an_admin_or_the_projects_pm_may_unlink(self):
         db = FakeDb(whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1")])
         with patch.object(server, "db", db):
-            with self.assertRaises(HTTPException) as e:
+            for role in ("cp", "superintendent", "owner", "worker"):
+                with self.subTest(role):
+                    with self.assertRaises(HTTPException) as e:
+                        _run(server.whatsapp_unlink_group(
+                            "g1", {"id": "u", "company_id": CO_A, "role": role}))
+                    self.assertEqual(e.exception.status_code, 403)
+            with self.assertRaises(HTTPException) as e:      # PM, not on this project
                 _run(server.whatsapp_unlink_group(
-                    "g1", {"id": "u", "company_id": CO_A, "role": "superintendent"}))
+                    "g1", {"id": "u", "company_id": CO_A, "role": "pm",
+                           "assigned_projects": ["proj_x"]}))
             self.assertEqual(e.exception.status_code, 403)
+            with self.assertRaises(HTTPException) as e:      # admin of another company
+                _run(server.whatsapp_unlink_group(
+                    "g1", {"id": "u", "company_id": "co_b", "role": "admin"}))
+            self.assertEqual(e.exception.status_code, 404)
             self.assertTrue(db.whatsapp_groups.rows[0]["active"])
             _run(server.whatsapp_unlink_group(
-                "g1", {"id": "u", "company_id": CO_A, "role": "admin"}))
+                "g1", {"id": "u", "company_id": CO_A, "role": "pm",
+                       "assigned_projects": ["proj_a"]}))
             self.assertFalse(db.whatsapp_groups.rows[0]["active"])
 
+    def test_an_admin_may_unlink(self):
+        db = FakeDb(whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1")])
+        with patch.object(server, "db", db):
+            _run(server.whatsapp_unlink_group(
+                "g1", {"id": "u", "company_id": CO_A, "role": "Admin"}))
+        self.assertFalse(db.whatsapp_groups.rows[0]["active"])
+
+
+class TheGcGroupsOwnSwitch(unittest.TestCase):
+    """bot_enabled=false on the GC group: no DOB alerts there, and it is never
+    offered as the GC group."""
+
+    def _bot_off(self, db, gid_index=0):
+        cfg = server._default_bot_config()
+        cfg["bot_enabled"] = False
+        db.whatsapp_groups.rows[gid_index]["bot_config"] = cfg
+
+    def test_no_alerts_while_off_and_no_backlog_after(self):
+        db = _world()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _arun(server._gc_alerts_tick(NOON))              # baseline
+            self._bot_off(db)
+            db.dob_logs.rows.append(_violation("70"))
+            r = _arun(server._gc_alerts_tick(NOON))
+            self.assertEqual((r["bot_off"], r["posted"], r["seen_while_off"]), (1, 0, 1))
+            self.assertEqual(_group_sends(c), [])
+            db.whatsapp_groups.rows[0]["bot_config"]["bot_enabled"] = True
+            _arun(server._gc_alerts_tick(NOON))
+            self.assertEqual(_group_sends(c), [])               # not posted later
+            db.dob_logs.rows.append(_violation("71"))
+            _arun(server._gc_alerts_tick(NOON))
+            self.assertEqual(len(_group_sends(c)), 1)           # new ones resume
+
+    def test_switched_off_between_check_and_send(self):
+        db = _world()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _arun(server._gc_alerts_tick(NOON))
+            db.dob_logs.rows.append(_violation("72"))
+            real = server._gc_group_bound_to
+            calls = {"n": 0}
+
+            async def flip(*a, **k):
+                calls["n"] += 1
+                if calls["n"] == 2:                             # the re-check before sending
+                    self._bot_off(db)
+                return await real(*a, **k)
+            with patch.object(server, "_gc_group_bound_to", flip):
+                _arun(server._gc_alerts_tick(NOON))
+            self.assertEqual(_group_sends(c), [])
+
+    def test_a_group_with_its_bot_off_is_never_proposed(self):
+        from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, _start
+        db = _world()
+        self._bot_off(db)                                       # "Main St Project"
+        with _Ctx(db=db) as c:
+            _start(ADMIN_PHONE)
+            self.assertEqual(_run(server._gc_propose_tick(NOON))["asked"], 0)
 
 if __name__ == "__main__":
     unittest.main()

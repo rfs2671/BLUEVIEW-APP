@@ -46,7 +46,7 @@ console.log('header');
      'company not set up: chip says so, no contact card');
 }
 
-console.log('\nyour alerts: one chip, one line per state');
+console.log('\nLevelog Assistant: one chip, one line per state');
 {
   const a = card(me('not_connected')).alerts;
   ok(a.chip.label === 'Assistant off', 'off');

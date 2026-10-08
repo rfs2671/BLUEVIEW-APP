@@ -52,9 +52,12 @@ export default function WhatsAppGroupsScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   // Admins see the Levelog Assistant settings and the per-group settings.
-  // Owner / admin / CP may link and unlink a group (the server's rule).
+  // Owner / admin / CP may link a group with a code; only an admin or the
+  // project's PM may unlink one (the server's rules).
   const isAdmin = isCompanyAdmin(user);
-  const canLink = ['owner', 'admin', 'cp'].includes(String(user?.role || '').toLowerCase());
+  const role = String(user?.role || '').toLowerCase();
+  const canLink = ['owner', 'admin', 'cp'].includes(role);
+  const canUnlink = ['admin', 'pm'].includes(role);
   const [confirmUnlink, setConfirmUnlink] = useState(null);
   const toast = useToast();
 
@@ -342,7 +345,7 @@ export default function WhatsAppGroupsScreen() {
                             </Text>
                             <Text style={s.groupMeta}>{messageCountLabel(group.message_count)}</Text>
                           </View>
-                          {canLink ? (
+                          {canUnlink ? (
                             <Pressable
                               onPress={() => handleUnlinkGroup(groupId)}
                               disabled={unlinking === groupId || readOnly}
