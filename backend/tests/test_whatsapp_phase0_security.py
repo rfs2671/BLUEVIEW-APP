@@ -1051,7 +1051,12 @@ class ADirectMessageFromANumberInTwoCompaniesReadsNothing(unittest.TestCase):
                              _recording_send(sent)), \
                 patch.object(server, "classify_intent", _classify):
             _run(server._process_whatsapp_message(dm))
-        self.assertEqual((sent, classified), ([], []))
+        # No opt-in for this chat: the one line every non-eligible sender
+        # gets (Levelog Assistant in a DM), and nothing read or classified.
+        from lib import wa_assistant
+        self.assertEqual(sent, [(f"{HUMAN}@c.us", wa_assistant.NOT_FOR_YOU_TEXT)])
+        self.assertEqual(classified, [])
+        self.assertNotIn(SECRET, str(sent))
 
     def test_a_contact_whose_company_is_not_its_users_reads_nothing(self):
         db = _Db(projects=[PROJ_A, PROJ_B],
