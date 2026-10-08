@@ -11793,8 +11793,8 @@ async def _assert_superintendent_under_admin(user_id: str, admin: dict) -> dict:
             # the offer pointed at a dead end even while the screen existed.
             # The remaining route is the role change, which User Management
             # now performs and prices first.
-            detail="Only a superintendent holds CS registrations. Change "
-                   "the role first in User Management.",
+            detail="Only a superintendent holds CS registrations. Change the "
+                   "role first in User Management.",
         )
     return target
 
