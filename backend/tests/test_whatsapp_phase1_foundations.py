@@ -309,12 +309,21 @@ class StartAndStop(unittest.TestCase):
         self.assertEqual((row["phone"], row["status"], row["user_id"]),
                          (UNKNOWN_PHONE, "opted_out", None))
 
-    def test_the_intro_text_is_the_operators(self):
-        self.assertEqual(wa_dm.INTRO_TEXT, (
-            "Blueview here. You'll get: chat summaries for your projects, "
-            "alerts when someone needs your answer, inspection and permit "
-            "reminders, and new DOB violations. Change settings in the app. "
-            "Reply STOP to turn off."))
+    def test_the_intro_names_only_live_features(self):
+        """Phase 2: GC group alerts are live; summaries, reply alerts and
+        reminders are not, so the intro must not promise them."""
+        text = wa_dm.INTRO_TEXT
+        self.assertTrue(text.startswith("Levelog here."))
+        self.assertIn("DOB violations", text)
+        self.assertIn("permit expiry reminders", text)
+        for not_live in ("summar", "needs your answer", "inspection"):
+            self.assertNotIn(not_live, text.lower())
+
+    def test_no_bot_text_says_blueview(self):
+        for name in dir(wa_dm):
+            if name.endswith("_TEXT"):
+                self.assertNotIn("Blueview", getattr(wa_dm, name), name)
+                self.assertTrue(getattr(wa_dm, name).startswith(("Levelog", "Done", "OK", "That")), name)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -434,7 +443,7 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 26)
+        self.assertEqual(body.count("scheduler.add_job("), 27)
 
 
 # ══════════════════════════════════════════════════════════════════════════

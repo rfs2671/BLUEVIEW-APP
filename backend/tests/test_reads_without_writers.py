@@ -136,6 +136,15 @@ BASELINE = {
     # see lib/logbook/ll196.py::_roster_for_period and
     # tests/test_ll196_population.py. This is the case the header describes:
     # "you have found the next `daily_logs.phase`."
+    # WRITTEN, INVISIBLY: _set_whatsapp_project_fields builds its $set as
+    # {f"whatsapp_project.{k}": v for k in fields} -- a comprehension the
+    # sweep cannot read. Writers: put_project_whatsapp_gc_group and
+    # _handle_gc_confirm_reply (gc_group_confirmed), _gc_propose_tick
+    # (gc_proposal with status / admin_user_id). tests/test_whatsapp_gc_alerts.py
+    # reads each back after the write.
+    ("notification_preferences", "whatsapp_project.gc_group_confirmed"),
+    ("notification_preferences", "whatsapp_project.gc_proposal.admin_user_id"),
+    ("notification_preferences", "whatsapp_project.gc_proposal.status"),
 }
 
 

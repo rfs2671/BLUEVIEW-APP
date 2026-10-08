@@ -68,6 +68,7 @@ from lib.report import view as report_view
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import wa_gc  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
@@ -43351,8 +43352,517 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
         out["gc_group_id"] = stored["gc_group_id"]
     out["gc_group_confirmed"] = bool(stored.get("gc_group_confirmed")) and bool(
         out["gc_group_id"])
+    for k in ("violation_alerts", "permit_reminders"):
+        if isinstance(stored.get(k), bool):
+            out[k] = stored[k]
+    if isinstance(stored.get("gc_proposal"), dict):
+        out["gc_proposal"] = stored["gc_proposal"]
+    if isinstance(stored.get("gc_declined"), list):
+        out["gc_declined"] = [str(x) for x in stored["gc_declined"]]
     return out
 
+
+async def _set_whatsapp_project_fields(project_id: Any, company_id: Any,
+                                       fields: dict, actor: Optional[str] = None) -> None:
+    """Write some per-project WhatsApp settings, leaving the others alone.
+
+    `fields` are keys of whatsapp_project ({"gc_group_id": ...}); each is set
+    by its own dotted path, so changing the alert switches never clears the
+    GC group and confirming a group never resets the switches."""
+    now = datetime.now(timezone.utc)
+    set_ops = {f"whatsapp_project.{k}": v for k, v in fields.items()}
+    set_ops["whatsapp_project.updated_at"] = now
+    if actor:
+        set_ops["whatsapp_project.updated_by"] = actor
+    set_ops["company_id"] = str(company_id)
+    set_ops["updated_at"] = now
+    await db.notification_preferences.update_one(
+        {"user_id": None, "project_id": str(project_id), "scope": "project"},
+        {"$set": set_ops,
+         "$setOnInsert": {"user_id": None, "project_id": str(project_id),
+                          "scope": "project", "created_at": now}},
+        upsert=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# GC GROUP: pick, confirm by DM, post DOB alerts  (lib/wa_gc.py is the logic)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Per project, in the project-scope notification_preferences row
+# (whatsapp_project.*): gc_group_id, gc_group_confirmed, violation_alerts,
+# permit_reminders, gc_proposal, gc_declined.
+#
+#   1. _gc_propose_tick: a project with no confirmed GC group whose linked
+#      groups give ONE obvious pick (no trade word) gets one DM to the
+#      company's main admin — opted in, or nothing is sent. One open question
+#      per admin at a time, so a bare "1" or "2" can only mean one thing.
+#   2. The admin's "1" / "2" (_handle_gc_confirm_reply) confirms or declines.
+#      No answer: the proposal expires and nothing is ever posted to that
+#      group until an admin picks it in the app.
+#   3. _gc_alerts_tick posts new violations and permit reminders to the
+#      CONFIRMED group only, 7 AM – 7 PM ET, each item once ever (ledger rows
+#      with no expires_at). The first run for a project records what already
+#      exists as seen and posts nothing.
+
+GC_PROPOSAL_TTL_HOURS = 72
+GC_MAX_POSTS_PER_PROJECT_RUN = 5
+_GC_CLOSED_STATES = ("certified", "dismissed", "paid", "resolved")
+
+
+async def _company_main_admin(company_id: Any) -> Optional[dict]:
+    """The company's main admin: whoever created the company, if they are
+    still a live, approved admin of it; else the earliest-created such admin.
+    None when the company has none (or cannot be read)."""
+    cid = str(company_id or "").strip()
+    if not cid:
+        return None
+    try:
+        company = await db.companies.find_one(
+            {"_id": to_query_id(cid), "is_deleted": {"$ne": True}})
+        users = await db.users.find(
+            {"company_id": _company_id_filter(cid), "is_deleted": {"$ne": True}},
+            {"password": 0}).to_list(500)
+    except Exception as e:
+        logger.warning(f"main admin read failed: {type(e).__name__}")
+        return None
+    if not company:
+        return None
+
+    def ok(u):
+        status = u.get("account_status")
+        return (wa_dm.norm_role(u.get("role")) in COMPANY_ADMIN_ROLES
+                and (status in APPROVED_ACCOUNT_STATUSES
+                     or (status is None and ALLOW_LEGACY_NULL_STATUS)))
+    admins = [u for u in users if ok(u)]
+    creator = str(company.get("created_by") or "")
+    for u in admins:
+        if creator and str(u.get("_id")) == creator:
+            return u
+    never = datetime.max.replace(tzinfo=timezone.utc)
+
+    def created(u):
+        v = u.get("created_at")
+        if not isinstance(v, datetime):
+            return never
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    admins.sort(key=lambda u: (created(u), str(u.get("_id"))))
+    return admins[0] if admins else None
+
+
+async def _gc_group_bound_to(wa_group_id: str, company_id: Any,
+                             project_id: Any) -> Optional[dict]:
+    """The binding, ONLY if the group is bound to this project of this
+    company. The question asked before proposing, confirming and posting."""
+    if not wa_group_id:
+        return None
+    binding = await _resolve_group_binding(wa_group_id)
+    if (binding.get("status") == wa_security.GROUP_OK
+            and binding.get("project_id") == str(project_id)
+            and wa_security.same_company(binding.get("company_id"), company_id)):
+        return binding
+    return None
+
+
+def _gc_proposal_open(prop: Any, now: datetime) -> bool:
+    if not isinstance(prop, dict) or prop.get("status") != "pending":
+        return False
+    exp = prop.get("expires_at")
+    if isinstance(exp, datetime) and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return isinstance(exp, datetime) and exp > now
+
+
+async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
+    """Ask main admins to confirm an obvious GC group. Returns counts."""
+    now = now or datetime.now(timezone.utc)
+    report = {"asked": 0, "no_pick": 0, "no_admin": 0, "busy": 0,
+              "not_sent": 0, "outside_window": 0}
+    if not wa_gc.in_post_window(now):
+        report["outside_window"] = 1
+        return report
+    test_ids = {str(x) for x in await test_company_ids()}
+    try:
+        groups = await db.whatsapp_groups.find(
+            {"active": True, "project_id": {"$nin": [None, ""]},
+             "company_id": {"$nin": [None, ""]}}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[wa-gc] group read failed: {type(e).__name__}")
+        return report
+    by_project: Dict[tuple, list] = {}
+    for g in groups:
+        key = (str(g.get("company_id")), str(g.get("project_id")))
+        if key[0] in test_ids:
+            continue
+        by_project.setdefault(key, []).append(g)
+
+    # Admins with a question already open, from every project's row.
+    busy_admins = set()
+    try:
+        async for row in db.notification_preferences.find(
+                {"user_id": None, "scope": "project",
+                 "whatsapp_project.gc_proposal.status": "pending"}):
+            prop = (row.get("whatsapp_project") or {}).get("gc_proposal")
+            if _gc_proposal_open(prop, now):
+                busy_admins.add(str(prop.get("admin_user_id")))
+            elif isinstance(prop, dict):
+                await _set_whatsapp_project_fields(
+                    row.get("project_id"), row.get("company_id"),
+                    {"gc_proposal": {**prop, "status": "expired"}})
+    except Exception as e:
+        logger.warning(f"[wa-gc] proposal read failed: {type(e).__name__}")
+        return report
+
+    for (company_id, project_id), rows in sorted(by_project.items()):
+        settings = await _whatsapp_project_settings(project_id)
+        if settings.get("gc_group_confirmed"):
+            continue
+        prop = settings.get("gc_proposal")
+        if isinstance(prop, dict) and prop.get("status") in (
+                "pending", "expired", "declined", "answered_in_app"):
+            continue  # asked once; from here the admin picks in the app
+        candidates = [g for g in rows
+                      if str(g.get("wa_group_id")) not in settings["gc_declined"]]
+        pick = wa_gc.pick_gc_group(candidates)
+        if not pick:
+            report["no_pick"] += 1
+            continue
+        project = await _bot_project_scope(company_id, project_id)
+        if not project or not await _gc_group_bound_to(
+                pick["wa_group_id"], company_id, project_id):
+            report["no_pick"] += 1
+            continue
+        admin = await _company_main_admin(company_id)
+        if not admin:
+            report["no_admin"] += 1
+            continue
+        admin_id = str(admin.get("_id"))
+        if admin_id in busy_admins:
+            report["busy"] += 1
+            continue
+        group_name = str(pick.get("group_name") or "this group")
+        project_name = str(project.get("name") or "your project")
+        sent = await send_whatsapp_dm(
+            admin_id,
+            wa_dm.GC_CONFIRM_TEXT.format(group=group_name, project=project_name),
+            kind="gc_confirm", window=str(pick["wa_group_id"]),
+            project_id=project_id)
+        if sent is None:
+            # Not opted in, alerts off, or the ledger says it was asked
+            # already: nothing is recorded, nothing is posted.
+            report["not_sent"] += 1
+            continue
+        await _set_whatsapp_project_fields(project_id, company_id, {
+            "gc_proposal": {
+                "status": "pending", "group_id": str(pick["wa_group_id"]),
+                "group_name": group_name, "admin_user_id": admin_id,
+                "sent_at": now,
+                "expires_at": now + timedelta(hours=GC_PROPOSAL_TTL_HOURS)}})
+        busy_admins.add(admin_id)
+        report["asked"] += 1
+    logger.info(f"[wa-gc] propose {report}")
+    return report
+
+
+async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
+    """An admin's "1" / "2" to a GC group question. True when it was one
+    (and was answered); False sends the message on to normal handling."""
+    now = datetime.now(timezone.utc)
+    optin = await _active_optin_for_phone(wa_dm.phone_digits(chat_id))
+    if not optin or not optin.get("user_id"):
+        return False
+    uid = str(optin["user_id"])
+    try:
+        row = await db.notification_preferences.find_one(
+            {"user_id": None, "scope": "project",
+             "whatsapp_project.gc_proposal.status": "pending",
+             "whatsapp_project.gc_proposal.admin_user_id": uid})
+    except Exception:
+        return False
+    prop = ((row or {}).get("whatsapp_project") or {}).get("gc_proposal")
+    if not row or not _gc_proposal_open(prop, now):
+        return False
+    project_id = str(row.get("project_id") or "")
+    company_id = str(row.get("company_id") or "")
+    group_id = str(prop.get("group_id") or "")
+    group_name = str(prop.get("group_name") or "the group")
+
+    # Everything re-checked at the moment of the answer, fail closed.
+    admin = await _company_main_admin(company_id)
+    project = await _bot_project_scope(company_id, project_id)
+    if (not admin or str(admin.get("_id")) != uid
+            or not wa_security.same_company(optin.get("company_id") or
+                                            admin.get("company_id"), company_id)
+            or not project):
+        _security_event("whatsapp_gc_confirm_refused", user_id=uid,
+                        project_id=project_id, company_id=company_id,
+                        reason="not_main_admin_or_project")
+        await _set_whatsapp_project_fields(project_id, company_id, {
+            "gc_proposal": {**prop, "status": "void", "answered_at": now}})
+        return False
+    project_name = str(project.get("name") or "your project")
+    if not await _gc_group_bound_to(group_id, company_id, project_id):
+        await _set_whatsapp_project_fields(project_id, company_id, {
+            "gc_proposal": {**prop, "status": "void", "answered_at": now}})
+        await send_whatsapp_message(
+            chat_id, wa_dm.GC_GONE_TEXT.format(project=project_name))
+        return True
+    if answer == "yes":
+        await _set_whatsapp_project_fields(project_id, company_id, {
+            "gc_group_id": group_id, "gc_group_confirmed": True,
+            "gc_proposal": {**prop, "status": "confirmed", "answered_at": now}},
+            actor=uid)
+        text = wa_dm.GC_CONFIRMED_TEXT.format(project=project_name,
+                                              group=group_name)
+    else:
+        declined = (await _whatsapp_project_settings(project_id))["gc_declined"]
+        await _set_whatsapp_project_fields(project_id, company_id, {
+            "gc_declined": sorted(set(declined) | {group_id}),
+            "gc_proposal": {**prop, "status": "declined", "answered_at": now}},
+            actor=uid)
+        text = wa_dm.GC_DECLINED_TEXT.format(project=project_name)
+    logger.info(f"[wa-gc] proposal {answer} project={project_id}")
+    await send_whatsapp_message(chat_id, text)
+    return True
+
+
+async def _gc_violation_summary(facts: Dict[str, str]) -> Optional[str]:
+    """A plain-language summary from the record's facts alone, or None."""
+    if not OPENAI_API_KEY or not facts:
+        return None
+    payload = {
+        "model": "gpt-4o-mini", "temperature": 0, "max_tokens": 120,
+        "messages": [
+            {"role": "system", "content": wa_gc.SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(facts, sort_keys=True)},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}",
+               "Content-Type": "application/json"}
+    try:
+        async with ServerHttpClient(timeout=20) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                json=payload, headers=headers)
+        return str(resp.json()["choices"][0]["message"]["content"]).strip() or None
+    except Exception as e:
+        logger.warning(f"[wa-gc] summary failed: {type(e).__name__}")
+        return None
+
+
+async def _gc_violation_text(project_name: str, dob_log: dict) -> str:
+    facts = wa_gc.violation_facts(dob_log)
+    summary = await _gc_violation_summary(facts)
+    if not summary or not wa_gc.check_summary(summary, facts):
+        if summary:
+            logger.info("[wa-gc] summary failed the record check; template used")
+        summary = wa_gc.violation_template(project_name=project_name, facts=facts)
+    return wa_gc.violation_message(summary=summary, facts=facts,
+                                   dob_link=str(dob_log.get("dob_link") or ""))
+
+
+def _gc_latest_per_record(rows: list) -> list:
+    """Newest row per raw_dob_id (a record gets a new row per status change)."""
+    def stamp(r):
+        v = r.get("status_changed_at") or r.get("detected_at")
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
+    best: Dict[str, dict] = {}
+    for r in rows:
+        rid = str(r.get("raw_dob_id") or "")
+        if rid and (rid not in best or stamp(r) > stamp(best[rid])):
+            best[rid] = r
+    return [best[k] for k in sorted(best)]
+
+
+async def _gc_ledger_insert(lid: str, **fields) -> str:
+    """Insert the once-ever row: "ok", "dup" (already there) or "error"."""
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[WA_LEDGER].insert_one({"_id": lid, "created_at":
+                                        datetime.now(timezone.utc), **fields})
+        return "ok"
+    except DuplicateKeyError:
+        return "dup"
+    except Exception as e:
+        logger.warning(f"[wa-gc] ledger claim failed: {type(e).__name__}")
+        return "error"
+
+
+async def _gc_ledger_claim(lid: str, **fields) -> bool:
+    """True only when this call wrote the row. A row already there, or a
+    failed write, is False — and nothing is posted."""
+    return await _gc_ledger_insert(lid, **fields) == "ok"
+
+
+async def _gc_project_items(project_id: str, today) -> dict:
+    """What a project has now: open violations, and permits with the
+    threshold each is inside today."""
+    rows = await db.dob_logs.find({
+        "project_id": project_id,
+        "record_type": {"$in": ["violation", "permit"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(5000)
+    latest = _gc_latest_per_record(rows)
+    violations = [r for r in latest if r.get("record_type") == "violation"
+                  and str(r.get("resolution_state") or "").lower()
+                  not in _GC_CLOSED_STATES]
+    permits, no_expiry = [], 0
+    for r in latest:
+        if r.get("record_type") != "permit":
+            continue
+        # The same "active" rule as the permit counts: REVOKED is not one.
+        if str(r.get("permit_status") or "").strip().upper() == "REVOKED":
+            continue
+        exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+        if exp is None:
+            no_expiry += 1
+            continue
+        permits.append((r, exp))
+    return {"violations": violations, "permits": permits,
+            "no_expiry": no_expiry}
+
+
+async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
+    """Post new violations and permit reminders to confirmed GC groups."""
+    now = now or datetime.now(timezone.utc)
+    report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
+              "permits_no_expiry": 0, "skipped_unbound": 0,
+              "outside_window": 0, "seen_while_off": 0}
+    if not wa_gc.in_post_window(now):
+        # Nothing posted and nothing marked: the 7 AM run picks it all up.
+        report["outside_window"] = 1
+        return report
+    today = wa_gc.today_et(now)
+    test_ids = {str(x) for x in await test_company_ids()}
+    try:
+        rows = await db.notification_preferences.find(
+            {"user_id": None, "scope": "project",
+             "whatsapp_project.gc_group_confirmed": True}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[wa-gc] settings read failed: {type(e).__name__}")
+        return report
+
+    for row in rows:
+        project_id = str(row.get("project_id") or "")
+        company_id = str(row.get("company_id") or "")
+        if not project_id or not company_id or company_id in test_ids:
+            continue
+        settings = await _whatsapp_project_settings(project_id)
+        group_id = settings.get("gc_group_id")
+        project = await _bot_project_scope(company_id, project_id)
+        if (not settings.get("gc_group_confirmed") or not project
+                or not await _gc_group_bound_to(group_id, company_id, project_id)):
+            report["skipped_unbound"] += 1
+            continue
+        report["projects"] += 1
+        project_name = str(project.get("name") or "the project")
+        try:
+            items = await _gc_project_items(project_id, today)
+        except Exception as e:
+            logger.warning(f"[wa-gc] dob read failed: {type(e).__name__}")
+            continue
+        report["permits_no_expiry"] += items["no_expiry"]
+
+        # NO BACKFILL. The first run records everything that exists — open
+        # violations, every threshold a permit has already reached — as seen,
+        # and only THEN writes the marker that says the baseline is done. A
+        # run that stops halfway, or an item write that fails, leaves no
+        # marker, so the next run baselines again (rows already written are
+        # duplicates, which is fine) instead of posting the history.
+        try:
+            baselined = await db[WA_LEDGER].find_one(
+                {"_id": wa_gc.baseline_id(project_id)})
+        except Exception as e:
+            logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
+            continue
+        if not baselined:
+            seen = [(wa_gc.ledger_id(project_id, "violation", v["raw_dob_id"]),
+                     "gc_violation") for v in items["violations"]]
+            seen += [(wa_gc.ledger_id(project_id, "permit",
+                                      f"{p['raw_dob_id']}:{t}"), "gc_permit")
+                     for p, exp in items["permits"]
+                     for t in wa_gc.thresholds_passed(exp, today)]
+            failed = False
+            for lid, kind in seen:
+                if await _gc_ledger_insert(
+                        lid, kind=kind, project_id=project_id,
+                        company_id=company_id, status="baseline") == "error":
+                    failed = True
+                    break
+            if not failed and await _gc_ledger_insert(
+                    wa_gc.baseline_id(project_id), kind="gc_baseline",
+                    project_id=project_id, company_id=company_id,
+                    status="baseline") != "error":
+                report["baselined"] += 1
+            continue
+
+        todo = []
+        for v in items["violations"]:
+            todo.append(("violation", v["raw_dob_id"], v, None,
+                         settings.get("violation_alerts")))
+        for p, exp in items["permits"]:
+            t = wa_gc.permit_threshold_due(exp, today)
+            if t is not None:
+                todo.append(("permit", f"{p['raw_dob_id']}:{t}", p, exp,
+                             settings.get("permit_reminders")))
+        posts = 0
+        for kind, item, rec, exp, enabled in todo:
+            if posts >= GC_MAX_POSTS_PER_PROJECT_RUN:
+                break   # the rest go on the next run
+            lid = wa_gc.ledger_id(project_id, kind, item)
+            if not enabled:
+                # Switched off: seen, never posted later as a backlog.
+                if await _gc_ledger_claim(lid, kind=f"gc_{kind}",
+                                          project_id=project_id,
+                                          company_id=company_id,
+                                          status="seen_while_off"):
+                    report["seen_while_off"] += 1
+                continue
+            if not await _gc_ledger_claim(lid, kind=f"gc_{kind}",
+                                          project_id=project_id,
+                                          company_id=company_id,
+                                          group_id=group_id, status="sending"):
+                continue
+            if kind == "violation":
+                text = await _gc_violation_text(project_name, rec)
+            else:
+                text = wa_gc.permit_message(project_name=project_name,
+                                            permit=rec, expires=exp, today=today)
+            # Re-proven immediately before the send: still this project's group.
+            sent = None
+            if await _gc_group_bound_to(group_id, company_id, project_id):
+                sent = await send_whatsapp_message(group_id, text)
+            posts += 1
+            if sent is None:
+                report["failed"] += 1
+                try:  # not posted: release the claim so the next run retries
+                    await db[WA_LEDGER].delete_one({"_id": lid, "status": "sending"})
+                except Exception:
+                    pass
+                continue
+            report["posted"] += 1
+            try:
+                await db[WA_LEDGER].update_one(
+                    {"_id": lid}, {"$set": {"status": "sent",
+                                            "sent_at": datetime.now(timezone.utc)}})
+            except Exception:
+                pass
+    logger.info(f"[wa-gc] alerts {report}")
+    return report
+
+
+async def _whatsapp_gc_tick() -> None:
+    """The scheduled job: proposals first, then alerts."""
+    try:
+        await _gc_propose_tick()
+    except Exception as e:
+        logger.error(f"[wa-gc] propose tick failed: {type(e).__name__}: {e}")
+    try:
+        await _gc_alerts_tick()
+    except Exception as e:
+        logger.error(f"[wa-gc] alerts tick failed: {type(e).__name__}: {e}")
 
 async def _waapi_contact_phone(jid: str) -> str:
     """Ask WaAPI who a @lid is. NOT VERIFIED: WaAPI's docs are not reachable
@@ -53304,6 +53814,11 @@ async def _process_whatsapp_message(payload: dict):
             if command == "stop":
                 await _handle_dm_stop(dm_chat, parsed.get("raw"))
                 return
+            # "1" / "2" to an open GC group question from Levelog. Anything
+            # else, or no open question for this person, carries on below.
+            answer = wa_gc.parse_confirm_reply(parsed.get("body"))
+            if answer and await _handle_gc_confirm_reply(dm_chat, answer):
+                return
 
         # Look up contact
         contact = await _find_whatsapp_contact(sender)
@@ -54956,22 +55471,86 @@ async def put_project_whatsapp_gc_group(project_id: str, body: dict,
     current = await _whatsapp_project_settings(project_id)
     if gc != current.get("gc_group_id"):
         confirmed = bool(confirmed and gc)
-    now = datetime.now(timezone.utc)
-    await db.notification_preferences.update_one(
-        {"user_id": None, "project_id": str(project_id), "scope": "project"},
-        {"$set": {"whatsapp_project": {
-                      "gc_group_id": gc or None,
-                      "gc_group_confirmed": bool(confirmed and gc),
-                      "updated_by": actor_id(current_user),
-                      "updated_at": now},
-                  "company_id": str(company_id),
-                  "updated_at": now},
-         "$setOnInsert": {"user_id": None, "project_id": str(project_id),
-                          "scope": "project", "created_at": now}},
-        upsert=True,
-    )
+    fields = {"gc_group_id": gc or None,
+              "gc_group_confirmed": bool(confirmed and gc)}
+    # An admin choosing in the app answers any pending DM proposal.
+    prop = current.get("gc_proposal") or {}
+    if prop.get("status") == "pending":
+        fields["gc_proposal"] = {**prop, "status": "answered_in_app",
+                                 "answered_at": datetime.now(timezone.utc)}
+    await _set_whatsapp_project_fields(project_id, company_id, fields,
+                                       actor=actor_id(current_user))
     return {"project_id": project_id,
             **(await _whatsapp_project_settings(project_id))}
+
+
+async def _wa_settings_view(project_id: str, company_id: str) -> dict:
+    """What the app's Project → WhatsApp settings screen shows: the GC group
+    (only if it is still bound to this project), the groups an admin may pick
+    from, and the two alert switches. Nothing for features that are not live."""
+    settings = await _whatsapp_project_settings(project_id)
+    try:
+        rows = await db.whatsapp_groups.find(
+            {"project_id": str(project_id), "active": True,
+             "company_id": _company_id_filter(company_id)}).to_list(200)
+    except Exception:
+        rows = []
+    groups = []
+    for g in rows:
+        gid = str(g.get("wa_group_id") or "")
+        if gid and await _gc_group_bound_to(gid, company_id, project_id):
+            groups.append({"wa_group_id": gid,
+                           "group_name": str(g.get("group_name") or gid)})
+    groups.sort(key=lambda g: g["group_name"].lower())
+    current = next((g for g in groups
+                    if g["wa_group_id"] == settings.get("gc_group_id")), None)
+    prop = settings.get("gc_proposal") or {}
+    return {
+        "project_id": str(project_id),
+        "gc_group": ({**current, "confirmed": bool(settings["gc_group_confirmed"])}
+                     if current else None),
+        "gc_pending_question": bool(
+            _gc_proposal_open(prop, datetime.now(timezone.utc))),
+        "groups": groups,
+        "violation_alerts": bool(settings["violation_alerts"]),
+        "permit_reminders": bool(settings["permit_reminders"]),
+    }
+
+
+@api_router.get("/projects/{project_id}/whatsapp-settings",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_whatsapp_settings(project_id: str,
+                                        current_user=Depends(get_current_user)):
+    """Admin only: the project's WhatsApp settings."""
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    if not await _bot_project_scope(company_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await _wa_settings_view(project_id, str(company_id))
+
+
+@api_router.patch("/projects/{project_id}/whatsapp-alerts",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def patch_project_whatsapp_alerts(project_id: str, body: dict,
+                                        current_user=Depends(get_current_user)):
+    """Admin only: turn the GC group's violation alerts / permit reminders
+    on or off. Only these two keys; each must be true or false."""
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    if not await _bot_project_scope(company_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    allowed = ("violation_alerts", "permit_reminders")
+    if (not isinstance(body, dict) or not body
+            or any(k not in allowed for k in body)
+            or any(not isinstance(v, bool) for v in body.values())):
+        raise HTTPException(
+            status_code=422,
+            detail="Send violation_alerts and/or permit_reminders as true or false.")
+    await _set_whatsapp_project_fields(project_id, company_id, dict(body),
+                                       actor=actor_id(current_user))
+    return await _wa_settings_view(project_id, str(company_id))
 
 
 @api_router.post(
@@ -59745,6 +60324,18 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+    )
+
+    # GC group: confirm-by-DM questions and DOB alerts. Every 15 minutes;
+    # both halves post only 7 AM – 7 PM ET (lib/wa_gc.in_post_window).
+    scheduler.add_job(
+        _whatsapp_gc_tick,
+        IntervalTrigger(minutes=15),
+        id='whatsapp_gc_alerts',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL

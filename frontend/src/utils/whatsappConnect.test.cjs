@@ -62,7 +62,7 @@ console.log('\nyour alerts: one chip, one line per state');
 }
 for (const [st, label, fixWord] of [
   ['phone_missing', 'Phone missing', 'Settings'],
-  ['phone_shared', 'Phone shared', 'another Blueview account'],
+  ['phone_shared', 'Phone shared', 'another Levelog account'],
   ['reconnect_needed', 'Reconnect needed', 'new number'],
   ['unavailable', 'Not available', 'support'],
 ]) {

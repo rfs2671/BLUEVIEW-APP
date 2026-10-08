@@ -81,13 +81,13 @@ export function alertsView(me, connectUrl = null) {
     case 'phone_shared':
       return {
         chip: chip('Phone shared', 'warn'),
-        line: 'This number is also on another Blueview account. Change your number in Settings, or ask Blueview support to remove it from the other account.',
+        line: 'This number is also on another Levelog account. Change your number in Settings, or ask Levelog support to remove it from the other account.',
         button: null,
       };
     case 'unavailable':
       return {
         chip: chip('Not available', 'warn'),
-        line: "WhatsApp alerts aren't set up yet. Contact Blueview support.",
+        line: "WhatsApp alerts aren't set up yet. Contact Levelog support.",
         button: null,
       };
     case 'not_connected':
@@ -104,7 +104,7 @@ export function alertsView(me, connectUrl = null) {
 export function groupsView({ status, pendingCount, isAdmin }) {
   if (!isAdmin || !status) return null;
   if (!status.platform_configured) {
-    return { line: "WhatsApp isn't available yet. Contact Blueview support.", action: null };
+    return { line: "WhatsApp isn't available yet. Contact Levelog support.", action: null };
   }
   if (!status.company_active) {
     return {

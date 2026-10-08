@@ -45,48 +45,73 @@ DM_MIN_INTERVAL_SECONDS = 2.0
 DM_SEND_ATTEMPTS = 3
 DM_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 
+# ONLY WHAT IS LIVE. The intro names features that exist today and nothing
+# planned: GC group alerts (new DOB violations, permit expiry reminders) and
+# the confirm-by-DM that picks the GC group. The settings it mentions exist:
+# Project → WhatsApp settings (admins). Add a feature here the day it ships.
 INTRO_TEXT = (
-    "Blueview here. You'll get: chat summaries for your projects, alerts when "
-    "someone needs your answer, inspection and permit reminders, and new DOB "
-    "violations. Change settings in the app. Reply STOP to turn off."
+    "Levelog here. You're connected. Levelog posts new DOB violations and "
+    "permit expiry reminders to each project's GC WhatsApp group. If you are "
+    "your company's main admin, Levelog will ask you here which group that "
+    "is. Admins can turn these alerts on or off in the app: open the project, "
+    "then WhatsApp settings. Reply STOP to turn this off."
 )
 # EVERY START GETS A REPLY. Each refusal says, in plain words, what to do.
 # The one deliberately vague line is NOT_ELIGIBLE_TEXT: an unknown number and
 # a role that may not get alerts read the same, so a stranger cannot use
 # START to learn who has an account or what role they hold.
 NOT_ELIGIBLE_TEXT = (
-    "Blueview here. WhatsApp alerts aren't available for this number. If you "
-    "use Blueview, open Integrations in the app and tap Turn on alerts."
+    "Levelog here. WhatsApp alerts aren't available for this number. If you "
+    "use Levelog, open Integrations in the app and tap Turn on alerts."
 )
 STOP_CONFIRM_TEXT = (
-    "Blueview here. You won't get any more WhatsApp updates. "
+    "Levelog here. You won't get any more WhatsApp updates. "
     "Reply START to turn them back on."
 )
 # The sender arrived as a WhatsApp privacy id (@lid), not a phone number, no
 # phone could be found for it, and the message carried no connect code.
 NEED_APP_TEXT = (
-    "Blueview here. WhatsApp didn't share your phone number with us, so we "
-    "can't tell who you are yet. Open Integrations in the Blueview app, tap "
+    "Levelog here. WhatsApp didn't share your phone number with us, so we "
+    "can't tell who you are yet. Open Integrations in the Levelog app, tap "
     "Turn on alerts, and send the message it prepares."
 )
 CODE_EXPIRED_TEXT = (
-    "Blueview here. This link expired. Tap Turn on alerts again in the app."
+    "Levelog here. This link expired. Tap Turn on alerts again in the app."
 )
 WRONG_PHONE_TEXT = (
-    "Blueview here. Send this from the phone number saved on your Blueview "
+    "Levelog here. Send this from the phone number saved on your Levelog "
     "profile, or update that number in Settings first."
 )
 PHONE_MISSING_TEXT = (
-    "Blueview here. Add your mobile number in Settings in the Blueview app, "
+    "Levelog here. Add your mobile number in Settings in the Levelog app, "
     "then tap Turn on alerts again."
 )
 PHONE_SHARED_TEXT = (
-    "Blueview here. This number is on more than one Blueview account, so "
-    "alerts can't be turned on. Contact Blueview support."
+    "Levelog here. This number is on more than one Levelog account, so "
+    "alerts can't be turned on. Contact Levelog support."
 )
 TRY_AGAIN_TEXT = (
-    "Blueview here. Something went wrong on our side. Please send START again "
+    "Levelog here. Something went wrong on our side. Please send START again "
     "in a minute."
+)
+
+# GC group confirm-by-DM (lib/wa_gc.py, server.py _gc_*).
+GC_CONFIRM_TEXT = (
+    "Levelog here. Use '{group}' as the GC group for {project}? "
+    "Levelog will post new DOB violations and permit expiry reminders there. "
+    "Reply 1 Yes / 2 No"
+)
+GC_CONFIRMED_TEXT = (
+    "Done. Levelog will post DOB alerts for {project} in '{group}'."
+)
+GC_DECLINED_TEXT = (
+    "OK. Pick the GC group for {project} in the Levelog app: open the project, "
+    "then WhatsApp settings."
+)
+GC_GONE_TEXT = (
+    "That group is no longer linked to {project}, so nothing was changed. "
+    "Pick the GC group in the Levelog app: open the project, then WhatsApp "
+    "settings."
 )
 
 _START_WORDS = frozenset({"start"})
