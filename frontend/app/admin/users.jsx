@@ -38,15 +38,16 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth, isPlatformOperator } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI, versionAPI } from '../../src/utils/api';
 import { isBehindMinimum } from '../../src/utils/clientVersion';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography, touchTarget } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../../src/utils/retentionCopy';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
   ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
-  licenceSentence, rolesAssignableBy,
+  licenceSentence, rolesAssignableBy, canBecomeSuperintendent,
 } from '../../src/utils/roleVocabulary';
+import { promoteToSuperintendentBody } from '../../src/utils/superintendentPromotionCopy';
 import DateInput from '../../src/components/DateInput';
 import { dateEntryError, toStoredDate } from '../../src/utils/dateEntry';
 
@@ -132,6 +133,30 @@ export default function AdminUsersScreen() {
   const [csLoading, setCsLoading] = useState(false);
   const [csSelected, setCsSelected] = useState([]);
   const [csSaving, setCsSaving] = useState(false);
+
+  // ── THE ROLE CHANGE THE REGISTRATION GATE ASKS FOR ──────────────────────
+  //
+  // `_assert_superintendent_under_admin` 422s a CS registration on any account
+  // that is not already a superintendent, and the message is an instruction:
+  // "Change the role first." It is a correct gate and it is not relaxed — a
+  // non-superintendent account cannot structurally hold a DOB licence either
+  // (`create_admin_user` pops the fields, `update_admin_user` $unsets them on
+  // demotion), so relaxing the role test alone would only move the refusal one
+  // line down to `set_user_cs_registrations`. What was missing was the PATH.
+  //
+  // NEITHER NAME IS `show...Modal`, AND THAT IS DELIBERATE. No sheet is being
+  // added here — the confirmation is the same Alert/confirm pair the delete
+  // path uses — and adminUsersFormsArePresented.test.cjs derives the screen's
+  // form census from exactly that naming pattern.
+  //
+  // `promotingId` rather than a boolean: the spinner belongs on the row that
+  // was pressed, not on every row at once.
+  const [promotingId, setPromotingId] = useState(null);
+  // Set when the Edit sheet was opened BY a promotion, so the admin is handed
+  // the Registration sheet once the DOB number is in rather than being returned
+  // to the list to find the button himself. Cleared by resetForm, which every
+  // exit from that sheet calls.
+  const [registerAfterEdit, setRegisterAfterEdit] = useState(false);
 
   const isAdmin = user?.role === 'admin';
 
@@ -267,6 +292,12 @@ export default function AdminUsersScreen() {
       return;
     }
 
+    // CAPTURED BEFORE resetForm NULLS THEM. The chained hand-off below needs the
+    // account and the number that were just saved, and resetForm clears both.
+    const chained = registerAfterEdit;
+    const chainTarget = selectedUser;
+    const chainHasNumber = !!formDobNumber.trim();
+
     try {
       const updatePayload = {
         name: formName,
@@ -297,6 +328,22 @@ export default function AdminUsersScreen() {
       // inside GET /admin/users — so the list call the screen already makes
       // carries everything the badge reads.
       fetchData();
+
+      // ── AND IF THIS SHEET WAS OPENED BY A PROMOTION, FINISH THE JOB ─────
+      //
+      // The admin pressed "Make superintendent" to register somebody on a job;
+      // the role and the licence number were the two prerequisites, not the
+      // errand. Dropping him back on the list to find the Registration button
+      // himself is the shape that made the role change undiscoverable in the
+      // first place.
+      //
+      // ONLY WITH A NUMBER IN HAND. `set_user_cs_registrations` 422s without
+      // one and the sheet's own Save is disabled, so opening it here would be
+      // handing him a dead end — the sheet already says what is missing and
+      // where, and the list is the better place to be told.
+      if (chained && chainTarget && chainHasNumber && roleHasLicence(formRole)) {
+        openCsModal({ ...chainTarget, role: ROLE_SUPERINTENDENT });
+      }
     } catch (error) {
       console.error('Failed to update user:', error);
       if (isOfflineError(error)) {
@@ -485,6 +532,98 @@ export default function AdminUsersScreen() {
     }
   };
 
+  /**
+   * MAKE THIS PERSON A SUPERINTENDENT — THE PATH THE 422 ASKS FOR.
+   *
+   * ── WHAT THIS IS NOT ────────────────────────────────────────────────────
+   *
+   * It is not a way around `_assert_superintendent_under_admin`. The gate is
+   * untouched and the server supports this already — a promotion ran in
+   * production on 2026-09-17 and has been done by hand through this screen
+   * since. What did not exist was a path: on a cp row there is no Registration
+   * button and nothing to say that the role is the thing in the way.
+   *
+   * ── AND IT IS NOT A TICK-BOX, WHICH IS WHY THE COPY COMES FIRST ─────────
+   *
+   * Four powers come off the account, a background download starts, and the
+   * first Registration save takes over his project list. The sentences are in
+   * src/utils/superintendentPromotionCopy.js, where
+   * superintendentPromotion.test.cjs asserts each of them against the code that
+   * makes it true — against `_PENDING_LINK_ROLES`, `PLAN_PREFETCH_ROLES`,
+   * `update_admin_user`, `EMAIL_EXCLUDED_ROLES` and the filing gate. A list of
+   * consequences nothing can fail is a list with an expiry date nobody set.
+   *
+   * THE SAME TWO-PLATFORM SHAPE AS THE DELETE CONFIRMATION, for the same
+   * reason: `Alert.alert` renders nothing on react-native-web.
+   */
+  const handlePromoteToSuperintendent = (userItem) => {
+    // A ROLE CHANGE IS AN EDIT, so the self-edit refusal applies to it too.
+    // The server does not stop an admin editing himself; this screen does, and
+    // a shortcut that skipped the rule would be a second answer to it.
+    if (userItem.id === user?.id || userItem.id === user?._id) {
+      toast.error('Error', 'You cannot edit your own account');
+      return;
+    }
+    const body = promoteToSuperintendentBody(userItem.name, {
+      hasLicenceNumber: !!String(userItem.dob_superintendent_number || '').trim(),
+    });
+    const go = () => promoteToSuperintendent(userItem);
+    if (Platform.OS === 'web') {
+      if (window.confirm(body)) go();
+    } else {
+      Alert.alert('Make superintendent', body, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Make superintendent', onPress: go },
+      ]);
+    }
+  };
+
+  const promoteToSuperintendent = async (userItem) => {
+    setPromotingId(userItem.id);
+    try {
+      // THE ROLE AND NOTHING ELSE IN THE BODY, AND IT HAS TO BE.
+      // `update_admin_user` derives the role it validates `assigned_projects`
+      // against from the value being WRITTEN, not the one on file — so a single
+      // patch carrying both is 422'd with "A superintendent's projects are set
+      // by Registration, not by Assign", a refusal about projects the admin
+      // never touched. His existing assignments are left exactly as they are;
+      // the first Registration save is what reconciles them, which is what the
+      // confirmation he just read says.
+      await adminUsersAPI.update(userItem.id, { role: ROLE_SUPERINTENDENT });
+
+      // ── STRAIGHT TO THE FIELD THAT IS NOW REQUIRED ───────────────────────
+      //
+      // A promoted account holds no DOB registration number — it structurally
+      // could not before the role changed — and a registration cannot be saved
+      // without one. So the next sheet is Edit, opened on the licence fields
+      // the role has just made visible, and `registerAfterEdit` hands him the
+      // Registration sheet from there. An account that somehow already carries
+      // a number skips straight to Registration.
+      const promoted = { ...userItem, role: ROLE_SUPERINTENDENT };
+      const hasNumber = !!String(userItem.dob_superintendent_number || '').trim();
+      fetchData();
+      if (hasNumber) {
+        openCsModal(promoted);
+      } else {
+        setRegisterAfterEdit(true);
+        openEditModal(promoted);
+        toast.success(
+          'Role changed',
+          `${userItem.name} is a superintendent. Record his DOB registration number.`,
+        );
+      }
+    } catch (error) {
+      console.error('Failed to promote user:', error);
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Changing the role needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not change the role');
+      }
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
   const openAssignModal = (userItem) => {
     setSelectedUser(userItem);
     setAssignedProjects(userItem.assigned_projects || []);
@@ -500,6 +639,11 @@ export default function AdminUsersScreen() {
     setFormDobNumber('');
     setFormDobExpiry('');
     setSelectedUser(null);
+    // CLEARED HERE AND NOWHERE ELSE. Every exit from the Edit sheet — Cancel,
+    // the close control and a successful Save — calls this, so a promotion the
+    // admin abandoned cannot pop a Registration sheet on the next unrelated
+    // edit. The chained hand-off reads the flag before calling this.
+    setRegisterAfterEdit(false);
   };
 
   // ONE PICKER, RENDERED TWICE. The Add and Edit modals each carried their own
@@ -810,7 +954,7 @@ export default function AdminUsersScreen() {
                         style={s.actionBtn}
                         disabled={isSelf}
                       />
-                      <Pressable 
+                      <Pressable
                         onPress={() => handleDeleteUser(userItem.id, userItem.name)}
                         style={[s.deleteBtn, isSelf && s.deleteBtnDisabled]}
                         disabled={isSelf}
@@ -818,6 +962,49 @@ export default function AdminUsersScreen() {
                         <Trash2 size={16} color={isSelf ? colors.text.subtle : colors.status.error} />
                       </Pressable>
                     </View>
+
+                    {/* ── THE PATH THE REGISTRATION GATE ASKS FOR ─────────
+                        A cp row carries no Registration button, because a cp
+                        holds no DOB licence and `set_user_cs_registrations`
+                        refuses him. The gate's own 422 says "Change the role
+                        first" — and until this line there was nowhere on the
+                        screen that said so, and no path except guessing that
+                        the role picker under Edit was the answer.
+
+                        A QUIET LINE AND NOT A FOURTH BUTTON. `userActions`
+                        above is three controls on a phone already; a full-width
+                        button on every cp row would restate this screen's
+                        emphasis for the sake of a case the platform currently
+                        has none of. The confirmation is where the substance is.
+
+                        NOT ON EVERY NON-SUPERINTENDENT ROW, AND cp IS THE WHOLE
+                        SET. `canBecomeSuperintendent` is the gate and it is the
+                        ONLY one — the server validates the role being WRITTEN
+                        and asks nothing about the one being replaced, so it
+                        would turn a site_device row into a superintendent on
+                        request. It admits `cp` alone because the confirmation
+                        states the consequences of promotion FROM cp and three
+                        of them are false from pm; the reason is written out on
+                        the function. A Site Manager is still promotable by hand
+                        with the role picker under Edit, which claims nothing.
+
+                        Off for `isSelf`, like Edit: a role change is an edit. */}
+                    {canBecomeSuperintendent(userItem.role) && !isSelf ? (
+                      <Pressable
+                        onPress={() => handlePromoteToSuperintendent(userItem)}
+                        disabled={promotingId === userItem.id}
+                        style={s.promoteRow}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Make ${userItem.name} a superintendent`}
+                      >
+                        <HardHat size={16} color={colors.text.secondary} />
+                        <Text style={s.promoteText}>
+                          {promotingId === userItem.id
+                            ? 'Changing the role…'
+                            : 'Make superintendent — needed to hold a DOB registration'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </GlassCard>
                 );
               })}
@@ -1409,6 +1596,37 @@ function buildStyles(colors, isDark) {
     lineHeight: 17,
     color: colors.text.muted,
     marginTop: spacing.xs,
+  },
+  // ── THE PROMOTION LINE ────────────────────────────────────────────────────
+  //
+  // DELIBERATELY QUIET. It sits under the action row on cp cards, and the
+  // platform has no cp-role CS registration today — so it is an on-ramp for a
+  // case that does not exist yet and must not compete with Registration, Edit
+  // and Delete for the eye.
+  //
+  // QUIET IS NOT THE SAME AS SMALL. `touchTarget.min` is the screen's own floor
+  // and it applies to a text control exactly as it does to a button — the
+  // superintendent log shipped an 18-point disclosure row above a compliant
+  // 56-point checkbox, and the small one was the way IN. The token rather than a
+  // number, so this moves when the floor does.
+  //
+  // `flex: 1` ON THE LABEL, which is what lets it wrap. Without it the long
+  // sentence is one unbreakable line in a row container and overflows the card
+  // on a phone — the spill-out-the-sides failure admin-users-card-actions.cjs
+  // measures on the button row above.
+  promoteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    minHeight: touchTarget.min,
+  },
+  promoteText: {
+    flex: 1,
+    fontSize: typography.sizes.fine,
+    lineHeight: 17,
+    color: colors.text.secondary,
+    textDecorationLine: 'underline',
   },
   roleSelectorLabel: {
     fontSize: 14,
