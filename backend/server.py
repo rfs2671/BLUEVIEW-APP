@@ -44837,7 +44837,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
-              "segment_permits": 0, "matched": 0, "new": 0, "changed": 0}
+              "matched": 0, "new": 0, "changed": 0}
     named = set()
     try:
         # Fixture (is_test) companies are left out, as in every unattended
@@ -44882,8 +44882,10 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
                 report["records"] += 1
                 if not isinstance(rec, dict):
                     continue
+                # A segment permit (no house number) is never matched. The
+                # permit request already filters on the house number, so none
+                # should arrive; this keeps it true if the request changes.
                 if q["kind"] == "dot_permit" and dot_sync.is_segment_permit(rec):
-                    report["segment_permits"] += 1     # no house number: not guessed
                     continue
                 how = dot_sync.match(q["kind"], pk, rec)
                 if not how:
