@@ -855,15 +855,33 @@ class ViewValidationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400, r.text[:300])
         self.assertIn("summary", r.text)
 
-    def test_the_only_view_is_the_one_the_client_asks_for(self):
-        self.assertEqual(server.SUBMITTED_LOGBOOK_VIEWS, {"index"})
+    def test_every_view_is_one_the_client_asks_for(self):
+        """EVERY view, not just this file's. `text` was added by
+        test_images_load_when_the_sheet_is_opened.py -- the signature deferral
+        -- and the point of this assertion is that the SET and the client's
+        requests are the same set, so a mode the server grew and nothing asks
+        for, or one the client asks for and the server refuses, is caught here
+        rather than in a deploy gap.
+
+        AND THE ECHO IS CHECKED FOR BOTH, for the reason INDEX_PROBE_DATES
+        gives: an old server ignores an unknown query param and serves whole
+        documents, so a client that did not verify the echo would commit a body
+        nobody agreed to serve."""
+        self.assertEqual(server.SUBMITTED_LOGBOOK_VIEWS, {"index", "text"})
         src = _strip_js_comments(_HISTORY_JS.read_text(encoding="utf-8"))
-        self.assertIn("view=index", src,
-                      "the client no longer asks for the view this serves")
+        for view in sorted(server.SUBMITTED_LOGBOOK_VIEWS):
+            self.assertIn(f"view={view}", src,
+                          f"the client no longer asks for `{view}`, which this "
+                          f"endpoint still serves")
         self.assertIn("body.view !== 'index'", src,
                       "the client no longer checks that the server honoured "
                       "it — see INDEX_PROBE_DATES: an old server ignores an "
                       "unknown query param and serves whole documents")
+        self.assertIn("body.view === 'text'", src,
+                      "the client no longer checks the `text` echo — a server "
+                      "that predates it serves the signature images inline, "
+                      "and a client that assumed otherwise would cache "
+                      "'nobody signed'")
 
 
 if __name__ == "__main__":

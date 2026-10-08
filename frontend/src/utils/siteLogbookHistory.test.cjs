@@ -228,6 +228,10 @@ function load(device, file) {
     }
     if (spec === './docCache') return load(device, 'docCache.js');
     if (spec === './siteManifestStore') return load(device, 'siteManifestStore.js');
+    // The deferral protocol. LOADED FOR REAL, not stubbed: it imports
+    // nothing, so there is nothing to stub it for -- see
+    // src/utils/signatureDeferral.js.
+    if (spec === './signatureDeferral') return load(device, 'signatureDeferral.js');
     throw new Error(`unstubbed import: ${spec}`);
   };
   shim.resolve = require.resolve;
