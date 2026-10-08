@@ -44655,6 +44655,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             report["bot_off"] += 1
         report["projects"] += 1
         address = wa_groups.project_label(project)
+        # Read BEFORE the DOT rows: a first sync that finishes between the two
+        # reads must not leave this tick baselining from rows it never saw.
+        try:
+            dot_state = await db[DOT_SYNC_STATE].find_one(
+                {"_id": project_id}, {"first_synced_at": 1})
+        except Exception as e:
+            logger.warning(f"[wa-gc] dot state read failed: {type(e).__name__}")
+            continue
         try:
             dob_rows, dot_rows = await _gc_project_records(project_id, company_id)
         except Exception as e:
@@ -44686,8 +44694,6 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                      for k in wa_alerts.NEW_KINDS}
             legacy = await db[WA_LEDGER].find_one(
                 {"_id": wa_gc.baseline_id(project_id)}, {"_id": 1})
-            dot_state = await db[DOT_SYNC_STATE].find_one(
-                {"_id": project_id}, {"first_synced_at": 1})
         except Exception as e:
             logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
             continue

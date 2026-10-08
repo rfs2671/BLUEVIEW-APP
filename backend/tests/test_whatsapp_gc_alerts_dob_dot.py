@@ -289,6 +289,26 @@ class DotWaitsForTheFirstSync(unittest.TestCase):
         self.assertEqual((row["first_synced_at"], row["company_id"]), (first, CO_A))
         self.assertGreaterEqual(row["synced_at"], first)
 
+    def test_first_sync_finishing_mid_tick_waits_for_the_next_tick(self):
+        """The state is read before the DOT rows: a sync that completes
+        between the two reads leaves this tick treating DOT as not synced."""
+        db = self._db()
+        real = server._gc_project_records
+
+        async def records_then_sync(project_id, company_id):
+            out = await real(project_id, company_id)        # snapshot: no rows
+            await server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()]))
+            return out
+
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            with patch.object(server, "_gc_project_records", records_then_sync):
+                r = _run(server._gc_alerts_tick(NOON))
+            self.assertEqual(r["dot_waiting_sync"], 1)
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=30)))
+        self.assertEqual(_group_sends(c), [])
+
     def test_marker_written_before_the_first_sync_is_rebaselined(self):
         """The prod case: #687 wrote DOT markers before any DOT row existed."""
         db = self._db()
