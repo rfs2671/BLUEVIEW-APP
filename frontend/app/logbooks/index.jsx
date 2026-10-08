@@ -612,8 +612,21 @@ export default function LogBooksScreen() {
       // declare hot-work days, on a project whose permit the office has
       // filed. "No permit, no day" — the server's rule, reached whatever this
       // screen rendered.
+      const detail = e?.response?.data?.detail;
+      // THE CS LOG'S REFUSAL CARRIES ITS OWN SENTENCE, and it is the only one
+      // that says what to do: register him, switch his registration back on,
+      // or link it to his account -- each in User Management. Falling through
+      // to the generic line told an admin to check his signal about a missing
+      // statutory designation.
+      if (detail?.code === 'ACTIVATION_REQUIRES_CS_REGISTRATION') {
+        toast.error(
+          'Superintendent registration needed',
+          detail.message || 'Register the construction superintendent for this project in User Management first.',
+        );
+        return;
+      }
       const refused = e?.response?.status === 403
-        || e?.response?.data?.detail?.code === 'HOT_WORK_DAY_REQUIRES_PERMIT';
+        || detail?.code === 'HOT_WORK_DAY_REQUIRES_PERMIT';
       toast.error(
         refused ? 'An admin sets this one' : 'Could not update',
         refused
