@@ -139,18 +139,79 @@ def _args(**kw):
     return Namespace(**base)
 
 
-def _run(db, write, args=None, leave_ok=True, r2_failed=()):
+class _NotFound(Exception):
+    def __init__(self, code="404", status=404):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code},
+                         "ResponseMetadata": {"HTTPStatusCode": status}}
+
+
+class FakeR2:
+    """head_object / delete_object over a set of stored keys. `stuck` keys
+    survive delete_object (the silent no-op the batch call gave); `broken`
+    keys make HEAD fail with something other than a 404."""
+
+    def __init__(self, stored=(), stuck=(), broken=()):
+        self.stored = {k for k in stored}
+        self.stuck, self.broken = set(stuck), set(broken)
+        self.deleted, self.calls = [], []
+
+    def head_object(self, Bucket, Key):
+        self.calls.append(("head", Bucket, Key))
+        if Key in self.broken:
+            raise _NotFound("AccessDenied", 403)
+        if Key not in self.stored:
+            raise _NotFound()
+        return {}
+
+    def delete_object(self, Bucket, Key):
+        self.calls.append(("delete", Bucket, Key))
+        if Key not in self.stuck:
+            self.stored.discard(Key)
+            self.deleted.append(Key)
+        return {}
+
+    def delete_objects(self, **kw):   # never to be used
+        raise AssertionError("batch delete_objects must not be called")
+
+    def list_objects_v2(self, **kw):  # never to be used
+        raise AssertionError("bucket listing must not be called")
+
+
+def _bucket_for(key):
+    return "card" if key.startswith("card-audit/") else "blueview"
+
+
+def _run(db, write, args=None, leave_ok=True, r2=None):
     left = []
+    r2 = r2 if r2 is not None else FakeR2(stored=h_all_keys(db))
 
     def leave(action, chat_id):
         left.append(chat_id)
         return leave_ok, "http 200" if leave_ok else "http 404"
 
     with patch.object(h, "_leave_group", leave), \
-            patch.object(h, "_r2_delete", lambda keys: list(r2_failed)), \
+            patch.object(h, "_group_info", lambda c: (None, "test")), \
+            patch.object(h, "_r2_target", lambda: (r2, _bucket_for)), \
             patch.object(h, "_r2_listing", lambda prefixes: {}):
         code = h.run(db, write, args or _args())
     return code, left
+
+
+def h_all_keys(db):
+    """Every R2 key the script would find in this world (all stored)."""
+    import io
+    from contextlib import redirect_stdout
+    seen = []
+    probe = FakeR2()
+    probe.head_object = lambda Bucket, Key: seen.append(Key) or {}
+    with patch.object(h, "_leave_group", lambda a, c: (True, "")), \
+            patch.object(h, "_group_info", lambda c: (None, "test")), \
+            patch.object(h, "_r2_target", lambda: (probe, _bucket_for)), \
+            patch.object(h, "_r2_listing", lambda prefixes: {}), \
+            redirect_stdout(io.StringIO()):
+        h.run(db, False, _args())
+    return set(seen)
 
 
 # ── the invocation guard ───────────────────────────────────────────────────
@@ -329,7 +390,8 @@ class TheSafetyChecks(unittest.TestCase):
 
         buf = io.StringIO()
         with patch.object(h, "_leave_group", leave), \
-                patch.object(h, "_r2_delete", lambda keys: []), \
+                patch.object(h, "_group_info", lambda c: (None, "test")), \
+                patch.object(h, "_r2_target", lambda: (FakeR2(), _bucket_for)), \
                 patch.object(h, "_r2_listing", lambda prefixes: {}), \
                 redirect_stdout(buf):
             code = h.run(db, True, _args())
@@ -352,13 +414,72 @@ class TheSafetyChecks(unittest.TestCase):
         self.assertEqual({n: len(c.rows) for n, c in db._c.items()
                           if n in before}, before)
 
-    def test_a_failed_r2_delete_keeps_every_row(self):
+    def test_an_object_still_there_after_delete_keeps_every_row(self):
+        """HEAD after delete must 404. One survivor = FAILED, no row touched."""
         db = _world()
+        keys = h_all_keys(db)
+        self.assertTrue(keys)
+        stuck = sorted(keys)[0]
         before = {n: len(c.rows) for n, c in db._c.items()}
-        code, _ = _run(db, True, r2_failed=["co/laf/plan.pdf"])
+        code, _ = _run(db, True, r2=FakeR2(stored=keys, stuck=[stuck]))
         self.assertEqual(code, h.FAILED)
         self.assertEqual({n: len(c.rows) for n, c in db._c.items()
                           if n in before}, before)
+
+    def test_a_head_error_keeps_every_row(self):
+        db = _world()
+        keys = h_all_keys(db)
+        before = {n: len(c.rows) for n, c in db._c.items()}
+        code, _ = _run(db, True, r2=FakeR2(stored=keys, broken=[sorted(keys)[-1]]))
+        self.assertEqual(code, h.FAILED)
+        self.assertEqual({n: len(c.rows) for n, c in db._c.items()
+                          if n in before}, before)
+
+    def test_unconfigured_r2_keeps_every_row(self):
+        db = _world()
+        before = {n: len(c.rows) for n, c in db._c.items()}
+        with patch.object(h, "_leave_group", lambda a, c: (True, "")), \
+                patch.object(h, "_group_info", lambda c: (None, "test")), \
+                patch.object(h, "_r2_target", lambda: (None, None)), \
+                patch.object(h, "_r2_listing", lambda prefixes: {}):
+            code = h.run(db, True, _args())
+        self.assertEqual(code, h.FAILED)
+        self.assertEqual({n: len(c.rows) for n, c in db._c.items()
+                          if n in before}, before)
+
+
+class R2DeleteVerified(unittest.TestCase):
+
+    def test_each_key_is_deleted_one_at_a_time_then_headed(self):
+        r2 = FakeR2(stored={"a", "card-audit/b"})
+        out = h.r2_delete_verified(r2, _bucket_for, {"a", "card-audit/b", "gone"})
+        self.assertEqual(sorted(out.deleted), ["a", "card-audit/b"])
+        self.assertEqual(out.absent_before, ["gone"])
+        self.assertEqual(out.still_present + out.error, [])
+        self.assertEqual([c for c in r2.calls if c[2] == "a"],
+                         [("head", "blueview", "a"), ("delete", "blueview", "a"),
+                          ("head", "blueview", "a")])
+        self.assertIn(("delete", "card", "card-audit/b"), r2.calls)
+
+    def test_a_survivor_is_reported(self):
+        out = h.r2_delete_verified(FakeR2(stored={"a"}, stuck={"a"}), _bucket_for, {"a"})
+        self.assertEqual(out.still_present, ["a"])
+
+    def test_only_a_404_counts_as_gone(self):
+        self.assertIs(h._r2_exists(FakeR2(), "b", "x"), False)
+        self.assertIs(h._r2_exists(FakeR2(stored={"x"}), "b", "x"), True)
+        self.assertIsNone(h._r2_exists(FakeR2(broken={"x"}), "b", "x"))
+
+    def test_the_probe_is_read_only(self):
+        r2 = FakeR2(stored={"a"})
+        out = h.r2_probe(r2, _bucket_for, {"a", "b"})
+        self.assertEqual((out.present, out.absent), (["a"], ["b"]))
+        self.assertTrue(all(c[0] == "head" for c in r2.calls))
+
+    def test_the_script_never_calls_bucket_level_operations(self):
+        src = open(h.__file__).read()
+        self.assertNotIn("delete_objects(", src)
+        self.assertNotIn("list_objects_v2(", src.split("def _r2_listing")[0])
 
 
 # ── a full run ─────────────────────────────────────────────────────────────
@@ -382,8 +503,12 @@ class AFullRun(unittest.TestCase):
 
     def test_execute_deletes_the_company_and_nothing_else(self):
         db = _world()
-        code, left = _run(db, True)
+        r2 = FakeR2(stored=h_all_keys(db))
+        stored = set(r2.stored)
+        code, left = _run(db, True, r2=r2)
         self.assertEqual(code, h.OK)
+        self.assertEqual(set(r2.deleted), stored)
+        self.assertEqual(r2.stored, set())
         self.assertEqual(set(left),
                          {h.TARGET_WA_GROUP, SECOND_GROUP, PENDING_GROUP})
         ids = lambda c: {r.get("_id") for r in db[c].rows}  # noqa: E731
