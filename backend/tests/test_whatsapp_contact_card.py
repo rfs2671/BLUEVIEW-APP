@@ -31,19 +31,23 @@ BOT = "15165494475"
 STRANGER = "15557770000"
 
 
-class _UrlWire:
-    """Captures (action, payload); answers each action as told."""
+OK = (200, {"data": {"status": "success", "data": {"sendVcard": True}}}, None)
+REFUSED_200 = (200, {"data": {"status": "error", "message": "Invalid vCard",
+                              "explanation": "waid is not a WhatsApp number"}}, None)
 
-    def __init__(self, refuse=()):
+
+class _UrlWire:
+    """Captures (action, payload); answers each action as told
+    (`answers`: action -> (code, body, exc)); success otherwise."""
+
+    def __init__(self, answers=None):
         self.calls = []
-        self.refuse = set(refuse)
+        self.answers = dict(answers or {})
 
     async def post_raw(self, url, payload, headers):
         action = url.rsplit("/", 1)[-1]
         self.calls.append((action, payload))
-        if action in self.refuse:
-            return 400, {"error": "bad"}, None
-        return 200, {"data": {"status": "success"}}, None
+        return self.answers.get(action, OK)
 
 
 def _ctx(wire):
@@ -69,9 +73,19 @@ class Keyword(unittest.TestCase):
         self.assertIn("FN:Levelog Assistant", v)
         self.assertIn("waid=15165494475:+1 516-549-4475", v)
         self.assertTrue(v.endswith("END:VCARD\r\n"))
-        o = wa_contact.waapi_vcard(BOT)
-        self.assertEqual((o["fullName"], o["phoneNumber"]),
-                         ("Levelog Assistant", "+15165494475"))
+        self.assertEqual(wa_contact.waapi_vcard(BOT), {
+            "waid": "15165494475", "internationalnumber": "+15165494475",
+            "firstname": "Levelog", "lastname": "Assistant",
+            "displayname": "Levelog Assistant", "organization": "Levelog",
+            "website": "https://levelog.com"})
+
+    def test_only_status_success_is_sent(self):
+        self.assertTrue(wa_contact.waapi_succeeded(OK[1]))
+        self.assertFalse(wa_contact.waapi_succeeded(REFUSED_200[1]))
+        self.assertFalse(wa_contact.waapi_succeeded({}))
+        self.assertFalse(wa_contact.waapi_succeeded({"status": "success"}))  # top level is not data.status
+        self.assertEqual(wa_contact.waapi_failure(REFUSED_200[1], None),
+                         "status error: Invalid vCard / waid is not a WhatsApp number")
 
 
 class CardSent(unittest.TestCase):
@@ -83,7 +97,7 @@ class CardSent(unittest.TestCase):
         self.assertEqual([a for a, _p in wire.calls], ["send-vcard"])
         action, payload = wire.calls[0]
         self.assertEqual(payload["chatId"], f"{STRANGER}@c.us")
-        self.assertEqual(payload["vCard"]["fullName"], "Levelog Assistant")
+        self.assertEqual(payload["vCard"], wa_contact.waapi_vcard(BOT))
 
     def test_an_opted_in_admin_gets_only_the_card_no_assistant_reply(self):
         wire = _UrlWire()
@@ -93,14 +107,39 @@ class CardSent(unittest.TestCase):
             _dm(ADMIN_PHONE, "Contact", "S2")
         self.assertEqual([a for a, _p in wire.calls], ["send-vcard"])
 
-    def test_refused_vcard_falls_back_to_the_vcf_document(self):
-        wire = _UrlWire(refuse={"send-vcard"})
+    def _send(self, answers):
+        wire = _UrlWire(answers)
         with _ctx(wire):
             _dm(STRANGER, "contact")
-        self.assertEqual([a for a, _p in wire.calls][-1], "send-media")
+        return wire, [a for a, _p in wire.calls]
+
+    def test_200_with_status_error_is_not_sent_and_falls_back(self):
+        wire, actions = self._send({"send-vcard": REFUSED_200})
+        self.assertEqual(actions, ["send-vcard", "send-media"])
         media = wire.calls[-1][1]
         self.assertTrue(media["mediaUrl"].endswith("/api/whatsapp/levelog-assistant.vcf"))
         self.assertEqual(media["chatId"], f"{STRANGER}@c.us")
+
+    def test_422_is_not_retried_and_falls_back_once(self):
+        _wire, actions = self._send({"send-vcard": (422, {"message": "bad"}, None)})
+        self.assertEqual(actions, ["send-vcard", "send-media"])
+
+    def test_429_is_not_retried_and_sends_nothing_more(self):
+        _wire, actions = self._send({"send-vcard": (429, {"message": "slow down"}, None)})
+        self.assertEqual(actions, ["send-vcard"])
+
+    def test_a_failed_fallback_is_not_retried_either(self):
+        _wire, actions = self._send({"send-vcard": REFUSED_200,
+                                     "send-media": (503, None, None)})
+        self.assertEqual(actions, ["send-vcard", "send-media"])
+
+    def test_the_card_goes_to_the_lid_chat_like_start(self):
+        wire = _UrlWire()
+        with _ctx(wire):
+            _run(server._open_dm_reply_window("215556667778899"))
+            _run(server._handle_dm_contact("215556667778899@lid"))
+        self.assertEqual(wire.calls[0][1]["chatId"],
+                         wa_dm.dm_chat_id("215556667778899@lid"))
 
     def test_other_words_are_not_the_card(self):
         wire = _UrlWire()

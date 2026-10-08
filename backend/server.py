@@ -44361,9 +44361,11 @@ _DM_SEND_LOCK = asyncio.Lock()
 _DM_LAST_SENT = [0.0]
 
 
-async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict):
+async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
+                               attempts: Optional[int] = None):
     """Direct messages: one at a time, DM_MIN_INTERVAL_SECONDS apart, retried
-    with backoff on transient errors. (ok, json, err).
+    with backoff on transient errors. (ok, json, err). `attempts=1` sends
+    once and never retries.
 
     A retry after a timeout can deliver a message twice if the first attempt
     reached WhatsApp; the alternative — never retrying — drops it. WaAPI
@@ -44375,13 +44377,14 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict):
             await asyncio.sleep(wait)
         err = None
         try:
-            for attempt in range(wa_dm.DM_SEND_ATTEMPTS):
+            tries = attempts or wa_dm.DM_SEND_ATTEMPTS
+            for attempt in range(tries):
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
                     return True, body, None
                 err = type(exc).__name__ if exc else f"http {code}"
                 if (not wa_dm.is_transient(code, exc)
-                        or attempt == wa_dm.DM_SEND_ATTEMPTS - 1):
+                        or attempt == tries - 1):
                     break
                 await asyncio.sleep(wa_dm.backoff_for(attempt))
             return False, None, err
@@ -45886,8 +45889,15 @@ async def _contact_card_claim(chat: str, now: datetime) -> bool:
 
 
 async def _send_contact_card(chat: str) -> Optional[str]:
-    """Send the card to this DM chat: "vcard" (WaAPI send-vcard) or
-    "document" (the .vcf, when send-vcard is refused); None if neither."""
+    """Send the card to this DM chat (the same chat id START replies to,
+    @lid chats included): "vcard" or "document"; None if neither went.
+
+    WaAPI's send-vcard (verified against its OpenAPI spec) answers HTTP 200
+    either way; only data.status == "success" (data.data.sendVcard true) is
+    sent. Every request is made ONCE: WaAPI counts retries toward its
+    reach-out limit. A refusal (200 + status "error", a 422, any other
+    failure) falls back to the .vcf as a document, once. A 429 is logged and
+    nothing more is sent."""
     digits = _wa_bot_digits()
     if not digits or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
         logger.warning("[wa-contact] not sent: WhatsApp number or WaAPI not configured")
@@ -45900,11 +45910,14 @@ async def _send_contact_card(chat: str) -> Optional[str]:
     headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
     ok, body, err = await _waapi_send_dm_paced(
         f"{base}/send-vcard",
-        {"chatId": chat, "vCard": wa_contact.waapi_vcard(digits)}, headers)
-    if ok and not _waapi_body_says_error(body):
+        {"chatId": chat, "vCard": wa_contact.waapi_vcard(digits)}, headers, attempts=1)
+    if ok and wa_contact.waapi_succeeded(body):
         logger.info("[wa-contact] sent as vcard")
         return "vcard"
-    logger.warning(f"[wa-contact] send-vcard refused ({err or 'error body'}); "
+    if err == "http 429":
+        logger.warning("[wa-contact] send-vcard rate-limited by WaAPI (429); nothing more sent")
+        return None
+    logger.warning(f"[wa-contact] send-vcard not sent ({wa_contact.waapi_failure(body, err)}); "
                    f"sending the .vcf as a document")
     ok, body, err = await _waapi_send_dm_paced(
         f"{base}/send-media",
@@ -45912,18 +45925,12 @@ async def _send_contact_card(chat: str) -> Optional[str]:
          "mediaUrl": f"{PUBLIC_API_BASE_URL}/api/whatsapp/{wa_contact.VCF_FILENAME}",
          "mediaName": wa_contact.VCF_FILENAME,
          "asDocument": True,
-         "caption": wa_contact.CONTACT_NAME}, headers)
-    if ok and not _waapi_body_says_error(body):
+         "caption": wa_contact.CONTACT_NAME}, headers, attempts=1)
+    if ok and wa_contact.waapi_succeeded(body):
         logger.info("[wa-contact] sent as document")
         return "document"
-    logger.error(f"[wa-contact] not delivered: {err or 'error body'}")
+    logger.error(f"[wa-contact] not delivered: {wa_contact.waapi_failure(body, err)}")
     return None
-
-
-def _waapi_body_says_error(body: Any) -> bool:
-    """WaAPI sometimes answers 200 with {data: {status: "error"}}."""
-    data = body.get("data") if isinstance(body, dict) else None
-    return isinstance(data, dict) and str(data.get("status") or "").lower() == "error"
 
 
 async def _handle_dm_contact(chat_id: str) -> None:

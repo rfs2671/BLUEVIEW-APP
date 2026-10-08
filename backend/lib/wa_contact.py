@@ -54,20 +54,36 @@ def vcard_text(digits: str) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def waapi_vcard(digits: str) -> Dict[str, Any]:
-    """The `vCard` object for WaAPI's client/action/send-vcard.
+WEBSITE = "https://levelog.com"
 
-    WaAPI documents the action (chatId + a vCard object) but its field list
-    could not be read when this was written, so the object carries the usual
-    names for each part. A request WaAPI refuses falls back to the .vcf as a
-    document (server.py), and the log line says which path went out."""
+
+def waapi_vcard(digits: str) -> Dict[str, Any]:
+    """The `vCard` object for WaAPI's client/action/send-vcard, as its
+    OpenAPI spec defines it."""
     d = digits_of(digits)
     return {
-        "fullName": CONTACT_NAME,
-        "displayName": CONTACT_NAME,
-        "firstName": FIRST_NAME,
-        "lastName": LAST_NAME,
+        "waid": d,
+        "internationalnumber": f"+{d}",
+        "firstname": FIRST_NAME,
+        "lastname": LAST_NAME,
+        "displayname": CONTACT_NAME,
         "organization": ORG,
-        "phoneNumber": f"+{d}",
-        "vcard": vcard_text(d),
+        "website": WEBSITE,
     }
+
+
+def waapi_succeeded(body: Any) -> bool:
+    """WaAPI answers HTTP 200 for failures too: sent only when
+    data.status == "success"."""
+    data = body.get("data") if isinstance(body, dict) else None
+    return isinstance(data, dict) and str(data.get("status") or "").lower() == "success"
+
+
+def waapi_failure(body: Any, err: Optional[str]) -> str:
+    """What WaAPI said, for the log: its message and explanation, or the
+    HTTP error. Never the chat id or the number."""
+    data = body.get("data") if isinstance(body, dict) else None
+    if isinstance(data, dict) and data.get("status"):
+        bits = [str(data.get(k)) for k in ("message", "explanation") if data.get(k)]
+        return "status " + str(data.get("status")) + (": " + " / ".join(bits) if bits else "")
+    return err or "no response"
