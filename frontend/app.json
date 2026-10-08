@@ -122,7 +122,9 @@
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "READ_CONTACTS",
+        "WRITE_CONTACTS"
       ]
     },
     "web": {
@@ -160,6 +162,12 @@
           "enableCodeScanner": false,
           "enableLocation": false,
           "enableFrameProcessors": false
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Levelog uses Contacts to save the Levelog Assistant WhatsApp number."
         }
       ]
     ],

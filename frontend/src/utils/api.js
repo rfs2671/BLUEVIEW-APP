@@ -1841,6 +1841,13 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Every group the Levelog number is in, for Integrations → WhatsApp:
+  // linked ones with their job and GC status, then the ones not linked yet.
+  getCompanyGroups: async () => {
+    const response = await apiClient.get('/api/whatsapp/company-groups');
+    return response.data;
+  },
+
   // A single pending group, named by a signed token from an in-chat link.
   // The token says WHICH group; it grants nothing — this call is
   // authenticated and tenant-checked exactly like the list above.
@@ -1909,52 +1916,31 @@ export const whatsappAPI = {
    * OTA-safe: uses only the existing core libraries (axios + Platform + Linking).
    * No expo-sharing dependency -- that would require a native rebuild.
    */
+  // Web: the Levelog contact card as a download. (Phones go through
+  // utils/saveContact.js, which uses getVCardText.)
   downloadVCard: async () => {
-    const { Platform, Linking } = require('react-native');
+    const response = await apiClient.get('/api/whatsapp/contact.vcf', {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data], { type: 'text/vcard' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'levelog-assistant.vcf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return { ok: true };
+  },
 
-    if (Platform.OS === 'web') {
-      // Auth + blob download so the browser saves the .vcf file
-      const response = await apiClient.get('/api/whatsapp/contact.vcf', {
-        responseType: 'blob',
-      });
-      const blob = new Blob([response.data], { type: 'text/vcard' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'levelog-assistant.vcf';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      return { ok: true };
-    }
-
-    // Native: we need the auth token on the URL (Linking can't set headers).
-    // Fetch the file content, write it to cache via expo-file-system (already
-    // installed), and open it -- the OS shows the "Add Contact" sheet.
-    const FileSystem = require('expo-file-system/legacy');
+  // The .vcf text itself (authenticated), for the phone's share sheet.
+  getVCardText: async () => {
     const response = await apiClient.get('/api/whatsapp/contact.vcf', {
       responseType: 'text',
       transformResponse: [(data) => data], // keep as raw text
     });
-
-    const fileUri = `${FileSystem.cacheDirectory}levelog-assistant.vcf`;
-    await FileSystem.writeAsStringAsync(fileUri, response.data, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-
-    // On Android, a file:// URI may need a content:// for Linking to work.
-    // Fall back gracefully; if Linking fails, surface the file path so the
-    // UI can toast it.
-    try {
-      const supported = await Linking.canOpenURL(fileUri);
-      if (supported) {
-        await Linking.openURL(fileUri);
-        return { ok: true, fileUri };
-      }
-    } catch (_) { /* fall through */ }
-
-    return { ok: true, fileUri };
+    return response.data;
   },
 };
 

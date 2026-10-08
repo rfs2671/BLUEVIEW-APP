@@ -46306,7 +46306,7 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
                 continue
             settings = await _brief_settings(uid)
             if not wa_brief.is_due(now, settings["brief_time"],
-                                   settings["brief_saturday"]):
+                                   settings["brief_weekend"]):
                 continue
             report["due"] += 1
             if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
@@ -49106,6 +49106,25 @@ async def run_whatsapp_startup_migrations():
     Each stage is independent and each names ITSELF in its log line, so a
     failure says which migration failed and the rest still run.
     """
+    # Migration 0 — morning brief "Also on Saturday" became "Also on
+    # weekends": a user who had Saturday on now gets Saturday and Sunday.
+    # Rows already carrying brief_weekend were saved by the new switch.
+    try:
+        moved = 0
+        for was in (True, False):
+            result = await db.notification_preferences.update_many(
+                {"whatsapp.brief_saturday": was,
+                 "whatsapp.brief_weekend": {"$exists": False}},
+                {"$set": {"whatsapp.brief_weekend": was},
+                 "$unset": {"whatsapp.brief_saturday": ""}},
+            )
+            moved += result.modified_count
+        if moved:
+            logger.info(f"WhatsApp migration: brief_saturday -> brief_weekend on "
+                        f"{moved} preference row(s)")
+    except Exception as e:
+        logger.warning(f"whatsapp migration 0 (brief weekend): {e}")
+
     # Migration 1 — backfill bot_config on legacy group docs
     try:
         result = await db.whatsapp_groups.update_many(
@@ -57385,6 +57404,23 @@ async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_curr
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Group not found")
+    # The bot is still in the group: put it back where it can be linked
+    # again (Integrations → Groups, the link screen), for this company only.
+    # A row created here is marked greeted and invited — the group already
+    # had both, and must not be sent them a second time.
+    now = datetime.now(timezone.utc)
+    try:
+        await db[PENDING_GROUPS].update_one(
+            {"group_id": row.get("wa_group_id")},
+            {"$set": {"status": "pending", "company_id": company_id,
+                      "unlinked_at": now, "linked_project_id": None},
+             "$setOnInsert": {"group_name": row.get("group_name") or "",
+                              "added_by_phone": "", "first_seen": now,
+                              "last_seen": now, "greeted_at": now,
+                              "invite_sent_at": now}},
+            upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa] unlinked group not returned to pending: {type(e).__name__}")
     return {"status": "unlinked"}
 
 
@@ -57487,6 +57523,83 @@ async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
             for p in projects
         ],
     }
+
+
+# Integrations → WhatsApp → Groups: what each group is to this company.
+GROUP_GC_CONFIRMED = "gc_confirmed"     # the project's confirmed GC group
+GROUP_GC_WAITING = "gc_waiting"         # an admin was asked to confirm it
+GROUP_TRADE = "trade"                   # linked, not the GC group
+GROUP_NOT_LINKED = "not_linked"         # the number is in it; no job yet
+
+
+@api_router.get("/whatsapp/company-groups",
+                dependencies=[Depends(require_approved)])
+async def whatsapp_company_groups(current_user=Depends(get_current_user)):
+    """Every group the Levelog number is in that this company may see.
+
+    Linked groups (this company's whatsapp_groups) with their job's address
+    and what they are to it; then groups not linked yet (the same rows
+    /whatsapp/pending-groups shows). Another company's groups never appear."""
+    company_id = _require_link_role(current_user)
+    phone = _caller_phone_digits(current_user)
+    now = datetime.now(timezone.utc)
+
+    linked = await db.whatsapp_groups.find(
+        {"company_id": company_id, "active": True}).to_list(200)
+    await _ensure_group_names(linked)
+    pids = list({str(g.get("project_id") or "") for g in linked} - {""})
+    projects = {}
+    if pids:
+        for p in await db.projects.find(
+                {"_id": {"$in": [to_query_id(x) for x in pids]},
+                 "company_id": company_id, "is_deleted": {"$ne": True}},
+                {"name": 1, "address": 1, "location": 1}).to_list(500):
+            projects[str(p["_id"])] = p
+
+    out = []
+    for g in linked:
+        pid = str(g.get("project_id") or "")
+        project = projects.get(pid)
+        if not project:
+            continue          # its job was deleted or is not this company's
+        wa_id = str(g.get("wa_group_id") or "")
+        settings = await _whatsapp_project_settings(pid)
+        prop = settings.get("gc_proposal") or {}
+        if settings.get("gc_group_confirmed") and settings.get("gc_group_id") == wa_id:
+            status = GROUP_GC_CONFIRMED
+        elif (_gc_proposal_open(prop, now) and str(prop.get("group_id")) == wa_id
+              and not settings.get("gc_group_confirmed")):
+            status = GROUP_GC_WAITING
+        else:
+            status = GROUP_TRADE
+        out.append({
+            "group_id": wa_id,
+            "group_name": wa_groups.display_name(g.get("group_name")),
+            "has_name": wa_groups.is_real_name(g.get("group_name")),
+            "project_id": pid,
+            "project_label": wa_groups.project_label(project),
+            "status": status,
+        })
+    out.sort(key=lambda r: (r["project_label"].lower(), r["group_name"].lower()))
+
+    pending = await db[PENDING_GROUPS].find(
+        _pending_visible_query(company_id, phone)
+    ).sort("first_seen", -1).to_list(200)
+    await _ensure_group_names(pending, coll=PENDING_GROUPS, key="group_id")
+    seen = {r["group_id"] for r in out}
+    for r in pending:
+        gid = str(r.get("group_id") or "")
+        if not gid or gid in seen:
+            continue
+        out.append({
+            "group_id": gid,
+            "group_name": wa_groups.display_name(r.get("group_name")),
+            "has_name": wa_groups.is_real_name(r.get("group_name")),
+            "project_id": None,
+            "project_label": None,
+            "status": GROUP_NOT_LINKED,
+        })
+    return {"groups": out}
 
 
 @api_router.post("/whatsapp/pending-groups/{group_id}/link",
@@ -57852,18 +57965,27 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
 @api_router.put("/whatsapp/brief")
 async def put_whatsapp_brief(body: dict, current_user=Depends(get_current_user)):
     """The caller's morning brief: brief_time (off / 07:00 / 08:00 / 09:00)
-    and/or brief_saturday (true/false). Admins and PMs only."""
+    and/or brief_weekend (true/false: also Saturday and Sunday). Admins and
+    PMs only. brief_saturday is still accepted from app versions before the
+    weekend switch, and saved as brief_weekend."""
     from lib import notification_preferences as _nprefs
     if not wa_dm.is_dm_eligible(current_user):
         raise HTTPException(status_code=403,
                             detail="The morning brief is for admins and PMs.")
+    keys = ("brief_time", "brief_weekend", "brief_saturday")
     if (not isinstance(body, dict) or not body
-            or any(k not in ("brief_time", "brief_saturday") for k in body)
+            or any(k not in keys for k in body)
             or ("brief_time" in body and body["brief_time"] not in wa_brief.BRIEF_TIMES)
-            or ("brief_saturday" in body and not isinstance(body["brief_saturday"], bool))):
+            or any(k in body and not isinstance(body[k], bool)
+                   for k in ("brief_weekend", "brief_saturday"))
+            or ("brief_weekend" in body and "brief_saturday" in body
+                and body["brief_weekend"] != body["brief_saturday"])):
         raise HTTPException(
             status_code=422,
-            detail="brief_time: off, 07:00, 08:00 or 09:00; brief_saturday: true or false.")
+            detail="brief_time: off, 07:00, 08:00 or 09:00; brief_weekend: true or false.")
+    body = dict(body)
+    if "brief_saturday" in body:
+        body["brief_weekend"] = body.pop("brief_saturday")
     uid = str(current_user.get("id") or current_user.get("_id") or "")
     existing = await _nprefs.fetch_preferences_record(db, user_id=uid, project_id=None)
     now = datetime.now(timezone.utc)
@@ -57876,7 +57998,10 @@ async def put_whatsapp_brief(body: dict, current_user=Depends(get_current_user))
         await db.notification_preferences.update_one(
             {"_id": existing["_id"]},
             {"$set": {**{f"whatsapp.{k}": v for k, v in body.items()},
-                      "updated_at": now}})
+                      "updated_at": now},
+             # brief_weekend now set: the old key would only disagree with it.
+             **({"$unset": {"whatsapp.brief_saturday": ""}}
+                if "brief_weekend" in body else {})})
     return await _brief_settings(uid)
 
 

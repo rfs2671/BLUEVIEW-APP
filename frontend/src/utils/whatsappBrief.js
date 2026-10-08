@@ -1,9 +1,9 @@
 /**
- * Integrations → Levelog Assistant → "Morning brief: 7 AM ▾" + Saturday.
+ * Integrations → Levelog Assistant → "Morning brief: 7 AM ▾" + weekends.
  * Pure, so it is tested under plain node (whatsappBrief.test.cjs).
  *
  * Shown only to an eligible, connected user: GET /api/whatsapp/me returns
- * `brief` ({brief_time, brief_saturday}) only then. Saved with
+ * `brief` ({brief_time, brief_weekend}) only then. Saved with
  * PUT /api/whatsapp/brief.
  */
 
@@ -23,12 +23,14 @@ export function briefTimeLabel(value) {
 export function briefRow(me) {
   if (!me || !me.connected || !me.brief) return null;
   const time = me.brief.brief_time;
+  // brief_saturday: what a server from before the weekend switch sends.
+  const weekend = !!(me.brief.brief_weekend ?? me.brief.brief_saturday);
   return {
     label: `Morning brief: ${briefTimeLabel(time)}`,
     line: time === 'off'
       ? 'Off. Turn it on to get one message each weekday morning.'
-      : 'Each weekday: what needs action on your jobs, and who is on site so far.',
-    saturday: !!me.brief.brief_saturday,
-    saturdayDisabled: time === 'off',
+      : `${weekend ? 'Every day' : 'Each weekday'}: what needs action on your jobs, and who is on site so far.`,
+    weekend,
+    weekendDisabled: time === 'off',
   };
 }

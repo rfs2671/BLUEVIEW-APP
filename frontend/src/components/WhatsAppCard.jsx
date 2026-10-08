@@ -7,7 +7,6 @@ import {
   Linking,
   AppState,
   ActivityIndicator,
-  Platform,
   Switch,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -20,6 +19,7 @@ import {
   whatsappCardView, needsFreshLink, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
 } from '../utils/whatsappConnect';
 import { BRIEF_OPTIONS, briefRow } from '../utils/whatsappBrief';
+import { saveLevelogContact } from '../utils/saveContact';
 import { spacing, borderRadius } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
@@ -33,7 +33,7 @@ const WHATSAPP_GREEN = '#25D366';
  *
  *   header       Levelog number, company setup chip, Save to Contacts
  *   Levelog Assistant  this person's own updates — Admins and PMs
- *   Groups       linking job groups — Admins only
+ *   Groups       every group the Levelog number is in — Admins only
  *
  * What it SAYS comes from utils/whatsappConnect.js (pure, tested). This file
  * only fetches and draws.
@@ -50,7 +50,8 @@ export default function WhatsAppCard({ isAdmin = false }) {
   const toast = useToast();
   const [me, setMe] = useState(null);
   const [status, setStatus] = useState(null);
-  const [pendingCount, setPendingCount] = useState(0);
+  // /whatsapp/company-groups, or null until it has loaded.
+  const [groupList, setGroupList] = useState(null);
   const [focused, setFocused] = useState(true);
   const [busy, setBusy] = useState(null); // 'activate' | 'contact' | null
   // The single-use, 15-minute "Turn on Levelog Assistant" link. Fetched BEFORE the tap,
@@ -80,9 +81,9 @@ export default function WhatsAppCard({ isAdmin = false }) {
       const st = await whatsappAPI.getStatus();
       if (mounted.current) setStatus(st);
       if (isAdmin && st && st.company_active) {
-        const res = await whatsappAPI.getPendingGroups();
-        const rows = (res && Array.isArray(res.pending)) ? res.pending : [];
-        if (mounted.current) setPendingCount(rows.length);
+        const res = await whatsappAPI.getCompanyGroups();
+        const rows = (res && Array.isArray(res.groups)) ? res.groups : [];
+        if (mounted.current) setGroupList(rows);
       }
     } catch (e) {
       // Leave the last reading in place.
@@ -144,7 +145,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
   }, [focused, shouldPoll, refreshMe]);
 
   const view = whatsappCardView({
-    me, status, pendingCount, isAdmin, connectUrl: link && link.url,
+    me, status, groups: groupList, isAdmin, connectUrl: link && link.url,
   });
   if (!view.visible) return null;
 
@@ -190,9 +191,16 @@ export default function WhatsAppCard({ isAdmin = false }) {
   const saveContact = async () => {
     setBusy('contact');
     try {
-      await whatsappAPI.downloadVCard();
-      if (Platform.OS === 'web') {
+      const how = await saveLevelogContact({
+        phone: view.header.number,
+        getVCardText: whatsappAPI.getVCardText,
+        downloadVCard: whatsappAPI.downloadVCard,
+      });
+      if (how === 'downloaded') {
         toast.success('Contact downloaded', 'Open the file to add the Levelog number.');
+      } else if (how === 'denied_shared') {
+        toast.info('Contacts access is off',
+          'Allow it in Settings to add the contact directly. Pick Contacts to save the card.');
       }
     } catch (error) {
       if (isOfflineError(error)) {
@@ -259,6 +267,19 @@ export default function WhatsAppCard({ isAdmin = false }) {
             <Chip c={alerts.chip} />
           </View>
           <Text style={s.line}>{alerts.line}</Text>
+          {/* Admins only: the project WhatsApp tab is admin-only. */}
+          {isAdmin ? (
+            <Text style={s.line}>
+              DOB/DOT alert switches are in each project's WhatsApp tab.{' '}
+              <Text
+                style={s.inlineLink}
+                onPress={() => router.push('/projects')}
+                accessibilityRole="link"
+              >
+                Go to projects
+              </Text>
+            </Text>
+          ) : null}
           {alerts.button ? (
             <Pressable
               onPress={() => openWhatsApp(alerts.button.url)}
@@ -301,12 +322,12 @@ export default function WhatsAppCard({ isAdmin = false }) {
               )) : null}
               <Text style={s.line}>{brief.line}</Text>
               <View style={s.briefRow}>
-                <Text style={s.line}>Also on Saturday</Text>
+                <Text style={s.line}>Also on weekends</Text>
                 <Switch
-                  value={brief.saturday}
-                  disabled={busy === 'brief' || brief.saturdayDisabled}
-                  onValueChange={(v) => saveBrief({ brief_saturday: v })}
-                  accessibilityLabel="Morning brief on Saturday"
+                  value={brief.weekend}
+                  disabled={busy === 'brief' || brief.weekendDisabled}
+                  onValueChange={(v) => saveBrief({ brief_weekend: v })}
+                  accessibilityLabel="Morning brief on Saturday and Sunday"
                   trackColor={{ false: colors.glass.border, true: WHATSAPP_GREEN }}
                 />
               </View>
@@ -321,6 +342,27 @@ export default function WhatsAppCard({ isAdmin = false }) {
             <Text style={s.sectionTitle}>Groups</Text>
           </View>
           {groups.line ? <Text style={s.line}>{groups.line}</Text> : null}
+          {groups.rows.map((g) => (
+            <View key={g.key} style={s.groupRow}>
+              <View style={s.groupText}>
+                <Text style={s.groupName}>{g.name}</Text>
+                <Text style={[s.groupPlace, g.link && s.groupPlaceMuted]}>{g.place}</Text>
+                {g.chip ? (
+                  <View style={s.groupChip}><Chip c={g.chip} /></View>
+                ) : null}
+              </View>
+              {g.link ? (
+                <Pressable
+                  onPress={() => router.push('/admin/whatsapp-groups')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Link ${g.name} to a job`}
+                  style={({ pressed }) => [s.smallButton, pressed && s.pressed]}
+                >
+                  <Text style={s.smallButtonText}>Link</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ))}
           {groups.action ? (
             <Pressable
               onPress={groups.action.kind === 'activate'
@@ -456,6 +498,21 @@ function buildStyles(colors) {
       minHeight: 44,
     },
     smallButtonText: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
+    inlineLink: { color: WHATSAPP_GREEN, fontWeight: '600' },
+    groupRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+      borderTopWidth: 1,
+      borderTopColor: colors.glass.border,
+    },
+    groupText: { flex: 1, minWidth: 0 },
+    groupName: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
+    groupPlace: { fontSize: 13, color: colors.text.primary, marginTop: 2 },
+    groupPlaceMuted: { color: colors.text.muted },
+    groupChip: { flexDirection: 'row', marginTop: spacing.xs },
     badge: {
       minWidth: 22,
       height: 22,

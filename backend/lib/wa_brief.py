@@ -47,25 +47,33 @@ def local_now(now_utc: datetime) -> datetime:
     return now_utc.astimezone(_ET) if _ET else now_utc
 
 
-def is_due(now_utc: datetime, brief_time: Optional[str], saturday: bool) -> bool:
-    """Is it this person's brief time today (New York), on a brief day?"""
+def is_due(now_utc: datetime, brief_time: Optional[str], weekend: bool) -> bool:
+    """Is it this person's brief time today (New York), on a brief day?
+    Weekdays always; Saturday and Sunday only with `weekend` on."""
     if brief_time not in BRIEF_TIMES or brief_time == "off":
         return False
     now = local_now(now_utc)
     wd = now.weekday()  # Mon 0 … Sun 6
-    if wd == 6 or (wd == 5 and not saturday):
+    if wd >= 5 and not weekend:
         return False
     hour = int(brief_time[:2])
     return hour <= now.hour < hour + CATCHUP_HOURS
 
 
 def clean_settings(stored: Any) -> Dict[str, Any]:
-    """{brief_time, brief_saturday} from whatever is stored; defaults
-    (7 AM, no Saturday) for anything missing or ill-typed."""
+    """{brief_time, brief_weekend, brief_saturday} from whatever is stored;
+    defaults (7 AM, weekdays only) for anything missing or ill-typed.
+
+    brief_weekend (Saturday and Sunday) replaced brief_saturday. A row the
+    startup migration has not reached yet still counts its brief_saturday,
+    and brief_saturday is returned as a copy of brief_weekend for app
+    versions that still read it."""
     s = stored if isinstance(stored, dict) else {}
     t = s.get("brief_time")
+    weekend = (s.get("brief_weekend") is True if "brief_weekend" in s
+               else s.get("brief_saturday") is True)
     return {"brief_time": t if t in BRIEF_TIMES else DEFAULT_TIME,
-            "brief_saturday": s.get("brief_saturday") is True}
+            "brief_weekend": weekend, "brief_saturday": weekend}
 
 
 def header(now_utc: datetime) -> str:

@@ -197,7 +197,12 @@ class Coll:
         for k, v in (update.get("$inc") or {}).items():
             _set(doc, k, (_get(doc, k) if _get(doc, k) is not _MISSING else 0) + v)
         for k in (update.get("$unset") or {}):
-            doc.pop(k, None)
+            *parents, leaf = k.split(".")
+            cur = doc
+            for part in parents:         # a dotted path unsets the nested key
+                cur = cur.get(part) if isinstance(cur, dict) else None
+            if isinstance(cur, dict):
+                cur.pop(leaf, None)
         for k, v in (update.get("$addToSet") or {}).items():
             cur = _get(doc, k)
             cur = list(cur) if isinstance(cur, list) else []
