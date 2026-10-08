@@ -49,6 +49,11 @@ SECOND = "u-second"
 
 def _match(doc, q):
     for k, v in (q or {}).items():
+        if k == "$or":
+            # `_cs_rows_are_for` matches both spellings of an account id.
+            if not any(_match(doc, c) for c in v):
+                return False
+            continue
         got = doc.get(k)
         if isinstance(v, dict):
             if "$ne" in v and got == v["$ne"]:
@@ -117,8 +122,10 @@ class _Coll:
 
 
 class _DB:
-    def __init__(self, regs=(), log_on=(P588,)):
+    def __init__(self, regs=(), log_on=(P588,), users=()):
         self.cs_registrations = _Coll(regs)
+        self.users = _Coll(users)
+        self.audits = []
         self.projects = _Coll([
             {"_id": P588, "name": "588 Thomas", "company_id": "c1",
              "superintendent_log_active": P588 in log_on},
@@ -143,8 +150,9 @@ def _row(db, rid):
 
 class _Fixture(unittest.TestCase):
     def run_with(self, db, coro_fn):
-        async def _audit(*a, **k):
-            return None
+        async def _audit(action, user_id, resource_type, resource_id, details=None):
+            db.audits.append({"action": action, "resource_id": resource_id,
+                              "details": details or {}})
 
         async def _under_admin(registration_id, admin):
             row = await db.cs_registrations.find_one({"_id": registration_id})
@@ -295,6 +303,63 @@ class AnEndedRegistrationIsHistory(_Fixture):
 
     def test_the_put_body_has_no_switch(self):
         self.assertNotIn("is_active", S.CSRegistrationUpdate.model_fields)
+
+
+def _super(uid, projects, role="superintendent"):
+    return {"_id": uid, "id": uid, "role": role, "company_id": "c1",
+            "assigned_projects": list(projects)}
+
+
+def _assigned(db, uid):
+    return next(u for u in db.users.rows if u["_id"] == uid).get("assigned_projects")
+
+
+class TheGrantEndsWithTheRegistration(_Fixture):
+    """Operator's ruling, 2026-10-08: "a superseded super keeps the project in
+    assigned_projects, so he still has access to a job he's no longer on.
+    Ending a registration removes the project from his assigned_projects."
+
+    `require_project_access` honours `assigned_projects` as an authorization
+    grant, so this is access, not bookkeeping."""
+
+    def test_superseded_he_loses_that_job_and_keeps_his_others(self):
+        db = _DB([_reg(), _reg(_id="r12", project_id=P12)],
+                 users=[_super(MICHAEL, [P588, P12]), _super(SECOND, [])])
+        self.register(db, P588, SECOND, name="Second Super", number="44444")
+        self.assertEqual(_assigned(db, MICHAEL), [P12])
+
+    def test_and_it_is_audited(self):
+        db = _DB([_reg()], users=[_super(MICHAEL, [P588]), _super(SECOND, [])])
+        self.register(db, P588, SECOND, name="Second Super", number="44444")
+        ended = [a for a in db.audits if a["action"] == "cs_registration_access_ended"]
+        self.assertEqual(len(ended), 1)
+        self.assertEqual(ended[0]["resource_id"], MICHAEL)
+        self.assertEqual(ended[0]["details"]["project_id"], P588)
+        self.assertEqual(ended[0]["details"]["reason"], "superseded")
+
+    def test_the_admin_delete_takes_it_too(self):
+        db = _DB([_reg()], log_on=(), users=[_super(MICHAEL, [P588, P12])])
+        self.run_with(db, lambda: S.delete_cs_registration("r1", admin=ADMIN))
+        self.assertEqual(_assigned(db, MICHAEL), [P12])
+
+    def test_registering_the_same_man_again_keeps_his_access(self):
+        """His new row is live on the same job, so the grant stands."""
+        db = _DB([_reg()], users=[_super(MICHAEL, [P588])])
+        self.register(db, P588, MICHAEL)
+        self.assertEqual(_assigned(db, MICHAEL), [P588])
+
+    def test_a_cp_linked_to_a_registration_keeps_what_assign_gave_him(self):
+        """For any role but superintendent, `assigned_projects` is Assign's
+        grant, which this registration never made and does not revoke."""
+        db = _DB([_reg()], users=[_super(MICHAEL, [P588], role="cp"),
+                                  _super(SECOND, [])])
+        self.register(db, P588, SECOND, name="Second Super", number="44444")
+        self.assertEqual(_assigned(db, MICHAEL), [P588])
+
+    def test_the_successor_is_not_touched(self):
+        db = _DB([_reg()], users=[_super(MICHAEL, [P588]), _super(SECOND, [P12])])
+        self.register(db, P588, SECOND, name="Second Super", number="44444")
+        self.assertEqual(_assigned(db, SECOND), [P12])
 
 
 if __name__ == "__main__":
