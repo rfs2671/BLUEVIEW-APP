@@ -37,8 +37,21 @@ PLAN_TITLE = re.compile(r"\b(FLOOR\s+PLAN|MEZZANINE(\s+FLOOR)?\s+PLAN|ROOF\b.*\b
                         r"BULKHEAD\b.*\bPLAN)\b", re.I)
 
 
+#: The role of a sheet the pairing refused: whether it can carry the
+#: mechanical symbols a building total counts (operator ruling 2026-10-07).
+#: Written on the refusal row by the pass, never guessed from a prefix later.
+ROLE_MECHANICAL, ROLE_ARCHITECTURAL = "mechanical", "architectural"
+
+
 def pair_plan_sheets(pages: Iterable[dict]) -> dict:
-    """{"pairs": [(arch, mech)], "refused": [(page, reason)]}.
+    """{"pairs": [(arch, mech)], "refused": [(page, reason, role)],
+    "unpaired_mech": [mech]}.
+
+    A MECHANICAL PLAN WITH NO ARCHITECTURAL PARTNER IS NOT REFUSED
+    (2026-10-07): its symbols are still located and named, at sheet scope,
+    with placement refused - M-106.00 (the bulkhead) has no A-106, and it is
+    the only sheet SAF-1 and DH-1 appear on. It is returned in
+    `unpaired_mech` for the pass to count.
 
     `pages` are CURRENT pages only (a superseded sheet is the caller's to
     drop), each with "sheet_number" and "sheet_title". The key is the
@@ -52,7 +65,9 @@ def pair_plan_sheets(pages: Iterable[dict]) -> dict:
     - it has no mechanical partner it could ever be paired by number with.
     """
     by_key: Dict[Tuple[str, str], List[dict]] = {}
-    refused: List[Tuple[dict, str]] = []
+    refused: List[Tuple[dict, str, str]] = []
+    unpaired_mech: List[dict] = []
+    role = {"A": ROLE_ARCHITECTURAL, "M": ROLE_MECHANICAL}
     for p in pages:
         num = (p.get("sheet_number") or "").strip().upper()
         m = PLAN_SHEET.match(num)
@@ -63,7 +78,8 @@ def pair_plan_sheets(pages: Iterable[dict]) -> dict:
             # ARCHITECTURAL or unnumbered only: FA-007 is a fire-alarm plan,
             # not an apartment plan missing its partner
             refused.append((p, f"{num or 'unnumbered sheet'} is a plan with no "
-                               "mechanical partner by sheet number"))
+                               "mechanical partner by sheet number",
+                            ROLE_ARCHITECTURAL))
     pairs = []
     for seq in sorted({k[1] for k in by_key}):
         a, m = by_key.get(("A", seq), []), by_key.get(("M", seq), [])
@@ -71,18 +87,17 @@ def pair_plan_sheets(pages: Iterable[dict]) -> dict:
             if len(pp) > 1:
                 for p in pp:
                     refused.append((p, f"{len(pp)} current {disc}-{seq} sheets: "
-                                       "ambiguous, not paired"))
+                                       "ambiguous, not paired", role[disc]))
         if len(a) > 1 or len(m) > 1:
             continue
         if a and m:
             pairs.append((a[0], m[0]))
         elif a:
             refused.append((a[0], f"{a[0]['sheet_number']} has no mechanical "
-                                  f"partner M-{seq}"))
+                                  f"partner M-{seq}", ROLE_ARCHITECTURAL))
         elif m:
-            refused.append((m[0], f"{m[0]['sheet_number']} has no architectural "
-                                  f"partner A-{seq}"))
-    return {"pairs": pairs, "refused": refused}
+            unpaired_mech.append(m[0])
+    return {"pairs": pairs, "refused": refused, "unpaired_mech": unpaired_mech}
 
 
 # ── units ──────────────────────────────────────────────────────────────────

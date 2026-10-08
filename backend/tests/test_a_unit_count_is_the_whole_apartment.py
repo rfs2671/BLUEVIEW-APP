@@ -206,8 +206,9 @@ class ThePassRecordsItOnEveryRow(unittest.TestCase):
             self.assertEqual(set(ml), {"4A", "4B"})
             self.assertEqual(len(ml["4A"]), 2)          # LOWER and the private UP
             self.assertEqual(ml["4B"], [])
-            self.assertEqual(r["payload"]["emit_version"], 2)
-        self.assertEqual(E.EMIT_VERSION, 2)
+            # 2 introduced multi_level; later versions keep it
+            self.assertEqual(r["payload"]["emit_version"], E.EMIT_VERSION)
+        self.assertGreaterEqual(E.EMIT_VERSION, 2)
 
 
 class OnTheRealSheets(unittest.TestCase):

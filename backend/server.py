@@ -50090,13 +50090,24 @@ async def _glyph_evidence(project_id: str, subject: str) -> List[dict]:
                ("family", name, tags)) for name, tags in sorted(want.items())]
     checks.append((plan_search.glyph_refusal_filter(pid, page_ids),
                    ("refusals", None, [])))
+    # THE SCHEDULE'S QTY, per tag, from the same best-tier reading the
+    # families come from - so a building total can be checked against what
+    # the schedule prints (plan_search._qty_check).
+    from lib.plan_records import tier_rank as _tier_rank
+    best: Dict[str, dict] = {}
+    for s in sched:
+        nm = str((s.get("payload") or {}).get("name") or "").strip().upper()
+        if nm and (nm not in best or _tier_rank(s.get("tier")) < _tier_rank(best[nm].get("tier"))):
+            best[nm] = s
     rows: List[dict] = []
     census: List[dict] = []
     for flt, (kind, name, tags) in checks:
         rows += await db[PLAN_RECORDS].find(flt, proj).to_list(GLYPH_EVIDENCE_MAX)
         n = await db[PLAN_RECORDS].count_documents(flt)
+        qty = (plan_search.schedule_quantities((best.get(name) or {}).get("payload"), tags)
+               if kind == "family" else None)
         census.append(plan_search.glyph_census(kind, pid, page_ids, n,
-                                               family=name, tags=tags))
+                                               family=name, tags=tags, qty=qty))
     return rows + census
 
 
