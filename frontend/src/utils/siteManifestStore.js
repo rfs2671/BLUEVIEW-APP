@@ -873,8 +873,43 @@ export async function syncSiteManifest(projectId, opts = {}) {
       await clearSpaceShortfall(projectId);
     }
 
+    // ── THE FILL YIELDS TO WHOEVER IS BEING READ TO RIGHT NOW ──────────────
+    //
+    // THE DEFECT, MEASURED. This loop is up to DOWNLOADS_PER_RUN = 500
+    // SEQUENTIAL downloads; on 588 Thomas the queue is ~105 MB, including a
+    // 31.7 MB and a 24.9 MB plan set. It starts the moment the project id
+    // resolves -- which is when the app OPENS -- and the gate tablet has one
+    // radio. The site logbooks screen's own list request was issued into that
+    // and lost. An inspector waited ten minutes for a list of dates while the
+    // device pre-loaded documents nobody had asked for.
+    //
+    // A HOOK, NOT AN IMPORT, AND THE REASON IS WHICH MACHINE THIS IS. The gate
+    // tablet is the device with the problem and `SiteManifestSync`
+    // (app/_layout.jsx) is the only thing that starts it there; the admin
+    // phone reaches this same function through adminPlanPrefetch, which has its
+    // own pacing and no inspector standing in front of it. So the priority
+    // policy is passed in by the caller that knows which device it is on,
+    // rather than compiled in here where it would apply to both.
+    //
+    // BETWEEN DOWNLOADS, NOT ONCE AT THE TOP. A run that checked only on entry
+    // would start before the screen did and then hold the link for 105 MB
+    // regardless. Checking per file is what makes a read that arrives in the
+    // MIDDLE of a fill get the radio.
+    //
+    // IT DEFERS, IT NEVER CANCELS. The hook is awaited and whatever it resolves
+    // to is ignored: the file is downloaded either way. The offline guarantee
+    // is the product -- this changes WHEN the bytes are fetched, not WHETHER.
+    const yieldLink = typeof opts.beforeEachDownload === 'function'
+      ? opts.beforeEachDownload
+      : null;
+    const letTheForegroundGoFirst = async () => {
+      if (!yieldLink) return;
+      try { await yieldLink(); } catch (_e) { /* a yield may not fail a fill */ }
+    };
+
     let downloaded = 0;
     for (const r of plan.slice(0, opts.downloadLimit || DOWNLOADS_PER_RUN)) {
+      await letTheForegroundGoFirst();
       const got = await ensureCachedDocFile({
         fileId: r.id, cacheVersion: r.cache_version, remoteUrl: r.url,
       });
@@ -895,6 +930,7 @@ export async function syncSiteManifest(projectId, opts = {}) {
     // wrong size, and cacheDocFile reject every good download.
     let thumbs = 0;
     for (const r of wantedThumbs.slice(0, opts.thumbLimit || DOWNLOADS_PER_RUN)) {
+      await letTheForegroundGoFirst();
       const got = await ensureCachedDocFile({
         fileId: r.id, cacheVersion: r.cache_version, remoteUrl: r.url, ext: 'jpg',
       });

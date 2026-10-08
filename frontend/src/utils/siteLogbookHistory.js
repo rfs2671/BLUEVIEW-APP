@@ -91,6 +91,36 @@ import { readManifestList, writeManifestList } from './siteManifestStore';
  * would. A dropped page, a page cap, a server that does not declare
  * completeness at all — every one of them lands in the same place: keep what
  * is here, commit nothing that claims to be the whole history.
+ *
+ * ── AND THE WALK ITSELF WAS STILL THE WHOLE CORPUS ─────────────────────────
+ *
+ * The split above put the heavy bytes on the FILESYSTEM. It did not stop them
+ * crossing the WIRE. Measured on production 2026-10-07, 588 Thomas, through the
+ * real handler: `syncLogbookHistory` moved 14,363,640 bytes over five pages to
+ * draw a list of 43 dates — 14,122,753 of them `data`, overwhelmingly the kiosk
+ * worker-signature images on pre-shift sheets — and 3.4 s of that was the
+ * server. The rest was transfer, and an inspector stood in front of it for ten
+ * minutes.
+ *
+ * So there are now TWO reads, and the list uses the cheap one:
+ *
+ *   syncLogbookIndex   `view=index` — identity rows, no `data`. 39,308 bytes in
+ *                      two requests for this project's whole history, 0.27% of
+ *                      the documents. Same commit rules, clause for clause.
+ *   ensureDayDetail    `?date=` — ONE day's whole documents, when a day is
+ *                      opened, and nothing at all for a day this device already
+ *                      holds at its filed version. That last clause is the one
+ *                      that matters: the old walk re-downloaded all 14 MB and
+ *                      rewrote all 43 days on EVERY open.
+ *   backfillDayDetails the offline guarantee, moved off the render path. Same
+ *                      days end up on the device; they are fetched after the
+ *                      list is on screen instead of in front of it.
+ *
+ * `syncLogbookHistory` and `fetchSubmittedHistory` STAY, and they are reachable:
+ * a server that predates `view=index` ignores the parameter and serves
+ * documents, `fetchSubmittedIndex` detects that and refuses to commit, and the
+ * screen falls back to this walk for however long the deploy gap lasts. Slow is
+ * better than blank.
  */
 
 // ── scope key ──────────────────────────────────────────────────────────────
@@ -168,6 +198,52 @@ export const HISTORY_PAGE_TIMEOUT_MS = 60000;
  */
 const SERVER_DATE_CEILING = 4000;
 const MAX_HISTORY_PAGES = Math.ceil((SERVER_DATE_CEILING * 3) / HISTORY_PAGE_DATES);
+
+/**
+ * THE INDEX PAGE, AND WHY IT IS FIFTY TIMES THE DOCUMENT PAGE.
+ *
+ * MEASURED ON PRODUCTION 2026-10-07, 588 Thomas, through the real handler.
+ * Walking this endpoint for whole documents to draw a DATE LIST cost
+ * 14,363,640 bytes over five pages and 3.4 s of server time -- and 44,016 of
+ * those bytes, 0.306%, were the only part the list renders from. `data` was
+ * 14,122,753 of them: worker signature images on pre-shift sheets, drawn
+ * nowhere on a list of dates.
+ *
+ * An index row is therefore ~1 KB a date rather than ~334 KB, and the page can
+ * be as wide as the memory bound allows instead of as narrow as the TRANSFER
+ * bound forces. 500 dates is ~500 KB of body -- a tenth of the 5.8 MB page this
+ * device is measured to survive receiving -- and it covers the server's own
+ * 4000-date ceiling, eleven years of daily filing, in eight requests. For this
+ * project's whole 43-date history it is ONE.
+ *
+ * NOT "the whole history in one unbounded request". The parameter-free response
+ * is the complete set BY DESIGN, so asking for it is asking for 4000 dates at
+ * whatever the server has; the page is what keeps one body bounded as the
+ * history grows, which is the same rule HISTORY_PAGE_DATES exists under.
+ */
+export const INDEX_PAGE_DATES = 500;
+
+/**
+ * AND THE FIRST INDEX PAGE IS DELIBERATELY THE SMALL ONE.
+ *
+ * THE DEPLOY GAP IS REAL AND IT RUNS BOTH WAYS. This screen ships over the air
+ * and the API ships to Railway, so one is always ahead of the other. A server
+ * that predates `view=index` does not reject the parameter -- FastAPI ignores
+ * an unknown query param -- it serves WHOLE DOCUMENTS for however many dates
+ * `limit` asked for. At 500 that is ~166 MB on a project at the server's
+ * ceiling, into a 60 s timeout, on a tablet in front of an inspector.
+ *
+ * So the walk asks its FIRST page at the document page size -- exactly today's
+ * risk, no more -- and reads `view` off the response. A server that echoes
+ * `view: "index"` has honoured it, and every page after the first is 500 wide.
+ * A server that does not is an OLD server, and the walk says so rather than
+ * committing an index assembled out of bodies it did not ask for.
+ *
+ * THE COST OF THE PROBE IS ONE EXTRA REQUEST OF ~10 KB on this project: 43
+ * dates arrive as 10 + 33 instead of 43. That is the price of not being able
+ * to ask a server what it supports without asking it for something.
+ */
+export const INDEX_PROBE_DATES = HISTORY_PAGE_DATES;
 
 const DAY_DIR = (FileSystem.documentDirectory || '') + 'site_logdays/';
 const canUseFs = () => Platform.OS !== 'web' && !!FileSystem.documentDirectory;
@@ -371,6 +447,14 @@ const pagePath = (projectId, limit, before) =>
   `/api/logbooks/project/${projectId}/submitted?limit=${limit}`
   + (before ? `&before=${encodeURIComponent(before)}` : '');
 
+/** The index walk's path: identity rows, no `data`. Same cursor contract. */
+const indexPagePath = (projectId, limit, before) =>
+  `${pagePath(projectId, limit, before)}&view=index`;
+
+/** One day's whole documents. The only read that carries photographs now. */
+export const dayDetailPath = (projectId, date) =>
+  `/api/logbooks/project/${projectId}/submitted?date=${encodeURIComponent(date)}`;
+
 /**
  * Walk every page of submitted history, newest date first.
  *
@@ -545,6 +629,367 @@ export async function syncLogbookHistory(projectId, opts = {}) {
   };
 }
 
+// ── the index walk: the same rules, 0.3% of the bytes ──────────────────────
+
+/**
+ * Walk every page of the submitted-history INDEX, newest date first.
+ *
+ * Returns {ok, complete, rows, pages, reason, error} — the same contract as
+ * `fetchSubmittedHistory`, and deliberately so: the completeness rule below is
+ * the one thing a second walk is not allowed to weaken.
+ *
+ * THREE WAYS TO NOT BE COMPLETE, AND ALL THREE LAND IN THE SAME PLACE:
+ *
+ *   'unreachable'               a page never reached a server
+ *   'no-completeness-contract'  a body declared neither `complete` nor
+ *                               `next_before`. Reading it as the whole history
+ *                               is the silent-ceiling defect relocated to the
+ *                               client, and it was worth a whole fix once.
+ *   'index-unsupported'         the server answered WITHOUT echoing
+ *                               `view: "index"`. See INDEX_PROBE_DATES: that
+ *                               is an old server serving whole documents, and
+ *                               an index assembled from bodies the server did
+ *                               not agree to serve is not an index this walk
+ *                               may vouch for.
+ *
+ * `opts.onPage({pages, dates, rows})` is awaited before the next request. The
+ * `rows` it hands over are a COPY and they are a FRAGMENT: the caller may draw
+ * them while it is still loading, and may NOT present them as the list. That
+ * is the screen's judgement to make, not this module's, which is why the raw
+ * progress is reported rather than a boolean.
+ */
+export async function fetchSubmittedIndex(projectId, opts = {}) {
+  const probeLimit = opts.probeLimit || INDEX_PROBE_DATES;
+  const pageLimit = opts.limit || INDEX_PAGE_DATES;
+  const onPage = opts.onPage;
+  const rows = [];
+  const seen = new Set();
+  let before = null;
+  let pages = 0;
+  // DERIVED FROM THE PAGE SIZE, like MAX_HISTORY_PAGES and for the same
+  // reason: a literal cap sized for one page width silently halves the history
+  // it covers when the width changes, and a walk that hits its cap commits
+  // nothing. Starts at the PROBE width because that is the only width page one
+  // is asked at; it is raised once the probe has told us the real one.
+  let maxPages = opts.maxPages || Math.ceil((SERVER_DATE_CEILING * 3) / probeLimit);
+
+  for (;;) {
+    if (pages >= maxPages) {
+      return { ok: true, complete: false, rows, pages, reason: 'page-cap', error: null };
+    }
+    const limit = pages === 0 ? probeLimit : pageLimit;
+    let body;
+    try {
+      const res = await apiClient.get(
+        indexPagePath(projectId, limit, before),
+        { timeout: HISTORY_PAGE_TIMEOUT_MS },
+      );
+      body = res && res.data;
+    } catch (error) {
+      return { ok: false, complete: false, rows, pages, reason: 'unreachable', error };
+    }
+    pages += 1;
+
+    if (!body || (body.complete === undefined && body.next_before === undefined)) {
+      return {
+        ok: true, complete: false, rows, pages,
+        reason: 'no-completeness-contract', error: null,
+      };
+    }
+    if (body.view !== 'index') {
+      return { ok: true, complete: false, rows, pages, reason: 'index-unsupported', error: null };
+    }
+    if (pages === 1 && !opts.maxPages) {
+      maxPages = 1 + Math.ceil((SERVER_DATE_CEILING * 3) / pageLimit);
+    }
+
+    const dates = body.dates || {};
+    for (const date of Object.keys(dates)) {
+      if (seen.has(date)) continue;
+      seen.add(date);
+      rows.push(identityRow(projectId, date, dates[date]));
+    }
+    if (onPage) {
+      try {
+        await onPage({ pages, dates: rows.length, rows: rows.slice() });
+      } catch (_e) { /* a progress callback may not fail a walk */ }
+    }
+
+    const next = body.next_before;
+    if (next === null || next === undefined || next === '') {
+      return { ok: true, complete: true, rows, pages, reason: null, error: null };
+    }
+    before = next;
+  }
+}
+
+/**
+ * One index sync: walk the index, commit it, prune detail it no longer names.
+ *
+ * SAME COMMIT RULES AS `syncLogbookHistory`, WORD FOR WORD, because they are
+ * not about what the pages carried — they are about whether this device may
+ * claim to hold the whole filed history. A replace needs a complete walk; a
+ * union needs a complete prev; a walk that assembled nothing writes nothing;
+ * and only a complete walk whose commit LANDED may prune.
+ *
+ * WHAT IT NO LONGER DOES IS WRITE DAY DETAIL. There is none in a body it asked
+ * for. The detail arrives through `ensureDayDetail` when a day is opened and
+ * through `backfillDayDetails` in the background, and `pruneDayDetails` is
+ * unchanged by that: it deletes names this project's index does not carry, and
+ * a date with no file yet simply has no name to delete.
+ */
+export async function syncLogbookIndex(projectId, opts = {}) {
+  if (!projectId) {
+    return {
+      ok: false, complete: false, dates: 0, rows: [], stored: false,
+      pruned: 0, pages: 0, reason: 'no-project', error: null,
+    };
+  }
+  const scope = historyScope(projectId);
+  const walk = await fetchSubmittedIndex(projectId, opts);
+  const prev = await readHistoryIndex(projectId);
+  const next = mergeHistoryRows(prev.rows, walk.rows, walk.complete);
+
+  let wrote = { ok: false, reason: 'skipped' };
+  if (walk.complete) {
+    wrote = await writeManifestList(scope, next, { at: Date.now() });
+  } else if (walk.rows.length === 0) {
+    wrote = { ok: false, reason: `no-news:${walk.reason || 'incomplete'}` };
+  } else if (prev.state !== 'complete') {
+    wrote = { ok: false, reason: `partial-store:${prev.reason}` };
+  } else {
+    // The age is CARRIED, not refreshed — see syncLogbookHistory.
+    wrote = await writeManifestList(scope, next, { at: prev.at === undefined ? null : prev.at });
+  }
+
+  const pruned = (walk.complete && wrote.ok) ? await pruneDayDetails(projectId, next) : 0;
+
+  return {
+    ok: walk.ok && walk.complete,
+    complete: walk.complete,
+    dates: next.length,
+    // The committed list, so a caller that wants to BACKFILL against it does
+    // not have to read the store back to find out what it just stored.
+    rows: next,
+    stored: wrote.ok === true,
+    pruned,
+    pages: walk.pages,
+    reason: walk.complete ? (wrote.ok ? null : (wrote.reason || 'store-failed')) : walk.reason,
+    error: walk.error || null,
+  };
+}
+
+// ── day detail, fetched when it is wanted ──────────────────────────────────
+
+/**
+ * One day's whole documents: off the disk if they are there, off the server if
+ * they are not, and on the disk afterwards either way.
+ *
+ * Returns {logs, fetched, stored, version, amended, reason, error}. `logs` is
+ * NULL when the day could not be produced — never `[]`, which would draw a
+ * filed day as blank to an inspector.
+ *
+ * THE DISK READ COMES FIRST AND IT IS THE WHOLE POINT. The version is part of
+ * the file name, so a hit means "this device already holds this exact day as
+ * filed" and NOTHING is transferred. That is the fault this kills: the old
+ * walk re-downloaded all 14.36 MB and rewrote every day's detail on every
+ * open, including the forty-three days that had not changed since the last one.
+ *
+ * AN EMPTY BODY FOR A DAY THE INDEX SAYS HAS RECORDS IS REFUSED. If the index
+ * row carries logs and the server answers with none, the index is stale (a
+ * withdrawal, a hard delete) — and writing `[]` under the index's version
+ * would cache "this filed day is empty" and serve it to an inspector until the
+ * index happened to be refreshed. Pass `opts.expectLogs` and it cannot happen.
+ */
+export async function ensureDayDetail(projectId, date, version, opts = {}) {
+  if (!projectId || !date) {
+    return { logs: null, fetched: false, stored: false, version: null, reason: 'no-project' };
+  }
+  const onDisk = await readDayDetail(projectId, date, version);
+  if (Array.isArray(onDisk)) {
+    return { logs: onDisk, fetched: false, stored: true, version, amended: false, reason: null };
+  }
+  // A CALLER THAT KNOWS IT IS OFFLINE DOES NOT SPEND 60 s FINDING OUT. The
+  // screen already tracks that; this is how it says so.
+  if (opts.offline === true) {
+    return { logs: null, fetched: false, stored: false, version: null, reason: 'not-held' };
+  }
+
+  let body;
+  try {
+    const res = await apiClient.get(
+      dayDetailPath(projectId, date),
+      // A photo-bearing payload, like the document pages -- see
+      // HISTORY_PAGE_TIMEOUT_MS. One day, not ten.
+      { timeout: HISTORY_PAGE_TIMEOUT_MS },
+    );
+    body = res && res.data;
+  } catch (error) {
+    return { logs: null, fetched: false, stored: false, version: null, reason: 'unreachable', error };
+  }
+
+  const dates = (body && body.dates) || null;
+  if (!dates || typeof dates !== 'object') {
+    return { logs: null, fetched: true, stored: false, version: null, reason: 'no-dates' };
+  }
+  let logs = dates[date];
+  if (!Array.isArray(logs)) {
+    // The server buckets an undated log under "unknown", so the key it answers
+    // with is not always the key that was asked for. One bucket, one answer.
+    const keys = Object.keys(dates);
+    logs = (keys.length === 1 && Array.isArray(dates[keys[0]])) ? dates[keys[0]] : null;
+  }
+  if (!Array.isArray(logs)) {
+    return { logs: null, fetched: true, stored: false, version: null, reason: 'date-missing' };
+  }
+  if (logs.length === 0 && Number(opts.expectLogs) > 0) {
+    return {
+      logs: null, fetched: true, stored: false, version: null,
+      reason: 'empty-for-a-filed-day',
+    };
+  }
+
+  // NAMED ON WHAT ARRIVED, NOT ON WHAT WAS ASKED FOR. If the day was amended
+  // between the index sync and this read, the version differs — and storing
+  // the new documents under the OLD name is how a tablet comes to serve a
+  // superseded record from a file that claims to be the current one. `amended`
+  // says it happened so the caller can refresh the index.
+  const fetchedVersion = dayReportVersion(logs, date);
+  const stored = await writeDayDetail(projectId, date, fetchedVersion, logs);
+  return {
+    logs,
+    fetched: true,
+    stored,
+    version: fetchedVersion,
+    amended: version !== undefined && version !== null
+      && String(fetchedVersion) !== String(version),
+    reason: null,
+  };
+}
+
+/**
+ * How much of the filed history this device actually holds as openable detail.
+ *
+ * ONE DIRECTORY READ, NOT ONE STAT A DATE. The progress indicator this feeds
+ * is redrawn on every step of a backfill; 43 `getInfoAsync` calls a redraw on a
+ * gate tablet is the kind of measurement that becomes the thing it measures.
+ *
+ * `readable` IS NOT `held > 0`. On web there is no filesystem at all and
+ * `readDayDetail` can never answer, so the honest report is "this surface does
+ * not keep offline copies" — not "0 of 43 saved", which reads as a device
+ * that is failing to save.
+ */
+export async function heldDayDetails(projectId, rows) {
+  const list = (Array.isArray(rows) ? rows : []).filter((r) => r && r.date);
+  if (!canUseFs() || !projectId) {
+    return { held: 0, total: list.length, missing: list.map((r) => r.date), readable: false };
+  }
+  let names = [];
+  try {
+    names = await FileSystem.readDirectoryAsync(DAY_DIR);
+  } catch (_e) {
+    // No directory yet is not an error: it is a device that has filed nothing.
+    names = [];
+  }
+  const have = new Set(Array.isArray(names) ? names : []);
+  const missing = [];
+  for (const r of list) {
+    if (!have.has(dayDetailName(projectId, r.date, r.cache_version))) missing.push(r.date);
+  }
+  return { held: list.length - missing.length, total: list.length, missing, readable: true };
+}
+
+/**
+ * Bounded so one run cannot occupy the device for ever, and RESUMABLE by
+ * construction: what is already on disk is skipped in a single directory read,
+ * so a first fill simply completes across the next few runs. Sized at a
+ * calendar quarter of daily filing — more than any inspector asks for in one
+ * visit, less than a project's whole history in one go.
+ */
+export const DETAIL_BACKFILL_PER_RUN = 60;
+
+/**
+ * Put every day's detail on the device, newest first, skipping what is there.
+ *
+ * THIS IS THE OFFLINE GUARANTEE, MOVED RATHER THAN REMOVED. The old walk filled
+ * the device by downloading the whole corpus on the render path, which is why
+ * an inspector waited ten minutes for a list. This fills it off the render
+ * path: nothing here is awaited by a screen, every date it fetches is one the
+ * device does not already hold, and `opts.beforeEach` is where the caller
+ * yields the link back to a foreground read that started in the meantime.
+ *
+ * `onProgress({held, total, fetched})` IS A COUNT, NOT AN ANIMATION. `held` is
+ * days whose detail file this device can open, `total` is dates in the
+ * committed index, `fetched` is days this run actually downloaded. Every one of
+ * them is measured; none of them moves on a timer.
+ *
+ * IT STOPS ON THE FIRST UNREACHABLE DAY. A tablet that has gone into the dead
+ * zone would otherwise spend forty-three 60-second timeouts discovering it one
+ * date at a time.
+ */
+export async function backfillDayDetails(projectId, rows, opts = {}) {
+  const perRun = opts.perRun || DETAIL_BACKFILL_PER_RUN;
+  const onProgress = opts.onProgress;
+  const list = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r && r.date)
+    .slice()
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+  const state = await heldDayDetails(projectId, list);
+  const report = (extra) => ({
+    held: state.held, total: state.total, fetched: 0, failed: 0,
+    // CARRIED THROUGH, because a caller that cannot tell "this surface keeps no
+    // offline copies" from "this device has saved none of them" shows a web
+    // browser a progress bar that can never move.
+    readable: state.readable,
+    complete: false, reason: null, error: null, ...extra,
+  });
+  if (!canUseFs() || !projectId) return report({ reason: 'no-filesystem' });
+
+  let held = state.held;
+  let fetched = 0;
+  let failed = 0;
+  const tell = async () => {
+    if (!onProgress) return;
+    try { await onProgress({ held, total: state.total, fetched }); } catch (_e) { /* ignored */ }
+  };
+  await tell();
+
+  const missing = new Set(state.missing);
+  for (const row of list) {
+    if (!missing.has(row.date)) continue;
+    if (fetched + failed >= perRun) {
+      return report({ held, fetched, failed, reason: 'per-run-cap' });
+    }
+    if (opts.shouldStop) {
+      let stop = false;
+      try { stop = opts.shouldStop() === true; } catch (_e) { stop = false; }
+      if (stop) return report({ held, fetched, failed, reason: 'stopped' });
+    }
+    if (opts.beforeEach) {
+      try { await opts.beforeEach(); } catch (_e) { /* a yield may not fail a fill */ }
+    }
+    const r = await ensureDayDetail(projectId, row.date, row.cache_version, {
+      expectLogs: (row.logs || []).length,
+    });
+    if (r.stored) {
+      fetched += 1;
+      held += 1;
+    } else {
+      failed += 1;
+      if (r.reason === 'unreachable') {
+        return report({ held, fetched, failed, reason: 'unreachable', error: r.error || null });
+      }
+    }
+    await tell();
+  }
+  return report({
+    held, fetched, failed,
+    complete: held >= state.total,
+    reason: null,
+  });
+}
+
 export default {
   historyScope,
   HISTORY_PAGE_DATES,
@@ -561,4 +1006,13 @@ export default {
   pruneDayDetails,
   fetchSubmittedHistory,
   syncLogbookHistory,
+  INDEX_PAGE_DATES,
+  INDEX_PROBE_DATES,
+  DETAIL_BACKFILL_PER_RUN,
+  dayDetailPath,
+  fetchSubmittedIndex,
+  syncLogbookIndex,
+  ensureDayDetail,
+  heldDayDetails,
+  backfillDayDetails,
 };

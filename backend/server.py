@@ -37482,6 +37482,100 @@ SUBMITTED_LOGBOOK_EXCLUDED_FIELDS = {
     "data.activities.photos.base64": 0,
 }
 
+# ══ AND THE LIST STILL COST THE WHOLE CORPUS ════════════════════════════════
+#
+# THE DEFECT, MEASURED ON PRODUCTION 2026-10-07 (588 Thomas, through this
+# handler). The tablet walks this endpoint at ten dates a page to draw its date
+# list:
+#
+#     page  dates  recs        bytes     ms
+#        1     10    63      6452999   1546
+#        2     10    83      4043877    788
+#        3     10    71      2028208    536
+#        4     10    57      1598155    463
+#        5      3    15       240401    121
+#      TOT     43   289     14363640   3454
+#
+# 14,363,640 bytes. 14,122,753 of them -- 98.3% -- are `data`, overwhelmingly
+# the worker signature images on pre-shift sheets. THE SERVER IS NOT SLOW: 3.4 s
+# of handler time for the lot. The ten minutes an inspector waits is TRANSFER.
+#
+# AND THE LIST DOES NOT RENDER ANY OF IT. The screen draws its dates off
+# `identityRow` (frontend/src/utils/siteLogbookHistory.js) --
+# `{date, id, cache_version, logs:[{id, log_type, status, updated_at}]}` -- which
+# for all 43 dates and 289 records is 44,016 bytes. 0.306% of what is
+# transferred. The tablet was moving 326x the bytes its list needs.
+#
+# ── INCLUSION HERE, AND THE ARGUMENT IS THE OPPOSITE OF THE ONE ABOVE ───────
+#
+# SUBMITTED_LOGBOOK_EXCLUDED_FIELDS is an exclusion precisely because its
+# consumer renders thirteen `data` shapes this file does not own, so a field
+# somebody starts drawing tomorrow must arrive by default. This projection has
+# the opposite consumer: ONE function, `identityRow`, which reads four fields
+# off a log and discards everything else. Naming them is therefore not a guess
+# about a renderer -- it is a transcription of a nine-line function -- and
+# `test_the_list_costs_the_index.py` derives the set from that function's own
+# source so the two cannot drift. The same call, for the same reason, as
+# WORKER_LIST_FIELDS (server.py:14138) and SUPERSEDED_LOOKUP_FIELDS.
+#
+# IT IS WIDER THAN THE FOUR FIELDS, AND EVERY EXTRA ONE IS LOAD-BEARING. The
+# amendment collapse in step 4 runs in BOTH modes -- it has to, or the index
+# would list a superseded record the full body omits, and the row set an
+# inspector sees would depend on which mode his tablet asked in. These are the
+# fields that collapse reads: `parent_logbook_id` (logbook_chain_parent),
+# `is_locked`/`status` (logbook_is_filed), `created_at` (the tie-break),
+# `is_amendment`/`amendment_reason`/`created_by_name` (amendment_state). Drop
+# any of them and the collapse silently picks a different head.
+SUBMITTED_LOGBOOK_INDEX_FIELDS = {
+    # what the row carries
+    "_id": 1, "date": 1, "log_type": 1, "status": 1,
+    "updated_at": 1, "submitted_at": 1, "created_at": 1,
+    # what the amendment collapse reads
+    "is_locked": 1, "is_amendment": 1, "parent_logbook_id": 1,
+    "amendment_reason": 1, "created_by_name": 1,
+}
+
+# The only `view` there is. An UNKNOWN view is a 400, not a silent fall-through
+# to the full body: a client that misspells it would otherwise ask for 44 KB and
+# be handed 14 MB with nothing anywhere saying why its list took ten minutes.
+SUBMITTED_LOGBOOK_VIEWS = {"index"}
+
+
+def _submitted_index_row(log: dict) -> dict:
+    """One record's identity. EXACTLY what `identityRow` keeps, and no `data`.
+
+    `updated_at` IS THE RESOLVED STAMP, NOT THE FIELD. The client's own
+    `pdfVersion` resolves `updated_at || submitted_at || created_at`, and that
+    string becomes the day's `cache_version` and therefore the NAME of the
+    full-day PDF on disk. Resolving it here produces the same string the client
+    would have computed off a full body, so a tablet that synced in full mode
+    before this deploy and in index mode after it names the same file -- rather
+    than naming a second one and letting sweepDocCache delete the first.
+
+    SERIALIZED THROUGH `serialize_id`, not by hand, for the same reason: it is
+    what marks Mongo's naive datetimes as UTC, and an unmarked one reaches
+    `new Date()` as local time and renames the file.
+    """
+    stamp = None
+    for field in ("updated_at", "submitted_at", "created_at"):
+        value = log.get(field)
+        if value is None or value == "":
+            continue
+        stamp = value
+        break
+    row = {
+        "log_type": log.get("log_type") or "",
+        "status": log.get("status") or "",
+        "updated_at": stamp,
+    }
+    # ONLY WHEN THERE IS ONE. serialize_id turns a present `_id` into `id`;
+    # handing it None would serve the string "None" as a record id, and the
+    # full body simply omits the key for an id-less row.
+    if log.get("_id") is not None:
+        row["_id"] = log.get("_id")
+    return serialize_id(row)
+
+
 # ── THE CAP, AND WHY IT COUNTS DATES ────────────────────────────────────────
 #
 # `.to_list(500)` returned the 500 most recent logs and said nothing about it.
@@ -37531,6 +37625,17 @@ async def get_submitted_logbooks(
         None, ge=1, le=MAX_SUBMITTED_DATES,
         description="Dates per page. Omit for the complete set.",
     ),
+    view: Optional[str] = Query(
+        None, max_length=16,
+        description="`index` for identity rows only (no `data`). Omit for "
+                    "whole documents, which is what an installed tablet asks "
+                    "for.",
+    ),
+    date: Optional[str] = Query(
+        None, max_length=32,
+        description="One date key. The day-detail read: whole documents for "
+                    "that date and nothing else.",
+    ),
     current_user = Depends(get_current_user),
     _proj = Depends(require_project_access),
 ):
@@ -37539,6 +37644,33 @@ async def get_submitted_logbooks(
     Returns {dates, complete, next_before, date_count, log_count}. `dates` is
     unchanged in shape and stays first for the installed clients that read
     nothing else.
+
+    THREE READS, AND THE DEFAULT ONE IS BYTE-FOR-BYTE WHAT IT ALWAYS WAS.
+
+      no parameters / `before` / `limit`   whole documents. UNCHANGED. An
+                                          installed tablet that has not taken
+                                          the OTA still asks exactly this and
+                                          still gets exactly this; the new
+                                          parameters are additive and absent
+                                          means absent. Breaking this strands
+                                          an inspector behind a tablet nobody
+                                          can update from the gate.
+      `view=index`                        identity rows, no `data`. 39,206
+                                          bytes for 588 Thomas's whole 43-date
+                                          history against 14,363,640 of
+                                          documents -- see
+                                          SUBMITTED_LOGBOOK_INDEX_FIELDS for
+                                          the measurement.
+      `date=<key>`                        whole documents for ONE date. What an
+                                          expanded day costs, instead of the
+                                          corpus.
+
+    A `date` READ NEVER CLAIMS COMPLETENESS. `complete` means "this body is the
+    whole submitted history of this project", and one date is not. The client's
+    walk treats an incomplete body as something it may not commit, and
+    `siteLogbookHistory`'s rule is that a list may only shrink on a complete
+    walk -- so a day-detail read that said `complete: true` would authorise the
+    tablet to replace 43 dates with 1 and let sweepDocCache delete the rest.
 
     ONE ROW PER RECORD, NOT PER DOCUMENT. An amendment chain arrives as one
     row -- its head -- carrying `_chain_length`, `_superseded_ids`,
@@ -37552,37 +37684,93 @@ async def get_submitted_logbooks(
     page boundary is always a date boundary: the distinct dates are ordered
     first, the page is cut there, and only then are that page's logs read.
     """
+    # ── THE TWO NEW PARAMETERS, NORMALISED BEFORE ANYTHING READS THEM ───────
+    #
+    # `view` and `date` arrive as strings over HTTP and as the Query() default
+    # OBJECT when this coroutine is called directly, which two tests in this
+    # repo do -- test_the_cache_key_carries_the_renderer.py:173 and the sort
+    # analyser both invoke `get_submitted_logbooks(project_id=..., before=None,
+    # limit=30)` with no `view` and no `date`. A truthy Query object reaching
+    # the branches below would 400 that call, or send it down the single-date
+    # path. Coerced to None, which is the DEFAULT behaviour -- the whole
+    # history, whole documents -- so the failure direction is "as before".
+    if not isinstance(view, str):
+        view = None
+    if not isinstance(date, str):
+        date = None
+    if view is not None and view not in SUBMITTED_LOGBOOK_VIEWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown view {view!r}; expected one of "
+                   f"{sorted(SUBMITTED_LOGBOOK_VIEWS)}",
+        )
+    index_only = view == "index"
+
     query = {
         "project_id": project_id,
         "status": "submitted",
         "is_deleted": {"$ne": True},
     }
 
-    # Step 1 — the ordered date index. Cheap: one key per calendar day the
-    # project filed on, never per log.
-    raw_by_key: Dict[str, List] = {}
-    for value in await db.logbooks.distinct("date", query):
-        raw_by_key.setdefault(_submitted_date_key(value), []).append(value)
-    keys = sorted(raw_by_key.keys(), reverse=True)
+    # ── STEP 1/2 — WHICH DATES THIS BODY IS ABOUT ───────────────────────────
+    #
+    # A `date` READ SKIPS THE DATE INDEX ENTIRELY. It is one day's documents,
+    # asked for by a screen that already holds the index and is expanding a row
+    # off it; running `distinct` over the project's whole history to answer it
+    # would put a scan back on the path this change exists to shorten.
+    if date is not None:
+        date_key = _submitted_date_key(date)
+        page = [date_key]
+        complete = False
+        next_before = None
+        # `unknown` IS NOT A DATE, IT IS THE BUCKET FOR LOGS THAT HAVE NONE.
+        # The grouping key for a null, missing or blank `date`, so the read for
+        # it has to ask for those values rather than for the literal string --
+        # `$in: [None]` matches a missing field as well as a null one, which is
+        # the same clause step 3 relies on below.
+        date_match = {"$in": [None, ""]} if date_key == "unknown" else date_key
+    else:
+        # Step 1 — the ordered date index. Cheap: one key per calendar day the
+        # project filed on, never per log.
+        raw_by_key: Dict[str, List] = {}
+        for value in await db.logbooks.distinct("date", query):
+            raw_by_key.setdefault(_submitted_date_key(value), []).append(value)
+        keys = sorted(raw_by_key.keys(), reverse=True)
 
-    # Step 2 — cut the page on a date boundary. The cursor is a date key and the
-    # order is descending, so "older than the cursor" is "sorts below it".
-    remaining = [k for k in keys if k < before] if before else keys
-    page = remaining[:(limit or MAX_SUBMITTED_DATES)]
-    # COMPLETE means: this body is the whole submitted history of this project.
-    # A cursor was given, or a page was cut -> it is not, and it says so.
-    complete = before is None and len(page) == len(keys)
-    next_before = page[-1] if page and len(page) < len(remaining) else None
+        # Step 2 — cut the page on a date boundary. The cursor is a date key and
+        # the order is descending, so "older than the cursor" is "sorts below
+        # it".
+        remaining = [k for k in keys if k < before] if before else keys
+        page = remaining[:(limit or MAX_SUBMITTED_DATES)]
+        # COMPLETE means: this body is the whole submitted history of this
+        # project. A cursor was given, or a page was cut -> it is not, and it
+        # says so.
+        complete = before is None and len(page) == len(keys)
+        next_before = page[-1] if page and len(page) < len(remaining) else None
 
-    # Step 3 — the logs for exactly those dates. The raw stored values are
-    # replayed rather than the keys, so an undated log (null, missing, or "")
-    # is fetched by what is actually on the document; `$in: [None]` matches a
-    # missing field as well as a null one.
-    wanted = [v for k in page for v in raw_by_key[k]]
+        # Step 3 — the logs for exactly those dates. The raw stored values are
+        # replayed rather than the keys, so an undated log (null, missing, or
+        # "") is fetched by what is actually on the document; `$in: [None]`
+        # matches a missing field as well as a null one.
+        wanted = [v for k in page for v in raw_by_key[k]]
+        date_match = {"$in": wanted} if wanted else None
+
     logbooks = []
-    if wanted:
+    # TWO CALLS, NOT ONE CALL WITH THE PROJECTION IN A VARIABLE. The exclusion
+    # call below is pinned by its SOURCE TEXT in
+    # frontend/src/utils/cpForeignPhotoResolution.test.cjs:398, which asserts
+    # that `/submitted` and only `/submitted` applies #357's exclusion -- the
+    # CP's own read must keep every photo field. Hoisting the projection into a
+    # local would pass that assertion's regex by accident or fail it by
+    # accident; spelling both reads out keeps it checking the thing it means.
+    if date_match is not None and index_only:
         logbooks = await db.logbooks.find(
-            {**query, "date": {"$in": wanted}},
+            {**query, "date": date_match},
+            SUBMITTED_LOGBOOK_INDEX_FIELDS,
+        ).sort("date", -1).to_list(None)
+    elif date_match is not None:
+        logbooks = await db.logbooks.find(
+            {**query, "date": date_match},
             SUBMITTED_LOGBOOK_EXCLUDED_FIELDS,
         ).sort("date", -1).to_list(None)
 
@@ -37624,6 +37812,19 @@ async def get_submitted_logbooks(
     for _key, _day in _by_day.items():
         for _chain in collapse_amendment_chains(_day):
             _head = _chain["head"]
+            # ── THE INDEX ROW LEAVES HERE AND NOWHERE ELSE ──────────────────
+            #
+            # INSIDE the collapse, deliberately. The index and the full body
+            # must list the SAME records, or an amended day would show two
+            # cards to a tablet reading the index and one to a tablet reading
+            # documents, and which an inspector saw would depend on an OTA.
+            # Everything below this point is the full body's own apparatus --
+            # the amendment sentence, the superseded ids, the competing fork --
+            # and all of it is rendered from the EXPANDED day, which is a `date`
+            # read of whole documents. None of it is on the list.
+            if index_only:
+                by_date[_key].append(_submitted_index_row(_head))
+                continue
             # SAFE FOR AN OLD CLIENT WITHOUT A SECOND FIELD, unlike the manifest
             # above. These rows are whole documents, so they still carry
             # `updated_at`/`submitted_at`/`created_at` -- all three are in
@@ -37659,7 +37860,7 @@ async def get_submitted_logbooks(
                     for _c in _chain["competing"]
                 ]
             by_date[_key].append(_row)
-    return {
+    body = {
         "dates": by_date,
         "complete": complete,
         "next_before": next_before,
@@ -37672,6 +37873,28 @@ async def get_submitted_logbooks(
         # is a number no reading of the payload could contradict.
         "log_count": sum(len(v) for v in by_date.values()),
     }
+    # ── THE SERVER SAYS WHICH BODY THIS IS, AND ONLY WHEN IT WAS ASKED ──────
+    #
+    # WHY THE ECHO EXISTS AT ALL. A server that predates `view` does not reject
+    # it -- FastAPI ignores an unknown query parameter -- it serves WHOLE
+    # DOCUMENTS for however many dates `limit` asked for. There is no other way
+    # for a client to tell "39 KB of identity rows" from "14 MB of documents
+    # that happen to carry the four fields I read", and getting it wrong is a
+    # tablet that commits an index it assembled out of a body nobody agreed to
+    # serve.
+    #
+    # AND WHY IT IS ABSENT RATHER THAN `null` BY DEFAULT. It was `"view": view`
+    # on every response for one commit, which is one line further than the
+    # change needed to go:
+    # test_one_record_with_its_history.py::test_the_payload_shape_an_installed_client_reads_is_unchanged
+    # PINS THE KEY SET of the body an installed tablet receives, and it failed.
+    # That gate is right and it is the backward-compatibility guarantee itself
+    # -- a tablet bolted to a gate cannot be updated from the gate. A client
+    # only ever sees this key when it asked for the mode, which is the only time
+    # it needs to read it.
+    if view is not None:
+        body["view"] = view
+    return body
 
 @api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):

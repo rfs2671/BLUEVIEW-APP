@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image,
-  Linking, Platform,
+  Linking, Platform, RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,7 +9,7 @@ import {
   ArrowLeft, ClipboardList, BookOpen, Users, FileText,
   Building2, Calendar, CheckCircle, ChevronRight, ChevronDown,
   CloudSun, Clock, MapPin, Wrench, ShieldCheck, Eye, Truck,
-  AlertTriangle, Pen, XCircle, Download, Share2, Lock,
+  AlertTriangle, Pen, XCircle, Download, Share2, Lock, RotateCw,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -27,9 +27,11 @@ import { logbooksAPI } from '../../src/utils/api';
 import { csLogItems, csItemState, csItemSummary } from '../../src/utils/superintendentLogModel';
 import { ensureCachedDocFile, warmDocCache } from '../../src/utils/docCache';
 import {
-  readHistoryIndex, readDayDetail, syncLogbookHistory,
+  readHistoryIndex, syncLogbookHistory,
+  syncLogbookIndex, ensureDayDetail, backfillDayDetails,
   dayReportId, dayReportVersion,
 } from '../../src/utils/siteLogbookHistory';
+import { claimForeground, awaitQuiet } from '../../src/utils/syncPriority';
 import { isOfflineError } from '../../src/utils/offlineState';
 import { headcountDisplay } from '../../src/utils/dailyJobsiteModel';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -109,6 +111,19 @@ const LOG_TABS = [
 const ANDROID_OFFLINE_PDF_MSG =
   'PDF viewing offline requires the next app update — the record is listed above and its PDF is saved on this device.';
 
+/**
+ * How long the background day-detail fill waits for a foreground read.
+ *
+ * A CAP, NOT A DELAY. `awaitQuiet` resolves the instant nothing is being read,
+ * so on an idle tablet the fill starts immediately. This number is only what
+ * happens if a claim is never released — the fill proceeds anyway, because a
+ * gate that can stop the device filling for ever is worse than one that
+ * occasionally fills a few seconds early. Shorter than the manifest filler's
+ * own cap because a day of detail is ~300 KB, not a 31.7 MB plan set: it can
+ * afford to be more eager.
+ */
+const DAY_FILL_DEFERRAL_MS = 8000;
+
 // Roster check-in time -> "7:42 AM". The toolbox roster carries the four
 // §3301.12.3 fields (name, title, company, date/time); this renders the time.
 // Falls back to the raw value rather than printing an error onto a record an
@@ -183,6 +198,36 @@ export default function SiteLogbooksViewer() {
   // Submitted Logs", which tells a DOB inspector no compliance records exist.
   const [fetchState, setFetchState] = useState('ok');
 
+  // ── THE CONTROLS AND THE INDICATOR THE OPERATOR RULED FOR ────────────────
+  //
+  // "load the list immediately, fetch documents on demand, add a refresh
+  // control and a visible progress indicator." Three pieces of state, and
+  // every number in all three is MEASURED -- see progressLine() below. Nothing
+  // here moves on a timer, and nothing reports a fraction whose denominator
+  // was assumed.
+  const [refreshing, setRefreshing] = useState(false);
+  // {pages, dates} while the index walk is in flight, null when it is not.
+  const [listProgress, setListProgress] = useState(null);
+  // {held, total, fetched, running, readable, reason} — the offline fill.
+  const [offlineFill, setOfflineFill] = useState(null);
+  // TRUE while what is drawn is a FRAGMENT of the filed history. The one thing
+  // this screen may never do is present a short list as the list, so the
+  // fragment is drawn only when the alternative is a blank screen, and it is
+  // drawn with this flag making the indicator say so.
+  const [indexPartial, setIndexPartial] = useState(false);
+
+  // Fire-and-forget work that outlives a render. `stopped` is flipped when the
+  // project changes, so a tablet re-provisioned to another job does not keep
+  // filling the old one; `mounted` is what keeps a resolved promise from
+  // setting state on a screen that has gone.
+  const fill = useRef({ running: false, listing: false, stopped: false, mounted: true });
+  useEffect(() => {
+    const token = fill.current;
+    token.mounted = true;
+    token.stopped = false;
+    return () => { token.mounted = false; token.stopped = true; };
+  }, [siteProject?.id]);
+
   // AND HOW THE LAST SERVER READ WENT IS NOT WHETHER THIS TABLET IS WHOLE.
   // The state above is about the network a moment ago. This one is about the
   // device: whether it holds the complete approved set at all. A tablet that
@@ -250,101 +295,270 @@ export default function SiteLogbooksViewer() {
   const dayPdfPath = (date) => `/api/reports/project/${siteProject?.id}/date/${date}/pdf`;
 
   /**
-   * THE LIST IS THE WHOLE FILED HISTORY, OR IT SAYS IT IS NOT.
+   * THE LIST IS THE WHOLE FILED HISTORY, OR IT SAYS IT IS NOT — AND IT ARRIVES
+   * IN 39 KB RATHER THAN 14 MB.
    *
-   * 1. INDEX FIRST — paint every date this device already holds before the
-   *    network is touched, so a dead zone shows the record immediately. The
-   *    stored index is complete BY CONSTRUCTION: siteLogbookHistory commits it
-   *    only when a walk reached the end, and its reader hands back ZERO rows
-   *    for a half-written one rather than a fragment that reads as a short
-   *    complete list.
+   * ── THE DEFECT, MEASURED ON PRODUCTION 2026-10-07 (588 Thomas) ──────────
    *
-   * 2. THEN WALK. On failure the index stays exactly as it was — the old
-   *    `setLogsByDate({})` was the bug: offline it rendered a confident "No
-   *    Submitted Logs" to a DOB inspector. An incomplete walk cannot shrink
-   *    anything either, and cannot replace what is on screen: rendering the
-   *    pages that happened to arrive would be a short list presented as the
-   *    list, which is the ruling this screen exists under.
+   * An inspector tapped Log Books, online, and waited ~TEN MINUTES with no
+   * refresh control and no progress. Through the real handler, this screen's
+   * own walk for whole documents: 14,363,640 bytes over five pages, of which
+   * 14,122,753 — 98.3% — were `data`, overwhelmingly the kiosk worker-signature
+   * images on pre-shift sheets. THE SERVER WAS NOT SLOW: 3.4 s of handler time
+   * for all five. The ten minutes was TRANSFER, and the list draws none of it.
+   * The same 43 dates and 289 records as `identityRow` are 44,016 bytes.
+   *
+   * Measured again after this change, same project, same handler: the index
+   * walk is 39,308 bytes in two requests and 167 ms. 0.27% of the documents.
+   * (It is SMALLER than the 44,016 stored rows because the day's own id and
+   * `cache_version` are synthesised on the device, not sent.)
+   *
+   * ── WHAT CHANGED, AND WHAT DID NOT ─────────────────────────────────────
+   *
+   * 1. INDEX FIRST, AND THE INDEX IS AN INDEX. The stored index still paints
+   *    before the network is touched, so a dead zone shows the record
+   *    immediately; it is complete BY CONSTRUCTION, because siteLogbookHistory
+   *    commits it only when a walk reached the end and its reader hands back
+   *    ZERO rows for a half-written one rather than a fragment that reads as a
+   *    short complete list. What is new is that the walk itself asks for
+   *    `view=index` — the four fields `identityRow` keeps, and no `data`.
+   *
+   * 2. THEN WALK, AND REPORT EACH PAGE. `setDateIndex` used to be INSIDE
+   *    `if (r.complete)`, so time-to-first-log was time-to-ALL-logs. It no
+   *    longer is — but the old rule it was protecting still holds, and the
+   *    distinction is WHAT IS ON SCREEN ALREADY. With a stored index painted, a
+   *    fragment may not replace it: that would be a SHORTER list in front of an
+   *    inspector. With nothing stored, the alternative to the fragment is a
+   *    blank screen, so the dates are drawn as they arrive and `indexPartial`
+   *    makes the screen say they are not yet the whole record — which is also
+   *    what withholds the "No Submitted Logs" claim until the walk finishes.
+   *
+   * 3. ONLY WHAT CHANGED IS FETCHED. The old walk rewrote every day's detail to
+   *    disk on every open, unchanged or not. Day detail is read on demand now,
+   *    and a day the device already holds at its filed version is not requested
+   *    at all — see ensureDayDetail.
+   *
+   * 4. AND A FAILED READ STILL CHANGES NOTHING. On failure the index stays
+   *    exactly as it was — the original `setLogsByDate({})` was the bug: offline
+   *    it rendered a confident "No Submitted Logs" to a DOB inspector. An
+   *    incomplete walk still cannot shrink anything and still cannot commit
+   *    anything.
    */
-  const fetchLogbooks = async () => {
-    setLoading(true);
-
-    const cached = await readHistoryIndex(siteProject.id);
-    const cachedRows = (cached && cached.rows) || [];
-    if (cachedRows.length > 0) {
-      setDateIndex(cachedRows);
-      setLoading(false);
+  const runListSync = async (projectId, hadStored) => {
+    const r = await syncLogbookIndex(projectId, {
+      onPage: ({ pages, dates, rows }) => {
+        if (!fill.current.mounted) return;
+        setListProgress({ pages, dates });
+        // ONLY WHEN THE ALTERNATIVE IS A BLANK SCREEN. With a stored index
+        // already painted, replacing it with a fragment would be a SHORTER
+        // list in front of an inspector mid-load.
+        if (!hadStored) {
+          setDateIndex(rows);
+          setIndexPartial(true);
+          setLoading(false);
+        }
+      },
+    });
+    // ── THE OLD WALK IS THE FALLBACK, AND IT IS A REACHABLE ONE ───────────
+    //
+    // This screen ships over the air and the API ships to Railway, so one is
+    // always ahead. A server that predates `view=index` ignores the parameter
+    // and serves whole documents; `fetchSubmittedIndex` detects that from the
+    // missing `view` echo and refuses to commit an index it assembled out of
+    // bodies nobody agreed to serve. `syncLogbookHistory` is then exactly what
+    // this screen did before -- slow, correct, and better than an empty screen
+    // for however long the deploy gap lasts.
+    if (r.reason === 'index-unsupported') {
+      console.warn('Logbook index unsupported by this server — falling back to '
+        + 'the full-document walk (slow). Expected only during a deploy gap.');
+      const legacy = await syncLogbookHistory(projectId);
+      // `rows: null` -- the committed list is read back out of the store, as it
+      // always was on this path. `recent` is carried because on WEB there is no
+      // filesystem, `readDayDetail` can never answer, and the walk's newest
+      // sixty dates are the only detail that surface will ever have; dropping
+      // it would make every expanded day on web re-ask a server that is
+      // ignoring `?date=` and answer with the whole corpus.
+      return { ...legacy, rows: null, viaFallback: true };
     }
+    return { ...r, recent: null, viaFallback: false };
+  };
 
-    const r = await syncLogbookHistory(siteProject.id);
-    // 'ok' | 'offline' | 'error' — the same three states, from the same
-    // discriminator. A walk that finished is the only one that answers 'ok';
-    // a page that never reached a server is offline, and anything else the
-    // server actually answered with is an error.
-    setFetchState(r.complete ? 'ok' : (isOfflineError(r.error) ? 'offline' : 'error'));
+  const fetchLogbooks = async (opts = {}) => {
+    const projectId = siteProject?.id;
+    if (!projectId) return;
+    // ONE WALK AT A TIME, SET BEFORE THE FIRST AWAIT so the guard is real. The
+    // mount effect and a pull-to-refresh can land together, and two walks on a
+    // gate tablet is two copies of the transfer this change exists to shrink.
+    if (fill.current.listing) return;
+    fill.current.listing = true;
+    const isRefresh = opts.refresh === true;
+    // THE READ CLAIMS THE LINK. `SiteManifestSync` defers its ~105 MB fill
+    // while this claim is held -- see src/utils/syncPriority.js. Released in
+    // `finally`, and the gate's own cap is what covers a leak anyway.
+    const release = claimForeground('site-logbooks-list');
+    if (isRefresh) setRefreshing(true); else setLoading(true);
+    setListProgress({ pages: 0, dates: 0 });
 
-    if (r.complete) {
-      const fresh = await readHistoryIndex(siteProject.id);
-      const rows = (fresh && fresh.rows) || [];
-      setDateIndex(rows);
-      // A date whose detail was just rewritten must not keep serving the copy
-      // already in memory — an amendment changes the day's version, and the
-      // expanded card has to re-read. What replaces it is the walk's FIRST
-      // page: the newest sixty dates, which is the window this screen used to
-      // hold whole, so the recent days an inspector actually asks for open
-      // with no disk read at all. On web — where nothing can be written to
-      // disk and readDayDetail can never answer — it is the only detail there
-      // is, which is why it is seeded rather than discarded.
-      setDayLogs(r.recent || {});
+    let cachedRows = [];
+    try {
+      const cached = await readHistoryIndex(projectId);
+      cachedRows = (cached && cached.rows) || [];
+      if (cachedRows.length > 0) {
+        setDateIndex(cachedRows);
+        setIndexPartial(false);
+        setLoading(false);
+      }
 
-      // Fire-and-forget: put each submitted log's PDF on disk so the bytes are
-      // here in the dead zone. NOT awaited — never on the render path. Newest
-      // first and bounded, because an inspector asks for the recent ones and
-      // the manifest store is what fills the rest of the history in the
-      // background.
-      const submitted = rows
-        .flatMap((row) => row.logs || [])
-        .filter((l) => l.status === 'submitted' && l.id);
-      warmDocCache(submitted, {
-        idOf: (l) => l.id,
-        versionOf: pdfVersion,
-        urlOf: (l) => logPdfPath(l.id),
-      }).catch(() => {});
-    } else {
-      console.warn(
-        `Logbooks walk incomplete (${r.reason || 'unknown'}) — keeping `
-        + `${cachedRows.length} stored date(s)`,
-        r.error,
-      );
+      const r = await runListSync(projectId, cachedRows.length > 0);
+      // 'ok' | 'offline' | 'error' — the same three states, from the same
+      // discriminator. A walk that finished is the only one that answers 'ok';
+      // a page that never reached a server is offline, and anything else the
+      // server actually answered with is an error.
+      setFetchState(r.complete ? 'ok' : (isOfflineError(r.error) ? 'offline' : 'error'));
+
+      if (r.complete) {
+        const fresh = await readHistoryIndex(projectId);
+        const stored = (fresh && fresh.rows) || [];
+        // WHAT IS DRAWN IS WHAT IS STORED, when the store answers. A commit
+        // that failed leaves a device holding the PREVIOUS generation, and
+        // `SiteReadinessNotice` is what says so; drawing the list this run
+        // computed would hide it. The walk's own rows are the fallback for the
+        // web build, where there is no filesystem to read back.
+        const rows = stored.length > 0 ? stored : (r.rows || []);
+        setDateIndex(rows);
+        setIndexPartial(false);
+        // A DATE WHOSE VERSION MAY HAVE MOVED MUST RE-READ. An amendment
+        // changes the day's `cache_version`, so detail already in memory can
+        // be the superseded record. Cleared rather than re-seeded: the effect
+        // below re-reads whatever is still expanded, off disk if it is held
+        // and off the server if it is not. The ONE exception is the legacy
+        // fallback, whose walk already carried the newest sixty days in memory
+        // and is the only detail web will ever have -- see runListSync.
+        setDayLogs(r.viaFallback ? (r.recent || {}) : {});
+
+        // Fire-and-forget: put each submitted log's PDF on disk so the bytes
+        // are here in the dead zone. NOT awaited — never on the render path.
+        const submitted = rows
+          .flatMap((row) => row.logs || [])
+          .filter((l) => l.status === 'submitted' && l.id);
+        warmDocCache(submitted, {
+          idOf: (l) => l.id,
+          versionOf: pdfVersion,
+          urlOf: (l) => logPdfPath(l.id),
+        }).catch(() => {});
+
+        // AND THE INLINE DETAIL FOR THE DEAD ZONE, off the render path too.
+        // This is the offline guarantee the old walk provided as a side effect
+        // of being slow: the same days end up on the device, fetched after the
+        // list is on screen instead of in front of it, and skipped entirely
+        // when the device already holds them.
+        if (!r.viaFallback) startOfflineFill(projectId, rows);
+      } else {
+        console.warn(
+          `Logbooks walk incomplete (${r.reason || 'unknown'}) — keeping `
+          + `${cachedRows.length} stored date(s)`,
+          r.error,
+        );
+      }
+    } finally {
+      fill.current.listing = false;
+      if (fill.current.mounted) {
+        setListProgress(null);
+        setLoading(false);
+        setRefreshing(false);
+      }
+      release();
     }
-
-    setLoading(false);
   };
 
   /**
-   * One day's rendered detail, off the filesystem, on demand.
+   * Fill this tablet's inline day detail, newest first, in the background.
    *
-   * NULL IS RECORDED, NOT RETRIED AS EMPTY. A day whose detail file is missing
-   * is a day this tablet can still produce as a PDF but cannot draw inline,
-   * and the card says exactly that. Storing `null` distinguishes it from a day
-   * nobody has opened yet, so the notice appears instead of a spinner that
-   * never ends.
+   * ONE AT A TIME, and `beforeEach` is the yield: a fill in flight hands the
+   * link back to any foreground read that starts while it is running, which is
+   * the same gate `SiteManifestSync` waits on.
+   *
+   * SCOPED TO THIS SCREEN, WHICH IS EXACTLY THE COVERAGE THERE WAS BEFORE.
+   * `syncLogbookHistory` had one caller — this screen — so day detail has only
+   * ever been written while somebody had Log Books open, and a tablet nobody
+   * opened it on held none of it either way. Nothing is narrowed by stopping
+   * here; the fill is resumable off a directory read, so the next open carries
+   * on. What an unvisited tablet still gets is every logbook PDF, from
+   * `warmDocCache` and the manifest filler, which is what an inspector opens
+   * in the dead zone when the inline copy is absent.
    */
-  const openDate = async (date) => {
-    if (expandedDate === date) { setExpandedDate(null); return; }
-    setExpandedDate(date);
-    if (Object.prototype.hasOwnProperty.call(dayLogs, date)) return;
+  const startOfflineFill = (projectId, rows) => {
+    if (fill.current.running) return;
+    fill.current.running = true;
+    const token = fill.current;
+    backfillDayDetails(projectId, rows, {
+      onProgress: (p) => {
+        if (token.mounted) {
+          setOfflineFill({ ...p, running: true, readable: true, reason: null });
+        }
+      },
+      beforeEach: () => awaitQuiet(DAY_FILL_DEFERRAL_MS),
+      shouldStop: () => token.stopped,
+    })
+      .then((res) => {
+        if (token.mounted) setOfflineFill({ ...res, running: false });
+      })
+      .catch(() => { if (token.mounted) setOfflineFill(null); })
+      .finally(() => { token.running = false; });
+  };
+
+  /**
+   * One day's rendered detail: off the filesystem if this tablet holds it, off
+   * the server if it does not.
+   *
+   * NULL IS RECORDED, NOT RETRIED AS EMPTY. A day this tablet can still
+   * produce as a PDF but cannot draw inline says exactly that. Storing `null`
+   * distinguishes it from a day nobody has opened yet, so the notice appears
+   * instead of a spinner that never ends.
+   *
+   * THE FETCH IS ONE DATE, NOT THE CORPUS. ~300 KB for a heavy day against the
+   * 14.36 MB the whole history used to cost to draw a list -- and nothing at
+   * all for a day already on disk at this version.
+   */
+  const loadDayDetail = useCallback(async (date) => {
+    const projectId = siteProject?.id;
+    if (!projectId || !date) return;
     const row = dateIndex.find((r) => r.date === date);
     setDayLoading(date);
+    const release = claimForeground('site-logbooks-day');
     try {
-      const logs = await readDayDetail(siteProject?.id, date, row?.cache_version);
-      setDayLogs((prev) => ({ ...prev, [date]: logs }));
+      const r = await ensureDayDetail(projectId, date, row?.cache_version, {
+        expectLogs: (row?.logs || []).length,
+        // DO NOT SPEND 60 s DISCOVERING WHAT THE LAST WALK ALREADY FOUND OUT.
+        // `fetchState` is at most one poll old and pull-to-refresh renews it.
+        offline: fetchState === 'offline',
+      });
+      setDayLogs((prev) => ({ ...prev, [date]: Array.isArray(r.logs) ? r.logs : null }));
     } catch (_e) {
       setDayLogs((prev) => ({ ...prev, [date]: null }));
     } finally {
       setDayLoading((d) => (d === date ? null : d));
+      release();
     }
+  }, [siteProject?.id, dateIndex, fetchState]);
+
+  const openDate = (date) => {
+    setExpandedDate((d) => (d === date ? null : date));
   };
+
+  // THE EXPANDED DAY IS READ BY AN EFFECT, NOT BY THE TAP HANDLER, and that is
+  // what makes it self-healing. A completed sync clears `dayLogs` because an
+  // amendment can have moved the day's version — and with the read living in
+  // the tap handler, a date that was ALREADY open at that moment would render
+  // an expanded card with nothing under it: a filed day presented as blank, to
+  // an inspector. Keyed on "expanded and not yet answered", so it re-reads
+  // exactly then.
+  useEffect(() => {
+    if (!expandedDate) return;
+    if (Object.prototype.hasOwnProperty.call(dayLogs, expandedDate)) return;
+    if (dayLoading === expandedDate) return;
+    loadDayDetail(expandedDate);
+  }, [expandedDate, dayLogs, dayLoading, loadDayDetail]);
 
   // ===========================================================================
   //  PDF handlers — local file only, no token in any URL
@@ -498,6 +712,63 @@ export default function SiteLogbooksViewer() {
   const sortedDates = filteredIndex.map((row) => row.date);
   // Records actually on screen for this tab — what the offline banner reports.
   const visibleLogCount = filteredIndex.reduce((n, row) => n + row.logs.length, 0);
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  THE PROGRESS INDICATOR, AND EVERY NUMBER ON IT IS A MEASUREMENT
+  // ═════════════════════════════════════════════════════════════════════════
+  //
+  // THE RULE IT IS WRITTEN UNDER: do not fake progress. There is no animated
+  // bar here and no "n of m" whose m was assumed. Exactly three facts can
+  // appear, and each one is counted:
+  //
+  //   pages / dates   what the index walk has actually received. `pages` is
+  //                   responses returned; `dates` is rows assembled from them.
+  //                   Reported by the walk itself, per page, before it issues
+  //                   the next request.
+  //   held / total    `held` is day-detail files this device can OPEN, from one
+  //                   directory read matched against the stored names;
+  //                   `total` is dates in the committed index. Neither is a
+  //                   guess and neither moves without a file landing.
+  //   nothing         the normal state of a current tablet. A progress line
+  //                   that is always on screen is decoration, and an inspector
+  //                   reading a compliance record does not need to be told the
+  //                   device is idle.
+  //
+  // IT SAYS WHEN IT IS SHORT. `indexPartial` is what makes the loading line
+  // name itself a fragment, and a fill that stopped short reports the number it
+  // reached rather than rounding up to the total.
+  const progressLine = () => {
+    if (listProgress) {
+      if (listProgress.pages === 0) {
+        return { text: 'Checking for new filings…', busy: true };
+      }
+      const n = listProgress.dates;
+      return {
+        text: indexPartial
+          ? `Loading filed history — ${n} date${n === 1 ? '' : 's'} so far, `
+            + 'not yet the complete record'
+          : `Loading filed history — ${n} date${n === 1 ? '' : 's'}`,
+        busy: true,
+      };
+    }
+    // NOTHING ON WEB. There is no filesystem there, `readDayDetail` can never
+    // answer and the fill can never hold anything — so "0 of 43 saved" would
+    // report a device that is failing at something it is not attempting.
+    if (!offlineFill || offlineFill.readable === false) return null;
+    const { held, total, running } = offlineFill;
+    if (!Number.isFinite(Number(total)) || Number(total) === 0) return null;
+    if (running) {
+      return { text: `Saving records for offline use — ${held} of ${total} days`, busy: true };
+    }
+    if (Number(held) >= Number(total)) return null;
+    return {
+      text: offlineFill.reason === 'unreachable'
+        ? `Saved for offline use: ${held} of ${total} days — reconnect to finish`
+        : `Saved for offline use: ${held} of ${total} days`,
+      busy: false,
+    };
+  };
+  const progress = progressLine();
 
   const formatDate = (dateStr) => {
     try {
@@ -1793,6 +2064,23 @@ export default function SiteLogbooksViewer() {
             <Text style={s.headerTitle}>Log Books</Text>
             <Text style={s.headerSub}>Submitted Records</Text>
           </View>
+          {/* AN EXPLICIT CONTROL AS WELL AS PULL-TO-REFRESH, and the reason is
+              the machine. This is a tablet bolted to a gate, operated with
+              work gloves on and often by somebody who has never used the app
+              before; a pull gesture that has to start inside a scroll view is
+              not a control an inspector can be expected to find. The pull
+              still works for whoever knows it. Both call the same function. */}
+          <Pressable
+            onPress={() => { if (!loading && !refreshing) fetchLogbooks({ refresh: true }); }}
+            disabled={loading || refreshing}
+            style={s.refreshBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Check for new filed records"
+          >
+            {refreshing
+              ? <ActivityIndicator size="small" color={colors.text.muted} />
+              : <RotateCw size={18} strokeWidth={1.8} color={colors.text.muted} />}
+          </Pressable>
         </View>
 
         {/* Inspector Mode banner — read-only notice + exit control. */}
@@ -1843,11 +2131,34 @@ export default function SiteLogbooksViewer() {
         </ScrollView>
 
         {/* Content */}
-        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent}>
+        <ScrollView
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
+          refreshControl={(
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => fetchLogbooks({ refresh: true })}
+              tintColor={colors.text.muted}
+              colors={[colors.text.muted]}
+            />
+          )}
+        >
           {/* WHETHER THIS TABLET IS WHOLE, stated before anything it shows.
               Silent on a device that is complete and current, which is the
               normal case; the inspector never sees it on a healthy tablet. */}
           <SiteReadinessNotice readiness={readiness} />
+
+          {/* WHAT IS HAPPENING, IN COUNTED FACTS. See progressLine(): no
+              animated fraction, no assumed denominator, and nothing at all on
+              a tablet that is current. */}
+          {!!progress && (
+            <View style={s.progressRow}>
+              {progress.busy
+                ? <ActivityIndicator size="small" color={colors.text.muted} />
+                : <Download size={14} strokeWidth={1.5} color={colors.text.muted} />}
+              <Text style={s.progressText}>{progress.text}</Text>
+            </View>
+          )}
 
           {loading ? (
             <View style={s.loadingCenter}>
@@ -1866,13 +2177,24 @@ export default function SiteLogbooksViewer() {
             // whole story, and it is the story about the tablet.
             !mayClaimEmpty ? null
             : fetchState === 'ok' ? (
-              <GlassCard style={s.emptyCard}>
-                <FileText size={40} strokeWidth={1} color={colors.text.muted} />
-                <Text style={s.emptyTitle}>No Submitted Logs</Text>
-                <Text style={s.emptyText}>
-                  Submitted {tabLabel(effectiveTab)} entries will appear here.
-                </Text>
-              </GlassCard>
+              // AND NOT WHILE THE INDEX IS KNOWN TO BE A FRAGMENT.
+              //
+              // This is the price of rendering pages as they arrive, and it has
+              // to be paid here. `filteredIndex` is filtered BY TAB, so the
+              // first page of a partial load can legitimately hold no record of
+              // the tab in force while a later page does — and "No Submitted
+              // Logs" is a claim about the RECORD, which is the one claim this
+              // screen may not make on an incomplete read. The progress line
+              // above is already saying the history is still loading.
+              indexPartial ? null : (
+                <GlassCard style={s.emptyCard}>
+                  <FileText size={40} strokeWidth={1} color={colors.text.muted} />
+                  <Text style={s.emptyTitle}>No Submitted Logs</Text>
+                  <Text style={s.emptyText}>
+                    Submitted {tabLabel(effectiveTab)} entries will appear here.
+                  </Text>
+                </GlassCard>
+              )
             ) : (
               <OfflineNotice mode={fetchState} cachedCount={0} />
             )
@@ -2060,6 +2382,22 @@ function buildStyles(colors, isDark) {
   },
   headerTitle: { fontSize: 22, fontWeight: '600', color: colors.text.primary },
   headerSub: { fontSize: 15, color: colors.text.muted },
+
+  // 48x48, which is the house minimum touch target and not a decoration here:
+  // this is tapped with a work glove on, on a tablet bolted to a gate.
+  refreshBtn: {
+    minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center',
+    borderRadius: borderRadius.full, borderWidth: 1, borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
+  },
+
+  // The counted-facts line. See progressLine().
+  progressRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  progressText: { flex: 1, fontSize: 15, color: colors.text.muted },
 
   // Tabs
   tabScroll: { flexGrow: 0, marginBottom: spacing.sm },
