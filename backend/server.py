@@ -44506,7 +44506,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
-              "matched": 0, "new": 0, "changed": 0}
+              "segment_permits": 0, "matched": 0, "new": 0, "changed": 0}
     named = set()
     try:
         projects = await db.projects.find(
@@ -44516,6 +44516,14 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
     except Exception as e:
         logger.warning(f"[dot-sync] project read failed: {type(e).__name__}")
         return report
+    company_names: Dict[str, str] = {}
+    try:
+        cids = list({str(p.get("company_id")) for p in projects})
+        async for c in db.companies.find(
+                {"_id": {"$in": [to_query_id(c) for c in cids]}}, {"name": 1}):
+            company_names[str(c.get("_id"))] = dot_sync.norm_name(c.get("name"))
+    except Exception:
+        company_names = {}
     for p in projects:
         pk = dot_sync.project_keys(p)
         reqs = dot_sync.queries(pk)
@@ -44537,12 +44545,20 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
                 report["records"] += 1
                 if not isinstance(rec, dict):
                     continue
-                how = dot_sync.match(pk, dot_sync.record_keys(rec))
+                if q["kind"] == "dot_permit" and dot_sync.is_segment_permit(rec):
+                    report["segment_permits"] += 1     # no house number: not guessed
+                    continue
+                how = dot_sync.match(q["kind"], pk, rec)
                 if not how:
                     continue
                 log = dot_sync.to_log(q["kind"], rec)
                 if not log:
                     continue
+                if q["kind"] == "dot_permit":
+                    # An extra signal only, never a reason to match.
+                    log["permittee_is_company"] = bool(
+                        company_names.get(company_id)) and dot_sync.norm_name(
+                        log.get("permittee")) == company_names.get(company_id)
                 report["matched"] += 1
                 try:
                     res = await _dot_store(project_id, company_id, log, how, now)

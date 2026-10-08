@@ -9,6 +9,7 @@ record without the value a line needs is left out, never filled in.
 
   🔴  new violation / complaint / stop-work order since the last brief
   🔴  new DOT summons since the last brief
+  🟠  an OATH hearing still to come on a DOT summons (its hearing_date)
   🟡  a DOB status change: permit issued / expired / revoked, stop-work order
       rescinded, or any change DOB marks as needing action
   🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30
@@ -23,7 +24,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import wa_gc
+from lib import dot_sync, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -262,10 +263,18 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                     "rank": RANK_REGULATORY, "order": (0, -issued.toordinal()),
                     "text": f"🔴 New DOT summons {num}, issued {_md(issued)}"
                             + (f", {status}" if status else "") + ". DOT."})
-        elif rt == "dot_permit":
+        elif rt == "dot_permit" and dot_sync.permit_is_active(r.get("status")):
             item = _expiry_item(r, "number", "DOT", today, label="DOT permit")
             if item:
                 items.append(item)
+        if rt == "dot_violation":
+            # An OATH hearing still to come, from the record's hearing_date.
+            hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
+            num = _text(r.get("number"))
+            if hearing and num and hearing >= today:
+                items.append({
+                    "rank": RANK_REGULATORY, "order": (0, hearing.toordinal()),
+                    "text": f"🟠 OATH hearing {_md(hearing)} · ticket #{num} · DOT."})
     items.sort(key=lambda i: (i["rank"], i["order"]))
     return items
 

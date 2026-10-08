@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from lib import wa_gc
+from lib import dot_sync, wa_gc
 
 # ── The kinds and their switches ────────────────────────────────────────────
 
@@ -190,6 +190,11 @@ def collect(dob_rows: List[Dict[str, Any]], dot_rows: List[Dict[str, Any]],
         if rt == "dot_violation" and not is_closed(r):
             out.append({"kind": "dot_violation", "item": rid, "rec": r})
         elif rt == "dot_permit":
+            # Only an active permit ("ISSUED & PRINTED"). A row DOT already
+            # shows as EXPIRED / VOIDED / DELINQUENT gets nothing; "expired"
+            # below is an active permit whose end date has passed.
+            if not dot_sync.permit_is_active(r.get("status")):
+                continue
             exp = wa_gc.parse_dob_date(r.get("expiration_date"))
             if exp is None:
                 continue

@@ -67,7 +67,8 @@ def _swo(raw, **kw):
 def _dot(raw, kind="dot_violation", co=CO_A, pid="proj_a", **kw):
     row = {"_id": f"d_{raw}", "project_id": pid, "company_id": co,
            "record_type": kind, "raw_id": f"oath:{raw}", "number": raw,
-           "issue_date": "2026-10-06", "status": "DEFAULT",
+           "issue_date": "2026-10-06",
+           "status": "ISSUED & PRINTED" if kind == "dot_permit" else "DEFAULT",
            "description": "Sidewalk obstruction",
            "link": f"https://data.example/{raw}", "detected_at": NOON}
     row.update(kw)
@@ -202,6 +203,26 @@ class EachNewKindPostsOnce(unittest.TestCase):
         self.assertTrue(all("Source: DOT" in t for t in texts))
 
 
+class DotPermitStatuses(unittest.TestCase):
+
+    def test_an_already_expired_or_voided_permit_never_alerts(self):
+        exp = (TODAY + timedelta(days=5)).isoformat()
+        db = _world()
+        with _Ctx(db=db) as c, _no_ai():
+            _first_run(db)
+            for i, st in enumerate(("EXPIRED", "EXPIRED UNDER GUARANTEE",
+                                    "VOIDED AFTER ISSUE", "DELINQUENT - FEES")):
+                db.dot_logs.rows.append(_dot(f"X{i}", kind="dot_permit",
+                                             raw_id=f"dotpermit:X{i}", status=st,
+                                             expiration_date=exp))
+            db.dot_logs.rows.append(_dot("Y", kind="dot_permit", raw_id="dotpermit:Y",
+                                         status="EXPIRED",
+                                         expiration_date=(TODAY - timedelta(days=3)).isoformat()))
+            _run(server._gc_alerts_tick(NOON))
+            _run(server._gc_alerts_tick(NOON + timedelta(days=10)))
+        self.assertEqual(_group_sends(c), [])
+
+
 class NoBackfill(unittest.TestCase):
 
     def test_existing_records_of_every_kind_post_nothing(self):
@@ -333,64 +354,109 @@ class TheChecker(unittest.TestCase):
 
 class DotMatching(unittest.TestCase):
 
-    P = {"address": "588 Thomas S Boyland St, Brooklyn, NY 11212",
-         "nyc_bin": "3082345", "bbl": "3015230001"}
+    P = {"address": "588 Thomas S Boyland St, Brooklyn, NY 11212", "bbl": "3015230001"}
+    OATH = {"issuing_agency": "DEPT OF TRANSPORTATION", "ticket_number": "T1",
+            "violation_location_borough": "BROOKLYN",
+            "violation_location_block_no": "01523", "violation_location_lot_no": "0001",
+            "violation_location_house": "588",
+            "violation_location_street_name": "THOMAS S BOYLAND STREET"}
+    PERMIT = {"permitnumber": "P1", "boroughname": "BROOKLYN",
+              "permithousenumber": "588", "onstreetname": "THOMAS S BOYLAND STREET"}
 
-    def _m(self, rec, project=None):
-        return dot_sync.match(dot_sync.project_keys(project or self.P),
-                              dot_sync.record_keys(rec))
+    def _pk(self, project=None):
+        return dot_sync.project_keys(project or self.P)
 
-    def test_bin_first(self):
-        self.assertEqual(self._m({"bin": "3082345"}), "bin")
-        self.assertIsNone(self._m({"bin": "3082346", "bbl": "3015230001"}),
-                          "a different BIN is not this building, whatever else matches")
+    def test_oath_bbl_first(self):
+        self.assertEqual(dot_sync.match("dot_violation", self._pk(), self.OATH), "bbl")
+        other_lot = {**self.OATH, "violation_location_lot_no": "0002"}
+        self.assertIsNone(dot_sync.match("dot_violation", self._pk(), other_lot),
+                          "a different BBL is another lot, whatever the address")
 
-    def test_bbl_from_boro_block_lot(self):
-        rec = {"violation_location_borough": "BROOKLYN",
-               "violation_location_block_no": "01523", "violation_location_lot_no": "0001"}
-        self.assertEqual(self._m(rec), "bbl")
-        self.assertIsNone(self._m({**rec, "violation_location_lot_no": "2"}))
-
-    def test_exact_address_only(self):
-        p = {"address": "588 Thomas S Boyland St, Brooklyn, NY"}
-        ok = {"violation_location_house": "588",
-              "violation_location_street_name": "THOMAS S BOYLAND STREET",
-              "violation_location_borough": "BROOKLYN"}
-        self.assertEqual(self._m(ok, p), "address")
-        for bad in ({**ok, "violation_location_house": "586"},
-                    {**ok, "violation_location_street_name": "THOMAS BOYLAND ST"},
-                    {**ok, "violation_location_borough": "QUEENS"},
-                    {"violation_location_street_name": "THOMAS S BOYLAND ST"}):
+    def test_oath_missing_bbl_parts_fall_back_to_exact_address(self):
+        rec = {**self.OATH, "violation_location_block_no": "00000",
+               "violation_location_lot_no": "0000"}
+        self.assertEqual(dot_sync.oath_keys(rec)["bbl"], "")
+        self.assertEqual(dot_sync.match("dot_violation", self._pk(), rec), "address")
+        for bad in ({**rec, "violation_location_house": "586"},
+                    {**rec, "violation_location_street_name": "THOMAS BOYLAND ST"},
+                    {**rec, "violation_location_borough": "QUEENS"}):
             with self.subTest(bad):
-                self.assertIsNone(self._m(bad, p))
-
-    def test_dot_permit_house_number_field(self):
-        p = {"address": "588 Thomas S Boyland St, Brooklyn, NY"}
-        rec = {"permithousenumber": "588", "onstreetname": "THOMAS S BOYLAND STREET",
-               "boroughname": "BROOKLYN"}
-        self.assertEqual(self._m(rec, p), "address")
+                self.assertIsNone(dot_sync.match("dot_violation", self._pk(), bad))
 
     def test_staten_island_as_oath_writes_it(self):
         rec = {"violation_location_borough": "STATEN IS",
-               "violation_location_block_no": "100", "violation_location_lot_no": "5"}
-        self.assertEqual(dot_sync.record_keys(rec)["bbl"], "5001000005")
-        self.assertEqual(dot_sync.record_keys(rec)["boro"], "5")
+               "violation_location_block_no": "00100", "violation_location_lot_no": "0005"}
+        self.assertEqual(dot_sync.oath_keys(rec)["bbl"], "5001000005")
+        self.assertEqual(dot_sync.oath_keys(rec)["boro"], "5")
 
-    def test_permit_query_is_narrowed_to_the_address(self):
-        pk = dot_sync.project_keys({"address": "10 West 30 Street, Manhattan, NY"})
-        q = [x for x in dot_sync.queries(pk) if x["dataset"] == dot_sync.PERMIT_DATASET][0]
-        self.assertIn("permithousenumber = '10'", q["params"]["$where"])
-        self.assertNotIn("like '%W%'", q["params"]["$where"])
+    def test_both_dot_agency_spellings(self):
+        for agency in ("DEPT OF TRANSPORTATION", "DEPT OF TRAN"):
+            with self.subTest(agency):
+                self.assertEqual(dot_sync.to_log("dot_violation", {
+                    **self.OATH, "issuing_agency": agency})["number"], "T1")
+        for agency in ("DEPT OF SANITATION", "DEPARTMENT OF BUILDINGS", ""):
+            with self.subTest(agency):
+                self.assertIsNone(dot_sync.to_log("dot_violation", {
+                    **self.OATH, "issuing_agency": agency}))
 
-    def test_placeholder_bin_is_no_bin(self):
-        self.assertEqual(dot_sync.norm_bin("3000000"), "")
+    def test_oath_fields_kept(self):
+        log = dot_sync.to_log("dot_violation", {
+            **self.OATH, "violation_date": "2026-10-06T00:00:00.000",
+            "hearing_status": "PENDING", "hearing_date": "2026-10-20T00:00:00.000",
+            "charge_1_code_description": "OBSTRUCTION OF SIDEWALK",
+            "penalty_imposed": "0", "balance_due": "0", "compliance_status": "N/A",
+            "hearing_result": None})
+        self.assertEqual((log["number"], log["status"], log["hearing_date"],
+                          log["description"]),
+                         ("T1", "PENDING", "2026-10-20T00:00:00.000",
+                          "OBSTRUCTION OF SIDEWALK"))
 
-    def test_only_dot_summonses_are_kept(self):
-        rec = {"ticket_number": "T1", "issuing_agency": "DEPT OF SANITATION"}
-        self.assertIsNone(dot_sync.to_log("dot_violation", rec))
-        log = dot_sync.to_log("dot_violation", {**rec, "issuing_agency":
-                                                "DEPARTMENT OF TRANSPORTATION"})
-        self.assertEqual((log["raw_id"], log["number"]), ("oath:T1", "T1"))
+    def test_permit_borough_house_street_all_three(self):
+        self.assertEqual(dot_sync.match("dot_permit", self._pk(), self.PERMIT), "address")
+        for bad in ({**self.PERMIT, "boroughname": "QUEENS"},
+                    {**self.PERMIT, "permithousenumber": "586"},
+                    {**self.PERMIT, "onstreetname": "THOMAS BOYLAND ST"},
+                    {**self.PERMIT, "boroughname": ""}):
+            with self.subTest(bad):
+                self.assertIsNone(dot_sync.match("dot_permit", self._pk(), bad))
+
+    def test_segment_permit_never_matches(self):
+        seg = {**self.PERMIT, "permithousenumber": "", "fromstreetname": "X",
+               "tostreetname": "Y"}
+        self.assertTrue(dot_sync.is_segment_permit(seg))
+        self.assertIsNone(dot_sync.match("dot_permit", self._pk(), seg))
+
+    def test_permit_fields_kept(self):
+        log = dot_sync.to_log("dot_permit", {
+            **self.PERMIT, "permitissuedate": "2026-09-01T00:00:00.000",
+            "issuedworkenddate": "2026-10-20T00:00:00.000",
+            "permitstatusshortdesc": "ISSUED & PRINTED",
+            "permittypedesc": "OCCUPANCY OF SIDEWALK", "permitteename": "ACME GC LLC"})
+        self.assertEqual((log["number"], log["expiration_date"], log["status"],
+                          log["permittee"]),
+                         ("P1", "2026-10-20T00:00:00.000", "ISSUED & PRINTED", "ACME GC LLC"))
+
+    def test_active_statuses(self):
+        self.assertTrue(dot_sync.permit_is_active("ISSUED & PRINTED"))
+        for s in ("EXPIRED", "EXPIRED UNDER GUARANTEE", "VOIDED AFTER ISSUE",
+                  "DELINQUENT - FEES", "", None):
+            with self.subTest(s):
+                self.assertFalse(dot_sync.permit_is_active(s))
+
+    def test_queries_are_narrowed(self):
+        qs = dot_sync.queries(self._pk())
+        oath_bbl = qs[0]["params"]["$where"]
+        self.assertIn("violation_location_block_no = '01523'", oath_bbl)
+        self.assertIn("violation_location_lot_no = '0001'", oath_bbl)
+        self.assertIn("like 'DEPT OF TRAN%'", oath_bbl)
+        permit = [q for q in qs if q["dataset"] == dot_sync.PERMIT_DATASET][0]
+        self.assertIn("boroughname = 'BROOKLYN'", permit["params"]["$where"])
+        self.assertIn("permithousenumber = '588'", permit["params"]["$where"])
+
+    def test_no_borough_no_permit_query(self):
+        pk = dot_sync.project_keys({"address": "588 Thomas S Boyland St"})
+        self.assertFalse(any(q["dataset"] == dot_sync.PERMIT_DATASET
+                             for q in dot_sync.queries(pk)))
 
 
 class DotSyncJob(unittest.TestCase):
@@ -405,7 +471,7 @@ class DotSyncJob(unittest.TestCase):
 
     def test_matches_stores_and_logs_field_names_only(self):
         db = self._world()
-        mine = {"ticket_number": "T1", "issuing_agency": "DEPARTMENT OF TRANSPORTATION",
+        mine = {"ticket_number": "T1", "issuing_agency": "DEPT OF TRANSPORTATION",
                 "violation_date": "2026-10-06", "hearing_status": "DEFAULT",
                 "violation_location_borough": "BROOKLYN",
                 "violation_location_block_no": "1523", "violation_location_lot_no": "1",
@@ -433,7 +499,7 @@ class DotSyncJob(unittest.TestCase):
 
     def test_status_change_is_kept(self):
         db = self._world()
-        rec = {"ticket_number": "T1", "issuing_agency": "DEPARTMENT OF TRANSPORTATION",
+        rec = {"ticket_number": "T1", "issuing_agency": "DEPT OF TRANSPORTATION",
                "violation_location_borough": "BROOKLYN",
                "violation_location_block_no": "1523", "violation_location_lot_no": "1",
                "hearing_status": "DEFAULT"}
@@ -448,6 +514,29 @@ class DotSyncJob(unittest.TestCase):
         row = db.dot_logs.rows[0]
         self.assertEqual((row["status"], row["previous_status"], r["changed"]),
                          ("PAID IN FULL", "DEFAULT", 1))
+
+    def test_permits_segments_counted_and_permittee_flag(self):
+        db = self._world()
+        db.companies.rows = [{"_id": CO_A, "name": "Acme GC, LLC"},
+                             {"_id": CO_B, "name": "B"}]
+        exact = {"permitnumber": "P1", "boroughname": "BROOKLYN",
+                 "permithousenumber": "588", "onstreetname": "THOMAS S BOYLAND STREET",
+                 "permitstatusshortdesc": "ISSUED & PRINTED",
+                 "issuedworkenddate": "2026-10-20T00:00:00.000",
+                 "permitteename": "ACME GC LLC"}
+        segment = {**exact, "permitnumber": "P2", "permithousenumber": "",
+                   "fromstreetname": "A", "tostreetname": "B"}
+
+        async def fetch(dataset, params):
+            if dataset == dot_sync.PERMIT_DATASET and "BROOKLYN" in params["$where"]:
+                return [exact, segment]
+            return []
+
+        with patch.object(server, "db", db):
+            r = _run(server._dot_sync_tick(now=NOON, fetch=fetch))
+        self.assertEqual(r["segment_permits"], 1)
+        self.assertEqual([x["number"] for x in db.dot_logs.rows], ["P1"])
+        self.assertTrue(db.dot_logs.rows[0]["permittee_is_company"])
 
     def test_a_failed_request_stores_nothing(self):
         db = self._world()
@@ -487,6 +576,19 @@ class TheBrief(unittest.TestCase):
                             for t in texts), texts)
         self.assertTrue(any(t.startswith("🟠 DOT permit P1 expires") and t.endswith("DOT.")
                             for t in texts), texts)
+
+    def test_upcoming_oath_hearing(self):
+        dot = [_dot("D5", detected_at=NOON - timedelta(days=9),
+                    hearing_date="2026-10-20T00:00:00.000"),
+               _dot("D6", detected_at=NOON - timedelta(days=9),
+                    hearing_date="2026-09-01T00:00:00.000")]
+        texts = [i["text"] for i in wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot)]
+        self.assertEqual(texts, ["🟠 OATH hearing Oct 20 · ticket #D5 · DOT."])
+
+    def test_inactive_dot_permit_not_in_brief(self):
+        dot = [_dot("P9", kind="dot_permit", raw_id="dotpermit:P9", status="EXPIRED",
+                    expiration_date=(TODAY + timedelta(days=4)).isoformat())]
+        self.assertEqual(wa_brief.job_items([], NOON - timedelta(hours=20), NOON, dot), [])
 
     def test_old_dot_summons_is_not_new(self):
         dot = [_dot("D9", detected_at=NOON - timedelta(days=3))]
