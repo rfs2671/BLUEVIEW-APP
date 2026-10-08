@@ -131,8 +131,10 @@ export default function SettingsScreen() {
   // `jsCommit` is a slot EAS fills at build time (app.json extra.jsCommit).
   // Until that is wired it is null, and the OTA update id is what identifies
   // the bundle — a UUID, not a SHA, so it cannot be COMPARED to the backend
-  // commit. The card says which of the two it is showing rather than implying
-  // a comparison it cannot make.
+  // commit. The value SAYS which of the two it is rather than implying a
+  // comparison it cannot make. It reaches the clipboard only, not the card:
+  // the 2026-10-07 ruling left one line on screen, and `jsCommit` is still
+  // read here because buildVerdict compares it below.
   // TYPE-GUARDED, and this is not defensive padding — it is a fix.
   // app.json carried `"jsCommit": null` and the Expo config pipeline handed it
   // back as `{}`. An empty object is TRUTHY, so it flowed straight into the
@@ -152,6 +154,11 @@ export default function SettingsScreen() {
   // reader to do the arithmetic and to know what current looks like; "34 days
   // ago" is the whole diagnosis. Absent for an embedded bundle, deliberately —
   // see src/utils/bundleAge.js.
+  //
+  // THIS GOES TO THE CLIPBOARD, NOT THE CARD, since the 2026-10-07 ruling.
+  // The on-screen age did not disappear with the row: BuildMarker renders the
+  // same label on the CP surfaces, which is why the row was the duplicate one
+  // and this is not — a pasted support string has no BuildMarker beside it.
   const _jsAge = bundleAgeLabel(Updates.createdAt);
   const jsBuiltAt = Updates.createdAt
     ? `${new Date(Updates.createdAt).toLocaleString()}${_jsAge ? ` — ${_jsAge}` : ''}`
@@ -250,9 +257,31 @@ export default function SettingsScreen() {
   const buildMatches = verdict.ok;
   const buildVerdictText = backendLoading ? null : verdict.text;
 
+  // THE COPY DID NOT SHRINK WHEN THE CARD DID, and that is a decision.
+  //
+  // The 2026-10-07 ruling dropped App version and Bundle built from the
+  // DISPLAY. They went because they were duplicated on the same phone —
+  // BuildMarker prints `v{version}` and `bundle: {id} · {created}` on the CP
+  // surfaces, so a reader holding the device already had them. That argument
+  // does not reach the clipboard: a pasted string is read by somebody who
+  // CANNOT see the screen, and a support call is the only reason this control
+  // exists. Dropping a row from a glance is not dropping it from a support
+  // thread, so all four identities stay here.
+  //
+  // AND TWO ARE ADDED. `deployed_at` and the verdict state are what say WHICH
+  // SIDE moved; while they lived only on the card, a support thread got the
+  // two commits and had to re-derive the direction — the exact re-derivation
+  // src/utils/buildVerdict.js exists to stop anybody doing by eye.
+  //
+  // The STATE, not `verdict.text`: a token like `backend_ahead` is greppable
+  // across tickets and does not drift when the sentence is reworded. The
+  // sentence is for the person holding the phone, and it is on the card.
   const copyBuild = async () => {
     await Clipboard.setStringAsync(
-      `app ${appVersion} | js ${jsBundle} | built ${jsBuiltAt} | backend ${backendCommit || 'unreachable'}`,
+      `app ${appVersion} | js ${jsBundle} | built ${jsBuiltAt}`
+      + ` | backend ${backendCommit || 'unreachable'}`
+      + ` | deployed ${backendDeployedAt || 'not reported'}`
+      + ` | verdict ${verdict.state}`,
     );
     setBuildCopied(true);
     setTimeout(() => setBuildCopied(false), 2000);
@@ -1276,14 +1305,37 @@ export default function SettingsScreen() {
               than the backend. Time was spent diagnosing a defect that did
               not exist.
 
-              The two identities are shown TOGETHER, because knowing the
-              bundle alone does not tell you whether it matches the server.
+              ONE LINE, on the operator's ruling of 2026-10-07: "drop App
+              version and Bundle built; keep backend commit + verdict as one
+              line."
+
+              WHAT WENT WAS THE DUPLICATED HALF. BuildMarker already prints
+              `v{version}` and `bundle: {id} · {created}` on the CP surfaces,
+              and every user carries the app version to the server as
+              `client_version` — so this card was the second place the phone
+              said both. The JS bundle row goes with them for the same reason
+              (BuildMarker's `bundle: {updateId}`), which the ruling did not
+              name but "one line" leaves no room for.
+
+              WHAT STAYED IS WHAT EXISTS NOWHERE ELSE. `backendCommit` is read
+              on no other screen, and the verdict is the only thing that reads
+              the two identities as a PAIR. Both are here because of recorded
+              incidents: see src/utils/buildVerdict.js for the single string
+              compare that printed MISMATCH for three different states and sent
+              out an acceptance test telling a CP to wait for a version line
+              that was never going to change.
+
+              THE VERDICT IS NOT FOLDED INTO THE LINE'S VALUE. The value text
+              is numberOfLines={1}, and clipping the one sentence this card
+              exists to say would rebuild the terse-verdict defect from the
+              other direction. One identity, and the sentence that reads it.
+
+              THE COPY STILL CARRIES EVERYTHING — see copyBuild above for why
+              shrinking the display is a different decision from shrinking the
+              clipboard.
               Not on a CP-facing compliance screen — settings only. */}
           <Text style={s.sectionLabel}>BUILD</Text>
           <GlassCard style={s.card}>
-            <BuildInfoRow label="App version" value={appVersion} onCopy={copyBuild} />
-            <BuildInfoRow label="JS bundle" value={jsBundle} onCopy={copyBuild} />
-            <BuildInfoRow label="Bundle built" value={jsBuiltAt} onCopy={copyBuild} />
             <BuildInfoRow
               label="Backend"
               value={backendLoading ? 'checking…' : (backendCommit || 'unreachable')}
