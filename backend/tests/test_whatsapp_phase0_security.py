@@ -905,12 +905,17 @@ class ChecklistExtractionDefaultsOff(unittest.TestCase):
             _run(server._run_whatsapp_checklist_extractions())
         self.assertEqual(calls, [])
 
-    def test_the_panel_default_matches(self):
+    def test_the_panel_shows_the_servers_defaults(self):
+        """The panel keeps no defaults of its own (a second copy is how the
+        two drifted): it renders the server's effective config, whose
+        checklist default is off."""
         src = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
                "components" / "whatsapp" / "GroupConfigPanel.jsx").read_text()
-        block = src[src.index("const DEFAULT_CONFIG"):src.index("};", src.index("const DEFAULT_CONFIG"))]
-        self.assertIn("checklist_extraction_enabled: false", block)
-        self.assertIn("plan_queries: true", block)
+        self.assertNotIn("DEFAULT_CONFIG", src)
+        self.assertIn("useState(() => group?.bot_config || {})", src)
+        cfg = server._effective_bot_config({})
+        self.assertFalse(cfg["checklist_extraction_enabled"])
+        self.assertTrue(cfg["features"]["plan_queries"])
 
 
 # ══════════════════════════════════════════════════════════════════════════

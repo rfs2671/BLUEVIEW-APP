@@ -5,7 +5,6 @@ alerts into: new violations and permit expiry reminders. Everything here is a
 plain function so it is tested without a server:
 
   * which linked group is the GC group (auto-pick, trade words excluded)
-  * whether now is inside the posting window (7 AM – 7 PM ET)
   * which permit reminder threshold is due (30 / 14 / 7 / 1 days)
   * reading DOB's dates
   * the violation message: an AI-written plain-language summary is used ONLY
@@ -74,23 +73,69 @@ def parse_confirm_reply(body: Optional[str]) -> Optional[str]:
     return None
 
 
-# ── When to post ────────────────────────────────────────────────────────────
+# ── When to send (per project, the admin's choice) ──────────────────────────
+#
+# "anytime" (the default): as soon as something is found. "work_hours": 7 AM
+# to 7 PM New York time. "custom": the admin's start and end (HH:MM, New York
+# time; an end before the start runs overnight). Outside the window nothing is
+# sent and nothing is marked, so the first run inside it sends what waited.
 
-POST_START_HOUR = 7    # 7 AM ET
-POST_END_HOUR = 19     # 7 PM ET (exclusive)
+SEND_ANYTIME = "anytime"
+SEND_WORK_HOURS = "work_hours"
+SEND_CUSTOM = "custom"
+SEND_MODES = (SEND_ANYTIME, SEND_WORK_HOURS, SEND_CUSTOM)
+WORK_HOURS = ("07:00", "19:00")
+_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
-def in_post_window(now_utc: datetime) -> bool:
-    """True from 7:00 AM to 6:59 PM America/New_York. Outside it nothing is
-    posted and nothing is marked, so the next run inside the window posts it.
-    Fail closed: no time zone data, no posting."""
+def default_send_window() -> Dict[str, Any]:
+    return {"mode": SEND_ANYTIME, "start": WORK_HOURS[0], "end": WORK_HOURS[1]}
+
+
+def clean_send_window(value: Any) -> Optional[Dict[str, Any]]:
+    """A valid window dict, or None when `value` is not one."""
+    if not isinstance(value, dict):
+        return None
+    mode = value.get("mode")
+    if mode not in SEND_MODES:
+        return None
+    out = default_send_window()
+    out["mode"] = mode
+    if mode == SEND_CUSTOM:
+        start, end = value.get("start"), value.get("end")
+        if not (isinstance(start, str) and _HHMM.match(start)
+                and isinstance(end, str) and _HHMM.match(end)) or start == end:
+            return None
+        out["start"], out["end"] = start, end
+    return out
+
+
+def _minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def in_send_window(now_utc: datetime, window: Any) -> bool:
+    """May an alert go out now under this project's window? Anything that is
+    not a valid window means anytime (the default). Fail closed only where a
+    window IS set and New York time cannot be told."""
+    w = clean_send_window(window) or default_send_window()
+    if w["mode"] == SEND_ANYTIME:
+        return True
+    start, end = (WORK_HOURS if w["mode"] == SEND_WORK_HOURS
+                  else (w["start"], w["end"]))
     if _ET is None:
         return False
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=timezone.utc)
-    h = now_utc.astimezone(_ET).hour
-    return POST_START_HOUR <= h < POST_END_HOUR
+    local = now_utc.astimezone(_ET)
+    t = local.hour * 60 + local.minute
+    a, b = _minutes(start), _minutes(end)
+    return a <= t < b if a < b else (t >= a or t < b)
 
+
+# ── Today, in New York ──────────────────────────────────────────────────────
+# Permit reminder thresholds (days left) are counted on the New York calendar.
 
 def today_et(now_utc: datetime) -> date:
     if now_utc.tzinfo is None:
@@ -166,7 +211,7 @@ def permit_message(*, project_name: str, permit: Dict[str, Any],
     lead = ("expires today" if days_left <= 0
             else "expires tomorrow" if days_left == 1
             else f"expires in {days_left} days")
-    lines = [f"Levelog: a {what} on {project_name} {lead} ({when})."]
+    lines = [f"Levelog Assistant: a {what} on {project_name} {lead} ({when})."]
     if num:
         lines.append(f"Permit: {num}")
     link = str(permit.get("dob_link") or "").strip()
@@ -199,7 +244,7 @@ def _norm(s: str) -> str:
 # Tokens a summary must not invent: anything with a digit (numbers, dates,
 # amounts, codes like "B123" or "BC 3301.2"), and all-caps codes of 2+ letters.
 _TOKEN_RE = re.compile(r"\$?\d[\d,./:-]*\d|\$?\d|[A-Za-z]+\d[\w-]*|\b[A-Z]{2,}[A-Z0-9-]*\b")
-_ALLOWED_WORDS = {"levelog", "dob", "nyc", "ok"}
+_ALLOWED_WORDS = {"levelog", "assistant", "dob", "nyc", "ok"}
 
 
 def _tokens(text: str) -> set:
@@ -278,7 +323,7 @@ def check_summary(text: str, facts: Dict[str, str]) -> bool:
 def violation_template(*, project_name: str, facts: Dict[str, str]) -> str:
     """The fixed message when the AI summary is missing or fails the check.
     Only record values, copied verbatim."""
-    parts = [f"Levelog: a new DOB violation was issued for {project_name}."]
+    parts = [f"Levelog Assistant: a new DOB violation was issued for {project_name}."]
     if facts.get("description"):
         parts.append(f"What it says: {facts['description']}")
     if facts.get("violation_date"):
@@ -308,7 +353,7 @@ SUMMARY_SYSTEM_PROMPT = (
     "given. Do not add any number, date, dollar amount, code or law that is "
     "not in the facts. Do not guess a fine. Do not include the violation "
     "number or a link (they are added separately). Start with "
-    "'Levelog: a new DOB violation'."
+    "'Levelog Assistant: a new DOB violation'."
 )
 
 

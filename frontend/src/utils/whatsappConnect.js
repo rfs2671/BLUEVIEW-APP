@@ -6,7 +6,7 @@
  *
  *   header      the Levelog number and whether WhatsApp is set up for the
  *               company (GET /whatsapp/status), with Save to Contacts
- *   Your alerts this person's own updates (GET /whatsapp/me state, from
+ *   Levelog Assistant  this person's own updates (GET /whatsapp/me state, from
  *               backend lib/wa_dm.py::connect_state) — Admins and PMs
  *   Groups      linking job groups — Admins only
  *
@@ -50,7 +50,7 @@ export function needsFreshLink(link, now = Date.now()) {
 }
 
 /**
- * The "Your alerts" section for a GET /whatsapp/me reading, or null.
+ * The "Levelog Assistant" section for a GET /whatsapp/me reading, or null.
  * `connectUrl` is the single-use coded link from POST /whatsapp/connect-link;
  * the plain-START `me.connect_url` is the fallback when none could be had.
  */
@@ -58,24 +58,24 @@ export function alertsView(me, connectUrl = null) {
   const state = me && me.state;
   if (!me || !me.eligible || !state || state === 'not_eligible') return null;
   const onUrl = me.connect_url ? (connectUrl || me.connect_url) : null;
-  const on = onUrl ? { label: 'Turn on alerts', url: onUrl } : null;
+  const on = onUrl ? { label: 'Turn on Levelog Assistant', url: onUrl } : null;
   switch (state) {
     case 'connected':
       return {
-        chip: chip('On', 'ok'),
+        chip: chip('Assistant on', 'ok'),
         line: `You'll get updates for your projects at ${formatWaPhone(me.phone)}.`,
-        button: me.stop_url ? { label: 'Turn off', url: me.stop_url, quiet: true } : null,
+        button: me.stop_url ? { label: 'Turn off Assistant', url: me.stop_url, quiet: true } : null,
       };
     case 'reconnect_needed':
       return {
         chip: chip('Reconnect needed', 'warn'),
-        line: 'Your phone number changed. Turn alerts on again from your new number.',
+        line: 'Your phone number changed. Turn on Levelog Assistant again from your new number.',
         button: on,
       };
     case 'phone_missing':
       return {
         chip: chip('Phone missing', 'warn'),
-        line: 'Add your mobile number in Settings, then turn alerts on.',
+        line: 'Add your mobile number in Settings, then turn on Levelog Assistant.',
         button: null,
       };
     case 'phone_shared':
@@ -87,14 +87,14 @@ export function alertsView(me, connectUrl = null) {
     case 'unavailable':
       return {
         chip: chip('Not available', 'warn'),
-        line: "WhatsApp alerts aren't set up yet. Contact Levelog support.",
+        line: "Levelog Assistant isn't set up yet. Contact Levelog support.",
         button: null,
       };
     case 'not_connected':
     default:
       return {
-        chip: chip('Off', 'idle'),
-        line: 'Get updates for your projects on WhatsApp.',
+        chip: chip('Assistant off', 'idle'),
+        line: 'Get updates for your projects on WhatsApp from Levelog Assistant.',
         button: on,
       };
   }

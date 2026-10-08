@@ -16,13 +16,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   MessageCircle,
-  Plus,
   Trash2,
   X,
   Copy,
   CheckCircle,
-  Settings,
-  FileText,
   RotateCw,
   ChevronDown,
   ChevronRight,
@@ -32,12 +29,14 @@ import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
-import { whatsappAPI, projectsAPI, documentsAPI } from '../../../src/utils/api';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
+import { whatsappAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
-import GroupConfigPanel, { isConfigNonDefault } from '../../../src/components/whatsapp/GroupConfigPanel';
+import GroupConfigPanel from '../../../src/components/whatsapp/GroupConfigPanel';
+import LevelogAssistantCard from '../../../src/components/whatsapp/LevelogAssistantCard';
+import { groupLabel, headerTitle, messageCountLabel } from '../../../src/utils/whatsappSettings';
 import { withAlpha } from '../../../src/styles/semanticColors';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { readCachedProject } from '../../../src/utils/projectCache';
@@ -51,7 +50,12 @@ export default function WhatsAppGroupsScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  // Admins see the Levelog Assistant settings and the per-group settings.
+  // Owner / admin / CP may link and unlink a group (the server's rule).
+  const isAdmin = isCompanyAdmin(user);
+  const canLink = ['owner', 'admin', 'cp'].includes(String(user?.role || '').toLowerCase());
+  const [confirmUnlink, setConfirmUnlink] = useState(null);
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -65,34 +69,11 @@ export default function WhatsAppGroupsScreen() {
   const [fetchState, setFetchState] = useState('ok');
   const readOnly = fetchState !== 'ok';
 
-  // Document index state (Sprint 3)
-  const [indexStatus, setIndexStatus] = useState(null);  // {qwen_configured, files:[...]}
-  const [indexOpen, setIndexOpen] = useState(false);
-  const [reindexing, setReindexing] = useState(null); // file_id currently being re-indexed
-
   // Modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
-  // ── THE CODE FLOW IS NO LONGER THE FRONT DOOR ─────────────────────────
-  //
-  // Adding the bot to a group now puts it on a waiting list an admin confirms
-  // from one screen (app/admin/whatsapp-groups.jsx), which is a tap instead of
-  // four steps that begin with knowing the six-digit flow exists.
-  //
-  // The code flow is KEPT, working and reachable, behind this disclosure. It
-  // is the only path that works when the bot cannot be added to the group by
-  // the person doing the linking, and deleting a working route because a
-  // better one shipped is how a fallback stops existing right when it is
-  // needed.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  // The nickname lives HERE, not on a project settings screen, because there
-  // is no general project settings screen in this app and because this is the
-  // only place the field does anything: it is scored against WhatsApp group
-  // names so a group called "The Church Job" finds a project whose address
-  // says nothing of the kind.
-  const [nickname, setNickname] = useState('');
-  const [nicknameSaving, setNicknameSaving] = useState(false);
-  const [nicknameDirty, setNicknameDirty] = useState(false);
+  // The six-digit code flow is kept (see the quiet link under the groups):
+  // it is the only path when the person linking cannot add the number to
+  // the group themselves.
 
   const [linkStep, setLinkStep] = useState(1);
   const [verifyCode, setVerifyCode] = useState('');
@@ -142,11 +123,10 @@ export default function WhatsAppGroupsScreen() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectRes, groupsRes, waStatus, idxStatus] = await Promise.all([
+      const [projectRes, groupsRes, waStatus] = await Promise.all([
         settleFetch(() => projectsAPI.getById(projectId)),
         settleFetch(() => whatsappAPI.getGroups(projectId)),
         whatsappAPI.getStatus().catch(() => null),
-        documentsAPI.getIndexStatus(projectId).catch(() => null),
       ]);
 
       // Offline fallback for the project name/header — cacheProject() already
@@ -168,38 +148,14 @@ export default function WhatsAppGroupsScreen() {
       setFetchState(netState);
 
       setProject(projectData);
-      // Seeded from the server, not kept in sync after — the field is only
-      // dirty once a person types, so a background refetch cannot silently
-      // discard what they are in the middle of writing.
-      if (!nicknameDirty) setNickname(projectData?.nickname || '');
       setGroups(Array.isArray(groupsRes.data) ? groupsRes.data : []);
       setWhatsappStatus(waStatus);
-      setIndexStatus(idxStatus);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       setFetchState('error');
       toast.error('Load Error', 'Could not load WhatsApp groups');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleReindex = async (fileId) => {
-    setReindexing(fileId);
-    try {
-      await documentsAPI.reindexFile(projectId, fileId);
-      toast.success('Indexing', 'Re-index started. Check back in a moment.');
-      // Refresh status after a short delay
-      setTimeout(async () => {
-        try {
-          const s = await documentsAPI.getIndexStatus(projectId);
-          setIndexStatus(s);
-        } catch {}
-      }, 2500);
-    } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Re-index failed');
-    } finally {
-      setReindexing(null);
     }
   };
 
@@ -219,22 +175,6 @@ export default function WhatsAppGroupsScreen() {
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       toast.error('Error', 'Could not copy to clipboard');
-    }
-  };
-
-  const handleSaveNickname = async () => {
-    setNicknameSaving(true);
-    try {
-      await projectsAPI.update(projectId, { nickname: nickname.trim() });
-      setNicknameDirty(false);
-      toast.success('Saved', 'Nickname updated');
-    } catch (error) {
-      toast.error(
-        'Could not save',
-        error.response?.data?.detail || 'Please try again',
-      );
-    } finally {
-      setNicknameSaving(false);
     }
   };
 
@@ -301,6 +241,13 @@ export default function WhatsAppGroupsScreen() {
   };
 
   const handleUnlinkGroup = async (groupDocId) => {
+    // Two taps: the first asks, the second unlinks. (A dialog would not
+    // show on the web build.)
+    if (confirmUnlink !== groupDocId) {
+      setConfirmUnlink(groupDocId);
+      return;
+    }
+    setConfirmUnlink(null);
     setUnlinking(groupDocId);
     try {
       await whatsappAPI.unlinkGroup(groupDocId);
@@ -342,8 +289,10 @@ export default function WhatsAppGroupsScreen() {
         >
           {/* Title */}
           <View style={s.titleSection}>
-            <Text style={s.titleLabel}>{project?.name || 'PROJECT'}</Text>
-            <Text style={s.titleText}>WhatsApp Groups</Text>
+            <Text style={s.titleLabel}>
+              {project?.address || project?.location || project?.name || 'PROJECT'}
+            </Text>
+            <Text style={s.titleText}>{headerTitle(readOnly ? 0 : groups.length)}</Text>
           </View>
 
           {loading ? (
@@ -372,175 +321,45 @@ export default function WhatsAppGroupsScreen() {
                 </>
               )}
 
-              {/* ── HOW A GROUP GETS CONNECTED NOW ───────────────────────
-                  Add the number to the group; it appears on the waiting list
-                  and an admin confirms which job it is. No code to paste. */}
-              <GlassCard style={{ padding: spacing.md, marginTop: spacing.md }}>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
-                  Add a group
-                </Text>
-                <Text style={{ fontSize: 13, color: colors.text.secondary, marginTop: 4 }}>
-                  Add the Levelog number to the WhatsApp group. It shows up under
-                  Groups waiting, and you pick the job there.
-                </Text>
-                <GlassButton
-                  title="Open groups waiting"
-                  onPress={() => router.push('/admin/whatsapp-groups')}
-                  style={{ marginTop: spacing.sm }}
-                />
-              </GlassCard>
-
-              {/* The six-digit flow, kept and demoted. See the note beside
-                  `advancedOpen` for why it is not deleted. */}
-              <Pressable
-                onPress={() => setAdvancedOpen((v) => !v)}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
-                         paddingVertical: spacing.sm, marginTop: spacing.xs }}
-              >
-                <Text style={{ fontSize: 13, color: colors.text.muted }}>
-                  Advanced: link with code
-                </Text>
-                {advancedOpen
-                  ? <ChevronDown size={16} color={colors.text.muted} />
-                  : <ChevronRight size={16} color={colors.text.muted} />}
-              </Pressable>
-              {advancedOpen && (
-                <GlassButton
-                  title={readOnly ? 'Linking needs a connection' : '+ Link with a code'}
-                  icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                  onPress={handleOpenLinkModal}
-                  disabled={readOnly}
-                  style={s.linkButton}
-                />
-              )}
-
-              {/* ── THE NICKNAME ─────────────────────────────────────────────
-                  One field, filled in once, that removes a guess for every
-                  group on this job. Scored against group names alongside the
-                  street — see backend/lib/group_match.py. */}
-              <GlassCard style={{ padding: spacing.md, marginTop: spacing.md }}>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
-                  Job nickname
-                </Text>
-                <Text style={{ fontSize: 13, color: colors.text.secondary, marginTop: 4 }}>
-                  What people call this job in conversation. Used to match WhatsApp
-                  group names to this project. Optional.
-                </Text>
-                <TextInput
-                  value={nickname}
-                  onChangeText={(v) => { setNickname(v); setNicknameDirty(true); }}
-                  placeholder="e.g. The Church Job"
-                  placeholderTextColor={colors.text.subtle}
-                  style={{
-                    marginTop: spacing.sm,
-                    borderWidth: 1,
-                    borderColor: withAlpha('#ffffff', 0.12),
-                    borderRadius: borderRadius.sm,
-                    paddingHorizontal: spacing.md,
-                    paddingVertical: spacing.sm,
-                    color: colors.text.primary,
-                    fontSize: 15,
-                  }}
-                />
-                {nicknameDirty && (
-                  <GlassButton
-                    title={nicknameSaving ? 'Saving…' : 'Save nickname'}
-                    onPress={handleSaveNickname}
-                    disabled={nicknameSaving || readOnly}
-                    style={{ marginTop: spacing.sm }}
-                  />
-                )}
-              </GlassCard>
-
-              {/* Groups List */}
+              {/* ── GROUPS ─────────────────────────────────────────────────
+                  Real names and message counts. Linking a new group lives
+                  in Integrations ("Link new groups"), not here. */}
+              <Text style={s.sectionHeading}>Groups</Text>
               {groups.length > 0 ? (
                 <View style={s.groupsList}>
                   {groups.map((group) => {
                     const groupId = group._id || group.id;
-                    const isConfigOpen = configOpenId === groupId;
-                    const nonDefault = isConfigNonDefault(group.bot_config);
+                    const asking = confirmUnlink === groupId;
                     return (
-                      <View key={groupId}>
-                        <GlassCard style={s.groupItem}>
-                          <View style={s.groupRow}>
-                            <View style={s.groupIconWrap}>
-                              <MessageCircle size={22} strokeWidth={1.5} color={WHATSAPP_GREEN} />
-                            </View>
-                            <View style={s.groupInfo}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                <Text style={s.groupName} numberOfLines={1}>
-                                  {group.group_name || group.name || 'WhatsApp Group'}
-                                </Text>
-                                {nonDefault && (
-                                  <View
-                                    style={{
-                                      width: 8,
-                                      height: 8,
-                                      borderRadius: 4,
-                                      backgroundColor: colors.primary,
-                                    }}
-                                  />
-                                )}
-                              </View>
-                              {group.message_count != null && (
-                                <View style={s.messageBadge}>
-                                  <Text style={s.messageBadgeText}>
-                                    {group.message_count} messages
-                                  </Text>
-                                </View>
-                              )}
-                            </View>
-                            <Pressable
-                              onPress={() => setConfigOpenId(isConfigOpen ? null : groupId)}
-                              style={({ pressed }) => [
-                                s.iconBtn,
-                                pressed && { opacity: 0.7 },
-                                isConfigOpen && { backgroundColor: colors.glass.background },
-                              ]}
-                            >
-                              <Settings
-                                size={18}
-                                strokeWidth={1.5}
-                                color={isConfigOpen ? colors.primary : colors.text.secondary}
-                              />
-                            </Pressable>
+                      <GlassCard key={groupId} style={s.groupItem}>
+                        <View style={s.groupRow}>
+                          <View style={s.groupIconWrap}>
+                            <MessageCircle size={22} strokeWidth={1.5} color={WHATSAPP_GREEN} />
+                          </View>
+                          <View style={s.groupInfo}>
+                            <Text style={s.groupName} numberOfLines={1}>
+                              {groupLabel(group.group_name)}
+                            </Text>
+                            <Text style={s.groupMeta}>{messageCountLabel(group.message_count)}</Text>
+                          </View>
+                          {canLink ? (
                             <Pressable
                               onPress={() => handleUnlinkGroup(groupId)}
-                              disabled={unlinking === groupId}
-                              style={({ pressed }) => [
-                                s.iconBtn,
-                                pressed && { opacity: 0.7 },
-                              ]}
+                              disabled={unlinking === groupId || readOnly}
+                              accessibilityLabel={asking ? 'Tap again to unlink' : 'Unlink group'}
+                              style={({ pressed }) => [s.iconBtn, pressed && { opacity: 0.7 }]}
                             >
                               {unlinking === groupId ? (
                                 <ActivityIndicator size="small" color={colors.status.error} />
+                              ) : asking ? (
+                                <Text style={s.unlinkConfirm}>Unlink?</Text>
                               ) : (
                                 <Trash2 size={18} strokeWidth={1.5} color={colors.status.error} />
                               )}
                             </Pressable>
-                          </View>
-                        </GlassCard>
-                        {isConfigOpen && (
-                          <GroupConfigPanel
-                            group={group}
-                            qwenConfigured={!!indexStatus?.qwen_configured}
-                            hasIndexedDocs={
-                              Array.isArray(indexStatus?.files)
-                              && indexStatus.files.some((f) => (f.indexed_pages || 0) > 0)
-                            }
-                            onSaved={(updated) => {
-                              setGroups((prev) =>
-                                prev.map((g) =>
-                                  (g._id || g.id) === groupId
-                                    ? { ...g, bot_config: updated.bot_config || g.bot_config }
-                                    : g,
-                                ),
-                              );
-                            }}
-                            onClose={() => setConfigOpenId(null)}
-                          />
-                        )}
-                      </View>
+                          ) : null}
+                        </View>
+                      </GlassCard>
                     );
                   })}
                 </View>
@@ -557,92 +376,75 @@ export default function WhatsAppGroupsScreen() {
                   <MessageCircle size={48} strokeWidth={1} color={colors.text.subtle} />
                   <Text style={s.emptyTitle}>No groups linked yet</Text>
                   <Text style={s.emptyDesc}>
-                    Link a WhatsApp group to this project to enable messaging, site queries, and
-                    daily summaries for your team.
+                    Add the Levelog number to the job's WhatsApp group, then link it in
+                    Integrations → Link new groups.
                   </Text>
                 </GlassCard>
               )}
 
-              {/* Document Index (Sprint 3) — only render when relevant */}
-              {(() => {
-                const anyFiles = (indexStatus?.files || []).length > 0;
-                const anyPlanQueryGroup = groups.some((g) => g?.bot_config?.features?.plan_queries);
-                if (!anyFiles && !anyPlanQueryGroup) return null;
-                return (
-                  <GlassCard style={{ marginTop: spacing.lg, padding: spacing.md }}>
-                    <Pressable
-                      onPress={() => setIndexOpen((v) => !v)}
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}
-                    >
-                      <FileText size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                      <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
-                        Plan Query Index
-                      </Text>
-                      {indexOpen
-                        ? <ChevronDown size={18} color={colors.text.muted} />
-                        : <ChevronRight size={18} color={colors.text.muted} />}
-                    </Pressable>
-                    {indexOpen && (
-                      <View style={{ marginTop: spacing.md }}>
-                        {!indexStatus?.qwen_configured ? (
-                          <Text style={{ fontSize: 13, color: colors.text.muted, lineHeight: 18 }}>
-                            Plan queries require Qwen API setup. Contact your administrator.
-                          </Text>
-                        ) : (indexStatus?.files || []).length === 0 ? (
-                          <Text style={{ fontSize: 13, color: colors.text.muted }}>
-                            No PDFs yet. Upload plans to this project first.
-                          </Text>
-                        ) : (
-                          <>
-                            {indexStatus.files.map((f) => (
-                              <View
-                                key={f.file_id}
-                                style={{
-                                  flexDirection: 'row', alignItems: 'center',
-                                  paddingVertical: spacing.sm,
-                                  borderTopWidth: 1,
-                                  borderTopColor: colors.glass.border,
-                                }}
-                              >
-                                <View style={{ flex: 1 }}>
-                                  <Text
-                                    numberOfLines={1}
-                                    style={{ fontSize: 13, color: colors.text.primary }}
-                                  >
-                                    {f.file_name}
-                                  </Text>
-                                  <Text style={{ fontSize: 11, color: colors.text.muted, marginTop: 2 }}>
-                                    {f.index_status?.state === 'skipped_combined_set'
-                                      ? 'Combined set — skipped'
-                                      : `${f.indexed_pages || 0} / ${f.total_pages || 0} pages indexed`}
-                                  </Text>
-                                </View>
-                                <Pressable
-                                  onPress={() => handleReindex(f.file_id)}
-                                  disabled={reindexing === f.file_id}
-                                  style={({ pressed }) => [
-                                    { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-                                    pressed && { opacity: 0.7 },
-                                  ]}
-                                >
-                                  {reindexing === f.file_id ? (
-                                    <ActivityIndicator size="small" color={colors.text.primary} />
-                                  ) : (
-                                    <RotateCw size={16} strokeWidth={1.5} color={colors.text.secondary} />
-                                  )}
-                                </Pressable>
-                              </View>
-                            ))}
-                            <Text style={{ fontSize: 11, color: colors.text.subtle, marginTop: spacing.sm }}>
-                              Indexing runs automatically when documents are synced.
-                            </Text>
-                          </>
-                        )}
+              {/* The six-digit flow, kept for the case where the number
+                  can't be added by the person linking. Quiet, and only for
+                  those who may link. */}
+              {canLink ? (
+                <Pressable
+                  onPress={handleOpenLinkModal}
+                  disabled={readOnly}
+                  style={({ pressed }) => [s.quietLink, pressed && { opacity: 0.7 }]}
+                >
+                  <Text style={s.quietLinkText}>
+                    {readOnly ? 'Linking needs a connection' : 'Link a group with a code instead'}
+                  </Text>
+                </Pressable>
+              ) : null}
+
+              {/* ── LEVELOG ASSISTANT (admins) ──────────────────────────── */}
+              {isAdmin && !readOnly ? (
+                <LevelogAssistantCard projectId={projectId} />
+              ) : null}
+
+              {/* ── WHAT THE BOT DOES IN GROUPS (admins) ─────────────────── */}
+              {isAdmin && !readOnly && groups.length > 0 ? (
+                <>
+                  <Text style={s.sectionHeading}>What the bot does in groups</Text>
+                  {groups.map((group) => {
+                    const groupId = group._id || group.id;
+                    const open = configOpenId === groupId;
+                    return (
+                      <View key={`cfg-${groupId}`}>
+                        <Pressable
+                          onPress={() => setConfigOpenId(open ? null : groupId)}
+                          style={({ pressed }) => [pressed && { opacity: 0.8 }]}
+                          accessibilityRole="button"
+                        >
+                          <GlassCard style={s.groupItem}>
+                            <View style={s.groupRow}>
+                              <Text style={[s.groupName, { flex: 1 }]} numberOfLines={1}>
+                                {groupLabel(group.group_name)}
+                              </Text>
+                              {open
+                                ? <ChevronDown size={18} color={colors.text.muted} />
+                                : <ChevronRight size={18} color={colors.text.muted} />}
+                            </View>
+                          </GlassCard>
+                        </Pressable>
+                        {open ? (
+                          <GroupConfigPanel
+                            group={group}
+                            onSaved={(updated) => {
+                              setGroups((prev) => prev.map((g) => (
+                                (g._id || g.id) === groupId
+                                  ? { ...g, bot_config: updated.bot_config || g.bot_config }
+                                  : g)));
+                            }}
+                            onClose={() => setConfigOpenId(null)}
+                          />
+                        ) : null}
                       </View>
-                    )}
-                  </GlassCard>
-                );
-              })()}
+                    );
+                  })}
+                </>
+              ) : null}
+
             </>
           )}
         </ScrollView>
@@ -767,6 +569,19 @@ function buildStyles(colors, isDark) {
     container: {
       flex: 1,
     },
+    sectionHeading: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.text.muted,
+      letterSpacing: 0.6,
+      textTransform: 'uppercase',
+      marginTop: spacing.lg,
+      marginBottom: spacing.sm,
+    },
+    groupMeta: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
+    unlinkConfirm: { fontSize: 12, fontWeight: '600', color: colors.status.error },
+    quietLink: { paddingVertical: spacing.sm, marginTop: spacing.xs },
+    quietLinkText: { fontSize: 13, color: colors.text.muted },
     header: {
       flexDirection: 'row',
       alignItems: 'center',

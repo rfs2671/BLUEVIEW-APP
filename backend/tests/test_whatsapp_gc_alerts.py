@@ -3,7 +3,7 @@
   * Auto-pick: the one linked group with no trade word in its name.
   * Confirm by DM to the company's main admin (opted in): 1 confirms, 2
     declines, no answer posts nothing.
-  * Alerts go to the CONFIRMED group only, 7 AM – 7 PM ET, once each, ever;
+  * Alerts go to the CONFIRMED group only, inside the project's send window (Anytime by default), once each, ever;
     the first run records what exists and posts nothing.
   * The violation summary may not carry a number, date, amount or code that
     is not in the DOB record; otherwise the fixed template is posted.
@@ -39,7 +39,7 @@ from tests._fake_mongo import FakeDb  # noqa: E402
 G_GC = "120363000000000101@g.us"
 G_PLUMB = "120363000000000102@g.us"
 G_B = "120363000000000201@g.us"
-IN_WINDOW = datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc)     # 11 AM ET
+NOON = datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc)     # 11 AM ET
 LATER = datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)
 NIGHT = datetime(2026, 10, 8, 2, 0, tzinfo=timezone.utc)          # 10 PM ET
 ADMIN = {"_id": "u_admin", "id": "u_admin", "company_id": CO_A,
@@ -61,7 +61,7 @@ def _violation(raw, **kw):
            "penalty_amount": "1,200", "violation_date": "2026-10-01",
            "status": "ACTIVE", "resolution_state": "open",
            "dob_link": f"https://dob.example/{raw}",
-           "detected_at": IN_WINDOW}
+           "detected_at": NOON}
     row.update(kw)
     return row
 
@@ -70,7 +70,7 @@ def _permit(raw, expires, **kw):
     row = {"_id": f"p_{raw}", "project_id": "proj_a", "company_id": CO_A,
            "record_type": "permit", "raw_dob_id": raw, "job_number": f"J{raw}",
            "work_type": "Plumbing", "expiration_date": expires,
-           "dob_link": f"https://dob.example/p{raw}", "detected_at": IN_WINDOW}
+           "dob_link": f"https://dob.example/p{raw}", "detected_at": NOON}
     row.update(kw)
     return row
 
@@ -158,19 +158,11 @@ class TheAutoPick(unittest.TestCase):
                 self.assertEqual(wa_gc.parse_confirm_reply(body), want)
 
 
-class TheWindow(unittest.TestCase):
+class AroundTheClock(unittest.TestCase):
 
-    def test_seven_to_seven_eastern(self):
-        et = lambda h, m=0: datetime(2026, 10, 7, h + 4, m, tzinfo=timezone.utc)  # noqa: E731,E501 EDT
-        self.assertFalse(wa_gc.in_post_window(et(6, 59)))
-        self.assertTrue(wa_gc.in_post_window(et(7, 0)))
-        self.assertTrue(wa_gc.in_post_window(et(18, 59)))
-        self.assertFalse(wa_gc.in_post_window(et(19, 0)))
-        # Winter (EST, UTC-5): 7 AM ET is 12:00 UTC.
-        self.assertFalse(wa_gc.in_post_window(
-            datetime(2026, 1, 7, 11, 59, tzinfo=timezone.utc)))
-        self.assertTrue(wa_gc.in_post_window(
-            datetime(2026, 1, 7, 12, 0, tzinfo=timezone.utc)))
+    def test_there_is_no_posting_window(self):
+        self.assertFalse(hasattr(wa_gc, "in_post_window"))
+        self.assertFalse(hasattr(wa_gc, "POST_START_HOUR"))
 
 
 class TheChecker(unittest.TestCase):
@@ -251,7 +243,7 @@ class PermitThresholds(unittest.TestCase):
 
 class TheConfirmFlow(unittest.TestCase):
 
-    def _ask(self, c, now=IN_WINDOW):
+    def _ask(self, c, now=NOON):
         return _run(server._gc_propose_tick(now))
 
     def test_the_main_admin_is_asked_once_with_the_picked_group(self):
@@ -280,12 +272,12 @@ class TheConfirmFlow(unittest.TestCase):
             self.assertEqual(_dm_sends(c), [])
             self.assertIsNone(_settings()["gc_proposal"])
 
-    def test_no_question_at_night(self):
+    def test_the_question_goes_out_at_night_too(self):
         with _Ctx(db=_world()) as c:
             _start(ADMIN_PHONE)
             n = len(_dm_sends(c))
-            self.assertEqual(self._ask(c, NIGHT)["asked"], 0)
-            self.assertEqual(len(_dm_sends(c)), n)
+            self.assertEqual(self._ask(c, NIGHT)["asked"], 1)
+            self.assertEqual(len(_dm_sends(c)), n + 1)
 
     def test_the_main_admin_is_the_creator_else_the_earliest_admin(self):
         db = _world()
@@ -321,7 +313,7 @@ class TheConfirmFlow(unittest.TestCase):
             self.assertFalse(s["gc_group_confirmed"])
             self.assertIsNone(s["gc_group_id"])
             self.assertEqual(s["gc_declined"], [G_GC])
-            self.assertIn("WhatsApp settings", _dm_sends(c)[-1]["message"])
+            self.assertIn("then WhatsApp", _dm_sends(c)[-1]["message"])
             n = len(_dm_sends(c))
             self._ask(c, LATER)   # never asked again about the same project
             self.assertEqual(len(_dm_sends(c)), n)
@@ -331,7 +323,7 @@ class TheConfirmFlow(unittest.TestCase):
         with _Ctx(db=db) as c:
             _start(ADMIN_PHONE)
             self._ask(c)
-            later = IN_WINDOW + timedelta(hours=server.GC_PROPOSAL_TTL_HOURS + 1)
+            later = NOON + timedelta(hours=server.GC_PROPOSAL_TTL_HOURS + 1)
             self._ask(c, later)
             self.assertEqual(_settings()["gc_proposal"]["status"], "expired")
             with _no_ai():
@@ -392,11 +384,11 @@ class TheAlerts(unittest.TestCase):
         db = _world(dob_logs=[_violation("1")])
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual((r["baselined"], r["posted"]), (1, 0))
             self.assertEqual(_group_sends(c), [])
             db.dob_logs.rows.append(_violation("2"))
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             sends = _group_sends(c, G_GC)
             self.assertEqual((r["posted"], len(sends)), (1, 1))
             self.assertIn("Violation #: V2", sends[0]["message"])
@@ -420,24 +412,22 @@ class TheAlerts(unittest.TestCase):
         db = _world()
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("3", resolution_state="dismissed"))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
-    def test_nothing_posts_outside_7_to_7_and_nothing_is_marked(self):
+    def test_a_violation_found_at_night_posts_at_once(self):
         db = _world()
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("4"))
-            r = _run(server._gc_alerts_tick(NIGHT))
-            self.assertEqual(r["outside_window"], 1)
-            self.assertEqual(_group_sends(c), [])
-            self.assertIsNone(_run(db[server.WA_LEDGER].find_one(
-                {"_id": wa_gc.ledger_id("proj_a", "violation", "4")})))
-            _run(server._gc_alerts_tick(LATER))            # 11 AM next day
+            r = _run(server._gc_alerts_tick(NIGHT))         # 10 PM ET
+            self.assertEqual(r["posted"], 1)
             self.assertEqual(len(_group_sends(c)), 1)
+            _run(server._gc_alerts_tick(LATER))
+            self.assertEqual(len(_group_sends(c)), 1)       # once, ever
 
     def test_an_invented_fine_falls_back_to_the_template(self):
         async def liar(_facts):
@@ -445,9 +435,9 @@ class TheAlerts(unittest.TestCase):
         db = _world()
         with _Ctx(db=db) as c, patch.object(server, "_gc_violation_summary", liar):
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("5"))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             msg = _group_sends(c)[0]["message"]
             self.assertNotIn("500", msg)
             self.assertIn("Failure to maintain", msg)
@@ -460,32 +450,32 @@ class TheAlerts(unittest.TestCase):
         db = _world()
         with _Ctx(db=db) as c, patch.object(server, "_gc_violation_summary", good):
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("6"))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             self.assertTrue(_group_sends(c)[0]["message"].startswith(
                 "Levelog: a new DOB violation for failure to maintain"))
 
     def test_permit_reminders_at_thresholds_no_backfill(self):
-        today = wa_gc.today_et(IN_WINDOW)
+        today = wa_gc.today_et(NOON)
         exp = (today + timedelta(days=10)).isoformat()
         db = _world(dob_logs=[_permit("1", exp), _permit("2", None),
                               _permit("3", "")])
         with _Ctx(db=db) as c:
             _confirm()
-            r = _run(server._gc_alerts_tick(IN_WINDOW))   # 10 days out: 30, 14 seen
+            r = _run(server._gc_alerts_tick(NOON))   # 10 days out: 30, 14 seen
             self.assertEqual(r["permits_no_expiry"], 2)
             self.assertEqual(_group_sends(c), [])
-            _run(server._gc_alerts_tick(IN_WINDOW + timedelta(days=1)))
+            _run(server._gc_alerts_tick(NOON + timedelta(days=1)))
             self.assertEqual(_group_sends(c), [])          # still inside 14
-            r = _run(server._gc_alerts_tick(IN_WINDOW + timedelta(days=3)))
+            r = _run(server._gc_alerts_tick(NOON + timedelta(days=3)))
             sends = _group_sends(c)
             self.assertEqual(len(sends), 1)                # 7 days out
             self.assertIn("expires in 7 days", sends[0]["message"])
             self.assertIn("Permit: J1", sends[0]["message"])
-            _run(server._gc_alerts_tick(IN_WINDOW + timedelta(days=4)))
+            _run(server._gc_alerts_tick(NOON + timedelta(days=4)))
             self.assertEqual(len(_group_sends(c)), 1)
-            _run(server._gc_alerts_tick(IN_WINDOW + timedelta(days=9)))
+            _run(server._gc_alerts_tick(NOON + timedelta(days=9)))
             self.assertIn("expires tomorrow", _group_sends(c)[-1]["message"])
             self.assertEqual(len(_group_sends(c)), 2)
 
@@ -504,27 +494,27 @@ class TheAlerts(unittest.TestCase):
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
             with patch.object(server, "_gc_ledger_insert", flaky):
-                r = _run(server._gc_alerts_tick(IN_WINDOW))
+                r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["baselined"], 0)
             self.assertIsNone(_run(db[server.WA_LEDGER].find_one(
                 {"_id": wa_gc.baseline_id("proj_a")})))
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual((r["baselined"], r["posted"]), (1, 0))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
     def test_revoked_permits_get_no_reminders(self):
-        today = wa_gc.today_et(IN_WINDOW)
+        today = wa_gc.today_et(NOON)
         db = _world()
         with _Ctx(db=db) as c:
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows += [
                 _permit("30", (today + timedelta(days=5)).isoformat(),
                         permit_status="REVOKED"),
                 _permit("31", (today + timedelta(days=5)).isoformat(),
                         permit_status="ISSUED")]
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             sends = _group_sends(c)
             self.assertEqual(len(sends), 1)
             self.assertIn("Permit: J31", sends[0]["message"])
@@ -535,13 +525,13 @@ class TheAlerts(unittest.TestCase):
             _confirm()
             _run(server._set_whatsapp_project_fields(
                 "proj_a", CO_A, {"violation_alerts": False}))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("7"))
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["seen_while_off"], 1)
             _run(server._set_whatsapp_project_fields(
                 "proj_a", CO_A, {"violation_alerts": True}))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
     def test_unconfirmed_group_gets_nothing(self):
@@ -549,18 +539,18 @@ class TheAlerts(unittest.TestCase):
         with _Ctx(db=db) as c, _no_ai():
             _run(server._set_whatsapp_project_fields(
                 "proj_a", CO_A, {"gc_group_id": G_GC, "gc_group_confirmed": False}))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("9"))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
     def test_another_companys_group_is_never_posted_to(self):
         db = _world()
         with _Ctx(db=db) as c, _no_ai():
             _confirm(group=G_B)               # proj_a pointed at co_b's group
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("10"))
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["skipped_unbound"], 1)
             self.assertEqual(_group_sends(c), [])
 
@@ -569,20 +559,20 @@ class TheAlerts(unittest.TestCase):
         with _Ctx(db=db) as c, _no_ai():
             _confirm(company=CO_B)            # row's company is not proj_a's
             db.dob_logs.rows.append(_violation("11"))
-            _run(server._gc_alerts_tick(IN_WINDOW))
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
+            _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
     def test_a_failed_send_is_retried_next_run(self):
         db = _world()
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
-            _run(server._gc_alerts_tick(IN_WINDOW))
+            _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("12"))
             c.wire.responses = [(500, {}, None)]
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["failed"], 1)
-            r = _run(server._gc_alerts_tick(IN_WINDOW))
+            r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["posted"], 1)
 
 
@@ -605,7 +595,7 @@ class TheSettingsEndpoints(unittest.TestCase):
                          (True, True))
         self.assertEqual(set(out), {"project_id", "gc_group", "gc_pending_question",
                                     "groups", "violation_alerts",
-                                    "permit_reminders"})
+                                    "permit_reminders", "send_window"})
 
     def test_a_pm_cannot_read_or_change(self):
         with _Ctx(db=_world()):
@@ -656,7 +646,7 @@ class TheSettingsEndpoints(unittest.TestCase):
     def test_change_in_the_app_answers_a_pending_question(self):
         with _Ctx(db=_world()) as c:
             _start(ADMIN_PHONE)
-            _run(server._gc_propose_tick(IN_WINDOW))
+            _run(server._gc_propose_tick(NOON))
             _run(server.put_project_whatsapp_gc_group(
                 "proj_a", {"gc_group_id": G_PLUMB, "gc_group_confirmed": True},
                 ADMIN))

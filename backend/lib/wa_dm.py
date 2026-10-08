@@ -48,70 +48,73 @@ DM_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 # ONLY WHAT IS LIVE. The intro names features that exist today and nothing
 # planned: GC group alerts (new DOB violations, permit expiry reminders) and
 # the confirm-by-DM that picks the GC group. The settings it mentions exist:
-# Project → WhatsApp settings (admins). Add a feature here the day it ships.
+# the project's WhatsApp tab (admins). Add a feature here the day it ships.
+# The bot is "Levelog Assistant" in every message it sends.
+ASSISTANT = "Levelog Assistant"
 INTRO_TEXT = (
-    "Levelog here. You're connected. Levelog posts new DOB violations and "
-    "permit expiry reminders to each project's GC WhatsApp group. If you are "
-    "your company's main admin, Levelog will ask you here which group that "
-    "is. Admins can turn these alerts on or off in the app: open the project, "
-    "then WhatsApp settings. Reply STOP to turn this off."
+    "Levelog Assistant here. You're connected. Levelog Assistant posts new "
+    "DOB violations and permit expiry reminders to each project's GC WhatsApp "
+    "group. If you are your company's main admin, Levelog Assistant will ask "
+    "you here which group that is. Admins can turn these alerts on or off in "
+    "the app: open the project, then WhatsApp. Reply STOP to turn this off."
 )
 # EVERY START GETS A REPLY. Each refusal says, in plain words, what to do.
 # The one deliberately vague line is NOT_ELIGIBLE_TEXT: an unknown number and
 # a role that may not get alerts read the same, so a stranger cannot use
 # START to learn who has an account or what role they hold.
 NOT_ELIGIBLE_TEXT = (
-    "Levelog here. WhatsApp alerts aren't available for this number. If you "
-    "use Levelog, open Integrations in the app and tap Turn on alerts."
+    "Levelog Assistant here. Levelog Assistant isn't available for this "
+    "number. If you use Levelog, open Integrations in the app and tap Turn on "
+    "Levelog Assistant."
 )
 STOP_CONFIRM_TEXT = (
-    "Levelog here. You won't get any more WhatsApp updates. "
+    "Levelog Assistant here. You won't get any more WhatsApp updates. "
     "Reply START to turn them back on."
 )
 # The sender arrived as a WhatsApp privacy id (@lid), not a phone number, no
 # phone could be found for it, and the message carried no connect code.
 NEED_APP_TEXT = (
-    "Levelog here. WhatsApp didn't share your phone number with us, so we "
-    "can't tell who you are yet. Open Integrations in the Levelog app, tap "
-    "Turn on alerts, and send the message it prepares."
+    "Levelog Assistant here. WhatsApp didn't share your phone number with us, "
+    "so we can't tell who you are yet. Open Integrations in the Levelog app, "
+    "tap Turn on Levelog Assistant, and send the message it prepares."
 )
 CODE_EXPIRED_TEXT = (
-    "Levelog here. This link expired. Tap Turn on alerts again in the app."
+    "Levelog Assistant here. This link expired. Tap Turn on Levelog Assistant "
+    "again in the app."
 )
 WRONG_PHONE_TEXT = (
-    "Levelog here. Send this from the phone number saved on your Levelog "
-    "profile, or update that number in Settings first."
+    "Levelog Assistant here. Send this from the phone number saved on your "
+    "Levelog profile, or update that number in Settings first."
 )
 PHONE_MISSING_TEXT = (
-    "Levelog here. Add your mobile number in Settings in the Levelog app, "
-    "then tap Turn on alerts again."
+    "Levelog Assistant here. Add your mobile number in Settings in the Levelog "
+    "app, then tap Turn on Levelog Assistant again."
 )
 PHONE_SHARED_TEXT = (
-    "Levelog here. This number is on more than one Levelog account, so "
-    "alerts can't be turned on. Contact Levelog support."
+    "Levelog Assistant here. This number is on more than one Levelog account, "
+    "so Levelog Assistant can't be turned on. Contact Levelog support."
 )
 TRY_AGAIN_TEXT = (
-    "Levelog here. Something went wrong on our side. Please send START again "
-    "in a minute."
+    "Levelog Assistant here. Something went wrong on our side. Please send "
+    "START again in a minute."
 )
 
 # GC group confirm-by-DM (lib/wa_gc.py, server.py _gc_*).
 GC_CONFIRM_TEXT = (
-    "Levelog here. Use '{group}' as the GC group for {project}? "
-    "Levelog will post new DOB violations and permit expiry reminders there. "
-    "Reply 1 Yes / 2 No"
+    "Levelog Assistant here. Use '{group}' as the GC group for {project}? "
+    "Levelog Assistant will post new DOB violations and permit expiry "
+    "reminders there. Reply 1 Yes / 2 No"
 )
 GC_CONFIRMED_TEXT = (
-    "Done. Levelog will post DOB alerts for {project} in '{group}'."
+    "Done. Levelog Assistant will post DOB alerts for {project} in '{group}'."
 )
 GC_DECLINED_TEXT = (
     "OK. Pick the GC group for {project} in the Levelog app: open the project, "
-    "then WhatsApp settings."
+    "then WhatsApp."
 )
 GC_GONE_TEXT = (
     "That group is no longer linked to {project}, so nothing was changed. "
-    "Pick the GC group in the Levelog app: open the project, then WhatsApp "
-    "settings."
+    "Pick the GC group in the Levelog app: open the project, then WhatsApp."
 )
 
 _START_WORDS = frozenset({"start"})
