@@ -234,6 +234,7 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
 
 MAX_COMPANIES = 5
 NO_COMPANY = "No company"
+NO_CHECKINS = "No check-ins yet."
 
 
 def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
@@ -252,7 +253,7 @@ def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
                 break
         by_worker[wid] = company or NO_COMPANY
     if not by_worker:
-        return "No check-ins yet."
+        return NO_CHECKINS
     counts: Dict[str, int] = {}
     for c in by_worker.values():
         counts[c] = counts.get(c, 0) + 1
@@ -270,8 +271,9 @@ NOTHING_TODAY = "Good morning. No action needed today."
 
 def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     """jobs: [{label, items, headcount}] in display order. At most MAX_ITEMS
-    items across all jobs, the most pressing first; every job keeps its
-    headcount line."""
+    items across all jobs, the most pressing first. A job with items or
+    check-ins gets its own block (address, items, headcount); jobs with
+    neither are named together: "No check-ins yet: 8 Walworth, 8 Prescott." """
     ranked: List[Tuple[Tuple, int, str]] = []
     for j_idx, job in enumerate(jobs):
         for it in job.get("items") or []:
@@ -283,20 +285,22 @@ def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     for _k, j_idx, text in kept:
         per_job.setdefault(j_idx, []).append(text)
 
-    if not kept:
-        lines = [NOTHING_TODAY]
-        for job in jobs:
-            lines += ["", job["label"], job["headcount"]]
-        return "\n".join(lines)
-
-    lines = [header(now_utc)]
+    # A job with nothing to do AND nobody on site is not a block of its own:
+    # those are named together in one line at the end.
+    quiet = [j for j in range(len(jobs))
+             if j not in per_job and jobs[j]["headcount"] == NO_CHECKINS]
+    lines = [header(now_utc) if kept else NOTHING_TODAY]
     # Jobs with something to do first (in order of their most pressing
-    # item), then the rest for their headcount.
+    # item), then the rest that have someone on site.
     with_items = sorted(per_job, key=lambda j: min(
         r[0] for r in kept if r[1] == j))
-    order = with_items + [j for j in range(len(jobs)) if j not in per_job]
+    order = with_items + [j for j in range(len(jobs))
+                          if j not in per_job and j not in quiet]
     for j in order:
         lines += ["", jobs[j]["label"]] + per_job.get(j, []) + [jobs[j]["headcount"]]
+    if quiet:
+        lines += ["", "No check-ins yet: "
+                  + ", ".join(jobs[j]["label"] for j in quiet) + "."]
     if extra > 0:
         lines += ["", f"+{extra} more in the Levelog app."]
     return "\n".join(lines)

@@ -251,7 +251,31 @@ class TheMessage(unittest.TestCase):
         self.assertEqual(text, "\n".join([
             "Good morning. No action needed today.", "",
             "588 Thomas S Boyland St", "On site so far: 3 — GC 3", "",
-            "8 Walworth St", "No check-ins yet."]))
+            "No check-ins yet: 8 Walworth St."]))
+
+    def test_quiet_jobs_collapse_into_one_line(self):
+        viol = wa_brief.job_items([_violation(WALWORTH, "35123456")],
+                                  YESTERDAY - timedelta(hours=1), THU_7)
+        text = wa_brief.compose(THU_7, [
+            {"label": "588 Thomas S Boyland St", "items": [],
+             "headcount": "On site so far: 3 — GC 3"},
+            {"label": "8 Walworth St", "items": viol, "headcount": "No check-ins yet."},
+            {"label": "8 Prescott St", "items": [], "headcount": "No check-ins yet."},
+            {"label": "12 Pacific St", "items": [], "headcount": "No check-ins yet."}])
+        self.assertEqual(text, "\n".join([
+            "Morning — Thu Oct 8", "",
+            "8 Walworth St",                         # an item: its own block
+            "🔴 New violation 35123456, issued Oct 7, open. DOB.",
+            "No check-ins yet.", "",
+            "588 Thomas S Boyland St", "On site so far: 3 — GC 3", "",
+            "No check-ins yet: 8 Prescott St, 12 Pacific St."]))
+
+    def test_all_quiet(self):
+        text = wa_brief.compose(THU_7, [
+            {"label": "8 Walworth St", "items": [], "headcount": "No check-ins yet."},
+            {"label": "8 Prescott St", "items": [], "headcount": "No check-ins yet."}])
+        self.assertEqual(text, "Good morning. No action needed today.\n\n"
+                               "No check-ins yet: 8 Walworth St, 8 Prescott St.")
 
     def test_at_most_seven_items(self):
         rows = [_permit(THOMAS, f"B{i}", f"2026-10-{10 + i}") for i in range(9)]
