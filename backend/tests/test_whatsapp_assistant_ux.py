@@ -460,6 +460,16 @@ class AddressAndRoles(unittest.TestCase):
                        "assigned_projects": ["proj_a"]}))
             self.assertFalse(db.whatsapp_groups.rows[0]["active"])
 
+    def test_the_platform_operator_keeps_unlink_access(self):
+        """Admitted by flag by the shared rank test, whatever its retired
+        "owner" role says (Codex P2)."""
+        db = FakeDb(whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1")])
+        with patch.object(server, "db", db):
+            _run(server.whatsapp_unlink_group(
+                "g1", {"id": "op", "company_id": CO_A, "role": "owner",
+                       "is_platform_operator": True}))
+        self.assertFalse(db.whatsapp_groups.rows[0]["active"])
+
     def test_an_admin_may_unlink(self):
         db = FakeDb(whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1")])
         with patch.object(server, "db", db):
@@ -493,6 +503,23 @@ class TheGcGroupsOwnSwitch(unittest.TestCase):
             db.dob_logs.rows.append(_violation("71"))
             _arun(server._gc_alerts_tick(NOON))
             self.assertEqual(len(_group_sends(c)), 1)           # new ones resume
+
+    def test_bot_off_outside_the_window_is_still_recorded_as_seen(self):
+        """Found while the bot was off AND outside work hours, then the bot is
+        switched back on before the window opens: never posted (Codex P1)."""
+        db = _world()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _run(server._set_whatsapp_project_fields(
+                "proj_a", CO_A, {"send_window": {"mode": "work_hours"}}))
+            _arun(server._gc_alerts_tick(ET(12)))                 # baseline
+            self._bot_off(db)
+            db.dob_logs.rows.append(_violation("73"))
+            r = _arun(server._gc_alerts_tick(ET(22)))             # off, and 10 PM
+            self.assertEqual(r["seen_while_off"], 1)
+            db.whatsapp_groups.rows[0]["bot_config"]["bot_enabled"] = True
+            _arun(server._gc_alerts_tick(ET(7) + timedelta(days=1)))
+            self.assertEqual(_group_sends(c), [])
 
     def test_switched_off_between_check_and_send(self):
         db = _world()

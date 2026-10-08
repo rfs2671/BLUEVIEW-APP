@@ -43815,12 +43815,6 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                 report["baselined"] += 1
             continue
 
-        # The project's send window. Outside it nothing is posted and nothing
-        # is marked: the first run inside it posts what waited.
-        if not wa_gc.in_send_window(now, settings.get("send_window")):
-            report["held"] += 1
-            continue
-
         todo = []
         for v in items["violations"]:
             todo.append(("violation", v["raw_dob_id"], v, None,
@@ -43830,19 +43824,30 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             if t is not None:
                 todo.append(("permit", f"{p['raw_dob_id']}:{t}", p, exp,
                              bot_on and settings.get("permit_reminders")))
+
+        # Off — the group's bot, or this kind of alert — is recorded as seen
+        # NOW, whatever the send window says: an item found while it was off
+        # must never post later as a backlog, even if it is switched back on
+        # before the window opens.
+        for kind, item, rec, exp, enabled in todo:
+            if not enabled and await _gc_ledger_claim(
+                    wa_gc.ledger_id(project_id, kind, item), kind=f"gc_{kind}",
+                    project_id=project_id, company_id=company_id,
+                    status="seen_while_off"):
+                report["seen_while_off"] += 1
+        todo = [t for t in todo if t[4]]
+
+        # The project's send window. Outside it nothing is posted and nothing
+        # (still on) is marked: the first run inside it posts what waited.
+        if not wa_gc.in_send_window(now, settings.get("send_window")):
+            report["held"] += 1
+            continue
+
         posts = 0
         for kind, item, rec, exp, enabled in todo:
             if posts >= GC_MAX_POSTS_PER_PROJECT_RUN:
                 break   # the rest go on the next run
             lid = wa_gc.ledger_id(project_id, kind, item)
-            if not enabled:
-                # Switched off: seen, never posted later as a backlog.
-                if await _gc_ledger_claim(lid, kind=f"gc_{kind}",
-                                          project_id=project_id,
-                                          company_id=company_id,
-                                          status="seen_while_off"):
-                    report["seen_while_off"] += 1
-                continue
             if not await _gc_ledger_claim(lid, kind=f"gc_{kind}",
                                           project_id=project_id,
                                           company_id=company_id,
@@ -55451,16 +55456,15 @@ async def whatsapp_update_group_config(
     }
 
 
-# Who may unlink a group: an admin, or a PM on their own project.
-_UNLINK_ROLES = ("admin", ROLE_PM)
-
-
 @api_router.delete("/whatsapp/groups/{group_doc_id}")
 async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_current_user)):
     """Unlink (deactivate) a WhatsApp group. Company admins, and PMs on their
     own projects. Never a CP or a superintendent ("owner" is retired)."""
+    # An admin by the shared rank test (which also admits the platform
+    # operator by flag while the retired "owner" role is migrated), or a PM.
     role = wa_dm.norm_role(current_user.get("role"))
-    if role not in _UNLINK_ROLES:
+    is_admin = is_company_admin(current_user)
+    if not is_admin and role != ROLE_PM:
         raise HTTPException(status_code=403,
                             detail="Only an admin or the project's PM can unlink a group.")
     company_id = get_user_company_id(current_user)
@@ -55470,7 +55474,7 @@ async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_curr
         {"_id": to_query_id(group_doc_id), "company_id": company_id})
     if not row:
         raise HTTPException(status_code=404, detail="Group not found")
-    if role == ROLE_PM and str(row.get("project_id")) not in {
+    if not is_admin and str(row.get("project_id")) not in {
             str(p) for p in current_user.get("assigned_projects") or []}:
         raise HTTPException(status_code=403,
                             detail="Only an admin or the project's PM can unlink a group.")
