@@ -52,8 +52,8 @@ F = {
     "boro": ("violation_location_borough", "boroughname", "borough", "boro"),
     "block": ("violation_location_block_no", "block", "block_no"),
     "lot": ("violation_location_lot_no", "lot", "lot_no"),
-    "house": ("violation_location_house", "housenumber", "house_number",
-              "house_no"),
+    "house": ("violation_location_house", "permithousenumber", "housenumber",
+              "house_number", "house_no"),
     "street": ("violation_location_street_name", "onstreetname", "street_name",
                "street"),
 }
@@ -72,6 +72,7 @@ def pick(rec: Dict[str, Any], key: str) -> str:
 _BORO_CODE = {"MANHATTAN": "1", "MN": "1", "NEW YORK": "1", "BRONX": "2",
               "BX": "2", "BROOKLYN": "3", "BK": "3", "KINGS": "3",
               "QUEENS": "4", "QN": "4", "STATEN ISLAND": "5", "SI": "5",
+              "STATEN IS": "5", "STATEN IS.": "5",
               "RICHMOND": "5", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
 
 _SUFFIX = {"STREET": "ST", "STR": "ST", "AVENUE": "AVE", "AV": "AVE",
@@ -187,9 +188,13 @@ def queries(pk: Dict[str, str]) -> List[Dict[str, Any]]:
         out.append({"dataset": OATH_DATASET, "kind": "dot_violation", "params": {
             "$where": f"{agency} AND violation_location_house = '{_q(pk['house'])}'",
             "$limit": "200", "$order": "violation_date DESC"}})
-        first = pk["street"].split()[0]
+        # Narrowed on the server to this house number and the street's most
+        # distinctive word, so the 200-row page is this address's permits,
+        # not the first 200 on every "WEST …" street in the city.
+        word = max(pk["street"].split(), key=len)
         out.append({"dataset": PERMIT_DATASET, "kind": "dot_permit", "params": {
-            "$where": f"upper(onstreetname) like '%{_q(first)}%'",
+            "$where": f"permithousenumber = '{_q(pk['house'])}' "
+                      f"AND upper(onstreetname) like '%{_q(word)}%'",
             "$limit": "200"}})
     return out
 

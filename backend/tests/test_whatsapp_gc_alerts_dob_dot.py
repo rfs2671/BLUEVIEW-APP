@@ -364,6 +364,24 @@ class DotMatching(unittest.TestCase):
             with self.subTest(bad):
                 self.assertIsNone(self._m(bad, p))
 
+    def test_dot_permit_house_number_field(self):
+        p = {"address": "588 Thomas S Boyland St, Brooklyn, NY"}
+        rec = {"permithousenumber": "588", "onstreetname": "THOMAS S BOYLAND STREET",
+               "boroughname": "BROOKLYN"}
+        self.assertEqual(self._m(rec, p), "address")
+
+    def test_staten_island_as_oath_writes_it(self):
+        rec = {"violation_location_borough": "STATEN IS",
+               "violation_location_block_no": "100", "violation_location_lot_no": "5"}
+        self.assertEqual(dot_sync.record_keys(rec)["bbl"], "5001000005")
+        self.assertEqual(dot_sync.record_keys(rec)["boro"], "5")
+
+    def test_permit_query_is_narrowed_to_the_address(self):
+        pk = dot_sync.project_keys({"address": "10 West 30 Street, Manhattan, NY"})
+        q = [x for x in dot_sync.queries(pk) if x["dataset"] == dot_sync.PERMIT_DATASET][0]
+        self.assertIn("permithousenumber = '10'", q["params"]["$where"])
+        self.assertNotIn("like '%W%'", q["params"]["$where"])
+
     def test_placeholder_bin_is_no_bin(self):
         self.assertEqual(dot_sync.norm_bin("3000000"), "")
 
