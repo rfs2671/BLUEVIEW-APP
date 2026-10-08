@@ -98,19 +98,61 @@ class PutSchedulesThePass(unittest.TestCase):
 
 
 class TheAppendRouteSchedulesIt(unittest.TestCase):
-    """49 of the 134 came in through /logbooks/{id}/activity-photo. Pinned on
-    the handler's code (comments stripped): driving the route needs a real
-    multipart upload into R2, and what matters is that the call is there."""
+    """49 of the 134 came in through /logbooks/{id}/activity-photo, which is
+    for a FILED log -- and a filed log's data moves only by identity. That the
+    route schedules the enhancement for exactly the appended photo is asserted
+    against the real route in test_filed_log_photo_append.py; here, that it is
+    the identity-keyed writer and not the positional walk."""
 
-    def test_the_call_is_in_the_handler(self):
+    def test_the_handler_uses_the_identity_keyed_writer(self):
         code = code_of("server.py")
         i = code.index("async def append_activity_photo(")
         j = code.index("\nasync def ", i + 1)
         body = code[i:j]
-        self.assertTrue("_enhance_logbook_photos(" in body,
-                        "the append route does not schedule the enhance pass")
-        self.assertTrue("retry_failed=False" in body,
-                        "the append route would retry failed enhances")
+        self.assertTrue("_enhance_appended_photo(" in body,
+                        "the append route does not schedule the enhancement")
+        self.assertFalse("_enhance_logbook_photos(" in body,
+                         "the append route runs the POSITIONAL walk on a filed log")
+
+
+def _appended(enhance):
+    """Run _enhance_appended_photo against a recording db; return the write."""
+    db = MagicMock()
+    db.logbooks.update_one = AsyncMock()
+    with patch.object(server, "db", db), \
+         patch.object(server, "to_query_id", lambda x: x), \
+         patch.object(server, "_enhance_r2_original_sync", enhance):
+        asyncio.run(server._enhance_appended_photo("lb1", "act_9", ORIG))
+    return db.logbooks.update_one.call_args
+
+
+class TheAppendedPhotoIsWrittenByIdentity(unittest.TestCase):
+
+    def test_the_write_names_the_row_and_the_photo_not_positions(self):
+        call = _appended(lambda key: dict(PATCH))
+        (q, u), kw = call.args, call.kwargs
+        self.assertEqual(q, {"_id": "lb1"})
+        for path in u["$set"]:
+            self.assertTrue(path.startswith("data.activities.$[act].photos.$[ph]."), path)
+        self.assertEqual(kw["array_filters"], [
+            {"act.activity_id": "act_9"},
+            {"ph.original_r2_key": ORIG, "ph.thumb_r2_key": {"$exists": False}},
+        ])
+
+    def test_only_rendition_fields_are_written(self):
+        """A patch carrying anything else -- here a stray key -- writes only
+        what an enhancement is allowed to write."""
+        call = _appended(lambda key: {**PATCH, "timestamp": "rewritten"})
+        written = {p.rsplit(".", 1)[1] for p in call.args[1]["$set"]}
+        self.assertTrue(written <= server.PHOTO_RENDITION_FIELDS, written)
+        self.assertNotIn("timestamp", written)
+
+    def test_a_failure_is_stamped_on_that_photo(self):
+        def boom(key):
+            raise RuntimeError("NoSuchKey")
+        call = _appended(boom)
+        sets = call.args[1]["$set"]
+        self.assertEqual(sets["data.activities.$[act].photos.$[ph].enhance_status"], "failed")
 
 
 # ── the pass itself ────────────────────────────────────────────────────────

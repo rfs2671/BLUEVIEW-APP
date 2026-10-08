@@ -760,9 +760,9 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str,
     kept its R2 original and nothing else: no thumbnail, no enhanced render,
     and the kiosk loaded the full-size original into an 80x60 tile. 134 filed
     photos on 588 Thomas were in that state. All three paths schedule it now,
-    and scripts/backfill_photo_thumbnails.py runs it over the ones it missed.
+    and scripts/backfill_photo_thumbnails.py runs it over the ones it missed. (The append route uses _enhance_appended_photo, which writes by identity.)
 
-    `retry_failed=False` FOR PUT AND THE APPEND ROUTE. A photo whose enhance
+    `retry_failed=False` FOR PUT. A photo whose enhance
     failed is stamped `enhance_status: "failed"`; POST has always retried it on
     a re-save, but PUT fires on every autosave, and re-running a photo that
     failed for a reason in its bytes on each keystroke-driven save is paid AI
@@ -829,6 +829,55 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str,
     except Exception as e:
         # Never let the background task surface as an unhandled task exception.
         logger.error("[photo-enhance] walk failed logbook=%s: %r", logbook_id, e)
+
+
+#: The fields an enhancement writes on a photo entry -- its renditions and the
+#: status of making them. Nothing a filed record STATES is among them.
+PHOTO_RENDITION_FIELDS = frozenset({
+    "enhanced_r2_key", "thumb_r2_key", "enhance_status", "enhance_ms",
+    "enhanced_w", "enhanced_h", "thumb_base64", "enhance_error",
+})
+
+
+async def _enhance_appended_photo(logbook_id: str, activity_id: str,
+                                  original_r2_key: str) -> None:
+    """Enhance ONE photo just appended to a log, and write it by identity.
+
+    The append route exists for a FILED log, whose contract is that its data
+    moves only by identity: the photo was pushed under `$[act]` filtered on
+    `activity_id`, never under an index a concurrent edit could shift. The
+    generic `_enhance_logbook_photos` walk writes every photo of the log by
+    POSITION, so it is not used here. This writes the rendition fields -- and
+    only those (PHOTO_RENDITION_FIELDS) -- onto the photo whose
+    `original_r2_key` is this one, on the row whose `activity_id` is this one,
+    and only while it still has no thumbnail.
+
+    Fire-and-forget like the walk: a failure is stamped on the photo and
+    logged; the original object is never touched.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        try:
+            patch = await loop.run_in_executor(
+                _PHOTO_ENHANCE_POOL, _enhance_r2_original_sync, original_r2_key)
+        except Exception as e:
+            logger.warning("[photo-enhance] appended photo failed logbook=%s key=%s: %r",
+                           logbook_id, original_r2_key, e)
+            patch = {"enhance_status": "failed", "enhance_error": str(e)[:200]}
+        patch = {k: v for k, v in patch.items() if k in PHOTO_RENDITION_FIELDS}
+        await db.logbooks.update_one(
+            {"_id": to_query_id(logbook_id)},
+            {"$set": {f"data.activities.$[act].photos.$[ph].{k}": v
+                      for k, v in patch.items()}},
+            array_filters=[
+                {"act.activity_id": activity_id},
+                {"ph.original_r2_key": original_r2_key,
+                 "ph.thumb_r2_key": {"$exists": False}},
+            ],
+        )
+    except Exception as e:
+        logger.error("[photo-enhance] appended photo write failed logbook=%s: %r",
+                     logbook_id, e)
 
 
 def _presign_r2_get(r2_key: str, expires_in: int = 3600) -> str:
@@ -31387,11 +31436,13 @@ async def append_activity_photo(
         "[photo-append] logbook=%s activity=%s photo=%s filed=%s by=%s",
         logbook_id, activity_id, photo_id, filed, photo["added_by"],
     )
-    # A PHOTO ADDED TO A FILED LOG IS ENHANCED LIKE ANY OTHER. 49 of the 134
-    # photos the enhance pass never reached came in through this route.
-    asyncio.create_task(_enhance_logbook_photos(
-        str(logbook_id), str((fresh or {}).get("project_id") or ""),
-        retry_failed=False,
+    # A PHOTO ADDED TO A FILED LOG IS ENHANCED -- THAT PHOTO, BY IDENTITY.
+    # 49 of the 134 photos the enhance pass never reached came in through this
+    # route. Not the generic walk: it writes every photo of the log by
+    # POSITION, and this route's whole contract on a filed record is identity
+    # (see test_filed_log_photo_append.py). See _enhance_appended_photo.
+    asyncio.create_task(_enhance_appended_photo(
+        str(logbook_id), activity_id, r2_key,
     ))
     return {
         "original_r2_key": r2_key,
