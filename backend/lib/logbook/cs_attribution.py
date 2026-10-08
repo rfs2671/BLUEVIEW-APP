@@ -213,8 +213,12 @@ def attribution_sentence(result) -> str:
     state = r.get("state")
 
     if state == MATCHED_ACCOUNT or state == MATCHED_LICENCE:
-        by = ("account" if state == MATCHED_ACCOUNT else "licence number")
-        tail = f" (licence {lic})" if lic else ""
+        # "REGISTRATION", NOT "LICENCE". DOB issues a construction
+        # superintendent a registration number; the sheet used to call it a
+        # licence (defect A2). Corrected on the operator's ruling, 2026-10-08.
+        by = ("account" if state == MATCHED_ACCOUNT
+              else "registration number")
+        tail = f" (registration {lic})" if lic else ""
         return (f"Signed by {who}, the construction superintendent registered "
                 f"for this project{tail}. Matched by {by}.")
     if state == NOT_REGISTERED_CS:

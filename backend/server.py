@@ -11961,7 +11961,7 @@ async def set_user_cs_registrations(
             status_code=422,
             detail="Record this superintendent's DOB registration number "
                    "before registering him on a project. The one-job rule is "
-                   "checked on the licence number.",
+                   "checked on the registration number.",
         )
 
     full_name = str(
@@ -24135,7 +24135,7 @@ async def _register_cs_on_project(
             conflict_projects.append(cp.get("name", "Unknown") if cp else "Unknown")
 
         conflict_warning = (
-            f"WARNING: License {license_clean} is already registered as active CS on: "
+            f"WARNING: DOB registration {license_clean} is already the active CS on: "
             + ", ".join(conflict_projects)
             + ". NYC DOB one-job rule (eff. Jan 2026) limits CS to one active job."
         )
@@ -25040,26 +25040,33 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         # selection rules and the per-item provenance lines. A declaration
         # cannot express a date-dependent statutory item list without becoming
         # a second copy of that rule.
+        # THE SIGNER IS THE ACCOUNT THAT SUBMITTED THE LOG, not the presence
+        # block. That block carries a typed name and two times -- no id and no
+        # registration number -- so `attribute_signer` could match neither
+        # branch and every sheet, linked or not, printed the mismatch sentence:
+        # "Signed by Michael Cespedes. The construction superintendent
+        # registered for this project is Michael Cespedes." The filing gate
+        # already matched the ACCOUNT; this is the same question asked of the
+        # same party. Operator's ruling, 2026-10-08. See `_cs_signer_for`.
         try:
             _cs_attr = await cs_attribution_for(
-                db, project_id, date, (data or {}).get("presence") or {})
+                db, project_id, date, await _cs_signer_for(logbook))
         except Exception as _e:                       # pragma: no cover
             logger.warning(f"cs attribution failed: {_e}")
             _cs_attr = None
         _ctx_extra["register_rows"] = _cs_register_rows(
             logbook, attribution=_cs_attr)
-        # THE ATTRIBUTION SENTENCE, WHICH IS ALSO DEFECT A2.
+        # THE ATTRIBUTION SENTENCE, FORMERLY DEFECT A2.
         #
-        # It says how this log's superintendent was matched to the filing, and
-        # on the BC 3301.13.13 sheet it describes that match "by licence
-        # number" -- a term the DOB card does not use; the card carries a
-        # REGISTRATION number, and `registration_number` appears nowhere in
-        # this repository.
+        # It says how this log's superintendent was matched to the filing. It
+        # used to call his number a "licence"; DOB issues a construction
+        # superintendent a REGISTRATION number, and the sentence now says so.
         #
-        # IT IS CARRIED VERBATIM AND NOT CORRECTED HERE. A conversion's job is
-        # that the document still says what it said; changing the words on a
-        # filed compliance record is a separate decision with the operator's
-        # name on it, and it is recorded as A2 in the defect document.
+        # CORRECTED ON THE OPERATOR'S RULING (2026-10-08), which is the
+        # decision this note used to say was his: a conversion carries the
+        # words verbatim, a ruling changes them. Attribution is derived at
+        # render time, so sheets ALREADY FILED reprint with the corrected
+        # sentence. Nothing stored changes.
         if _cs_attr:
             _ctx_extra["cs_attribution_sentence"] = attribution_sentence(
                 _cs_attr)
@@ -36178,6 +36185,41 @@ def _cs_item_body(item, block, cs_name):
     if not rows:
         return NOT_RECORDED
     return "<br />".join(rows)
+
+
+async def _cs_signer_for(logbook) -> dict:
+    """WHO SIGNED THIS SUPERINTENDENT'S LOG, as `attribute_signer` reads a signer.
+
+    THE SUBMITTING ACCOUNT. `signed_by` is written where the signature arrives,
+    from the authenticated session and never from the body (`_signed_by`); a
+    log filed before that stamp existed falls back to `created_by`, the same
+    fallback designatedCp.js uses. Of the 17 filed on 588 Thomas, 16 carry
+    `signed_by` and one (2026-09-04) resolves through `created_by` -- both to
+    the same account.
+
+    NOT `printed_name`. That is typed text and can be anyone; the account is
+    who the filing gate already matched. The typed name is kept only as the
+    NAME of last resort, for an account whose document can no longer be read --
+    the match itself is by id and does not need the document.
+
+    NO ID AT ALL is the presence block, exactly as before: nothing invented.
+    """
+    lb = logbook if isinstance(logbook, dict) else {}
+    presence = ((lb.get("data") or {}).get("presence")) or {}
+    uid = str(lb.get("signed_by") or lb.get("created_by") or "").strip()
+    if not uid:
+        return presence
+    signer = {"id": uid, "printed_name": presence.get("printed_name")}
+    try:
+        account = await db.users.find_one(
+            {"_id": to_query_id(uid)}, {"name": 1, "full_name": 1})
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[cs-log] signer read failed for {uid}: {e!r}")
+        account = None
+    if account:
+        signer["name"] = account.get("name")
+        signer["full_name"] = account.get("full_name")
+    return signer
 
 
 async def cs_attribution_for(db_, project_id, log_date, signer):
