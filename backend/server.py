@@ -44509,18 +44509,24 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
               "segment_permits": 0, "matched": 0, "new": 0, "changed": 0}
     named = set()
     try:
+        # Fixture (is_test) companies are left out, as in every unattended
+        # sweep; a project with no company is skipped below.
         projects = await db.projects.find(
-            {"is_deleted": {"$ne": True}, "company_id": {"$nin": [None, ""]}},
+            await unattended_project_filter({"is_deleted": {"$ne": True}}),
             {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
              "company_id": 1}).to_list(5000)
+        projects = [p for p in projects if str(p.get("company_id") or "").strip()]
     except Exception as e:
         logger.warning(f"[dot-sync] project read failed: {type(e).__name__}")
         return report
     company_names: Dict[str, str] = {}
     try:
         cids = list({str(p.get("company_id")) for p in projects})
-        async for c in db.companies.find(
-                {"_id": {"$in": [to_query_id(c) for c in cids]}}, {"name": 1}):
+        for c in drop_test_companies(
+                await db.companies.find(
+                    {"_id": {"$in": [to_query_id(c) for c in cids]}},
+                    {"name": 1}).to_list(5000),
+                await test_company_ids()):
             company_names[str(c.get("_id"))] = dot_sync.norm_name(c.get("name"))
     except Exception:
         company_names = {}
