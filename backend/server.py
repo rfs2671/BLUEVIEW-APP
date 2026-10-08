@@ -24199,6 +24199,43 @@ async def register_construction_superintendent(
     if not project_access_ok(project, str(data.project_id), admin):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
+    # ── THE ACCOUNT LINK IS CHECKED HERE TOO, BY THE SAME FUNCTION ──────────
+    #
+    # `_register_cs_on_project` wrote `user_id` STRAIGHT OFF THE WIRE. #678
+    # closed the identical hole on PUT /admin/cs-registrations/{id} and listed
+    # this one as out of scope: same field, same collection, same screen, one
+    # route over -- so the cross-tenant link that route now refuses could
+    # simply be made at create time instead. The project gate above does not
+    # cover it; it says whose JOBSITE this is, and the link says whose
+    # ACCOUNT files BC 3301.13.13 on it.
+    #
+    # ONE VALIDATOR, NOT A SECOND ONE. `_validated_cs_account_link` was written
+    # to be callable from here -- two implementations of "may this id be
+    # stored" are two chances to drift, and the drift would be in an
+    # authorisation path.
+    #
+    # "THE REGISTRATION'S OWN COMPANY" ON A CREATE is the company the insert is
+    # ABOUT TO STAMP. The validator's third question compares the account to
+    # the ROW's `company_id`, and on a create there is no row to ask;
+    # `_register_cs_on_project` sets `company_id = get_user_company_id(admin)`
+    # unconditionally, so that is the company this registration will belong to
+    # and that is what is handed over. NOT A SKIPPED HALF AND NOT VACUOUS: for
+    # a caller WITH a company the third question agrees with the second by
+    # construction, and for a caller WITHOUT one it resolves to absent -- the
+    # same legacy-orphan allowance the validator documents -- where the second
+    # question ("in the caller's company unless platform operator") is what
+    # carries the refusal.
+    #
+    # BEFORE ANY WRITE, deliberately. `_register_cs_on_project` DEACTIVATES the
+    # project's current CS and may raise a one-job conflict alert, so a refusal
+    # resolved afterwards would have retired a live registration on its way to
+    # returning a 403.
+    link = await _validated_cs_account_link(
+        user_id=data.user_id,
+        registration={"company_id": get_user_company_id(admin)},
+        admin=admin,
+    )
+
     out = await _register_cs_on_project(
         project=project,
         project_id=data.project_id,
@@ -24208,7 +24245,7 @@ async def register_construction_superintendent(
         nyc_id_email=data.nyc_id_email,
         sst_number=data.sst_number,
         phone=data.phone,
-        user_id=data.user_id,
+        user_id=link,
     )
     out["message"] = ("CS registered successfully"
                       + (" — with conflict warning" if out.get("conflict_warning") else ""))
@@ -24380,6 +24417,81 @@ async def _validated_cs_account_link(
     return link
 
 
+async def _cs_registration_under_admin(registration_id: str, admin: dict) -> dict:
+    """The registration row this admin may mutate, or a refusal.
+
+    ── `get_admin_user` PROVED A RANK, NOT A COMPANY ───────────────────────
+
+    Both mutating routes on this collection took the path id and used it. An
+    admin of any company could edit or soft-delete ANY tenant's registration --
+    the same rank/company split that was a SEV-0 on `update_admin_user` and that
+    `_assert_superintendent_under_admin` restates. #678's
+    `_validated_cs_account_link` closes the cross-tenant LINK, which is where
+    the row may POINT; it has nothing to say about whether this caller may touch
+    the row at all.
+
+    WHAT A STRANGER REACHED. `cs_registrations` is the BC 3301.13.13 path's only
+    answer to whose record a superintendent's log is:
+
+      * `_refuse_if_not_the_superintendent` -- 403
+        NOT_THE_REGISTERED_SUPERINTENDENT on the write path, so an edit moves
+        who MAY file;
+      * `_logbook_filing_rights` -- `may_file` on the logbook tile;
+      * the activation gate -- ACTIVATION_REQUIRES_CS_REGISTRATION tests only
+        that a row EXISTS, so a cross-tenant DELETE switches the superintendent
+        log off the project;
+      * `cs_attribution_for` -- re-derived AT RENDER TIME, so an edit changes
+        what sheets ALREADY FILED say about who signed them.
+
+    ── `_same_company_or_403`, WHICH IS THE HOUSE GATE FOR THIS SHAPE ──────
+
+    "A record whose tenancy is its own company_id, with no project to scope it
+    through", in its own words: both sides truthy and equal, with absent, null
+    and "" treated as one state.
+
+    NOT `project_access_ok`, though the row carries a `project_id`. That gate
+    has an `assigned_projects` branch -- its docstring calls those historical
+    rows that predate validation -- and a per-project assignment says nothing
+    about a company-level document. The row's tenancy is the `company_id`
+    `_register_cs_on_project` stamped on it from the creating admin, not the
+    project's.
+
+    PLUS THE OPERATOR CARVE-OUT, which `_same_company_or_403` has no branch for
+    because its three existing callers are not admin routes. The predicate is
+    the FLAG, never the `owner` role -- that role is what every self-serve
+    signup receives.
+
+    ── AN UNOWNED ROW FAILS CLOSED, THE OPPOSITE OF THE LINK CHECK ─────────
+
+    `_validated_cs_account_link` deliberately does NOT refuse a registration
+    with no `company_id`, because failing closed there would make an orphan row
+    permanently UNLINKABLE while the caller-company question still confined the
+    link. Here there is no second question: an unowned row either answers to a
+    company or to EVERY authenticated admin, and the second is the defect. The
+    platform operator still reaches it, so nothing becomes unreachable -- and a
+    read-only census on 2026-10-08 found ONE row platform-wide, BLUEVIEW's,
+    company-stamped, with ZERO in the other live tenant. Prevention only, the
+    same posture `_same_company_or_403` itself was landed with.
+
+    ── `is_deleted` IS NOT IN THE SELECTOR ─────────────────────────────────
+
+    Matching the read #678 put on the PUT route and for its reason: a
+    soft-deleted registration stays editable exactly as it was, and deleting one
+    again is idempotent rather than a 404.
+    """
+    reg = await db.cs_registrations.find_one(
+        {"_id": to_query_id(registration_id)},
+    )
+    if not reg:
+        raise HTTPException(status_code=404, detail="CS registration not found")
+    if not is_platform_operator(admin):
+        _same_company_or_403(
+            reg, admin,
+            detail="This registration belongs to another company.",
+        )
+    return reg
+
+
 @api_router.put("/admin/cs-registrations/{registration_id}")
 async def update_cs_registration(
     registration_id: str,
@@ -24421,15 +24533,21 @@ async def update_cs_registration(
     from the read rather than from `matched_count`, with the same meaning and
     the same selector -- including NOT filtering `is_deleted`, so a
     soft-deleted registration stays editable exactly as it was.
+
+    ── AND THE ROW IS NOW SCOPED, WHICH THE LINK CHECK DID NOT DO ──────────
+
+    That read is `_cs_registration_under_admin`'s, unchanged in selector and
+    meaning and with the tenant gate on the row added to it. #678 stopped an
+    admin pointing another tenant's registration at his own people; it did not
+    stop him editing that registration at all, and `get_admin_user` is a rank
+    gate. Asked BEFORE the link, because when a foreign admin sends an id of
+    his own company the link check would refuse him for the wrong reason -- the
+    account is not what is wrong.
     """
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
 
-    existing = await db.cs_registrations.find_one(
-        {"_id": to_query_id(registration_id)},
-    )
-    if not existing:
-        raise HTTPException(status_code=404, detail="CS registration not found")
+    existing = await _cs_registration_under_admin(registration_id, admin)
 
     # THE LINK IS RESOLVED BEFORE ANYTHING IS WRITTEN, so a refusal leaves the
     # row untouched. Validating it after the `$set` was built but before the
@@ -24499,10 +24617,58 @@ async def update_cs_registration(
  
 @api_router.delete("/admin/cs-registrations/{registration_id}")
 async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
-    """Soft-delete a CS registration."""
+    """Soft-delete a CS registration.
+
+    ── IT DID NOT READ THE ROW, SO THERE WAS NOTHING TO SCOPE ──────────────
+
+    The path id went straight into `update_one` and the handler returned
+    "CS registration deleted" either way: for another tenant's registration,
+    and for an id that never existed. `get_admin_user` is a rank gate, so the
+    first of those was a cross-tenant delete of a statutory record by anyone
+    holding an admin account anywhere on the platform.
+
+    THE WORSE HALF OF THE PAIR, and not because a delete is bigger than an edit.
+    The activation gate asks only whether a row EXISTS
+    (ACTIVATION_REQUIRES_CS_REGISTRATION), so removing the row takes the
+    superintendent log off the project -- and that gate fires on ACTIVATION
+    only, by design, so nothing would have objected on the way back.
+    `_cs_registration_under_admin` is where the fetch and the gate live; the
+    404 for a missing row is a consequence of having to read it, and a 200 that
+    said a deletion happened when none did was not true either.
+    """
+    reg = await _cs_registration_under_admin(registration_id, admin)
+    now = datetime.now(timezone.utc)
     await db.cs_registrations.update_one(
         {"_id": to_query_id(registration_id)},
-        {"$set": {"is_deleted": True, "is_active": False, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "is_active": False,
+                  "deleted_at": now, "updated_at": now}}
+    )
+
+    # ── RECORDED, LIKE EVERY OTHER SOFT-DELETE OF A FILED-RECORD ROW ────────
+    #
+    # `logbook_delete` is the house shape, and the reasoning is #678's: the
+    # sibling `set_user_cs_registrations` audits the registrations it adds and
+    # REMOVES, and this removes one outright. It ends a filing right and can
+    # switch a log type off a project, which is strictly more than the moved
+    # link #678 recorded -- an audit that carried the link and not the deletion
+    # would describe the smaller of the two.
+    #
+    # FROM THE ROW THE GATE ALREADY READ. No second fetch, and the detail is
+    # the row as it stood BEFORE the write, because after it the fields that
+    # say what was lost are the ones the write overwrote.
+    await audit_log(
+        "cs_registration_delete", actor_id(admin),
+        "cs_registration", str(registration_id),
+        {
+            "project_id": str(reg.get("project_id") or "") or None,
+            "user_id": str(reg.get("user_id") or "") or None,
+            "license_number": reg.get("license_number"),
+            "full_name": reg.get("full_name"),
+            # WHETHER IT WAS THE LIVE ONE. A deactivated predecessor and the
+            # project's current CS are the same shape to this route and not the
+            # same event to anyone reading the log afterwards.
+            "was_active": bool(reg.get("is_active")),
+        },
     )
     return {"message": "CS registration deleted"}
  
