@@ -313,10 +313,29 @@ class TheOtherTwoSCREENSReadThisListToo(unittest.TestCase):
     names it — not the removal of the clause.
     """
 
+    # ── THE THIRD CALLER IS GONE, AND IT WAS THE ONE TO WATCH ───────────────
+    #
+    # `app/admin/superintendent.jsx` was the third entry here and the docstring
+    # above still describes it at length -- deliberately, because the reasoning
+    # is the reason this census exists and the consequence it named was real
+    # while the screen lived. It was deleted on the operator's ruling of
+    # 2026-10-08 ("OUTSIDE SUPERS: DELETE THE TAB. There is no such case"), so
+    # the population is TWO.
+    #
+    # THE REMEDY THE DOCSTRING OFFERS ALREADY SHIPPED, which is why its loss
+    # costs nothing here: the optional query parameter exists
+    # (`include_all_roles`, and `includeAllRoles` on the client), and the
+    # deleted screen was its only caller. A new picker that needs to see an
+    # admin asks for it by name; `test_two_rulings_on_the_demo_and_the_picker`
+    # now pins that nobody currently does.
+    #
+    # THE COUNT IS TWO AND A THIRD IS STILL THE THING TO WATCH. Nothing about
+    # the number matters except that it cannot GROW without somebody deciding
+    # it should -- a new caller is a screen narrowed by a ruling made about a
+    # different screen.
     CALLERS = (
         "app/admin/users.jsx",
         "app/admin/checklists/index.jsx",
-        "app/admin/superintendent.jsx",
     )
 
     def test_the_callers_are_still_exactly_these_three(self):

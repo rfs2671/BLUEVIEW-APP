@@ -11,7 +11,6 @@ import {
   Cloud,
   ClipboardList,
   Shield,
-  HardHat,
   Plus,
   Sparkles,
   X,
@@ -59,12 +58,30 @@ const adminActions = [
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Dropbox & WhatsApp', path: '/admin/integrations', icon: Cloud },
-  // NARROWED, NOT REMOVED. A superintendent who holds an account is
-  // registered from User Management now; this tile is what is left for the
-  // one case that cannot go there — a super with no account, i.e. another
-  // company's on a joint site. See the header of app/admin/superintendent.jsx
-  // for why the tab is not retired yet.
-  { title: 'Outside supers', subtitle: 'No-account CS registration', path: '/admin/superintendent', icon: HardHat },
+  // NO 'Outside supers' TILE, and the screen behind it is gone too (operator
+  // ruling, 2026-10-08: "DELETE THE TAB. There is no such case. A
+  // superintendent with no account cannot file any logbook, so recording one
+  // serves nothing"). The tile was already narrowed from 'Superintendents' to
+  // the one case User Management could not cover — a super with no account,
+  // another company's on a joint site — on the understanding that the tab
+  // would retire once the project screen grew an entry for it.
+  //
+  // THE RULING WITHDREW THE CASE INSTEAD OF WAITING FOR THAT SECTION, and the
+  // reading was checked before the deletion: the BC 3301.13.13 filing gate
+  // matches a signer by ACCOUNT LINK or by licence number, and the licence
+  // side reads `cs_license_number` / `license_number` off the signer while the
+  // licence actually lives on the user document as
+  // `dob_superintendent_number` — present on 0 user rows under either of the
+  // two names it looks for. So an account-less registration admits nobody; it
+  // only REFUSES everybody on the project, while still satisfying the
+  // activation gate. Platform-wide there is one registration and it is linked.
+  //
+  // Registration is managed only from User Management — the 'Registration'
+  // control on a superintendent's row, which writes the SAME cs_registrations
+  // rows through the SAME `_register_cs_on_project`. The collection, the
+  // filing gate and the activation gate are untouched. The `HardHat` import
+  // goes with the tile: unlike `Smartphone`, which the Device Check removal
+  // kept for Site Devices, nothing else on this screen used it.
   { title: 'Safety Staff', subtitle: 'SSC / SSM registry', path: '/admin/safety-staff', icon: Shield },
   // NO 'Device Check' TILE, and the screen behind it is gone too (operator
   // ruling, 2026-10-07: "remove the tile. Nothing depends on it, and it can't

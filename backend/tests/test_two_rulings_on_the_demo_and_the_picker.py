@@ -274,10 +274,61 @@ class TheCallersAreWhatTheRulingNamed(unittest.TestCase):
     def _src(self, rel):
         return (self.ROOT / rel).read_text(encoding="utf-8")
 
-    def test_the_superintendent_picker_opts_in(self):
-        src = self._src("app/admin/superintendent.jsx")
-        self.assertIn("includeAllRoles: true", src,
-                      "the screen that links a CS cannot see an admin CS")
+    def test_nothing_opts_in_now_that_the_picker_is_gone(self):
+        """WHAT THIS ASSERTED, AND WHOSE RULING CHANGED IT.
+
+        It was `test_the_superintendent_picker_opts_in`:
+
+            src = self._src("app/admin/superintendent.jsx")
+            self.assertIn("includeAllRoles: true", src,
+                          "the screen that links a CS cannot see an admin CS")
+
+        and RULING 2 in this file's header is the reason it existed: that
+        screen was a PICKER, it linked the construction superintendent of a
+        job, and `ADMIN_MANAGED_ROLES` had narrowed it along with the roster,
+        so a company admin who was also the CS on his own job became
+        unlinkable.
+
+        OPERATOR RULING, 2026-10-08: "OUTSIDE SUPERS: DELETE THE TAB. There is
+        no such case." The screen is gone, so the one opt-in goes with it and
+        this becomes a census of ZERO -- asserted rather than dropped, because
+        the thing worth pinning was never "that screen opts in" but "only a
+        caller that NAMES the parameter is widened". A new opt-in appearing
+        without a ruling is the defect this class was written against, and it
+        is now caught by a test that has no file to be deleted along with.
+
+        THE HEADER'S RULING 2 STANDS AND IS NOT REWRITTEN. The server-side
+        opt-in and its tenant pinning -- every assertion in the class above --
+        are untouched; `include_all_roles` is the route's parameter and the
+        next picker that has to show an admin needs it. What changed is that no
+        screen currently asks.
+        """
+        # COMMENT-STRIPPED, AND THE FIRST VERSION OF THIS ASSERTION WAS NOT.
+        # It read raw source and went red on `src/utils/api.js` -- whose
+        # wrapper now carries a note saying the deleted screen "was the one
+        # caller that passed `includeAllRoles: true`". The census counted the
+        # sentence recording the removal as a caller. This is tests/
+        # source_text.py's own documented trap, and `strip_js` is the fix it
+        # exists to be: a scanner rather than a regex, because a `//` inside a
+        # string had previously blanked thirty lines of live JSX.
+        from tests.source_text import strip_js
+
+        askers = []
+        for path in self.ROOT.rglob("*.js*"):
+            rel = path.relative_to(self.ROOT).as_posix()
+            if rel.startswith(("node_modules/", "dist/")):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:  # pragma: no cover
+                continue
+            if "includeAllRoles: true" in strip_js(text):
+                askers.append(rel)
+        self.assertEqual(
+            askers, [],
+            "a screen opts into the widened role list; RULING 2 above says "
+            f"that is a decision somebody has to make: {askers}",
+        )
 
     def test_user_management_does_not(self):
         src = self._src("app/admin/users.jsx")

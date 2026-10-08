@@ -47,8 +47,16 @@ const CODE = (s) => s
 const USERS = read('app', 'admin', 'users.jsx');
 const USERS_CODE = CODE(USERS);
 const API = CODE(read('src', 'utils', 'api.js'));
-const TAB = read('app', 'admin', 'superintendent.jsx');
 const DASH = read('app', 'index.jsx');
+const DASH_CODE = CODE(DASH);
+const SMOKE = read('scripts', 'smoke-mount.cjs');
+
+/** THE TAB IS GONE, SO IT IS NOT READ AT MODULE LOAD ANY MORE. This was
+ *  `read('app','admin','superintendent.jsx')` at the top of the file, which
+ *  after the deletion throws ENOENT and aborts the whole run — fourteen
+ *  assertions lost to report one. Existence is now a question an assertion
+ *  asks, not a precondition of the file loading. */
+const exists = (...p) => fs.existsSync(path.join(FRONTEND, ...p));
 
 let failures = 0;
 const check = (name, fn) => {
@@ -172,33 +180,158 @@ check('the one-job warning is surfaced and not swallowed', () => {
     'the conflict warning is not shown to the admin');
 });
 
-// ── 5. THE OLD TAB IS NARROWED, NOT SILENTLY LEFT AS A TWIN ─────────────────
+// ── 5. THE OLD TAB IS GONE, AND REGISTRATION HAS ONE DOOR ───────────────────
 //
-// The ruling was to retire it once an external-superintendent entry exists on
-// the project screen. That entry is not built, so the tab stays — and the one
-// thing that must not happen meanwhile is two screens offering the same job
-// with nothing saying which to use.
+// ── WHAT THIS SECTION USED TO ASSERT, AND WHOSE RULING CHANGED IT ──────────
+//
+// It asserted the tab was NARROWED rather than removed — four checks:
+//
+//     'the tab names the case it is kept for'        /no LeveLog account/i
+//                                                    /joint site/i      on TAB
+//     'the tab points at User Management ...'        /User Management/i on TAB
+//     'the tab records that retiring it is still owed'
+//                                        /[Rr]etiring this tab is owed/ on TAB
+//     'the dashboard tile no longer reads as the main superintendent screen'
+//                                        /Outside supers/ AND
+//                                        /admin\/superintendent/ on DASH
+//
+// The reasoning was recorded here and it was: the ruling was to retire the tab
+// once an external-superintendent entry existed on the project screen; that
+// entry was not built, so the tab stayed, and meanwhile the one thing that
+// must not happen was two screens offering the same job with nothing saying
+// which to use.
+//
+// OPERATOR RULING, 2026-10-08, AND IT WITHDRAWS THE CASE ITSELF rather than
+// declaring the owed section built: "OUTSIDE SUPERS: DELETE THE TAB. There is
+// no such case. A superintendent with no account cannot file any logbook, so
+// recording one serves nothing. Zero such registrations exist platform-wide."
+// The census agreed: ONE cs_registrations row exists, on 588 Thomas S Boyland,
+// linked to a `superintendent` account. Zero unlinked rows, ever.
+//
+// SO THE ASSERTION INVERTS. The two that pinned the tab's copy and the one
+// that pinned the tile's label can have no subject; what replaces them is the
+// stronger claim the four of them were a proxy for — THERE IS ONE DOOR, and it
+// is the one sections 1 to 4 above test. Those are untouched: every assertion
+// about the seed, the licence never being sent, the role gate and the copy
+// stands exactly as written, because what moved is where the registration is
+// made and not how.
+//
+// WHAT THE SERVER KEEPS, DELIBERATELY, AND IT IS NOT TESTED HERE: the
+// `cs_registrations` collection, `_register_cs_on_project`, the BC 3301.13.13
+// filing gate, the activation gate and `cs_attribution_for` are all unchanged.
+// Michael Cespedes's 588 Thomas registration still governs who may file, and
+// that is asserted on the server side, where the gate is —
+// backend/tests/test_the_registration_still_governs.py.
 
-check('the tab names the case it is kept for', () => {
-  ok(/no LeveLog account/i.test(TAB), 'the tab does not say who it is for');
-  ok(/joint site/i.test(TAB), 'the tab does not name the joint-site case');
+check('the outside-supers screen is gone', () => {
+  ok(!exists('app', 'admin', 'superintendent.jsx'),
+    'app/admin/superintendent.jsx is still here — a second place to make a '
+    + 'registration, which is the condition sections 1-4 exist to rule out');
 });
 
-check('the tab points at User Management for everyone else', () => {
-  ok(/User Management/i.test(TAB),
-    'an admin is left to guess which of the two screens to use');
+check('the dashboard tile is gone', () => {
+  // BOTH HALVES. A tile whose label was dropped but whose path survived would
+  // leave the route linked from the grid under a neighbour's name; a path
+  // dropped with the label left behind renders a tile that navigates nowhere.
+  //
+  // ON DASH_CODE, NOT DASH, AND THIS ASSERTION FOUND OUT WHY ON ITS CONTROL
+  // RUN. It read the raw source first and went red on the removal itself: the
+  // comment left in app/index.jsx where the tile was says "NO 'Outside supers'
+  // TILE", exactly as the Device Check removal's does, so a raw scan counted
+  // the sentence recording the deletion as the thing deleted. The subject is
+  // the code.
+  ok(!/Outside supers/.test(DASH_CODE),
+    'the "Outside supers" tile is still here');
+  ok(!/admin\/superintendent/.test(DASH_CODE),
+    'the dashboard still routes to admin/superintendent');
+  // And the label it carried BEFORE it was narrowed must not come back as the
+  // repair — that is the twin this file's sections 1-4 were written against.
+  ok(!/title: 'Superintendents'/.test(DASH_CODE),
+    'the tile came back under its original name');
 });
 
-check('the tab records that retiring it is still owed', () => {
-  ok(/[Rr]etiring this tab is owed/.test(TAB),
-    'nothing in the file says the tab is on its way out');
+check('no screen navigates to admin/superintendent any more', () => {
+  // A ROUTE WITH NO LINK IS NOT SHIPPED, and the converse is what this asks: a
+  // link with no route mounts the unmatched screen. app/index.jsx is checked
+  // above by name; this is every other file under app/, so a second entry
+  // point added anywhere fails here rather than at a tap.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!/\.(jsx?|tsx?)$/.test(e.name)) continue;
+      // COMMENTS STRIPPED. Several files below name the deleted screen in
+      // prose as the example of a UI pattern — FormSheet.jsx and users.jsx
+      // both do — and a banned-path scan that counted those would be
+      // measuring the comment saying it was removed.
+      const src = CODE(fs.readFileSync(full, 'utf8'));
+      if (/admin\/superintendent/.test(src)) {
+        offenders.push(path.relative(FRONTEND, full));
+      }
+    }
+  };
+  walk(path.join(FRONTEND, 'app'));
+  ok(offenders.length === 0,
+    `these still reach the deleted screen: ${offenders.join(', ')}`);
 });
 
-check('the dashboard tile no longer reads as the main superintendent screen', () => {
-  ok(!/title: 'Superintendents'/.test(DASH),
-    'the tile still claims to be THE superintendent screen');
-  ok(/Outside supers/.test(DASH), 'the tile does not name the narrowed case');
-  ok(/admin\/superintendent/.test(DASH), 'the tile no longer reaches the screen');
+check('no icon import is orphaned by the removed tile', () => {
+  // `HardHat` was imported by app/index.jsx FOR THAT TILE AND NOTHING ELSE —
+  // unlike `Smartphone`, which the Device Check removal deliberately kept
+  // because the Site Devices tile shares it. An unused lucide import is not a
+  // crash, which is why a mount smoke cannot catch it.
+  const uses = (DASH_CODE.match(/\bHardHat\b/g) || []).length;
+  ok(uses === 0,
+    `HardHat is still named ${uses} time(s) in app/index.jsx with no tile `
+    + 'left to use it');
+});
+
+// ── 6. csUserPicker.test.cjs WENT WITH THE SCREEN, AND WHAT IT SAID ─────────
+//
+// That file read `app/admin/superintendent.jsx` at module load and tested the
+// picker that linked a registration to an account — nineteen assertions in five
+// sections: the link is written on create AND on edit ('' never sent as an id);
+// no role filter on the user list; three link states on the card (unlinked,
+// dangling, linked) each with its own colour token; no default selection, email
+// beside every name, a failed user load stated rather than rendered as an empty
+// list; and the three-way destructure of its Promise.all.
+//
+// IT IS DELETED RATHER THAN RE-POINTED, because its subject was the PICKER —
+// choosing WHICH account a registration names — and that is precisely the
+// capability the ruling withdraws. There is no second file to aim it at.
+//
+// TWO OF ITS CLAIMS SURVIVE AS SERVER RULES, and they are asserted where the
+// rule now lives, not restated here:
+//
+//   THE LINK IS ALWAYS WRITTEN. `set_user_cs_registrations` passes
+//   `user_id=str(user_id)` unconditionally, so User Management cannot produce
+//   the unlinked row the picker made possible. Asserted in
+//   backend/tests/test_the_registration_still_governs.py.
+//
+//   NO ROLE FILTER — AND THIS ONE IS NOW VIOLATED BY THE SURVIVING PATH, which
+//   is recorded here because it is a consequence of the deletion and not a
+//   defect introduced by it. That file's header said filtering by role "would
+//   hide the one person this control exists to link — the same mistake as
+//   gating the log on role == 'superintendent'".
+//   `_assert_superintendent_under_admin` 422s unless `role == "superintendent"`,
+//   and a non-superintendent account cannot hold `dob_superintendent_number`
+//   (popped on create, refused on update), so User Management can register ONLY
+//   a `superintendent`-role account. The filing gate itself is unchanged and
+//   still keys on the registration rather than the role. Michael Cespedes holds
+//   `superintendent` today so the live case is covered; PR #683 is the
+//   affordance for promoting a CP into the role.
+
+check('the mount smoke carries no route for the deleted screen', () => {
+  // IT NEVER DID, and that is the assertion. The ruling expected this list to
+  // lose an entry and drop from 38 paths / 76 mounts; `/admin/superintendent`
+  // was never in ROUTES, so the count is UNCHANGED at 38/76 and the screen
+  // never had an executed mount in CI. Pinned from the absent side so that
+  // re-adding the path — which after the deletion fails the job outright, the
+  // way /admin/device-capabilities did at 76/78 — is caught here first.
+  ok(!/admin\/superintendent/.test(CODE(SMOKE)),
+    'the smoke list routes at a screen that does not exist; it will mount the '
+    + 'unmatched screen and fail the job');
 });
 
 console.log(`\n${failures === 0 ? 'all passed' : `${failures} FAILED`}\n`);

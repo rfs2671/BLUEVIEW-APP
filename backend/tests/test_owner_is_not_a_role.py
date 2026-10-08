@@ -449,10 +449,17 @@ class TheScreensFollowedTheServer(unittest.TestCase):
     """The frontend half. A gate the server opens and the screen hides is
     still a feature the operator cannot reach."""
 
+    # `app/admin/superintendent.jsx` WAS THE THIRD ENTRY AND IS DELETED
+    # (operator ruling, 2026-10-08: "OUTSIDE SUPERS: DELETE THE TAB"). It is
+    # removed from the census rather than retained as a skip: both subtests
+    # below read the file, so a missing path is a FileNotFoundError and not a
+    # finding, and the rule they assert -- no screen compares a role to the
+    # retired "owner" string, and every one asks the shared predicate -- has no
+    # subject in a file that does not exist. Fourteen screens remain, and the
+    # list is still the whole population: nothing here was relaxed.
     SCREENS = (
         "app/admin/checklists/index.jsx",
         "app/admin/safety-staff.jsx",
-        "app/admin/superintendent.jsx",
         "app/documents.jsx",
         "app/index.jsx",
         "app/logbooks/index.jsx",

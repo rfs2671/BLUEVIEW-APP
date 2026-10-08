@@ -4,10 +4,18 @@
 
 `CSRegistrationUpdate` declares `user_id` and says why: "the commonest real
 sequence is a registration typed for DOB first and the account created later".
-`frontend/app/admin/superintendent.jsx` sends it, and its own comment says "an
+`frontend/app/admin/superintendent.jsx` sent it, and its own comment said "an
 edit form that silently dropped the field would make an unlinked registration
 permanently unlinkable". `update_cs_registration` built its `$set` dict from
 six of the model's seven settable fields and NEVER COPIED `user_id`.
+
+THAT SCREEN WAS DELETED ON 2026-10-08 (operator ruling: "OUTSIDE SUPERS: DELETE
+THE TAB. There is no such case"), so the sender named above is past tense and no
+client sends `user_id` on this route today. THE ROUTE AND THIS TEST BOTH STAY,
+and the ruling is explicit about why the collection and the gate are untouched:
+the three states below are a property of `update_cs_registration`, which is
+still reachable, still the only writer that can move an existing link, and
+whose fate the operator has yet to rule on.
 
 So the form sent it, the model accepted it, the handler returned 200 with the
 re-read row — and the link was unchanged. The one repair that screen exists to
