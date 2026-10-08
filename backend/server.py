@@ -71,6 +71,7 @@ from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
+from lib import wa_brief  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -45199,6 +45200,147 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
     return jobs
 
 
+# ── MORNING BRIEF (DM, opted-in Admins and PMs) ────────────────────────────
+#
+# One DM a day per person, at the time they picked in the app (Off / 7 / 8 /
+# 9 AM New York, Mon–Fri, Saturday if they turned it on): what needs action
+# today on their jobs, then who is on site so far. Content: lib/wa_brief.py —
+# deterministic, from stored records only.
+#
+# WHO. Every ACTIVE opt-in whose user is live, DM-eligible (company admin or
+# PM), of the opt-in's company. Jobs: _dm_assistant_projects — an admin's
+# every live company job, a PM's assigned jobs, each re-proven to be the
+# company's. STOP makes the opt-in inactive, and then nothing is read or sent.
+#
+# ONCE A DAY. The ledger key (user, -, morning_brief, YYYY-MM-DD) is claimed
+# by send_whatsapp_dm before WaAPI is called; a second run, a second
+# container or a restart finds it taken.
+
+MORNING_BRIEF_KIND = "morning_brief"
+_BRIEF_MAX_LOOKBACK = timedelta(days=4)
+_BRIEF_DOB_TYPES = ["violation", "complaint", "swo", "permit", "job_status",
+                    "cofo", "facade_fisp", "boiler", "elevator"]
+
+
+async def _brief_settings(user_id: str) -> dict:
+    from lib import notification_preferences as _nprefs
+    row = await _nprefs.fetch_preferences_record(db, user_id=str(user_id),
+                                                 project_id=None)
+    return wa_brief.clean_settings((row or {}).get("whatsapp"))
+
+
+async def _brief_since(user_id: str, now: datetime) -> datetime:
+    """When this person's last brief went out; else a day ago. Never more
+    than a few days back (a long weekend, not a backlog)."""
+    floor = now - _BRIEF_MAX_LOOKBACK
+    try:
+        row = await db[WA_LEDGER].find_one(
+            {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND,
+             "status": "sent"}, sort=[("created_at", -1)])
+    except Exception:
+        row = None
+    last = (row or {}).get("created_at")
+    if isinstance(last, datetime):
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return max(last, floor)
+    return max(now - timedelta(days=1), floor)
+
+
+async def _brief_job(project: dict, company_id: str, since: datetime,
+                     now: datetime) -> dict:
+    """One job's block: its address, its items, its headcount line."""
+    pid = str(project.get("_id"))
+    rows = await db.dob_logs.find({
+        "project_id": pid,
+        "record_type": {"$in": _BRIEF_DOB_TYPES},
+        "is_deleted": {"$ne": True},
+    }).to_list(5000)
+    start, end = wa_brief_day_range(now)
+    checkins = await db.checkins.find({
+        "project_id": pid,
+        "company_id": _company_id_filter(company_id),
+        "check_in_time": {"$gte": start, "$lt": end},
+        "is_deleted": {"$ne": True},
+    }).to_list(2000)
+    return {"label": wa_assistant.street_label(project),
+            "items": wa_brief.job_items(rows, since, now),
+            "headcount": wa_brief.headcount_line(checkins)}
+
+
+def wa_brief_day_range(now: datetime):
+    """Today's start and end (New York midnight to midnight) in UTC."""
+    local = wa_brief.local_now(now)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
+async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
+    """The brief text for one person, or None when they have no jobs."""
+    company_id = str(user.get("company_id") or "").strip()
+    if not company_id:
+        return None
+    role = wa_dm.norm_role(user.get("role"))
+    projects = await _dm_assistant_projects(user, company_id, role)
+    if not projects:
+        return None
+    since = await _brief_since(str(user.get("_id")), now)
+    jobs = [await _brief_job(p, company_id, since, now) for p in projects]
+    return wa_brief.compose(now, jobs)
+
+
+async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    report = {"optins": 0, "due": 0, "sent": 0, "refused": 0, "skipped": 0,
+              "already": 0}
+    today = wa_brief.local_now(now).date().isoformat()
+    try:
+        optins = await db[WA_OPTINS].find({"status": "active"}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}")
+        return report
+    for optin in optins:
+        report["optins"] += 1
+        uid = str(optin.get("user_id") or "")
+        if not uid:
+            continue
+        try:
+            user = await db.users.find_one(
+                {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+            if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
+                    optin.get("company_id") or user.get("company_id"),
+                    user.get("company_id")):
+                report["skipped"] += 1
+                continue
+            settings = await _brief_settings(uid)
+            if not wa_brief.is_due(now, settings["brief_time"],
+                                   settings["brief_saturday"]):
+                continue
+            report["due"] += 1
+            if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
+                    uid, None, MORNING_BRIEF_KIND, today)}, {"_id": 1}):
+                report["already"] += 1
+                continue
+            text = await _brief_for_user(user, now)
+            if not text:
+                report["skipped"] += 1
+                continue
+            sent = await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND,
+                                          window=today)
+            report["sent" if sent else "refused"] += 1
+        except Exception as e:
+            logger.warning(f"[wa-brief] user failed: {type(e).__name__}")
+    logger.info(f"[wa-brief] {report}")
+    return report
+
+
+async def _whatsapp_brief_job() -> None:
+    try:
+        await _morning_brief_tick()
+    except Exception as e:
+        logger.error(f"[wa-brief] tick failed: {type(e).__name__}: {e}")
+
+
 async def _dm_jobs(ident: dict) -> list:
     """[{id, label, aliases, project}] — aliases include group names."""
     pids = [str(p.get("_id")) for p in ident["projects"]]
@@ -56709,7 +56851,41 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
                         if state in wa_dm.CONNECT_ACTIONABLE else None),
         "stop_url": (f"https://wa.me/{bot}?text=STOP"
                      if state == wa_dm.CONNECT_CONNECTED else None),
+        # The morning brief row is shown only to an eligible, connected user.
+        "brief": (await _brief_settings(uid)
+                  if state == wa_dm.CONNECT_CONNECTED else None),
     }
+
+
+@api_router.put("/whatsapp/brief")
+async def put_whatsapp_brief(body: dict, current_user=Depends(get_current_user)):
+    """The caller's morning brief: brief_time (off / 07:00 / 08:00 / 09:00)
+    and/or brief_saturday (true/false). Admins and PMs only."""
+    from lib import notification_preferences as _nprefs
+    if not wa_dm.is_dm_eligible(current_user):
+        raise HTTPException(status_code=403,
+                            detail="The morning brief is for admins and PMs.")
+    if (not isinstance(body, dict) or not body
+            or any(k not in ("brief_time", "brief_saturday") for k in body)
+            or ("brief_time" in body and body["brief_time"] not in wa_brief.BRIEF_TIMES)
+            or ("brief_saturday" in body and not isinstance(body["brief_saturday"], bool))):
+        raise HTTPException(
+            status_code=422,
+            detail="brief_time: off, 07:00, 08:00 or 09:00; brief_saturday: true or false.")
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    existing = await _nprefs.fetch_preferences_record(db, user_id=uid, project_id=None)
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        doc = _nprefs.build_default_preferences(user_id=uid, project_id=None)
+        doc["whatsapp"] = {**_nprefs.default_whatsapp_prefs(), **body}
+        doc["updated_at"] = now
+        await db.notification_preferences.insert_one(doc)
+    else:
+        await db.notification_preferences.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {**{f"whatsapp.{k}": v for k, v in body.items()},
+                      "updated_at": now}})
+    return await _brief_settings(uid)
 
 
 @api_router.post("/whatsapp/connect-link")
@@ -61871,6 +62047,18 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
+    )
+    # Morning brief: each opted-in Admin/PM at the time they picked (7/8/9 AM
+    # New York, Mon–Fri, Saturday optional). Every 10 minutes; the ledger
+    # makes it once a day per person.
+    scheduler.add_job(
+        _whatsapp_brief_job,
+        IntervalTrigger(minutes=10),
+        id='whatsapp_morning_brief',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(

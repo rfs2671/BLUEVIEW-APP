@@ -8,9 +8,10 @@ import {
   AppState,
   ActivityIndicator,
   Platform,
+  Switch,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { MessageCircle, UserPlus } from 'lucide-react-native';
+import { MessageCircle, UserPlus, ChevronDown, Check } from 'lucide-react-native';
 import { GlassCard } from './GlassCard';
 import { useToast } from './Toast';
 import { whatsappAPI } from '../utils/api';
@@ -18,6 +19,7 @@ import { isOfflineError } from '../utils/offlineState';
 import {
   whatsappCardView, needsFreshLink, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
 } from '../utils/whatsappConnect';
+import { BRIEF_OPTIONS, briefRow } from '../utils/whatsappBrief';
 import { spacing, borderRadius } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
@@ -55,6 +57,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
   // so the tap opens WhatsApp at once: a browser blocks a window opened
   // after waiting on the network.
   const [link, setLink] = useState(null);
+  const [briefOpen, setBriefOpen] = useState(false);
   const pollStartedAt = useRef(Date.now());
   const mounted = useRef(true);
 
@@ -169,6 +172,21 @@ export default function WhatsAppCard({ isAdmin = false }) {
     }
   };
 
+  const saveBrief = async (patch) => {
+    setBusy('brief');
+    try {
+      const brief = await whatsappAPI.setBrief(patch);
+      if (mounted.current) setMe((m) => (m ? { ...m, brief } : m));
+      setBriefOpen(false);
+    } catch (error) {
+      toast.error('Not saved', isOfflineError(error)
+        ? 'Reconnect to change the morning brief.'
+        : 'The morning brief could not be changed. Try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const saveContact = async () => {
     setBusy('contact');
     try {
@@ -197,6 +215,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
   ) : null);
 
   const { header, alerts, groups } = view;
+  const brief = briefRow(me);
 
   return (
     <GlassCard style={s.card}>
@@ -253,6 +272,45 @@ export default function WhatsAppCard({ isAdmin = false }) {
                 {alerts.button.label}
               </Text>
             </Pressable>
+          ) : null}
+          {brief ? (
+            <View style={s.briefBox}>
+              <Pressable
+                onPress={() => setBriefOpen((o) => !o)}
+                disabled={busy === 'brief'}
+                accessibilityRole="button"
+                style={({ pressed }) => [s.briefRow, pressed && s.pressed]}
+              >
+                <Text style={s.briefLabel}>{brief.label}</Text>
+                {busy === 'brief'
+                  ? <ActivityIndicator size="small" color={colors.text.muted} />
+                  : <ChevronDown size={16} color={colors.text.muted} />}
+              </Pressable>
+              {briefOpen ? BRIEF_OPTIONS.map((o) => (
+                <Pressable
+                  key={o.value}
+                  onPress={() => saveBrief({ brief_time: o.value })}
+                  disabled={busy === 'brief'}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [s.briefOption, pressed && s.pressed]}
+                >
+                  <Text style={s.line}>{o.label}</Text>
+                  {me.brief.brief_time === o.value
+                    ? <Check size={16} color={WHATSAPP_GREEN} /> : null}
+                </Pressable>
+              )) : null}
+              <Text style={s.line}>{brief.line}</Text>
+              <View style={s.briefRow}>
+                <Text style={s.line}>Also on Saturday</Text>
+                <Switch
+                  value={brief.saturday}
+                  disabled={busy === 'brief' || brief.saturdayDisabled}
+                  onValueChange={(v) => saveBrief({ brief_saturday: v })}
+                  accessibilityLabel="Morning brief on Saturday"
+                  trackColor={{ false: colors.glass.border, true: WHATSAPP_GREEN }}
+                />
+              </View>
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -319,6 +377,16 @@ function buildStyles(colors) {
       marginBottom: spacing.sm,
     },
     numberText: { fontSize: 14, color: colors.text.muted },
+    briefBox: { marginTop: spacing.md },
+    briefRow: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      paddingVertical: spacing.xs,
+    },
+    briefLabel: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
+    briefOption: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      paddingVertical: spacing.xs, paddingLeft: spacing.md,
+    },
     numberValue: { color: colors.text.primary, fontWeight: '600' },
     section: {
       borderTopWidth: 1,
