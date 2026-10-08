@@ -7111,7 +7111,9 @@ class CSRegistrationUpdate(BaseModel):
     # Settable after the fact: the commonest real sequence is a registration
     # typed for DOB first and the account created later.
     user_id: Optional[str] = None
-    is_active: Optional[bool] = None
+    # NO `is_active`. There is no switch: a registration exists until User
+    # Management ends it (operator's ruling, 2026-10-08). A body that still
+    # sends the key has it ignored, as pydantic ignores any unknown field.
  
 class CSRegistrationResponse(BaseModel):
     id: str
@@ -7122,7 +7124,6 @@ class CSRegistrationResponse(BaseModel):
     nyc_id_email: Optional[str] = None
     sst_number: Optional[str] = None
     phone: Optional[str] = None
-    is_active: bool = True
     conflict_warning: Optional[str] = None  # Set if license found on another active project
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
@@ -7642,9 +7643,79 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
 from lib.logbook.cs_attribution import (  # noqa: E402
     attribute_signer, attribution_sentence, normalise_licence,
     is_registered_cs, cs_filing_refused,
+    registration_in_force_on, registration_end,
     MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
     REGISTERED_LATER, UNDETERMINED,
 )
+
+# ── WHETHER A CS REGISTRATION EXISTS: ONE DEFINITION ────────────────────────
+#
+# THERE IS NO SWITCH. Operator's ruling, 2026-10-08: once a superintendent is
+# assigned to a project he is its superintendent until User Management changes
+# his assignment. There is no "assigned but switched off" state, so
+# `is_active` is neither read nor written anywhere in this file.
+#
+# AN END IS A DATE, NEVER A DELETION. Unassigning him, or registering his
+# replacement, stamps `ended_at`; the row stays, because it is what a sheet he
+# signed last month is attributed against (`registration_in_force_on`).
+#
+# `deactivated_at` IS IN THE SELECTOR AS A LEGACY SPELLING OF AN END, so a row
+# retired before this change cannot come back to life by dropping the flag
+# that used to hide it. Production held none (census 2026-10-08).
+CS_REGISTRATION_LIVE = {
+    "is_deleted": {"$ne": True}, "ended_at": None, "deactivated_at": None,
+}
+
+
+async def _refuse_if_it_unseats_the_cs(project_id, *, ending_ids=(),
+                                       adding_linked=False):
+    """409 if this change would leave a project whose CS log is ON with no live
+    registration linked to an account.
+
+    THE OPERATOR'S RULE, CARRIED INTO A MODEL WITHOUT A SWITCH: "an admin can
+    unlink or switch off a registration after activation, putting a live
+    project back into lockout; refuse that while the log is on." Switch-off is
+    gone. What remains is ending the registration (unassign, or the admin
+    DELETE), unlinking it, and superseding it with one that names no account.
+
+    `ending_ids` are the rows this change ends or unlinks; `adding_linked` is
+    True when the change itself registers a linked superintendent, which
+    always leaves the project covered. Checked BEFORE any write, so a refusal
+    changes nothing.
+
+    The remedy the message names is the one that works: assigning the
+    replacement in User Management supersedes the old registration in the
+    same act, so the project is never uncovered.
+    """
+    if adding_linked:
+        return
+    project = await db.projects.find_one(
+        {"_id": to_query_id(project_id)},
+        {"superintendent_log_active": 1, "name": 1},
+    )
+    if not (project or {}).get("superintendent_log_active"):
+        return
+    ending = {str(i) for i in (ending_ids or ())}
+    rows = await db.cs_registrations.find(
+        {"project_id": str(project_id), **CS_REGISTRATION_LIVE},
+    ).to_list(50)
+    if any(str(r.get("user_id") or "").strip()
+           for r in rows if str(r.get("_id")) not in ending):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "CS_LOG_IS_ON",
+            "project_id": str(project_id),
+            "message": (
+                f"The superintendent log is switched on for "
+                f"{(project or {}).get('name') or 'this project'}, and this "
+                "would leave it with no registered superintendent who can "
+                "file it. Assign his replacement in User Management first, or "
+                "switch the log off."
+            ),
+        },
+    )
 from lib.logbook.superintendent_log import (  # noqa: E402
     ITEMS as CS_LOG_ITEMS, ATTESTABLE_KEYS as CS_ATTESTABLE_KEYS,
     item_provenance as cs_item_provenance,
@@ -8213,7 +8284,7 @@ def assert_licence_expiry(raw):
 
 
 async def licence_numbers_from_registrations(user_ids) -> dict:
-    """{user_id: license_number} from the ACTIVE cs_registrations of these users.
+    """{user_id: license_number} from the LIVE cs_registrations of these users.
 
     THE FALLBACK HALF OF "ONE FIELD, WRITTEN AND READ". A superintendent whose
     user document carries no number may still hold a live registration that
@@ -8221,13 +8292,12 @@ async def licence_numbers_from_registrations(user_ids) -> dict:
 
     ── THREE NAMES FOR TWO FACTS, AND THE ONE THAT BITES ───────────────────
 
-    The registration row spells the licence `license_number` (US) and its live
-    flag `is_active`. The user document spells the same licence
-    `dob_superintendent_number`. A filter written against `active` rather than
-    `is_active` MATCHES EVERY ROW -- Mongo has no opinion about a field that
-    does not exist -- so a retired registration would go on clearing the
-    warning, silently, for as long as the row existed. That was nearly shipped
-    in a probe while this was being diagnosed.
+    The registration row spells the number `license_number` (US); the user
+    document spells the same number `dob_superintendent_number`. Whether the
+    row is live is `CS_REGISTRATION_LIVE` -- there is no flag to misspell any
+    more, and a misspelled flag MATCHES EVERY ROW (Mongo has no opinion about
+    a field that does not exist), which is how a retired registration nearly
+    went on clearing this warning in a probe while it was being diagnosed.
 
     ONE QUERY FOR THE WHOLE PAGE, and none at all for an empty set: this is
     called from a paginated list, and a per-row lookup is the shape that turns
@@ -8251,8 +8321,7 @@ async def licence_numbers_from_registrations(user_ids) -> dict:
     rows = await db.cs_registrations.find(
         {
             "user_id": {"$in": spellings},
-            "is_active": True,
-            "is_deleted": {"$ne": True},
+            **CS_REGISTRATION_LIVE,
         },
         {"user_id": 1, "license_number": 1},
     ).to_list(500)
@@ -11836,7 +11905,7 @@ async def get_user_cs_registrations(user_id: str, admin=Depends(get_user_admin))
     target = await _assert_superintendent_under_admin(user_id, admin)
 
     rows = await db.cs_registrations.find(
-        {**_cs_rows_are_for(user_id), "is_active": True},
+        {**_cs_rows_are_for(user_id), **CS_REGISTRATION_LIVE},
     ).to_list(200)
 
     # THE COMPANY'S PROJECTS, by the same predicate `validate_assignable_projects`
@@ -11896,11 +11965,11 @@ async def set_user_cs_registrations(
     ── REGISTRATION DOES BOTH, AND THAT IS THE RULING ──────────────────────
 
         INVARIANT: for a superintendent, set(assigned_projects)
-                   == {r.project_id for r in cs_registrations if r.is_active}
+                   == {r.project_id for r in his LIVE cs_registrations}
 
     Registering him on a project writes the row AND adds the project to
-    `assigned_projects`; unregistering soft-deletes the row AND removes the
-    assignment. THIS IS THE ONLY WRITER OF THAT LIST FOR THIS ROLE -- Assign is
+    `assigned_projects`; unregistering ENDS the row (a dated `ended_at`, never
+    a deletion) AND removes the assignment. THIS IS THE ONLY WRITER OF THAT LIST FOR THIS ROLE -- Assign is
     gone from his card, `POST /assign-projects` refuses him and
     `PUT /admin/users/{id}` refuses the field. An invariant with two writers is
     an invariant until the second one runs.
@@ -11918,10 +11987,13 @@ async def set_user_cs_registrations(
 
     ── THE DELETE SIDE IS THE DANGEROUS HALF ───────────────────────────────
 
-    A removed project is SOFT-deleted and never hard-deleted. The row is the
-    provenance of every superintendent's log filed under it: `attribute_signer`
-    reads `created_at`, `deactivated_at` and `deleted_at` to decide what a
-    document signed months ago can say about who signed it. Removing the row
+    A removed project is ENDED -- `ended_at` stamped -- and never deleted, soft
+    or hard. The row is the provenance of every superintendent's log filed
+    under it: `registration_in_force_on` reads `created_at` and the end to
+    decide what a document signed months ago can say about who signed it.
+    (This used to soft-delete, and the attribution read skipped deleted rows,
+    so an unassigned superintendent's filed sheets would have reprinted as
+    having nobody registered. No such row was ever written in production.) Removing the row
     outright would not un-register him going forward, it would make a FILED
     STATUTORY RECORD unable to account for itself.
 
@@ -11993,7 +12065,7 @@ async def set_user_cs_registrations(
     await validate_assignable_projects(admin, sorted(wanted))
 
     current_rows = await db.cs_registrations.find(
-        {**_cs_rows_are_for(user_id), "is_active": True},
+        {**_cs_rows_are_for(user_id), **CS_REGISTRATION_LIVE},
     ).to_list(200)
     current = {str(r.get("project_id")) for r in current_rows}
 
@@ -12015,6 +12087,15 @@ async def set_user_cs_registrations(
 
     now = datetime.now(timezone.utc)
     added, warnings = [], []
+
+    # ENDING A REGISTRATION MAY NOT UNSEAT A LIVE LOG. Checked for every
+    # project this save would end BEFORE anything is written, so a refusal
+    # leaves the whole request undone rather than half-applied.
+    _ending_rows = {}
+    for _r in current_rows:
+        _ending_rows.setdefault(str(_r.get("project_id")), []).append(_r.get("_id"))
+    for pid in sorted((current - wanted) & selectable_ids):
+        await _refuse_if_it_unseats_the_cs(pid, ending_ids=_ending_rows.get(pid, ()))
 
     for pid in sorted(wanted - current):
         project = await db.projects.find_one(
@@ -12045,12 +12126,12 @@ async def set_user_cs_registrations(
     removed = []
     for pid in sorted((current - wanted) & selectable_ids):
         res = await db.cs_registrations.update_many(
-            {**_cs_rows_are_for(user_id), "project_id": pid, "is_active": True},
+            {**_cs_rows_are_for(user_id), "project_id": pid,
+             **CS_REGISTRATION_LIVE},
             {"$set": {
-                "is_active": False,
-                "is_deleted": True,
-                "deactivated_at": now,
-                "deleted_at": now,
+                "ended_at": now,
+                "ended_reason": "unassigned",
+                "ended_by": actor_id(admin),
                 "updated_at": now,
             }},
         )
@@ -24086,9 +24167,11 @@ async def _register_cs_on_project(
 
       1. SUPERSEDES the project's current CS, if it has one. A project has one
          construction superintendent, so registering a second is a replacement
-         -- and the old row is DEACTIVATED, never removed. `cs_attribution`
-         reads `deactivated_at` to decide whether a log signed last month was
-         signed by the CS of that day.
+         -- and the old row is ENDED (`ended_at`, reason "superseded"), never
+         removed. `registration_in_force_on` reads the end to decide whether a
+         log signed last month was signed by the CS of that day.
+         Registering him on a SECOND project ends nothing: two live rows for
+         one number is exactly what step 2's alert exists to flag.
       2. THE ONE-JOB RULE. The same licence active on another project raises a
          `cs_one_job_conflict` compliance alert and returns a warning. It does
          NOT refuse, and that is deliberate: NYC DOB limits a CS to one active
@@ -24107,24 +24190,26 @@ async def _register_cs_on_project(
     now = datetime.now(timezone.utc)
     company_id = get_user_company_id(admin)
 
-    existing_for_project = await db.cs_registrations.find_one({
-        "project_id": project_id,
-        "is_active": True,
-        "is_deleted": {"$ne": True},
-    })
-    if existing_for_project:
-        await db.cs_registrations.update_one(
-            {"_id": existing_for_project["_id"]},
-            {"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}
-        )
+    # A REPLACEMENT THAT NAMES NO ACCOUNT would leave a project whose log is on
+    # fileable by nobody -- refused before the predecessor is touched.
+    await _refuse_if_it_unseats_the_cs(
+        project_id, adding_linked=bool(str(user_id or "").strip()),
+        ending_ids=[r.get("_id") for r in await db.cs_registrations.find(
+            {"project_id": project_id, **CS_REGISTRATION_LIVE}).to_list(50)],
+    )
+
+    await db.cs_registrations.update_many(
+        {"project_id": project_id, **CS_REGISTRATION_LIVE},
+        {"$set": {"ended_at": now, "ended_reason": "superseded",
+                  "ended_by": admin.get("id"), "updated_at": now}},
+    )
 
     conflict_warning = None
     license_clean = license_number.strip().upper()
 
     conflicting = await db.cs_registrations.find({
         "license_number_normalized": license_clean,
-        "is_active": True,
-        "is_deleted": {"$ne": True},
+        **CS_REGISTRATION_LIVE,
         "project_id": {"$ne": project_id},
     }).to_list(50)
 
@@ -24163,7 +24248,6 @@ async def _register_cs_on_project(
         "sst_number": (sst_number or "").strip() or None,
         "phone": (phone or "").strip() or None,
         "user_id": (str(user_id).strip() or None) if user_id else None,
-        "is_active": True,
         "company_id": company_id,
         "created_by": admin.get("id"),
         "created_at": now,
@@ -24180,7 +24264,6 @@ async def _register_cs_on_project(
         "full_name": full_name,
         "license_number": license_number,
         "nyc_id_email": nyc_id_email,
-        "is_active": True,
         "conflict_warning": conflict_warning,
     }
 
@@ -24320,12 +24403,13 @@ async def list_cs_registrations(
         project = await db.projects.find_one({"_id": to_query_id(reg["project_id"])})
         reg_data["project_name"] = project.get("name") if project else "Unknown"
         
-        # Check for active conflicts
-        if reg.get("is_active"):
+        # Check for conflicts among LIVE rows. An ended row is history and
+        # conflicts with nothing.
+        reg_data["live"] = not registration_end(reg)
+        if reg_data["live"]:
             conflicts = await db.cs_registrations.count_documents({
                 "license_number_normalized": reg.get("license_number_normalized"),
-                "is_active": True,
-                "is_deleted": {"$ne": True},
+                **CS_REGISTRATION_LIVE,
                 "_id": {"$ne": reg_oid},
             })
             reg_data["has_conflict"] = conflicts > 0
@@ -24452,8 +24536,8 @@ async def _cs_registration_under_admin(registration_id: str, admin: dict) -> dic
         NOT_THE_REGISTERED_SUPERINTENDENT on the write path, so an edit moves
         who MAY file;
       * `_logbook_filing_rights` -- `may_file` on the logbook tile;
-      * the activation gate -- ACTIVATION_REQUIRES_CS_REGISTRATION requires an
-        active row linked to an account, so a cross-tenant DELETE or edit
+      * the activation gate -- ACTIVATION_REQUIRES_CS_REGISTRATION requires a
+        live row linked to an account, so a cross-tenant DELETE or edit
         decides whether the superintendent log may be switched on;
       * `cs_attribution_for` -- re-derived AT RENDER TIME, so an edit changes
         what sheets ALREADY FILED say about who signed them.
@@ -24564,6 +24648,16 @@ async def update_cs_registration(
 
     existing = await _cs_registration_under_admin(registration_id, admin)
 
+    # AN ENDED REGISTRATION IS HISTORY. Its name, number and account link are
+    # what sheets filed while it stood are attributed against, so editing one
+    # would rewrite what those sheets say.
+    if registration_end(existing):
+        raise HTTPException(
+            status_code=409,
+            detail="This registration has ended and is kept as the record of "
+                   "who held the role while it stood. It cannot be edited.",
+        )
+
     # THE LINK IS RESOLVED BEFORE ANYTHING IS WRITTEN, so a refusal leaves the
     # row untouched. Validating it after the `$set` was built but before the
     # write would do too; validating it after the write would make a refusal a
@@ -24575,6 +24669,9 @@ async def update_cs_registration(
         )
         update["user_id"] = link
         link_moved = link != (str(existing.get("user_id") or "") or None)
+        if link_moved and not link:
+            await _refuse_if_it_unseats_the_cs(
+                existing.get("project_id"), ending_ids=[existing.get("_id")])
 
     if data.full_name is not None:
         update["full_name"] = data.full_name.strip()
@@ -24587,10 +24684,6 @@ async def update_cs_registration(
         update["sst_number"] = data.sst_number.strip() or None
     if data.phone is not None:
         update["phone"] = data.phone.strip() or None
-    if data.is_active is not None:
-        update["is_active"] = data.is_active
-        if not data.is_active:
-            update["deactivated_at"] = now
     
     result = await db.cs_registrations.update_one(
         {"_id": to_query_id(registration_id)},
@@ -24611,9 +24704,7 @@ async def update_cs_registration(
     #
     # ONLY THE LINK. The other six fields are facts somebody typed, not an
     # authorisation, and an audit that logged every phone-number correction is
-    # an audit nobody reads. `is_active` is the one arguable omission -- it
-    # moves the gate too, from the other direction -- and it is left as it was
-    # rather than changed by a fix about `user_id`.
+    # an audit nobody reads.
     if link_moved:
         await audit_log(
             "cs_registration_account_link_set", actor_id(admin),
@@ -24632,7 +24723,7 @@ async def update_cs_registration(
  
 @api_router.delete("/admin/cs-registrations/{registration_id}")
 async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
-    """Soft-delete a CS registration.
+    """End a CS registration (stamp `ended_at`); it is never deleted.
 
     ── IT DID NOT READ THE ROW, SO THERE WAS NOTHING TO SCOPE ──────────────
 
@@ -24643,7 +24734,7 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
     holding an admin account anywhere on the platform.
 
     THE WORSE HALF OF THE PAIR, and not because a delete is bigger than an edit.
-    The activation gate asks whether an active, account-linked row exists
+    The activation gate asks whether a live, account-linked row exists
     (ACTIVATION_REQUIRES_CS_REGISTRATION), so removing the row takes the
     superintendent log off the project -- and that gate fires on ACTIVATION
     only, by design, so nothing would have objected on the way back.
@@ -24652,11 +24743,18 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
     said a deletion happened when none did was not true either.
     """
     reg = await _cs_registration_under_admin(registration_id, admin)
+    # IT ENDS THE REGISTRATION; IT DOES NOT ERASE IT. A registration that stood
+    # is the record of who held the role while it stood, and a sheet filed then
+    # is attributed against it. No route makes that history disappear.
+    if registration_end(reg):
+        return {"message": "CS registration already ended"}
+    await _refuse_if_it_unseats_the_cs(
+        reg.get("project_id"), ending_ids=[reg.get("_id")])
     now = datetime.now(timezone.utc)
     await db.cs_registrations.update_one(
         {"_id": to_query_id(registration_id)},
-        {"$set": {"is_deleted": True, "is_active": False,
-                  "deleted_at": now, "updated_at": now}}
+        {"$set": {"ended_at": now, "ended_reason": "removed",
+                  "ended_by": actor_id(admin), "updated_at": now}}
     )
 
     # ── RECORDED, LIKE EVERY OTHER SOFT-DELETE OF A FILED-RECORD ROW ────────
@@ -24679,23 +24777,18 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
             "user_id": str(reg.get("user_id") or "") or None,
             "license_number": reg.get("license_number"),
             "full_name": reg.get("full_name"),
-            # WHETHER IT WAS THE LIVE ONE. A deactivated predecessor and the
-            # project's current CS are the same shape to this route and not the
-            # same event to anyone reading the log afterwards.
-            "was_active": bool(reg.get("is_active")),
         },
     )
-    return {"message": "CS registration deleted"}
+    return {"message": "CS registration ended"}
  
  
 @api_router.get("/cs/project/{project_id}")
 async def get_project_cs(project_id: str, current_user=Depends(get_current_user), _proj = Depends(require_project_access)):
-    """Get the active CS for a project. Used by site device to auto-fill superintendent info."""
+    """Get the live CS for a project. Used by site device to auto-fill superintendent info."""
     
     cs = await db.cs_registrations.find_one({
         "project_id": project_id,
-        "is_active": True,
-        "is_deleted": {"$ne": True},
+        **CS_REGISTRATION_LIVE,
     })
     
     if not cs:
@@ -29703,9 +29796,16 @@ async def _cs_filing_check(log_type, project_id, log_date, current_user):
     """
     if log_type != CS_OWNED_LOG_TYPE:
         return None, None
-    reg = await db.cs_registrations.find_one({
-        "project_id": str(project_id), "is_deleted": {"$ne": True},
-    })
+    # THE REGISTRATION IN FORCE ON THE LOG'S DATE, chosen by the same function
+    # the filed sheet uses. This was a bare find_one on (project_id,
+    # is_deleted): no end check and no sort, so on a project that had changed
+    # superintendent it could answer with the predecessor's row and let the
+    # wrong man file, or refuse the right one. One read, every row the project
+    # has had, because an old date's log belongs to that date's superintendent.
+    rows = await db.cs_registrations.find(
+        {"project_id": str(project_id)}).to_list(100)
+    _uid = str((current_user or {}).get("id") or (current_user or {}).get("_id") or "")
+    reg = registration_in_force_on(rows, log_date, signer_id=_uid)
     if not reg:
         return None, None
     return reg, attribute_signer(current_user, reg, log_date)
@@ -32726,11 +32826,6 @@ CS_ACTIVATION_REFUSAL_MESSAGES = {
         "from User Management. BC 3301.13.13 is his own record, and the log "
         "cannot say whose it is until the project names him."
     ),
-    "inactive": (
-        "This project's construction superintendent registration is switched "
-        "off. Switch it back on, or register the current superintendent, from "
-        "User Management first."
-    ),
     "unlinked": (
         "This project's construction superintendent registration is not linked "
         "to an account, so nobody could file the log. Link it to his account "
@@ -32742,24 +32837,22 @@ CS_ACTIVATION_REFUSAL_MESSAGES = {
 def _cs_activation_refusal(registrations):
     """None when the CS log may be switched on, else why not.
 
-    PURE, so the rule is testable without a database. `registrations` is every
-    non-deleted row for the project. One row that is BOTH active and linked
-    to an account is enough; anything less refuses, and the reason names the
-    nearest miss -- an active row with no account says "unlinked" rather than
-    "none", because that is the row an admin would go and look at.
+    PURE, so the rule is testable without a database. `registrations` is the
+    project's LIVE rows (`CS_REGISTRATION_LIVE`). One linked to an account is
+    enough; a live row with none says "unlinked" rather than "none", because
+    that is the row an admin would go and look at.
 
-    `is_active` must be the boolean True, the same test `cs_attribution_for`
-    applies. A `user_id` of "", "   " or None is no account.
+    THERE IS NO "SWITCHED OFF" REASON. A registration exists or it does not
+    (operator's ruling, 2026-10-08), so `is_active` is not consulted: a row
+    carrying `is_active: False` and no end is live. A `user_id` of "", "   "
+    or None is no account.
     """
     rows = [r for r in (registrations or []) if isinstance(r, dict)]
     if not rows:
         return "none"
-    active = [r for r in rows if r.get("is_active") is True]
-    if any(str(r.get("user_id") or "").strip() for r in active):
+    if any(str(r.get("user_id") or "").strip() for r in rows):
         return None
-    if active:
-        return "unlinked"
-    return "inactive"
+    return "unlinked"
 
 
 @api_router.put(
@@ -32865,21 +32958,19 @@ async def set_logbook_activation(
     # project only by coincidence today. This is what stops the second one
     # diverging.
     #
-    # A ROW IS NOT A REGISTRATION UNTIL IT NAMES AN ACCOUNT AND IS SWITCHED ON.
-    # This asked only whether a non-deleted row EXISTED. A row with no
-    # `user_id` satisfied it -- and that row is a total lockout: the filing
-    # gate matches the signer by account id, then by a licence key nothing in
-    # this repository writes, so it answers `not_registered_cs` for EVERY
-    # caller and the log is required, counted as missing, and fileable by
-    # nobody. A switched-off row satisfied it too, while `cs_attribution_for`
-    # reads only active ones. The operator's ruling: activation requires both.
+    # A REGISTRATION THAT EXISTS AND NAMES AN ACCOUNT. A live row with no
+    # `user_id` is a total lockout: the filing gate matches the signer by
+    # account id, then by a licence key nothing in this repository writes, so
+    # it answers `not_registered_cs` for EVERY caller and the log is required,
+    # counted as missing, and fileable by nobody. Live is
+    # `CS_REGISTRATION_LIVE`; there is no switch (operator's ruling,
+    # 2026-10-08), so an ended row is no row and nothing else is consulted.
     #
-    # WHY EACH ROW IS JUDGED HERE AND NOT IN THE QUERY. The refusal says WHICH
-    # of the three it is, because "register him first" is false when a row
-    # exists and the fix is in User Management, not a new registration.
+    # WHY THE LINK IS JUDGED HERE AND NOT IN THE QUERY. The refusal says which
+    # it is, because "register him first" is false when an unlinked row exists.
     if active and entry["conditional"] == "superintendent_log_active":
         _regs = await db.cs_registrations.find({
-            "project_id": str(project_id), "is_deleted": {"$ne": True},
+            "project_id": str(project_id), **CS_REGISTRATION_LIVE,
         }).to_list(50)
         _reason = _cs_activation_refusal(_regs)
         if _reason:
@@ -36236,28 +36327,26 @@ async def cs_attribution_for(db_, project_id, log_date, signer):
     if db_ is None or not project_id:
         return attribute_signer(signer, None, log_date)
     try:
-        # THE ACTIVE ONE, AND DETERMINISTICALLY.
+        # THE ONE IN FORCE ON THE LOG'S DATE, from every row the project has
+        # ever had.
         #
-        # This was a bare find_one on (project_id, is_deleted) with no
-        # `is_active` and no sort. A project ACCUMULATES registrations --
-        # register_construction_superintendent deactivates the predecessor and
-        # inserts a new row rather than editing in place, and an admin can
-        # switch one off -- so this returned whichever row Mongo handed back
-        # first. When that was the deactivated predecessor, attribute_signer
-        # read its `deactivated_at` and a project with a live registered CS
-        # reported as having none: the exact failure the account link exists to
-        # prevent, degrading toward telling a statutory record that a named
-        # person was not registered.
+        # This read the project's CURRENT active row. A project accumulates
+        # registrations -- a replacement ends the predecessor and inserts a new
+        # row -- so a sheet signed by the predecessor last month was checked
+        # against his SUCCESSOR's registration, which postdates it, and printed
+        # "registration created after this date" instead of naming the man who
+        # held the role. And an unassign used to soft-delete, which this read
+        # skipped, so an unassigned superintendent's sheets would have printed
+        # nobody registered. Neither ever happened in production (one
+        # registration, never ended); both are closed by asking for the date.
         #
-        # Two active rows should not exist, but "should not" is not "cannot" --
-        # one migration and it would. Newest created_at wins, ties on _id, the
-        # same ordering _filed_log and open_amendment_head use.
+        # ENDED ROWS ARE READ ON PURPOSE. They are the history this exists for.
         _regs = await db_.cs_registrations.find({
             "project_id": str(project_id),
-            "is_active": True,
-            "is_deleted": {"$ne": True},
-        }).sort([("created_at", -1), ("_id", -1)]).to_list(20)
-        reg = _regs[0] if _regs else None
+        }).to_list(100)
+        _sid = str((signer or {}).get("id") or (signer or {}).get("_id") or "") \
+            if isinstance(signer, dict) else ""
+        reg = registration_in_force_on(_regs, log_date, signer_id=_sid)
     except Exception as e:  # pragma: no cover
         logger.warning(f"[cs-log] registration read failed for {project_id}: {e!r}")
         reg = None
@@ -36305,8 +36394,7 @@ async def superintendent_projects_for(db_, user) -> list:
         ors.append({"license_number_normalized": lic})
     try:
         regs = await db_.cs_registrations.find({
-            "is_active": True,
-            "is_deleted": {"$ne": True},
+            **CS_REGISTRATION_LIVE,
             "$or": ors,
         }).sort([("created_at", -1), ("_id", -1)]).to_list(50)
     except Exception as e:  # pragma: no cover
@@ -36317,8 +36405,8 @@ async def superintendent_projects_for(db_, user) -> list:
     out = []
     for reg in regs:
         # The SAME function the document uses, not a reimplementation of its
-        # rule. It also re-checks created_at/deactivated_at against the date,
-        # which the query above does not.
+        # rule. It also re-checks created_at and the end against the date,
+        # which the query above does only for the end.
         if is_registered_cs(attribute_signer(user, reg, today)):
             pid = str(reg.get("project_id") or "")
             if pid and pid not in out:

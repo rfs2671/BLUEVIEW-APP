@@ -135,10 +135,78 @@ class TheActiveRegistrationWins(unittest.TestCase):
         self.assertEqual(out["state"], A.MATCHED_ACCOUNT,
                          "the LIVE registration must be the one consulted")
 
-    def test_the_query_filters_on_is_active(self):
+    def test_the_read_takes_the_projects_whole_history(self):
+        """NO SWITCH AND NO LIVE FILTER IN THE QUERY. The row a sheet is
+        attributed against is the one in force ON ITS DATE, chosen in
+        `registration_in_force_on` from every row the project has had --
+        ended rows included, because they are that history."""
         _, queries = _run([_reg()])
-        self.assertTrue(any(q.get("is_active") is True for q in queries),
-                        f"is_active not in any query: {queries}")
+        self.assertEqual(len(queries), 1)
+        self.assertEqual(queries[0], {"project_id": "P1"})
+
+
+class TheRowInForceOnTheSheetsDate(unittest.TestCase):
+    """THE HISTORY THE OPERATOR ASKED FOR: "a filed sheet from last month must
+    still attribute correctly." Each case below printed the wrong sentence
+    when the read took the project's CURRENT row."""
+
+    OLD = dict(_id="old", user_id="u-old", full_name="Old Super",
+               created_at=T0, ended_at=T0 + timedelta(days=20),
+               ended_reason="superseded")
+    NEW = dict(_id="new", user_id="u-michael", created_at=T0 + timedelta(days=20))
+
+    def test_the_predecessors_sheet_names_the_predecessor(self):
+        """Signed on day 10 by the man who held the role on day 10. The read
+        used to hand in his SUCCESSOR's row, which postdates the sheet, and it
+        printed "registration created after this date"."""
+        out = asyncio.run(server.cs_attribution_for(
+            _DB([_reg(**self.OLD), _reg(**self.NEW)]), "P1",
+            (T0 + timedelta(days=10)).date().isoformat(),
+            {"id": "u-old", "name": "Old Super"}))
+        self.assertEqual(out["state"], A.MATCHED_ACCOUNT)
+        self.assertEqual(out["registered_name"], "Old Super")
+
+    def test_the_successors_sheet_names_the_successor(self):
+        out = asyncio.run(server.cs_attribution_for(
+            _DB([_reg(**self.OLD), _reg(**self.NEW)]), "P1",
+            (T0 + timedelta(days=25)).date().isoformat(), SIGNER))
+        self.assertEqual(out["state"], A.MATCHED_ACCOUNT)
+
+    def test_an_unassigned_superintendents_sheets_still_name_him(self):
+        """Unassigning ENDS the row. It used to soft-delete it, and the read
+        skipped deleted rows -- so every sheet he had filed would have printed
+        that nobody was registered."""
+        ended = _reg(_id="r1", user_id="u-michael", created_at=T0,
+                     ended_at=T0 + timedelta(days=30), ended_reason="unassigned")
+        out = asyncio.run(server.cs_attribution_for(
+            _DB([ended]), "P1", (T0 + timedelta(days=10)).date().isoformat(),
+            SIGNER))
+        self.assertEqual(out["state"], A.MATCHED_ACCOUNT)
+
+    def test_after_the_end_nobody_is_registered(self):
+        ended = _reg(_id="r1", user_id="u-michael", created_at=T0,
+                     ended_at=T0 + timedelta(days=30), ended_reason="unassigned")
+        out = asyncio.run(server.cs_attribution_for(
+            _DB([ended]), "P1", (T0 + timedelta(days=40)).date().isoformat(),
+            SIGNER))
+        self.assertEqual(out["state"], A.NO_REGISTRATION)
+
+    def test_on_the_handover_day_each_mans_own_sheet_is_his(self):
+        """The predecessor's end and the successor's start share a date, and
+        both held the role that day. Whichever account signed is matched to
+        its own registration rather than to the other man's."""
+        day = (T0 + timedelta(days=20)).date().isoformat()
+        rows = [_reg(**self.OLD), _reg(**self.NEW)]
+        old = asyncio.run(server.cs_attribution_for(
+            _DB(rows), "P1", day, {"id": "u-old", "name": "Old Super"}))
+        new = asyncio.run(server.cs_attribution_for(_DB(rows), "P1", day, SIGNER))
+        self.assertEqual(old["state"], A.MATCHED_ACCOUNT)
+        self.assertEqual(new["state"], A.MATCHED_ACCOUNT)
+
+    def test_the_old_switch_changes_nothing(self):
+        """`is_active: False` with no end is a live registration."""
+        out, _ = _run([_reg(user_id="u-michael", is_active=False)])
+        self.assertEqual(out["state"], A.MATCHED_ACCOUNT)
 
     def test_two_active_rows_resolve_deterministically(self):
         """Should not happen — the registration path deactivates the

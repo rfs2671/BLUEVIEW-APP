@@ -2,12 +2,14 @@
 
 OPERATOR RULING. Registration does both. Registering a superintendent on a
 project writes the `cs_registrations` row AND adds the project to his
-`assigned_projects`; unregistering soft-deletes the row and removes the
-assignment. The superintendent card therefore carries Registration, Edit and
+`assigned_projects`; unregistering ENDS the row (a dated `ended_at`, never a
+deletion) and removes the assignment. The superintendent card therefore carries Registration, Edit and
 Delete, and no Assign button -- CP and PM keep theirs.
 
     INVARIANT: for a superintendent, set(assigned_projects)
-               == {r.project_id for r in cs_registrations if r.is_active}
+               == {r.project_id for r in his LIVE cs_registrations}
+
+    LIVE is "not ended", and there is no switch: operator's ruling, 2026-10-08.
 
 ── WHY THE TWO HALVES SHIP TOGETHER AND CANNOT BE SPLIT ────────────────────
 
@@ -187,7 +189,7 @@ class Base(unittest.TestCase):
             outer.registered.append(kw["project_id"])
             outer.regs.rows.append({
                 "_id": f"r-{kw['project_id']}", "user_id": kw["user_id"],
-                "project_id": kw["project_id"], "is_active": True,
+                "project_id": kw["project_id"],
                 "is_deleted": False, "license_number": kw["license_number"],
             })
             return {"project_id": kw["project_id"], "conflict_warning": None}
@@ -231,7 +233,10 @@ class Base(unittest.TestCase):
         return asyncio.run(server.get_user_cs_registrations("su1", ADMIN))
 
     def active(self):
-        return {r["project_id"] for r in self.regs.rows if r.get("is_active")}
+        """The LIVE rows' projects: not ended, not (legacy) deleted. There is
+        no `is_active` to read."""
+        return {r["project_id"] for r in self.regs.rows
+                if not r.get("ended_at") and not r.get("is_deleted")}
 
     def assigned(self):
         return set(self.michael.get("assigned_projects") or [])
@@ -266,6 +271,46 @@ class RegisteringAlsoAssigns(Base):
                          {"p1", "p2"})
 
 
+class UnassigningMayNotUnseatALiveLog(Base):
+    """THE CS LOG ON 588 IS ON, AND MICHAEL IS ITS ONLY REGISTRATION.
+
+    Unticking 588 would leave a live statutory log with nobody registered who
+    can file it -- the lockout the operator ruled must be refused while the log
+    is on. Refused BEFORE anything is written: the row stays live and his
+    assignment stays, even when the same save also adds another project."""
+
+    def setUp(self):
+        super().setUp()
+        self.projects.rows[0]["superintendent_log_active"] = True
+
+    def _refused(self, project_ids):
+        with self.assertRaises(HTTPException) as cm:
+            self.save(project_ids)
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertEqual(cm.exception.detail["code"], "CS_LOG_IS_ON")
+        self.assertIsNone(self.regs.rows[0].get("ended_at"))
+        self.assertEqual(self.assigned(), {"p1"})
+
+    def test_unticking_his_only_project_is_refused(self):
+        self._refused([])
+
+    def test_a_swap_is_refused_whole_and_registers_nothing(self):
+        self._refused(["p2"])
+        self.assertEqual(self.registered, [])
+
+    def test_with_the_log_off_it_ends(self):
+        self.projects.rows[0]["superintendent_log_active"] = False
+        self.save([])
+        self.assertTrue(self.regs.rows[0].get("ended_at"))
+
+    def test_another_linked_superintendent_keeps_588_covered(self):
+        self.regs.rows.append(
+            {"_id": "r9", "user_id": "su9", "project_id": "p1",
+             "is_deleted": False, "license_number": "44444"})
+        self.save([])
+        self.assertTrue(self.regs.rows[0].get("ended_at"))
+
+
 class UnregisteringAlsoUnassigns(Base):
     """THE OTHER DIRECTION. An assignment left behind is a live authorization
     grant: `require_project_access` honours `assigned_projects` (branch 3), so
@@ -275,15 +320,19 @@ class UnregisteringAlsoUnassigns(Base):
         self.save([])
         self.assertEqual(self.assigned(), set())
 
-    def test_and_the_row_is_soft_deleted_not_removed(self):
-        """Unchanged, and it must stay unchanged. The row is the provenance of
-        every log filed under it -- `attribute_signer` reads `deactivated_at`
-        and `deleted_at` to decide what a document signed months ago can say
-        about who signed it."""
+    def test_and_the_row_is_ended_not_removed(self):
+        """IT STAYS ON THE RECORD, DATED. The row is the provenance of every log
+        filed under it -- `registration_in_force_on` reads its start and end to
+        decide what a document signed months ago can say about who signed it.
+
+        NOT SOFT-DELETED ANY MORE, and that change is the fix: the attribution
+        read skipped deleted rows, so an unassigned superintendent's filed
+        sheets would have reprinted as having nobody registered."""
         self.save([])
         row = self.regs.rows[0]
-        self.assertFalse(row["is_active"])
-        self.assertTrue(row["is_deleted"])
+        self.assertTrue(row.get("ended_at"))
+        self.assertEqual(row.get("ended_reason"), "unassigned")
+        self.assertIsNot(row.get("is_deleted"), True)
         self.assertIn(row, self.regs.rows)
 
     def test_swapping_one_job_for_another_leaves_exactly_one_of_each(self):
@@ -341,7 +390,7 @@ class ARegistrationTheScreenCannotSeeIsLeftAlone(Base):
              "is_active": True, "is_deleted": False, "license_number": "32299"})
         self.save(["p1"])
         survivor = next(r for r in self.regs.rows if r["_id"] == "rX")
-        self.assertTrue(survivor["is_active"])
+        self.assertIsNone(survivor.get("ended_at"))
 
     def test_and_the_read_names_it_rather_than_hiding_it(self):
         self.regs.rows.append(

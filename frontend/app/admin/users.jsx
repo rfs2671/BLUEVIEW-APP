@@ -528,9 +528,16 @@ export default function AdminUsersScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to save CS registrations:', error);
+      // A REFUSAL CAN CARRY A CODE AND A SENTENCE, not just a string. The
+      // server refuses an unassign that would leave a project whose
+      // superintendent log is ON with nobody registered to file it
+      // (409 CS_LOG_IS_ON), and that detail is {code, message}. Handed to the
+      // toast whole it rendered "[object Object]".
+      const detail = error.response?.data?.detail;
       toast.error(
-        isOfflineError(error) ? 'Offline' : 'Error',
-        error.response?.data?.detail
+        isOfflineError(error) ? 'Offline'
+          : (detail?.code === 'CS_LOG_IS_ON' ? 'Superintendent log is on' : 'Error'),
+        (typeof detail === 'string' ? detail : detail?.message)
           || 'Could not save the registrations. Nothing was changed.',
       );
     } finally {

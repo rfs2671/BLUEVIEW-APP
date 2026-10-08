@@ -168,10 +168,14 @@ class TheListReadsTheRegistrationsWithTheRightFieldNames(unittest.TestCase):
             # Michael's live row. license_number, US spelling.
             {"user_id": "su1", "project_id": "p1", "is_active": True,
              "license_number": "32299"},
-            # A retired row for somebody else. `is_active: False` -- a query
-            # written against `active` would take this as live.
-            {"user_id": "su2", "project_id": "p1", "is_active": False,
-             "license_number": "11111"},
+            # An ENDED row for somebody else -- a dated `ended_at`, which is
+            # how a registration stops now (there is no switch).
+            {"user_id": "su2", "project_id": "p1",
+             "ended_at": "2026-09-20T00:00:00", "license_number": "11111"},
+            # A LEGACY row carrying `is_active: False` and no end. With no
+            # switch it is live, so it counts (operator's ruling, 2026-10-08).
+            {"user_id": "su3", "project_id": "p1", "is_active": False,
+             "license_number": "22222"},
         ]
         seen = self.seen
 
@@ -216,14 +220,21 @@ class TheListReadsTheRegistrationsWithTheRightFieldNames(unittest.TestCase):
         got = asyncio.run(server.licence_numbers_from_registrations(["su1"]))
         self.assertEqual(got.get("su1"), "32299")
 
-    def test_it_asks_for_is_active_and_not_active(self):
+    def test_it_asks_for_live_rows_by_the_one_definition(self):
+        """`CS_REGISTRATION_LIVE`, and no flag of either spelling -- there is
+        no switch, and a misspelled flag matches every row."""
         asyncio.run(server.licence_numbers_from_registrations(["su1"]))
         q = self.seen[0]
-        self.assertIn("is_active", q)
+        for k, v in server.CS_REGISTRATION_LIVE.items():
+            self.assertEqual(q.get(k), v, k)
+        self.assertNotIn("is_active", q)
         self.assertNotIn("active", q)
-        self.assertTrue(q["is_active"])
 
-    def test_a_retired_row_is_not_a_registration(self):
+    def test_a_row_with_the_old_flag_off_still_counts(self):
+        got = asyncio.run(server.licence_numbers_from_registrations(["su3"]))
+        self.assertEqual(got.get("su3"), "22222")
+
+    def test_an_ended_row_is_not_a_registration(self):
         got = asyncio.run(server.licence_numbers_from_registrations(["su2"]))
         self.assertNotIn("su2", got)
 

@@ -175,6 +175,16 @@ check('it says why Save is blocked with no registration number', () => {
     'a 422 the admin has to decode is the only explanation');
 });
 
+check('a refusal that carries {code, message} shows the message', () => {
+  // 409 CS_LOG_IS_ON: unassigning the only registration on a project whose
+  // superintendent log is on. Its detail is an object; passing it to the
+  // toast whole printed "[object Object]".
+  ok(/detail\?\.code === 'CS_LOG_IS_ON'/.test(USERS),
+    'the save handler does not recognise the live-log refusal');
+  ok(/typeof detail === 'string' \? detail : detail\?\.message/.test(USERS),
+    'the save handler hands an object detail to the toast');
+});
+
 check('the one-job warning is surfaced and not swallowed', () => {
   const save = body(USERS_CODE, 'const handleSaveCsRegistrations =');
   ok(save.includes('conflict_warnings'), 'the conflict warning is dropped');
