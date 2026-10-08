@@ -24451,9 +24451,9 @@ async def _cs_registration_under_admin(registration_id: str, admin: dict) -> dic
         NOT_THE_REGISTERED_SUPERINTENDENT on the write path, so an edit moves
         who MAY file;
       * `_logbook_filing_rights` -- `may_file` on the logbook tile;
-      * the activation gate -- ACTIVATION_REQUIRES_CS_REGISTRATION tests only
-        that a row EXISTS, so a cross-tenant DELETE switches the superintendent
-        log off the project;
+      * the activation gate -- ACTIVATION_REQUIRES_CS_REGISTRATION requires an
+        active row linked to an account, so a cross-tenant DELETE or edit
+        decides whether the superintendent log may be switched on;
       * `cs_attribution_for` -- re-derived AT RENDER TIME, so an edit changes
         what sheets ALREADY FILED say about who signed them.
 
@@ -24642,7 +24642,7 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
     holding an admin account anywhere on the platform.
 
     THE WORSE HALF OF THE PAIR, and not because a delete is bigger than an edit.
-    The activation gate asks only whether a row EXISTS
+    The activation gate asks whether an active, account-linked row exists
     (ACTIVATION_REQUIRES_CS_REGISTRATION), so removing the row takes the
     superintendent log off the project -- and that gate fires on ACTIVATION
     only, by design, so nothing would have objected on the way back.
@@ -32709,6 +32709,51 @@ async def _set_hot_work_day(project_id, entry, active, current_user) -> dict:
     }
 
 
+#: Why the CS log may not be switched on, keyed by `_cs_activation_refusal`.
+#: Each names where the fix is: registration is managed only from User
+#: Management since the Outside supers tab was removed.
+CS_ACTIVATION_REFUSAL_MESSAGES = {
+    "none": (
+        "Register the construction superintendent for this project first, "
+        "from User Management. BC 3301.13.13 is his own record, and the log "
+        "cannot say whose it is until the project names him."
+    ),
+    "inactive": (
+        "This project's construction superintendent registration is switched "
+        "off. Switch it back on, or register the current superintendent, from "
+        "User Management first."
+    ),
+    "unlinked": (
+        "This project's construction superintendent registration is not linked "
+        "to an account, so nobody could file the log. Link it to his account "
+        "from User Management first."
+    ),
+}
+
+
+def _cs_activation_refusal(registrations):
+    """None when the CS log may be switched on, else why not.
+
+    PURE, so the rule is testable without a database. `registrations` is every
+    non-deleted row for the project. One row that is BOTH active and linked
+    to an account is enough; anything less refuses, and the reason names the
+    nearest miss -- an active row with no account says "unlinked" rather than
+    "none", because that is the row an admin would go and look at.
+
+    `is_active` must be the boolean True, the same test `cs_attribution_for`
+    applies. A `user_id` of "", "   " or None is no account.
+    """
+    rows = [r for r in (registrations or []) if isinstance(r, dict)]
+    if not rows:
+        return "none"
+    active = [r for r in rows if r.get("is_active") is True]
+    if any(str(r.get("user_id") or "").strip() for r in active):
+        return None
+    if active:
+        return "unlinked"
+    return "inactive"
+
+
 @api_router.put(
     "/logbooks/project/{project_id}/activation",
     dependencies=[Depends(require_approved), Depends(require_project_access)],
@@ -32811,22 +32856,32 @@ async def set_logbook_activation(
     # 37 PROJECTS, ONE REGISTRATION, ONE FLAG ON -- and they are the same
     # project only by coincidence today. This is what stops the second one
     # diverging.
+    #
+    # A ROW IS NOT A REGISTRATION UNTIL IT NAMES AN ACCOUNT AND IS SWITCHED ON.
+    # This asked only whether a non-deleted row EXISTED. A row with no
+    # `user_id` satisfied it -- and that row is a total lockout: the filing
+    # gate matches the signer by account id, then by a licence key nothing in
+    # this repository writes, so it answers `not_registered_cs` for EVERY
+    # caller and the log is required, counted as missing, and fileable by
+    # nobody. A switched-off row satisfied it too, while `cs_attribution_for`
+    # reads only active ones. The operator's ruling: activation requires both.
+    #
+    # WHY EACH ROW IS JUDGED HERE AND NOT IN THE QUERY. The refusal says WHICH
+    # of the three it is, because "register him first" is false when a row
+    # exists and the fix is in User Management, not a new registration.
     if active and entry["conditional"] == "superintendent_log_active":
-        _reg = await db.cs_registrations.find_one({
+        _regs = await db.cs_registrations.find({
             "project_id": str(project_id), "is_deleted": {"$ne": True},
-        })
-        if not _reg:
+        }).to_list(50)
+        _reason = _cs_activation_refusal(_regs)
+        if _reason:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "code": "ACTIVATION_REQUIRES_CS_REGISTRATION",
                     "log_type": log_type,
-                    "message": (
-                        "Register the construction superintendent for this "
-                        "project first. BC 3301.13.13 is his own record, and "
-                        "the log cannot say whose it is until the project "
-                        "names him."
-                    ),
+                    "reason": _reason,
+                    "message": CS_ACTIVATION_REFUSAL_MESSAGES[_reason],
                 },
             )
 
