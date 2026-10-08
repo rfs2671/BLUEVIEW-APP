@@ -236,6 +236,21 @@ class TheBackfill(unittest.TestCase):
         # NOTHING OUTSIDE THE PHOTO: the filed record's version does not move.
         self.assertTrue(all(k.startswith(f + ".") for k in u["$set"]))
 
+    def test_an_amendment_chain_enhances_each_original_once(self):
+        """An amendment copies its parent's photos: three logs, one original.
+        One enhance, and every entry gets the same patch."""
+        calls = []
+
+        def counting(key):
+            calls.append(key)
+            return dict(PATCH)
+        logs = _Logs([_log(_id="lb1"), _log(_id="lb2"), _log(_id="lb3")])
+        stats = _backfill(_DB(logs), execute=True, enhance=counting)
+        self.assertEqual(calls, [ORIG])
+        self.assertEqual(stats["distinct_originals"], 1)
+        self.assertEqual((stats["enhanced"], stats["reused"]), (1, 2))
+        self.assertEqual(len(logs.writes), 3)
+
     def test_a_failed_enhance_is_stamped_like_the_pass_does(self):
         def boom(key):
             raise RuntimeError("undecodable")

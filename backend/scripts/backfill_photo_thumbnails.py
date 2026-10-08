@@ -114,8 +114,11 @@ async def run(db, execute: bool = False, project_id: Optional[str] = None,
     stats: Dict[str, Any] = {
         "logbooks_scanned": 0, "logbooks_with_work": 0, "photos": 0,
         "originals_missing_in_r2": 0, "original_bytes": 0,
-        "enhanced": 0, "failed": 0, "skipped_changed_since_scan": 0,
+        "distinct_originals": 0, "enhanced": 0, "reused": 0, "failed": 0,
+        "skipped_changed_since_scan": 0,
     }
+    by_original: Dict[str, Dict[str, Any]] = {}
+    seen_originals = set()
     if not (server._r2_client and server.R2_BUCKET_NAME):
         raise SystemExit(
             "R2 is not configured. Refusing to run: there is nothing to read "
@@ -138,6 +141,9 @@ async def run(db, execute: bool = False, project_id: Optional[str] = None,
         stats["logbooks_with_work"] += 1
         for t in todo:
             stats["photos"] += 1
+            if t["original_r2_key"] not in seen_originals:
+                seen_originals.add(t["original_r2_key"])
+                stats["distinct_originals"] += 1
             size = _object_size(t["original_r2_key"])
             if size is None:
                 stats["originals_missing_in_r2"] += 1
@@ -150,14 +156,25 @@ async def run(db, execute: bool = False, project_id: Optional[str] = None,
             if not execute:
                 continue
             field = f"data.activities.{t['ai']}.photos.{t['pi']}"
-            try:
-                patch = await loop.run_in_executor(
-                    None, server._enhance_r2_original_sync, t["original_r2_key"])
-                stats["enhanced"] += 1
-            except Exception as e:
-                logger.warning("enhance failed log=%s %s: %r", doc["_id"], field, e)
-                patch = {"enhance_status": "failed", "enhance_error": str(e)[:200]}
-                stats["failed"] += 1
+            # ONE ENHANCE PER ORIGINAL, however many entries name it. An
+            # amendment copies its parent's photos, so a chain of three logs
+            # names the same original three times (on 2026-10-08: 134 entries,
+            # 104 originals). The derivative keys come from the original key,
+            # so a second run would only re-upload identical objects.
+            key = t["original_r2_key"]
+            if key in by_original:
+                patch = by_original[key]
+                stats["reused"] += 1
+            else:
+                try:
+                    patch = await loop.run_in_executor(
+                        None, server._enhance_r2_original_sync, key)
+                    stats["enhanced"] += 1
+                except Exception as e:
+                    logger.warning("enhance failed log=%s %s: %r", doc["_id"], field, e)
+                    patch = {"enhance_status": "failed", "enhance_error": str(e)[:200]}
+                    stats["failed"] += 1
+                by_original[key] = patch
             res = await db.logbooks.update_one(
                 {"_id": doc["_id"],
                  f"{field}.original_r2_key": t["original_r2_key"],
