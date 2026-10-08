@@ -150,7 +150,7 @@ const serve = (overrides = {}) => (method, url, body) => {
     const r = await mod.runPhotoRecovery();
     eq(calls.filter((c) => c[1].endsWith('/recover')).length, 0,
       'a report that did not land means nothing uploads this pass');
-    eq(r.phase, 'unreachable', 'and the pass says why it stopped');
+    eq(r.outcome, 'unreachable', 'and the pass says why it stopped');
   }
 
   console.log('\nC. quiet when there is nothing to do or no way to do it');
@@ -162,12 +162,12 @@ const serve = (overrides = {}) => (method, url, body) => {
   {
     const { mod, calls } = phone({ web: true, route: serve() });
     const r = await mod.runPhotoRecovery();
-    eq([r.phase, calls.length], ['no-files', 0], 'web has no phone files: it asks nothing');
+    eq([r.outcome, calls.length], ['no-files', 0], 'web has no phone files: it asks nothing');
   }
   {
     const { mod } = phone({ route: () => new Error('offline') });
     const r = await mod.runPhotoRecovery();
-    eq(r.phase, 'unreachable', 'an unreachable server is left for the next startup');
+    eq(r.outcome, 'unreachable', 'an unreachable server is left for the next startup');
   }
   {
     const { mod, calls } = phone({ files: {}, route: serve() });

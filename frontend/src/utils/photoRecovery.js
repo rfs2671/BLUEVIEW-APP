@@ -76,19 +76,19 @@ async function uploadOne(logbookId, item) {
 
 /**
  * One pass. Returns {pending, reported, present, uploaded, held, failed,
- * phase} -- `phase` is where it stopped ('done', 'no-files', 'unreachable').
+ * outcome} -- `outcome` is where it stopped ('done', 'no-files', 'unreachable').
  */
 export async function runPhotoRecovery(opts = {}) {
   const fs = opts.canReadFiles || canReadFiles;
-  const out = { pending: 0, reported: 0, present: 0, uploaded: 0, held: 0, failed: 0, phase: 'done' };
-  if (!fs()) return { ...out, phase: 'no-files' };
+  const out = { pending: 0, reported: 0, present: 0, uploaded: 0, held: 0, failed: 0, outcome: 'done' };
+  if (!fs()) return { ...out, outcome: 'no-files' };
 
   let items;
   try {
     const res = await apiClient.get('/api/photo-recovery/pending', { timeout: 30000 });
     items = (res && res.data && Array.isArray(res.data.items)) ? res.data.items : [];
   } catch (_e) {
-    return { ...out, phase: 'unreachable' };
+    return { ...out, outcome: 'unreachable' };
   }
   out.pending = items.length;
   if (items.length === 0) return out;
@@ -113,7 +113,7 @@ export async function runPhotoRecovery(opts = {}) {
     } catch (_e) {
       // NO UPLOAD WITHOUT A REPORT. If the phone's account of itself did not
       // land, nothing is sent this pass; the next one reports first again.
-      return { ...out, phase: 'unreachable' };
+      return { ...out, outcome: 'unreachable' };
     }
   }
 
