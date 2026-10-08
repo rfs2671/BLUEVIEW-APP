@@ -462,10 +462,14 @@ def _logbook_photo_sources(photo: dict, v: str = "") -> list:
     once the purge has taken it. That keeps the lightbox's "Original" label
     honest instead of quietly serving an enhanced render under it.
 
-    `original_r2_key` is read because the ladder is specified in terms of an
-    original object; nothing writes that field today (the enhance pass uploads
-    enhanced + thumb and nothing else), so the rung is inert until something
-    does. It is listed, not assumed.
+    `original_r2_key` is the R2 object a photo was CAPTURED into: the client
+    uploads the image to POST /projects/{id}/logbook-photo the moment it is
+    taken and stores the key it gets back on the photo entry, the append route
+    (/logbooks/{id}/activity-photo) writes it for a photo added to a filed log,
+    and scripts/backfill_photo_to_r2.py writes it for the inline-era photos it
+    moves. (This note used to say nothing wrote it. On 2026-10-08, 134 filed
+    photos carried it and nothing else, because the enhance pass never ran on
+    them -- see `_enhance_logbook_photos`.)
     """
     if not isinstance(photo, dict):
         return []
@@ -744,8 +748,25 @@ def _enhance_r2_original_sync(original_key: str) -> dict:
     )
 
 
-async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
+async def _enhance_logbook_photos(logbook_id: str, project_id: str,
+                                  retry_failed: bool = True) -> None:
     """Walk data.activities[].photos[] and enhance each one off the hot path.
+
+    THREE PATHS PUT A PHOTO ON A LOG, AND UNTIL 2026-10-08 ONLY ONE RAN THIS.
+    It was scheduled from POST /logbooks alone. The CP's real path -- Save
+    Draft, then Submit -- arrives as a PUT, the offline drain pushes with a PUT,
+    and a photo added to a filed log goes through the append route; none of the
+    three scheduled it. So every photo that reached a log after its first save
+    kept its R2 original and nothing else: no thumbnail, no enhanced render,
+    and the kiosk loaded the full-size original into an 80x60 tile. 134 filed
+    photos on 588 Thomas were in that state. All three paths schedule it now,
+    and scripts/backfill_photo_thumbnails.py runs it over the ones it missed.
+
+    `retry_failed=False` FOR PUT AND THE APPEND ROUTE. A photo whose enhance
+    failed is stamped `enhance_status: "failed"`; POST has always retried it on
+    a re-save, but PUT fires on every autosave, and re-running a photo that
+    failed for a reason in its bytes on each keystroke-driven save is paid AI
+    work that cannot succeed.
 
     Fire-and-forget: the CP's save has already returned by the time this runs.
     Every photo is independent — one failure never blocks the others, and the
@@ -765,6 +786,8 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
                     continue
                 if photo.get("enhance_status") == "done":
                     continue          # idempotent: re-saving a log re-runs nothing
+                if not retry_failed and photo.get("enhance_status") == "failed":
+                    continue
                 b64 = photo.get("base64")
                 orig_key = photo.get("original_r2_key")
                 if not b64 and not orig_key:
@@ -29767,10 +29790,11 @@ def _submit_row_would_print(row, field) -> bool:
     return not (need or need_p)
 
 
-# COST-BEARING, so it carries the activation gate. Both this and PUT below
-# fire _enhance_logbook_photos, which is AI image work on the platform's bill,
-# and they were the only two spending endpoints in the codebase without
-# require_approved.
+# COST-BEARING, so it carries the activation gate. This, PUT below and the
+# append route (/logbooks/{id}/activity-photo) fire _enhance_logbook_photos,
+# which is AI image work on the platform's bill. (PUT and the append route
+# carried the gate for this reason before they actually fired it -- see the
+# note on _enhance_logbook_photos.)
 #
 # THIS REFUSES NOBODY WHO CAN FILE TODAY. A pending account is, by
 # construction, a self-registered `owner` with company_id = None: /auth/register
@@ -30976,6 +31000,13 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if data.data is not None:
         await _remember_other_activities((updated or {}).get("project_id"), data.data)
         await _remember_other_locations((updated or {}).get("project_id"), data.data)
+        # THE PATH THE CP ACTUALLY WALKS. Save Draft then Submit, and the
+        # offline drain, arrive here -- and until 2026-10-08 nothing here
+        # enhanced the photos they carried. See _enhance_logbook_photos.
+        asyncio.create_task(_enhance_logbook_photos(
+            str(logbook_id), str((updated or {}).get("project_id") or ""),
+            retry_failed=False,
+        ))
     return serialize_id(updated)
 
 
@@ -31356,6 +31387,12 @@ async def append_activity_photo(
         "[photo-append] logbook=%s activity=%s photo=%s filed=%s by=%s",
         logbook_id, activity_id, photo_id, filed, photo["added_by"],
     )
+    # A PHOTO ADDED TO A FILED LOG IS ENHANCED LIKE ANY OTHER. 49 of the 134
+    # photos the enhance pass never reached came in through this route.
+    asyncio.create_task(_enhance_logbook_photos(
+        str(logbook_id), str((fresh or {}).get("project_id") or ""),
+        retry_failed=False,
+    ))
     return {
         "original_r2_key": r2_key,
         "bytes": len(file_bytes),
