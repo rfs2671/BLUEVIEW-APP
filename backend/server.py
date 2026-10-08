@@ -46094,32 +46094,75 @@ async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
 #
 # The app's "Save to Contacts" opens WhatsApp with "contact" typed to the
 # Levelog number; the bot answers with its contact card. Any sender (the
-# number is public), at most once per sender per hour, and nothing else
-# answers that message.
+# number is public), and nothing else answers that message.
+#
+# LIMITS, PER SENDER. At most one card per CONTACT_CARD_COOLDOWN — asking
+# again inside it gets a 👍 on their message, not silence (someone who
+# deleted the chat and asks again must see that it was heard) — and at most
+# CONTACT_CARD_DAILY_MAX cards per New York day; past that, nothing.
 WA_CONTACT_CARD_LOG = "whatsapp_contact_card_log"
-CONTACT_CARD_EVERY = timedelta(hours=1)
+CONTACT_CARD_COOLDOWN = timedelta(minutes=2)
+CONTACT_CARD_DAILY_MAX = 10
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-async def _contact_card_claim(chat: str, now: datetime) -> bool:
-    """True when this sender has had no card in the last hour; claims the
-    hour atomically (two webhooks for one message send one card)."""
-    key = wa_dm.phone_digits(chat) or str(chat or "")
+def _contact_card_key(chat: str) -> str:
+    return wa_dm.phone_digits(chat) or str(chat or "")
+
+
+async def _contact_card_claim(chat: str, now: datetime) -> Optional[str]:
+    """Claim a card for this sender, atomically (two webhooks for one
+    message send one card): None when claimed, else why not — "cooldown"
+    or "daily" (or "error"). One row per sender:
+    {_id, sent_at, day (New York date), day_count}."""
+    key = _contact_card_key(chat)
     if not key:
-        return False
+        return "error"
+    today = wa_gc.today_et(now).isoformat()
+    cutoff = now - CONTACT_CARD_COOLDOWN
+    coll = db[WA_CONTACT_CARD_LOG]
     from pymongo.errors import DuplicateKeyError
     try:
-        res = await db[WA_CONTACT_CARD_LOG].update_one(
-            {"_id": key, "sent_at": {"$lt": now - CONTACT_CARD_EVERY}},
-            {"$set": {"sent_at": now}})
+        # Out of the cooldown, same day, under the cap.
+        res = await coll.update_one(
+            {"_id": key, "sent_at": {"$lt": cutoff}, "day": today,
+             "day_count": {"$lt": CONTACT_CARD_DAILY_MAX}},
+            {"$set": {"sent_at": now}, "$inc": {"day_count": 1}})
         if res.modified_count == 1:
-            return True
-        await db[WA_CONTACT_CARD_LOG].insert_one({"_id": key, "sent_at": now})
-        return True
+            return None
+        # Out of the cooldown, first card of a new day (or a row from
+        # before day counting).
+        res = await coll.update_one(
+            {"_id": key, "sent_at": {"$lt": cutoff}, "day": {"$ne": today}},
+            {"$set": {"sent_at": now, "day": today, "day_count": 1}})
+        if res.modified_count == 1:
+            return None
+        await coll.insert_one({"_id": key, "sent_at": now, "day": today, "day_count": 1})
+        return None
     except DuplicateKeyError:
-        return False          # a card within the hour
+        row = await coll.find_one({"_id": key}) or {}
+        # The cap first: past it the answer is silence, even inside the
+        # cooldown of the card that reached it.
+        if row.get("day") == today and (row.get("day_count") or 0) >= CONTACT_CARD_DAILY_MAX:
+            return "daily"
+        sent = _as_utc(row.get("sent_at"))
+        if isinstance(sent, datetime) and sent >= cutoff:
+            return "cooldown"
+        return "daily"
     except Exception as e:
         logger.warning(f"[wa-contact] claim failed: {type(e).__name__}")
-        return False
+        return "error"
+
+
+async def _contact_card_release(chat: str, claimed_at: datetime) -> None:
+    """Nothing was delivered: undo this claim (cooldown and day count), so
+    asking again works. Matched on our own sent_at."""
+    try:
+        await db[WA_CONTACT_CARD_LOG].update_one(
+            {"_id": _contact_card_key(chat), "sent_at": claimed_at},
+            {"$set": {"sent_at": _EPOCH}, "$inc": {"day_count": -1}})
+    except Exception as e:
+        logger.warning(f"[wa-contact] claim release failed: {type(e).__name__}")
 
 
 async def _send_contact_card(chat: str) -> Optional[str]:
@@ -46168,22 +46211,23 @@ async def _send_contact_card(chat: str) -> Optional[str]:
     return None
 
 
-async def _handle_dm_contact(chat_id: str) -> None:
+async def _handle_dm_contact(chat_id: str, message_id: Optional[str] = None) -> None:
     chat = wa_dm.dm_chat_id(chat_id)
     now = datetime.now(timezone.utc)
-    if not await _contact_card_claim(chat, now):
-        logger.info(f"[wa-contact] rate-limited chat=...{wa_dm.phone_digits(chat)[-4:]}")
+    limited = await _contact_card_claim(chat, now)
+    if limited:
+        logger.info(f"[wa-contact] limited reason={limited} "
+                    f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
+        if limited == "cooldown":
+            # Heard, just sent: a 👍 on their message rather than silence.
+            await _react_to_message(chat, message_id, "👍")
         return
     result = await _send_contact_card(chat)
     if result is None:
-        # Nothing was delivered: give the hour back, so asking again works.
-        # (The claim still did its job of stopping a duplicate webhook.) A
-        # WaAPI 429 keeps it — asking again within the hour would hit it too.
-        try:
-            await db[WA_CONTACT_CARD_LOG].delete_one(
-                {"_id": wa_dm.phone_digits(chat) or str(chat or ""), "sent_at": now})
-        except Exception as e:
-            logger.warning(f"[wa-contact] claim release failed: {type(e).__name__}")
+        # Nothing was delivered: give the claim back, so asking again works.
+        # (It still stopped a duplicate webhook meanwhile.) A WaAPI 429 keeps
+        # it — asking again at once would hit the same limit.
+        await _contact_card_release(chat, now)
 
 
 @api_router.api_route(f"/whatsapp/{wa_contact.VCF_FILENAME}", methods=["GET", "HEAD"])
@@ -56713,10 +56757,11 @@ async def _process_whatsapp_message(payload: dict):
                 await _handle_dm_stop(dm_chat, parsed.get("raw"))
                 return
             # "contact": the Levelog Assistant contact card, for any sender.
-            # Answered (or, within the hour, silently skipped) here and
-            # nowhere else.
+            # Answered (a card, a 👍 in the cooldown, or past the daily cap
+            # nothing) here and nowhere else.
             if wa_contact.is_contact_request(parsed.get("body")):
-                await _handle_dm_contact(dm_chat)
+                await _handle_dm_contact(dm_chat,
+                                         parsed.get("message_id_serialized"))
                 return
             # "1" / "2" to an open GC group question from Levelog. Anything
             # else, or no open question for this person, carries on below.
