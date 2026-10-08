@@ -316,14 +316,26 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         page_index reads a project's stored plan extraction from a project_id
         in the QUERY STRING. "It's only for debugging" is how a route skips the
         check; a debug endpoint is still an endpoint, and this one returns the
-        contents of another company's drawings if it is wrong."""
+        contents of another company's drawings if it is wrong.
+
+        THE SEVENTH IS THE FIRST ONE BEHIND AN OPERATOR CARVE-OUT.
+        `_cs_registration_under_admin` scopes the row that PUT and DELETE
+        /admin/cs-registrations/{id} mutate -- `get_admin_user` proved a RANK,
+        so any admin anywhere could edit or soft-delete any tenant's
+        construction-superintendent registration, and that row is what
+        `_refuse_if_not_the_superintendent` and the
+        ACTIVATION_REQUIRES_CS_REGISTRATION gate read. It calls this helper
+        under `if not is_platform_operator(admin)`, which the six above have no
+        need of because none of them is an admin route. THE CARVE-OUT DOES NOT
+        MAKE IT A DIFFERENT CHECK -- the company comparison is still this one,
+        which is the whole claim being counted."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 6)
+        self.assertEqual(calls, 7)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and
