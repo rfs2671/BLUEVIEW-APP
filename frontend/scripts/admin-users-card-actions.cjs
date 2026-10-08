@@ -66,6 +66,21 @@ const DIST = path.resolve(arg('dist', 'dist'));
 const PORT = Number(arg('port', 5812));
 const WIDTH = Number(arg('width', 443));
 
+// THE SCREEN'S OWN TAP FLOOR, READ FROM theme.js AND NOT COPIED HERE. 56 is
+// `touchTarget.min` and theme.js says why in its own words — outdoors, gloved,
+// one-handed. A literal in this file would be a second copy of the number and
+// would go stale silently the day the token moves, which is the shape
+// touch-targets.cjs beside this one warns about. A theme that cannot be read is
+// a refusal, not a default: a fallback would let this check pass on a number
+// nobody set.
+const TOUCH_MIN = (() => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'styles', 'theme.js'), 'utf8');
+  const m = src.match(/touchTarget\s*=\s*\{[^}]*?\bmin:\s*(\d+)/s);
+  if (!m) throw new Error('no touchTarget.min found in src/styles/theme.js');
+  return Number(m[1]);
+})();
+
 let chromium;
 try {
   ({ chromium } = require(process.env.PW_CORE || 'playwright-core'));
@@ -203,6 +218,55 @@ const READ_CARDS = () => {
   return out;
 };
 
+/**
+ * THE PROMOTION LINE, WHICH IS NOT IN THE ACTION ROW AND SO NOT IN READ_CARDS.
+ *
+ * `canBecomeSuperintendent` admits `cp` and nothing else, and the reason is the
+ * confirmation copy: three of the consequences it states are false from `pm` —
+ * a Site Manager's email is not already suppressed, and he holds neither the
+ * WhatsApp binding nor the emergency check-in point, so two of the stated losses
+ * are not losses. That scope was wrong in the first draft of the feature and
+ * nothing in the suite could see it, because the only instrument that opens this
+ * screen in a browser derives its population from "the parent of an Edit" and
+ * this control is a SIBLING of that row.
+ *
+ * SO THE COUNT IS THE ASSERTION, AND THE LABELS ARE HOW IT IS CHECKED. One
+ * control, on the CP's card, named after him. Offering it on the Site Manager's
+ * card shows up here as two.
+ *
+ * AND ITS SIZE IS MEASURED LIKE EVERY OTHER TARGET ON THE SCREEN. A quiet text
+ * control is still a control: the superintendent log shipped an 18-point
+ * disclosure row above a 56-point checkbox and the small one was the way IN.
+ * The floor is read from theme.js by the caller rather than written here twice.
+ */
+const READ_PROMOTIONS = () => {
+  const controls = Array.from(
+    document.querySelectorAll('[role="button"],[tabindex="0"]'),
+  );
+  const out = [];
+  for (const el of controls) {
+    const aria = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    if (!/^Make .+ a superintendent$/.test(aria)) continue;
+    const box = el.getBoundingClientRect();
+    // AGAINST THE CARD, NOT AGAINST ITSELF. This control has no border of its
+    // own to spill over; what it can do is run past the edge of the GlassCard it
+    // sits in, which is the same failure in a different frame. The card is the
+    // nearest ancestor wider than the control.
+    let card = el.parentElement;
+    while (card && card.getBoundingClientRect().width <= box.width + 1) {
+      card = card.parentElement;
+    }
+    const cbox = card ? card.getBoundingClientRect() : null;
+    out.push({
+      label: aria,
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+      overflows: !!cbox && (box.left < cbox.left - 1 || box.right > cbox.right + 1),
+    });
+  }
+  return out;
+};
+
 (async () => {
   if (!fs.existsSync(path.join(DIST, 'index.html'))) {
     console.error(`no export at ${DIST} — run: npx expo export --platform web --output-dir dist`);
@@ -239,6 +303,7 @@ const READ_CARDS = () => {
   await page.waitForTimeout(4000);
 
   const controls = await page.evaluate(READ_CARDS);
+  const promotions = await page.evaluate(READ_PROMOTIONS);
   await browser.close();
   server.close();
 
@@ -296,11 +361,42 @@ const READ_CARDS = () => {
     console.log(`  ${verdict}  card ${c.row}  `
       + `${String(c.width).padStart(4)}x${String(c.height).padStart(3)}  ${c.label}`);
   }
+  // ── THE PROMOTION LINE ────────────────────────────────────────────────────
+  //
+  // ONE, ON THE CP'S CARD. `canBecomeSuperintendent` admits `cp` alone because
+  // the confirmation states the consequences of promotion FROM cp — see
+  // src/utils/roleVocabulary.js, which writes out which three of them are false
+  // from pm. A second control here is that scope having widened without the copy
+  // being re-measured, which is a confirmation that misleads an admin about a
+  // change he can only partly undo.
+  const expectPromote = `Make ${ROWS.find((r) => r.role === 'cp').name} a superintendent`;
+  const promoteLabels = promotions.map((p) => p.label).sort();
+  if (promoteLabels.length !== 1 || promoteLabels[0] !== expectPromote) {
+    say(`expected exactly one promotion control, on the CP's card `
+      + `("${expectPromote}"), found ${promoteLabels.length}: `
+      + `${promoteLabels.join(' | ') || 'none'}`);
+  }
+  // THE FLOOR IS theme.js's OWN NUMBER, read rather than copied — a literal here
+  // would go stale the day the token moves and take this check quietly with it.
+  for (const p of promotions) {
+    if (p.height < TOUCH_MIN) {
+      say(`promotion control is ${p.height}px tall, under the screen's own `
+        + `${TOUCH_MIN}px floor: "${p.label}"`);
+    }
+    if (p.overflows) {
+      say(`promotion control runs past the edge of its card at ${WIDTH}px: `
+        + `"${p.label}" (${p.width}px)`);
+    }
+    console.log(`  ${p.overflows || p.height < TOUCH_MIN ? 'OVER' : '  ok'}  promote `
+      + `${String(p.width).padStart(4)}x${String(p.height).padStart(3)}  ${p.label}`);
+  }
+
   if (consoleErrors.length) {
     for (const e of consoleErrors.slice(0, 5)) say(`console error: ${e.slice(0, 160)}`);
   }
 
-  console.log(`\n${controls.length} control(s) on ${rows.size} card(s) measured, ${bad} problem(s)`);
+  console.log(`\n${controls.length} control(s) on ${rows.size} card(s) measured, `
+    + `${promotions.length} promotion control(s), ${bad} problem(s)`);
   if (bad) {
     console.error('\nA label that wraps or spills is a control that no longer fits '
       + 'the row it was drawn for, and a role holding the wrong buttons is the '
