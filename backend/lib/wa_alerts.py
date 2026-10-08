@@ -51,6 +51,8 @@ SWITCHES = tuple(dict.fromkeys(KIND_SWITCH.values()))
 # already has history never posts that history.
 LEGACY_KINDS = ("violation", "permit")
 NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
+# Fed by the DOT sync, not DOB: they wait for the project's first DOT pass.
+DOT_KINDS = ("dot_violation", "dot_permit")
 
 RED, ORANGE = "🔴", "🟠"
 CLOSED_WORDS = ("certified", "dismissed", "paid", "resolved", "closed",

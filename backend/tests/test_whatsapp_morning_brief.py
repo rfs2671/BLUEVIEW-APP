@@ -34,8 +34,18 @@ from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
     ADMIN_PHONE, CO_A, CO_B, CP_PHONE, PM_PHONE, _Ctx,
 )
 from tests.test_whatsapp_dm_assistant import (  # noqa: E402
-    PROJ_B, THOMAS, WALWORTH, _db, _optin,
+    PROJ_B, THOMAS, WALWORTH, _db as _base_db, _optin,
 )
+from tests.test_whatsapp_gc_alerts import synced_state  # noqa: E402
+
+
+def _db():
+    """Every project's sources first synced long ago (lib/source_sync.py)."""
+    db = _base_db()
+    db[server.SOURCE_SYNC_STATE].rows.extend(
+        synced_state(str(p["_id"]), (str(p["_id"]), p.get("company_id")))
+        for p in db.projects.rows)
+    return db
 
 THU_7 = datetime(2026, 10, 8, 11, 5, tzinfo=timezone.utc)     # Thu 7:05 AM ET
 THU_8 = datetime(2026, 10, 8, 12, 5, tzinfo=timezone.utc)     # Thu 8:05 AM ET

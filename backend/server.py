@@ -74,6 +74,7 @@ from lib import wa_attention  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -38676,8 +38677,12 @@ def _cofo_borough_label(nyc_bin: str, project_address: str = "") -> Optional[str
     return None
 
 
-async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
-    """Query NYC Open Data Socrata endpoints by BIN and/or address."""
+async def _query_dob_apis(nyc_bin: str, project_address: str = "",
+                          answered: Optional[Dict[str, bool]] = None) -> list:
+    """Query NYC Open Data Socrata endpoints by BIN and/or address.
+
+    `answered`, when given, collects {record_type: every request for it
+    answered with a list} — what lib/source_sync counts as a full sync."""
     all_records = []
     seen_ids = set()
     
@@ -39013,10 +39018,12 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
         for ep in endpoints:
             raw_returned = 0
             kept_after_dedup = 0
+            ok = False
             try:
                 resp = await http_client.get(ep["url"], params=ep["params"])
                 if resp.status_code == 200:
                     records = resp.json()
+                    ok = isinstance(records, list)
                     if not isinstance(records, list):
                         records = []
                     raw_returned = len(records)
@@ -39102,7 +39109,11 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                 else:
                     logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
             except Exception as e:
+                ok = False
                 logger.error(f"DOB API error {ep['url']}: {e}")
+            if answered is not None:
+                rt = ep["record_type"]
+                answered[rt] = answered.get(rt, True) and ok
             per_endpoint_stats.append({
                 "url": ep["url"].rsplit("/", 1)[-1].replace(".json", ""),
                 "record_type": ep["record_type"],
@@ -40999,7 +41010,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     logger.warning(f"BBL->BIN pre-heal write failed: {e}")
                 nyc_bin = bbl_bin
 
-    raw_records = await _query_dob_apis(nyc_bin, project_address)
+    # Which record types answered in full (lib/source_sync). Both passes —
+    # the address pass and a BIN-heal re-query — must answer for a source.
+    answered: Dict[str, bool] = {}
+    failed_types: set = set()
+
+    async def _mark_synced():
+        await _mark_sources_synced(
+            project_id, company_id,
+            source_sync.answered_sources(answered, failed_types)
+            & set(source_sync.DOB_SOURCES))
+
+    raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
@@ -41040,7 +41062,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 logger.warning(f"BIN backfill write failed: {e}")
             # Re-query with the real BIN and merge (dedup by record id).
             nyc_bin = healed_bin
-            heal_records = await _query_dob_apis(healed_bin, project_address)
+            heal_records = await _query_dob_apis(healed_bin, project_address,
+                                                 answered)
             if heal_records:
                 seen_keys = set()
                 merged = []
@@ -41061,6 +41084,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 )
 
     if not raw_records:
+        await _mark_synced()      # every source answered with nothing
         return []
 
     # DOB NOW Job → Filing de-duplication. A permit-bearing filing appears BOTH
@@ -41156,6 +41180,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
  
     if not new_records:
         logger.info(f"DOB sync for project {project_id}: no new records")
+        await _mark_synced()
         return []
  
     inserted_logs = []
@@ -41304,7 +41329,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 if severity == "Action" and not is_seed_transition:
                     await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
         except Exception as e:
+            failed_types.add(rec.get("_record_type"))
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
+
+    # After every record is stored: a GC tick or brief reading the rows
+    # once this is written sees the source's whole first sync.
+    await _mark_synced()
  
     # Sprint 1: Cross-reference complaints to violations
     try:
@@ -44682,13 +44712,26 @@ async def _gc_project_records(project_id: str, company_id: str) -> Tuple[list, l
     return dob, dot
 
 
+async def _gc_marker_redate(lid: str) -> bool:
+    """A baseline marker taken before its source's first sync, re-dated
+    now that the kind has been baselined again."""
+    try:
+        await db[WA_LEDGER].update_one(
+            {"_id": lid}, {"$set": {"created_at": datetime.now(timezone.utc)}})
+        return True
+    except Exception as e:
+        logger.warning(f"[wa-gc] marker re-date failed: {type(e).__name__}")
+        return False
+
+
 async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
     """Post DOB and DOT alerts to confirmed GC groups (lib/wa_alerts.py)."""
     now = now or datetime.now(timezone.utc)
     report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
               "kinds_baselined": 0, "skipped_unbound": 0, "no_number": 0,
               "permits_no_expiry": 0,
-              "seen_while_off": 0, "held": 0, "bot_off": 0}
+              "seen_while_off": 0, "held": 0, "bot_off": 0,
+              "kinds_waiting_sync": 0}
     today = wa_gc.today_et(now)
     test_ids = {str(x) for x in await test_company_ids()}
     try:
@@ -44721,6 +44764,13 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             report["bot_off"] += 1
         report["projects"] += 1
         address = wa_groups.project_label(project)
+        # Read BEFORE the rows: a first sync that finishes between the two
+        # reads must not leave this tick baselining from rows it never saw.
+        try:
+            synced = await _project_first_synced(project_id)
+        except Exception as e:
+            logger.warning(f"[wa-gc] sync state read failed: {type(e).__name__}")
+            continue
         try:
             dob_rows, dot_rows = await _gc_project_records(project_id, company_id)
         except Exception as e:
@@ -44740,17 +44790,46 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         # baselines again instead of posting history. violation + permit
         # share the original marker; every later kind has its own, so a kind
         # added later never posts what a project already had.
+        #
+        # FIRST SYNC, PER SOURCE (lib/source_sync.py). A kind waits — not
+        # baselined, not posted — until the project's first sync of its
+        # source is done; violation + permit wait for both of theirs. A
+        # marker older than that first sync was taken before the rows
+        # existed, so the kind is baselined again and the marker re-dated.
         try:
             marks = {k: await db[WA_LEDGER].find_one(
-                         {"_id": wa_alerts.kind_baseline_id(project_id, k)}, {"_id": 1})
+                         {"_id": wa_alerts.kind_baseline_id(project_id, k)},
+                         {"_id": 1, "created_at": 1})
                      for k in wa_alerts.NEW_KINDS}
             legacy = await db[WA_LEDGER].find_one(
-                {"_id": wa_gc.baseline_id(project_id)}, {"_id": 1})
+                {"_id": wa_gc.baseline_id(project_id)}, {"_id": 1, "created_at": 1})
         except Exception as e:
             logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
             continue
-        unbaselined = [k for k in wa_alerts.NEW_KINDS if not marks[k]]
-        if not legacy:
+
+        def _since(kinds):
+            """When every source of `kinds` finished its first sync, or None."""
+            ats = [synced.get(source_sync.KIND_SOURCE[k]) for k in kinds]
+            return None if any(a is None for a in ats) else max(ats)
+
+        def _stale(mark, since):
+            at = source_sync.as_utc((mark or {}).get("created_at"))
+            return bool(mark) and (at is None or at < since)
+
+        waiting = {k for k in wa_alerts.NEW_KINDS if _since([k]) is None}
+        legacy_since = _since(wa_alerts.LEGACY_KINDS)
+        if legacy_since is None:
+            waiting |= set(wa_alerts.LEGACY_KINDS)
+        if waiting:
+            report["kinds_waiting_sync"] += len(waiting)
+            items = [it for it in items if it["kind"] not in waiting]
+        rebaseline = {k for k in wa_alerts.NEW_KINDS
+                      if k not in waiting and _stale(marks[k], _since([k]))}
+        legacy_stale = legacy_since is not None and _stale(legacy, legacy_since)
+        unbaselined = [k for k in wa_alerts.NEW_KINDS if k not in waiting
+                       and (not marks[k] or k in rebaseline)]
+        legacy_due = legacy_since is not None and (not legacy or legacy_stale)
+        if legacy_due:
             unbaselined = list(wa_alerts.LEGACY_KINDS) + unbaselined
         if unbaselined:
             legacy_failed = False
@@ -44768,13 +44847,21 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                     continue
                 if kind in wa_alerts.LEGACY_KINDS:
                     continue      # the shared marker is written below
+                if kind in rebaseline:
+                    if await _gc_marker_redate(
+                            wa_alerts.kind_baseline_id(project_id, kind)):
+                        report["kinds_baselined"] += 1
+                    continue
                 if await _gc_ledger_insert(
                         wa_alerts.kind_baseline_id(project_id, kind),
                         kind="gc_baseline", project_id=project_id,
                         company_id=company_id, status="baseline") != "error":
                     report["kinds_baselined"] += 1
-            if not legacy and not legacy_failed:
-                if await _gc_ledger_insert(
+            if legacy_due and not legacy_failed:
+                if legacy_stale:
+                    if await _gc_marker_redate(wa_gc.baseline_id(project_id)):
+                        report["baselined"] += 1
+                elif await _gc_ledger_insert(
                         wa_gc.baseline_id(project_id), kind="gc_baseline",
                         project_id=project_id, company_id=company_id,
                         status="baseline") != "error":
@@ -44861,6 +44948,37 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 # which name to fix.
 
 DOT_SYNC_HOURS = 2
+# Per project, per source: when its first full sync finished (see
+# lib/source_sync.py). Written by the DOB and DOT syncs; read by the GC
+# alerts tick and the morning brief, which treat nothing as new before it.
+SOURCE_SYNC_STATE = "source_sync_state"
+
+
+async def _mark_sources_synced(project_id: str, company_id: str,
+                               sources) -> None:
+    """Stamp each source's synced_at, and first_synced_at the first time."""
+    now = datetime.now(timezone.utc)
+    for s in sorted(set(sources)):
+        try:
+            await db[SOURCE_SYNC_STATE].update_one(
+                {"_id": project_id},
+                {"$set": {"company_id": company_id,
+                          f"sources.{s}.synced_at": now}},
+                upsert=True)
+            await db[SOURCE_SYNC_STATE].update_one(
+                {"_id": project_id,
+                 f"sources.{s}.first_synced_at": {"$exists": False}},
+                {"$set": {f"sources.{s}.first_synced_at": now}})
+        except Exception as e:
+            logger.warning(f"[source-sync] state write failed: {type(e).__name__}")
+
+
+async def _project_first_synced(project_id: str) -> dict:
+    """{source: first_synced_at} for the project's fully synced sources."""
+    state = await db[SOURCE_SYNC_STATE].find_one({"_id": project_id})
+    project = await db.projects.find_one(
+        {"_id": to_query_id(project_id)}, {"first_poll_completed_at": 1})
+    return source_sync.first_synced(state, project)
 
 
 async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
@@ -44935,9 +45053,12 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
             continue
         report["projects"] += 1
         project_id, company_id = str(p.get("_id")), str(p.get("company_id"))
+        answered: Dict[str, bool] = {}
+        failed_types = set()
         for q in reqs:
             report["requests"] += 1
             recs = await fetch(q["dataset"], q["params"])
+            answered[q["kind"]] = answered.get(q["kind"], True) and recs is not None
             if recs is None:
                 report["failed"] += 1
                 continue
@@ -44970,9 +45091,13 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
                     res = await _dot_store(project_id, company_id, log, how, now)
                 except Exception as e:
                     logger.warning(f"[dot-sync] store failed: {type(e).__name__}")
+                    failed_types.add(q["kind"])
                     continue
                 if res in ("new", "changed"):
                     report[res] += 1
+        await _mark_sources_synced(
+            project_id, company_id,
+            source_sync.answered_sources(answered, failed_types))
     logger.info(f"[dot-sync] {report}")
     return report
 
@@ -45960,6 +46085,9 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
                      now: datetime) -> dict:
     """One job's block: its address, its items, its headcount line."""
     pid = str(project.get("_id"))
+    # Before the rows (as in the GC tick): a source mid-way through its
+    # first sync is skipped, never read half-stored.
+    synced = await _project_first_synced(pid)
     rows = await db.dob_logs.find({
         "project_id": pid,
         "record_type": {"$in": _BRIEF_DOB_TYPES},
@@ -45977,7 +46105,7 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000)
     return {"label": wa_assistant.street_label(project),
-            "items": wa_brief.job_items(rows, since, now, dot_rows),
+            "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
                 pid, company_id, now)}

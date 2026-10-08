@@ -91,9 +91,24 @@ def _world(**extra):
         projects=[{"_id": "proj_a", "company_id": CO_A, "name": "Main St"},
                   {"_id": "proj_b", "company_id": CO_B, "name": "B"}],
         whatsapp_groups=groups,
+        # Every source's first sync done long ago (lib/source_sync.py).
+        source_sync_state=[synced_state(p, ("proj_a", CO_A), ("proj_b", CO_B))
+                           for p in ("proj_a", "proj_b")],
     )
     cols.update(extra)
     return FakeDb(unique={server.WA_OPTINS: ("phone",)}, **cols)
+
+
+LONG_AGO = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+
+def synced_state(project_id, *companies, sources=None, at=LONG_AGO):
+    """A source_sync_state row: `sources` (default all) first synced `at`."""
+    from lib import source_sync
+    co = dict(companies).get(project_id, "")
+    return {"_id": project_id, "company_id": co,
+            "sources": {s: {"first_synced_at": at, "synced_at": at}
+                        for s in (source_sync.SOURCES if sources is None else sources)}}
 
 
 def _group_sends(c, group=None):
