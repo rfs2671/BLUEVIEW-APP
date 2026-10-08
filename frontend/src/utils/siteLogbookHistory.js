@@ -2,6 +2,22 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import apiClient from './api';
 import { readManifestList, writeManifestList } from './siteManifestStore';
+// THE DEFERRAL PROTOCOL LIVES IN A MODULE THAT IMPORTS NOTHING, so the screen's
+// renderers — which are sliced out and EXECUTED by
+// logbookViewRenderers.test.cjs, a harness that cannot require a module
+// touching the filesystem — can load the real `signatureMark` instead of a stub
+// of it. A stubbed answer to "did he sign?" in the only test that runs the
+// pre-shift roster is the defect wearing the name of the fix.
+// RE-EXPORTED BELOW, so every existing import of this module is unchanged.
+import {
+  SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
+  dayHasDeferredSignatures, applySignatureImages, applyDaySignatureImages,
+} from './signatureDeferral';
+
+export {
+  SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
+  dayHasDeferredSignatures, applySignatureImages, applyDaySignatureImages,
+};
 
 /**
  * EVERY FILED DATE STAYS ON THE TABLET, AND SO DOES EVERY PDF THAT NAMES ONE.
@@ -357,6 +373,31 @@ export function dayDetailName(projectId, date, version) {
   return `${clean(projectId)}_${clean(date)}.${clean(version)}.json`;
 }
 
+/**
+ * One RECORD's signature marks: `{projectId}_{logId}.{version}.sig.json`.
+ *
+ * THE SAME DIRECTORY AND THE SAME NAMING DISCIPLINE as the day above — the
+ * project prefix `pruneDayDetails` matches on, the version in the name, and
+ * the same sanitiser — because this is the second half of the same cache and
+ * not a second cache. `sweepDocCache` and the manifest store are untouched by
+ * it: they name PDFs, and these are not PDFs.
+ *
+ * PER RECORD RATHER THAN PER DAY, AND THE REASON IS A COUNT THAT WOULD
+ * OTHERWISE LIE. A per-day bundle filled one sheet at a time is PARTIAL, and
+ * nothing in its name says so — so a progress line reading "43 of 43 days
+ * saved" would be true of a tablet holding the pre-shift images and none of
+ * the orientation ones. A record's file either exists or it does not, and the
+ * record's own deferred set says whether it was needed.
+ *
+ * VERSIONED ON THE RECORD'S OWN STAMP, which is `pdfVersion` — so an amended
+ * sheet misses rather than serving the superseded ink under the current
+ * record's name.
+ */
+export function recordSignatureName(projectId, logId, version) {
+  const clean = (v) => String(v === undefined || v === null ? '' : v).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${clean(projectId)}_${clean(logId)}.${clean(version)}.sig.json`;
+}
+
 async function ensureDayDir() {
   try {
     const info = await FileSystem.getInfoAsync(DAY_DIR);
@@ -404,6 +445,46 @@ export async function readDayDetail(projectId, date, version) {
 }
 
 /**
+ * Put one record's signature marks on disk. Returns whether they landed.
+ *
+ * NEVER THROWS, for `writeDayDetail`'s reason: a record whose ink could not be
+ * written is a record that says "signed, image not saved on this tablet" —
+ * degraded, honest, and not worth abandoning the rest of the fill over.
+ */
+export async function writeRecordSignatures(projectId, logId, version, images) {
+  if (!canUseFs() || !projectId || !logId) return false;
+  try {
+    await ensureDayDir();
+    await FileSystem.writeAsStringAsync(
+      DAY_DIR + recordSignatureName(projectId, logId, version),
+      JSON.stringify((images && typeof images === 'object') ? images : {}),
+    );
+    return true;
+  } catch (_e) { return false; }
+}
+
+/**
+ * One record's marks, or NULL.
+ *
+ * NULL IS NOT "NO SIGNATURES", and the distinction is the same one
+ * `readDayDetail` makes. `{}` is a record whose marks are all unsigned — a real
+ * answer, which the splice correctly does nothing with. NULL is a file this
+ * device does not hold, which must leave the flags standing so the screen says
+ * the image is not here rather than silently drawing nothing.
+ */
+export async function readRecordSignatures(projectId, logId, version) {
+  if (!canUseFs() || !projectId || !logId) return null;
+  try {
+    const raw = await FileSystem.readAsStringAsync(
+      DAY_DIR + recordSignatureName(projectId, logId, version),
+    );
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? parsed : null;
+  } catch (_e) { return null; }
+}
+
+/**
  * Reclaim day detail this project no longer files on.
  *
  * ONLY THIS PROJECT'S OWN FILES, matched on the `{projectId}_` prefix. This
@@ -415,14 +496,32 @@ export async function readDayDetail(projectId, date, version) {
  *
  * Callers must have a COMPLETE walk before calling this. Stale detail is
  * recoverable on the next poll; deleted, underground, is not.
+ *
+ * ── AND THE SIGNATURE FILES ARE IN THE KEEP-SET, WHICH IS NOT OPTIONAL ─────
+ *
+ * This sweep deletes EVERY `{projectId}_` name the keep-set does not hold, so a
+ * keep-set built from day names alone would delete every signature file on the
+ * tablet on the first complete walk after one landed — and then the backfill
+ * would download them all again, and the walk after that would delete them
+ * again. A fill that never finishes and an inspector who never gets the ink.
+ *
+ * NAMED OFF THE INDEX ROWS, NOT OFF THE DETAIL ON DISK. `identityRow` keeps
+ * `{id, updated_at}` per log and `updated_at` IS `pdfVersion` — the same stamp
+ * `recordSignatureName` versions on — so the committed index names every
+ * record's signature file without a single detail file being opened. That is
+ * what keeps this a ONE directory read.
  */
 export async function pruneDayDetails(projectId, rows) {
   if (!canUseFs() || !projectId) return 0;
-  const keep = new Set(
-    (Array.isArray(rows) ? rows : [])
-      .filter((r) => r && r.date)
-      .map((r) => dayDetailName(projectId, r.date, r.cache_version)),
-  );
+  const keep = new Set();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    if (!r || !r.date) continue;
+    keep.add(dayDetailName(projectId, r.date, r.cache_version));
+    for (const l of (Array.isArray(r.logs) ? r.logs : [])) {
+      const id = l && (l.id || l._id);
+      if (id) keep.add(recordSignatureName(projectId, id, l.updated_at));
+    }
+  }
   const prefix = `${String(projectId).replace(/[^a-zA-Z0-9_-]/g, '_')}_`;
   let removed = 0;
   try {
@@ -451,9 +550,21 @@ const pagePath = (projectId, limit, before) =>
 const indexPagePath = (projectId, limit, before) =>
   `${pagePath(projectId, limit, before)}&view=index`;
 
-/** One day's whole documents. The only read that carries photographs now. */
+/**
+ * One day's documents, TEXT ONLY — every signature mark replaced by a
+ * `*_deferred` flag beside where it was. 65.8% of this corpus is those marks.
+ *
+ * `view=text` AND THE ECHO IS CHECKED, like `view=index` above. A server that
+ * predates the parameter ignores it and serves whole documents WITH their
+ * signatures, which renders correctly and costs what it costs — see
+ * `ensureDayDetail`, which reports which body it got rather than assuming.
+ */
 export const dayDetailPath = (projectId, date) =>
-  `/api/logbooks/project/${projectId}/submitted?date=${encodeURIComponent(date)}`;
+  `/api/logbooks/project/${projectId}/submitted?date=${encodeURIComponent(date)}&view=text`;
+
+/** One record's signature marks. The second half of the read above. */
+export const signatureImagesPath = (logId) =>
+  `/api/logbooks/${encodeURIComponent(logId)}/signature-images`;
 
 /**
  * Walk every page of submitted history, newest date first.
@@ -863,8 +974,167 @@ export async function ensureDayDetail(projectId, date, version, opts = {}) {
     version: fetchedVersion,
     amended: version !== undefined && version !== null
       && String(fetchedVersion) !== String(version),
+    // WHICH BODY THIS WAS, REPORTED AND NOT ASSUMED. `view=text` is additive,
+    // so a server that predates it ignores the parameter and serves whole
+    // documents WITH their signatures. That renders perfectly — the marks are
+    // in hand and nothing is flagged, so `deferredSignaturePaths` is empty and
+    // nothing is fetched — but the day cost what it used to cost, and the
+    // screen is entitled to say so once rather than leaving a deploy gap
+    // looking like a change that did not work.
+    textView: !!(body && body.view === 'text'),
     reason: null,
   };
+}
+
+// ── the signature marks, fetched when a SHEET is drawn ─────────────────────
+
+/**
+ * One record's signature marks: off the disk if this tablet holds them, off
+ * the server if it does not, and on the disk afterwards either way.
+ *
+ * Returns {images, fetched, stored, version, stale, reason, error}. `images` is
+ * NULL when they could not be produced and `{}` when the record has none —
+ * and those are different answers. NULL leaves the flags standing, so the
+ * sheet says "signed, image not on this tablet"; `{}` is a record whose marks
+ * are all genuinely unsigned, which there was never anything to fetch for.
+ *
+ * `stale` IS THE AMENDMENT GUARD. The server answers with the record's own
+ * resolved stamp. If it does not match the version the day body was filed
+ * under, the record was amended between the two reads — and splicing the new
+ * ink into the old sheet, or storing it under the old sheet's name, is how a
+ * tablet comes to show a corrected signature on a superseded record. Nothing
+ * is spliced and nothing is written; the caller refreshes the index instead.
+ *
+ * THE VERSION IS PART OF THE FILE NAME for the same reason, so an amended
+ * record MISSES on disk rather than serving the superseded ink.
+ */
+export async function ensureRecordSignatures(projectId, logId, version, opts = {}) {
+  if (!projectId || !logId) {
+    return { images: null, fetched: false, stored: false, version: null, reason: 'no-record' };
+  }
+  const onDisk = await readRecordSignatures(projectId, logId, version);
+  if (onDisk) {
+    return { images: onDisk, fetched: false, stored: true, version, stale: false, reason: null };
+  }
+  if (opts.offline === true) {
+    return { images: null, fetched: false, stored: false, version: null, reason: 'not-held' };
+  }
+
+  let body;
+  try {
+    const res = await apiClient.get(
+      signatureImagesPath(logId),
+      { timeout: HISTORY_PAGE_TIMEOUT_MS },
+    );
+    body = res && res.data;
+  } catch (error) {
+    return { images: null, fetched: false, stored: false, version: null, reason: 'unreachable', error };
+  }
+  const images = (body && body.signatures && typeof body.signatures === 'object')
+    ? body.signatures : null;
+  if (!images) {
+    // A SERVER THAT DOES NOT HAVE THIS ENDPOINT, or one that answered with
+    // something else. Reported, never invented: the flags stay and the sheet
+    // says the image is not here, which is true.
+    return { images: null, fetched: true, stored: false, version: null, reason: 'no-signatures' };
+  }
+  const servedVersion = (body && body.version !== undefined) ? body.version : null;
+  const asked = (version === undefined || version === null) ? null : String(version);
+  if (asked !== null && servedVersion !== null && String(servedVersion) !== asked) {
+    return {
+      images: null, fetched: true, stored: false, version: servedVersion,
+      stale: true, reason: 'amended',
+    };
+  }
+  const stored = await writeRecordSignatures(projectId, logId, version, images);
+  return { images, fetched: true, stored, version, stale: false, reason: null };
+}
+
+/**
+ * How much of one day's ink this tablet holds. `{held, total, missing}` where
+ * `missing` is the log ids still owed images.
+ *
+ * DERIVED FROM THE DAY'S OWN FLAGS, so a record with no marks is not counted as
+ * missing and a full-document day (the deploy gap) reports `0 of 0` rather than
+ * a fill that can never complete. EXACT, which a per-day bundle could not have
+ * been — see `recordSignatureName`.
+ */
+export async function heldDaySignatures(projectId, logs) {
+  const wanted = (Array.isArray(logs) ? logs : [])
+    .map((l) => ({ id: (l && (l.id || l._id)) || '', version: pdfVersion(l),
+                   owed: deferredSignaturePaths(l).length }))
+    .filter((r) => r.id && r.owed > 0);
+  if (!canUseFs() || !projectId) {
+    return { held: 0, total: wanted.length, missing: wanted.map((r) => r.id), readable: false };
+  }
+  let names = [];
+  try {
+    names = await FileSystem.readDirectoryAsync(DAY_DIR);
+  } catch (_e) { names = []; }
+  const have = new Set(Array.isArray(names) ? names : []);
+  const missing = wanted
+    .filter((r) => !have.has(recordSignatureName(projectId, r.id, r.version)))
+    .map((r) => r.id);
+  return { held: wanted.length - missing.length, total: wanted.length, missing, readable: true };
+}
+
+/**
+ * Every record of one day, spliced with whatever ink this tablet can produce.
+ *
+ * Returns {logs, fetched, failed, owed, amended}. ONE RECORD AT A TIME, in the
+ * order given, so the sheet at the top of the screen fills first — on
+ * 2026-08-28 the pre-shift tab is three sheets and 981,144 bytes, and waiting
+ * for the third to draw the first is the wait this change exists to remove.
+ *
+ * `opts.onRecord({logs, fetched, owed})` is awaited after each record, which is
+ * how the screen redraws progressively instead of at the end.
+ *
+ * NOTHING HERE CAN BLANK A SHEET. A record whose ink did not arrive keeps its
+ * flags and renders as "signed, image not loaded"; the logs handed back are
+ * always the full day.
+ */
+export async function fillDaySignatures(projectId, logs, opts = {}) {
+  const list = Array.isArray(logs) ? logs.slice() : [];
+  const owed = list.filter((l) => deferredSignaturePaths(l).length > 0).length;
+  let out = list;
+  let fetched = 0;
+  let failed = 0;
+  let amended = false;
+  if (!projectId || owed === 0) {
+    return { logs: out, fetched, failed, owed, amended };
+  }
+  for (let i = 0; i < out.length; i += 1) {
+    const log = out[i];
+    if (deferredSignaturePaths(log).length === 0) continue;
+    if (opts.shouldStop) {
+      let stop = false;
+      try { stop = opts.shouldStop() === true; } catch (_e) { stop = false; }
+      if (stop) break;
+    }
+    if (opts.beforeEach) {
+      try { await opts.beforeEach(); } catch (_e) { /* a yield may not fail a fill */ }
+    }
+    const id = (log && (log.id || log._id)) || '';
+    const r = await ensureRecordSignatures(projectId, id, pdfVersion(log), {
+      offline: opts.offline === true,
+    });
+    if (r.stale) amended = true;
+    if (r.images) {
+      out = out.slice();
+      out[i] = applySignatureImages(log, r.images);
+      fetched += 1;
+    } else {
+      failed += 1;
+      // THE DEAD ZONE IS DISCOVERED ONCE, NOT ONCE A SHEET. Sixteen records at
+      // a 60-second timeout is sixteen minutes of a screen saying it is still
+      // loading — the shape #681 removed from the day walk.
+      if (r.reason === 'unreachable') break;
+    }
+    if (opts.onRecord) {
+      try { await opts.onRecord({ logs: out, fetched, failed, owed }); } catch (_e) { /* ignored */ }
+    }
+  }
+  return { logs: out, fetched, failed, owed, amended };
 }
 
 /**
@@ -896,7 +1166,12 @@ export async function heldDayDetails(projectId, rows) {
   for (const r of list) {
     if (!have.has(dayDetailName(projectId, r.date, r.cache_version))) missing.push(r.date);
   }
-  return { held: list.length - missing.length, total: list.length, missing, readable: true };
+  // `names` IS HANDED BACK, so a caller that needs a second fact about the
+  // same directory does not take a second listing. `backfillDayDetails` counts
+  // the signature files off this one, and `siteLogbookIndex.test.cjs` holds the
+  // whole fill to a directory-read budget -- which a second read breaks.
+  return { held: list.length - missing.length, total: list.length, missing,
+           readable: true, names: Array.isArray(names) ? names : [] };
 }
 
 /**
@@ -918,14 +1193,40 @@ export const DETAIL_BACKFILL_PER_RUN = 60;
  * device does not already hold, and `opts.beforeEach` is where the caller
  * yields the link back to a foreground read that started in the meantime.
  *
- * `onProgress({held, total, fetched})` IS A COUNT, NOT AN ANIMATION. `held` is
- * days whose detail file this device can open, `total` is dates in the
- * committed index, `fetched` is days this run actually downloaded. Every one of
- * them is measured; none of them moves on a timer.
+ * `onProgress({held, total, fetched, inkHeld, inkTotal})` IS A COUNT, NOT AN
+ * ANIMATION. `held` is days whose detail file this device can open, `total` is
+ * dates in the committed index, `fetched` is days this run actually
+ * downloaded, and the `ink*` pair is the same two facts about SIGNATURE MARKS.
+ * Every one of them is measured; none of them moves on a timer.
  *
  * IT STOPS ON THE FIRST UNREACHABLE DAY. A tablet that has gone into the dead
  * zone would otherwise spend forty-three 60-second timeouts discovering it one
  * date at a time.
+ *
+ * ── AND THE SIGNATURES ARE A SECOND PASS OF THE SAME FILL ──────────────────
+ *
+ * THE OFFLINE GUARANTEE DID NOT MOVE, ONLY THE MOMENT THE INK ARRIVES. What
+ * this change alters is WHEN a signature reaches the tablet, never WHETHER: the
+ * day read no longer carries the marks, so this fill fetches them, newest day
+ * first, bounded by the same per-run cap, resumable off the same directory
+ * read, yielding through the same `beforeEach`. A tablet that stopped carrying
+ * signatures into the dead zone would be a worse record than the slow one.
+ *
+ * TEXT BEFORE INK, DELIBERATELY, AND THE ORDER IS THE PRIORITY. Pass one puts
+ * every day's TEXT on the device; pass two puts the marks on it. A tablet
+ * interrupted halfway — by the per-run cap, by the dead zone, by being carried
+ * indoors — holds every day readable with "signed, image not loaded" where the
+ * ink has not landed, rather than nine days complete and thirty-four with
+ * nothing on them at all.
+ *
+ * A RECORD WITH NO MARKS GETS AN EMPTY FILE, and that is not a marker for its
+ * own sake. Without it "this record is owed nothing" is indistinguishable from
+ * "this record is owed something that has not arrived" without opening the
+ * day's detail — so every run would re-read all 43 days' JSON to rediscover
+ * that an OSHA log has never had a signature on it. With it, the steady state
+ * is ONE directory read and no requests. Nothing is invented: the file is
+ * written only where the stored day itself flags nothing, and `{}` spliced
+ * into a record changes nothing about it.
  */
 export async function backfillDayDetails(projectId, rows, opts = {}) {
   const perRun = opts.perRun || DETAIL_BACKFILL_PER_RUN;
@@ -936,12 +1237,36 @@ export async function backfillDayDetails(projectId, rows, opts = {}) {
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   const state = await heldDayDetails(projectId, list);
+  // EVERY RECORD THE INDEX NAMES, and whether its ink is already on disk. Off
+  // the SAME directory listing `heldDayDetails` just took -- it hands the names
+  // back for exactly this -- so the two counts this reports cost ONE read
+  // between them rather than one each. `siteLogbookIndex.test.cjs` budgets the
+  // reads of a whole fill, and it is right to: 43 listings a redraw on a gate
+  // tablet is the kind of measurement that becomes the thing it measures.
+  const onDiskNames = new Set(state.names || []);
+  const inkRecords = [];
+  for (const row of list) {
+    for (const l of (Array.isArray(row.logs) ? row.logs : [])) {
+      const id = l && (l.id || l._id);
+      if (!id) continue;
+      inkRecords.push({
+        date: row.date,
+        name: recordSignatureName(projectId, id, l.updated_at),
+      });
+    }
+  }
+  const inkTotal = inkRecords.length;
+  const inkMissingDates = new Set(
+    inkRecords.filter((r) => !onDiskNames.has(r.name)).map((r) => r.date),
+  );
+
   const report = (extra) => ({
     held: state.held, total: state.total, fetched: 0, failed: 0,
     // CARRIED THROUGH, because a caller that cannot tell "this surface keeps no
     // offline copies" from "this device has saved none of them" shows a web
     // browser a progress bar that can never move.
     readable: state.readable,
+    inkHeld: 0, inkTotal, inkFetched: 0,
     complete: false, reason: null, error: null, ...extra,
   });
   if (!canUseFs() || !projectId) return report({ reason: 'no-filesystem' });
@@ -949,9 +1274,16 @@ export async function backfillDayDetails(projectId, rows, opts = {}) {
   let held = state.held;
   let fetched = 0;
   let failed = 0;
+  // RECORDS, NOT DAYS. One count of files that exist against files the index
+  // names — the only two numbers that were both measured.
+  let inkHeld = inkRecords.filter((r) => onDiskNames.has(r.name)).length;
+  let inkFetched = 0;
   const tell = async () => {
     if (!onProgress) return;
-    try { await onProgress({ held, total: state.total, fetched }); } catch (_e) { /* ignored */ }
+    try {
+      await onProgress({ held, total: state.total, fetched,
+                         inkHeld, inkTotal, inkFetched });
+    } catch (_e) { /* ignored */ }
   };
   await tell();
 
@@ -959,12 +1291,12 @@ export async function backfillDayDetails(projectId, rows, opts = {}) {
   for (const row of list) {
     if (!missing.has(row.date)) continue;
     if (fetched + failed >= perRun) {
-      return report({ held, fetched, failed, reason: 'per-run-cap' });
+      return report({ held, fetched, failed, inkHeld, inkFetched, reason: 'per-run-cap' });
     }
     if (opts.shouldStop) {
       let stop = false;
       try { stop = opts.shouldStop() === true; } catch (_e) { stop = false; }
-      if (stop) return report({ held, fetched, failed, reason: 'stopped' });
+      if (stop) return report({ held, fetched, failed, inkHeld, inkFetched, reason: 'stopped' });
     }
     if (opts.beforeEach) {
       try { await opts.beforeEach(); } catch (_e) { /* a yield may not fail a fill */ }
@@ -975,17 +1307,75 @@ export async function backfillDayDetails(projectId, rows, opts = {}) {
     if (r.stored) {
       fetched += 1;
       held += 1;
+      // A DAY WHOSE TEXT JUST LANDED IS OWED ITS INK, whatever the directory
+      // listing taken before the fetch said about it.
+      inkMissingDates.add(row.date);
     } else {
       failed += 1;
       if (r.reason === 'unreachable') {
-        return report({ held, fetched, failed, reason: 'unreachable', error: r.error || null });
+        return report({ held, fetched, failed, inkHeld, inkFetched,
+                        reason: 'unreachable', error: r.error || null });
       }
     }
     await tell();
   }
+
+  // ── PASS TWO: THE INK ───────────────────────────────────────────────────
+  for (const row of list) {
+    if (!inkMissingDates.has(row.date)) continue;
+    if (fetched + failed >= perRun) {
+      return report({ held, fetched, failed, inkHeld, inkFetched, reason: 'per-run-cap' });
+    }
+    if (opts.shouldStop) {
+      let stop = false;
+      try { stop = opts.shouldStop() === true; } catch (_e) { stop = false; }
+      if (stop) return report({ held, fetched, failed, inkHeld, inkFetched, reason: 'stopped' });
+    }
+    // OFF THE DISK. The day's text is already here — that is what pass one is
+    // for — so this is a file read and a parse, not a request.
+    const dayLogs = await readDayDetail(projectId, row.date, row.cache_version);
+    if (!Array.isArray(dayLogs)) continue;
+    for (const log of dayLogs) {
+      const id = (log && (log.id || log._id)) || '';
+      if (!id) continue;
+      const version = pdfVersion(log);
+      if (onDiskNames.has(recordSignatureName(projectId, id, version))) continue;
+      if (deferredSignaturePaths(log).length === 0) {
+        // NOTHING IS OWED, AND IT IS WRITTEN DOWN. No request; see the header.
+        if (await writeRecordSignatures(projectId, id, version, {})) {
+          inkHeld += 1;
+        }
+        continue;
+      }
+      if (fetched + failed >= perRun) {
+        return report({ held, fetched, failed, inkHeld, inkFetched, reason: 'per-run-cap' });
+      }
+      if (opts.beforeEach) {
+        try { await opts.beforeEach(); } catch (_e) { /* a yield may not fail a fill */ }
+      }
+      const s = await ensureRecordSignatures(projectId, id, version);
+      if (s.stored) {
+        fetched += 1;
+        inkFetched += 1;
+        inkHeld += 1;
+      } else {
+        failed += 1;
+        if (s.reason === 'unreachable') {
+          return report({ held, fetched, failed, inkHeld, inkFetched,
+                          reason: 'unreachable', error: s.error || null });
+        }
+      }
+      await tell();
+    }
+  }
+
   return report({
-    held, fetched, failed,
-    complete: held >= state.total,
+    held, fetched, failed, inkHeld, inkFetched,
+    // BOTH HALVES, because a day whose text is here and whose ink is not is
+    // not a complete offline record. A `complete` that counted only the text
+    // would report a finished fill to a tablet that cannot show an inspector a
+    // single signature in the dead zone.
+    complete: held >= state.total && inkHeld >= inkTotal,
     reason: null,
   });
 }
@@ -1015,4 +1405,19 @@ export default {
   ensureDayDetail,
   heldDayDetails,
   backfillDayDetails,
+  // the deferral protocol — see "THREE STATES, NOT TWO"
+  SIG_DEFERRED_SUFFIX,
+  SIG_FIELDS,
+  signatureMark,
+  deferredSignaturePaths,
+  dayHasDeferredSignatures,
+  applySignatureImages,
+  applyDaySignatureImages,
+  signatureImagesPath,
+  recordSignatureName,
+  readRecordSignatures,
+  writeRecordSignatures,
+  ensureRecordSignatures,
+  heldDaySignatures,
+  fillDaySignatures,
 };

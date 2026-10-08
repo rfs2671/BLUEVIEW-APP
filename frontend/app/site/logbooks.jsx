@@ -30,6 +30,13 @@ import {
   readHistoryIndex, syncLogbookHistory,
   syncLogbookIndex, ensureDayDetail, backfillDayDetails,
   dayReportId, dayReportVersion,
+  // THE DEFERRAL PROTOCOL, IMPORTED AND NOT RESTATED. `signatureMark` is the
+  // only thing on this screen allowed to answer "did he sign?", and
+  // SIG_FIELDS is the per-site key precedence — see siteLogbookHistory.js,
+  // "THREE STATES, NOT TWO". A renderer that tested `w.worker_signature`
+  // itself would tell a DOB inspector that every worker who signed at the
+  // kiosk had not signed, which is why that census is a gate.
+  signatureMark, SIG_FIELDS, fillDaySignatures, dayHasDeferredSignatures,
 } from '../../src/utils/siteLogbookHistory';
 import { claimForeground, awaitQuiet } from '../../src/utils/syncPriority';
 import { isOfflineError } from '../../src/utils/offlineState';
@@ -192,6 +199,11 @@ export default function SiteLogbooksViewer() {
   const [dayLogs, setDayLogs] = useState({});
   // The date whose detail is being read, so an expand is not a blank gap.
   const [dayLoading, setDayLoading] = useState(null);
+  // THE INK, WHICH IS THE OTHER 65.8% OF A DAY. {date, owed, fetched, failed,
+  // running} while a sheet's signature images are being fetched, null when
+  // nothing is. It is NOT part of `dayLogs` because the text must render
+  // without waiting for it — that separation is the whole change.
+  const [sigFill, setSigFill] = useState(null);
   const [expandedDate, setExpandedDate] = useState(null);
   // 'ok' | 'offline' | 'error' — how the LAST server read went. This is the
   // whole point of the screen: a failed read must NEVER render as "No
@@ -533,6 +545,16 @@ export default function SiteLogbooksViewer() {
         // `fetchState` is at most one poll old and pull-to-refresh renews it.
         offline: fetchState === 'offline',
       });
+      // THE DEPLOY GAP, SAID ONCE RATHER THAN LOOKED FOR LATER. This screen
+      // ships over the air and the API ships to Railway, so one is always
+      // ahead; a server without `view=text` ignores the parameter and serves
+      // whole documents, which RENDERS CORRECTLY -- nothing is flagged, so
+      // nothing is fetched -- at the old cost. That is the right fallback and
+      // the wrong thing to leave silent.
+      if (r.fetched && r.textView === false) {
+        console.warn('Signature deferral unsupported by this server — the day '
+          + 'carried its images inline (slow). Expected only during a deploy gap.');
+      }
       setDayLogs((prev) => ({ ...prev, [date]: Array.isArray(r.logs) ? r.logs : null }));
     } catch (_e) {
       setDayLogs((prev) => ({ ...prev, [date]: null }));
@@ -559,6 +581,20 @@ export default function SiteLogbooksViewer() {
     if (dayLoading === expandedDate) return;
     loadDayDetail(expandedDate);
   }, [expandedDate, dayLogs, dayLoading, loadDayDetail]);
+
+  /**
+   * WHAT THE DEFERRED CARD SAYS ON ITS SECOND LINE. "Loading" is a claim about
+   * this moment, so it is only made while a fetch is actually in flight; a
+   * tablet in the dead zone is told the ink is not saved here, which is the
+   * true and actionable version. The line above it — "Signature on file" — is
+   * the claim about the RECORD and never changes, because the record does not.
+   */
+  const sigPendingNote = () => {
+    if (sigFill && sigFill.running) return 'image loading…';
+    if (fetchState === 'offline') return 'image not saved on this tablet';
+    return 'image not loaded';
+  };
+
 
   // ===========================================================================
   //  PDF handlers — local file only, no token in any URL
@@ -713,6 +749,89 @@ export default function SiteLogbooksViewer() {
   // Records actually on screen for this tab — what the offline banner reports.
   const visibleLogCount = filteredIndex.reduce((n, row) => n + row.logs.length, 0);
 
+  /**
+   * THE IMAGES ARRIVE WHEN A SHEET IS DRAWN, NOT WHEN THE DAY IS.
+   *
+   * SCOPED TO THE RENDERED TAB, which is where the bulk of the saving is. On
+   * 2026-08-28 the expanded day holds 16 records and 1,149,132 bytes of marks;
+   * the daily-jobsite tab draws two of those records and needs NONE of it, and
+   * the pre-shift tab draws three and needs 981,144 across them. Fetching the
+   * day would have charged the inspector for thirteen records he is not
+   * looking at.
+   *
+   * ONE SHEET AT A TIME AND REDRAWN AFTER EACH, through `onRecord`: the sheet
+   * at the top fills first instead of every sheet filling at the end.
+   *
+   * NOT AWAITED BY ANY RENDER. The text is already on screen when this starts
+   * — that is the ruling — and `claimForeground` is still taken, because an
+   * inspector waiting on ink is as much the foreground as one waiting on text.
+   */
+  useEffect(() => {
+    const projectId = siteProject?.id;
+    const date = expandedDate;
+    if (!projectId || !date) return;
+    const detail = dayLogs[date];
+    if (!Array.isArray(detail)) return;
+    const onScreen = detail.filter((l) => l.log_type === effectiveTab);
+    if (!dayHasDeferredSignatures(onScreen)) return;
+    // ONE FILL AT A TIME for this (date, tab). Without the guard the state
+    // update this effect causes re-runs it, which on a 27-signature sheet is
+    // the request storm the whole change exists to avoid.
+    if (sigFill && sigFill.date === date && sigFill.tab === effectiveTab
+        && (sigFill.running || sigFill.done)) return;
+
+    let cancelled = false;
+    const token = fill.current;
+    setSigFill({ date, tab: effectiveTab, owed: 0, fetched: 0, failed: 0,
+                 running: true, done: false });
+    const release = claimForeground('site-logbooks-signatures');
+    (async () => {
+      try {
+        const r = await fillDaySignatures(projectId, onScreen, {
+          offline: fetchState === 'offline',
+          shouldStop: () => cancelled || token.stopped,
+          onRecord: ({ logs, fetched, owed }) => {
+            if (cancelled || !token.mounted) return;
+            setSigFill((p) => (p && p.date === date
+              ? { ...p, fetched, owed } : p));
+            // MERGED BY RECORD ID INTO WHAT IS STORED, never replacing the
+            // day: `onScreen` is one tab's slice, and writing it back whole
+            // would drop every record of every other tab from the open day.
+            setDayLogs((prev) => {
+              const held = prev[date];
+              if (!Array.isArray(held)) return prev;
+              const byId = new Map(logs.map((l) => [(l.id || l._id) || '', l]));
+              return { ...prev,
+                       [date]: held.map((l) => byId.get((l.id || l._id) || '') || l) };
+            });
+          },
+        });
+        if (cancelled || !token.mounted) return;
+        setSigFill({ date, tab: effectiveTab, owed: r.owed, fetched: r.fetched,
+                     failed: r.failed, running: false, done: true });
+        // AN AMENDED RECORD IS NOT PATCHED HERE. The server answered with a
+        // different stamp than the day was filed under, so the sheet on screen
+        // is the superseded one; the index refresh is what replaces it, and
+        // splicing the corrected ink into it would have been the one outcome
+        // worse than waiting.
+        if (r.amended) fetchLogbooks({ refresh: true });
+      } catch (_e) {
+        if (!cancelled && token.mounted) {
+          setSigFill({ date, tab: effectiveTab, owed: 0, fetched: 0, failed: 0,
+                       running: false, done: true });
+        }
+      } finally {
+        release();
+      }
+    })();
+    return () => { cancelled = true; };
+    // `dayLogs` is deliberately NOT a dependency: this effect writes to it, and
+    // depending on it would make every spliced record re-enter the fill. The
+    // day's identity (date + tab) is what decides whether a fill is wanted,
+    // and `dayLogs[date]` is read fresh inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteProject?.id, expandedDate, effectiveTab, dayLoading]);
+
   // ═════════════════════════════════════════════════════════════════════════
   //  THE PROGRESS INDICATOR, AND EVERY NUMBER ON IT IS A MEASUREMENT
   // ═════════════════════════════════════════════════════════════════════════
@@ -755,16 +874,29 @@ export default function SiteLogbooksViewer() {
     // answer and the fill can never hold anything — so "0 of 43 saved" would
     // report a device that is failing at something it is not attempting.
     if (!offlineFill || offlineFill.readable === false) return null;
-    const { held, total, running } = offlineFill;
+    const { held, total, running, inkHeld, inkTotal } = offlineFill;
     if (!Number.isFinite(Number(total)) || Number(total) === 0) return null;
+    // ── THE INK IS COUNTED SEPARATELY, BECAUSE IT IS A SEPARATE FACT ───────
+    //
+    // A tablet holding all 43 days of TEXT and none of the signature images
+    // cannot show an inspector a single mark in the dead zone, and a line
+    // reading "43 of 43 days" would have said it was finished. Both numbers
+    // are measured — days whose detail file opens, records whose signature
+    // file exists — and the signature clause appears only once there is
+    // something to count, so a project that has never had a mark filed does
+    // not get a second number that is permanently 0 of 0.
+    const ink = (Number.isFinite(Number(inkTotal)) && Number(inkTotal) > 0)
+      ? `, signatures ${inkHeld} of ${inkTotal}` : '';
     if (running) {
-      return { text: `Saving records for offline use — ${held} of ${total} days`, busy: true };
+      return { text: `Saving records for offline use — ${held} of ${total} days${ink}`, busy: true };
     }
-    if (Number(held) >= Number(total)) return null;
+    if (Number(held) >= Number(total) && (!ink || Number(inkHeld) >= Number(inkTotal))) {
+      return null;
+    }
     return {
       text: offlineFill.reason === 'unreachable'
-        ? `Saved for offline use: ${held} of ${total} days — reconnect to finish`
-        : `Saved for offline use: ${held} of ${total} days`,
+        ? `Saved for offline use: ${held} of ${total} days${ink} — reconnect to finish`
+        : `Saved for offline use: ${held} of ${total} days${ink}`,
       busy: false,
     };
   };
@@ -817,6 +949,56 @@ export default function SiteLogbooksViewer() {
           <Text style={{ fontSize: 15, color: colors.text.secondary, fontStyle: 'italic' }}>{signerName} (signed)</Text>
         ) : null}
       </View>
+    );
+  };
+
+  // ── THE SIGNATURE GRID, AND THE THIRD STATE IT HAD TO LEARN ──────────────
+  //
+  // ONE COMPONENT FOR BOTH ROSTERS, which the pre-shift sheet and the toolbox
+  // talk previously spelled out separately — two copies of a signed-ness test,
+  // and the day one of them learned a third state would have been the day they
+  // disagreed about what a filed record says.
+  //
+  // WHAT THE DEFERRED CARD SAYS, AND WHY IT IS NOT A SPINNER. "Signature on
+  // file — image loading" is a claim about the RECORD (he signed) plus a fact
+  // about this tablet (the ink has not arrived). A spinner says only the
+  // second, and an inspector reading a card with a spinner on it cannot tell
+  // it from a sheet that is still deciding whether the man signed at all.
+  // `legal_render/primitives.py` made the same call for the PDF: the mark and
+  // the words, because the image is the evidence and the line beneath it is
+  // the claim.
+  //
+  // THE SECTION LABEL COUNTS BOTH, so a sheet whose ink has not landed still
+  // announces that it HAS signatures rather than looking like one that has
+  // none.
+  const SignatureGrid = ({ holders, fields, nameOf }) => {
+    const rows = (Array.isArray(holders) ? holders : [])
+      .map((h) => ({ holder: h, mark: signatureMark(h, fields) }))
+      .filter((r) => r.mark.value || r.mark.deferred);
+    if (rows.length === 0) return null;
+    return (
+      <>
+        <DocSectionLabel icon={Pen} label="Worker Signatures" color={semantic.neutral} />
+        <View style={s.workerSigGrid}>
+          {rows.map(({ holder, mark }, i) => (
+            <View key={i} style={s.workerSigCard}>
+              <Text style={s.workerSigName}>{nameOf(holder)}</Text>
+              {mark.value ? (
+                <Image
+                  source={{ uri: String(mark.value).startsWith('data:')
+                    ? mark.value : `data:image/png;base64,${mark.value}` }}
+                  style={s.workerSigImage} resizeMode="contain"
+                />
+              ) : (
+                <View style={s.workerSigPending}>
+                  <Text style={s.workerSigPendingText}>Signature on file</Text>
+                  <Text style={s.workerSigPendingSub}>{sigPendingNote()}</Text>
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      </>
     );
   };
 
@@ -1109,22 +1291,19 @@ export default function SiteLogbooksViewer() {
           </>
         )}
 
-        {attendees.some(a => a.worker_signature || a.signature) && (
-          <>
-            <DocSectionLabel icon={Pen} label="Worker Signatures" color={semantic.neutral} />
-            <View style={s.workerSigGrid}>
-              {attendees.filter(a => a.worker_signature || a.signature).map((a, i) => (
-                <View key={i} style={s.workerSigCard}>
-                  <Text style={s.workerSigName}>{a.name || 'Unknown'}</Text>
-                  <Image
-                    source={{ uri: (a.worker_signature || a.signature || '').startsWith('data:') ? (a.worker_signature || a.signature) : `data:image/png;base64,${a.worker_signature || a.signature}` }}
-                    style={s.workerSigImage} resizeMode="contain"
-                  />
-                </View>
-              ))}
-            </View>
-          </>
-        )}
+        {/* SIGNED IS NOT THE SAME QUESTION AS SIGNED-AND-HERE. Both tests go
+            through `signatureMark`, which answers three ways — see the import.
+            A toolbox talk carries no "Not Signed:" line, so an omitted mark
+            here was SILENT rather than false; it is still wrong, and the fix is
+            the same one. All 558 attendee rows in production have both keys
+            null, so this site moves no bytes today and is covered anyway: the
+            day the kiosk starts signing a toolbox talk it must not be the one
+            site that still infers signed-ness from the image. */}
+        <SignatureGrid
+          holders={attendees}
+          fields={SIG_FIELDS.attendee}
+          nameOf={(a) => a.name || 'Unknown'}
+        />
 
         <View style={s.signatureSection}>
           <View style={s.signatureDivider} />
@@ -1164,27 +1343,34 @@ export default function SiteLogbooksViewer() {
           </>
         )}
 
-        {workers.some(w => w.worker_signature) && (
-          <>
-            <DocSectionLabel icon={Pen} label="Worker Signatures" color={semantic.neutral} />
-            <View style={s.workerSigGrid}>
-              {workers.filter(w => w.worker_signature).map((w, i) => (
-                <View key={i} style={s.workerSigCard}>
-                  <Text style={s.workerSigName}>{w.name}</Text>
-                  <Image
-                    source={{ uri: w.worker_signature.startsWith('data:') ? w.worker_signature : `data:image/png;base64,${w.worker_signature}` }}
-                    style={s.workerSigImage} resizeMode="contain"
-                  />
-                </View>
-              ))}
-            </View>
-          </>
-        )}
+        {/* ── THE SITE WHERE OMITTING THE FIELD WOULD HAVE LIED ───────────
+            This renderer used to key BOTH blocks off the same field:
 
-        {workers.some(w => !w.worker_signature) && (
+                workers.some(w => w.worker_signature)   -> the images
+                workers.some(w => !w.worker_signature)  -> the UNSIGNED list
+
+            so a payload without the mark told a DOB inspector that every man
+            who signed at the kiosk had NOT signed — 505 of 603 roster rows in
+            production. A false statement on a legal record, and worse than the
+            nine-second screen this change exists to shorten. `signatureMark`
+            answers three ways and the UNSIGNED list is now the THIRD of them,
+            never the absence of the first. */}
+        <SignatureGrid
+          holders={workers}
+          fields={SIG_FIELDS.worker}
+          nameOf={(w) => w.name}
+        />
+
+        {workers.some(w => !signatureMark(w, SIG_FIELDS.worker).value
+                           && !signatureMark(w, SIG_FIELDS.worker).deferred) && (
           <View style={s.unsignedBlock}>
             <Text style={s.unsignedLabel}>Not Signed: </Text>
-            <Text style={s.unsignedNames}>{workers.filter(w => !w.worker_signature).map(w => w.name).join(', ')}</Text>
+            <Text style={s.unsignedNames}>
+              {workers
+                .filter(w => !signatureMark(w, SIG_FIELDS.worker).value
+                             && !signatureMark(w, SIG_FIELDS.worker).deferred)
+                .map(w => w.name).join(', ')}
+            </Text>
           </View>
         )}
 
@@ -1782,8 +1968,26 @@ export default function SiteLogbooksViewer() {
         {/* LOAD-BEARING: worker_signature is written as null on manual entries
             (subcontractor_orientation.jsx:481). Key present and empty => say
             UNSIGNED, so an unattested acknowledgment is never presented as
-            complete. Key absent entirely => say nothing. */}
-        {'worker_signature' in data && (
+            complete. Key absent entirely => say nothing.
+
+            AND NOW A THIRD READING BEFORE EITHER OF THOSE. This is the second
+            biggest signature site in the corpus — `data.worker_signature`
+            carries 1,548,916 bytes, 9.1% of everything the tablet moved — and
+            `view=text` DELETES the key rather than nulling it, precisely so
+            that an old client falls into "say nothing" instead of into the
+            UNSIGNED branch. A new client must not: 78 of 93 orientation sheets
+            in production are signed, and calling them unattested is the same
+            lie as the roster's. `signatureMark` is asked first, and only a
+            record it reports neither way falls through to the two-state test
+            above, which is unchanged. */}
+        {signatureMark(data, SIG_FIELDS.acknowledgment).deferred ? (
+          <View style={s.unsignedBlock}>
+            <Text style={s.unsignedLabel}>{`${t('orAck')}: `}</Text>
+            <Text style={s.unsignedNames}>
+              {`Signature on file — ${sigPendingNote()}`}
+            </Text>
+          </View>
+        ) : 'worker_signature' in data && (
           data.worker_signature
             ? <SignatureBlock signature={data.worker_signature} label={t('orAck')} />
             : (
@@ -2565,6 +2769,19 @@ function buildStyles(colors, isDark) {
   },
   workerSigName: { fontSize: 14, fontWeight: '600', color: colors.text.muted, marginBottom: 4 },
   workerSigImage: { width: 120, height: 36, borderRadius: 4, backgroundColor: withAlpha('#ffffff', 0.05) },
+
+  // THE THIRD STATE: signed, ink not here yet. SAME 120x36 FOOTPRINT as the
+  // image it stands in for, so a sheet does not reflow as the marks land under
+  // an inspector's thumb. Dashed, because a solid card reads as a drawn box
+  // and this is the absence of one.
+  workerSigPending: {
+    width: 120, height: 36, borderRadius: 4,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderStyle: 'dashed', borderColor: colors.glass.border,
+    backgroundColor: withAlpha('#ffffff', 0.03),
+  },
+  workerSigPendingText: { fontSize: 11, fontWeight: '700', color: colors.text.secondary },
+  workerSigPendingSub: { fontSize: 10, color: colors.text.muted },
 
   // Unsigned workers
   unsignedBlock: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: spacing.xs, paddingLeft: 2 },

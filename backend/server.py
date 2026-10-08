@@ -37702,10 +37702,26 @@ SUBMITTED_LOGBOOK_INDEX_FIELDS = {
     "amendment_reason": 1, "created_by_name": 1,
 }
 
-# The only `view` there is. An UNKNOWN view is a 400, not a silent fall-through
-# to the full body: a client that misspells it would otherwise ask for 44 KB and
-# be handed 14 MB with nothing anywhere saying why its list took ten minutes.
-SUBMITTED_LOGBOOK_VIEWS = {"index"}
+# The views there are. An UNKNOWN view is a 400, not a silent fall-through to
+# the full body: a client that misspells it would otherwise ask for 44 KB and be
+# handed 14 MB with nothing anywhere saying why its list took ten minutes.
+SUBMITTED_LOGBOOK_VIEWS = {"index", "text"}
+
+
+def _submitted_stamp(log: dict):
+    """`updated_at || submitted_at || created_at`, the client's own precedence.
+
+    ONE DEFINITION, because three surfaces have to agree on it or the same
+    record is stored twice under two names: the index row below, the signature
+    read's `version`, and the client's `pdfVersion`
+    (frontend/src/utils/siteLogbookHistory.js).
+    """
+    for field in ("updated_at", "submitted_at", "created_at"):
+        value = log.get(field)
+        if value is None or value == "":
+            continue
+        return value
+    return None
 
 
 def _submitted_index_row(log: dict) -> dict:
@@ -37723,13 +37739,7 @@ def _submitted_index_row(log: dict) -> dict:
     what marks Mongo's naive datetimes as UTC, and an unmarked one reaches
     `new Date()` as local time and renames the file.
     """
-    stamp = None
-    for field in ("updated_at", "submitted_at", "created_at"):
-        value = log.get(field)
-        if value is None or value == "":
-            continue
-        stamp = value
-        break
+    stamp = _submitted_stamp(log)
     row = {
         "log_type": log.get("log_type") or "",
         "status": log.get("status") or "",
@@ -37741,6 +37751,202 @@ def _submitted_index_row(log: dict) -> dict:
     if log.get("_id") is not None:
         row["_id"] = log.get("_id")
     return serialize_id(row)
+
+
+# ══ AND A DAY STILL COST ITS SIGNATURE IMAGES ════════════════════════════════
+#
+# #681 made the LIST cost the index. Opening one day still cost that day's whole
+# payload, and the payload is signature images.
+#
+# MEASURED ON PRODUCTION 2026-10-08, every submitted record of every project,
+# through a read-only probe of this collection:
+#
+#     data.workers[].worker_signature          9,685,074 B   56.7%
+#     data.worker_signature  (orientation)     1,548,916 B    9.1%
+#     data.attendees[].worker_signature                0 B    0.0%
+#     data.attendees[].signature                       0 B    0.0%
+#     cp_signature.data                                0 B    0.0%
+#     ─────────────────────────────────────────────────────────────
+#     signature images                        11,233,990 B   65.8% of 17,080,794
+#
+# Per day, for the one project with a history (43 dates, 339 records):
+#
+#                    lightest     median    heaviest
+#     today             4,691    361,525   1,440,691
+#     text only         4,691     99,491     592,243
+#
+# ── THE TWO SITES THAT MEASURE ZERO ARE STILL HANDLED, AND THAT IS THE POINT ─
+#
+# `data.attendees[]` holds 0 bytes today: all 558 attendee rows in production
+# have both keys NULL, because nothing yet signs a toolbox talk. It is in the
+# table anyway, because `renderToolboxTalk` ALREADY READS BOTH KEYS -- so the
+# day the kiosk starts signing a toolbox talk, a table that covered two of the
+# three sites would quietly put the whole defect back on the third. A site
+# that stores no bytes costs nothing to cover and is the only one that can be
+# covered before it is a problem.
+#
+# ── AND `cp_signature` IS DELIBERATELY NOT IN THE TABLE ──────────────────────
+#
+# NOT an oversight and not a judgement call: measured. Across all 387 filed
+# records, `cp_signature` is affirmation metadata and NOTHING ELSE -- the key
+# sets are {affirmed, affirmedAt, affirmedLang, affirmed_received_at, signer},
+# {affirmed, affirmedLang, signerName, timestamp} and five more of the same
+# shape. Not one carries `data`, and `paths` already leaves through
+# SUBMITTED_LOGBOOK_EXCLUDED_FIELDS. There are no bytes here to move, so moving
+# them would be apparatus with nothing behind it -- and `SignatureBlock`'s
+# "<name> (signed)" branch is what already draws these rows.
+SIGNATURE_IMAGE_SITES = (
+    # (list under `data`, or None for `data` itself,  the key holding the mark)
+    ("workers", "worker_signature"),
+    ("attendees", "worker_signature"),
+    ("attendees", "signature"),
+    (None, "worker_signature"),
+)
+
+# The sibling flag. `<field>_deferred` rather than a sentinel VALUE on the field
+# itself, and that is the whole safety argument of this change -- see
+# `_defer_signature_images`.
+SIGNATURE_DEFERRED_SUFFIX = "_deferred"
+
+
+def _is_signature_image(value) -> bool:
+    """Whether this stored value carries IMAGE BYTES worth a second request.
+
+    THREE THINGS ARE NOT ONE THING, and this predicate is the line between the
+    first and the other two:
+
+      an image        a non-blank string (all 583 marks in production are a
+                      `data:image/png;base64,...` string), or a dict carrying
+                      one under `data` -- the shape
+                      test_preshift_affirmation_record.py files.
+      not signed      None, "", "   ". Left EXACTLY as stored, with no flag, so
+                      the screen's "Not Signed:" list is byte-for-byte the list
+                      it draws today. A man who did not sign must never become
+                      a man whose image is merely late.
+      signed, no bytes
+                      a dict of affirmation metadata with no `data` -- what
+                      every `cp_signature` in production is. Nothing to serve
+                      separately, so it stays in the body and the existing
+                      renderer branch draws it.
+    """
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        inner = value.get("data")
+        return isinstance(inner, str) and bool(inner.strip())
+    return False
+
+
+def _signature_image_paths(row: dict) -> List[tuple]:
+    """Every signature image on one record, as (path, value).
+
+    THE PATH IS THE ADDRESS, AND IT IS AN INDEX RATHER THAN A NAME. Two men on
+    one roster can share a name; `data.workers.3.worker_signature` is what the
+    renderer already has in hand when it draws row 3, and it is stable for as
+    long as the stored document is -- which, a filed record being immutable, is
+    for ever.
+
+    ONE READER FOR BOTH HALVES. `_defer_signature_images` strips exactly what
+    this finds and the signature endpoint serves exactly what this finds, so
+    "what the day left out" and "what the second read brings" cannot drift into
+    disagreement. test_images_load_when_the_sheet_is_opened.py asserts that
+    identity rather than asserting each side against a retyped list.
+    """
+    out: List[tuple] = []
+    data = row.get("data")
+    if not isinstance(data, dict):
+        return out
+    for listname, field in SIGNATURE_IMAGE_SITES:
+        if listname is None:
+            if _is_signature_image(data.get(field)):
+                out.append((f"data.{field}", data.get(field)))
+            continue
+        holders = data.get(listname)
+        if not isinstance(holders, list):
+            continue
+        for i, holder in enumerate(holders):
+            if isinstance(holder, dict) and _is_signature_image(holder.get(field)):
+                out.append((f"data.{listname}.{i}.{field}", holder.get(field)))
+    return out
+
+
+def _defer_signature_images(row: dict) -> dict:
+    """The record with its signature images replaced by their PRESENCE.
+
+    ── THE TRAP THIS EXISTS TO AVOID, WHICH IS WORSE THAN THE SLOW SCREEN ────
+
+    `frontend/app/site/logbooks.jsx`'s pre-shift renderer does two things with
+    the same field:
+
+        workers.some(w => w.worker_signature)    -> draw the signature images
+        workers.some(w => !w.worker_signature)   -> list those names as UNSIGNED
+
+    So OMITTING THE FIELD WOULD TELL A DOB INSPECTOR THAT EVERY WORKER WHO
+    SIGNED AT THE KIOSK DID NOT SIGN. That is a false statement on a legal
+    record and it is strictly worse than a nine-second screen. There are THREE
+    states and the wire has to carry all three:
+
+        worker_signature present            signed, and here is the mark
+        worker_signature_deferred: true     signed; the mark is a second read
+        neither key                         did not sign
+
+    ── WHY THE FLAG IS A SIBLING KEY AND THE FIELD IS DELETED ───────────────
+
+    Four shapes were considered and three of them lie to a client that has not
+    taken the OTA that reads the flag:
+
+      `worker_signature: null`      joins him to the UNSIGNED list. The lie.
+      `worker_signature: {...}`     a sentinel the renderer calls `.startsWith`
+                                    on -- a crash, in Inspector Mode.
+      `worker_signature: ""`        the UNSIGNED list again.
+      DELETED + sibling flag        an old client says NOTHING about him: he
+                                    appears in the roster table with his name,
+                                    company, OSHA number, injury and PPE
+                                    answers, and he is in neither the signature
+                                    grid nor the "Not Signed:" line.
+
+    Silence is not free, which is why `view=text` IS OPT-IN and the client
+    verifies the echo before it believes the absence. But of the four it is the
+    only one that does not make a claim, and a record that says less is
+    recoverable where a record that lies is not.
+
+    RETURNS A COPY, COPY-ON-WRITE. Nothing stored is touched -- the daily
+    jobsite record this runs beside carries 555 KB of photo thumbnails and
+    deep-copying it to strip a field it does not have would put the transfer
+    cost back as handler cost. Only the dicts and lists on a signature's own
+    path are rebuilt; everything else is the same object the driver returned.
+    A record with no signature image is returned UNCHANGED, identity included.
+    """
+    paths = _signature_image_paths(row)
+    if not paths:
+        return row
+    out = dict(row)
+    data = dict(row.get("data") or {})
+    out["data"] = data
+    copied_lists: Dict[str, list] = {}
+    for path, _value in paths:
+        parts = path.split(".")
+        if len(parts) == 2:
+            # `data.<field>` -- the orientation sheet's single acknowledgment.
+            field = parts[1]
+            data.pop(field, None)
+            data[field + SIGNATURE_DEFERRED_SUFFIX] = True
+            continue
+        _, listname, index, field = parts
+        if listname not in copied_lists:
+            copied_lists[listname] = list(data.get(listname) or [])
+            data[listname] = copied_lists[listname]
+        holders = copied_lists[listname]
+        i = int(index)
+        # COPIED AGAIN ON THE SECOND KEY OF THE SAME ROW, and that is correct
+        # rather than wasteful: an attendee carrying both `worker_signature`
+        # and `signature` yields two paths at one index, and the second copy is
+        # of the already-stripped holder, so both marks leave.
+        holder = dict(holders[i])
+        holder.pop(field, None)
+        holder[field + SIGNATURE_DEFERRED_SUFFIX] = True
+        holders[i] = holder
+    return out
 
 
 # ── THE CAP, AND WHY IT COUNTS DATES ────────────────────────────────────────
@@ -37794,9 +38000,10 @@ async def get_submitted_logbooks(
     ),
     view: Optional[str] = Query(
         None, max_length=16,
-        description="`index` for identity rows only (no `data`). Omit for "
-                    "whole documents, which is what an installed tablet asks "
-                    "for.",
+        description="`index` for identity rows only (no `data`); `text` for "
+                    "whole documents with the signature IMAGES replaced by a "
+                    "`*_deferred` flag. Omit for whole documents, which is "
+                    "what an installed tablet asks for.",
     ),
     date: Optional[str] = Query(
         None, max_length=32,
@@ -37831,6 +38038,24 @@ async def get_submitted_logbooks(
       `date=<key>`                        whole documents for ONE date. What an
                                           expanded day costs, instead of the
                                           corpus.
+      `view=text`                         whole documents MINUS the signature
+                                          images, which are 65.8% of this
+                                          corpus -- 11,233,990 of 17,080,794
+                                          bytes. Each mark that left is
+                                          replaced by `<field>_deferred: true`
+                                          beside where it was, and served by
+                                          GET /logbooks/{id}/signature-images
+                                          when a sheet is actually drawn. See
+                                          `_defer_signature_images` for why the
+                                          flag is a sibling key and not a value
+                                          on the field.
+
+    `view=text` COMBINES WITH `date`, AND THAT IS THE ONLY WAY THE CLIENT USES
+    IT. It is not restricted to it, because the restriction would be apparatus
+    with nothing behind it: the two parameters answer different questions --
+    WHICH dates, and whether the images come with them -- and a server that
+    refused one combination of them would be a fourth rule to keep in step with
+    the three above.
 
     A `date` READ NEVER CLAIMS COMPLETENESS. `complete` means "this body is the
     whole submitted history of this project", and one date is not. The client's
@@ -37872,6 +38097,7 @@ async def get_submitted_logbooks(
                    f"{sorted(SUBMITTED_LOGBOOK_VIEWS)}",
         )
     index_only = view == "index"
+    text_only = view == "text"
 
     query = {
         "project_id": project_id,
@@ -37999,6 +38225,15 @@ async def get_submitted_logbooks(
             # old name AND this one. The compact manifest row carries neither,
             # which is why it needed `rv`.
             _row = serialize_id(dict(_head))
+            # BEFORE `cache_version`, AND BEFORE EVERY EXTRA BELOW. Those are
+            # computed off `_head` -- the stored document -- so a deferral that
+            # ran after them could not have changed them; running it first makes
+            # that independence visible instead of leaving it to be rechecked.
+            # `dict(_head)` is SHALLOW, so `_row["data"]` is still the driver's
+            # own dict here: the copy-on-write inside is what keeps this read
+            # from reaching into it.
+            if text_only:
+                _row = _defer_signature_images(_row)
             _row["cache_version"] = _logbook_cache_version(_head)
             # WHAT THE ROW HAS TO SAY, AND WHY EACH PART IS SEPARATE.
             #
@@ -38062,6 +38297,85 @@ async def get_submitted_logbooks(
     if view is not None:
         body["view"] = view
     return body
+
+
+@api_router.get("/logbooks/{logbook_id}/signature-images")
+async def get_logbook_signature_images(
+    logbook_id: str,
+    current_user = Depends(get_current_user),
+):
+    """The signature marks `view=text` left out of one record.
+
+        {"logbook_id": "...", "version": "2026-08-28T07:05:00+00:00",
+         "signatures": {"data.workers.3.worker_signature": "data:image/..."},
+         "count": 3}
+
+    THE SECOND HALF OF ONE READ, NOT A NEW FEATURE. `GET .../submitted?date=
+    <key>&view=text` serves the day's text and says, per mark, `*_deferred:
+    true`; this serves those marks. Keyed on the PATH the day body flagged, so
+    the screen asks for row 3's image with the address it already drew row 3
+    from -- not by name, which two men on one roster can share.
+
+    `version` IS THE GUARD AGAINST A STALE PAIRING, and it is the client's own
+    `pdfVersion` precedence (`_submitted_stamp`). A record amended between the
+    day read and this one answers with a different stamp, so the device can
+    refuse to file these images against the day it holds rather than storing a
+    corrected sheet's ink under the superseded sheet's name. Nothing here
+    decides what to do about that: the stamp is reported and `ensureDaySignatures`
+    is where the rule lives.
+
+    PER RECORD, NOT PER DAY, AND THAT IS WHAT THE RULING ASKED FOR. The screen
+    renders only the ACTIVE TAB's sheets of an expanded day. On 2026-08-28 --
+    16 records, 1,149,132 bytes of marks -- the daily-jobsite tab needs NONE of
+    them and the pre-shift tab needs 981,144 across three sheets, which arrive
+    one sheet at a time so the first one drawn fills first. A per-day endpoint
+    would have made the inspector wait for the other thirteen records' images
+    to open the one in front of him.
+
+    ── SCOPED LIKE THE DAY READ IT COMPLETES, AND NOT LIKE THE PHOTO ONE ──────
+
+    `require_project_access` CANNOT be used as a dependency here: it reads
+    `project_id` out of the PATH, and the path here is a record id. The project
+    is resolved off the record and `_assert_project_access` is then called with
+    it -- the same function that dependency is a wrapper around, so this is the
+    same rule and not a second one.
+
+    AND IT IS AUTHENTICATED, unlike `get_logbook_activity_photo` next door,
+    which is deliberately open because the people reading an emailed daily
+    report have no login. These are named workers' signatures on a compliance
+    record. A 404 for a record nobody may read is deliberate too: a 403 would
+    confirm the id exists to a caller who may not know it does.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    if not project_id:
+        # A RECORD WITH NO PROJECT CANNOT BE SCOPED, so it is not served.
+        # Falling through to "no project means no restriction" is the
+        # double-permissive shape _same_company_or_403 documents.
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    await _assert_project_access(project_id, current_user)
+
+    found = _signature_image_paths(logbook)
+    return {
+        "logbook_id": str(logbook.get("_id") or logbook_id),
+        # THROUGH `serialize_id`, FOR THE SAME REASON `_submitted_index_row`
+        # does it: that is what marks Mongo's naive datetimes as UTC, and an
+        # unmarked one reaches `new Date()` as LOCAL time -- which would make a
+        # record look amended to a device four hours off the server and send it
+        # back for images it already holds. One key in, one key out.
+        "version": serialize_id({"v": _submitted_stamp(logbook)}).get("v"),
+        "signatures": {path: value for path, value in found},
+        # THE COUNT OF WHAT IS IN THIS BODY. A caller that asked for a sheet
+        # whose marks are all unsigned gets `{}` and `0` -- which is an answer,
+        # not a failure, and is how the screen tells "nothing to fetch" from
+        # "the fetch did not happen".
+        "count": len(found),
+    }
+
 
 @api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):

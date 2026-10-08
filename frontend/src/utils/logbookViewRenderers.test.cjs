@@ -174,6 +174,25 @@ const _csModel = new Function(
 let PHOTO_URI = () => null;
 const styleProxy = new Proxy({}, { get: () => ({}) });
 const Icon = function IconStub() { return null; };
+// ── The REAL deferral protocol, not a stub ─────────────────────────────────
+// `signatureMark` is what decides whether a man signed, whether his mark is
+// merely still in transit, or whether he did not sign — three states on a
+// legal record, and this file is the ONLY thing that executes the roster that
+// draws them. A stubbed answer here would leave every assertion below passing
+// while the question itself went unasked. It is importless on purpose; see
+// src/utils/signatureDeferral.js.
+const _deferral = {};
+// eslint-disable-next-line no-new-func
+new Function('exports', 'module', 'require', babel.transformSync(
+  fs.readFileSync(path.join(__dirname, 'signatureDeferral.js'), 'utf8'),
+  {
+    filename: 'signatureDeferral.js',
+    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
+    configFile: false,
+    babelrc: false,
+  },
+).code)(_deferral, { exports: _deferral }, require);
+
 const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'semantic',
   'spacing', 'withAlpha', 'rosterClock', 'logbookPhotoUri',
   'ShieldCheck', 'AlertTriangle', 'Truck', 'MapPin', 'ClipboardList', 'FileText',
@@ -182,7 +201,13 @@ const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'sem
   // BC 3301.13.13 items. REAL, not stubbed: the branch's whole job is to
   // render three kinds of empty differently, and a stub would make the test
   // pass without exercising the distinction it exists to defend.
-  'csLogItems', 'csItemState', 'csItemSummary'];
+  'csLogItems', 'csItemState', 'csItemSummary',
+  // The deferral protocol. The first two are REAL; `sigPendingNote` is the one
+  // genuine stub, because it lives outside this slice and reads screen state
+  // (whether a fetch is in flight, whether the tablet is offline) that no
+  // assertion here is about. A FIXED, RECOGNISABLE STRING, so a test can tell
+  // the deferred card apart from the drawn one and from the unsigned line.
+  'signatureMark', 'SIG_FIELDS', 'sigPendingNote'];
 const VALUES = {
   View: 'View', Text: 'Text', Image: 'Image', React,
   s: styleProxy, t, tFp,
@@ -201,6 +226,9 @@ const VALUES = {
   csLogItems: _csModel.csLogItems,
   csItemState: _csModel.csItemState,
   csItemSummary: _csModel.csItemSummary,
+  signatureMark: _deferral.signatureMark,
+  SIG_FIELDS: _deferral.SIG_FIELDS,
+  sigPendingNote: () => 'image loading…',
 };
 for (const n of NAMES) if (!(n in VALUES)) VALUES[n] = Icon;
 
@@ -809,6 +837,97 @@ ok(EN.logbookPhotos.addedAfterFiling === ADDED_LABEL,
 ok(EN.dailyJobsite.photoAddedAfterFiling === undefined,
   'and the key it MOVED FROM is gone rather than left behind: a second copy '
   + 'nothing renders is a reword away from making one record read two ways');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THREE STATES, NOT TWO: signed, signed-and-the-image-is-coming, not signed
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ASSERTED HERE BECAUSE THIS IS THE ONLY FILE THAT EXECUTES THE ROSTER. The
+// signature images are 65.8% of a filed-record payload, so they are served
+// separately now — and the renderer used to key BOTH blocks off one field:
+//
+//     workers.some(w => w.worker_signature)    -> draw the signature images
+//     workers.some(w => !w.worker_signature)   -> list those names as UNSIGNED
+//
+// which means a payload without the mark told a DOB inspector that every one
+// of the 505 men who signed at the kiosk had NOT signed. A false statement on a
+// legal record, and worse than a slow screen.
+//
+// A MARK THE SIZE OF A REAL ONE. The mean of the 583 in production is 20,040 B;
+// the exact bytes do not matter to a text collector, but a data URI does — all
+// of them are `data:image/png;base64,...` rather than bare base64, and the
+// renderer branches on that prefix.
+const MARK = `data:image/png;base64,${'W'.repeat(64)}`;
+const PENDING = 'image loading…';
+
+{
+  // (a) WHOLE BODY — the mark is here. What the screen has always drawn.
+  const here = render(doc('preshift_signin', { workers: [
+    { name: 'Signed One', worker_signature: MARK },
+    { name: 'Unsigned Null', worker_signature: null },
+  ] }));
+  ok(here.includes('Signed One') && !here.includes(PENDING),
+    'preshift: a mark that is HERE draws the image, with no pending notice');
+  ok(/Not Signed:[^|]*\|\s*Unsigned Null/.test(here) || here.includes('Unsigned Null'),
+    'preshift: and the man who did not sign is still listed');
+
+  // (b) TEXT BODY — he signed; the image is a second read.
+  const pending = render(doc('preshift_signin', { workers: [
+    { name: 'Signed One', worker_signature_deferred: true },
+    { name: 'Unsigned Null', worker_signature: null },
+    { name: 'Unsigned Absent' },
+  ] }));
+  ok(pending.includes('Signature on file'),
+    'preshift: a DEFERRED mark says the record HAS a signature, which is the '
+    + 'claim about the record and not about this tablet');
+  ok(pending.includes(PENDING),
+    '...and says separately that the image has not arrived');
+  ok(pending.includes('Signed One'),
+    '...beside the name of the man it belongs to');
+
+  // THE HEADLINE. He must not appear in the UNSIGNED list.
+  const unsignedLine = (pending.match(/Not Signed:\s*\|\s*([^|]*)/) || [])[1] || '';
+  ok(!unsignedLine.includes('Signed One'),
+    'THE TRAP IS SHUT: a man whose image is merely still in transit is NOT '
+    + 'listed as unsigned — the false statement this protocol exists to prevent');
+  ok(unsignedLine.includes('Unsigned Null') && unsignedLine.includes('Unsigned Absent'),
+    '...and both men who really did not sign still are, in both stored shapes');
+
+  // (c) A sheet nobody signed names no signature section at all.
+  const none = render(doc('preshift_signin', { workers: [
+    { name: 'Unsigned Null', worker_signature: null },
+  ] }));
+  ok(!none.includes('Signature on file') && !none.includes(PENDING),
+    'preshift: a sheet with no marks claims none, pending or otherwise');
+
+  // The toolbox talk reads TWO keys, and both defer.
+  for (const key of ['worker_signature_deferred', 'signature_deferred']) {
+    const tb = render(doc('toolbox_talk', {
+      attendees: [{ name: 'Attendee One', [key]: true }],
+    }));
+    ok(tb.includes('Signature on file') && tb.includes('Attendee One'),
+      `toolbox_talk: a deferred \`${key.replace('_deferred', '')}\` says signed-on-file`);
+  }
+  const tbHere = render(doc('toolbox_talk', {
+    attendees: [{ name: 'Attendee One', signature: MARK }],
+  }));
+  ok(!tbHere.includes(PENDING),
+    'toolbox_talk: and a mark that is here draws instead of claiming');
+
+  // The orientation acknowledgment — 1,548,916 B, the second biggest site.
+  const orPending = render(doc('subcontractor_orientation', {
+    worker_signature_deferred: true,
+  }));
+  ok(orPending.includes('Signature on file') && orPending.includes(PENDING),
+    'subcontractor_orientation: a deferred acknowledgment says signed-on-file');
+  ok(!orPending.includes(t('orUnsigned')),
+    'ORIENTATION TRAP SHUT: a deferred acknowledgment is not reported '
+    + 'UNSIGNED — 78 of 93 filed orientations in production are signed');
+  const orNull = render(doc('subcontractor_orientation', { worker_signature: null }));
+  ok(orNull.includes(t('orUnsigned')) && !orNull.includes(PENDING),
+    '...while a PRESENT-AND-NULL acknowledgment still reads UNSIGNED, which is '
+    + 'the two-state rule this one is layered in front of, not instead of');
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
