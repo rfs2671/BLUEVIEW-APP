@@ -43,7 +43,16 @@ const base = { groups: [G1, G2], violation_alerts: true, permit_reminders: false
   ok(v.choices.find((c) => c.current).id === '1@g.us', 'current group marked');
   ok(v.choices.find((c) => c.id === '2@g.us').name === 'Unnamed group', 'an unnamed choice is not shown as its id');
   ok(v.switches.map((s) => s.label).join('|')
-     === 'New DOB violations → GC group|Permit expiry reminders → GC group', 'the two switches, by name');
+     === ['New DOB violations → GC group', 'Permit expiry reminders → GC group',
+       'New DOB complaints → GC group', 'Stop-work orders → GC group',
+       'Violation status changes → GC group', 'Permit status changes → GC group',
+       'New DOT summonses → GC group', 'DOT permit expiry → GC group'].join('|'),
+     'every alert switch, by name');
+  ok(v.switches.map((s) => s.key).join('|')
+     === 'violation_alerts|permit_reminders|complaint_alerts|swo_alerts|'
+       + 'violation_status_alerts|permit_status_alerts|dot_violation_alerts|dot_permit_alerts',
+     'switch keys match the server (wa_alerts.SWITCHES)');
+  ok(v.switches.slice(2).every((s) => s.value === true), 'a switch the server did not send reads on (default on)');
   ok(v.switches[0].value === true && v.switches[1].value === false, 'switches carry the server values');
 }
 {

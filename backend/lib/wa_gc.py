@@ -7,10 +7,9 @@ plain function so it is tested without a server:
   * which linked group is the GC group (auto-pick, trade words excluded)
   * which permit reminder threshold is due (30 / 14 / 7 / 1 days)
   * reading DOB's dates
-  * the violation message: an AI-written plain-language summary is used ONLY
-    if every number, date, amount and code in it appears in the DOB record;
-    otherwise a fixed template. The violation number and DOB link are always
-    appended from the record, never from the model.
+  * the record checker (check_summary): an AI-written sentence is used ONLY
+    if every number, date, amount and code in it appears in the record. The
+    messages themselves are built in lib/wa_alerts.py.
 """
 
 from __future__ import annotations
@@ -200,26 +199,6 @@ def thresholds_passed(expires: Optional[date], today: date) -> List[int]:
     return [t for t in PERMIT_THRESHOLDS if days_left <= t]
 
 
-def permit_message(*, project_name: str, permit: Dict[str, Any],
-                   expires: date, today: date) -> str:
-    what = " ".join(p for p in (str(permit.get("work_type") or "").strip(),
-                                "permit") if p)
-    num = str(permit.get("job_number") or permit.get("permit_number")
-              or permit.get("raw_dob_id") or "").strip()
-    when = f"{expires:%b} {expires.day}, {expires.year}"
-    days_left = (expires - today).days
-    lead = ("expires today" if days_left <= 0
-            else "expires tomorrow" if days_left == 1
-            else f"expires in {days_left} days")
-    lines = [f"Levelog Assistant: a {what} on {project_name} {lead} ({when})."]
-    if num:
-        lines.append(f"Permit: {num}")
-    link = str(permit.get("dob_link") or "").strip()
-    if link:
-        lines.append(f"DOB: {link}")
-    return "\n".join(lines)
-
-
 # ── New violation messages ──────────────────────────────────────────────────
 
 # The record fields the summary may draw on. Nothing else is shown to the
@@ -318,43 +297,6 @@ def check_summary(text: str, facts: Dict[str, str]) -> bool:
             continue
         return False
     return True
-
-
-def violation_template(*, project_name: str, facts: Dict[str, str]) -> str:
-    """The fixed message when the AI summary is missing or fails the check.
-    Only record values, copied verbatim."""
-    parts = [f"Levelog Assistant: a new DOB violation was issued for {project_name}."]
-    if facts.get("description"):
-        parts.append(f"What it says: {facts['description']}")
-    if facts.get("violation_date"):
-        d = parse_dob_date(facts["violation_date"])
-        parts.append(f"Issued: {d.isoformat() if d else facts['violation_date']}")
-    if facts.get("status"):
-        parts.append(f"Status: {facts['status']}")
-    return "\n".join(parts)
-
-
-def violation_message(*, summary: str, facts: Dict[str, str],
-                      dob_link: str) -> str:
-    """The posted text: the (checked) summary, then the violation number and
-    DOB link straight from the record. Never a fine the record does not
-    carry — the summary is checked, and nothing else adds an amount."""
-    lines = [summary.strip()]
-    if facts.get("violation_number"):
-        lines.append(f"Violation #: {facts['violation_number']}")
-    if dob_link:
-        lines.append(f"DOB: {dob_link}")
-    return "\n".join(lines)
-
-
-SUMMARY_SYSTEM_PROMPT = (
-    "You write one or two short plain-English sentences for a construction "
-    "crew's WhatsApp group about a NYC DOB violation. Use ONLY the facts "
-    "given. Do not add any number, date, dollar amount, code or law that is "
-    "not in the facts. Do not guess a fine. Do not include the violation "
-    "number or a link (they are added separately). Start with "
-    "'Levelog Assistant: a new DOB violation'."
-)
 
 
 # ── Bookkeeping keys (the notification ledger) ──────────────────────────────

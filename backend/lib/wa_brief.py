@@ -8,8 +8,10 @@ number, date and status. Nothing is inferred and no urgency is invented: a
 record without the value a line needs is left out, never filled in.
 
   🔴  new violation / complaint / stop-work order since the last brief
-  🟡  another DOB status change DOB marks as needing action
-  🟠  permit expiring within 14 days, or expired in the last 30
+  🔴  new DOT summons since the last brief
+  🟡  a DOB status change: permit issued / expired / revoked, stop-work order
+      rescinded, or any change DOB marks as needing action
+  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30
   (inspections: no stored scheduled date exists, so there is no 🔴 line for
    them — none is guessed)
 
@@ -162,9 +164,32 @@ def group_records(rows: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, An
     return out
 
 
+def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
+                 *, work: str = "", label: str = "Permit") -> Optional[Dict[str, Any]]:
+    """🟠 a permit expiring within 14 days, or expired in the last 30."""
+    exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+    num = _text(r.get(num_field))
+    if not exp or not num:
+        return None
+    days = (exp - today).days
+    name = f"{label} {num}" + (f" ({work})" if work else "")
+    if 0 <= days <= PERMIT_SOON_DAYS:
+        when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
+        return {"rank": RANK_PERMIT, "order": (days,),
+                "text": f"🟠 {name} expires {_md(exp)} ({when}). {source}."}
+    if -EXPIRED_RECENT_DAYS <= days < 0:
+        ago = -days
+        return {"rank": RANK_PERMIT, "order": (days,),
+                "text": f"🟠 {name} expired {_md(exp)} "
+                        f"({ago} day{'s' if ago != 1 else ''} ago). {source}."}
+    return None
+
+
 def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
-              now_utc: datetime) -> List[Dict[str, Any]]:
-    """The items one job has today: [{rank, order, text}]. Pure."""
+              now_utc: datetime,
+              dot_rows: Iterable[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+    """The items one job has today: [{rank, order, text}]. Pure. `dot_rows`
+    are the job's dot_logs rows (DOT summonses and permits)."""
     today = wa_gc.today_et(now_utc)
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
@@ -193,43 +218,54 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                         "text": f"🔴 New {label} {num}, {verb} {_md(issued)}, {status}. DOB."})
                     continue
 
-        # 🟠 permit expiring / expired
-        if rt == "permit":
-            if _text(latest.get("permit_status")).upper() == "REVOKED":
-                continue
-            exp = wa_gc.parse_dob_date(latest.get("expiration_date"))
-            num = _text(latest.get("job_number"))
-            if not exp or not num:
-                continue
-            days = (exp - today).days
-            work = _text(latest.get("work_type"))
-            name = f"Permit {num}" + (f" ({work})" if work else "")
-            if 0 <= days <= PERMIT_SOON_DAYS:
-                when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
-                items.append({"rank": RANK_PERMIT, "order": (days,),
-                              "text": f"🟠 {name} expires {_md(exp)} ({when}). DOB."})
-            elif -EXPIRED_RECENT_DAYS <= days < 0:
-                ago = -days
-                items.append({"rank": RANK_PERMIT, "order": (days,),
-                              "text": f"🟠 {name} expired {_md(exp)} "
-                                      f"({ago} day{'s' if ago != 1 else ''} ago). DOB."})
-            continue
+        # 🟠 permit expiring / expired (not for a revoked permit)
+        if rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+            item = _expiry_item(latest, "job_number", "DOB", today,
+                                work=_text(latest.get("work_type")))
+            if item:
+                items.append(item)
 
-        # 🟡 another status change DOB marks as needing action
-        if (len(hist) > 1 and latest.get("previous_status") is not None
-                and not latest.get("is_seed_transition")
-                and _text(latest.get("severity")) == "Action"
-                and _stamp(latest) > since and not _is_closed(latest)):
-            num = _text(latest.get(_NUMBER_FIELD.get(rt, ""))) or (
-                _text(latest.get("violation_number")) if rt == "swo" else "")
-            before = _text(latest.get("previous_status"))
-            after = _text(latest.get("current_status"))
-            if num and before and after and before != after:
-                changed = local_now(_stamp(latest)).date()
+        # 🟡 a status change: a permit issued / expired / revoked, a
+        # stop-work order rescinded, or any change DOB marks as needing action
+        before = _text(latest.get("previous_status"))
+        after = _text(latest.get("current_status"))
+        if (len(hist) > 1 and before and after and before != after
+                and not latest.get("is_seed_transition") and _stamp(latest) > since):
+            up = after.upper()
+            permit_change = rt == "permit" and any(
+                w in up for w in ("ISSUED", "EXPIRED", "REVOKED"))
+            rescinded = rt == "swo" and ("RESCIND" in up or "LIFTED" in up)
+            action = (_text(latest.get("severity")) == "Action"
+                      and not _is_closed(latest))
+            if permit_change or rescinded or action:
+                num = _text(latest.get(_NUMBER_FIELD.get(rt, ""))) or (
+                    _text(latest.get("violation_number")) if rt == "swo" else "")
+                if num:
+                    changed = local_now(_stamp(latest)).date()
+                    items.append({
+                        "rank": RANK_REGULATORY, "order": (1, -changed.toordinal()),
+                        "text": f"🟡 {_KIND_LABEL.get(rt, 'Record')} {num} changed "
+                                f"{before} → {after} on {_md(changed)}. DOB."})
+
+    # DOT (dot_logs: one row per record, already matched to this job)
+    for r in dot_rows:
+        rt = _text(r.get("record_type")).lower()
+        if rt == "dot_violation":
+            seen = _detected(r)
+            num = _text(r.get("number"))
+            issued = wa_gc.parse_dob_date(r.get("issue_date"))
+            if (seen and seen > since and num and issued and not _is_closed(r)
+                    and timedelta(0) <= today - issued
+                    <= timedelta(days=NEW_ISSUED_WITHIN_DAYS)):
+                status = _text(r.get("status"))
                 items.append({
-                    "rank": RANK_REGULATORY, "order": (1, -changed.toordinal()),
-                    "text": f"🟡 {_KIND_LABEL.get(rt, 'Record')} {num} changed "
-                            f"{before} → {after} on {_md(changed)}. DOB."})
+                    "rank": RANK_REGULATORY, "order": (0, -issued.toordinal()),
+                    "text": f"🔴 New DOT summons {num}, issued {_md(issued)}"
+                            + (f", {status}" if status else "") + ". DOT."})
+        elif rt == "dot_permit":
+            item = _expiry_item(r, "number", "DOT", today, label="DOT permit")
+            if item:
+                items.append(item)
     items.sort(key=lambda i: (i["rank"], i["order"]))
     return items
 
