@@ -175,6 +175,13 @@ class TheItems(unittest.TestCase):
             "🔴 New complaint 1234567, filed Oct 6, ACTIVE. DOB.",
         ])
 
+    def test_swo_from_a_violation_dataset_uses_its_violation_number(self):
+        row = {"raw_dob_id": "s:2", "record_type": "swo", "violation_number": "V-555",
+               "violation_date": "2026-10-07", "resolution_state": "open",
+               "detected_at": YESTERDAY, "previous_status": None}
+        self.assertEqual(self._items([row]),
+                         ["🔴 New stop-work order V-555, issued Oct 7, open. DOB."])
+
     def test_not_new_old_closed_seed_or_unsure(self):
         rows = [
             _violation(THOMAS, "1", detected_at=YESTERDAY - timedelta(days=3)),  # before last brief

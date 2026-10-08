@@ -179,7 +179,10 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
             seen = _detected(first)
             if (seen and seen > since and not first.get("is_seed_transition")
                     and first.get("previous_status") is None):
-                num = _text(latest.get(num_f))
+                # A stop-work order found by text in a violation dataset is
+                # stored with the violation's fields: its number is there.
+                num = _text(latest.get(num_f)) or (
+                    _text(latest.get("violation_number")) if rt == "swo" else "")
                 issued = wa_gc.parse_dob_date(latest.get(date_f))
                 status = _status(latest)
                 if (num and issued and status and not _is_closed(latest)
@@ -217,7 +220,8 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                 and not latest.get("is_seed_transition")
                 and _text(latest.get("severity")) == "Action"
                 and _stamp(latest) > since and not _is_closed(latest)):
-            num = _text(latest.get(_NUMBER_FIELD.get(rt, "")))
+            num = _text(latest.get(_NUMBER_FIELD.get(rt, ""))) or (
+                _text(latest.get("violation_number")) if rt == "swo" else "")
             before = _text(latest.get("previous_status"))
             after = _text(latest.get("current_status"))
             if num and before and after and before != after:
