@@ -24293,16 +24293,155 @@ async def get_cs_registration(registration_id: str, admin=Depends(get_admin_user
     return serialize_id(reg)
  
  
+async def _validated_cs_account_link(
+    *, user_id, registration: dict, admin: dict,
+) -> Optional[str]:
+    """The id to store in `cs_registrations.user_id`, or a refusal.
+
+    ── WHY THIS ID IS CHECKED AND THE OTHER SIX FIELDS ARE NOT ─────────────
+
+    A name or a phone number on this row is a fact somebody typed. The account
+    link is an AUTHORISATION: `attribute_signer` matches it first, before the
+    licence, so it is what decides
+
+      * `_refuse_if_not_the_superintendent` -- 403
+        NOT_THE_REGISTERED_SUPERINTENDENT on the BC 3301.13.13 write path,
+      * `_logbook_filing_rights` -- `may_file` on the logbook tile,
+      * `superintendent_projects_for` -- the CP nav's superintendent-log slot,
+      * `cs_attribution_for` -- which prints the attribution sentence onto the
+        filed sheet, AT READ TIME, so a re-link changes what sheets already
+        filed say about who signed them.
+
+    An arbitrary id written in here is therefore a false statement about a
+    DOB-facing role on a statutory record, and the three ways it goes wrong are
+    a deleted account, another tenant's account, and no account at all.
+
+    ── THE STANDARD IS `_assert_superintendent_under_admin`'S, NOT A NEW ONE ─
+
+    Exists and is not soft-deleted; and in the caller's company unless the
+    caller is the platform operator -- `get_admin_user` proved a RANK and not a
+    company, which is the split that was a SEV-0 on `update_admin_user`.
+
+    PLUS THE REGISTRATION'S OWN COMPANY, which that sibling has no equivalent
+    of because it starts from the user and reaches the rows, while this starts
+    from the row. The row carries `company_id`, so an admin who reaches another
+    tenant's registration cannot point it at his own people.
+
+    A ROW WITH NO `company_id` IS NOT REFUSED. `_register_cs_on_project` has
+    always stamped one and production carries none without it, so this is the
+    legacy shape only -- and the link is still confined to the caller's own
+    company by the check above. Failing closed here would make an orphan row
+    PERMANENTLY UNLINKABLE, which is the defect class this function exists to
+    close rather than a safer version of it.
+
+    ── NOT A ROLE TEST, DELIBERATELY ───────────────────────────────────────
+
+    `_refuse_if_not_the_superintendent` states the rule it is the gate for:
+    the filing right keys on the registration and NEVER on `role`, because a
+    `role == "superintendent"` gate "would refuse the only man who must file"
+    -- the dual-capacity user who is both the registered CS and the competent
+    person on his own job. This screen is kept for the superintendent who is
+    not carried as one, so linking cannot be stricter than the gate it feeds.
+    """
+    link = str(user_id or "").strip()
+    if not link:
+        # UNLINKING, and '' arrives here as well as None. The create payload's
+        # own comment says why '' may not be stored: it is a user id that
+        # matches nobody, so `superintendent_projects_for` would see a truthy
+        # value and query on it while `attribute_signer` matched no signer --
+        # a row that reads as linked to the screen and as linked to nothing to
+        # the gate. Absent must read as absent.
+        return None
+
+    target = await db.users.find_one(
+        {"_id": to_query_id(link), "is_deleted": {"$ne": True}},
+    )
+    if not target:
+        raise HTTPException(
+            status_code=404,
+            detail="No such user account. A registration linked to an account "
+                   "that does not exist reads as linked and files as nobody.",
+        )
+    if not is_platform_operator(admin) and not _same_company(admin, target):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to link this user",
+        )
+    reg_company = str((registration or {}).get("company_id") or "")
+    if reg_company and reg_company != str(target.get("company_id") or ""):
+        raise HTTPException(
+            status_code=403,
+            detail="That account is not in the company this registration "
+                   "belongs to.",
+        )
+    # STORED AS A STRING, the spelling `_register_cs_on_project` writes.
+    # `_cs_rows_are_for` carries a two-spelling selector because older rows
+    # hold either; a new write has no excuse to add to that.
+    return link
+
+
 @api_router.put("/admin/cs-registrations/{registration_id}")
 async def update_cs_registration(
     registration_id: str,
     data: CSRegistrationUpdate,
     admin=Depends(get_admin_user),
 ):
-    """Update a CS registration."""
+    """Update a CS registration.
+
+    ── `user_id` USED TO BE DECLARED, SENT, AND DROPPED ON THE FLOOR ───────
+
+    `CSRegistrationUpdate` declares it and says why: "the commonest real
+    sequence is a registration typed for DOB first and the account created
+    later". The edit form sends it and its own comment says "an edit form that
+    silently dropped the field would make an unlinked registration permanently
+    unlinkable". The copy block below had six of the seven settable fields and
+    not that one, so the form sent it, the model accepted it, this returned 200
+    with the re-read row -- and the link never moved. The one repair the screen
+    exists to make did nothing, and the 200 said it had worked.
+
+    ── THREE STATES, AND THE OTHER FIELDS' SHAPE CAN ONLY HOLD TWO ─────────
+
+        user_id: "<id>"   LINK     -- this registration is that account's
+        user_id: null     UNLINK   -- it belongs to no account
+        field absent      LEAVE    -- this request is not about the link
+
+    `null` is a VALUE here. Every other field is copied under
+    `if data.X is not None:`, which conflates the second and third states, so
+    a handler written that way could link and never unlink -- the same defect
+    one direction over, and unlinking is how an admin corrects a link made to
+    the wrong man. `model_fields_set` is the only thing that separates "sent
+    null" from "not sent", so it is what is asked, and only for this field:
+    the other six have no meaningful null and changing them is not this fix.
+
+    ── THE ROW IS READ FIRST NOW ───────────────────────────────────────────
+
+    For two things the write cannot supply: the row's `company_id`, which the
+    tenant check on the link needs, and the OLD link, because "who may file
+    changed" is unanswerable from the new value alone. The 404 therefore comes
+    from the read rather than from `matched_count`, with the same meaning and
+    the same selector -- including NOT filtering `is_deleted`, so a
+    soft-deleted registration stays editable exactly as it was.
+    """
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
-    
+
+    existing = await db.cs_registrations.find_one(
+        {"_id": to_query_id(registration_id)},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="CS registration not found")
+
+    # THE LINK IS RESOLVED BEFORE ANYTHING IS WRITTEN, so a refusal leaves the
+    # row untouched. Validating it after the `$set` was built but before the
+    # write would do too; validating it after the write would make a refusal a
+    # partial success reported as a failure.
+    link_moved = False
+    if "user_id" in data.model_fields_set:
+        link = await _validated_cs_account_link(
+            user_id=data.user_id, registration=existing, admin=admin,
+        )
+        update["user_id"] = link
+        link_moved = link != (str(existing.get("user_id") or "") or None)
+
     if data.full_name is not None:
         update["full_name"] = data.full_name.strip()
     if data.license_number is not None:
@@ -24325,7 +24464,34 @@ async def update_cs_registration(
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="CS registration not found")
-    
+
+    # ── A MOVED LINK IS RECORDED, AND ONLY A MOVED LINK ─────────────────────
+    #
+    # `set_user_cs_registrations` -- the other writer of this field -- audits
+    # the registrations it adds and removes. This moves the same fact, who may
+    # file BC 3301.13.13, so it is recorded the same way.
+    #
+    # BOTH SIDES ON THE ROW. "Who may file changed" is unanswerable from the
+    # new value alone: the account that LOST the link is the one whose 403 an
+    # admin will be asked about, and it is nowhere else after the write.
+    #
+    # ONLY THE LINK. The other six fields are facts somebody typed, not an
+    # authorisation, and an audit that logged every phone-number correction is
+    # an audit nobody reads. `is_active` is the one arguable omission -- it
+    # moves the gate too, from the other direction -- and it is left as it was
+    # rather than changed by a fix about `user_id`.
+    if link_moved:
+        await audit_log(
+            "cs_registration_account_link_set", actor_id(admin),
+            "cs_registration", str(registration_id),
+            {
+                "user_id_was": str(existing.get("user_id") or "") or None,
+                "user_id_now": update["user_id"],
+                "project_id": str(existing.get("project_id") or "") or None,
+                "license_number": existing.get("license_number"),
+            },
+        )
+
     updated = await db.cs_registrations.find_one({"_id": to_query_id(registration_id)})
     return serialize_id(updated)
  
