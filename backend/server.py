@@ -76,6 +76,7 @@ from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
+from lib import wa_contact  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
@@ -45852,6 +45853,102 @@ async def _reply_dm(chat_id: str, text: str, outcome: str) -> None:
                        f"(see 'WhatsApp DM refused' / 'send failed' above)")
 
 
+# ── "contact": THE LEVELOG ASSISTANT CONTACT CARD (lib/wa_contact.py) ───
+#
+# The app's "Save to Contacts" opens WhatsApp with "contact" typed to the
+# Levelog number; the bot answers with its contact card. Any sender (the
+# number is public), at most once per sender per hour, and nothing else
+# answers that message.
+WA_CONTACT_CARD_LOG = "whatsapp_contact_card_log"
+CONTACT_CARD_EVERY = timedelta(hours=1)
+
+
+async def _contact_card_claim(chat: str, now: datetime) -> bool:
+    """True when this sender has had no card in the last hour; claims the
+    hour atomically (two webhooks for one message send one card)."""
+    key = wa_dm.phone_digits(chat) or str(chat or "")
+    if not key:
+        return False
+    from pymongo.errors import DuplicateKeyError
+    try:
+        res = await db[WA_CONTACT_CARD_LOG].update_one(
+            {"_id": key, "sent_at": {"$lt": now - CONTACT_CARD_EVERY}},
+            {"$set": {"sent_at": now}})
+        if res.modified_count == 1:
+            return True
+        await db[WA_CONTACT_CARD_LOG].insert_one({"_id": key, "sent_at": now})
+        return True
+    except DuplicateKeyError:
+        return False          # a card within the hour
+    except Exception as e:
+        logger.warning(f"[wa-contact] claim failed: {type(e).__name__}")
+        return False
+
+
+async def _send_contact_card(chat: str) -> Optional[str]:
+    """Send the card to this DM chat: "vcard" (WaAPI send-vcard) or
+    "document" (the .vcf, when send-vcard is refused); None if neither."""
+    digits = _wa_bot_digits()
+    if not digits or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        logger.warning("[wa-contact] not sent: WhatsApp number or WaAPI not configured")
+        return None
+    verdict = await _dm_send_verdict(chat, "[contact card]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[wa-contact] refused ({verdict['reason']})")
+        return None
+    base = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action"
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{base}/send-vcard",
+        {"chatId": chat, "vCard": wa_contact.waapi_vcard(digits)}, headers)
+    if ok and not _waapi_body_says_error(body):
+        logger.info("[wa-contact] sent as vcard")
+        return "vcard"
+    logger.warning(f"[wa-contact] send-vcard refused ({err or 'error body'}); "
+                   f"sending the .vcf as a document")
+    ok, body, err = await _waapi_send_dm_paced(
+        f"{base}/send-media",
+        {"chatId": chat,
+         "mediaUrl": f"{PUBLIC_API_BASE_URL}/api/whatsapp/{wa_contact.VCF_FILENAME}",
+         "mediaName": wa_contact.VCF_FILENAME,
+         "asDocument": True,
+         "caption": wa_contact.CONTACT_NAME}, headers)
+    if ok and not _waapi_body_says_error(body):
+        logger.info("[wa-contact] sent as document")
+        return "document"
+    logger.error(f"[wa-contact] not delivered: {err or 'error body'}")
+    return None
+
+
+def _waapi_body_says_error(body: Any) -> bool:
+    """WaAPI sometimes answers 200 with {data: {status: "error"}}."""
+    data = body.get("data") if isinstance(body, dict) else None
+    return isinstance(data, dict) and str(data.get("status") or "").lower() == "error"
+
+
+async def _handle_dm_contact(chat_id: str) -> None:
+    chat = wa_dm.dm_chat_id(chat_id)
+    if not await _contact_card_claim(chat, datetime.now(timezone.utc)):
+        logger.info(f"[wa-contact] rate-limited chat=...{wa_dm.phone_digits(chat)[-4:]}")
+        return
+    await _send_contact_card(chat)
+
+
+@api_router.api_route(f"/whatsapp/{wa_contact.VCF_FILENAME}", methods=["GET", "HEAD"])
+async def whatsapp_public_vcard():
+    """The Levelog Assistant contact card as a file, for WaAPI to fetch when
+    it sends the card as a document. Public: it holds only the bot's own,
+    public number."""
+    digits = _wa_bot_digits()
+    if not digits:
+        raise HTTPException(status_code=404, detail="Not configured")
+    return Response(
+        content=wa_contact.vcard_text(digits), media_type="text/vcard",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{wa_contact.VCF_FILENAME}"',
+                 "Cache-Control": "public, max-age=300"})
+
+
 async def _handle_dm_start(chat_id: str, body: str = "START",
                            raw: Any = None) -> None:
     """START, from any chat: opt the right user in, or say plainly why not.
@@ -56363,6 +56460,12 @@ async def _process_whatsapp_message(payload: dict):
             if command == "stop":
                 await _handle_dm_stop(dm_chat, parsed.get("raw"))
                 return
+            # "contact": the Levelog Assistant contact card, for any sender.
+            # Answered (or, within the hour, silently skipped) here and
+            # nowhere else.
+            if wa_contact.is_contact_request(parsed.get("body")):
+                await _handle_dm_contact(dm_chat)
+                return
             # "1" / "2" to an open GC group question from Levelog. Anything
             # else, or no open question for this person, carries on below.
             answer = wa_gc.parse_confirm_reply(parsed.get("body"))
@@ -57539,13 +57642,28 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
 
     Linked groups (this company's whatsapp_groups) with their job's address
     and what they are to it; then groups not linked yet (the same rows
-    /whatsapp/pending-groups shows). Another company's groups never appear."""
-    company_id = _require_link_role(current_user)
+    /whatsapp/pending-groups shows). Another company's groups never appear.
+
+    A PM reads it too (Integrations → Project groups, read-only): only the
+    linked groups of their own assigned projects, and no unlinked ones —
+    linking is for owners, admins and CPs."""
+    role = wa_dm.norm_role(current_user.get("role"))
+    is_pm = role == ROLE_PM and not is_company_admin(current_user)
+    if is_pm:
+        company_id = get_user_company_id(current_user)
+        if not company_id:
+            raise HTTPException(status_code=403,
+                                detail="This account is not linked to a company yet.")
+    else:
+        company_id = _require_link_role(current_user)
     phone = _caller_phone_digits(current_user)
     now = datetime.now(timezone.utc)
 
-    linked = await db.whatsapp_groups.find(
-        {"company_id": company_id, "active": True}).to_list(200)
+    query = {"company_id": company_id, "active": True}
+    if is_pm:
+        query["project_id"] = {"$in": [str(p) for p in
+                                       current_user.get("assigned_projects") or []]}
+    linked = await db.whatsapp_groups.find(query).to_list(200)
     await _ensure_group_names(linked)
     pids = list({str(g.get("project_id") or "") for g in linked} - {""})
     projects = {}
@@ -57581,6 +57699,8 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
             "status": status,
         })
     out.sort(key=lambda r: (r["project_label"].lower(), r["group_name"].lower()))
+    if is_pm:
+        return {"groups": out}
 
     pending = await db[PENDING_GROUPS].find(
         _pending_visible_query(company_id, phone)
