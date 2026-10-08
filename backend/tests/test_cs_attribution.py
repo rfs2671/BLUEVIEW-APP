@@ -236,7 +236,9 @@ class TheSentenceIsAFactNotAnAccusation(unittest.TestCase):
             {"id": "u9", "cs_license_number": "1234567", "name": "M R"},
             REG, "2026-08-30"))
         self.assertIn("account", by_id)
-        self.assertIn("licence number", by_lic)
+        # "REGISTRATION": DOB issues a CS a registration number (ruling,
+        # 2026-10-08; formerly defect A2).
+        self.assertIn("registration number", by_lic)
 
     def test_every_state_produces_a_sentence(self):
         for state in (CA.MATCHED_ACCOUNT, CA.MATCHED_LICENCE,

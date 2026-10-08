@@ -55,6 +55,12 @@ regulator does not use.
 filed compliance record is a decision with the operator's name on it.*
 **One sentence to fix, in `attribution_sentence`.**
 
+> **Resolved 2026-10-08, on the operator's ruling.** The sentence now reads
+> "(registration N)" and "Matched by registration number". The same fix made
+> the signer the submitting account rather than the presence block, which had
+> printed the mismatch sentence on every filed sheet. Attribution is derived at
+> render time, so filed sheets reprint corrected; nothing stored changed.
+
 #### T1.2 — Nine filed orientations print "UNASSIGNED" as the worker's company *(was A4)*
 **9 of 135 orientations store `worker_company: "UNASSIGNED"`, and all 9 print it
 raw.** On a signed orientation record that reads as the name of a firm.

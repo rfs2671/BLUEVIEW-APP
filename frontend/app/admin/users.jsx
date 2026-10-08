@@ -1204,7 +1204,7 @@ export default function AdminUsersScreen() {
                 <Text style={s.csBlocked}>
                   No DOB registration number on this account. Add it under
                   Edit before registering him on a project — the one-job
-                  rule is checked on the licence number.
+                  rule is checked on the registration number.
                 </Text>
               )}
 

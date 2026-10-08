@@ -163,13 +163,15 @@ check('it names the registrations this screen cannot touch', () => {
     'the modal ignores registrations outside his assignments');
 });
 
-check('it says why Save is blocked with no licence number', () => {
+check('it says why Save is blocked with no registration number', () => {
   // WHITESPACE-INSENSITIVE. The sentence is wrapped across JSX source lines,
   // so a literal-space regex matches the intent and not the file — the first
   // version of this assertion went red on a line break while the copy was
   // exactly right.
   const flat = USERS.replace(/\s+/g, ' ');
-  ok(/one-job rule is checked on the licence number/i.test(flat),
+  // "REGISTRATION", NOT "LICENCE": DOB issues a construction superintendent
+  // a registration number (operator's ruling, 2026-10-08).
+  ok(/one-job rule is checked on the registration number/i.test(flat),
     'a 422 the admin has to decode is the only explanation');
 });
 
