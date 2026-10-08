@@ -58,10 +58,7 @@ def _payload(chat, body, msg_id="L1", extra=None):
 
 
 def _process(c, chat, body, msg_id="L1", extra=None):
-    async def _no_classify(_body):
-        raise AssertionError("START/STOP must not reach intent classification")
-    with patch.object(server, "classify_intent", _no_classify):
-        _run(server._process_whatsapp_message(_payload(chat, body, msg_id, extra)))
+    _run(server._process_whatsapp_message(_payload(chat, body, msg_id, extra)))
 
 
 def _sends(c):

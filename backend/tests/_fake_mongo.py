@@ -111,6 +111,13 @@ class _Res:
         self.deleted_count = matched
 
 
+def _sortable(v):
+    """Dates compare as dates, everything else as its string."""
+    if hasattr(v, "isoformat") and not isinstance(v, str):
+        return (0, v.isoformat())
+    return (1, str(v))
+
+
 class _Cursor:
     def __init__(self, rows):
         self.rows = rows
@@ -119,6 +126,11 @@ class _Cursor:
         if isinstance(key, str):
             self.rows.sort(key=lambda r: (_get(r, key) is _MISSING, str(_get(r, key))),
                            reverse=(direction == -1))
+        elif isinstance(key, list):
+            # [(field, dir), ...]: stable sorts from the last key to the first.
+            for field, d in reversed(key):
+                self.rows.sort(key=lambda r, f=field: (
+                    _get(r, f) is _MISSING, _sortable(_get(r, f))), reverse=(d == -1))
         return self
 
     def limit(self, n):
@@ -186,6 +198,12 @@ class Coll:
             _set(doc, k, (_get(doc, k) if _get(doc, k) is not _MISSING else 0) + v)
         for k in (update.get("$unset") or {}):
             doc.pop(k, None)
+        for k, v in (update.get("$addToSet") or {}).items():
+            cur = _get(doc, k)
+            cur = list(cur) if isinstance(cur, list) else []
+            if v not in cur:
+                cur.append(v)
+            _set(doc, k, cur)
 
     async def update_one(self, query, update, upsert=False, **k):
         for r in self.rows:
@@ -224,7 +242,8 @@ class Coll:
             if matches(r, query):
                 before = copy.deepcopy(r)
                 self._apply(r, update)
-                return before
+                # pymongo's ReturnDocument.AFTER is True.
+                return copy.deepcopy(r) if k.get("return_document") is True else before
         return None
 
     async def delete_one(self, query):

@@ -57,7 +57,7 @@ MIN_BODY_CHARS = 15
 
 # ── THE CANDIDATE PREFILTER ──────────────────────────────────────────────
 #
-# Drawn from the vocabulary classify_intent already carries in its string-match
+# Drawn from the vocabulary the (since removed) classify_intent carried in its string-match
 # rules, plus the four phrasings the material-detection prompt gives as its own
 # examples. Nothing here is invented: every term is one the deployed code or its
 # prompt already treats as material language.

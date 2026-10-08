@@ -476,13 +476,6 @@ class EveryReaderRefusesBsProjectForAsGroup(unittest.TestCase):
                 self.assertEqual(out, wa_security.BOT_SCOPE_REFUSAL)
                 self._assert_refused(out)
 
-    def test_material_receipt(self):
-        with patch.object(server, "OPENAI_API_KEY", "sk-test"):
-            out = _run(server._handle_material_receipt(
-                "proj_b", "got 10 bags", HUMAN, company_id=CO_A))
-        self.assertEqual(out, wa_security.BOT_SCOPE_REFUSAL)
-        self._assert_refused(out)
-
     def test_a_handler_with_no_company_at_all_refuses(self):
         out = _run(server._handle_dob_status("proj_b"))
         self.assertEqual(out, wa_security.BOT_SCOPE_REFUSAL)
@@ -1037,25 +1030,19 @@ class ADirectMessageFromANumberInTwoCompaniesReadsNothing(unittest.TestCase):
             {"company_id": CO_A, "phone": HUMAN, "user_id": "u_a"},
             {"company_id": CO_B, "phone": f"+{HUMAN}", "user_id": "u_b"}],
             **_b_data())
-        sent, classified = [], []
-
-        async def _classify(body):
-            classified.append(body)
-            return "dob_status"
+        sent = []
 
         dm = {"event": "message", "data": {"message": {
             "id": {"id": "D1", "fromMe": False}, "from": f"{HUMAN}@c.us",
             "body": "dob status", "type": "chat"}}}
         with patch.object(server, "db", db), \
                 patch.object(server, "send_whatsapp_message",
-                             _recording_send(sent)), \
-                patch.object(server, "classify_intent", _classify):
+                             _recording_send(sent)):
             _run(server._process_whatsapp_message(dm))
         # No opt-in for this chat: the one line every non-eligible sender
-        # gets (Levelog Assistant in a DM), and nothing read or classified.
+        # gets (Levelog Assistant in a DM), and nothing read.
         from lib import wa_assistant
         self.assertEqual(sent, [(f"{HUMAN}@c.us", wa_assistant.NOT_FOR_YOU_TEXT)])
-        self.assertEqual(classified, [])
         self.assertNotIn(SECRET, str(sent))
 
     def test_a_contact_whose_company_is_not_its_users_reads_nothing(self):
