@@ -32,8 +32,18 @@ import server  # noqa: E402
 from lib import dot_sync, wa_alerts, wa_brief, wa_gc  # noqa: E402
 from tests.test_whatsapp_gc_alerts import (  # noqa: E402
     CO_A, CO_B, G_GC, NOON, NIGHT, _Ctx, _confirm, _group_sends, _no_ai,
-    _permit, _violation, _world,
+    _permit, _violation, _world as _base_world,
 )
+
+SYNCED = NOON - timedelta(days=30)
+
+
+def _world(**extra):
+    """proj_a has had its first DOT sync long ago, unless a test says not."""
+    extra.setdefault(server.DOT_SYNC_STATE, [
+        {"_id": "proj_a", "company_id": CO_A,
+         "first_synced_at": SYNCED, "synced_at": SYNCED}])
+    return _base_world(**extra)
 
 TODAY = wa_gc.today_et(NOON)
 
@@ -201,6 +211,106 @@ class EachNewKindPostsOnce(unittest.TestCase):
         self.assertIn("DOT permit expires tomorrow", texts[1])
         self.assertIn("DOT permit expired on", texts[2])
         self.assertTrue(all("Source: DOT" in t for t in texts))
+
+
+class DotWaitsForTheFirstSync(unittest.TestCase):
+    """The GC tick runs 4 min after boot, the DOT sync after 8. A DOT
+    baseline taken before the project's first sync would record nothing,
+    and the sync's rows would then post as new."""
+
+    def _oath(self):
+        return {"ticket_number": "T1", "issuing_agency": "DEPT OF TRANSPORTATION",
+                "violation_date": "2026-10-06", "hearing_status": "DEFAULT",
+                "violation_location_borough": "BROOKLYN",
+                "violation_location_block_no": "1523", "violation_location_lot_no": "1"}
+
+    def _db(self, **kw):
+        db = _world(**{server.DOT_SYNC_STATE: [], **kw})
+        p = next(p for p in db.projects.rows if p["_id"] == "proj_a")
+        p.update({"address": "588 Thomas S Boyland St, Brooklyn, NY",
+                  "bbl": "3015230001"})
+        return db
+
+    def _fetch(self, recs, ok=True):
+        async def fetch(dataset, params):
+            if not ok:
+                return None
+            return recs if dataset == dot_sync.OATH_DATASET else []
+        return fetch
+
+    def test_gc_tick_before_first_sync_then_sync_posts_nothing(self):
+        db = self._db()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            r = _run(server._gc_alerts_tick(NOON))                  # boot + 4 min
+            self.assertEqual(r["dot_waiting_sync"], 1)
+            ids = {x["_id"] for x in db[server.WA_LEDGER].rows}
+            self.assertNotIn(wa_alerts.kind_baseline_id("proj_a", "dot_violation"), ids)
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
+            self.assertEqual(len(db.dot_logs.rows), 1)
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=30)))
+        self.assertEqual(_group_sends(c), [])
+        seen = [x for x in db[server.WA_LEDGER].rows if x.get("kind") == "gc_dot_violation"]
+        self.assertEqual([x["status"] for x in seen], ["baseline"])
+
+    def test_after_the_first_sync_a_new_summons_posts(self):
+        db = self._db()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _run(server._gc_alerts_tick(NOON))
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+            later = {**self._oath(), "ticket_number": "T2"}
+            _run(server._dot_sync_tick(now=NOON + timedelta(hours=2),
+                                       fetch=self._fetch([self._oath(), later])))
+            _run(server._gc_alerts_tick(NOON + timedelta(hours=2, minutes=15)))
+        texts = [s["message"] for s in _group_sends(c)]
+        self.assertEqual(len(texts), 1, texts)
+        self.assertIn("#T2", texts[0])
+
+    def test_a_failed_sync_is_not_a_first_sync(self):
+        db = self._db()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([], ok=False)))
+            self.assertEqual(db[server.DOT_SYNC_STATE].rows, [])
+            db.dot_logs.rows.append(_dot("D1"))
+            r = _run(server._gc_alerts_tick(NOON))
+        self.assertEqual((r["dot_waiting_sync"], _group_sends(c)), (1, []))
+
+    def test_first_synced_at_is_kept_on_later_syncs(self):
+        db = self._db()
+        with patch.object(server, "db", db):
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
+            first = db[server.DOT_SYNC_STATE].rows[0]["first_synced_at"]
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
+        row = db[server.DOT_SYNC_STATE].rows[0]
+        self.assertEqual((row["first_synced_at"], row["company_id"]), (first, CO_A))
+        self.assertGreaterEqual(row["synced_at"], first)
+
+    def test_marker_written_before_the_first_sync_is_rebaselined(self):
+        """The prod case: #687 wrote DOT markers before any DOT row existed."""
+        db = self._db()
+        with _Ctx(db=db) as c, _no_ai():
+            _confirm()
+            for k in wa_alerts.DOT_KINDS:
+                db[server.WA_LEDGER].rows.append({
+                    "_id": wa_alerts.kind_baseline_id("proj_a", k),
+                    "kind": "gc_baseline", "project_id": "proj_a",
+                    "company_id": CO_A, "status": "baseline",
+                    "created_at": NOON - timedelta(hours=1)})
+            _run(server._gc_alerts_tick(NOON))          # DOB baseline only
+            _run(server._dot_sync_tick(now=NOON, fetch=self._fetch([self._oath()])))
+            r = _run(server._gc_alerts_tick(NOON + timedelta(minutes=15)))
+            _run(server._gc_alerts_tick(NOON + timedelta(minutes=30)))
+        self.assertEqual(_group_sends(c), [])
+        self.assertEqual(r["kinds_baselined"], len(wa_alerts.DOT_KINDS))
+        marker = next(x for x in db[server.WA_LEDGER].rows if x["_id"]
+                      == wa_alerts.kind_baseline_id("proj_a", "dot_violation"))
+        self.assertGreater(server._as_utc(marker["created_at"]),
+                           server._as_utc(db[server.DOT_SYNC_STATE].rows[0]
+                                          ["first_synced_at"]))
 
 
 class DotPermitStatuses(unittest.TestCase):

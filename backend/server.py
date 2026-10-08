@@ -44621,7 +44621,8 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
     report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
               "kinds_baselined": 0, "skipped_unbound": 0, "no_number": 0,
               "permits_no_expiry": 0,
-              "seen_while_off": 0, "held": 0, "bot_off": 0}
+              "seen_while_off": 0, "held": 0, "bot_off": 0,
+              "dot_waiting_sync": 0}
     today = wa_gc.today_et(now)
     test_ids = {str(x) for x in await test_company_ids()}
     try:
@@ -44673,16 +44674,40 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         # baselines again instead of posting history. violation + permit
         # share the original marker; every later kind has its own, so a kind
         # added later never posts what a project already had.
+        #
+        # The DOT kinds also wait for the project's first complete DOT sync
+        # (DOT_SYNC_STATE): until then they are neither baselined nor posted.
+        # A DOT marker older than that first sync was taken before the rows
+        # existed, so the kind is baselined again and its marker re-dated.
         try:
             marks = {k: await db[WA_LEDGER].find_one(
-                         {"_id": wa_alerts.kind_baseline_id(project_id, k)}, {"_id": 1})
+                         {"_id": wa_alerts.kind_baseline_id(project_id, k)},
+                         {"_id": 1, "created_at": 1})
                      for k in wa_alerts.NEW_KINDS}
             legacy = await db[WA_LEDGER].find_one(
                 {"_id": wa_gc.baseline_id(project_id)}, {"_id": 1})
+            dot_state = await db[DOT_SYNC_STATE].find_one(
+                {"_id": project_id}, {"first_synced_at": 1})
         except Exception as e:
             logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
             continue
-        unbaselined = [k for k in wa_alerts.NEW_KINDS if not marks[k]]
+        first_dot_sync = _as_utc((dot_state or {}).get("first_synced_at"))
+        if not isinstance(first_dot_sync, datetime):
+            first_dot_sync = None
+        rebaseline = set()
+        if first_dot_sync is None:
+            items = [it for it in items if it["kind"] not in wa_alerts.DOT_KINDS]
+            report["dot_waiting_sync"] += 1
+        else:
+            for k in wa_alerts.DOT_KINDS:
+                at = _as_utc((marks.get(k) or {}).get("created_at"))
+                if marks.get(k) and (not isinstance(at, datetime)
+                                     or at < first_dot_sync):
+                    marks[k] = None
+                    rebaseline.add(k)
+        unbaselined = [k for k in wa_alerts.NEW_KINDS if not marks[k]
+                       and (first_dot_sync is not None
+                            or k not in wa_alerts.DOT_KINDS)]
         if not legacy:
             unbaselined = list(wa_alerts.LEGACY_KINDS) + unbaselined
         if unbaselined:
@@ -44701,6 +44726,16 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                     continue
                 if kind in wa_alerts.LEGACY_KINDS:
                     continue      # the shared marker is written below
+                if kind in rebaseline:
+                    try:
+                        await db[WA_LEDGER].update_one(
+                            {"_id": wa_alerts.kind_baseline_id(project_id, kind)},
+                            {"$set": {"created_at": datetime.now(timezone.utc)}})
+                        report["kinds_baselined"] += 1
+                    except Exception as e:
+                        logger.warning(f"[wa-gc] marker re-date failed: "
+                                       f"{type(e).__name__}")
+                    continue
                 if await _gc_ledger_insert(
                         wa_alerts.kind_baseline_id(project_id, kind),
                         kind="gc_baseline", project_id=project_id,
@@ -44794,6 +44829,12 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
 # which name to fix.
 
 DOT_SYNC_HOURS = 2
+# One row per project: {_id: project_id, company_id, first_synced_at,
+# synced_at}. first_synced_at is the end of the project's first DOT pass in
+# which every request answered and every match was stored. The GC alerts
+# tick leaves the DOT kinds alone until then: a baseline taken before the
+# first pass has nothing to record, and the pass's rows would post as new.
+DOT_SYNC_STATE = "dot_sync_state"
 
 
 async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
@@ -44868,11 +44909,13 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
             continue
         report["projects"] += 1
         project_id, company_id = str(p.get("_id")), str(p.get("company_id"))
+        clean = True
         for q in reqs:
             report["requests"] += 1
             recs = await fetch(q["dataset"], q["params"])
             if recs is None:
                 report["failed"] += 1
+                clean = False
                 continue
             if recs and q["dataset"] not in named:
                 named.add(q["dataset"])
@@ -44901,9 +44944,21 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
                     res = await _dot_store(project_id, company_id, log, how, now)
                 except Exception as e:
                     logger.warning(f"[dot-sync] store failed: {type(e).__name__}")
+                    clean = False
                     continue
                 if res in ("new", "changed"):
                     report[res] += 1
+        if clean:
+            try:
+                await db[DOT_SYNC_STATE].update_one(
+                    {"_id": project_id},
+                    {"$set": {"company_id": company_id,
+                              "synced_at": datetime.now(timezone.utc)},
+                     "$setOnInsert": {
+                         "first_synced_at": datetime.now(timezone.utc)}},
+                    upsert=True)
+            except Exception as e:
+                logger.warning(f"[dot-sync] state write failed: {type(e).__name__}")
     logger.info(f"[dot-sync] {report}")
     return report
 
