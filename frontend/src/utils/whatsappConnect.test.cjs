@@ -169,10 +169,23 @@ ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(card
    'a group not linked yet has a Link button');
 {
   const brand = read('src/components/HeaderBrand.js');
-  ok(/export const BRAND_LABEL = 'Levelog';/.test(brand) && /\{BRAND_LABEL\}/.test(brand),
-     'header says Levelog');
-  ok(!/ellipsizeMode|maxWidth: 280|company_name|gc_business_name/.test(brand),
-     'header is not truncated and no longer shows the company name');
+  const B = loadEsm('src/utils/brandLabel.js');
+  ok(B.brandLabel({ gc_business_name: 'BLUEVIEW CONSTRUCTION', company_name: 'x' })
+     === 'BLUEVIEW CONSTRUCTION', 'header: the company (GC) name');
+  ok(B.brandLabel({ company_name: 'Acme' }) === 'Acme', 'company_name when no GC name');
+  ok(B.brandLabel({ company_name: '  ' }) === 'Levelog' && B.brandLabel(null) === 'Levelog',
+     '"Levelog" only when the company name is empty');
+  ok(B.brandSizing('ACME').fontSize === 27, 'a short name keeps the full size');
+  const long = B.brandSizing('BLUEVIEW CONSTRUCTION');
+  ok(long.fontSize < 27 && long.fontSize >= 14, 'a long name starts smaller');
+  ok(B.brandSizing('X'.repeat(80)).fontSize === 14, 'never below 14');
+  ok(Math.abs(long.fontSize * long.minimumFontScale - 14) < 0.01,
+     'shrink-to-fit stops at 14pt');
+  ok(/numberOfLines=\{1\}/.test(brand) && /adjustsFontSizeToFit/.test(brand)
+     && /ellipsizeMode="tail"/.test(brand) && /minimumFontScale=\{minimumFontScale\}/.test(brand),
+     'one line, shrink to fit, ellipsis only past the minimum');
+  ok(/brandLabel\(user\)/.test(brand) && !/maxWidth: 280/.test(brand),
+     'header uses the company name; the fixed 280px cap is gone');
 }
 ok(!/whatsappAPI|Connect WhatsApp|waMe/.test(read('app/settings.jsx')), 'nothing in Settings');
 ok(/whatsappAPI\.connectLink\(\)/.test(cardSrc) && /connectUrl: link && link\.url/.test(cardSrc),

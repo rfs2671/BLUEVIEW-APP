@@ -1,6 +1,8 @@
 import React, { useEffect } from 'react';
-import { Text, Platform } from 'react-native';
+import { Text, Platform, useWindowDimensions } from 'react-native';
+import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { brandLabel, brandSizing } from '../utils/brandLabel';
 
 /* Load Montserrat once from Google Fonts on web */
 let fontInjected = false;
@@ -14,31 +16,36 @@ function injectMontserrat() {
   document.head.appendChild(link);
 }
 
-export const BRAND_LABEL = 'Levelog';
-
 /**
- * The app header wordmark: "Levelog", in a clean geometric sans-serif.
+ * The logged-in user's company (GC) name as the header wordmark, in a clean
+ * geometric sans-serif; "Levelog" only when the company has no name.
  *
- * It used to show the company's name, which on a phone was cut to
- * "BLUEVIE…" (a 280px cap with an ellipsis). The product name is short
- * enough to fit every header, so nothing is cut: one line, and on a very
- * narrow screen the text shrinks instead of being truncated.
+ * One line, never wrapped. A long name starts smaller and shrinks to fit
+ * (not below 14pt); only a name too long even then ends in "…"
+ * (utils/brandLabel.js).
  */
+const BRAND_SIDE_ROOM = 150;
+
 export default function HeaderBrand({ style }) {
   useEffect(() => { injectMontserrat(); }, []);
+  const { user } = useAuth();
   const { colors } = useTheme();
+  const { width } = useWindowDimensions();
+  const label = brandLabel(user);
+  const { fontSize, letterSpacing, minimumFontScale } = brandSizing(label);
 
   return (
     <Text
       numberOfLines={1}
+      ellipsizeMode="tail"
       adjustsFontSizeToFit
-      minimumFontScale={0.6}
+      minimumFontScale={minimumFontScale}
       accessibilityRole="header"
       style={[
         {
-          fontSize: 27,
+          fontSize,
           fontWeight: '300',
-          letterSpacing: 6,
+          letterSpacing,
           color: colors.text.primary,
           fontFamily: Platform.select({
             web: 'Montserrat, "Gotham", "Futura", "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif',
@@ -47,12 +54,14 @@ export default function HeaderBrand({ style }) {
             default: 'sans-serif',
           }),
           textTransform: 'uppercase',
-          flexShrink: 0,
+          // The headers' rows do not shrink, so the room is set here: the
+          // screen less the back button, padding and a right-side control.
+          maxWidth: Math.max(160, width - BRAND_SIDE_ROOM),
         },
         style,
       ]}
     >
-      {BRAND_LABEL}
+      {label}
     </Text>
   );
 }
