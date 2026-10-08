@@ -317,16 +317,15 @@ class TheAgentRunsOnTheBiggerModel(unittest.TestCase):
     def test_the_classifiers_stay_on_mini(self):
         """They emit one label from a fixed set or fill a fixed schema. None
         of them reasons, and they run on traffic the agent never sees."""
-        for fn in (server.classify_intent, server._detect_material_request,
+        for fn in (server._detect_material_request,
                    server._parse_plan_query):
             with self.subTest(fn=fn.__name__):
                 self.assertIn('"model": "gpt-4o-mini"', inspect.getsource(fn))
 
     def test_the_agent_names_its_model_once_in_a_constant(self):
         """NOT "the only gpt-4o call in the file" — that was the first draft
-        and it was simply false. _handle_material_receipt and the scheduled
-        group summary were already on gpt-4o before this change and are outside
-        this PR's scope. What matters here is that the agent's model is named
+        and it was simply false. The scheduled group summary was already on
+        gpt-4o before this change and is outside this PR's scope. What matters here is that the agent's model is named
         once, in a constant, so it cannot drift between the two places the
         agent is configured."""
         self.assertEqual(SRC.count('AGENT_MODEL = "gpt-4o"'), 1)

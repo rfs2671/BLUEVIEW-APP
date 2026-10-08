@@ -231,12 +231,7 @@ class NoDirectMessageWithoutOptIn(unittest.TestCase):
 class StartAndStop(unittest.TestCase):
 
     def _process(self, c, phone, body, msg_id="D1"):
-        with patch.object(server, "classify_intent", self._no_classify):
-            _run(server._process_whatsapp_message(_dm_payload(phone, body, msg_id)))
-
-    @staticmethod
-    async def _no_classify(body):
-        raise AssertionError("START/STOP must not reach intent classification")
+        _run(server._process_whatsapp_message(_dm_payload(phone, body, msg_id)))
 
     def test_start_from_an_admin_opts_in_and_introduces(self):
         with _Ctx() as c:
