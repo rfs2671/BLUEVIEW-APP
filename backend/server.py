@@ -43529,9 +43529,12 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
         # A group with no known name cannot be judged by its name, so it is
         # never the auto-pick (the admin can still choose it in the app).
         await _ensure_group_names(rows)
+        # A group whose bot is switched off ("Answer in this group") is not
+        # offered either: alerts would never post there.
         candidates = [g for g in rows
                       if str(g.get("wa_group_id")) not in settings["gc_declined"]
-                      and wa_groups.is_real_name(g.get("group_name"))]
+                      and wa_groups.is_real_name(g.get("group_name"))
+                      and _effective_bot_config(g.get("bot_config"))["bot_enabled"]]
         pick = wa_gc.pick_gc_group(candidates)
         if not pick:
             report["no_pick"] += 1
@@ -43738,7 +43741,7 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
               "permits_no_expiry": 0, "skipped_unbound": 0,
-              "seen_while_off": 0, "held": 0}
+              "seen_while_off": 0, "held": 0, "bot_off": 0}
     today = wa_gc.today_et(now)
     test_ids = {str(x) for x in await test_company_ids()}
     try:
@@ -43757,10 +43760,18 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         settings = await _whatsapp_project_settings(project_id)
         group_id = settings.get("gc_group_id")
         project = await _bot_project_scope(company_id, project_id)
-        if (not settings.get("gc_group_confirmed") or not project
-                or not await _gc_group_bound_to(group_id, company_id, project_id)):
+        binding = (await _gc_group_bound_to(group_id, company_id, project_id)
+                   if settings.get("gc_group_confirmed") and project else None)
+        if not binding:
             report["skipped_unbound"] += 1
             continue
+        # The GC group's own master switch. Off means Levelog Assistant is
+        # silent in that group — DOB alerts included. Items found meanwhile
+        # are recorded as seen (below), never posted later as a backlog.
+        bot_on = _effective_bot_config(
+            (binding.get("group") or {}).get("bot_config"))["bot_enabled"]
+        if not bot_on:
+            report["bot_off"] += 1
         report["projects"] += 1
         project_name = wa_groups.project_label(project)
         try:
@@ -43803,34 +43814,39 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                 report["baselined"] += 1
             continue
 
-        # The project's send window. Outside it nothing is posted and nothing
-        # is marked: the first run inside it posts what waited.
-        if not wa_gc.in_send_window(now, settings.get("send_window")):
-            report["held"] += 1
-            continue
-
         todo = []
         for v in items["violations"]:
             todo.append(("violation", v["raw_dob_id"], v, None,
-                         settings.get("violation_alerts")))
+                         bot_on and settings.get("violation_alerts")))
         for p, exp in items["permits"]:
             t = wa_gc.permit_threshold_due(exp, today)
             if t is not None:
                 todo.append(("permit", f"{p['raw_dob_id']}:{t}", p, exp,
-                             settings.get("permit_reminders")))
+                             bot_on and settings.get("permit_reminders")))
+
+        # Off — the group's bot, or this kind of alert — is recorded as seen
+        # NOW, whatever the send window says: an item found while it was off
+        # must never post later as a backlog, even if it is switched back on
+        # before the window opens.
+        for kind, item, rec, exp, enabled in todo:
+            if not enabled and await _gc_ledger_claim(
+                    wa_gc.ledger_id(project_id, kind, item), kind=f"gc_{kind}",
+                    project_id=project_id, company_id=company_id,
+                    status="seen_while_off"):
+                report["seen_while_off"] += 1
+        todo = [t for t in todo if t[4]]
+
+        # The project's send window. Outside it nothing is posted and nothing
+        # (still on) is marked: the first run inside it posts what waited.
+        if not wa_gc.in_send_window(now, settings.get("send_window")):
+            report["held"] += 1
+            continue
+
         posts = 0
         for kind, item, rec, exp, enabled in todo:
             if posts >= GC_MAX_POSTS_PER_PROJECT_RUN:
                 break   # the rest go on the next run
             lid = wa_gc.ledger_id(project_id, kind, item)
-            if not enabled:
-                # Switched off: seen, never posted later as a backlog.
-                if await _gc_ledger_claim(lid, kind=f"gc_{kind}",
-                                          project_id=project_id,
-                                          company_id=company_id,
-                                          status="seen_while_off"):
-                    report["seen_while_off"] += 1
-                continue
             if not await _gc_ledger_claim(lid, kind=f"gc_{kind}",
                                           project_id=project_id,
                                           company_id=company_id,
@@ -43841,9 +43857,12 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             else:
                 text = wa_gc.permit_message(project_name=project_name,
                                             permit=rec, expires=exp, today=today)
-            # Re-proven immediately before the send: still this project's group.
+            # Re-proven immediately before the send: still this project's
+            # group, and its bot still switched on.
             sent = None
-            if await _gc_group_bound_to(group_id, company_id, project_id):
+            again = await _gc_group_bound_to(group_id, company_id, project_id)
+            if again and _effective_bot_config(
+                    (again.get("group") or {}).get("bot_config"))["bot_enabled"]:
                 sent = await send_whatsapp_message(group_id, text)
             posts += 1
             if sent is None:
@@ -55050,8 +55069,26 @@ async def whatsapp_update_group_config(
 
 @api_router.delete("/whatsapp/groups/{group_doc_id}")
 async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_current_user)):
-    """Unlink (deactivate) a WhatsApp group. Same roles as linking one."""
-    company_id = _require_link_role(current_user)
+    """Unlink (deactivate) a WhatsApp group. Company admins, and PMs on their
+    own projects. Never a CP or a superintendent ("owner" is retired)."""
+    # An admin by the shared rank test (which also admits the platform
+    # operator by flag while the retired "owner" role is migrated), or a PM.
+    role = wa_dm.norm_role(current_user.get("role"))
+    is_admin = is_company_admin(current_user)
+    if not is_admin and role != ROLE_PM:
+        raise HTTPException(status_code=403,
+                            detail="Only an admin or the project's PM can unlink a group.")
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=403, detail="This account is not linked to a company yet.")
+    row = await db.whatsapp_groups.find_one(
+        {"_id": to_query_id(group_doc_id), "company_id": company_id})
+    if not row:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if not is_admin and str(row.get("project_id")) not in {
+            str(p) for p in current_user.get("assigned_projects") or []}:
+        raise HTTPException(status_code=403,
+                            detail="Only an admin or the project's PM can unlink a group.")
     result = await db.whatsapp_groups.update_one(
         {"_id": to_query_id(group_doc_id), "company_id": company_id},
         {"$set": {"active": False, "unlinked_at": datetime.now(timezone.utc)}},
@@ -55521,7 +55558,7 @@ async def whatsapp_me(current_user=Depends(get_current_user)):
 
 @api_router.post("/whatsapp/connect-link")
 async def whatsapp_connect_link(current_user=Depends(get_current_user)):
-    """A fresh "Turn on alerts" link: wa.me/<bot>?text=START%20<code>.
+    """A fresh "Turn on Levelog Assistant" link: wa.me/<bot>?text=START%20<code>.
 
     The code is random, stored with this user, good for ONE START and for
     15 minutes. Earlier codes are NOT withdrawn: the app fetches a new link

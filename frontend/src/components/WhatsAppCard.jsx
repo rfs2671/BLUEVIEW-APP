@@ -36,7 +36,7 @@ const WHATSAPP_GREEN = '#25D366';
  * What it SAYS comes from utils/whatsappConnect.js (pure, tested). This file
  * only fetches and draws.
  *
- * LIVE REFRESH. Turning alerts on happens in another app (WhatsApp). While
+ * LIVE REFRESH. Turning on Levelog Assistant happens in another app (WhatsApp). While
  * the screen is open and a START may be on its way — or there is no reading
  * yet — GET /whatsapp/me is read every few seconds, and again on focus and
  * when the app returns to the foreground, so "Off" flips to "On" in place.
