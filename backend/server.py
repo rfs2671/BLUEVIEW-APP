@@ -38083,6 +38083,72 @@ SIGNATURE_IMAGE_SITES = (
 SIGNATURE_DEFERRED_SUFFIX = "_deferred"
 
 
+def _photo_thumb_paths(row: dict) -> List[tuple]:
+    """(path, value) for every activity photo's inline `thumb_base64`.
+
+    Keyed on the PATH, like the signature marks, so the device asks for photo
+    2 of activity 0 by the address it drew it from. Only `data.activities`
+    carries photos on a submitted record (`get_logbook_activity_photo` is the
+    one production reader and indexes exactly that).
+    """
+    out = []
+    data = (row or {}).get("data")
+    acts = data.get("activities") if isinstance(data, dict) else None
+    if not isinstance(acts, list):
+        return out
+    for ai, act in enumerate(acts):
+        photos = act.get("photos") if isinstance(act, dict) else None
+        if not isinstance(photos, list):
+            continue
+        for pi, photo in enumerate(photos):
+            if isinstance(photo, dict) and photo.get("thumb_base64"):
+                out.append((f"data.activities.{ai}.photos.{pi}.thumb_base64",
+                            photo["thumb_base64"]))
+    return out
+
+
+def _defer_photo_thumbs(row: dict) -> dict:
+    """The record with each photo's inline thumbnail replaced by a flag.
+
+    WHY IT CAN LEAVE. `thumb_base64` is the ~400px copy kept inline after
+    finalize (never removed from the STORED record -- this is a copy). On the
+    device it was 555 KB of the heaviest day's download, for photos the kiosk
+    draws only when that sheet is open. Every production photo carrying it also
+    has an R2 thumbnail (census 2026-10-08: 205 of 205).
+
+    WHY A FLAG AND NOT SILENCE, though silence would not lie here the way it
+    does for a signature: the flag is what tells the device a thumbnail is
+    OWED, so it fetches it with the record's signature marks and stores it on
+    disk for offline -- rather than drawing the served URL and nothing when the
+    signal goes.
+
+    COPY-ON-WRITE, like `_defer_signature_images`: only the dicts and lists on
+    a thumbnail's own path are rebuilt; a record with none is returned as is.
+    """
+    paths = _photo_thumb_paths(row)
+    if not paths:
+        return row
+    out = dict(row)
+    data = dict(row.get("data") or {})
+    out["data"] = data
+    acts = list(data.get("activities") or [])
+    data["activities"] = acts
+    copied_acts = set()
+    for path, _value in paths:
+        _d, _a, ai, _p, pi, field = path.split(".")
+        ai, pi = int(ai), int(pi)
+        if ai not in copied_acts:
+            act = dict(acts[ai])
+            act["photos"] = list(act.get("photos") or [])
+            acts[ai] = act
+            copied_acts.add(ai)
+        photo = dict(acts[ai]["photos"][pi])
+        photo.pop(field, None)
+        photo[field + SIGNATURE_DEFERRED_SUFFIX] = True
+        acts[ai]["photos"][pi] = photo
+    return out
+
+
 def _is_signature_image(value) -> bool:
     """Whether this stored value carries IMAGE BYTES worth a second request.
 
@@ -38284,6 +38350,13 @@ async def get_submitted_logbooks(
         description="One date key. The day-detail read: whole documents for "
                     "that date and nothing else.",
     ),
+    photos: Optional[str] = Query(
+        None, max_length=16,
+        description="`deferred`, with view=text: each photo's inline "
+                    "`thumb_base64` is replaced by `thumb_base64_deferred: "
+                    "true`, and the thumbnails are fetched per record from "
+                    "/logbooks/{id}/signature-images?include=photos.",
+    ),
     current_user = Depends(get_current_user),
     _proj = Depends(require_project_access),
 ):
@@ -38367,6 +38440,11 @@ async def get_submitted_logbooks(
         view = None
     if not isinstance(date, str):
         date = None
+    # OPT-IN, LIKE `view=text` ITSELF. The app build phones run today already
+    # asks for view=text and knows nothing about a deferred thumbnail: handed
+    # one, its photo reader would fall through to the served URL and draw a
+    # blank tile offline. Only a client that sends this gets the lighter day.
+    defer_photos = isinstance(photos, str) and photos == "deferred"
     if view is not None and view not in SUBMITTED_LOGBOOK_VIEWS:
         raise HTTPException(
             status_code=400,
@@ -38511,6 +38589,8 @@ async def get_submitted_logbooks(
             # from reaching into it.
             if text_only:
                 _row = _defer_signature_images(_row)
+                if defer_photos:
+                    _row = _defer_photo_thumbs(_row)
             _row["cache_version"] = _logbook_cache_version(_head)
             # WHAT THE ROW HAS TO SAY, AND WHY EACH PART IS SEPARATE.
             #
@@ -38579,6 +38659,7 @@ async def get_submitted_logbooks(
 @api_router.get("/logbooks/{logbook_id}/signature-images")
 async def get_logbook_signature_images(
     logbook_id: str,
+    include: Optional[str] = Query(None, max_length=16),
     current_user = Depends(get_current_user),
 ):
     """The signature marks `view=text` left out of one record.
@@ -38646,6 +38727,12 @@ async def get_logbook_signature_images(
         # back for images it already holds. One key in, one key out.
         "version": serialize_id({"v": _submitted_stamp(logbook)}).get("v"),
         "signatures": {path: value for path, value in found},
+        # THE PHOTO THUMBNAILS `photos=deferred` LEFT OUT, on request only.
+        # Opt-in so the app build phones run today, which never asks, gets the
+        # body it already reads. Same path keys, same version stamp: a device
+        # stores both maps as one record's images.
+        **({"photos": {path: value for path, value in _photo_thumb_paths(logbook)}}
+           if isinstance(include, str) and include == "photos" else {}),
         # THE COUNT OF WHAT IS IN THIS BODY. A caller that asked for a sheet
         # whose marks are all unsigned gets `{}` and `0` -- which is an answer,
         # not a failure, and is how the screen tells "nothing to fetch" from

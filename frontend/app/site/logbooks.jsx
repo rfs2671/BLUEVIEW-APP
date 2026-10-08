@@ -37,6 +37,7 @@ import {
   // itself would tell a DOB inspector that every worker who signed at the
   // kiosk had not signed, which is why that census is a gate.
   signatureMark, SIG_FIELDS, fillDaySignatures, dayHasDeferredSignatures,
+  dayHasDeferredImages,
 } from '../../src/utils/siteLogbookHistory';
 import { claimForeground, awaitQuiet } from '../../src/utils/syncPriority';
 import { isOfflineError } from '../../src/utils/offlineState';
@@ -781,7 +782,10 @@ export default function SiteLogbooksViewer() {
     const detail = dayLogs[date];
     if (!Array.isArray(detail)) return;
     const onScreen = detail.filter((l) => l.log_type === effectiveTab);
-    if (!dayHasDeferredSignatures(onScreen)) return;
+    // SIGNATURE MARKS OR PHOTO THUMBNAILS: the daily-jobsite tab owes the
+    // second kind and none of the first, and its photos are what the lighter
+    // day download left out.
+    if (!dayHasDeferredImages(onScreen)) return;
     // ONE FILL AT A TIME for this (date, tab). Without the guard the state
     // update this effect causes re-runs it, which on a 27-signature sheet is
     // the request storm the whole change exists to avoid.

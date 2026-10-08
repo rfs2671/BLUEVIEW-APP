@@ -785,7 +785,7 @@ SECTIONS.push(async () => {
   // comment that MENTIONED the thing they were looking for.
   const src = raw
     .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+    .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
   ok(src.includes('signatureMark'), 'the screen reads marks through signatureMark');
   ok(src.includes('SIG_FIELDS'), 'and takes the key precedence from the module');
@@ -837,6 +837,99 @@ SECTIONS.push(async () => {
 // failed` and EXITED 0. A suite that passes by running none of itself is the
 // instrument this repo keeps finding; the floor below is what makes that
 // outcome a failure instead of a green line.
+section('I. photo thumbnails leave the day and ride the record read');
+SECTIONS.push(async () => {
+  // NOT A SKIP-GUARD. The sections above skip when the protocol is absent so
+  // they can run against an older tree; this one is the change itself, and a
+  // missing helper is a failure, not a reason to report green.
+  const h0 = hist(makeDevice({}));
+  ok(typeof h0.deferredPhotoPaths === 'function'
+     && typeof h0.recordImagesPath === 'function',
+     'the photo half of the protocol exists');
+  if (typeof h0.deferredPhotoPaths !== 'function') return;
+
+  const THUMB = `data:image/jpeg;base64,${'T'.repeat(2048)}`;
+  const P0 = 'data.activities.0.photos.0.thumb_base64';
+  const P2 = 'data.activities.1.photos.0.thumb_base64';
+  // A daily jobsite log as `view=text&photos=deferred` serves it: two inline
+  // thumbnails held back, one photo that never had one (an original in R2).
+  const dailyPhotos = () => ({
+    id: 'lb_djp', _id: 'lb_djp', log_type: 'daily_jobsite',
+    date: DAY, status: 'submitted', updated_at: STAMP, cache_version: STAMP,
+    data: { activities: [
+      { photos: [{ thumb_r2_key: 'k0', thumb_base64_deferred: true },
+                 { original_r2_key: 'o1' }] },
+      { photos: [{ thumb_r2_key: 'k2', thumb_base64_deferred: true }] },
+    ] },
+  });
+
+  ok(h0.dayDetailPath(PID, DAY).includes('photos=deferred'),
+     'the day read opts in to held-back thumbnails');
+  eq(h0.recordImagesPath('lb_djp'),
+     '/api/logbooks/lb_djp/signature-images?include=photos',
+     'and the record read asks for them');
+  eq(h0.signatureImagesPath('lb_djp'), '/api/logbooks/lb_djp/signature-images',
+     'the signature-only path is unchanged');
+
+  eq(h0.deferredPhotoPaths(dailyPhotos()), [P0, P2],
+     'every held-back thumbnail is owed, by its path');
+  eq(h0.deferredSignaturePaths(dailyPhotos()), [],
+     'none of it is a signature');
+  eq(h0.dayHasDeferredImages([dailyPhotos()]), true,
+     'the day owes images, so the screen fills it');
+  eq(h0.dayHasDeferredSignatures([dailyPhotos()]), false,
+     'though it owes no signature -- which is why the screen asks the wider question');
+  eq(h0.deferredImagePaths(dailyText()), [], 'a log with nothing held back owes nothing');
+
+  const input = dailyPhotos();
+  const out = h0.applySignatureImages(input, { [P0]: THUMB, [P2]: THUMB });
+  eq(out.data.activities[0].photos[0].thumb_base64, THUMB, 'a thumbnail lands at its path');
+  eq('thumb_base64_deferred' in out.data.activities[0].photos[0], false,
+     'and its flag is cleared');
+  eq(out.data.activities[0].photos[1], { original_r2_key: 'o1' },
+     'a photo that owed nothing is untouched');
+  eq(h0.deferredImagePaths(out), [], 'nothing is owed afterwards');
+  eq(input.data.activities[0].photos[0].thumb_base64_deferred, true,
+     'the record handed in is not mutated');
+  const sneak = h0.applySignatureImages(dailyPhotos(),
+    { 'data.activities.0.photos.1.thumb_base64': THUMB });
+  eq(sneak.data.activities[0].photos[1].thumb_base64, undefined,
+     'a thumbnail nobody owed is not written');
+
+  const recordBody = {
+    logbook_id: 'lb_djp', version: STAMP, signatures: {},
+    photos: { [P0]: THUMB, [P2]: THUMB }, count: 0,
+  };
+  {
+    const d = makeDevice({ route: (u) => (u.includes('/signature-images') ? recordBody : null) });
+    const r = await hist(d).ensureRecordSignatures(PID, 'lb_djp', STAMP);
+    eq(r.stored, true, 'the thumbnails are written to disk with the record');
+    eq(Object.keys(r.images || {}).sort(), [P0, P2], 'both arrived, merged with the (empty) marks');
+    ok(d.requests.length === 1 && d.requests[0].includes('include=photos'),
+       'one request, asking for photos');
+    const again = await hist(d).ensureRecordSignatures(PID, 'lb_djp', STAMP, { offline: true });
+    eq(Object.keys(again.images || {}).sort(), [P0, P2],
+       'and they are there OFFLINE afterwards -- the point of storing them');
+    eq(d.requests.length, 1, 'with no second request');
+  }
+  {
+    const d = makeDevice({ route: (u) => (u.includes('/signature-images') ? recordBody : null) });
+    const r = await hist(d).fillDaySignatures(PID, [dailyPhotos()]);
+    eq(r.owed, 1, 'the fill counts the photo-owing record');
+    eq(r.logs[0].data.activities[1].photos[0].thumb_base64, THUMB,
+       'and puts its thumbnails on the sheet');
+  }
+  {
+    // A SERVER THAT PREDATES `include` serves the marks alone. Nothing lands,
+    // nothing is invented, and the photo still draws from its served URL.
+    const d = makeDevice({ route: (u) => (u.includes('/signature-images')
+      ? { logbook_id: 'lb_djp', version: STAMP, signatures: {}, count: 0 } : null) });
+    const r = await hist(d).fillDaySignatures(PID, [dailyPhotos()]);
+    eq(h0.deferredPhotoPaths(r.logs[0]).length, 2,
+       'an old server leaves the thumbnails owed rather than blanked');
+  }
+});
+
 (async () => {
   for (const run of SECTIONS) {
     // A SECTION THAT THROWS IS A FAILURE, NOT A SILENT STOP.

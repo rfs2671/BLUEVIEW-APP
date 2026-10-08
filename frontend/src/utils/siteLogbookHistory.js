@@ -12,11 +12,13 @@ import { readManifestList, writeManifestList } from './siteManifestStore';
 import {
   SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
   dayHasDeferredSignatures, applySignatureImages,
+  deferredPhotoPaths, deferredImagePaths, dayHasDeferredImages,
 } from './signatureDeferral';
 
 export {
   SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
   dayHasDeferredSignatures, applySignatureImages,
+  deferredPhotoPaths, deferredImagePaths, dayHasDeferredImages,
 };
 
 /**
@@ -560,11 +562,22 @@ const indexPagePath = (projectId, limit, before) =>
  * `ensureDayDetail`, which reports which body it got rather than assuming.
  */
 export const dayDetailPath = (projectId, date) =>
-  `/api/logbooks/project/${projectId}/submitted?date=${encodeURIComponent(date)}&view=text`;
+  `/api/logbooks/project/${projectId}/submitted?date=${encodeURIComponent(date)}&view=text&photos=deferred`;
 
 /** One record's signature marks. The second half of the read above. */
 export const signatureImagesPath = (logId) =>
   `/api/logbooks/${encodeURIComponent(logId)}/signature-images`;
+
+/**
+ * The same read, asking for the record's photo thumbnails too.
+ *
+ * `photos=deferred` on the day read holds each photo's inline ~400px copy back
+ * (555 KB of the heaviest day was those copies); this is where they come
+ * from, keyed by path beside the signature marks and stored on disk with them
+ * so they still draw offline. A server that predates `include` ignores it and
+ * serves the marks alone -- and such a server never deferred a thumbnail.
+ */
+export const recordImagesPath = (logId) => `${signatureImagesPath(logId)}?include=photos`;
 
 /**
  * Walk every page of submitted history, newest date first.
@@ -1023,15 +1036,21 @@ export async function ensureRecordSignatures(projectId, logId, version, opts = {
   let body;
   try {
     const res = await apiClient.get(
-      signatureImagesPath(logId),
+      recordImagesPath(logId),
       { timeout: HISTORY_PAGE_TIMEOUT_MS },
     );
     body = res && res.data;
   } catch (error) {
     return { images: null, fetched: false, stored: false, version: null, reason: 'unreachable', error };
   }
-  const images = (body && body.signatures && typeof body.signatures === 'object')
+  // ONE MAP OF THIS RECORD'S IMAGES: signature marks and, when the server
+  // sent them, photo thumbnails. Disjoint path keys, one version stamp, so
+  // they are stored and applied as one.
+  const sigs = (body && body.signatures && typeof body.signatures === 'object')
     ? body.signatures : null;
+  const photos = (body && body.photos && typeof body.photos === 'object')
+    ? body.photos : null;
+  const images = (sigs || photos) ? { ...(sigs || {}), ...(photos || {}) } : null;
   if (!images) {
     // A SERVER THAT DOES NOT HAVE THIS ENDPOINT, or one that answered with
     // something else. Reported, never invented: the flags stay and the sheet
@@ -1067,7 +1086,7 @@ export async function ensureRecordSignatures(projectId, logId, version, opts = {
  */
 export async function fillDaySignatures(projectId, logs, opts = {}) {
   const list = Array.isArray(logs) ? logs.slice() : [];
-  const owed = list.filter((l) => deferredSignaturePaths(l).length > 0).length;
+  const owed = list.filter((l) => deferredImagePaths(l).length > 0).length;
   let out = list;
   let fetched = 0;
   let failed = 0;
@@ -1077,7 +1096,7 @@ export async function fillDaySignatures(projectId, logs, opts = {}) {
   }
   for (let i = 0; i < out.length; i += 1) {
     const log = out[i];
-    if (deferredSignaturePaths(log).length === 0) continue;
+    if (deferredImagePaths(log).length === 0) continue;
     if (opts.shouldStop) {
       let stop = false;
       try { stop = opts.shouldStop() === true; } catch (_e) { stop = false; }
@@ -1312,7 +1331,7 @@ export async function backfillDayDetails(projectId, rows, opts = {}) {
       if (!id) continue;
       const version = pdfVersion(log);
       if (onDiskNames.has(recordSignatureName(projectId, id, version))) continue;
-      if (deferredSignaturePaths(log).length === 0) {
+      if (deferredImagePaths(log).length === 0) {
         // NOTHING IS OWED, AND IT IS WRITTEN DOWN. No request; see the header.
         if (await writeRecordSignatures(projectId, id, version, {})) {
           inkHeld += 1;
@@ -1385,6 +1404,10 @@ export default {
   dayHasDeferredSignatures,
   applySignatureImages,
   signatureImagesPath,
+  recordImagesPath,
+  deferredPhotoPaths,
+  deferredImagePaths,
+  dayHasDeferredImages,
   recordSignatureName,
   readRecordSignatures,
   writeRecordSignatures,
