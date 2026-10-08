@@ -951,12 +951,24 @@ export const adminUsersAPI = {
   // scopes every caller to his own company regardless; this only opts out of
   // the ADMIN_MANAGED_ROLES row filter, and only for a caller that asks.
   //
-  // WHO ASKS, AND WHY IT IS NOT THE DEFAULT. User Management is a MANAGEMENT
-  // surface and keeps the ruling: a company admin does not administer other
-  // admins. app/admin/superintendent.jsx is a PICKER -- it links the
-  // construction superintendent of a job, who may himself be an admin -- so it
-  // opts in. Defaulting this to true would quietly undo the ruling for the two
-  // callers that want it.
+  // WHY IT IS NOT THE DEFAULT. User Management is a MANAGEMENT surface and
+  // keeps the ruling: a company admin does not administer other admins.
+  // Defaulting this to true would quietly undo that ruling for every caller.
+  //
+  // NOBODY OPTS IN ANY MORE, AND THE SENTENCE ABOVE USED TO NAME WHO DID.
+  // app/admin/superintendent.jsx was the one caller that passed
+  // `includeAllRoles: true` -- it was a PICKER and it linked the construction
+  // superintendent of a job, who may himself be an admin, so the role filter
+  // would have hidden the one man it existed to link. That screen was deleted
+  // on the operator's ruling of 2026-10-08, so the two live callers
+  // (admin/users.jsx, admin/checklists/index.jsx) both take the filtered list
+  // and the option has no caller.
+  //
+  // THE OPTION STAYS. `include_all_roles` is the server's parameter, not this
+  // wrapper's invention, and the next surface that has to show an admin among
+  // the people it lists needs it -- promoting a CP into a superintendent is
+  // exactly that shape. Dropping it here would hide a server capability behind
+  // a client that no longer mentions it.
   getAll: async ({ includeAllRoles = false } = {}) => {
     const response = await apiClient.get(
       `/api/admin/users${includeAllRoles ? '?include_all_roles=true' : ''}`);
@@ -1574,6 +1586,21 @@ export const permitRenewalAPI = {
   },
 };
 
+// ── NO SCREEN CALLS THIS ANY MORE, AND IT IS KEPT PENDING A RULING ──────────
+//
+// app/admin/superintendent.jsx was the only caller of `create`, `update`,
+// `delete` and `getAll` here, and it was deleted on the operator's ruling of
+// 2026-10-08 ("OUTSIDE SUPERS: DELETE THE TAB"). Registration is now made only
+// from User Management, which uses `adminUsersAPI.setCsRegistrations` --
+// a different route onto the SAME `_register_cs_on_project`.
+//
+// THE WRAPPER IS NOT REMOVED AHEAD OF THE ROUTES IT WRAPS. The ruling asked
+// whether POST /admin/cs-registrations itself should go or stay for User
+// Management's use, and that is the operator's call, not this file's: deleting
+// the client while the server route lives would leave a statutory write
+// reachable with no client that names it, which is harder to find than an
+// unused export. `getForProject` (GET /api/cs/project/{id}) is a separate
+// read and is in the same position.
 export const csRegistrationAPI = {
   getAll: async (projectId = null) => {
     const params = projectId ? { project_id: projectId } : {};

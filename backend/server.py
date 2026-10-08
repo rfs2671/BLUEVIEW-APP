@@ -11786,9 +11786,15 @@ async def _assert_superintendent_under_admin(user_id: str, admin: dict) -> dict:
     if str(target.get("role") or "").strip().lower() != ROLE_SUPERINTENDENT:
         raise HTTPException(
             status_code=422,
+            # THE SECOND CLAUSE NAMED A SCREEN THAT NO LONGER EXISTS. It said
+            # "register an unaccounted superintendent from the project" -- the
+            # Outside supers tab, removed in this change. A registration with
+            # no account cannot file anything and only locks the project, so
+            # the offer pointed at a dead end even while the screen existed.
+            # The remaining route is the role change, which User Management
+            # now performs and prices first.
             detail="Only a superintendent holds CS registrations. Change the "
-                   "role first, or register an unaccounted superintendent from "
-                   "the project.",
+                   "role first in User Management.",
         )
     return target
 
