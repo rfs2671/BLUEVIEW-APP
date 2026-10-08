@@ -155,7 +155,7 @@ def _logbook(photo=None, **overrides):
     return doc
 
 
-def _run(docs, execute=False, r2=None, bucket="bv-bucket"):
+def _run(docs, execute=False, r2=None, bucket="bv-bucket", upload_only=False):
     coll = _Logbooks(docs)
     r2 = r2 if r2 is not None else _FakeR2()
     # `server.db` as well as the injected handle: the reclaim delegates to
@@ -167,7 +167,7 @@ def _run(docs, execute=False, r2=None, bucket="bv-bucket"):
     with patch.object(server, "db", db), patch.object(server, "_r2_client", r2), \
          patch.object(server, "R2_BUCKET_NAME", bucket):
         stats = asyncio.new_event_loop().run_until_complete(
-            bf.run_backfill(db, execute=execute),
+            bf.run_backfill(db, execute=execute, upload_only=upload_only),
         )
     return stats, docs, r2, coll
 
@@ -286,6 +286,57 @@ class UploadTest(unittest.TestCase):
     def test_execute_refuses_to_run_with_no_r2(self):
         with self.assertRaises(SystemExit):
             _run([_logbook()], execute=True, r2=None, bucket="")
+
+
+class UploadOnlyIsABackupTest(unittest.TestCase):
+    """Operator's ruling, 2026-10-08: the 32 photos that exist only inline
+    have no backup outside the database -- back them up to R2. A backup puts
+    the photo in R2 and names it; it does not also take the inline copy away,
+    which is the finalize purge's decision and was not ruled."""
+
+    RECLAIMABLE = {
+        "base64": FULL_B64, "enhance_status": "done",
+        "enhanced_r2_key": OLD_ENH, "thumb_r2_key": OLD_THUMB,
+    }
+
+    def test_it_still_uploads_and_writes_the_key(self):
+        stats, docs, r2, _ = _run([_logbook(is_locked=True)], execute=True,
+                                  upload_only=True)
+        self.assertEqual(stats["uploaded"], 1)
+        self.assertTrue(_first_photo(docs[0]).get("original_r2_key"))
+        self.assertEqual(_first_photo(docs[0])["base64"], FULL_B64)
+
+    def test_a_photo_the_purge_WOULD_reclaim_keeps_its_inline_copy(self):
+        r2 = _FakeR2({OLD_ENH: b"E", OLD_THUMB: THUMB_BYTES})
+        stats, docs, _, _ = _run([_logbook(dict(self.RECLAIMABLE), is_locked=True)],
+                                 execute=True, r2=r2, upload_only=True)
+        self.assertEqual(stats["inline_copies_reclaimed"], 0)
+        self.assertEqual(stats["reclaim_skipped_upload_only"], 1)
+        self.assertEqual(_first_photo(docs[0])["base64"], FULL_B64)
+
+    def test_the_purge_is_never_called(self):
+        calls = []
+
+        async def _spy(logbook_id, doc):
+            calls.append(logbook_id)
+            return 0
+
+        with patch.object(server, "_purge_finalized_photo_base64", _spy):
+            _run([_logbook(dict(self.RECLAIMABLE), is_locked=True)],
+                 execute=True, upload_only=True)
+        self.assertEqual(calls, [])
+
+    def test_the_default_still_reclaims(self):
+        """The switch is opt-in: a run without it is the script it was."""
+        r2 = _FakeR2({OLD_ENH: b"E", OLD_THUMB: THUMB_BYTES})
+        stats, _, _, _ = _run([_logbook(dict(self.RECLAIMABLE), is_locked=True)],
+                              execute=True, r2=r2)
+        self.assertEqual(stats["inline_copies_reclaimed"], 1)
+
+    def test_the_cli_offers_it(self):
+        src = (Path(bf.__file__)).read_text(encoding="utf-8")
+        self.assertTrue('"--upload-only", action="store_true"' in src,
+                        "main() does not offer --upload-only")
 
 
 class ReclaimIsDelegatedTest(unittest.TestCase):

@@ -122,7 +122,7 @@ def planned_key(doc: Dict[str, Any], activity: Dict[str, Any], b64_data: str) ->
 
 
 async def backfill_one(db, doc: Dict[str, Any], execute: bool,
-                       stats: Dict[str, int]) -> None:
+                       stats: Dict[str, int], upload_only: bool = False) -> None:
     """Upload every inline photo of one logbook, then offer it for reclaim."""
     logbook_id = str(doc.get("_id"))
     activities = ((doc.get("data") or {}).get("activities") or [])
@@ -191,6 +191,14 @@ async def backfill_one(db, doc: Dict[str, Any], execute: bool,
         stats["logbooks_touched"] += 1
 
     # ── the reclaim, delegated ───────────────────────────────────────────
+    #
+    # `--upload-only` STOPS HERE. A backup run puts the photo in R2 and names
+    # it on the record; it does not also take the inline copy away. Removing
+    # an inline copy is the finalize purge's decision with its own conditions,
+    # and an operator who ruled "back them up" did not rule that.
+    if upload_only:
+        stats["reclaim_skipped_upload_only"] += 1
+        return
     if not doc.get("is_locked"):
         stats["reclaim_skipped_not_finalized"] += 1
         return
@@ -207,7 +215,7 @@ async def backfill_one(db, doc: Dict[str, Any], execute: bool,
 
 async def run_backfill(db, execute: bool = False, project_id: Optional[str] = None,
                        logbook_id: Optional[str] = None,
-                       limit: int = 0) -> Dict[str, int]:
+                       limit: int = 0, upload_only: bool = False) -> Dict[str, int]:
     stats: Dict[str, int] = {
         "logbooks_scanned": 0,
         "logbooks_touched": 0,
@@ -220,6 +228,7 @@ async def run_backfill(db, execute: bool = False, project_id: Optional[str] = No
         "reclaim_candidates": 0,
         "reclaim_skipped_not_finalized": 0,
         "inline_copies_reclaimed": 0,
+        "reclaim_skipped_upload_only": 0,
     }
 
     if execute and not (server._r2_client and server.R2_BUCKET_NAME):
@@ -239,7 +248,7 @@ async def run_backfill(db, execute: bool = False, project_id: Optional[str] = No
     docs = await db.logbooks.find(query).to_list(limit or 100000)
     for doc in docs:
         stats["logbooks_scanned"] += 1
-        await backfill_one(db, doc, execute, stats)
+        await backfill_one(db, doc, execute, stats, upload_only=upload_only)
 
     logger.info(
         "backfill_photo_to_r2 %s complete: %s",
@@ -263,6 +272,11 @@ def main():
         "--limit", type=int, default=0, help="Stop after N logbooks (0 = all)",
     )
     parser.add_argument("--verbose", action="store_true", help="DEBUG logging")
+    parser.add_argument(
+        "--upload-only", action="store_true",
+        help="Back photos up to R2 and write their keys; do NOT offer the log "
+             "to the finalize purge (no inline copy is removed)",
+    )
     add_guard_args(parser)
     args = parser.parse_args()
     # --i-know IS THE GATE NOW. The old flag is still parsed so an operator's
@@ -296,6 +310,7 @@ def main():
     print(asyncio.run(run_backfill(
         server.db, execute=args.execute, project_id=args.project_id,
         logbook_id=args.logbook_id, limit=args.limit,
+        upload_only=args.upload_only,
     )))
 
 
