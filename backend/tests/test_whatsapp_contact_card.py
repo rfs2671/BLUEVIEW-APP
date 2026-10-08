@@ -57,7 +57,10 @@ def _ctx(wire):
 
 
 def _dm(phone, body, msg_id="M1"):
-    _run(server._process_whatsapp_message(_dm_payload(phone, body, msg_id)))
+    payload = _dm_payload(phone, body, msg_id)
+    # The serialized id WaAPI sends, which a reaction is addressed to.
+    payload["data"]["message"]["id"]["_serialized"] = f"false_{phone}@c.us_{msg_id}"
+    _run(server._process_whatsapp_message(payload))
 
 
 class Keyword(unittest.TestCase):
@@ -137,23 +140,24 @@ class CardSent(unittest.TestCase):
                                                           "message": "Instance not ready"}, None)})
         self.assertEqual(actions, ["send-vcard", "send-media"])
 
-    def test_nothing_delivered_gives_the_hour_back(self):
+    def test_nothing_delivered_gives_the_claim_back(self):
         wire = _UrlWire({"send-vcard": REFUSED_200, "send-media": (503, None, None)})
         with _ctx(wire) as c:
             _dm(STRANGER, "contact", "F1")
-            self.assertEqual(c.db[server.WA_CONTACT_CARD_LOG].rows, [])
+            row = c.db[server.WA_CONTACT_CARD_LOG].rows[0]
+            self.assertEqual(row["day_count"], 0)          # not counted
             wire.answers = {}
             _dm(STRANGER, "contact", "F2")            # asking again works
         self.assertEqual([a for a, _p in wire.calls],
                          ["send-vcard", "send-media", "send-vcard"])
 
-    def test_a_waapi_429_keeps_the_hour(self):
+    def test_a_waapi_429_keeps_the_cooldown(self):
         wire = _UrlWire({"send-vcard": (429, None, None)})
         with _ctx(wire) as c:
             _dm(STRANGER, "contact", "G1")
-            self.assertEqual(len(c.db[server.WA_CONTACT_CARD_LOG].rows), 1)
-            _dm(STRANGER, "contact", "G2")
-        self.assertEqual([a for a, _p in wire.calls], ["send-vcard"])
+            self.assertEqual(c.db[server.WA_CONTACT_CARD_LOG].rows[0]["day_count"], 1)
+            _dm(STRANGER, "contact", "G2")                 # in the cooldown: 👍
+        self.assertEqual([a for a, _p in wire.calls], ["send-vcard", "react-to-message"])
 
     def test_a_failed_fallback_is_not_retried_either(self):
         _wire, actions = self._send({"send-vcard": REFUSED_200,
@@ -181,28 +185,87 @@ class CardSent(unittest.TestCase):
         self.assertIn(b"FN:Levelog Assistant", resp.body)
 
 
-class RateLimit(unittest.TestCase):
+def _age(c, minutes):
+    """Move the sender's last card `minutes` into the past."""
+    row = c.db[server.WA_CONTACT_CARD_LOG].rows[0]
+    row["sent_at"] = row["sent_at"] - timedelta(minutes=minutes)
 
-    def test_once_per_sender_per_hour(self):
+
+class RateLimit(unittest.TestCase):
+    """One card per sender per 2 minutes (a 👍 inside it), 10 a day
+    (silence past that)."""
+
+    def test_cooldown_reacts_thumbs_up_then_sends_after_two_minutes(self):
         wire = _UrlWire()
         with _ctx(wire) as c:
             _dm(STRANGER, "contact", "A1")
-            _dm(STRANGER, "contact", "A2")          # same hour: nothing
-            _dm("15558880000", "contact", "B1")     # another sender: sent
-            self.assertEqual([a for a, _p in wire.calls], ["send-vcard", "send-vcard"])
-            # An hour later the sender may have it again.
-            c.db[server.WA_CONTACT_CARD_LOG].rows[0]["sent_at"] = (
-                datetime.now(timezone.utc) - timedelta(hours=1, minutes=1))
+            _dm(STRANGER, "contact", "A2")               # 30s later: 👍
+            _dm("15558880000", "contact", "B1")          # another sender: a card
+            self.assertEqual([a for a, _p in wire.calls],
+                             ["send-vcard", "react-to-message", "send-vcard"])
+            react = wire.calls[1][1]
+            self.assertEqual(react, {"messageId": f"false_{STRANGER}@c.us_A2",
+                                     "reaction": "👍"})
+            _age(c, 2)                                   # 2 minutes later: a card again
             _dm(STRANGER, "contact", "A3")
-        self.assertEqual(len(wire.calls), 3)
+        self.assertEqual([a for a, _p in wire.calls][-1], "send-vcard")
 
-    def test_rate_limited_message_gets_no_other_reply(self):
+    def test_the_device_case_delete_chat_and_ask_again(self):
+        """Card at 2:48, asked again at 2:51 and 2:59: both get a card now."""
+        wire = _UrlWire()
+        with _ctx(wire) as c:
+            _dm(STRANGER, "contact", "D1")
+            _age(c, 3)
+            _dm(STRANGER, "contact", "D2")
+            _age(c, 8)
+            _dm(STRANGER, "contact", "D3")
+        self.assertEqual([a for a, _p in wire.calls], ["send-vcard"] * 3)
+
+    def test_ten_a_day_then_silence(self):
+        wire = _UrlWire()
+        with _ctx(wire) as c:
+            for i in range(server.CONTACT_CARD_DAILY_MAX):
+                _dm(STRANGER, "contact", f"N{i}")
+                _age(c, 3)
+            self.assertEqual(len(wire.calls), 10)
+            _dm(STRANGER, "contact", "N10")              # 11th: nothing at all
+            self.assertEqual(len(wire.calls), 10)
+            # A new day starts over.
+            c.db[server.WA_CONTACT_CARD_LOG].rows[0]["day"] = "2000-01-01"
+            _dm(STRANGER, "contact", "N11")
+        self.assertEqual([a for a, _p in wire.calls][-1], "send-vcard")
+        self.assertEqual(len(wire.calls), 11)
+
+    def test_limited_is_logged_with_the_reason(self):
+        wire = _UrlWire()
+        with _ctx(wire) as c, self.assertLogs(server.logger, "INFO") as logs:
+            _dm(STRANGER, "contact", "L1")
+            _dm(STRANGER, "contact", "L2")
+            c.db[server.WA_CONTACT_CARD_LOG].rows[0].update(
+                day_count=server.CONTACT_CARD_DAILY_MAX)
+            _age(c, 3)
+            _dm(STRANGER, "contact", "L3")
+        lines = [l for l in logs.output if "[wa-contact] limited" in l]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("reason=cooldown", lines[0])
+        self.assertIn("reason=daily", lines[1])
+
+    def test_a_row_from_the_hourly_limit_still_works(self):
+        """Rows written before this change carry only sent_at."""
+        wire = _UrlWire()
+        with _ctx(wire) as c:
+            c.db[server.WA_CONTACT_CARD_LOG].rows.append(
+                {"_id": STRANGER, "sent_at": datetime.now(timezone.utc) - timedelta(minutes=5)})
+            _dm(STRANGER, "contact", "O1")
+        self.assertEqual([a for a, _p in wire.calls], ["send-vcard"])
+
+    def test_a_limited_message_gets_no_other_reply(self):
         wire = _UrlWire()
         with _ctx(wire):
             _dm(STRANGER, "contact", "A1")
             wire.calls.clear()
             _dm(STRANGER, "contact", "A2")
-        self.assertEqual(wire.calls, [])
+        self.assertEqual([a for a, _p in wire.calls], ["react-to-message"])
 
 
 if __name__ == "__main__":

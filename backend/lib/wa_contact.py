@@ -5,8 +5,9 @@ Levelog number (as "Turn on Levelog Assistant" does with START). The bot
 answers with its own contact card, which WhatsApp saves in one tap — no
 contacts permission, no file, no native module in the app.
 
-Any sender may ask: the number is public. At most one card per sender per
-hour (server.py, CONTACT_CARD_EVERY).
+Any sender may ask: the number is public. Per sender, one card per two
+minutes (asking again sooner gets a 👍) and ten a day (server.py,
+CONTACT_CARD_COOLDOWN / CONTACT_CARD_DAILY_MAX).
 
 Pure; server.py sends it.
 """
