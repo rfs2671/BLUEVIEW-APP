@@ -27,10 +27,15 @@
  *
  * ── THE DEFECT THIS PROTOCOL EXISTS FOR, MEASURED 2026-10-08 ───────────────
  *
- * Signature images are 11,233,990 of 17,080,794 bytes of filed-record payload
- * — 65.8% — and a day on the one project with a history costs 361,525 bytes at
- * the median and 1,440,691 at the heaviest. Served separately, the same days
- * are 99,491 and 592,243.
+ * On the one project with a filed history — the one the gate tablet is bolted
+ * to, 339 submitted records over 43 dates — signature images are 11,233,990 of
+ * 17,080,794 stored bytes, 65.8%. (The other four projects hold 53,100 between
+ * them; the scope is named because the first version of this note said "every
+ * project" and meant this one.)
+ *
+ * Measured THROUGH THE HANDLER, a day costs 336,385 bytes at the median and
+ * 1,132,800 at the heaviest; served this way the same days are 73,733 and
+ * 592,372.
  *
  * But the pre-shift renderer keyed TWO blocks off one field:
  *
@@ -43,16 +48,18 @@
  * states, and hence a single function that answers which one.
  */
 
-// ── the deferral protocol: THREE STATES, NOT TWO ───────────────────────────
-
 /**
  * THE ONE DEFINITION OF THE FLAG, AND WHY IT LIVES IN THIS MODULE.
  *
- * `server.py`'s `SIGNATURE_DEFERRED_SUFFIX` is the other half of this string.
- * It belongs here rather than in the screen because this module is what asks
- * for `view=text` — the suffix and the request that causes it are one decision,
- * and a screen that spelled the suffix itself is how a renderer comes to look
- * for a key the transport stopped sending.
+ * `server.py`'s `SIGNATURE_DEFERRED_SUFFIX` is the other half of this string,
+ * and `test_images_load_when_the_sheet_is_opened.py` holds the two equal by
+ * reading this declaration's own source.
+ *
+ * ONE DECLARATION, READ BY BOTH SURFACES. `siteLogbookHistory.js` asks for
+ * `view=text` and splices what comes back; `app/site/logbooks.jsx` renders the
+ * three states. A screen that spelled the suffix itself is how a renderer
+ * comes to look for a key the transport stopped sending — which on this screen
+ * means telling a DOB inspector that a man who signed did not.
  */
 export const SIG_DEFERRED_SUFFIX = '_deferred';
 
@@ -210,14 +217,3 @@ export function applySignatureImages(log, images) {
   }
   return touched ? out : log;
 }
-
-/** The whole day, spliced. `images` is {logId: {path: bytes}}. */
-export function applyDaySignatureImages(logs, byLogId) {
-  const map = (byLogId && typeof byLogId === 'object') ? byLogId : null;
-  if (!map) return logs;
-  return (Array.isArray(logs) ? logs : []).map((l) => {
-    const id = (l && (l.id || l._id)) || '';
-    return id && map[id] ? applySignatureImages(l, map[id]) : l;
-  });
-}
-

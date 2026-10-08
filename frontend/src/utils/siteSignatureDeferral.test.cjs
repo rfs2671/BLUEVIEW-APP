@@ -13,6 +13,11 @@
  *
  * ── THE REMAINING DEFECT, MEASURED ON PRODUCTION 2026-10-08 ───────────────
  *
+ * EACH NUMBER SAYS WHICH POPULATION IT IS ABOUT. This table is ONE project's
+ * 339 submitted records — the one the gate tablet is bolted to. It was first
+ * written as "every project", which is a different claim: the other four hold
+ * 53,100 bytes of marks between them.
+ *
  *     data.workers[].worker_signature          9,685,074 B   56.7%
  *     data.worker_signature  (orientation)     1,548,916 B    9.1%
  *     data.attendees[].worker_signature                0 B    0.0%
@@ -21,11 +26,13 @@
  *     ─────────────────────────────────────────────────────────────
  *     signature images                        11,233,990 B   65.8% of 17,080,794
  *
- * Per day, 43 dates and 339 records:
+ * Per day, 43 dates and 339 records, THROUGH THE REAL HANDLER — not off the
+ * collection, which counts the 50 superseded records (105 marks, 2,051,640 B)
+ * that #681's amendment collapse drops before a body is built:
  *
  *                    lightest     median    heaviest
- *     today             4,691    361,525   1,440,691
- *     text only         4,691     99,491     592,243
+ *     today             4,909    336,385   1,132,800
+ *     text only         4,925     73,733     592,372
  *
  * ── THE TRAP THIS FILE EXISTS TO HOLD SHUT ────────────────────────────────
  *
@@ -311,11 +318,10 @@ SECTIONS.push(async () => {
   const h = hist(makeDevice({}));
   for (const name of ['SIG_DEFERRED_SUFFIX', 'SIG_FIELDS', 'signatureMark',
                       'deferredSignaturePaths', 'dayHasDeferredSignatures',
-                      'applySignatureImages', 'applyDaySignatureImages',
+                      'applySignatureImages',
                       'signatureImagesPath', 'recordSignatureName',
                       'readRecordSignatures', 'writeRecordSignatures',
-                      'ensureRecordSignatures', 'heldDaySignatures',
-                      'fillDaySignatures']) {
+                      'ensureRecordSignatures', 'fillDaySignatures']) {
     ok(h[name] !== undefined, `siteLogbookHistory exports ${name}`);
   }
 });
@@ -455,12 +461,6 @@ SECTIONS.push(async () => {
     });
     eq(or.data.worker_signature, ACK, 'the scalar acknowledgment splices');
     eq(or.data.worker_signature_deferred, undefined, 'and loses its flag');
-
-    const day = h.applyDaySignatureImages([dailyText(), preshiftText()], {
-      lb_preshift: { 'data.workers.0.worker_signature': SIG },
-    });
-    eq(day[1].data.workers[0].worker_signature, SIG, 'a day splices by log id');
-    eq(day[0].data.weather, 'Sunny', 'and leaves the rest alone');
   } else { console.log('  (protocol absent — C skipped)'); }
 });
 
@@ -727,6 +727,37 @@ SECTIONS.push(async () => {
     eq(r.reason, 'unreachable', 'and it says why');
   }
   {
+    // ── THE WHOLE POINT, END TO END: A FILLED TABLET IN THE DEAD ZONE ─────
+    //
+    // Session one fills the device online. Session two is OFFLINE and must
+    // produce the sheet COMPLETE -- text off disk, ink off disk, spliced --
+    // with ZERO requests. Every other assertion in this file is a part of this
+    // one, and none of them is this one: a tablet that holds both files and
+    // still draws "signed, image not loaded" would satisfy all of them.
+    const d = makeDevice({ route });
+    await hist(d).backfillDayDetails(PID, [INDEX_ROW]);
+    const online = d.requests.length;
+
+    // The dead zone. A fresh module instance over the SAME disk, because a
+    // device that kept the day in memory would prove nothing about the files.
+    const dz = makeDevice({ route: () => null, days: [...d.days],
+                            dayBytes: Object.assign({}, d.dayBytes) });
+    const day = await hist(dz).ensureDayDetail(PID, DAY, STAMP, { offline: true });
+    eq(Array.isArray(day.logs), true, 'offline: the day text comes off the disk');
+    eq(day.fetched, false, '...without a request');
+    const filled = await hist(dz).fillDaySignatures(PID, day.logs, { offline: true });
+    eq(dz.requests.length, 0,
+       'OFFLINE, A FILLED TABLET ISSUES ZERO REQUESTS for a whole day');
+    eq(filled.fetched, 1, 'and still produces the one record that was owed ink');
+    const sheet = filled.logs.find((l) => (l.id || l._id) === 'lb_preshift');
+    eq(sheet.data.workers, preshiftWhole().data.workers,
+       'THE SHEET RENDERS COMPLETE IN THE DEAD ZONE — byte-for-byte the '
+       + 'whole-document record, ink and all');
+    eq(hist(dz).deferredSignaturePaths(sheet), [],
+       '...with nothing left flagged, so no card claims a missing image');
+    ok(online > 0, `(session one paid ${online} requests for it)`);
+  }
+  {
     const d = makeDevice({ route, noFs: true });
     const r = await hist(d).backfillDayDetails(PID, [INDEX_ROW]);
     eq(r.readable, false,
@@ -769,6 +800,17 @@ SECTIONS.push(async () => {
      || src.includes('signatures ${inkHeld} of ${inkTotal}'),
      'the offline line COUNTS THE INK SEPARATELY — "43 of 43 days" would have '
      + 'called a tablet with no marks on it finished');
+
+  // A FILL THAT STOPPED AT THE DEAD ZONE MUST RUN AGAIN. `sigFill` is what
+  // stops the effect re-entering itself; left standing across a refresh it also
+  // stops the retry, so a tablet that was offline when the sheet was opened
+  // would say "image not saved on this tablet" for ever. Two halves, and
+  // neither is enough alone.
+  ok(src.includes('setSigFill(null)'),
+     'a refresh CLEARS the ink-fill marker, so the sheet can be retried');
+  ok(/\}, \[[^\]]*fetchState\]\);/.test(src),
+     '...and the fill effect depends on fetchState, so coming back on Wi-Fi '
+     + 're-runs it rather than waiting for a tap');
 
   // THE CENSUS. Every signed-ness test on this screen must go through
   // `signatureMark`; one that reads the field itself is the UNSIGNED list

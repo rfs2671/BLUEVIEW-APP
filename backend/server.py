@@ -37758,8 +37758,11 @@ def _submitted_index_row(log: dict) -> dict:
 # #681 made the LIST cost the index. Opening one day still cost that day's whole
 # payload, and the payload is signature images.
 #
-# MEASURED ON PRODUCTION 2026-10-08, every submitted record of every project,
-# through a read-only probe of this collection:
+# MEASURED ON PRODUCTION 2026-10-08, read-only, and EACH NUMBER SAYS WHICH
+# POPULATION IT IS ABOUT -- the first table was written as "every project"
+# and is one project's, which is a different claim. These are the 339
+# submitted records of the project the gate tablet is bolted to; the other
+# four projects hold 53,100 bytes of marks between them.
 #
 #     data.workers[].worker_signature          9,685,074 B   56.7%
 #     data.worker_signature  (orientation)     1,548,916 B    9.1%
@@ -37769,11 +37772,22 @@ def _submitted_index_row(log: dict) -> dict:
 #     ─────────────────────────────────────────────────────────────
 #     signature images                        11,233,990 B   65.8% of 17,080,794
 #
-# Per day, for the one project with a history (43 dates, 339 records):
+# THE TWO ZEROS ARE NOT LOCAL TO THIS PROJECT. All 558 attendee rows in
+# production have both keys null -- nothing signs a toolbox talk yet -- and
+# all 387 filed `cp_signature`s are affirmation metadata with no `data`.
+#
+# PER DAY, THROUGH THIS HANDLER rather than off the collection, which is not
+# the same measurement: the collapse in step 4 drops 50 superseded records
+# carrying 105 marks before a body is built, so a count taken from the
+# collection over-reports what the wire carries by 2,051,640 bytes.
 #
 #                    lightest     median    heaviest
-#     today             4,691    361,525   1,440,691
-#     text only         4,691     99,491     592,243
+#     today             4,909    336,385   1,132,800
+#     text only         4,925     73,733     592,372
+#
+# And the handler is as fast either way: 4,591 ms for all 43 whole days
+# against 4,481 ms for the same 43 text days. The wait is TRANSFER, as #681
+# found; this moves two thirds of it off the moment the sheet is drawn.
 #
 # ── THE TWO SITES THAT MEASURE ZERO ARE STILL HANDLED, AND THAT IS THE POINT ─
 #
@@ -38039,9 +38053,12 @@ async def get_submitted_logbooks(
                                           expanded day costs, instead of the
                                           corpus.
       `view=text`                         whole documents MINUS the signature
-                                          images, which are 65.8% of this
-                                          corpus -- 11,233,990 of 17,080,794
-                                          bytes. Each mark that left is
+                                          images, which are 65.8% of the one
+                                          project with a history --
+                                          11,233,990 of 17,080,794 bytes, and
+                                          9,183,508 of them reachable through
+                                          this handler once the collapse has
+                                          run. Each mark that left is
                                           replaced by `<field>_deferred: true`
                                           beside where it was, and served by
                                           GET /logbooks/{id}/signature-images

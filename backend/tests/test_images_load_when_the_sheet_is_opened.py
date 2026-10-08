@@ -6,7 +6,11 @@ day still cost that day's whole payload, and the payload is signature images.
 
 ── THE REMAINING DEFECT, MEASURED ON PRODUCTION 2026-10-08 ──────────────────
 
-Every submitted record of every project, through a read-only probe:
+EACH NUMBER SAYS WHICH POPULATION IT IS ABOUT. This table is the 339
+submitted records of ONE project -- the one the gate tablet is bolted to. It
+was first written as "every project", which is a different claim: the other
+four hold 53,100 bytes of marks between them, and across all five it is
+11,287,090 of 17,432,932 bytes (64.7%).
 
     data.workers[].worker_signature          9,685,074 B   56.7%
     data.worker_signature  (orientation)     1,548,916 B    9.1%
@@ -16,11 +20,18 @@ Every submitted record of every project, through a read-only probe:
     ─────────────────────────────────────────────────────────────
     signature images                        11,233,990 B   65.8% of 17,080,794
 
-Per day, for the one project with a history (43 dates, 339 records):
+The two zeros ARE whole-production: all 558 attendee rows have both keys
+null, and all 387 filed `cp_signature`s are affirmation metadata with no
+`data`. That is why `cp_signature` is not in SIGNATURE_IMAGE_SITES and why
+`data.attendees[]` is, though it measures zero -- see that table's comment.
+
+Per day, THROUGH THE REAL HANDLER, which is not the same measurement as off
+the collection: the amendment collapse drops 50 superseded records carrying
+105 marks (2,051,640 B) before a body is built.
 
                    lightest     median    heaviest
-    today             4,691    361,525   1,440,691
-    text only         4,691     99,491     592,243
+    today             4,909    336,385   1,132,800
+    text only         4,925     73,733     592,372
 
 ── THE TRAP THIS FILE EXISTS TO HOLD SHUT ───────────────────────────────────
 

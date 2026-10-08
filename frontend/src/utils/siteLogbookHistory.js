@@ -11,12 +11,12 @@ import { readManifestList, writeManifestList } from './siteManifestStore';
 // RE-EXPORTED BELOW, so every existing import of this module is unchanged.
 import {
   SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
-  dayHasDeferredSignatures, applySignatureImages, applyDaySignatureImages,
+  dayHasDeferredSignatures, applySignatureImages,
 } from './signatureDeferral';
 
 export {
   SIG_DEFERRED_SUFFIX, SIG_FIELDS, signatureMark, deferredSignaturePaths,
-  dayHasDeferredSignatures, applySignatureImages, applyDaySignatureImages,
+  dayHasDeferredSignatures, applySignatureImages,
 };
 
 /**
@@ -1051,34 +1051,6 @@ export async function ensureRecordSignatures(projectId, logId, version, opts = {
 }
 
 /**
- * How much of one day's ink this tablet holds. `{held, total, missing}` where
- * `missing` is the log ids still owed images.
- *
- * DERIVED FROM THE DAY'S OWN FLAGS, so a record with no marks is not counted as
- * missing and a full-document day (the deploy gap) reports `0 of 0` rather than
- * a fill that can never complete. EXACT, which a per-day bundle could not have
- * been — see `recordSignatureName`.
- */
-export async function heldDaySignatures(projectId, logs) {
-  const wanted = (Array.isArray(logs) ? logs : [])
-    .map((l) => ({ id: (l && (l.id || l._id)) || '', version: pdfVersion(l),
-                   owed: deferredSignaturePaths(l).length }))
-    .filter((r) => r.id && r.owed > 0);
-  if (!canUseFs() || !projectId) {
-    return { held: 0, total: wanted.length, missing: wanted.map((r) => r.id), readable: false };
-  }
-  let names = [];
-  try {
-    names = await FileSystem.readDirectoryAsync(DAY_DIR);
-  } catch (_e) { names = []; }
-  const have = new Set(Array.isArray(names) ? names : []);
-  const missing = wanted
-    .filter((r) => !have.has(recordSignatureName(projectId, r.id, r.version)))
-    .map((r) => r.id);
-  return { held: wanted.length - missing.length, total: wanted.length, missing, readable: true };
-}
-
-/**
  * Every record of one day, spliced with whatever ink this tablet can produce.
  *
  * Returns {logs, fetched, failed, owed, amended}. ONE RECORD AT A TIME, in the
@@ -1412,12 +1384,10 @@ export default {
   deferredSignaturePaths,
   dayHasDeferredSignatures,
   applySignatureImages,
-  applyDaySignatureImages,
   signatureImagesPath,
   recordSignatureName,
   readRecordSignatures,
   writeRecordSignatures,
   ensureRecordSignatures,
-  heldDaySignatures,
   fillDaySignatures,
 };

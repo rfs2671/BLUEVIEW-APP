@@ -447,6 +447,14 @@ export default function SiteLogbooksViewer() {
         // fallback, whose walk already carried the newest sixty days in memory
         // and is the only detail web will ever have -- see runListSync.
         setDayLogs(r.viaFallback ? (r.recent || {}) : {});
+        // AND THE INK FILL IS CLEARED WITH THE DETAIL IT BELONGS TO. `sigFill`
+        // records that a (date, tab) has already been attempted, which is what
+        // stops the effect re-entering itself; left standing across a refresh
+        // it would ALSO stop a retry. A tablet that was in the dead zone when
+        // the inspector opened the sheet, then came back on Wi-Fi and was
+        // pulled to refresh, would have kept saying "image not saved on this
+        // tablet" for ever.
+        setSigFill(null);
 
         // Fire-and-forget: put each submitted log's PDF on disk so the bytes
         // are here in the dead zone. NOT awaited — never on the render path.
@@ -827,10 +835,15 @@ export default function SiteLogbooksViewer() {
     return () => { cancelled = true; };
     // `dayLogs` is deliberately NOT a dependency: this effect writes to it, and
     // depending on it would make every spliced record re-enter the fill. The
-    // day's identity (date + tab) is what decides whether a fill is wanted,
-    // and `dayLogs[date]` is read fresh inside.
+    // day's identity (date + tab) is what decides whether a fill is wanted, and
+    // `dayLogs[date]` is read fresh inside.
+    //
+    // `fetchState` IS ONE, because it is the only thing that changes the ANSWER
+    // for an unchanged day: a fill that stopped at the dead zone must run again
+    // when the link comes back, and the refresh that discovers that also clears
+    // `sigFill` — see fetchLogbooks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteProject?.id, expandedDate, effectiveTab, dayLoading]);
+  }, [siteProject?.id, expandedDate, effectiveTab, dayLoading, fetchState]);
 
   // ═════════════════════════════════════════════════════════════════════════
   //  THE PROGRESS INDICATOR, AND EVERY NUMBER ON IT IS A MEASUREMENT
@@ -971,6 +984,21 @@ export default function SiteLogbooksViewer() {
   // THE SECTION LABEL COUNTS BOTH, so a sheet whose ink has not landed still
   // announces that it HAS signatures rather than looking like one that has
   // none.
+  /**
+   * THE MEN WHO DID NOT SIGN. The THIRD state, derived once and named, because
+   * this list is a claim about a legal record and the one thing it may never
+   * contain is a man whose mark is merely still in transit.
+   *
+   * `!value && !deferred`, NOT `!value`. The second is what the renderer used
+   * to say, and against a `view=text` body it would have named all 505 kiosk
+   * signatories in production as unsigned.
+   */
+  const unsignedWorkers = (workers) => (Array.isArray(workers) ? workers : [])
+    .filter((w) => {
+      const mark = signatureMark(w, SIG_FIELDS.worker);
+      return !mark.value && !mark.deferred;
+    });
+
   const SignatureGrid = ({ holders, fields, nameOf }) => {
     const rows = (Array.isArray(holders) ? holders : [])
       .map((h) => ({ holder: h, mark: signatureMark(h, fields) }))
@@ -1361,15 +1389,11 @@ export default function SiteLogbooksViewer() {
           nameOf={(w) => w.name}
         />
 
-        {workers.some(w => !signatureMark(w, SIG_FIELDS.worker).value
-                           && !signatureMark(w, SIG_FIELDS.worker).deferred) && (
+        {unsignedWorkers(workers).length > 0 && (
           <View style={s.unsignedBlock}>
             <Text style={s.unsignedLabel}>Not Signed: </Text>
             <Text style={s.unsignedNames}>
-              {workers
-                .filter(w => !signatureMark(w, SIG_FIELDS.worker).value
-                             && !signatureMark(w, SIG_FIELDS.worker).deferred)
-                .map(w => w.name).join(', ')}
+              {unsignedWorkers(workers).map(w => w.name).join(', ')}
             </Text>
           </View>
         )}

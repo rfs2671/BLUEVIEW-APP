@@ -181,17 +181,43 @@ const Icon = function IconStub() { return null; };
 // draws them. A stubbed answer here would leave every assertion below passing
 // while the question itself went unasked. It is importless on purpose; see
 // src/utils/signatureDeferral.js.
+//
+// A MISSING MODULE MUST NOT BE A STACK TRACE — the rule the sibling
+// siteLogbookIndex.test.cjs already carries, learned the same way this one
+// learned it: against a tree without the module, an ENOENT replaced every named
+// guarantee in this file with one opaque error and exit 1. A control run that
+// crashes tells you the file ran; it does not tell you WHICH claim is not yet
+// true. So absence falls back to the PRE-CHANGE reader — `{value: the field,
+// deferred: false}`, exactly the two-state test this change replaces — and the
+// three-state section at the bottom then fails BY NAME, which is the whole
+// point of running it first.
 const _deferral = {};
-// eslint-disable-next-line no-new-func
-new Function('exports', 'module', 'require', babel.transformSync(
-  fs.readFileSync(path.join(__dirname, 'signatureDeferral.js'), 'utf8'),
-  {
-    filename: 'signatureDeferral.js',
-    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
-    configFile: false,
-    babelrc: false,
-  },
-).code)(_deferral, { exports: _deferral }, require);
+const _DEFERRAL_PATH = path.join(__dirname, 'signatureDeferral.js');
+if (fs.existsSync(_DEFERRAL_PATH)) {
+  // eslint-disable-next-line no-new-func
+  new Function('exports', 'module', 'require', babel.transformSync(
+    fs.readFileSync(_DEFERRAL_PATH, 'utf8'),
+    {
+      filename: 'signatureDeferral.js',
+      plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
+      configFile: false,
+      babelrc: false,
+    },
+  ).code)(_deferral, { exports: _deferral }, require);
+} else {
+  _deferral.SIG_FIELDS = {
+    worker: ['worker_signature'],
+    attendee: ['worker_signature', 'signature'],
+    acknowledgment: ['worker_signature'],
+  };
+  _deferral.signatureMark = (holder, fields) => {
+    const h = (holder && typeof holder === 'object') ? holder : {};
+    for (const f of (fields || ['worker_signature'])) {
+      if (h[f]) return { value: h[f], deferred: false, field: f };
+    }
+    return { value: null, deferred: false, field: null };
+  };
+}
 
 const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'semantic',
   'spacing', 'withAlpha', 'rosterClock', 'logbookPhotoUri',
