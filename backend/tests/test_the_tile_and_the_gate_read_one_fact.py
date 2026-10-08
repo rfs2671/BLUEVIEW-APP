@@ -99,6 +99,25 @@ PROJECT_ROW = {
 }
 
 
+class _RowsCursor:
+    """What `find` returns: sortable, listable, async-iterable."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def sort(self, *a, **k):
+        return self
+
+    async def to_list(self, n=None):
+        return list(self._rows)
+
+    def __aiter__(self):
+        async def gen():
+            for r in self._rows:
+                yield r
+        return gen()
+
+
 class _Regs:
     """db.cs_registrations, with whatever row the test wants."""
 
@@ -109,6 +128,14 @@ class _Regs:
     async def find_one(self, query, projection=None):
         self.queries.append(query)
         return self.row
+
+    def find(self, query=None, projection=None, **kw):
+        # THE SAME ROW, AS A LIST. The filing gate reads a project's whole
+        # registration history now (the row in force on the log's date is
+        # chosen from it); this fake still answers with the one row the test
+        # wants, whatever the query.
+        self.queries.append(query)
+        return _RowsCursor([self.row] if self.row else [])
 
 
 class _Projects:
@@ -247,11 +274,17 @@ class NoRegistrationMeansEVERYONEMayFile(Base):
         self.assertIsNone(_for_cs_log(_rights(WILSON, reg=None))["registered_name"])
 
     def test_a_deleted_registration_is_not_a_registration(self):
-        _install(REGISTRATION)
-        regs = server.db.cs_registrations
-        asyncio.run(server._logbook_filing_rights(
-            PROJECT, [CS_LOG], WILSON, on_date=DATE))
-        self.assertEqual(regs.queries[0]["is_deleted"], {"$ne": True})
+        """ASSERTED ON THE OUTCOME, NOT THE QUERY -- the read takes the
+        project's whole history now (see the gate). A legacy soft-delete is an
+        end at `deleted_at`; an undated one cannot be placed. Either way the
+        tile names no owner and everyone may file, exactly as with no row."""
+        for row in ({**REGISTRATION, "is_deleted": True,
+                     "deleted_at": "2026-09-02T09:00:00"},
+                    {**REGISTRATION, "is_deleted": True}):
+            with self.subTest(deleted_at=row.get("deleted_at")):
+                tile = _for_cs_log(_rights(WILSON, reg=row))
+                self.assertTrue(tile["may_file"])
+                self.assertIsNone(tile["reason"])
 
 
 class TheTileAndTheGateCannotDISAGREE(Base):

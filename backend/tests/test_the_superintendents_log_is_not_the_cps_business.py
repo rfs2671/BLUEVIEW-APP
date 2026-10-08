@@ -105,12 +105,35 @@ PROJECT_ROW = {
 }
 
 
+class _RowsCursor:
+    """What `find` returns: sortable, listable, async-iterable."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def sort(self, *a, **k):
+        return self
+
+    async def to_list(self, n=None):
+        return list(self._rows)
+
+    def __aiter__(self):
+        async def gen():
+            for r in self._rows:
+                yield r
+        return gen()
+
+
 class _One:
     def __init__(self, row):
         self.row = row
 
     async def find_one(self, query, projection=None, **kw):
         return self.row
+
+    def find(self, query=None, projection=None, **kw):
+        # THE SAME ROW, AS A LIST -- see the note on the registration read.
+        return _RowsCursor([self.row] if self.row else [])
 
 
 class _EmptyColl:

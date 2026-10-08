@@ -395,15 +395,17 @@ class ThePickerOffersTheCompanysProjects(unittest.TestCase):
 
 # ── THE THREE WAYS IT COULD DESTROY A RECORD ────────────────────────────────
 
-class ARemovedRegistrationIsSoftDeleted(unittest.TestCase):
+class ARemovedRegistrationIsEnded(unittest.TestCase):
     def test_unticking_a_project_retires_the_row(self):
         db = _db()
         out = _put(db, [])
         self.assertEqual(out["removed"], [THOMAS])
         row = db.cs_registrations.rows[0]
-        self.assertTrue(row["is_deleted"])
-        self.assertFalse(row["is_active"])
-        self.assertIn("deactivated_at", row)
+        # ENDED, NOT DELETED: a dated end, kept as the record of who held the
+        # role while it stood (operator's ruling, 2026-10-08).
+        self.assertTrue(row.get("ended_at"))
+        self.assertEqual(row.get("ended_reason"), "unassigned")
+        self.assertIsNot(row.get("is_deleted"), True)
 
     def test_the_row_is_still_there(self):
         """SOFT, NEVER HARD. It is the provenance of every log filed under it."""

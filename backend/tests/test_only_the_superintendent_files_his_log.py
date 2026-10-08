@@ -94,6 +94,25 @@ REGISTRATION = {
 }
 
 
+class _RowsCursor:
+    """What `find` returns: sortable, listable, async-iterable."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def sort(self, *a, **k):
+        return self
+
+    async def to_list(self, n=None):
+        return list(self._rows)
+
+    def __aiter__(self):
+        async def gen():
+            for r in self._rows:
+                yield r
+        return gen()
+
+
 class _Regs:
     """db.cs_registrations, with whatever row the test wants."""
 
@@ -104,6 +123,14 @@ class _Regs:
     async def find_one(self, query, projection=None):
         self.queries.append(query)
         return self.row
+
+    def find(self, query=None, projection=None, **kw):
+        # THE SAME ROW, AS A LIST. The filing gate reads a project's whole
+        # registration history now (the row in force on the log's date is
+        # chosen from it); this fake still answers with the one row the test
+        # wants, whatever the query.
+        self.queries.append(query)
+        return _RowsCursor([self.row] if self.row else [])
 
 
 def _install(row):
@@ -175,10 +202,20 @@ class NoRegistrationDoesNotGate(Base):
         self.assertEqual(regs.queries, [])
 
     def test_a_deleted_registration_is_not_a_registration(self):
-        regs = _install(REGISTRATION)
-        asyncio.run(server._refuse_if_not_the_superintendent(
-            CS_LOG, PROJECT, "2026-09-04", MICHAEL))
-        self.assertEqual(regs.queries[0]["is_deleted"], {"$ne": True})
+        """ASSERTED ON THE OUTCOME, NOT THE QUERY. The gate reads every row the
+        project has had -- ended rows are the history a dated log is judged
+        against -- so the query no longer carries `is_deleted`. What still
+        holds: a legacy soft-delete (how an unassign was written before ends
+        were dated) is an END at `deleted_at`, and one with no date cannot be
+        placed in time. Neither gates a log dated after it, so a caller who is
+        not the man it names is not refused."""
+        for row in ({**REGISTRATION, "is_deleted": True,
+                     "deleted_at": "2026-09-02T09:00:00"},
+                    {**REGISTRATION, "is_deleted": True}):
+            with self.subTest(deleted_at=row.get("deleted_at")):
+                _install(row)
+                asyncio.run(server._refuse_if_not_the_superintendent(
+                    CS_LOG, PROJECT, "2026-09-04", WILSON))
 
 
 class EveryOtherLogTypeIsUntouched(Base):

@@ -41,6 +41,7 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.source_text import code_of  # noqa: E402
 from tests.document_renderers import (  # noqa: E402
     N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
@@ -143,25 +144,40 @@ class ItResolvesAgainstTheLOGS_OwnDate(unittest.TestCase):
             "2026-08-30")
         self.assertEqual(r["state"], CA.MATCHED_ACCOUNT)
 
-    def test_BOTH_off_switches_stamp_a_time_so_the_question_is_answerable(self):
-        """AN EARLIER VERSION OF THIS MODULE CLAIMED ONLY THE DELETE PATH
-        STAMPED ONE, and documented a permanent "cannot be determined" for a
-        question the data could already answer. The writers had been INFERRED
-        from the model and the delete endpoint rather than ENUMERATED. This
-        asserts the two that were missed."""
-        src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        # supersession by a new CS, and an admin switching it off
-        self.assertIn(
-            '{"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}',
-            src)
-        self.assertIn('update["deactivated_at"] = now', src)
+    def test_every_end_is_a_dated_ended_at(self):
+        """EVERY WAY A REGISTRATION ENDS STAMPS THE SAME DATED FIELD.
 
-    def test_UNDETERMINED_survives_ONLY_for_the_pre_stamping_rump(self):
-        """A row switched off before either stamper existed carries is_active
-        False and no deactivated_at. The moment is unrecoverable, so the check
-        says so. THAT SET CANNOT GROW."""
-        r = CA.attribute_signer(SIGNER, dict(REG, is_active=False), "2026-08-30")
-        self.assertEqual(r["state"], CA.UNDETERMINED)
+        Operator's ruling, 2026-10-08: there is no switch; a registration exists
+        until User Management ends it, and an end is a date, never a deletion.
+        The three writers -- a replacement superseding him, User Management
+        unassigning him, and the admin DELETE -- are ENUMERATED here, the lesson
+        of the earlier version of this test, which inferred the writers and
+        missed two.
+
+        AND NOTHING WRITES THE OLD SWITCH. A `$set` of `is_active` anywhere would
+        be a second answer to "does this registration exist"."""
+        code = code_of("server.py")
+        for reason in ("superseded", "unassigned", "removed"):
+            with self.subTest(reason):
+                self.assertTrue(f'"ended_reason": "{reason}"' in code,
+                                f"no writer ends a registration as {reason!r}")
+        # THE TWO WRITERS THE SWITCH HAD, by their exact shapes: supersession's
+        # `$set` and the PUT's flag copy.
+        self.assertFalse('{"$set": {"is_active": False, "deactivated_at": now' in code,
+                         "supersession still switches the predecessor off")
+        self.assertFalse('update["is_active"] = data.is_active' in code,
+                         "the PUT still writes the switch")
+
+    def test_is_active_is_not_read(self):
+        """THERE IS NO SWITCH TO CONSULT. A row carrying `is_active: False` and
+        no end is a registration like any other; UNDETERMINED, which existed
+        only for a switched-off row nobody had dated, is no longer produced.
+        Production held no such row when the switch was removed."""
+        for flag in (False, None, "no"):
+            with self.subTest(is_active=flag):
+                r = CA.attribute_signer(SIGNER, dict(REG, is_active=flag),
+                                        "2026-08-30")
+                self.assertEqual(r["state"], CA.MATCHED_ACCOUNT)
 
     def test_a_TODAYS_log_is_unaffected_by_that_rump(self):
         r = CA.attribute_signer(SIGNER, dict(REG, is_active=False), "2026-01-01")
@@ -564,10 +580,13 @@ class TheSameQuestionAskedAtMENU_Time(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(regs.query, "it must not query on an empty $or")
 
     async def test_the_query_asks_only_for_live_rows(self):
+        """LIVE IS ONE DEFINITION, `CS_REGISTRATION_LIVE`: not deleted and not
+        ended. No `is_active` -- there is no switch."""
         regs = self._Regs([dict(REG, project_id="p1")])
         await server.superintendent_projects_for(self._DB(regs), SIGNER)
-        self.assertEqual(regs.query.get("is_active"), True)
-        self.assertEqual(regs.query.get("is_deleted"), {"$ne": True})
+        for k, v in server.CS_REGISTRATION_LIVE.items():
+            self.assertEqual(regs.query.get(k), v, k)
+        self.assertNotIn("is_active", regs.query)
 
     async def test_two_projects_are_both_reported(self):
         """The DOB one-job rule makes this an anomaly, not an impossibility --

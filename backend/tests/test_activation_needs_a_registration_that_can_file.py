@@ -5,11 +5,13 @@ whether a non-deleted `cs_registrations` row EXISTED. A row with no `user_id`
 passed -- and that row is a total lockout. The filing gate matches the signer
 by account id, then by a licence key nothing in this repository writes, so an
 unlinked row answers `not_registered_cs` for every caller and the log becomes
-required, counted as missing, and fileable by nobody. A switched-off row passed
-too, while `cs_attribution_for` reads only active rows.
+required, counted as missing, and fileable by nobody.
 
-The operator's ruling: activation requires a row that is BOTH active and linked
-to an account.
+The operator's ruling (#690): activation requires a registration linked to an
+account. SIMPLIFIED by the later ruling that removed the switch (2026-10-08): a
+registration exists or it does not, so the rule is "a live row, linked" -- an
+ENDED row is no row, and `is_active` is not read. There is no "switched off"
+refusal any more.
 
 THESE CALL THE REAL ENDPOINT. The neighbouring source-text tests
 (`ActivationRequiresARegistration`) prove the gate is spelled in the handler;
@@ -158,10 +160,10 @@ class AnActiveLinkedRowSwitchesItOn(unittest.TestCase):
         self.assertEqual(len(_flag_writes(db)), 1)
 
     def test_one_good_row_among_bad_ones_is_enough(self):
-        """A project accumulates rows -- a predecessor is deactivated, not
-        edited. One active, linked row is the registration."""
+        """A project accumulates rows -- a predecessor is ENDED, not edited.
+        One live, linked row is the registration."""
         out, err, _ = _switch([
-            _reg(_id="old", is_active=False),
+            _reg(_id="old", ended_at="2026-09-20T00:00:00"),
             _reg(_id="stray", user_id=None),
             _reg(_id="live"),
         ])
@@ -199,18 +201,25 @@ class AnythingLessRefusesAndSaysWhy(unittest.TestCase):
         del row["user_id"]
         self._refused([row], "unlinked")
 
-    def test_a_switched_off_row(self):
-        self._refused([_reg(is_active=False)], "inactive")
+    def test_an_ended_row_is_no_row(self):
+        """Unassigned, or superseded: history, not a registration."""
+        self._refused([_reg(ended_at="2026-09-20T00:00:00")], "none")
 
-    def test_is_active_must_be_the_boolean(self):
-        """The same test `cs_attribution_for` applies: `is_active: True`. A
-        truthy string is not a switched-on registration."""
-        for junk in ("true", 1, None):
-            with self.subTest(is_active=repr(junk)):
-                self._refused([_reg(is_active=junk)], "inactive")
+    def test_ended_AND_unlinked(self):
+        self._refused([_reg(ended_at="2026-09-20T00:00:00", user_id=None)], "none")
 
-    def test_switched_off_AND_unlinked(self):
-        self._refused([_reg(is_active=False, user_id=None)], "inactive")
+
+class TheOldSwitchIsNotRead(unittest.TestCase):
+    """THERE IS NO SWITCH (operator's ruling, 2026-10-08). A row carrying
+    `is_active` in any state and no end is a live registration, and a linked
+    one switches the log on. Before the ruling each of these was refused."""
+
+    def test_any_value_of_the_old_flag(self):
+        for flag in (False, None, "true", 1):
+            with self.subTest(is_active=repr(flag)):
+                out, err, _ = _switch([_reg(is_active=flag)])
+                self.assertIsNone(err)
+                self.assertIs(out["active"], True)
 
 
 class SwitchingItOffNeverAsks(unittest.TestCase):
@@ -237,10 +246,13 @@ class TheRuleWithNoDatabase(unittest.TestCase):
         self.assertEqual(f(None), "none")
         self.assertIsNone(f([_reg()]))
         self.assertEqual(f([_reg(user_id="")]), "unlinked")
-        self.assertEqual(f([_reg(is_active=False)]), "inactive")
+        self.assertIsNone(f([_reg(is_active=False)]))
+
+    def test_there_is_no_switched_off_reason(self):
+        self.assertEqual(set(S.CS_ACTIVATION_REFUSAL_MESSAGES), {"none", "unlinked"})
 
     def test_every_reason_names_where_to_fix_it(self):
-        for reason in ("none", "inactive", "unlinked"):
+        for reason in ("none", "unlinked"):
             with self.subTest(reason):
                 self.assertIn("User Management",
                               S.CS_ACTIVATION_REFUSAL_MESSAGES[reason])

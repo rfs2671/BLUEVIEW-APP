@@ -41,28 +41,35 @@ on the weaker basis.
 Same rule as item_applies and the pre-shift affirmation overlay: a filed
 document must not change what it says because the world moved on.
 
-EVERY PATH THAT SWITCHES A REGISTRATION OFF STAMPS A TIME, and all three are
-read here:
+A REGISTRATION IS A DATED SPAN, AND THERE IS NO SWITCH. Operator's ruling,
+2026-10-08: once a superintendent is assigned to a project he is its
+superintendent until User Management changes his assignment. A registration
+exists or it does not. `is_active` is neither read nor written.
 
-    superseded by a new CS    is_active False + deactivated_at   (:16014)
-    switched off by an admin  is_active False + deactivated_at   (:16165)
-    soft-deleted              is_deleted True  + deleted_at      (:16179)
+It starts at `created_at` and ends at `ended_at` -- stamped when he is
+unassigned, or when his replacement is registered. AN ENDED ROW IS NEVER
+DELETED: it is what a sheet he signed last month is attributed against. So the
+historical question is answerable in every case:
 
-So the historical question is answerable in every case a live build can
-produce:
+    registered AFTER the log date        created_at is later -> REGISTERED_LATER
+    ended BEFORE the log date            it did not describe that day
+    ended ON OR AFTER the log date       it DID -- attributed normally
+    not ended                            in force
 
-    registered AFTER the log date        created_at is later
-    deactivated BEFORE the log date      it was not active then
-    deactivated AFTER the log date       it WAS active then -- the log is
-                                         attributed normally
-    deleted before / after               same, via deleted_at
-    still active                         answerable
+`registration_in_force_on` picks the row for a date from ALL of a project's
+rows, so last month's sheet finds last month's superintendent even after he was
+replaced. Before this, the caller handed in the project's CURRENT row, and a
+sheet signed by a predecessor was checked against his successor's registration.
 
-UNDETERMINED SURVIVES FOR ONE CASE ONLY: a row switched off before those two
-stampers existed, which therefore carries `is_active: False` and no
-`deactivated_at`. That set cannot be repaired -- the time it was switched off
-was never written down -- so it reports that it cannot be determined rather
-than guessing. It does not grow.
+LEGACY SPELLINGS OF AN END are read as one (`registration_end`): `deactivated_at`
+(superseded or switched off) and `deleted_at` (unassigned, which used to
+soft-delete). Production held no such row when this changed (census
+2026-10-08: one registration, live) -- a guard, not a migration.
+
+UNDETERMINED IS NO LONGER PRODUCED. It existed for a row switched off before
+any end was stamped, which `is_active: False` alone could not date. With no
+switch there is no such row; the constant and its sentence stay so a caller
+holding the name does not break.
 
 AN EARLIER VERSION OF THIS MODULE CLAIMED ONLY THE DELETE PATH STAMPED A TIME.
 That was wrong, and wrong in a specific way worth recording: the writers were
@@ -104,6 +111,74 @@ def _as_date(value) -> Optional[str]:
     return text[:10] if len(text) >= 10 else None
 
 
+def registration_end(registration) -> Optional[object]:
+    """When this registration stopped describing the project, or None.
+
+    `ended_at` is the one spelling written now. The two legacy ones are read as
+    the same fact so a row written before the switch was removed still dates.
+    """
+    r = registration if isinstance(registration, dict) else {}
+    return r.get("ended_at") or r.get("deactivated_at") or r.get("deleted_at")
+
+
+def registration_in_force_on(rows, log_date, signer_id=None):
+    """The registration that described the project on `log_date`.
+
+    PURE. `rows` is EVERY registration the project has ever had -- ended ones
+    included, because an ended row is what an old sheet is attributed against.
+
+    Returns, in order of preference:
+      * a row in force that day (created on or before it, not ended before it).
+        ON A HANDOVER DAY two can be -- the predecessor's end and the
+        successor's start share a date -- and both men held the role that day,
+        so the one whose account signed is preferred; otherwise the newest.
+      * else the EARLIEST row created after it, so the caller reports
+        REGISTERED_LATER rather than "nobody";
+      * else None: every registration had ended before that day, or there
+        never was one.
+
+    A soft-deleted legacy row with no date is skipped: it cannot be placed in
+    time, and placing it would be a guess on a statutory record.
+    """
+    usable = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("is_deleted") and not registration_end(r):
+            continue
+        usable.append(r)
+    if not usable:
+        return None
+
+    def _key(r):
+        return (_as_date(r.get("created_at")) or "",
+                str(r.get("created_at") or ""), str(r.get("_id") or ""))
+
+    day = _as_date(log_date)
+    if day is None:
+        live = [r for r in usable if not registration_end(r)]
+        return max(live or usable, key=_key)
+
+    def _in_force(r):
+        start = _as_date(r.get("created_at"))
+        end = _as_date(registration_end(r))
+        return (start is None or start <= day) and (end is None or end >= day)
+
+    in_force = [r for r in usable if _in_force(r)]
+    if in_force:
+        sid = str(signer_id or "").strip()
+        if sid:
+            mine = [r for r in in_force if str(r.get("user_id") or "") == sid]
+            if mine:
+                return max(mine, key=_key)
+        return max(in_force, key=_key)
+    later = [r for r in usable
+             if _as_date(r.get("created_at")) and _as_date(r.get("created_at")) > day]
+    if later:
+        return min(later, key=_key)
+    return None
+
+
 def attribute_signer(signer, registration, log_date=None) -> Dict:
     """What this document can say about who signed it.
 
@@ -138,40 +213,17 @@ def attribute_signer(signer, registration, log_date=None) -> Dict:
                 "registered_licence": reg_lic, "signer_name": signer_name,
                 "checked_on": day}
 
-    deleted = _as_date(registration.get("deleted_at"))
-    if day and deleted and deleted < day:
+    # ── Ended, and WHEN ────────────────────────────────────────────────────
+    #
+    # ONE END, WHATEVER IT IS SPELLED. Ended before the log's date: it did not
+    # describe that day, so nothing is claimed about the signer. Ended on or
+    # after: it DID, and a registration that ended last week does not
+    # un-describe a log signed while it stood. There is no switch to consult --
+    # `is_active` is not read (operator's ruling, 2026-10-08).
+    ended = _as_date(registration_end(registration))
+    if day and ended and ended < day:
         return {"state": NO_REGISTRATION, "registered_name": None,
                 "registered_licence": None, "signer_name": signer_name,
-                "checked_on": day}
-
-    # ── Switched off, and WHEN ─────────────────────────────────────────────
-    #
-    # Both off-switches stamp `deactivated_at`: supersession by a new CS, and
-    # an admin setting is_active False. So the question is answerable rather
-    # than merely honest about being unanswerable.
-    deactivated = _as_date(registration.get("deactivated_at"))
-    if day and deactivated:
-        if deactivated < day:
-            # Not the registered CS on that date. Same answer as a deletion
-            # that predates the log: nobody was registered, so nothing is
-            # claimed about the signer.
-            return {"state": NO_REGISTRATION, "registered_name": None,
-                    "registered_licence": None, "signer_name": signer_name,
-                    "checked_on": day}
-        # Deactivated on or AFTER the log's date, so it WAS active then and the
-        # signature is attributed normally. A registration retired last month
-        # does not un-describe a log signed while it stood.
-
-    # THE ONE CASE THAT REMAINS UNANSWERABLE, and it cannot grow: a row
-    # switched off BEFORE either stamper existed carries is_active False and no
-    # deactivated_at. The moment it was switched off was never written down, so
-    # nothing can recover it and the check says so rather than guessing.
-    if (not registration.get("is_active")
-            and not registration.get("deleted_at")
-            and not registration.get("deactivated_at")
-            and day and created and created < day):
-        return {"state": UNDETERMINED, "registered_name": reg_name,
-                "registered_licence": reg_lic, "signer_name": signer_name,
                 "checked_on": day}
 
     # ── Who signed ─────────────────────────────────────────────────────────

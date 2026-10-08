@@ -126,6 +126,25 @@ REGISTRATION = {
 UNLINKED = {**REGISTRATION, "user_id": None}
 
 
+class _RowsCursor:
+    """What `find` returns: sortable, listable, async-iterable."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def sort(self, *a, **k):
+        return self
+
+    async def to_list(self, n=None):
+        return list(self._rows)
+
+    def __aiter__(self):
+        async def gen():
+            for r in self._rows:
+                yield r
+        return gen()
+
+
 class _Regs:
     def __init__(self, row):
         self.row = row
@@ -134,6 +153,14 @@ class _Regs:
     async def find_one(self, query, projection=None):
         self.queries.append(query)
         return self.row
+
+    def find(self, query=None, projection=None, **kw):
+        # THE SAME ROW, AS A LIST. The filing gate reads a project's whole
+        # registration history now (the row in force on the log's date is
+        # chosen from it); this fake still answers with the one row the test
+        # wants, whatever the query.
+        self.queries.append(query)
+        return _RowsCursor([self.row] if self.row else [])
 
 
 def _install(reg_row):

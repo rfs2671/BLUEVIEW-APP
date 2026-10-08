@@ -154,16 +154,29 @@ class TheExclusionMUSTBeTheObjectId(unittest.TestCase):
         _, sink = _run([_reg(REG_A)])
         q = sink[0]
         self.assertEqual(q["license_number_normalized"], "CS12345")
-        self.assertIs(q["is_active"], True)
+        # LIVE ROWS, BY THE ONE DEFINITION; no `is_active` -- there is no switch.
+        for k, v in server.CS_REGISTRATION_LIVE.items():
+            self.assertEqual(q.get(k), v, k)
+        self.assertNotIn("is_active", q)
 
 
-class TheInactivePathIsUnchanged(unittest.TestCase):
+class AnEndedRowIsHistory(unittest.TestCase):
     """PASSES EITHER WAY -- this is the path that hid the defect."""
 
-    def test_an_inactive_registration_never_enters_the_branch(self):
-        out, sink = _run([_reg(REG_A, is_active=False)])
+    def test_an_ended_registration_never_enters_the_branch(self):
+        """History conflicts with nothing: a registration that ended is not one
+        of the two live rows the one-job alert exists to flag."""
+        out, sink = _run([_reg(REG_A, ended_at="2026-09-20T00:00:00")])
         self.assertIs(out[0]["has_conflict"], False)
+        self.assertIs(out[0]["live"], False)
         self.assertEqual(sink, [])
+
+    def test_the_old_switch_off_does_not_hide_a_live_row(self):
+        """`is_active: False` with no end is live, so it IS checked for a
+        conflict (operator's ruling, 2026-10-08: there is no switch)."""
+        out, sink = _run([_reg(REG_A, is_active=False)])
+        self.assertIs(out[0]["live"], True)
+        self.assertEqual(len(sink), 1)
 
     def test_an_empty_list_is_fine(self):
         out, sink = _run([])

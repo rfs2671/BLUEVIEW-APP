@@ -89,6 +89,8 @@ def _db(project=PROJ_A):
         getattr(db, coll).insert_one = AsyncMock(side_effect=insert_one)
         getattr(db, coll).find = MagicMock(
             return_value=MagicMock(to_list=AsyncMock(return_value=[])))
+        # Supersession ends the project's live rows in one write.
+        getattr(db, coll).update_many = AsyncMock()
     return db, state
 
 

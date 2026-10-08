@@ -140,6 +140,16 @@ class _Coll:
                 return type("R", (), {"matched_count": 1, "modified_count": 1})()
         return type("R", (), {"matched_count": 0, "modified_count": 0})()
 
+    async def update_many(self, q, u):
+        # Supersession ends every live row on the project in one write.
+        n = 0
+        for r in self.rows:
+            if _match(r, q):
+                self.updates.append(dict(u.get("$set") or {}))
+                r.update(u.get("$set") or {})
+                n += 1
+        return type("R", (), {"matched_count": n, "modified_count": n})()
+
 
 class _DB:
     def __init__(self, users, regs):
@@ -400,8 +410,12 @@ class AnotherCompanysRegistrationIsNotEditable(unittest.TestCase):
         """PASSED IN THE CONTROL, same reason."""
         db = _db(regs=[_registration(user_id=MICHAEL)])
         out = _delete(db)
-        self.assertIs(_row(db)["is_deleted"], True)
-        self.assertIs(_row(db)["is_active"], False)
+        # IT ENDS THE REGISTRATION, IT DOES NOT ERASE IT (operator's ruling,
+        # 2026-10-08): a dated end, the row kept as the record of who held the
+        # role while it stood. There is no is_active to turn off.
+        self.assertTrue(_row(db).get("ended_at"))
+        self.assertEqual(_row(db).get("ended_reason"), "removed")
+        self.assertIsNot(_row(db).get("is_deleted"), True)
         self.assertIn("message", out)
 
     def test_the_platform_operator_reaches_both_routes(self):
@@ -413,7 +427,7 @@ class AnotherCompanysRegistrationIsNotEditable(unittest.TestCase):
         _put(db, {"full_name": "Renamed By Operator"}, admin=OPERATOR)
         self.assertEqual(_row(db)["full_name"], "Renamed By Operator")
         _delete(db, admin=OPERATOR)
-        self.assertIs(_row(db)["is_deleted"], True)
+        self.assertTrue(_row(db).get("ended_at"))
 
     def test_a_missing_registration_is_a_404_on_delete_too(self):
         """The PUT learnt this from its read in #678. DELETE sent the path id
