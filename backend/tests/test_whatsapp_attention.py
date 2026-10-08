@@ -221,6 +221,12 @@ class ImportanceAndDedupe(unittest.TestCase):
         self.assertEqual(wa.importance("high", "send the invoice")["importance"], "high")
         self.assertEqual(wa.importance("bogus", "send it")["importance"], "normal")
 
+    def test_all_stop_word_quotes_stay_apart(self):
+        a = wa.dedupe_key(G_A, "request", "u", "Can you do this?")
+        b = wa.dedupe_key(G_A, "request", "u", "Would you do that?")
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, wa.dedupe_key(G_A, "request", "u", "can you do this"))
+
     def test_same_ask_same_key(self):
         a = wa.dedupe_key(G_A, "request", "user:u1", "send the stair RFI please")
         b = wa.dedupe_key(G_A, "request", "user:u1", "Please send the stair RFI")
@@ -384,6 +390,40 @@ class ShadowModeAndCursor(unittest.TestCase):
             report = _run(server._attention_tick(now=T0, probe=False))
         self.assertTrue(report["no_model"])
         self.assertEqual(db.attention_cursors.rows, [])
+
+    def test_due_dates_count_from_when_it_was_sent(self):
+        db = _world()
+        _first_sight(db)
+        # Sent Thursday 11 PM ET, stored Friday 1 AM ET after a delay.
+        _msg(db, "can you send the stair RFI by tomorrow?",
+             timestamp=datetime(2026, 10, 9, 3, 0, tzinfo=timezone.utc),
+             at=datetime(2026, 10, 9, 5, 0, tzinfo=timezone.utc))
+        _tick(db, _Model({"stair RFI": [{**ASK[0], "quote": "can you send the stair RFI by tomorrow?",
+                                         "due_text": "by tomorrow"}]}),
+              datetime(2026, 10, 9, 6, 0, tzinfo=timezone.utc))
+        self.assertEqual(_items(db)[0]["due"]["due_at"], "2026-10-09")
+
+    def test_a_failed_write_is_retried_not_lost(self):
+        db = _world()
+        _first_sight(db)
+        _msg(db, "can you send the stair RFI by Friday?")
+        model = _Model({"stair RFI": ASK})
+        real = db.attention_items.insert_one
+        calls = [0]
+
+        async def flaky(doc):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError("primary stepped down")
+            return await real(doc)
+
+        db.attention_items.insert_one = flaky
+        report, _ = _tick(db, model, T0 + timedelta(hours=1))
+        self.assertEqual(report["write_failed"], 1)
+        self.assertEqual(_items(db), [])
+        _tick(db, model, T0 + timedelta(hours=2))
+        self.assertEqual(len(_items(db)), 1)
+        self.assertEqual(_items(db)[0]["also_seen"], [])
 
     def test_a_failed_model_call_is_retried_then_skipped(self):
         db = _world()

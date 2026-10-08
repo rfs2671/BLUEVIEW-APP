@@ -44120,7 +44120,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     report["prompt_tokens"] += answer.get("prompt_tokens", 0)
     report["completion_tokens"] += answer.get("completion_tokens", 0)
     body = str(msg.get("body") or "")
-    sent_at = msg.get("created_at") or datetime.now(timezone.utc)
+    # When it was SENT (WaAPI's timestamp), not when the webhook arrived:
+    # "tomorrow" after a delayed delivery means the sender's tomorrow.
+    sent_at = msg.get("timestamp")
+    if not isinstance(sent_at, datetime):
+        sent_at = msg.get("created_at") or datetime.now(timezone.utc)
     if sent_at.tzinfo is None:
         sent_at = sent_at.replace(tzinfo=timezone.utc)
     written = 0
@@ -44151,6 +44155,12 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         msg_id = str(msg.get("message_id") or "") or str(msg.get("_id"))
         now = datetime.now(timezone.utc)
         try:
+            # A retry of this same message after a failed write: what was
+            # already written stays, once.
+            if await db.attention_items.find_one(
+                    {"dedupe_key": key, "project_id": project_id,
+                     "evidence.message_id": msg_id}, {"_id": 1}):
+                continue
             dup = await db.attention_items.find_one_and_update(
                 {"dedupe_key": key, "project_id": project_id,
                  "evidence.sent_at": {"$gte": sent_at - timedelta(
@@ -44198,7 +44208,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
         except Exception as e:
+            # Not past this message: the cursor stays and it is retried
+            # (items already written are recognised above, not doubled).
             logger.warning(f"[attention] item write failed: {type(e).__name__}")
+            report["write_failed"] += 1
+            return False
     await _attention_count(ctx, ctx["now"], messages=1, passed=1, calls=1,
                            items=written,
                            prompt_tokens=answer.get("prompt_tokens", 0),
@@ -44281,7 +44295,8 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
     report = {"groups": 0, "new_groups": 0, "bot_off": 0, "unbound": 0,
               "messages": 0, "calls": 0, "items": 0, "deduped": 0,
               "filtered_out": 0, "dropped_unverified": 0, "model_failed": 0,
-              "skipped_failing": 0, "marked_resolved": 0, "owner_resolved": 0,
+              "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
+              "owner_resolved": 0,
               "owner_unresolved": 0, "prompt_tokens": 0,
               "completion_tokens": 0, "call_cap": False}
     if _attention_disabled():

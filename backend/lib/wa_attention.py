@@ -351,8 +351,13 @@ def subject_terms(quote: str, limit: int = 6) -> List[str]:
 
 
 def dedupe_key(group_id: str, typ: str, owner_key: str, quote: str) -> str:
-    raw = "|".join([str(group_id), typ, owner_key or "-",
-                    " ".join(subject_terms(quote))])
+    """Same group, type, owner and subject words. A quote with no subject
+    words at all ("can you do this?") keys on its normalised text instead,
+    so two different all-stop-word asks are not merged."""
+    terms = " ".join(subject_terms(quote))
+    if not terms:
+        terms = "q:" + " ".join(re.findall(r"[a-z0-9']+", (quote or "").lower().translate(_TYPO)))
+    raw = "|".join([str(group_id), typ, owner_key or "-", terms])
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
