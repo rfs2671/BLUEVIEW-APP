@@ -50,7 +50,7 @@ import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
-import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin, isPlatformOperator } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
@@ -672,6 +672,35 @@ export default function SettingsScreen() {
               />
             </View>
           </GlassCard>
+
+          {/* ── OWNER PORTAL ──────────────────────────────────────────────
+              The platform operator's way in. Hidden for everyone else; the
+              server answers 404 on the portal's routes regardless. */}
+          {isPlatformOperator(user) ? (
+            <>
+              <Text style={s.sectionLabel}>PLATFORM</Text>
+              <Pressable
+                onPress={() => router.push('/owner')}
+                accessibilityRole="button"
+                style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+              >
+                <GlassCard style={s.card}>
+                  <View style={s.settingRow}>
+                    <View style={s.settingLeft}>
+                      <ShieldCheck size={20} strokeWidth={1.5} color={colors.text.secondary} />
+                      <View>
+                        <Text style={s.settingTitle}>Owner portal</Text>
+                        <Text style={s.settingSubtitle}>
+                          Companies, admins and deleted items
+                        </Text>
+                      </View>
+                    </View>
+                    <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />
+                  </View>
+                </GlassCard>
+              </Pressable>
+            </>
+          ) : null}
 
           {/* ── NOTIFICATIONS ─────────────────────────────────────────── */}
           <Text style={s.sectionLabel}>NOTIFICATIONS</Text>

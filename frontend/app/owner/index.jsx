@@ -14,7 +14,6 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   Building2,
   Plus,
   Edit3,
@@ -36,7 +35,7 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import GCAutocomplete from '../../src/components/GCAutocomplete';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
-import FloatingNav from '../../src/components/FloatingNav';
+import OwnerNav from '../../src/components/OwnerNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
@@ -119,10 +118,6 @@ const ownerAPI = {
   },
   createAdmin: async (adminData) => {
     const response = await apiClient.post('/api/owner/admins', adminData);
-    return response.data;
-  },
-  deleteAdmin: async (adminId) => {
-    const response = await apiClient.delete(`/api/owner/admins/${adminId}`);
     return response.data;
   },
   migrateData: async (assignments) => {
@@ -247,10 +242,8 @@ export default function OwnerPortalScreen() {
   // Modal states
   const [showCreateCompanyModal, setShowCreateCompanyModal] = useState(false);
   const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
-  const [showCompanyAdminsModal, setShowCompanyAdminsModal] = useState(false);
   const [showMigrationModal, setShowMigrationModal] = useState(false);
   const [showDeleteCompanyModal, setShowDeleteCompanyModal] = useState(false);
-  const [showDeleteAdminModal, setShowDeleteAdminModal] = useState(false);
 
   // MR.2 — filing_reps state.
   const [expandedFilingRepsCompanyId, setExpandedFilingRepsCompanyId] = useState(null);
@@ -272,8 +265,6 @@ export default function OwnerPortalScreen() {
 
   // Selected data
   const [selectedCompany, setSelectedCompany] = useState(null);
-  const [selectedAdmin, setSelectedAdmin] = useState(null);
-  const [companyAdmins, setCompanyAdmins] = useState([]);
 
   // Form fields
   const [formCompanyName, setFormCompanyName] = useState('');
@@ -407,13 +398,6 @@ export default function OwnerPortalScreen() {
         toast.error('Error', error.response?.data?.detail || 'Could not create admin');
       }
     }
-  };
-
-  const handleViewCompanyAdmins = (company) => {
-    const companyAdminsList = admins.filter(a => a.company_id === company.id);
-    setSelectedCompany(company);
-    setCompanyAdmins(companyAdminsList);
-    setShowCompanyAdminsModal(true);
   };
 
   // ── MR.2: filing_reps handlers ────────────────────────────────
@@ -655,28 +639,6 @@ export default function OwnerPortalScreen() {
   }
 };
 
-  const handleDeleteAdmin = (admin) => {
-    setSelectedAdmin(admin);
-    setShowDeleteAdminModal(true);
-  };
-
-  const confirmDeleteAdmin = async () => {
-    try {
-      await ownerAPI.deleteAdmin(selectedAdmin.id);
-      setAdmins(admins.filter(a => a.id !== selectedAdmin.id));
-      toast.success('Deleted', 'Admin account deleted');
-      setShowDeleteAdminModal(false);
-      setSelectedAdmin(null);
-    } catch (error) {
-      console.error('Failed to delete admin:', error);
-      if (isOfflineError(error)) {
-        toast.error('Offline', 'Deleting needs a connection. The admin account was not deleted.');
-      } else {
-        toast.error('Error', error.response?.data?.detail || 'Could not delete admin');
-      }
-    }
-  };
-
   const handleOpenMigration = () => {
     // Initialize migration assignments
     const initial = {};
@@ -733,15 +695,7 @@ export default function OwnerPortalScreen() {
     return (
       <AnimatedBackground>
         <SafeAreaView style={styles.container} edges={['top']}>
-          <View style={styles.header}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/')}
-            />
-            <Text style={styles.logoText}>OWNER PORTAL</Text>
-            <View style={{ width: 48 }} />
-          </View>
+          <OwnerNav />
 
           <View style={styles.centerContent}>
             <GlassCard style={styles.loginCard}>
@@ -771,17 +725,9 @@ export default function OwnerPortalScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/')}
-            />
-            <Text style={styles.logoText}>OWNER PORTAL</Text>
-          </View>
-        </View>
+        {/* The portal's own nav, not the app's: no app tab bar here and
+            DesktopShell leaves /owner bare. "Back to app" returns to /. */}
+        <OwnerNav />
 
         <ScrollView
           style={styles.scrollView}
@@ -848,9 +794,12 @@ export default function OwnerPortalScreen() {
                           <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                         </IconPod>
                         <View style={styles.companyInfo}>
+                          {/* TWO LINES, THEN AN ELLIPSIS. One line cut
+                              "BLUEVIEW CONSTRUCTION INC" to "BLUEVIEW
+                              CONSTRUC…". */}
                           <Text
                             style={styles.companyName}
-                            numberOfLines={1}
+                            numberOfLines={2}
                             ellipsizeMode="tail"
                           >
                             {company.name}
@@ -901,7 +850,9 @@ export default function OwnerPortalScreen() {
                             </Text>
                           </Pressable>
                           <Pressable
-                            onPress={() => handleViewCompanyAdmins(company)}
+                            onPress={() => router.push(`/owner/company/${company.id}`)}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Open ${company.name}: users and admins`}
                             style={styles.actionBtn}
                           >
                             <Eye size={18} strokeWidth={1.5} color={colors.text.primary} />
@@ -1145,7 +1096,6 @@ export default function OwnerPortalScreen() {
           </View>
         </ScrollView>
 
-        <FloatingNav />
 
         {/* Create Company Modal */}
         <Modal
@@ -1349,61 +1299,6 @@ export default function OwnerPortalScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* View Company Admins Modal */}
-        <Modal
-          visible={showCompanyAdminsModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowCompanyAdminsModal(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowCompanyAdminsModal(false)} />
-            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
-              <GlassCard variant="modal" style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>
-                    {selectedCompany?.name} - Admins
-                  </Text>
-                  <Pressable onPress={() => setShowCompanyAdminsModal(false)}>
-                    <X size={24} color={colors.text.primary} />
-                  </Pressable>
-                </View>
-
-                <ScrollView style={styles.adminsList}>
-                  {companyAdmins.length > 0 ? (
-                    companyAdmins.map((admin) => (
-                      <View key={admin.id} style={styles.adminItem}>
-                        <View style={styles.adminInfo}>
-                          <Text style={styles.adminName}>{admin.name}</Text>
-                          <Text style={styles.adminEmail}>{admin.email}</Text>
-                        </View>
-                        <Pressable
-                          onPress={() => {
-                            setShowCompanyAdminsModal(false);
-                            handleDeleteAdmin(admin);
-                          }}
-                          style={styles.deleteAdminBtn}
-                        >
-                          <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
-                        </Pressable>
-                      </View>
-                    ))
-                  ) : adminsState !== 'ok' ? (
-                    <OfflineNotice
-                      mode={adminsState}
-                      detail={adminsState === 'offline'
-                        ? 'Admin accounts could not be loaded, so this company’s admins are unknown — not necessarily none.'
-                        : undefined}
-                    />
-                  ) : (
-                    <Text style={styles.emptyText}>No admins in this company</Text>
-                  )}
-                </ScrollView>
-              </GlassCard>
-            </View>
-          </View>
-        </Modal>
-
         {/* Migration Modal */}
         <Modal
           visible={showMigrationModal}
@@ -1568,44 +1463,6 @@ export default function OwnerPortalScreen() {
                       style={styles.deleteButton}
                     />
                   )}
-                </View>
-              </GlassCard>
-            </View>
-          </View>
-        </Modal>
-
-        {/* Delete Admin Confirmation */}
-        <Modal
-          visible={showDeleteAdminModal}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowDeleteAdminModal(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowDeleteAdminModal(false)} />
-            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
-              <GlassCard variant="modal" style={styles.confirmCard}>
-                <IconPod size={64}>
-                  <AlertTriangle size={28} strokeWidth={1.5} color={semantic.attention} />
-                </IconPod>
-                <Text style={styles.confirmTitle}>Delete Admin?</Text>
-                <Text style={styles.confirmText}>
-                  Are you sure you want to delete admin "{selectedAdmin?.name}"?
-                </Text>
-                <Text style={[styles.confirmWarning, { color: semantic.attention }]}>
-                  ⚠️ This will only delete the admin account. Their created projects and data will remain.
-                </Text>
-                <View style={styles.confirmActions}>
-                  <GlassButton
-                    title="Cancel"
-                    onPress={() => setShowDeleteAdminModal(false)}
-                    variant="secondary"
-                  />
-                  <GlassButton
-                    title="Delete"
-                    onPress={confirmDeleteAdmin}
-                    style={styles.deleteButton}
-                  />
                 </View>
               </GlassCard>
             </View>
@@ -1852,23 +1709,25 @@ function buildStyles(colors, isDark) {
   companyCard: {
     marginBottom: 0,
   },
+  // WRAPS on a phone: the chip and buttons drop below the name rather
+  // than squeezing it to a few letters per line.
   companyHeader: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.md,
   },
   companyInfo: {
     flex: 1,
+    minWidth: 180,
   },
   companyName: {
     fontSize: 18,
     fontWeight: '500',
     color: colors.text.primary,
-    // Allow ~25 chars before truncation at current font size.
-    // flex:1 keeps the text responsive; maxWidth caps the cell
-    // before it pushes the row actions off-screen.
+    // Wraps to two lines (numberOfLines={2}) in the space companyInfo
+    // leaves beside the row actions; the old 200px cap cut names short.
     flex: 1,
-    maxWidth: 200,
   },
   rowMeta: {
     ...typography.caption,
@@ -1927,7 +1786,9 @@ function buildStyles(colors, isDark) {
   },
   companyActions: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: spacing.sm,
+    marginLeft: 'auto',
   },
   actionBtn: {
     padding: spacing.sm,

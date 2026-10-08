@@ -282,7 +282,10 @@ class TestOwnerRouteClassification(unittest.TestCase):
             if not path.startswith("/owner/") and path != "/owner/companies":
                 continue
             names = self._deps(r)
-            if not ({"require_platform_operator", "require_company_scope"} & set(names)):
+            # require_operator_404 is the owner portal's STRICT platform gate
+            # (404 for every non-operator, never shadowed) -- see server.py.
+            if not ({"require_platform_operator", "require_company_scope",
+                     "require_operator_404"} & set(names)):
                 ungated.append(path)
         self.assertEqual(ungated, [],
                          "/owner/* routes with NO tenant or platform gate: "

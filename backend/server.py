@@ -67,6 +67,7 @@ from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
+from lib import owner_portal  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
@@ -8668,7 +8669,8 @@ def deleted_user_ref(user_id) -> str:
     return DELETED_USER_PREFIX + uid
 
 
-def _mark_user_deleted(user_id) -> dict:
+def _mark_user_deleted(user_id, *, by: Optional[str] = None,
+                       batch: Optional[str] = None) -> dict:
     """The $set for an executed deletion.
 
     THE ONLY WRITER of the soft-delete fields, so the prefix cannot be
@@ -8678,12 +8680,19 @@ def _mark_user_deleted(user_id) -> dict:
     is what keeps `signature_events.signer.user_id` resolvable to a person.
     """
     now = datetime.now(timezone.utc)
-    return {
+    out = {
         "is_deleted": True,
         "deleted_at": now,
         "updated_at": now,
         "deleted_user_ref": deleted_user_ref(user_id),
     }
+    # WHO, AND WHICH ACTION. The owner portal's Deleted items tab shows the
+    # first and restores by the second (lib/owner_portal.py). Absent on rows
+    # deleted before they were stamped; those restore on their own.
+    if by:
+        out["deleted_by"] = by
+    out["delete_batch_id"] = batch or owner_portal.new_batch_id()
+    return out
 
 
 @api_router.post("/auth/me/deletion-request")
@@ -11909,7 +11918,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
     # deleted_user: reference cannot be forgotten here or by a later path.
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
-        {"$set": _mark_user_deleted(user_id)},
+        {"$set": _mark_user_deleted(user_id, by=actor_id(admin))},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -15366,7 +15375,7 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     # Same single writer as DELETE /admin/users/{id} — see the note there.
     result = await db.users.update_one(
         {"_id": to_query_id(admin_id), "role": "admin"},
-        {"$set": _mark_user_deleted(admin_id)},
+        {"$set": _mark_user_deleted(admin_id, by=actor_id(current_user))},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Admin not found")
@@ -15403,6 +15412,410 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
     
     admin = await db.users.find_one({"_id": to_query_id(admin_id)})
     return serialize_id(admin)
+
+# ==================== OWNER PORTAL: COMPANY USERS AND DELETED ITEMS ==========
+#
+# PLATFORM OPERATOR ONLY, AND NOBODY ELSE LEARNS THESE ROUTES EXIST. Every
+# route below carries `require_operator_404`: a signed-in non-operator, and a
+# request with no or a bad token, both get 404 -- not 403, not 401. This gate
+# is strict regardless of PLATFORM_GATES_ENFORCED (the shadowed
+# `require_platform_operator` logs and lets people through while that flag is
+# unset).
+#
+# The rules -- what a deleted row says, when a change would leave a company
+# with no admin, what a restore clears -- are in lib/owner_portal.py.
+
+
+async def require_operator_404(
+    request: Request = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    try:
+        user = await get_current_user(request=request, credentials=credentials)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not is_platform_operator(user):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return user
+
+
+class OwnerAddAdmin(BaseModel):
+    """Body for POST /owner/companies/{id}/admins.
+
+    An email that already has an account in this company is made an admin;
+    otherwise a new admin is created here, with `name` and `password`."""
+    email: str
+    name: Optional[str] = None
+    password: Optional[str] = None
+
+
+class OwnerRoleChange(BaseModel):
+    role: str
+
+
+async def _owner_live_company(company_id: str) -> dict:
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if company.get("is_deleted") is True:
+        raise HTTPException(status_code=409, detail={
+            "code": "COMPANY_DELETED",
+            "message": "This company is deleted. Restore it first.",
+        })
+    return company
+
+
+async def _owner_company_users(company_id: str) -> list:
+    return await db.users.find(
+        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"password": 0},
+    ).to_list(2000)
+
+
+def _owner_last_admin():
+    return HTTPException(status_code=409, detail={
+        "code": "LAST_ADMIN",
+        "message": "This is the company's only admin. Make someone else an "
+                   "admin first.",
+    })
+
+
+@api_router.get("/owner/companies/{company_id}/users", tags=["Owner"])
+async def owner_company_users(company_id: str,
+                              operator=Depends(require_operator_404)):
+    """The company's live users with their roles, admins first."""
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    users = await _owner_company_users(company_id)
+    rows = owner_portal.sort_users(owner_portal.user_row(u) for u in users)
+    return {
+        "company": {
+            "id": str(company["_id"]),
+            "name": company.get("name"),
+            "is_test": bool(company.get("is_test")),
+            "is_deleted": company.get("is_deleted") is True,
+        },
+        "users": rows,
+        "admin_count": sum(1 for r in rows if r["role"] == "admin"),
+        "assignable_roles": list(ASSIGNABLE_ROLES),
+    }
+
+
+@api_router.post("/owner/companies/{company_id}/admins", tags=["Owner"])
+async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
+                                  operator=Depends(require_operator_404)):
+    """Make someone an admin of this company.
+
+    An existing account IN THIS COMPANY is promoted. An account in ANOTHER
+    company is refused -- moving people between tenants is not this button. An
+    email with no account creates a new admin here (name and password
+    required). No invite: the operator hands over the password."""
+    company = await _owner_live_company(company_id)
+    email = (body.email or "").strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="Enter an email address.")
+    now = datetime.now(timezone.utc)
+    op = actor_id(operator)
+
+    existing = await db.users.find_one({
+        "email": {"$in": sorted({email, email.lower()})},
+        "is_deleted": {"$ne": True},
+    })
+    if existing:
+        if str(existing.get("company_id") or "") != company_id:
+            raise HTTPException(status_code=409, detail={
+                "code": "OTHER_COMPANY" if existing.get("company_id")
+                        else "NO_COMPANY",
+                "message": "That email belongs to an account in another "
+                           "company." if existing.get("company_id") else
+                           "That email belongs to an account with no "
+                           "company (a self-serve signup). It cannot be "
+                           "made an admin here.",
+            })
+        if owner_portal.is_admin(existing):
+            raise HTTPException(status_code=409, detail={
+                "code": "ALREADY_ADMIN",
+                "message": "That person is already an admin of this company.",
+            })
+        uid = str(existing["_id"])
+        await db.users.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"role": "admin", "updated_at": now}},
+        )
+        await audit_log("owner_admin_add", op, "user", uid, {
+            "company_id": company_id, "email": existing.get("email"),
+            "mode": "promoted", "from_role": existing.get("role"),
+        })
+        existing["role"] = "admin"
+        return {"created": False, "user": owner_portal.user_row(existing)}
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail={
+            "code": "NEW_ACCOUNT_NEEDS_NAME",
+            "message": "No account has that email. Enter a name and a "
+                       "password to create one.",
+        })
+    pwd = assert_password_complexity(body.password or "")
+    user_doc = {
+        "email": email.lower(),
+        "password": hash_password(pwd),
+        "name": name,
+        "role": "admin",
+        "registration_source": REG_ADMIN,
+        "account_status": "approved",
+        "company_id": company_id,
+        "company_name": company.get("name"),
+        "created_at": now,
+        "updated_at": now,
+        "created_by": op,
+        "assigned_projects": [],
+        "is_deleted": False,
+    }
+    result = await db.users.insert_one(user_doc)
+    uid = str(result.inserted_id)
+    await audit_log("owner_admin_add", op, "user", uid, {
+        "company_id": company_id, "email": user_doc["email"],
+        "mode": "created",
+    })
+    user_doc["_id"] = uid
+    return {"created": True, "user": owner_portal.user_row(user_doc)}
+
+
+@api_router.patch("/owner/companies/{company_id}/users/{user_id}/role",
+                  tags=["Owner"])
+async def owner_change_user_role(company_id: str, user_id: str,
+                                 body: OwnerRoleChange,
+                                 operator=Depends(require_operator_404)):
+    """Change a company user's role. Refused if it leaves no admin."""
+    await _owner_live_company(company_id)
+    role = assert_assignable_role(body.role)
+    users = await _owner_company_users(company_id)
+    target = next((u for u in users if str(u["_id"]) == str(user_id)), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    before = target.get("role")
+    if str(before or "").strip().lower() == role:
+        return {"changed": False, "user": owner_portal.user_row(target)}
+    if owner_portal.leaves_no_admin(users, user_id, role):
+        raise _owner_last_admin()
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"_id": target["_id"]},
+        {"$set": {"role": role, "updated_at": now}},
+    )
+    await audit_log("owner_role_change", actor_id(operator), "user",
+                    str(user_id), {"company_id": company_id,
+                                   "email": target.get("email"),
+                                   "from_role": before, "to_role": role})
+    target["role"] = role
+    return {"changed": True, "user": owner_portal.user_row(target)}
+
+
+@api_router.delete("/owner/companies/{company_id}/users/{user_id}",
+                   tags=["Owner"])
+async def owner_remove_company_user(company_id: str, user_id: str,
+                                    operator=Depends(require_operator_404)):
+    """Remove a user from the company: a soft delete, so it lands on Deleted
+    items and can be restored. Refused for the company's only admin."""
+    await _owner_live_company(company_id)
+    users = await _owner_company_users(company_id)
+    target = next((u for u in users if str(u["_id"]) == str(user_id)), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if owner_portal.leaves_no_admin(users, user_id):
+        raise _owner_last_admin()
+    op = actor_id(operator)
+    await db.users.update_one(
+        {"_id": target["_id"]},
+        {"$set": _mark_user_deleted(user_id, by=op)},
+    )
+    if target.get("phone"):
+        try:
+            await db.whatsapp_contacts.update_one(
+                {"company_id": company_id, "phone": target["phone"]},
+                {"$set": {"user_id": None}},
+            )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts cleanup failed for removed user {user_id}: {e}")
+    await audit_log("owner_user_remove", op, "user", str(user_id), {
+        "company_id": company_id, "email": target.get("email"),
+        "role": target.get("role"),
+    })
+    return {"removed": True, "id": str(user_id)}
+
+
+_OWNER_KIND_COLLECTION = {
+    "company": "companies", "project": "projects", "user": "users",
+}
+
+
+@api_router.get("/owner/deleted", tags=["Owner"])
+async def owner_deleted_items(operator=Depends(require_operator_404)):
+    """Every soft-deleted company, project and user, newest first.
+
+    Projects include the ones an admin MARKED for deletion (state "marked")
+    as well as legacy soft deletes (state "deleted")."""
+    companies = await db.companies.find({}).to_list(5000)
+    company_names = {str(c["_id"]): c.get("name") or "" for c in companies}
+    deleted_companies = [c for c in companies if c.get("is_deleted") is True]
+    projects = await db.projects.find({
+        "$or": [{"is_deleted": True}, {"marked_for_deletion": True}],
+    }).to_list(5000)
+    users = await db.users.find({"is_deleted": True},
+                                {"password": 0}).to_list(10000)
+
+    by_ids = {str(owner_portal.deleted_by_of(d))
+              for d in (*deleted_companies, *projects, *users)
+              if owner_portal.deleted_by_of(d)}
+    people: Dict[str, str] = {}
+    if by_ids:
+        for u in await db.users.find(
+                {"_id": {"$in": [to_query_id(i) for i in by_ids]}},
+                {"name": 1, "email": 1}).to_list(len(by_ids)):
+            people[str(u["_id"])] = u.get("name") or u.get("email") or str(u["_id"])
+
+    rows = []
+    for kind, docs in (("company", deleted_companies), ("project", projects),
+                       ("user", users)):
+        rows.extend(owner_portal.deleted_row(
+            kind, d, company_names=company_names, people=people) for d in docs)
+    rows = owner_portal.sort_rows(rows)
+    return {
+        "items": rows,
+        "counts": {k: sum(1 for r in rows if r["kind"] == k)
+                   for k in owner_portal.KINDS},
+    }
+
+
+async def _owner_deleted_doc(kind: str, item_id: str):
+    if kind not in owner_portal.KINDS:
+        raise HTTPException(status_code=404, detail="Not Found")
+    coll = db[_OWNER_KIND_COLLECTION[kind]]
+    doc = await coll.find_one({"_id": to_query_id(item_id)},
+                              {"password": 0} if kind == "user" else None)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"{kind.capitalize()} not found")
+    deleted = (owner_portal.project_deleted_state(doc) if kind == "project"
+               else ("deleted" if doc.get("is_deleted") is True else None))
+    return coll, doc, deleted
+
+
+@api_router.post("/owner/deleted/{kind}/{item_id}/restore", tags=["Owner"])
+async def owner_restore_deleted(kind: str, item_id: str,
+                                operator=Depends(require_operator_404)):
+    """Undo a soft delete, with everything deleted in the same action.
+
+    "Same action" is the row's `delete_batch_id`; a project also gets back
+    the NFC tags its deletion closed. A project or user under a company that
+    is deleted or gone is refused: restore the company first."""
+    coll, doc, deleted = await _owner_deleted_doc(kind, item_id)
+    if not deleted:
+        raise HTTPException(status_code=409, detail={
+            "code": "NOT_DELETED", "message": "This is not deleted.",
+        })
+    if kind in ("project", "user") and doc.get("company_id"):
+        parent = await db.companies.find_one(
+            {"_id": to_query_id(str(doc["company_id"]))})
+        if not parent or parent.get("is_deleted") is True:
+            raise HTTPException(status_code=409, detail={
+                "code": "COMPANY_NOT_LIVE",
+                "message": "Its company is deleted or gone. Restore the "
+                           "company first.",
+            })
+    if kind == "user" and doc.get("email"):
+        clash = await db.users.find_one({
+            "email": doc["email"], "is_deleted": {"$ne": True},
+            "_id": {"$ne": doc["_id"]},
+        })
+        if clash:
+            raise HTTPException(status_code=409, detail={
+                "code": "EMAIL_IN_USE",
+                "message": "Another live account already uses this email.",
+            })
+
+    now = datetime.now(timezone.utc)
+    op = actor_id(operator)
+
+    def _update(k: str) -> dict:
+        s = owner_portal.restore_set(now, op)
+        if k == "project":
+            s["marked_for_deletion"] = False
+        return {"$set": s,
+                "$unset": {f: "" for f in owner_portal.RESTORE_UNSET[k]}}
+
+    await coll.update_one({"_id": doc["_id"]}, _update(kind))
+
+    children: Dict[str, int] = {}
+    batch = doc.get("delete_batch_id")
+    if kind == "project":
+        q = {"project_id": str(doc["_id"]), "status": "project_closed"}
+        if batch:
+            q["closed_batch_id"] = batch
+        r = await db.nfc_tags.update_many(q, {
+            "$set": {"status": "active", "updated_at": now},
+            "$unset": {"closed_batch_id": ""},
+        })
+        children["nfc_tags"] = getattr(r, "modified_count", 0) or 0
+    if batch:
+        for k in owner_portal.KINDS:
+            c = db[_OWNER_KIND_COLLECTION[k]]
+            q = {"delete_batch_id": batch, "_id": {"$ne": doc["_id"]}}
+            r = await c.update_many(q, _update(k))
+            n = getattr(r, "modified_count", 0) or 0
+            if n:
+                children[_OWNER_KIND_COLLECTION[k]] = n
+
+    await audit_log("owner_restore", op, kind, str(doc["_id"]), {
+        "name": owner_portal.deleted_row(
+            kind, doc, company_names={}, people={})["name"],
+        "was": deleted, "batch_id": batch, "children": children,
+    })
+    return {"restored": True, "kind": kind, "id": str(doc["_id"]),
+            "children": children}
+
+
+@api_router.get("/owner/deleted/{kind}/{item_id}/preview", tags=["Owner"])
+async def owner_preview_hard_delete(kind: str, item_id: str,
+                                    operator=Depends(require_operator_404)):
+    """What a hard delete WOULD remove, counted. Reads only; deletes nothing.
+
+    Hard delete itself is not wired here: it waits on the delete-service fix
+    (`hard_delete.enabled` is false and says why)."""
+    from lib.purge_dependencies import company_dependencies, project_dependencies
+
+    _, doc, deleted = await _owner_deleted_doc(kind, item_id)
+    if kind == "project":
+        out = await project_dependencies(
+            db, str(doc["_id"]), _PROJECT_OWNED_COLLECTIONS)
+        r2 = out.get("unrecoverable") or {}
+    elif kind == "company":
+        out = await company_dependencies(db, str(doc["_id"]))
+        r2 = {}
+    else:
+        out = {
+            "scope": "user", "id": str(doc["_id"]), "counts": {},
+            "blocking": [{
+                "kind": "never_purged",
+                "reason": "User rows are never purged: a deleted user stays "
+                          "as the record behind their signatures and logs.",
+            }],
+            "total": 0,
+        }
+        r2 = {}
+    out.update({
+        "kind": kind,
+        "name": owner_portal.deleted_row(
+            kind, doc, company_names={}, people={})["name"],
+        "state": deleted,
+        "r2_files": r2,
+        "read_only": True,
+        "hard_delete": {"enabled": False,
+                        "reason": owner_portal.HARD_DELETE_PENDING},
+    })
+    return out
+
 
 @api_router.post("/admin/migrate-company-data")
 async def migrate_company_data(data: dict, current_user = Depends(get_current_user)):
@@ -17027,6 +17440,9 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
 
     now = datetime.now(timezone.utc)
     admin_id = actor_id(admin)
+    # ONE BATCH for the project and the tags this closes, so the owner
+    # portal's restore reopens exactly these tags (lib/owner_portal.py).
+    batch = owner_portal.new_batch_id()
 
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
@@ -17035,15 +17451,19 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
             "marked_by": admin_id,
             "marked_at": now,
             "updated_at": now,
+            "delete_batch_id": batch,
         }},
     )
 
     # Deactivate the site's NFC tags. register_and_checkin matches
     # status:"active", so a tap now fails fast with "Invalid check-in point"
     # instead of passing the tag check and dying on the project lookup.
+    # ONLY ACTIVE TAGS: a tag already switched off stays off when the
+    # project is restored, because restore reopens what this closed.
     tag_result = await db.nfc_tags.update_many(
-        {"project_id": project_id},
-        {"$set": {"status": "project_closed", "updated_at": now}},
+        {"project_id": project_id, "status": "active"},
+        {"$set": {"status": "project_closed", "updated_at": now,
+                  "closed_batch_id": batch}},
     )
 
     await audit_log("project_mark_delete", admin_id, "project", project_id, {

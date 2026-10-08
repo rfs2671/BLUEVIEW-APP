@@ -240,8 +240,11 @@ class MarkDeleteTest(unittest.TestCase):
         self._mark(db)
         self.assertTrue(db.nfc_tags.updated, "nfc_tags must be deactivated")
         q, u = db.nfc_tags.updated[0]
-        self.assertEqual(q, {"project_id": _PID})
+        # Only ACTIVE tags are closed, and each is stamped with the project's
+        # delete batch so the owner portal's restore reopens exactly these.
+        self.assertEqual(q, {"project_id": _PID, "status": "active"})
         self.assertEqual(u["$set"]["status"], "project_closed")
+        self.assertTrue(u["$set"]["closed_batch_id"])
 
     def test_removes_nothing(self):
         """The old handler hard-deleted dob_logs. Nothing may be deleted now."""

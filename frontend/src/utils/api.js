@@ -1052,6 +1052,38 @@ export const ownerAPI = {
     const response = await apiClient.delete(`/api/owner/admins/${adminId}`);
     return response.data;
   },
+
+  // ── Owner portal: company users and Deleted items. Platform operator
+  // only; every route answers 404 to anyone else.
+  companyUsers: async (companyId) => {
+    const r = await apiClient.get(`/api/owner/companies/${companyId}/users`);
+    return r.data;
+  },
+  addCompanyAdmin: async (companyId, body) => {
+    const r = await apiClient.post(`/api/owner/companies/${companyId}/admins`, body);
+    return r.data;
+  },
+  changeUserRole: async (companyId, userId, role) => {
+    const r = await apiClient.patch(
+      `/api/owner/companies/${companyId}/users/${userId}/role`, { role });
+    return r.data;
+  },
+  removeCompanyUser: async (companyId, userId) => {
+    const r = await apiClient.delete(`/api/owner/companies/${companyId}/users/${userId}`);
+    return r.data;
+  },
+  deletedItems: async () => {
+    const r = await apiClient.get('/api/owner/deleted');
+    return r.data;
+  },
+  restoreDeleted: async (kind, id) => {
+    const r = await apiClient.post(`/api/owner/deleted/${kind}/${id}/restore`);
+    return r.data;
+  },
+  previewHardDelete: async (kind, id) => {
+    const r = await apiClient.get(`/api/owner/deleted/${kind}/${id}/preview`);
+    return r.data;
+  },
 };
 
 /**

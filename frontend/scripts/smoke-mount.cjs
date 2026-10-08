@@ -360,6 +360,11 @@ const ROUTES = [
   // that silently failed to draw that would offer a live delete button on a
   // project the server is going to refuse.
   '/owner/pending-deletion',
+  // THE OWNER PORTAL'S OTHER TWO SCREENS: Deleted items (restore, preview)
+  // and a company's users (add admin, change role, remove). Nothing else in
+  // CI renders them.
+  '/owner/deleted',
+  '/owner/company/c1',
   // THE SITE DEVICE — a fixed tablet at the gate, read by DOB inspectors, and
   // until now the only surface in the app with ZERO executed coverage. These
   // five need more than a URL: every one of them redirects away unless

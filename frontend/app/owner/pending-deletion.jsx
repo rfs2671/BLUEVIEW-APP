@@ -35,7 +35,6 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   Trash2,
   AlertTriangle,
   ShieldAlert,
@@ -44,7 +43,7 @@ import {
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import OwnerNav from '../../src/components/OwnerNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
@@ -150,14 +149,7 @@ export default function PendingDeletionScreen() {
     return (
       <AnimatedBackground>
         <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.header}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.back()}
-            />
-            <Text style={s.headerTitle}>Pending Deletion</Text>
-          </View>
+          <OwnerNav />
           <GlassCard style={s.emptyCard}>
             <ShieldAlert size={28} strokeWidth={1.5} color="#f87171" />
             <Text style={s.emptyText}>Platform operator access required</Text>
@@ -170,14 +162,7 @@ export default function PendingDeletionScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
-        <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.back()}
-          />
-          <Text style={s.headerTitle}>Pending Deletion</Text>
-        </View>
+        <OwnerNav title="Pending deletion" />
 
         <ScrollView
           style={s.scroll}
