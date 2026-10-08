@@ -8,8 +8,11 @@ number, date and status. Nothing is inferred and no urgency is invented: a
 record without the value a line needs is left out, never filled in.
 
   🔴  new violation / complaint / stop-work order since the last brief
-  🟡  another DOB status change DOB marks as needing action
-  🟠  permit expiring within 14 days, or expired in the last 30
+  🔴  new DOT summons since the last brief
+  🟠  an OATH hearing still to come on a DOT summons (its hearing_date)
+  🟡  a DOB status change: permit issued / expired / revoked, stop-work order
+      rescinded, or any change DOB marks as needing action
+  🟠  DOB or DOT permit expiring within 14 days, or expired in the last 30
   (inspections: no stored scheduled date exists, so there is no 🔴 line for
    them — none is guessed)
 
@@ -21,7 +24,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from lib import wa_gc
+from lib import dot_sync, wa_gc
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
     from zoneinfo import ZoneInfo
@@ -162,9 +165,32 @@ def group_records(rows: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, An
     return out
 
 
+def _expiry_item(r: Dict[str, Any], num_field: str, source: str, today: date,
+                 *, work: str = "", label: str = "Permit") -> Optional[Dict[str, Any]]:
+    """🟠 a permit expiring within 14 days, or expired in the last 30."""
+    exp = wa_gc.parse_dob_date(r.get("expiration_date"))
+    num = _text(r.get(num_field))
+    if not exp or not num:
+        return None
+    days = (exp - today).days
+    name = f"{label} {num}" + (f" ({work})" if work else "")
+    if 0 <= days <= PERMIT_SOON_DAYS:
+        when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
+        return {"rank": RANK_PERMIT, "order": (days,),
+                "text": f"🟠 {name} expires {_md(exp)} ({when}). {source}."}
+    if -EXPIRED_RECENT_DAYS <= days < 0:
+        ago = -days
+        return {"rank": RANK_PERMIT, "order": (days,),
+                "text": f"🟠 {name} expired {_md(exp)} "
+                        f"({ago} day{'s' if ago != 1 else ''} ago). {source}."}
+    return None
+
+
 def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
-              now_utc: datetime) -> List[Dict[str, Any]]:
-    """The items one job has today: [{rank, order, text}]. Pure."""
+              now_utc: datetime,
+              dot_rows: Iterable[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+    """The items one job has today: [{rank, order, text}]. Pure. `dot_rows`
+    are the job's dot_logs rows (DOT summonses and permits)."""
     today = wa_gc.today_et(now_utc)
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)
@@ -193,43 +219,62 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
                         "text": f"🔴 New {label} {num}, {verb} {_md(issued)}, {status}. DOB."})
                     continue
 
-        # 🟠 permit expiring / expired
-        if rt == "permit":
-            if _text(latest.get("permit_status")).upper() == "REVOKED":
-                continue
-            exp = wa_gc.parse_dob_date(latest.get("expiration_date"))
-            num = _text(latest.get("job_number"))
-            if not exp or not num:
-                continue
-            days = (exp - today).days
-            work = _text(latest.get("work_type"))
-            name = f"Permit {num}" + (f" ({work})" if work else "")
-            if 0 <= days <= PERMIT_SOON_DAYS:
-                when = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
-                items.append({"rank": RANK_PERMIT, "order": (days,),
-                              "text": f"🟠 {name} expires {_md(exp)} ({when}). DOB."})
-            elif -EXPIRED_RECENT_DAYS <= days < 0:
-                ago = -days
-                items.append({"rank": RANK_PERMIT, "order": (days,),
-                              "text": f"🟠 {name} expired {_md(exp)} "
-                                      f"({ago} day{'s' if ago != 1 else ''} ago). DOB."})
-            continue
+        # 🟠 permit expiring / expired (not for a revoked permit)
+        if rt == "permit" and _text(latest.get("permit_status")).upper() != "REVOKED":
+            item = _expiry_item(latest, "job_number", "DOB", today,
+                                work=_text(latest.get("work_type")))
+            if item:
+                items.append(item)
 
-        # 🟡 another status change DOB marks as needing action
-        if (len(hist) > 1 and latest.get("previous_status") is not None
-                and not latest.get("is_seed_transition")
-                and _text(latest.get("severity")) == "Action"
-                and _stamp(latest) > since and not _is_closed(latest)):
-            num = _text(latest.get(_NUMBER_FIELD.get(rt, ""))) or (
-                _text(latest.get("violation_number")) if rt == "swo" else "")
-            before = _text(latest.get("previous_status"))
-            after = _text(latest.get("current_status"))
-            if num and before and after and before != after:
-                changed = local_now(_stamp(latest)).date()
+        # 🟡 a status change: a permit issued / expired / revoked, a
+        # stop-work order rescinded, or any change DOB marks as needing action
+        before = _text(latest.get("previous_status"))
+        after = _text(latest.get("current_status"))
+        if (len(hist) > 1 and before and after and before != after
+                and not latest.get("is_seed_transition") and _stamp(latest) > since):
+            up = after.upper()
+            permit_change = rt == "permit" and any(
+                w in up for w in ("ISSUED", "EXPIRED", "REVOKED"))
+            rescinded = rt == "swo" and ("RESCIND" in up or "LIFTED" in up)
+            action = (_text(latest.get("severity")) == "Action"
+                      and not _is_closed(latest))
+            if permit_change or rescinded or action:
+                num = _text(latest.get(_NUMBER_FIELD.get(rt, ""))) or (
+                    _text(latest.get("violation_number")) if rt == "swo" else "")
+                if num:
+                    changed = local_now(_stamp(latest)).date()
+                    items.append({
+                        "rank": RANK_REGULATORY, "order": (1, -changed.toordinal()),
+                        "text": f"🟡 {_KIND_LABEL.get(rt, 'Record')} {num} changed "
+                                f"{before} → {after} on {_md(changed)}. DOB."})
+
+    # DOT (dot_logs: one row per record, already matched to this job)
+    for r in dot_rows:
+        rt = _text(r.get("record_type")).lower()
+        if rt == "dot_violation":
+            seen = _detected(r)
+            num = _text(r.get("number"))
+            issued = wa_gc.parse_dob_date(r.get("issue_date"))
+            if (seen and seen > since and num and issued and not _is_closed(r)
+                    and timedelta(0) <= today - issued
+                    <= timedelta(days=NEW_ISSUED_WITHIN_DAYS)):
+                status = _text(r.get("status"))
                 items.append({
-                    "rank": RANK_REGULATORY, "order": (1, -changed.toordinal()),
-                    "text": f"🟡 {_KIND_LABEL.get(rt, 'Record')} {num} changed "
-                            f"{before} → {after} on {_md(changed)}. DOB."})
+                    "rank": RANK_REGULATORY, "order": (0, -issued.toordinal()),
+                    "text": f"🔴 New DOT summons {num}, issued {_md(issued)}"
+                            + (f", {status}" if status else "") + ". DOT."})
+        elif rt == "dot_permit" and dot_sync.permit_is_active(r.get("status")):
+            item = _expiry_item(r, "number", "DOT", today, label="DOT permit")
+            if item:
+                items.append(item)
+        if rt == "dot_violation":
+            # An OATH hearing still to come, from the record's hearing_date.
+            hearing = wa_gc.parse_dob_date(r.get("hearing_date"))
+            num = _text(r.get("number"))
+            if hearing and num and hearing >= today:
+                items.append({
+                    "rank": RANK_REGULATORY, "order": (0, hearing.toordinal()),
+                    "text": f"🟠 OATH hearing {_md(hearing)} · ticket #{num} · DOT."})
     items.sort(key=lambda i: (i["rank"], i["order"]))
     return items
 
@@ -274,10 +319,15 @@ NOTHING_TODAY = "Good morning. No action needed today."
 
 
 def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
-    """jobs: [{label, items, headcount}] in display order. At most MAX_ITEMS
-    items across all jobs, the most pressing first. A job with items or
-    check-ins gets its own block (address, items, headcount); jobs with
-    neither are named together: "No check-ins yet: 8 Walworth, 8 Prescott." """
+    """jobs: [{label, items, headcount, uses_checkins}] in display order. At
+    most MAX_ITEMS items across all jobs, the most pressing first.
+
+    A job with items, or with someone on site, gets its own block (address,
+    items, and the headcount line only if the job uses check-ins). A job that
+    uses check-ins with neither is named in "No check-ins yet: 8 Walworth,
+    8 Prescott." A job that does not use check-ins and has nothing to do is
+    left out; if that leaves nothing, the brief is the one line
+    "Good morning. No action needed today." """
     ranked: List[Tuple[Tuple, int, str]] = []
     for j_idx, job in enumerate(jobs):
         for it in job.get("items") or []:
@@ -289,19 +339,25 @@ def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     for _k, j_idx, text in kept:
         per_job.setdefault(j_idx, []).append(text)
 
-    # A job with nothing to do AND nobody on site is not a block of its own:
-    # those are named together in one line at the end.
+    # A job that does not use check-ins (no active tag or site device, no
+    # check-in in 14 days) has no headcount line, and with nothing to do it
+    # is left out entirely. A job that does use them, with nothing to do and
+    # nobody on site, is named in one line at the end.
+    def uses(j):
+        return jobs[j].get("uses_checkins", True)
     quiet = [j for j in range(len(jobs))
-             if j not in per_job and jobs[j]["headcount"] == NO_CHECKINS]
-    lines = [header(now_utc) if kept else NOTHING_TODAY]
-    # Jobs with something to do first (in order of their most pressing
-    # item), then the rest that have someone on site.
+             if j not in per_job and uses(j) and jobs[j]["headcount"] == NO_CHECKINS]
     with_items = sorted(per_job, key=lambda j: min(
         r[0] for r in kept if r[1] == j))
-    order = with_items + [j for j in range(len(jobs))
-                          if j not in per_job and j not in quiet]
-    for j in order:
-        lines += ["", jobs[j]["label"]] + per_job.get(j, []) + [jobs[j]["headcount"]]
+    others = [j for j in range(len(jobs))
+              if j not in per_job and uses(j) and j not in quiet]
+    if not kept and not others and not quiet:
+        return NOTHING_TODAY
+    lines = [header(now_utc) if kept else NOTHING_TODAY]
+    for j in with_items + others:
+        lines += ["", jobs[j]["label"]] + per_job.get(j, [])
+        if uses(j):
+            lines.append(jobs[j]["headcount"])
     if quiet:
         lines += ["", "No check-ins yet: "
                   + ", ".join(jobs[j]["label"] for j in quiet) + "."]

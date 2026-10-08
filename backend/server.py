@@ -72,6 +72,8 @@ from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
 from lib import wa_brief  # noqa: E402
+from lib import wa_alerts  # noqa: E402
+from lib import dot_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -44243,7 +44245,7 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
         out["gc_group_id"] = stored["gc_group_id"]
     out["gc_group_confirmed"] = bool(stored.get("gc_group_confirmed")) and bool(
         out["gc_group_id"])
-    for k in ("violation_alerts", "permit_reminders"):
+    for k in wa_alerts.SWITCHES:
         if isinstance(stored.get(k), bool):
             out[k] = stored[k]
     if isinstance(stored.get("gc_proposal"), dict):
@@ -44527,15 +44529,17 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
     return True
 
 
-async def _gc_violation_summary(facts: Dict[str, str]) -> Optional[str]:
-    """A plain-language summary from the record's facts alone, or None."""
-    if not OPENAI_API_KEY or not facts:
+async def _gc_ai_line(kind: str, facts: Dict[str, str]) -> Optional[str]:
+    """One plain-language sentence from the record's facts alone, or None.
+    The caller checks it against the same facts (wa_alerts.what_line)."""
+    if not OPENAI_API_KEY or not facts or kind not in wa_alerts.AI_KINDS:
         return None
     payload = {
-        "model": "gpt-4o-mini", "temperature": 0, "max_tokens": 120,
+        "model": "gpt-4o-mini", "temperature": 0, "max_tokens": 80,
         "messages": [
-            {"role": "system", "content": wa_gc.SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(facts, sort_keys=True)},
+            {"role": "system", "content": wa_alerts.AI_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(
+                {"what": wa_alerts.LABEL.get(kind, kind), **facts}, sort_keys=True)},
         ],
     }
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -44551,15 +44555,14 @@ async def _gc_violation_summary(facts: Dict[str, str]) -> Optional[str]:
         return None
 
 
-async def _gc_violation_text(project_name: str, dob_log: dict) -> str:
-    facts = wa_gc.violation_facts(dob_log)
-    summary = await _gc_violation_summary(facts)
-    if not summary or not wa_gc.check_summary(summary, facts):
-        if summary:
-            logger.info("[wa-gc] summary failed the record check; template used")
-        summary = wa_gc.violation_template(project_name=project_name, facts=facts)
-    return wa_gc.violation_message(summary=summary, facts=facts,
-                                   dob_link=str(dob_log.get("dob_link") or ""))
+async def _gc_alert_text(item: dict, address: str, today) -> str:
+    kind, rec = item["kind"], item["rec"]
+    ai = await _gc_ai_line(kind, wa_alerts.facts(rec)) if kind in wa_alerts.AI_KINDS else None
+    what = wa_alerts.what_line(kind, rec, ai, today=today, exp=item.get("exp"),
+                               prev=item.get("prev") or "")
+    if ai and what != " ".join(ai.split()):
+        logger.info("[wa-gc] summary failed the record check; template used")
+    return wa_alerts.alert_message(kind, rec, address=address, what=what)
 
 
 def _gc_latest_per_record(rows: list) -> list:
@@ -44597,39 +44600,27 @@ async def _gc_ledger_claim(lid: str, **fields) -> bool:
     return await _gc_ledger_insert(lid, **fields) == "ok"
 
 
-async def _gc_project_items(project_id: str, today) -> dict:
-    """What a project has now: open violations, and permits with the
-    threshold each is inside today."""
-    rows = await db.dob_logs.find({
+async def _gc_project_records(project_id: str, company_id: str) -> Tuple[list, list]:
+    """The project's DOB rows (every kind the GC group hears about) and its
+    DOT rows, company-scoped."""
+    dob = await db.dob_logs.find({
         "project_id": project_id,
-        "record_type": {"$in": ["violation", "permit"]},
+        "record_type": {"$in": ["violation", "permit", "complaint", "swo"]},
         "is_deleted": {"$ne": True},
     }).to_list(5000)
-    latest = _gc_latest_per_record(rows)
-    violations = [r for r in latest if r.get("record_type") == "violation"
-                  and str(r.get("resolution_state") or "").lower()
-                  not in _GC_CLOSED_STATES]
-    permits, no_expiry = [], 0
-    for r in latest:
-        if r.get("record_type") != "permit":
-            continue
-        # The same "active" rule as the permit counts: REVOKED is not one.
-        if str(r.get("permit_status") or "").strip().upper() == "REVOKED":
-            continue
-        exp = wa_gc.parse_dob_date(r.get("expiration_date"))
-        if exp is None:
-            no_expiry += 1
-            continue
-        permits.append((r, exp))
-    return {"violations": violations, "permits": permits,
-            "no_expiry": no_expiry}
+    dot = await db.dot_logs.find({
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+    }).to_list(2000)
+    return dob, dot
 
 
 async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
-    """Post new violations and permit reminders to confirmed GC groups."""
+    """Post DOB and DOT alerts to confirmed GC groups (lib/wa_alerts.py)."""
     now = now or datetime.now(timezone.utc)
     report = {"projects": 0, "posted": 0, "failed": 0, "baselined": 0,
-              "permits_no_expiry": 0, "skipped_unbound": 0,
+              "kinds_baselined": 0, "skipped_unbound": 0, "no_number": 0,
+              "permits_no_expiry": 0,
               "seen_while_off": 0, "held": 0, "bot_off": 0}
     today = wa_gc.today_et(now)
     test_ids = {str(x) for x in await test_company_ids()}
@@ -44662,68 +44653,86 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
         if not bot_on:
             report["bot_off"] += 1
         report["projects"] += 1
-        project_name = wa_groups.project_label(project)
+        address = wa_groups.project_label(project)
         try:
-            items = await _gc_project_items(project_id, today)
+            dob_rows, dot_rows = await _gc_project_records(project_id, company_id)
         except Exception as e:
-            logger.warning(f"[wa-gc] dob read failed: {type(e).__name__}")
+            logger.warning(f"[wa-gc] record read failed: {type(e).__name__}")
             continue
-        report["permits_no_expiry"] += items["no_expiry"]
+        items = wa_alerts.collect(dob_rows, dot_rows, today)
+        report["permits_no_expiry"] += sum(
+            1 for r in _gc_latest_per_record(dob_rows)
+            if r.get("record_type") == "permit"
+            and str(r.get("permit_status") or "").strip().upper() != "REVOKED"
+            and wa_gc.parse_dob_date(r.get("expiration_date")) is None)
 
-        # NO BACKFILL. The first run records everything that exists — open
-        # violations, every threshold a permit has already reached — as seen,
-        # and only THEN writes the marker that says the baseline is done. A
-        # run that stops halfway, or an item write that fails, leaves no
-        # marker, so the next run baselines again (rows already written are
-        # duplicates, which is fine) instead of posting the history.
+        # NO BACKFILL, PER KIND. A kind's first run records everything of
+        # that kind that exists — open violations, every threshold a permit
+        # has already reached — as seen, and only THEN writes the kind's
+        # marker. A run that stops halfway leaves no marker, so the next run
+        # baselines again instead of posting history. violation + permit
+        # share the original marker; every later kind has its own, so a kind
+        # added later never posts what a project already had.
         try:
-            baselined = await db[WA_LEDGER].find_one(
-                {"_id": wa_gc.baseline_id(project_id)})
+            marks = {k: await db[WA_LEDGER].find_one(
+                         {"_id": wa_alerts.kind_baseline_id(project_id, k)}, {"_id": 1})
+                     for k in wa_alerts.NEW_KINDS}
+            legacy = await db[WA_LEDGER].find_one(
+                {"_id": wa_gc.baseline_id(project_id)}, {"_id": 1})
         except Exception as e:
             logger.warning(f"[wa-gc] baseline read failed: {type(e).__name__}")
             continue
-        if not baselined:
-            seen = [(wa_gc.ledger_id(project_id, "violation", v["raw_dob_id"]),
-                     "gc_violation") for v in items["violations"]]
-            seen += [(wa_gc.ledger_id(project_id, "permit",
-                                      f"{p['raw_dob_id']}:{t}"), "gc_permit")
-                     for p, exp in items["permits"]
-                     for t in wa_gc.thresholds_passed(exp, today)]
-            failed = False
-            for lid, kind in seen:
+        unbaselined = [k for k in wa_alerts.NEW_KINDS if not marks[k]]
+        if not legacy:
+            unbaselined = list(wa_alerts.LEGACY_KINDS) + unbaselined
+        if unbaselined:
+            legacy_failed = False
+            for kind in unbaselined:
+                failed = False
+                for key in wa_alerts.baseline_items(items, kind, today):
+                    if await _gc_ledger_insert(
+                            wa_gc.ledger_id(project_id, kind, key), kind=f"gc_{kind}",
+                            project_id=project_id, company_id=company_id,
+                            status="baseline") == "error":
+                        failed = True
+                        break
+                if failed:
+                    legacy_failed |= kind in wa_alerts.LEGACY_KINDS
+                    continue
+                if kind in wa_alerts.LEGACY_KINDS:
+                    continue      # the shared marker is written below
                 if await _gc_ledger_insert(
-                        lid, kind=kind, project_id=project_id,
-                        company_id=company_id, status="baseline") == "error":
-                    failed = True
-                    break
-            if not failed and await _gc_ledger_insert(
-                    wa_gc.baseline_id(project_id), kind="gc_baseline",
-                    project_id=project_id, company_id=company_id,
-                    status="baseline") != "error":
-                report["baselined"] += 1
-            continue
+                        wa_alerts.kind_baseline_id(project_id, kind),
+                        kind="gc_baseline", project_id=project_id,
+                        company_id=company_id, status="baseline") != "error":
+                    report["kinds_baselined"] += 1
+            if not legacy and not legacy_failed:
+                if await _gc_ledger_insert(
+                        wa_gc.baseline_id(project_id), kind="gc_baseline",
+                        project_id=project_id, company_id=company_id,
+                        status="baseline") != "error":
+                    report["baselined"] += 1
+            items = [it for it in items if it["kind"] not in unbaselined]
 
         todo = []
-        for v in items["violations"]:
-            todo.append(("violation", v["raw_dob_id"], v, None,
-                         bot_on and settings.get("violation_alerts")))
-        for p, exp in items["permits"]:
-            t = wa_gc.permit_threshold_due(exp, today)
-            if t is not None:
-                todo.append(("permit", f"{p['raw_dob_id']}:{t}", p, exp,
-                             bot_on and settings.get("permit_reminders")))
+        for it in items:
+            if not wa_alerts.postable(it["kind"], it["rec"]):
+                report["no_number"] += 1
+                continue
+            switch = wa_alerts.KIND_SWITCH[it["kind"]]
+            todo.append((it, bot_on and settings.get(switch)))
 
         # Off — the group's bot, or this kind of alert — is recorded as seen
         # NOW, whatever the send window says: an item found while it was off
         # must never post later as a backlog, even if it is switched back on
         # before the window opens.
-        for kind, item, rec, exp, enabled in todo:
+        for it, enabled in todo:
             if not enabled and await _gc_ledger_claim(
-                    wa_gc.ledger_id(project_id, kind, item), kind=f"gc_{kind}",
-                    project_id=project_id, company_id=company_id,
-                    status="seen_while_off"):
+                    wa_gc.ledger_id(project_id, it["kind"], it["item"]),
+                    kind=f"gc_{it['kind']}", project_id=project_id,
+                    company_id=company_id, status="seen_while_off"):
                 report["seen_while_off"] += 1
-        todo = [t for t in todo if t[4]]
+        todo = [t for t in todo if t[1]]
 
         # The project's send window. Outside it nothing is posted and nothing
         # (still on) is marked: the first run inside it posts what waited.
@@ -44732,20 +44741,17 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             continue
 
         posts = 0
-        for kind, item, rec, exp, enabled in todo:
+        for it, _enabled in todo:
             if posts >= GC_MAX_POSTS_PER_PROJECT_RUN:
                 break   # the rest go on the next run
-            lid = wa_gc.ledger_id(project_id, kind, item)
+            kind = it["kind"]
+            lid = wa_gc.ledger_id(project_id, kind, it["item"])
             if not await _gc_ledger_claim(lid, kind=f"gc_{kind}",
                                           project_id=project_id,
                                           company_id=company_id,
                                           group_id=group_id, status="sending"):
                 continue
-            if kind == "violation":
-                text = await _gc_violation_text(project_name, rec)
-            else:
-                text = wa_gc.permit_message(project_name=project_name,
-                                            permit=rec, expires=exp, today=today)
+            text = await _gc_alert_text(it, address, today)
             # Re-proven immediately before the send: still this project's
             # group, and its bot still switched on.
             sent = None
@@ -44770,6 +44776,143 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
                 pass
     logger.info(f"[wa-gc] alerts {report}")
     return report
+
+
+# ── DOT SYNC (lib/dot_sync.py is the logic) ────────────────────────────────
+#
+# Every live project with a BIN, a BBL or a street address is checked against
+# two NYC Open Data datasets (OATH summonses issued by DOT; DOT street
+# construction permits). A record is stored in `dot_logs` ONLY when
+# dot_sync.match says it is this project's — BIN, then BBL, then exact
+# normalized address; never fuzzy. A status change keeps the old status in
+# previous_status, as dob_logs does. The GC alerts and the morning brief read
+# these rows; nothing here sends anything.
+#
+# The field NAMES each dataset returned are logged once per run ([dot-sync]
+# fields …, names only, never values), because the build could not verify
+# them: a wrong name matches nothing, so it fails closed, and the log says
+# which name to fix.
+
+DOT_SYNC_HOURS = 2
+
+
+async def _dot_fetch(dataset: str, params: dict) -> Optional[list]:
+    try:
+        async with ServerHttpClient(timeout=20.0) as client_http:
+            resp = await client_http.get(f"{dot_sync.SODA}/{dataset}.json",
+                                         params=params)
+        if resp.status_code != 200:
+            logger.info(f"[dot-sync] {dataset} http {resp.status_code}")
+            return None
+        data = resp.json()
+        return data if isinstance(data, list) else None
+    except Exception as e:
+        logger.info(f"[dot-sync] {dataset} failed: {type(e).__name__}")
+        return None
+
+
+async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
+                     now: datetime) -> str:
+    """'new' | 'changed' | 'same'."""
+    existing = await db.dot_logs.find_one(
+        {"project_id": project_id, "raw_id": log["raw_id"]})
+    if not existing:
+        await db.dot_logs.insert_one({
+            **log, "raw_id": log["raw_id"],
+            "project_id": project_id, "company_id": company_id,
+            "matched_by": how, "previous_status": None,
+            "detected_at": now, "created_at": now, "updated_at": now})
+        return "new"
+    fields = {**log, "matched_by": how, "updated_at": now}
+    if (log.get("status") or None) != (existing.get("status") or None):
+        fields["previous_status"] = existing.get("status")
+        fields["status_changed_at"] = now
+        await db.dot_logs.update_one({"_id": existing["_id"]}, {"$set": fields})
+        return "changed"
+    await db.dot_logs.update_one({"_id": existing["_id"]}, {"$set": fields})
+    return "same"
+
+
+async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or _dot_fetch
+    report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
+              "segment_permits": 0, "matched": 0, "new": 0, "changed": 0}
+    named = set()
+    try:
+        # Fixture (is_test) companies are left out, as in every unattended
+        # sweep; a project with no company is skipped below.
+        projects = await db.projects.find(
+            await unattended_project_filter({"is_deleted": {"$ne": True}}),
+            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
+             "company_id": 1}).to_list(5000)
+        projects = [p for p in projects if str(p.get("company_id") or "").strip()]
+    except Exception as e:
+        logger.warning(f"[dot-sync] project read failed: {type(e).__name__}")
+        return report
+    company_names: Dict[str, str] = {}
+    try:
+        cids = list({str(p.get("company_id")) for p in projects})
+        for c in drop_test_companies(
+                await db.companies.find(
+                    {"_id": {"$in": [to_query_id(c) for c in cids]}},
+                    {"name": 1}).to_list(5000),
+                await test_company_ids()):
+            company_names[str(c.get("_id"))] = dot_sync.norm_name(c.get("name"))
+    except Exception:
+        company_names = {}
+    for p in projects:
+        pk = dot_sync.project_keys(p)
+        reqs = dot_sync.queries(pk)
+        if not reqs:
+            continue
+        report["projects"] += 1
+        project_id, company_id = str(p.get("_id")), str(p.get("company_id"))
+        for q in reqs:
+            report["requests"] += 1
+            recs = await fetch(q["dataset"], q["params"])
+            if recs is None:
+                report["failed"] += 1
+                continue
+            if recs and q["dataset"] not in named:
+                named.add(q["dataset"])
+                logger.info(f"[dot-sync] fields {q['dataset']}: "
+                            f"{dot_sync.field_names(recs)}")
+            for rec in recs:
+                report["records"] += 1
+                if not isinstance(rec, dict):
+                    continue
+                if q["kind"] == "dot_permit" and dot_sync.is_segment_permit(rec):
+                    report["segment_permits"] += 1     # no house number: not guessed
+                    continue
+                how = dot_sync.match(q["kind"], pk, rec)
+                if not how:
+                    continue
+                log = dot_sync.to_log(q["kind"], rec)
+                if not log:
+                    continue
+                if q["kind"] == "dot_permit":
+                    # An extra signal only, never a reason to match.
+                    log["permittee_is_company"] = bool(
+                        company_names.get(company_id)) and dot_sync.norm_name(
+                        log.get("permittee")) == company_names.get(company_id)
+                report["matched"] += 1
+                try:
+                    res = await _dot_store(project_id, company_id, log, how, now)
+                except Exception as e:
+                    logger.warning(f"[dot-sync] store failed: {type(e).__name__}")
+                    continue
+                if res in ("new", "changed"):
+                    report[res] += 1
+    logger.info(f"[dot-sync] {report}")
+    return report
+
+
+async def _dot_sync_job() -> None:
+    try:
+        await _dot_sync_tick()
+    except Exception as e:
+        logger.error(f"[dot-sync] tick failed: {type(e).__name__}: {e}")
 
 
 async def _whatsapp_gc_tick() -> None:
@@ -45760,9 +45903,34 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "check_in_time": {"$gte": start, "$lt": end},
         "is_deleted": {"$ne": True},
     }).to_list(2000)
+    dot_rows = await db.dot_logs.find({
+        "project_id": pid,
+        "company_id": _company_id_filter(company_id),
+    }).to_list(2000)
     return {"label": wa_assistant.street_label(project),
-            "items": wa_brief.job_items(rows, since, now),
-            "headcount": wa_brief.headcount_line(checkins)}
+            "items": wa_brief.job_items(rows, since, now, dot_rows),
+            "headcount": wa_brief.headcount_line(checkins),
+            "uses_checkins": bool(checkins) or await _brief_uses_checkins(
+                pid, company_id, now)}
+
+
+async def _brief_uses_checkins(project_id: str, company_id: str,
+                               now: datetime) -> bool:
+    """Does this job check people in at all? An active NFC tag or site
+    device, or any check-in in the last 14 days. A job that does not gets no
+    'No check-ins yet' line in the brief."""
+    if await db.nfc_tags.find_one(
+            {"project_id": project_id, "status": "active",
+             "is_deleted": {"$ne": True}}, {"_id": 1}):
+        return True
+    if await db.site_devices.find_one(
+            {"project_id": project_id, "is_active": True}, {"_id": 1}):
+        return True
+    return bool(await db.checkins.find_one(
+        {"project_id": project_id,
+         "company_id": _company_id_filter(company_id),
+         "check_in_time": {"$gte": now - timedelta(days=14)},
+         "is_deleted": {"$ne": True}}, {"_id": 1}))
 
 
 def wa_brief_day_range(now: datetime):
@@ -57561,8 +57729,7 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
         "gc_pending_question": bool(
             _gc_proposal_open(prop, datetime.now(timezone.utc))),
         "groups": groups,
-        "violation_alerts": bool(settings["violation_alerts"]),
-        "permit_reminders": bool(settings["permit_reminders"]),
+        **{k: bool(settings[k]) for k in wa_alerts.SWITCHES},
         "send_window": settings["send_window"],
     }
 
@@ -57584,21 +57751,21 @@ async def get_project_whatsapp_settings(project_id: str,
                    dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def patch_project_whatsapp_alerts(project_id: str, body: dict,
                                         current_user=Depends(get_current_user)):
-    """Admin only: turn the GC group's violation alerts / permit reminders
-    on or off. Only these two keys; each must be true or false."""
+    """Admin only: turn each kind of GC-group alert on or off
+    (wa_alerts.SWITCHES, each true or false) and/or set the send window."""
     if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    switches = ("violation_alerts", "permit_reminders")
+    switches = wa_alerts.SWITCHES
     if (not isinstance(body, dict) or not body
             or any(k not in switches + ("send_window",) for k in body)
             or any(not isinstance(body[k], bool) for k in switches if k in body)):
         raise HTTPException(
             status_code=422,
-            detail="Send violation_alerts and/or permit_reminders as true or "
-                   "false, and/or send_window.")
+            detail="Send alert switches (" + ", ".join(switches) + ") as true "
+                   "or false, and/or send_window.")
     fields = {k: body[k] for k in switches if k in body}
     if "send_window" in body:
         window = wa_gc.clean_send_window(body["send_window"])
@@ -61213,6 +61380,12 @@ async def startup_event():
     await db.attention_items.create_index(
         [("group_id", 1), ("evidence.message_id", 1), ("status", 1)])
     await db.attention_metrics.create_index([("week", 1)])
+    # DOT records matched to projects (lib/dot_sync.py): one row per record
+    # per project, and the reads the GC alerts and the morning brief make.
+    await _ensure_index_resilient(
+        db.dot_logs, keys=[("project_id", 1), ("raw_id", 1)],
+        name="dot_logs_project_raw_id_unique", unique=True)
+    await db.dot_logs.create_index([("project_id", 1), ("company_id", 1)])
     await _ensure_index_resilient(
         db.whatsapp_contacts,
         keys=[("company_id", 1), ("phone", 1)],
@@ -62556,6 +62729,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+    )
+    # DOT sync: OATH summonses issued by DOT and DOT street permits, matched
+    # to projects by BIN / BBL / exact address (lib/dot_sync.py). Every 2 h.
+    scheduler.add_job(
+        _dot_sync_job,
+        IntervalTrigger(hours=DOT_SYNC_HOURS),
+        id='dot_sync',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=8),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(

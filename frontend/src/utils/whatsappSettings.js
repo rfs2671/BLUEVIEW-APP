@@ -41,6 +41,18 @@ export const ALERT_SWITCHES = [
     line: 'Posts each new violation once, with its number and DOB link.' },
   { key: 'permit_reminders', label: 'Permit expiry reminders → GC group',
     line: 'Posts 30, 14, 7 and 1 days before a permit expires.' },
+  { key: 'complaint_alerts', label: 'New DOB complaints → GC group',
+    line: 'Posts each new DOB complaint once (not 311).' },
+  { key: 'swo_alerts', label: 'Stop-work orders → GC group',
+    line: 'Posts when DOB issues or rescinds a stop-work order.' },
+  { key: 'violation_status_alerts', label: 'Violation status changes → GC group',
+    line: 'Only changes DOB marks as needing action.' },
+  { key: 'permit_status_alerts', label: 'Permit status changes → GC group',
+    line: 'Posts when a permit is issued, expires or is revoked.' },
+  { key: 'dot_violation_alerts', label: 'New DOT summonses → GC group',
+    line: 'DOT violations matched to this job by BIN, BBL or exact address.' },
+  { key: 'dot_permit_alerts', label: 'DOT permit expiry → GC group',
+    line: 'Posts 30, 14, 7 and 1 days before a DOT permit expires, and when it expires.' },
 ];
 
 export const SEND_WINDOW_OPTIONS = [

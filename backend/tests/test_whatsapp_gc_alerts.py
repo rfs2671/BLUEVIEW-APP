@@ -117,9 +117,9 @@ def _confirm(pid="proj_a", company=CO_A, group=G_GC):
 
 
 def _no_ai():
-    async def none(_facts):
+    async def none(_kind, _facts):
         return None
-    return patch.object(server, "_gc_violation_summary", none)
+    return patch.object(server, "_gc_ai_line", none)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -209,13 +209,15 @@ class TheChecker(unittest.TestCase):
             "Levelog: a new DOB violation for failure to maintain, issued "
             "October 1, 2026, with a $1,200 penalty.", self.FACTS))
 
-    def test_the_template_and_message_carry_only_record_values(self):
-        t = wa_gc.violation_template(project_name="Main St", facts=self.FACTS)
-        self.assertTrue(wa_gc.check_summary(t, self.FACTS))
-        msg = wa_gc.violation_message(summary=t, facts=self.FACTS,
-                                      dob_link="https://dob.example/9")
-        self.assertIn("Violation #: V9", msg)
-        self.assertIn("DOB: https://dob.example/9", msg)
+    def test_the_template_carries_only_record_values(self):
+        from lib import wa_alerts
+        rec = {"record_type": "violation", **self.FACTS,
+               "dob_link": "https://dob.example/9"}
+        line = wa_alerts.template_line("violation", rec, today=date(2026, 10, 7))
+        self.assertTrue(wa_gc.check_summary(line, wa_alerts.facts(rec)))
+        msg = wa_alerts.alert_message("violation", rec, address="Main St", what=line)
+        self.assertIn("Violation #V9", msg)
+        self.assertIn("Source: DOB · https://dob.example/9", msg)
         self.assertNotIn("$", msg)
 
 
@@ -391,8 +393,8 @@ class TheAlerts(unittest.TestCase):
             r = _run(server._gc_alerts_tick(NOON))
             sends = _group_sends(c, G_GC)
             self.assertEqual((r["posted"], len(sends)), (1, 1))
-            self.assertIn("Violation #: V2", sends[0]["message"])
-            self.assertIn("DOB: https://dob.example/2", sends[0]["message"])
+            self.assertIn("Violation #V2", sends[0]["message"])
+            self.assertIn("Source: DOB · https://dob.example/2", sends[0]["message"])
             self.assertNotIn("V1", sends[0]["message"])
             _run(server._gc_alerts_tick(LATER))
             _run(server._gc_alerts_tick(LATER))
@@ -430,10 +432,10 @@ class TheAlerts(unittest.TestCase):
             self.assertEqual(len(_group_sends(c)), 1)       # once, ever
 
     def test_an_invented_fine_falls_back_to_the_template(self):
-        async def liar(_facts):
-            return "Levelog: a new DOB violation with a $500 fine."
+        async def liar(_kind, _facts):
+            return "A new DOB violation with a $500 fine."
         db = _world()
-        with _Ctx(db=db) as c, patch.object(server, "_gc_violation_summary", liar):
+        with _Ctx(db=db) as c, patch.object(server, "_gc_ai_line", liar):
             _confirm()
             _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("5"))
@@ -441,20 +443,21 @@ class TheAlerts(unittest.TestCase):
             msg = _group_sends(c)[0]["message"]
             self.assertNotIn("500", msg)
             self.assertIn("Failure to maintain", msg)
-            self.assertIn("Violation #: V5", msg)
+            self.assertIn("Violation #V5", msg)
 
     def test_a_checked_summary_is_used(self):
-        async def good(_facts):
-            return ("Levelog: a new DOB violation for failure to maintain, "
+        async def good(_kind, _facts):
+            return ("A new DOB violation for failure to maintain, "
                     "with a $1,200 penalty.")
         db = _world()
-        with _Ctx(db=db) as c, patch.object(server, "_gc_violation_summary", good):
+        with _Ctx(db=db) as c, patch.object(server, "_gc_ai_line", good):
             _confirm()
             _run(server._gc_alerts_tick(NOON))
             db.dob_logs.rows.append(_violation("6"))
             _run(server._gc_alerts_tick(NOON))
-            self.assertTrue(_group_sends(c)[0]["message"].startswith(
-                "Levelog: a new DOB violation for failure to maintain"))
+            self.assertEqual(_group_sends(c)[0]["message"].split("\n")[1],
+                             "A new DOB violation for failure to maintain, "
+                             "with a $1,200 penalty.")
 
     def test_permit_reminders_at_thresholds_no_backfill(self):
         today = wa_gc.today_et(NOON)
@@ -472,7 +475,7 @@ class TheAlerts(unittest.TestCase):
             sends = _group_sends(c)
             self.assertEqual(len(sends), 1)                # 7 days out
             self.assertIn("expires in 7 days", sends[0]["message"])
-            self.assertIn("Permit: J1", sends[0]["message"])
+            self.assertIn("Permit #J1", sends[0]["message"])
             _run(server._gc_alerts_tick(NOON + timedelta(days=4)))
             self.assertEqual(len(_group_sends(c)), 1)
             _run(server._gc_alerts_tick(NOON + timedelta(days=9)))
@@ -517,7 +520,7 @@ class TheAlerts(unittest.TestCase):
             _run(server._gc_alerts_tick(NOON))
             sends = _group_sends(c)
             self.assertEqual(len(sends), 1)
-            self.assertIn("Permit: J31", sends[0]["message"])
+            self.assertIn("Permit #J31", sends[0]["message"])
 
     def test_switched_off_is_seen_not_posted_later(self):
         db = _world()
@@ -594,8 +597,8 @@ class TheSettingsEndpoints(unittest.TestCase):
         self.assertEqual((out["violation_alerts"], out["permit_reminders"]),
                          (True, True))
         self.assertEqual(set(out), {"project_id", "gc_group", "gc_pending_question",
-                                    "groups", "violation_alerts",
-                                    "permit_reminders", "send_window"})
+                                    "groups", "send_window",
+                                    *server.wa_alerts.SWITCHES})
 
     def test_a_pm_cannot_read_or_change(self):
         with _Ctx(db=_world()):
