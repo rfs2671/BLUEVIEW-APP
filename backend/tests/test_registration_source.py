@@ -111,7 +111,8 @@ def test_the_client_cannot_claim_it():
 
 
 def test_every_other_creation_path_stamps_a_non_self_value():
-    for fn in (server.create_admin_user, server.create_admin_with_company):
+    for fn in (server.create_admin_user, server.create_admin_with_company,
+               server.owner_add_company_admin):
         assert "REG_ADMIN" in inspect.getsource(fn), fn.__name__
     # The startup seeds.
     assert SRC.count('"registration_source": REG_SEED') >= 4
@@ -139,17 +140,19 @@ def test_nothing_updates_it():
     constructed:
 
         1  register            REG_SELF
-        2  create_admin_user + create_admin_with_company   REG_ADMIN
+        3  create_admin_user + create_admin_with_company
+           + owner_add_company_admin                       REG_ADMIN
         4  startup seeds       REG_SEED
     """
     sites = re.findall(
         r'"registration_source":\s*REG_[A-Z]+|\["registration_source"\]\s*=\s*REG_[A-Z]+',
         SRC)
-    assert len(sites) == 7, (len(sites), sites)
+    assert len(sites) == 8, (len(sites), sites)
 
     # And no update-shaped path mentions it at all.
     for fn in (server.update_admin_account, server.update_profile,
-               server._mark_user_deleted, server.delete_admin_user):
+               server._mark_user_deleted, server.delete_admin_user,
+               server.owner_change_user_role, server.owner_restore_deleted):
         assert "registration_source" not in inspect.getsource(fn), fn.__name__
 
 

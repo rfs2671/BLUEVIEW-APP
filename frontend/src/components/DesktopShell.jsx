@@ -67,6 +67,10 @@ const RAIL_WIDTH = 240;
  *    confines a site device to `/site/*` and `/login` — so the rail was six
  *    dead ends occupying a fifth of the screen. Site mode has its own
  *    navigation (SiteNav); it must not inherit the admin one.
+ *  • OWNER PORTAL (`/owner/*`) — the platform operator's portal has its own
+ *    nav (OwnerNav: Companies · Deleted items · Pending deletion, and Back to
+ *    app). The company app's rail beside it offered a second, unrelated
+ *    navigation.
  *
  * Prefix-matched, so '/checkin' also covers '/checkin/{project_id}/{tag_id}'
  * and '/site' covers '/site/documents'.
@@ -79,6 +83,7 @@ const BARE_ROUTES = [
   '/nfc',
   '/checkin',
   '/site',
+  '/owner',
 ];
 
 function isBareRoute(pathname) {
