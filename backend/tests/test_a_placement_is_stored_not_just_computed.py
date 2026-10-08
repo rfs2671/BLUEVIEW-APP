@@ -84,10 +84,19 @@ class PairingIsBySheetNumberInThePlanSeries(unittest.TestCase):
     def test_what_is_refused_and_what_is_not(self):
         """M-106.00 is never paired to A-105.01 (ruling); the dotted A.1.x
         plans and an unnumbered plan have no partner; elevations, schedules,
-        renders and the fire-alarm plan are not apartment plans at all."""
+        renders and the fire-alarm plan are not apartment plans at all.
+
+        Since 2026-10-07 M-106.00 is not REFUSED either: a mechanical plan
+        with no partner is counted at sheet scope (unpaired_mech), and every
+        refusal says its role - here, all architectural."""
         _present()
-        refused = {p["sheet_number"] for p, _w in D.pair_plan_sheets(_pages())["refused"]}
-        self.assertEqual(refused, {"M-106.00", "A.1.1", "A.1.4", None})
+        got = D.pair_plan_sheets(_pages())
+        self.assertTrue(all(len(t) == 3 for t in got["refused"]),
+                        "a refusal does not say its role")
+        refused = {p["sheet_number"] for p, _w, _role in got["refused"]}
+        self.assertEqual(refused, {"A.1.1", "A.1.4", None})
+        self.assertEqual({r for _p, _w, r in got["refused"]}, {D.ROLE_ARCHITECTURAL})
+        self.assertEqual([m["sheet_number"] for m in got["unpaired_mech"]], ["M-106.00"])
 
     def test_number_alone_would_pair_elevations_with_hvac_schedules(self):
         """A-200.01 and M-200.00 share a number; they are not a floor."""
@@ -102,7 +111,9 @@ class PairingIsBySheetNumberInThePlanSeries(unittest.TestCase):
                                          ("A-103.00", "FOURTH FLOOR PLAN"),
                                          ("M-103.00", "FOURTH FLOOR HVAC")]))
         self.assertEqual(got["pairs"], [])
-        self.assertEqual(len([w for _p, w in got["refused"] if "ambiguous" in w]), 2)
+        self.assertTrue(all(len(t) == 3 for t in got["refused"]),
+                        "a refusal does not say its role")
+        self.assertEqual(len([w for _p, w, _r in got["refused"] if "ambiguous" in w]), 2)
 
 
 def _w(text, x, y):

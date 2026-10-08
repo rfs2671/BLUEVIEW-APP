@@ -317,7 +317,8 @@ def _union(boxes):
 def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                 corroborations: Optional[Dict[str, str]],
                 unit_tags: Sequence[str], widest_door_in: Optional[float],
-                force_geometry: bool = False, reads=None, space=None) -> dict:
+                force_geometry: bool = False, reads=None, space=None,
+                unplaced_reason: Optional[str] = None) -> dict:
     """The takeoff for one equipment type on one floor.
 
     `reads` is the mechanical sheet's sweep, when the caller already has it:
@@ -336,8 +337,17 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
     if not tags:
         return {"refused": "the schedule has no identifier column, so there "
                            "is no closed set to snap to"}
-    arch, mech = load_sheet(arch_page), load_sheet(mech_page)
-    reg_ = register(arch, mech)
+    # SHEET SCOPE (2026-10-07): with no architectural page - M-106.00 has
+    # none, and A-104.00 names no units - the symbols are still located and
+    # named on the mechanical sheet; only placement is refused, and
+    # `unplaced_reason` says why. A located count needs no apartment map.
+    mech = load_sheet(mech_page)
+    if arch_page is None:
+        arch = None
+        reg_ = {"dx": 0.0, "dy": 0.0, "usable": False, "sheet_scope": True}
+    else:
+        arch = load_sheet(arch_page)
+        reg_ = register(arch, mech)
     dx, dy = reg_["dx"], reg_["dy"]
     unit_labels = plan_unit_tags(arch["corners"], arch["words"], unit_tags) \
         if reg_["usable"] else {}
@@ -382,8 +392,8 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                          "at_arch": None})
             continue
         back = (pos[0] - dx, pos[1] - dy)
-        unit, how = units.unit_of_normal(*back) if units else (None, "refused: "
-                                                               "registration not usable")
+        unit, how = units.unit_of_normal(*back) if units else (
+            None, unplaced_reason or "refused: registration not usable")
         recs.append({"tag": tag, "unit": unit, "glyph_status": ptal.RESOLVED,
                      "placement": (REFUSED if not unit else
                                    PLACED_NON_UNIT if unit.startswith("non-unit:")
@@ -394,7 +404,7 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
                      "label_text": printed,
                      "symbol_at": tuple(pos),
                      "symbol_bbox": tuple(rep["bbox"]) if rep.get("bbox") else None,
-                     "at_arch": back})
+                     "at_arch": back if arch is not None else None})
 
     t = ptal.tally([{"tag": r["tag"], "unit": r["unit"],
                      "status": r["glyph_status"]} for r in recs],

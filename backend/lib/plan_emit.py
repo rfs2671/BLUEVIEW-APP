@@ -40,7 +40,10 @@ SOURCE = "plan_takeoff"
 #: 2 (2026-10-07): payload.units carries multi_level - per unit, what says
 #: it continues on another sheet. A version-1 row carries none, and the
 #: gate refuses unit scope on its floor.
-EMIT_VERSION = 2
+#: 3 (2026-10-07): a refusal row carries payload.role (mechanical /
+#: architectural), and a sheet the pass cannot place is counted at sheet
+#: scope (payload.arch None, units method "sheet_scope").
+EMIT_VERSION = 3
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -82,13 +85,16 @@ def _row(page, ordinal, *, label, quote, unit, glyph_status, bbox, payload):
 
 
 def sheet_refusal(page: Dict[str, Any], reason: str, *, pass_key: str,
-                  family: Optional[str] = None, ordinal: int = 0) -> Dict[str, Any]:
-    """One row saying the takeoff did not run on this sheet, and why."""
+                  family: Optional[str] = None, ordinal: int = 0,
+                  role: Optional[str] = None) -> Dict[str, Any]:
+    """One row saying the takeoff did not run on this sheet, and why - and
+    whether the sheet could carry the symbols a building total counts
+    (`role`). The gate treats a refusal with no role as one that could."""
     return _row(page, ordinal, label=None, quote="",
                 unit=f"sheet:{page.get('sheet_number') or page.get('page_id')}",
                 glyph_status=ptal.UNSUPPORTED_UNIT, bbox=None,
                 payload={"placement": None, "refusal": reason,
-                         "pass_key": pass_key, "family": family})
+                         "pass_key": pass_key, "family": family, "role": role})
 
 
 def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
@@ -98,10 +104,11 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
     """Every row one takeoff (one family, one floor pair) emits."""
     if result.get("refused"):
         return [sheet_refusal(mech, result["refused"], pass_key=pass_key,
-                              family=family)]
-    arch_ref = {k: arch.get(k) for k in ("page_id", "file_id", "file_hash",
-                                         "file_name", "page_number",
-                                         "sheet_number")}
+                              family=family, role="mechanical")]
+    # A sheet counted at sheet scope has no architectural page to cite.
+    arch_ref = ({k: arch.get(k) for k in ("page_id", "file_id", "file_hash",
+                                          "file_name", "page_number",
+                                          "sheet_number")} if arch else None)
     common = {
         "pass_key": pass_key, "family": family, "arch": arch_ref,
         "method": result.get("method"),
@@ -136,6 +143,7 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
 
 def refusal_rows(refused: Iterable, *, pass_key_prefix: str = "refusal"
                  ) -> List[Dict[str, Any]]:
-    """[(page, reason)] -> one sheet refusal row each."""
-    return [sheet_refusal(p, why, pass_key=f"{pass_key_prefix}|{p.get('sheet_number')}")
-            for p, why in refused]
+    """[(page, reason, role)] -> one sheet refusal row each."""
+    return [sheet_refusal(p, why, pass_key=f"{pass_key_prefix}|{p.get('sheet_number')}",
+                          role=role)
+            for p, why, role in refused]

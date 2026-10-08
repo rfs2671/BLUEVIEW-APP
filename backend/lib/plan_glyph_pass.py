@@ -60,6 +60,13 @@ def families(schedules: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+#: The units a sheet counted at sheet scope carries: none, read - an empty
+#: multi_level is an affirmative "no unit continues anywhere from here",
+#: so the floor is not "unknown" to the gate; there is simply no unit scope.
+SHEET_SCOPE_UNITS = {"tags": [], "method": "sheet_scope", "zero_units": False,
+                     "multi_level": {}}
+
+
 def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
              schedules: Sequence[Dict[str, Any]],
              door_pages: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
@@ -73,9 +80,9 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
                                "skipped_families": [], "door": None, "floors": []}
 
     paired = derive.pair_plan_sheets(pages)
-    for page, why in paired["refused"]:
-        rows += emit.refusal_rows([(page, why)])
-        summary["refused_sheets"].append([page.get("sheet_number"), why])
+    for page, why, role in paired["refused"]:
+        rows += emit.refusal_rows([(page, why, role)])
+        summary["refused_sheets"].append([page.get("sheet_number"), why, role])
 
     door = {"inches": None, "doors": {}, "why": "no door schedule in the set"}
     for p in door_pages:
@@ -89,23 +96,63 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
     summary["families"] = {n: f["tags"] for n, f in run_fams.items()}
     summary["skipped_families"] = sorted(n for n, f in fams.items() if not f["tags"])
 
+    def sheet_scope(mech_p, arch_p, why):
+        """COUNT WHAT CANNOT BE PLACED (operator ruling 2026-10-07). The
+        symbols on a mechanical sheet are located and named on that sheet
+        alone; placement is refused, with `why`. M-106.00 (no architectural
+        partner) and M-104.00 (whose partner names no units) are counted
+        this way - a floor total binds, and no unit scope does."""
+        m_sheet = mech_p.get("sheet_number")
+        a_sheet = arch_p.get("sheet_number") if arch_p else None
+        floor = {"arch": a_sheet, "mech": m_sheet, "units": dict(SHEET_SCOPE_UNITS),
+                 "method": "sheet_scope", "why": why, "families": {}}
+        summary["floors"].append(floor)
+        if not run_fams:
+            rows.append(emit.sheet_refusal(
+                mech_p, "no equipment schedule with an identifier column",
+                pass_key=f"{a_sheet}|{m_sheet}", role=derive.ROLE_MECHANICAL))
+            return
+        mech_pg = open_page(mech_p)
+        reads = sweep(mech_pg, load_sheet(mech_pg)["segs"])
+        for name, fam in run_fams.items():
+            key = f"{a_sheet}|{m_sheet}|{name}"
+            try:
+                res = run_takeoff(None, mech_pg, fam["tags"], fam["corroborations"],
+                                  [], door["inches"], reads=reads,
+                                  unplaced_reason=f"refused: {why}: counted at "
+                                                  f"sheet scope, not placed")
+            except Exception as e:                  # one sheet never sinks the pass
+                log.exception("glyph pass %s failed: %r", key, e)
+                res = {"refused": f"takeoff failed: {type(e).__name__}"}
+            got = emit.glyph_rows(res, mech=mech_p, arch=arch_p, family=name,
+                                  pass_key=key, units=SHEET_SCOPE_UNITS,
+                                  widest_door=door)
+            rows.extend(got)
+            floor["families"][name] = {"rows": len(got), "total": res.get("total"),
+                                       "refused": res.get("refused"),
+                                       "labels_by_tag": res.get("labels_by_tag")}
+
+    for mech_p in paired.get("unpaired_mech") or []:
+        m_sheet = mech_p.get("sheet_number")
+        seq = (derive.PLAN_SHEET.match(str(m_sheet or "").upper()) or [None, None, "?"])[2]
+        sheet_scope(mech_p, None, f"{m_sheet} has no architectural partner A-{seq}")
+
     for arch_p, mech_p in paired["pairs"]:
         a_sheet, m_sheet = arch_p.get("sheet_number"), mech_p.get("sheet_number")
         summary["pairs"].append([a_sheet, m_sheet])
         if not run_fams:
             rows.append(emit.sheet_refusal(
                 mech_p, "no equipment schedule with an identifier column",
-                pass_key=f"{a_sheet}|{m_sheet}"))
+                pass_key=f"{a_sheet}|{m_sheet}", role=derive.ROLE_MECHANICAL))
             continue
         arch_pg, mech_pg = open_page(arch_p), open_page(mech_p)
         a_sheet_data = load_sheet(arch_pg)
         units = derive.unit_tags(a_sheet_data["words"], a_sheet_data["corners"])
+        if units["tags"] is None:
+            sheet_scope(mech_p, arch_p, f"{a_sheet}: {units['why']}")
+            continue
         floor = {"arch": a_sheet, "mech": m_sheet, "units": units, "families": {}}
         summary["floors"].append(floor)
-        if units["tags"] is None:
-            rows.append(emit.sheet_refusal(
-                mech_p, f"{a_sheet}: {units['why']}", pass_key=f"{a_sheet}|{m_sheet}"))
-            continue
         mech_sheet = load_sheet(mech_pg)
         reads = sweep(mech_pg, mech_sheet["segs"])
         # one membership map per floor, whatever the family

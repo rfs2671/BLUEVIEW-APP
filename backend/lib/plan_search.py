@@ -1382,12 +1382,34 @@ def glyph_refusal_filter(project_id: str, page_ids: Sequence[str]) -> Dict[str, 
 
 
 def glyph_census(kind: str, project_id: str, page_ids: Sequence[str], count: int,
-                 family: Optional[str] = None,
-                 tags: Sequence[str] = ()) -> Dict[str, Any]:
-    """What the database said, at question time, about one filter."""
+                 family: Optional[str] = None, tags: Sequence[str] = (),
+                 qty: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """What the database said, at question time, about one filter - and, for
+    a family, what its schedule's QTY column prints per tag (`qty`, read by
+    schedule_quantities), so a building total can be checked against it."""
     return {"record_type": GLYPH_CENSUS, "kind": kind,
             "project_id": str(project_id), "page_ids": sorted(map(str, page_ids)),
-            "family": family, "tags": sorted(tags), "count": int(count)}
+            "family": family, "tags": sorted(tags), "count": int(count),
+            "qty": dict(qty or {})}
+
+
+def schedule_quantities(payload: Dict[str, Any], tags: Sequence[str]) -> Dict[str, str]:
+    """tag -> the cell under the schedule's printed quantity header, as
+    printed: a number, or the contested-cell text. Only tags in `tags`; a
+    schedule with no quantity column gives {}."""
+    payload = payload if isinstance(payload, dict) else {}
+    qcols = _quantity_columns(payload)
+    want = {str(t).strip().upper() for t in tags}
+    out: Dict[str, str] = {}
+    if not qcols:
+        return out
+    for row in payload.get("rows") or []:
+        if not isinstance(row, list) or not row:
+            continue
+        mark = re.sub(r"\s+", " ", str(row[0] or "")).strip().upper()
+        if mark in want and qcols[0] < len(row):
+            out[mark] = re.sub(r"\s+", " ", str(row[qcols[0]] or "")).strip()
+    return out
 
 
 def glyph_in_census(row: Dict[str, Any], census: Dict[str, Any]) -> bool:
@@ -1448,6 +1470,7 @@ class GlyphFamily(NamedTuple):
     tags: List[str]
     rows: List[Dict[str, Any]]          # its glyph rows in hand, refusals excluded
     why: Optional[str]                  # None when complete
+    qty: Dict[str, str] = {}            # tag -> its schedule's QTY cell, as printed
 
 
 class GlyphBook(NamedTuple):
@@ -1506,7 +1529,8 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
             why = "a row's tag and its schedule disagree"
         elif not any(r.get("glyph_status") == _tally.RESOLVED for r in located):
             why = "no located symbols"
-        families[name] = GlyphFamily(name, tags, located, why)
+        families[name] = GlyphFamily(name, tags, located, why,
+                                     dict(c.get("qty") or {}))
 
     levels: Dict[str, set] = {}
     titles: Dict[str, str] = {}
@@ -1544,12 +1568,26 @@ def glyph_book(records: Sequence[Dict[str, Any]]) -> GlyphBook:
                      sheets, units, multi)
 
 
+def _blocking(r: Dict[str, Any]) -> bool:
+    """A REFUSED SHEET BLOCKS A COUNT ONLY IF IT COULD CARRY THE SYMBOLS
+    (operator ruling 2026-10-07). The pass writes the role; an architectural
+    sheet with no mechanical partner - the second set's A.1.x, an unnumbered
+    roof plan - carries no mechanical symbol a total could miss. A refusal
+    row with no role (written before emit_version 3) blocks: fail closed."""
+    payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+    return payload.get("role") != "architectural"
+
+
 def _refused_floors(book: GlyphBook) -> set:
-    return {k for k in (_row_floor(r) for r in book.refused) if k}
+    return {k for k in (_row_floor(r) for r in book.refused if _blocking(r)) if k}
+
+
+def _blocking_refusals(book: GlyphBook) -> List[Dict[str, Any]]:
+    return [r for r in book.refused if _blocking(r)]
 
 
 def _building_refused(book: GlyphBook) -> bool:
-    return bool(book.refused) or not book.refusals_complete
+    return bool(_blocking_refusals(book)) or not book.refusals_complete
 
 
 def _resolved(fam: GlyphFamily, tags: Sequence[str]) -> List[Dict[str, Any]]:
@@ -1565,11 +1603,37 @@ def _floor_count(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
     return n or None                    # zero rows never binds
 
 
+def _qty_check(fam: GlyphFamily, tags: Sequence[str], n: int) -> Tuple[str, Optional[int]]:
+    """("agrees" | "disagrees" | "unreadable" | "no_column", the QTY sum).
+
+    THE SCHEDULE'S QTY IS THE STRONGEST CROSS-CHECK THERE IS (operator,
+    2026-10-07): on 588 Boyland the located building totals of PTAC-1/2/3,
+    WH-1 and SAF-1 each equal the QTY their schedule prints. A total that
+    DISAGREES is not stated - neither number is - and the disagreement is
+    said. A QTY cell that cannot be read (PTAC-2's is contested: two
+    readings, 6 and 9) is not a disagreement; the total stands, unchecked."""
+    if not fam.qty or not all(t in fam.qty for t in tags):
+        return "no_column", None
+    vals = []
+    for t in tags:
+        v = fam.qty[t]
+        if not re.fullmatch(r"\d+", v or ""):
+            return "unreadable", None
+        vals.append(int(v))
+    total = sum(vals)
+    return ("agrees" if total == n else "disagrees"), total
+
+
 def _building_count(book: GlyphBook, fam: GlyphFamily,
                     tags: Sequence[str]) -> Optional[int]:
     if fam.why or _building_refused(book):
         return None
-    return len(_resolved(fam, tags)) or None
+    n = len(_resolved(fam, tags))
+    if not n:
+        return None
+    if _qty_check(fam, tags, n)[0] == "disagrees":
+        return None
+    return n
 
 
 def _continues(book: GlyphBook, k: str) -> Optional[Dict[str, List[str]]]:
@@ -1764,7 +1828,17 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
         fam = book.families[name]
         head = f"{name} ({', '.join(fam.tags)})"
         if fam.why:
-            lines.append(f"{head}: NOT COUNTED - {fam.why}. State no count of these.")
+            line = f"{head}: NOT COUNTED - {fam.why}. State no count of these."
+            # A SCHEDULE THAT PRINTS A QUANTITY NOTHING WAS FOUND FOR IS A
+            # DISAGREEMENT TOO, and is said (operator ruling 2026-10-07).
+            # Measured: DH-1's schedule prints QTY 1; its label reads
+            # "DH-1. DUCT HEATER" and the pass locates none.
+            printed = [f"{t} {fam.qty[t]}" for t in fam.tags
+                       if re.fullmatch(r"\d+", fam.qty.get(t) or "") and int(fam.qty[t]) > 0]
+            if printed and not any(_resolved(fam, [t]) for t in fam.tags):
+                line += (f" The schedule's QTY prints {', '.join(printed)} and none "
+                         f"were located - THEY DISAGREE.")
+            lines.append(line)
             continue
         lines.append(f"{head}:")
         floors = sorted({_row_floor(r) for r in fam.rows if _row_floor(r)} | refused_k)
@@ -1811,12 +1885,31 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
             else:
                 line += "; per-unit split not available"
             lines.append(line)
+        if fam.why or _building_refused(book):
+            lines.append(f"- Whole building: NOT AVAILABLE - "
+                         f"{len(_blocking_refusals(book))} sheet(s) that can carry "
+                         f"these symbols were not counted")
+            continue
+        parts, disagree = [], False
+        for t in fam.tags:
+            n_t = len(_resolved(fam, [t]))
+            st, q = _qty_check(fam, [t], n_t)
+            if st == "disagrees":
+                disagree = True
+                parts.append(f"{t}: located {n_t} but the schedule's QTY prints "
+                             f"{q} - THEY DISAGREE; state neither as the total")
+            elif st == "agrees":
+                parts.append(f"{t} {n_t} (agrees with the schedule's QTY {q})")
+            elif st == "unreadable":
+                parts.append(f"{t} {n_t} (the schedule's QTY cell cannot be read: "
+                             f"{fam.qty.get(t)!r} - not checked)")
+            elif n_t:
+                parts.append(f"{t} {n_t}")
         n = _building_count(book, fam, fam.tags)
-        if n:
-            lines.append(f"- Whole building: {n}")
-        else:
-            lines.append(f"- Whole building: NOT AVAILABLE - {len(book.refused)} "
-                         f"sheet(s) were not counted")
+        line = "- Whole building: " + "; ".join(parts)
+        if n and len([t for t in fam.tags if _resolved(fam, [t])]) > 1 and not disagree:
+            line += f"; {n} in all"
+        lines.append(line)
     return "\n".join(lines)
 
 
