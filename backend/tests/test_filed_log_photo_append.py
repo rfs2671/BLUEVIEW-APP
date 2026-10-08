@@ -60,7 +60,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "smoke_test")
@@ -305,6 +305,15 @@ def _post(doc, *, r2=None, user=CP_USER, activity_id=AID, photo_id=PID,
     """Drive the endpoint. Returns (response, logbooks-double)."""
     lb = _Logbooks(doc)
     r2 = _FakeR2() if r2 is None else r2
+    # THE ROUTE'S OWN FOOTPRINT IS WHAT THIS FILE MEASURES. The rendition write
+    # that follows an append is a separate task, keyed by identity and pinned
+    # in test_every_photo_gets_a_thumbnail.py; it is recorded here, not run, so
+    # whether it happened to finish before the loop closed cannot decide what
+    # these assertions see.
+    lb.enhance_calls = []
+
+    async def _record_enhance(logbook_id, activity_id, original_r2_key):
+        lb.enhance_calls.append((logbook_id, activity_id, original_r2_key))
 
     async def _fake_user():
         return user
@@ -316,7 +325,8 @@ def _post(doc, *, r2=None, user=CP_USER, activity_id=AID, photo_id=PID,
         with patch.object(server, "db", _DB(lb, project)), \
              patch.object(server, "to_query_id", lambda x: x), \
              patch.object(server, "_r2_client", r2), \
-             patch.object(server, "R2_BUCKET_NAME", bucket):
+             patch.object(server, "R2_BUCKET_NAME", bucket), \
+             patch.object(server, "_enhance_appended_photo", _record_enhance):
             data = {"activity_id": activity_id, "photo_id": photo_id}
             data.update(extra or {})
             c = TestClient(server.app)
@@ -448,6 +458,14 @@ class TheStatutoryContentIsUntouched(unittest.TestCase):
 
 class ThePushIsKeyedOnIdentity(unittest.TestCase):
 
+    def test_the_appended_photo_and_only_it_is_sent_for_enhancement(self):
+        """By identity -- the row's activity_id and the photo's own key --
+        exactly as the push itself is addressed."""
+        _, lb = _post(_filed_log())
+        self.assertEqual(len(lb.enhance_calls), 1)
+        _lid, aid, key = lb.enhance_calls[0]
+        self.assertEqual((aid, key), (AID, KEY))
+
     def test_it_reaches_the_named_row_not_the_first_one(self):
         """AID is the SECOND row. An index-keyed push would put a photograph
         of Acme's shoring under Kestrel's electrical rough-in."""
@@ -492,7 +510,11 @@ class ThePushIsKeyedOnIdentity(unittest.TestCase):
             with patch.object(server, "db", _DB(lb)), \
                  patch.object(server, "to_query_id", lambda x: x), \
                  patch.object(server, "_r2_client", _FakeR2()), \
-                 patch.object(server, "R2_BUCKET_NAME", "bv-bucket"):
+                 patch.object(server, "R2_BUCKET_NAME", "bv-bucket"), \
+                 patch.object(server, "_enhance_appended_photo", AsyncMock()):
+                # STUBBED, LIKE _post: a real enhance runs on a pool thread
+                # that outlives this test and uploads into the NEXT test's
+                # fake R2 -- which is exactly how this was found.
                 resp = TestClient(server.app).post(
                     URL, data={"activity_id": AID, "photo_id": PID},
                     files={"file": ("p.jpg", TINY_JPEG, "image/jpeg")},
