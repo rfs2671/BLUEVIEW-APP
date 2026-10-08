@@ -342,10 +342,11 @@ export default function WhatsAppCard({ isAdmin = false }) {
           {groups.rows.map((g) => (
             <View key={g.key} style={s.groupRow}>
               <View style={s.groupText}>
-                <Text style={s.groupName} numberOfLines={2}>{g.name}</Text>
-                <Text style={[s.groupPlace, g.link && s.groupPlaceMuted]} numberOfLines={2}>
-                  {g.place}
-                </Text>
+                <Text style={s.groupName}>{g.name}</Text>
+                <Text style={[s.groupPlace, g.link && s.groupPlaceMuted]}>{g.place}</Text>
+                {g.chip ? (
+                  <View style={s.groupChip}><Chip c={g.chip} /></View>
+                ) : null}
               </View>
               {g.link ? (
                 <Pressable
@@ -356,7 +357,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
                 >
                   <Text style={s.smallButtonText}>Link</Text>
                 </Pressable>
-              ) : <Chip c={g.chip} />}
+              ) : null}
             </View>
           ))}
           {groups.action ? (
@@ -508,6 +509,7 @@ function buildStyles(colors) {
     groupName: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
     groupPlace: { fontSize: 13, color: colors.text.primary, marginTop: 2 },
     groupPlaceMuted: { color: colors.text.muted },
+    groupChip: { flexDirection: 'row', marginTop: spacing.xs },
     badge: {
       minWidth: 22,
       height: 22,

@@ -32,6 +32,9 @@ ok(B.briefRow({ connected: true, brief: null }) === null, 'no brief from server:
   const r = B.briefRow({ connected: true, brief: { brief_time: '07:00', brief_weekend: false } });
   ok(r.label === 'Morning brief: 7 AM', 'row label');
   ok(r.weekend === false && r.weekendDisabled === false, 'weekends off, can be turned on');
+  ok(r.line.startsWith('Each weekday:'), 'weekdays only: says each weekday');
+  const w = B.briefRow({ connected: true, brief: { brief_time: '07:00', brief_weekend: true } });
+  ok(w.line.startsWith('Every day:'), 'weekends on: says every day');
 }
 {
   const r = B.briefRow({ connected: true, brief: { brief_time: 'off', brief_weekend: true } });
