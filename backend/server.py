@@ -7716,6 +7716,58 @@ async def _refuse_if_it_unseats_the_cs(project_id, *, ending_ids=(),
             ),
         },
     )
+
+
+async def _end_registration_access(rows, *, actor, reason):
+    """Take each ended registration's project out of its superintendent's
+    `assigned_projects`.
+
+    THE ACCESS FOLLOWS THE REGISTRATION. Operator's ruling, 2026-10-08: a
+    superintendent superseded on a job kept it in `assigned_projects`, and
+    `require_project_access` honours that list as an authorization grant -- so
+    he could still open a job he was no longer on. For a superintendent the
+    list IS his live registrations (the invariant `set_user_cs_registrations`
+    keeps), so a registration ending ends the grant.
+
+    ONLY FOR role == superintendent. For every other role `assigned_projects`
+    is written by Assign, a separate grant this registration never made, and
+    a registration ending is not a reason to revoke it. (No such account is
+    linked to a registration in production.)
+
+    KEPT if he still holds another live registration on that project -- the
+    grant is his registrations, not this one row.
+
+    Unassign in User Management does not call this: that save already writes
+    his whole assignment list from his registrations. This is for the two ends
+    that happen elsewhere -- a replacement superseding him, and the admin
+    DELETE -- which until now left the grant behind.
+    """
+    for r in rows or ():
+        uid = str((r or {}).get("user_id") or "").strip()
+        pid = str((r or {}).get("project_id") or "").strip()
+        if not uid or not pid:
+            continue
+        user = await db.users.find_one(
+            {"_id": to_query_id(uid)}, {"role": 1, "assigned_projects": 1})
+        if str((user or {}).get("role") or "").strip().lower() != ROLE_SUPERINTENDENT:
+            continue
+        still = await db.cs_registrations.find_one(
+            {**_cs_rows_are_for(uid), "project_id": pid, **CS_REGISTRATION_LIVE})
+        if still:
+            continue
+        held = [str(p) for p in ((user or {}).get("assigned_projects") or [])]
+        if pid not in held:
+            continue
+        await db.users.update_one(
+            {"_id": to_query_id(uid)},
+            {"$set": {"assigned_projects": [p for p in held if p != pid],
+                      "updated_at": datetime.now(timezone.utc)}},
+        )
+        await audit_log(
+            "cs_registration_access_ended", actor_id(actor), "user", uid,
+            {"project_id": pid, "reason": reason,
+             "registration_id": str((r or {}).get("_id") or "") or None},
+        )
 from lib.logbook.superintendent_log import (  # noqa: E402
     ITEMS as CS_LOG_ITEMS, ATTESTABLE_KEYS as CS_ATTESTABLE_KEYS,
     item_provenance as cs_item_provenance,
@@ -24192,10 +24244,11 @@ async def _register_cs_on_project(
 
     # A REPLACEMENT THAT NAMES NO ACCOUNT would leave a project whose log is on
     # fileable by nobody -- refused before the predecessor is touched.
+    _superseded = await db.cs_registrations.find(
+        {"project_id": project_id, **CS_REGISTRATION_LIVE}).to_list(50)
     await _refuse_if_it_unseats_the_cs(
         project_id, adding_linked=bool(str(user_id or "").strip()),
-        ending_ids=[r.get("_id") for r in await db.cs_registrations.find(
-            {"project_id": project_id, **CS_REGISTRATION_LIVE}).to_list(50)],
+        ending_ids=[r.get("_id") for r in _superseded],
     )
 
     await db.cs_registrations.update_many(
@@ -24256,6 +24309,11 @@ async def _register_cs_on_project(
     }
 
     result = await db.cs_registrations.insert_one(reg_doc)
+
+    # THE PREDECESSOR'S ACCESS ENDS WITH HIS REGISTRATION. After the insert, so
+    # re-registering the same man on the same job keeps his grant: the "still
+    # holds a live registration here" check sees the new row.
+    await _end_registration_access(_superseded, actor=admin, reason="superseded")
 
     return {
         "id": str(result.inserted_id),
@@ -24756,6 +24814,7 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
         {"$set": {"ended_at": now, "ended_reason": "removed",
                   "ended_by": actor_id(admin), "updated_at": now}}
     )
+    await _end_registration_access([reg], actor=admin, reason="removed")
 
     # ── RECORDED, LIKE EVERY OTHER SOFT-DELETE OF A FILED-RECORD ROW ────────
     #
