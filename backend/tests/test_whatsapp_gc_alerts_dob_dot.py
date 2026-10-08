@@ -391,7 +391,7 @@ class DotSyncJob(unittest.TestCase):
                 "violation_date": "2026-10-06", "hearing_status": "DEFAULT",
                 "violation_location_borough": "BROOKLYN",
                 "violation_location_block_no": "1523", "violation_location_lot_no": "1",
-                "respondent_last_name": "SECRETNAME"}
+                "respondent_last_name": "Q7-RESPONDENT-VALUE-9Z"}
         neighbour = {**mine, "ticket_number": "T2", "violation_location_lot_no": "2"}
         calls, logged = [], []
 
@@ -411,7 +411,7 @@ class DotSyncJob(unittest.TestCase):
         field_lines = [m for m in logged if "[dot-sync] fields" in m]
         self.assertTrue(field_lines)
         self.assertIn("respondent_last_name", field_lines[0])
-        self.assertNotIn("SECRETNAME", " ".join(logged))
+        self.assertNotIn("Q7-RESPONDENT-VALUE-9Z", " ".join(logged))
 
     def test_status_change_is_kept(self):
         db = self._world()

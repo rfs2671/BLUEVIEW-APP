@@ -44321,7 +44321,8 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
         {"project_id": project_id, "raw_id": log["raw_id"]})
     if not existing:
         await db.dot_logs.insert_one({
-            **log, "project_id": project_id, "company_id": company_id,
+            **log, "raw_id": log["raw_id"],
+            "project_id": project_id, "company_id": company_id,
             "matched_by": how, "previous_status": None,
             "detected_at": now, "created_at": now, "updated_at": now})
         return "new"
@@ -60862,7 +60863,9 @@ async def startup_event():
     await db.attention_metrics.create_index([("week", 1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
-    await db.dot_logs.create_index([("project_id", 1), ("raw_id", 1)], unique=True)
+    await _ensure_index_resilient(
+        db.dot_logs, keys=[("project_id", 1), ("raw_id", 1)],
+        name="dot_logs_project_raw_id_unique", unique=True)
     await db.dot_logs.create_index([("project_id", 1), ("company_id", 1)])
     await _ensure_index_resilient(
         db.whatsapp_contacts,
