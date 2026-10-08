@@ -46053,6 +46053,10 @@ async def _contact_card_claim(chat: str, now: datetime) -> Optional[str]:
         return None
     except DuplicateKeyError:
         row = await coll.find_one({"_id": key}) or {}
+        # The cap first: past it the answer is silence, even inside the
+        # cooldown of the card that reached it.
+        if row.get("day") == today and (row.get("day_count") or 0) >= CONTACT_CARD_DAILY_MAX:
+            return "daily"
         sent = _as_utc(row.get("sent_at"))
         if isinstance(sent, datetime) and sent >= cutoff:
             return "cooldown"

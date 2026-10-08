@@ -236,6 +236,17 @@ class RateLimit(unittest.TestCase):
         self.assertEqual([a for a, _p in wire.calls][-1], "send-vcard")
         self.assertEqual(len(wire.calls), 11)
 
+    def test_right_after_the_tenth_card_is_silence_not_a_thumbs_up(self):
+        wire = _UrlWire()
+        with _ctx(wire) as c:
+            for i in range(server.CONTACT_CARD_DAILY_MAX - 1):
+                _dm(STRANGER, "contact", f"T{i}")
+                _age(c, 3)
+            _dm(STRANGER, "contact", "T9")               # the 10th card
+            _dm(STRANGER, "contact", "T10")              # at once: cap AND cooldown
+        actions = [a for a, _p in wire.calls]
+        self.assertEqual(actions, ["send-vcard"] * 10)   # no 👍
+
     def test_limited_is_logged_with_the_reason(self):
         wire = _UrlWire()
         with _ctx(wire) as c, self.assertLogs(server.logger, "INFO") as logs:
