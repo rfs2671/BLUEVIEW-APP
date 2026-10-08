@@ -15,7 +15,10 @@ export const UNNAMED_GROUP = 'Unnamed group';
 /** A group's name as people see it. Never a WhatsApp id. */
 export function groupLabel(name) {
   const s = String(name || '').trim();
-  if (!s || /@(g\.us|c\.us|lid|s\.whatsapp\.net)$/i.test(s) || /^[\d-]+$/.test(s)) {
+  // Only an id is hidden: a JID, a bare group id (18+ digits), or the older
+  // "<phone>-<epoch>" form. A subject that is just a number ("123") is a name.
+  if (!s || /@(g\.us|c\.us|lid|s\.whatsapp\.net)$/i.test(s)
+      || /^\d{15,}$/.test(s) || /^\d{10,15}-\d{9,10}$/.test(s)) {
     return UNNAMED_GROUP;
   }
   return s;

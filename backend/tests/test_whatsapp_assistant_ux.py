@@ -100,6 +100,48 @@ class GroupNames(unittest.TestCase):
         self.assertNotIn("@g.us", out[0]["group_name"])
         self.assertEqual(len(calls), 1)                       # once an hour, not every read
 
+    def test_a_numeric_subject_is_a_name(self):
+        for name in ("123", "100-102", "2024"):
+            self.assertTrue(wa_groups.is_real_name(name), name)
+            self.assertEqual(wa_groups.display_name(name), name)
+        for raw in ("120363424969499174", "15551234567-1600000000",
+                    "120363424969499174@g.us"):
+            self.assertFalse(wa_groups.is_real_name(raw), raw)
+
+    def test_a_slow_waapi_never_holds_a_read_past_the_deadline(self):
+        """Lookups run together under one deadline; a list read answers
+        with Unnamed group instead of waiting on WaAPI (Codex P1)."""
+        import time
+        rows = [{"wa_group_id": f"12036300000000000{i}@g.us"} for i in range(10)]
+        db = FakeDb(whatsapp_groups=[dict(r) for r in rows])
+
+        async def slow(gid):
+            await asyncio.sleep(30)
+            return "Too late"
+        start = time.monotonic()
+        with patch.object(server, "db", db), \
+                patch.object(server, "_fetch_group_subject", slow), \
+                patch.object(wa_groups, "NAME_FETCH_DEADLINE_SECONDS", 0.2):
+            out = _run(server._ensure_group_names(rows))
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertTrue(all(not wa_groups.is_real_name(r.get("group_name")) for r in out))
+        # Not marked as checked, so the next read tries again.
+        self.assertFalse(any("name_checked_at" in r for r in db.whatsapp_groups.rows))
+
+    def test_lookups_run_together(self):
+        import time
+        rows = [{"wa_group_id": f"12036300000000000{i}@g.us"} for i in range(5)]
+
+        async def half_second(gid):
+            await asyncio.sleep(0.3)
+            return f"Group {gid[-6:-5]}"
+        start = time.monotonic()
+        with patch.object(server, "db", FakeDb()), \
+                patch.object(server, "_fetch_group_subject", half_second):
+            out = _run(server._ensure_group_names(rows))
+        self.assertLess(time.monotonic() - start, 1.0)        # not 5 x 0.3 s
+        self.assertTrue(all(wa_groups.is_real_name(r["group_name"]) for r in out))
+
     def test_lookups_per_read_are_capped(self):
         rows = [{"wa_group_id": f"{i}@g.us"} for i in range(25)]
         calls = []

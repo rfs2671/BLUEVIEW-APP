@@ -15,11 +15,18 @@ UNNAMED = "Unnamed group"
 
 # Retry a failed subject lookup no more often than this, per group.
 NAME_RETRY_SECONDS = 60 * 60
-# At most this many WaAPI lookups for one read of a list.
+# At most this many WaAPI lookups for one read of a list, run together, and
+# never longer than this in total: a list read answers with "Unnamed group"
+# rather than wait on a slow WaAPI.
 NAME_FETCH_LIMIT = 10
+NAME_FETCH_DEADLINE_SECONDS = 4.0
 
-_RAW_ID_RE = re.compile(r"^\s*[\d-]+(@(g\.us|c\.us|lid|s\.whatsapp\.net))?\s*$",
-                        re.IGNORECASE)
+# What a WhatsApp id looks like, so only an id is hidden — a subject that is
+# just a number ("123", "100-102") is a real name. Anything with a JID suffix;
+# a bare group id (120363… , 18+ digits); or the older "<phone>-<epoch>" form.
+_RAW_ID_RE = re.compile(
+    r"^\s*(?:\S+@(?:g\.us|c\.us|lid|s\.whatsapp\.net)|\d{15,}|\d{10,15}-\d{9,10})\s*$",
+    re.IGNORECASE)
 
 
 def is_real_name(name: Any) -> bool:

@@ -53040,28 +53040,42 @@ async def _ensure_group_names(rows: list, *, coll: str = "whatsapp_groups",
     Returns the rows with `group_name` filled where it was learned. Never
     raises; a row it could not name stays unnamed and is shown as UNNAMED."""
     now = datetime.now(timezone.utc)
-    fetched = 0
+    todo: Dict[str, list] = {}
     for r in rows:
         if wa_groups.is_real_name(r.get("group_name")):
             continue
         gid = str(r.get(key) or "")
-        if not gid or fetched >= wa_groups.NAME_FETCH_LIMIT:
+        if not gid:
             continue
         checked = r.get("name_checked_at")
         if isinstance(checked, datetime):
             c = checked if checked.tzinfo else checked.replace(tzinfo=timezone.utc)
             if (now - c).total_seconds() < wa_groups.NAME_RETRY_SECONDS:
                 continue
-        fetched += 1
-        name = ""
+        if gid in todo or len(todo) < wa_groups.NAME_FETCH_LIMIT:
+            todo.setdefault(gid, []).append(r)
+    if not todo:
+        return rows
+
+    # All lookups at once, under one deadline. A lookup that has not answered
+    # by then is dropped for this read (and not marked, so the next read
+    # tries again); the row is shown as UNNAMED meanwhile.
+    tasks = {asyncio.ensure_future(_fetch_group_subject(gid)): gid for gid in todo}
+    done, pending = await asyncio.wait(
+        tasks, timeout=wa_groups.NAME_FETCH_DEADLINE_SECONDS)
+    for t in pending:
+        t.cancel()
+    for t in done:
+        gid = tasks[t]
         try:
-            name = await _fetch_group_subject(gid)
+            name = t.result() or ""
         except Exception:
             name = ""
         fields: Dict[str, Any] = {"name_checked_at": now}
         if wa_groups.is_real_name(name):
             fields["group_name"] = name.strip()
-            r["group_name"] = name.strip()
+            for r in todo[gid]:
+                r["group_name"] = name.strip()
         try:
             await db[coll].update_many({key: gid}, {"$set": fields})
         except Exception as e:

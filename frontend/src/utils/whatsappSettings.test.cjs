@@ -22,7 +22,9 @@ const read = (p) => fs.readFileSync(path.join(__dirname, '..', '..', p), 'utf8')
 
 console.log('names, never ids');
 ok(W.groupLabel('Main St Project') === 'Main St Project', 'a real name is shown');
-for (const raw of ['120363424969499174@g.us', '', null, undefined, '120363424969499174', '  ']) {
+ok(W.groupLabel('123') === '123' && W.groupLabel('100-102') === '100-102', 'a numeric subject is a name');
+for (const raw of ['120363424969499174@g.us', '', null, undefined, '120363424969499174',
+  '15551234567-1600000000', '  ']) {
   ok(W.groupLabel(raw) === 'Unnamed group', `"${raw}" shows as Unnamed group`);
 }
 ok(W.headerTitle(0) === 'WhatsApp · 0 groups linked', 'header, none');
