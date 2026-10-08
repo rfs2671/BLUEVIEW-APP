@@ -839,7 +839,7 @@ PHOTO_RENDITION_FIELDS = frozenset({
 })
 
 
-async def _enhance_appended_photo(logbook_id: str, activity_id: str,
+async def _enhance_appended_photo(logbook_id: str, activity_id: Optional[str],
                                   original_r2_key: str) -> None:
     """Enhance ONE photo just appended to a log, and write it by identity.
 
@@ -865,15 +865,20 @@ async def _enhance_appended_photo(logbook_id: str, activity_id: str,
                            logbook_id, original_r2_key, e)
             patch = {"enhance_status": "failed", "enhance_error": str(e)[:200]}
         patch = {k: v for k, v in patch.items() if k in PHOTO_RENDITION_FIELDS}
+        # A ROW WITH NO activity_id (rows written before it existed) is reached
+        # through `$[]` -- every row -- and the photo is still found by its own
+        # key, which is unique to it. Identity either way; never a position.
+        _ph = {"ph.original_r2_key": original_r2_key,
+               "ph.thumb_r2_key": {"$exists": False}}
+        if activity_id:
+            _path, _filters = "data.activities.$[act].photos.$[ph]", [
+                {"act.activity_id": activity_id}, _ph]
+        else:
+            _path, _filters = "data.activities.$[].photos.$[ph]", [_ph]
         await db.logbooks.update_one(
             {"_id": to_query_id(logbook_id)},
-            {"$set": {f"data.activities.$[act].photos.$[ph].{k}": v
-                      for k, v in patch.items()}},
-            array_filters=[
-                {"act.activity_id": activity_id},
-                {"ph.original_r2_key": original_r2_key,
-                 "ph.thumb_r2_key": {"$exists": False}},
-            ],
+            {"$set": {f"{_path}.{k}": v for k, v in patch.items()}},
+            array_filters=_filters,
         )
     except Exception as e:
         logger.error("[photo-enhance] appended photo write failed logbook=%s: %r",
@@ -31452,6 +31457,252 @@ async def append_activity_photo(
         "photo_index": photo_index,
         "photo": stored,
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  RECOVERING A PHOTO FROM THE PHONE THAT TOOK IT
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Operator's ruling, 2026-10-08. Two filed daily jobsite logs on 588 Thomas
+# (2026-08-05, 2026-08-24) list photos that exist only on the phone that took
+# them: `upload_pending`, a `file://` path in the app's own documents folder,
+# and nothing on the server. A filed legal record listing a photo nobody can
+# open is a defect.
+#
+# WHY THEY NEVER UPLOADED. The app sends photos to the server WITHOUT their
+# `id` (photoForPayload strips it: client bookkeeping), so the record holds
+# none; once a draft was reloaded from the server copy, its pending photos had
+# no id, and uploadCapturePhoto refused a photo with no id before any request
+# was made -- which the upload loop read as "offline", so it stopped and never
+# resumed. Fixed in the app in the same change (an id-less photo is named from
+# its own file). These routes recover the ones it left.
+#
+# THE ORDER IS THE RULING'S: THE PHONE REPORTS WHAT IT HOLDS BEFORE ANYTHING
+# UPLOADS. `/pending` names the entries; `/presence` records, per entry,
+# whether the file is on the phone (size, time, md5) -- in its own collection,
+# never on the record; only then does `/recover` take bytes.
+#
+# RECOVERY FILLS AN ENTRY THE RECORD ALREADY LISTS. It does not add a photo,
+# so it is not "added after filing": the capture `timestamp` is kept, and the
+# entry gains `recovered_at`, `recovered_by`, `recovered_from` so the record
+# says how its photo arrived. The entry is matched by its own phone path AND
+# capture time, never by position alone.
+#
+# A FILE SHARED BY SEVERAL ENTRIES IS HELD, NOT ATTACHED. On the 2026-08-24 log
+# three entries name one phone file; two of them already have their images in
+# R2. Which picture the file holds cannot be told from here, so its bytes go to
+# a holding key on the entry (`recovery_candidate_r2_key`) for the operator to
+# look at before anything is attached.
+
+def _photo_has_a_server_copy(p: dict) -> bool:
+    return bool(p.get("original_r2_key") or p.get("enhanced_r2_key")
+                or p.get("thumb_r2_key") or p.get("base64") or p.get("thumb_base64"))
+
+
+def _recoverable_photos(logbook: dict) -> list:
+    """[{activity_index, photo_index, uri, timestamp, shares_file}] -- the
+    entries that exist only on the capturing phone. PURE."""
+    out = []
+    acts = ((logbook or {}).get("data") or {}).get("activities") or []
+    if not isinstance(acts, list):
+        return out
+    uris = {}
+    for act in acts:
+        for p in ((act or {}).get("photos") or []) if isinstance(act, dict) else []:
+            if isinstance(p, dict) and p.get("uri"):
+                uris[p["uri"]] = uris.get(p["uri"], 0) + 1
+    for ai, act in enumerate(acts):
+        photos = (act or {}).get("photos") if isinstance(act, dict) else None
+        if not isinstance(photos, list):
+            continue
+        for pi, p in enumerate(photos):
+            if (isinstance(p, dict) and p.get("upload_pending") and p.get("uri")
+                    and not _photo_has_a_server_copy(p)
+                    and not p.get("recovery_candidate_r2_key")):
+                out.append({"activity_index": ai, "photo_index": pi,
+                            "uri": p["uri"], "timestamp": p.get("timestamp"),
+                            "shares_file": uris.get(p["uri"], 0) > 1})
+    return out
+
+
+def _is_the_logs_author(logbook: dict, user: dict) -> bool:
+    """The account that created or signed the log -- the one whose phone took
+    its photos. Recovery reads that phone's private files, so nobody else's
+    device can hold them."""
+    uid = str((user or {}).get("id") or (user or {}).get("_id") or "")
+    return bool(uid) and uid in {str((logbook or {}).get("created_by") or ""),
+                                 str((logbook or {}).get("signed_by") or "")}
+
+
+async def _recovery_log_or_404(logbook_id: str, user: dict) -> dict:
+    logbook = await db.logbooks.find_one(
+        {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    # 404 FOR SOMEBODY ELSE'S LOG, not 403: the route must not confirm to a
+    # caller that an id they do not own exists.
+    if not logbook or not _is_the_logs_author(logbook, user):
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    return logbook
+
+
+@api_router.get("/photo-recovery/pending", dependencies=[Depends(require_approved)])
+async def photo_recovery_pending(current_user=Depends(get_current_user)):
+    """Every photo on this account's logs that exists only on its phone."""
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    if not uid:
+        return {"items": []}
+    items = []
+    async for lb in db.logbooks.find(
+        {"is_deleted": {"$ne": True},
+         "data.activities.photos.upload_pending": True,
+         "$or": [{"created_by": uid}, {"signed_by": uid}]},
+        {"date": 1, "log_type": 1, "status": 1, "data.activities": 1,
+         "created_by": 1, "signed_by": 1},
+    ):
+        for it in _recoverable_photos(lb):
+            items.append({"logbook_id": str(lb["_id"]),
+                          "date": str(lb.get("date") or "")[:10],
+                          "log_type": lb.get("log_type"), **it})
+    return {"items": items}
+
+
+class PhotoPresenceReport(BaseModel):
+    activity_index: int
+    photo_index: int
+    uri: str
+    timestamp: Optional[str] = None
+    exists: bool
+    size: Optional[int] = None
+    modification_time: Optional[float] = None
+    md5: Optional[str] = None
+
+
+class PhotoPresenceBody(BaseModel):
+    reports: List[PhotoPresenceReport]
+    device: Optional[Dict[str, Any]] = None
+
+
+@api_router.post("/photo-recovery/{logbook_id}/presence",
+                 dependencies=[Depends(require_approved)])
+async def photo_recovery_presence(logbook_id: str, body: PhotoPresenceBody,
+                                  current_user=Depends(get_current_user)):
+    """What the phone holds, per entry, BEFORE any upload.
+
+    Written to `photo_recovery_probes`, never to the logbook: this is the
+    phone's account of itself, and it is what the operator rules on.
+    """
+    logbook = await _recovery_log_or_404(logbook_id, current_user)
+    now = datetime.now(timezone.utc)
+    uid = actor_id(current_user)
+    docs = [{
+        "logbook_id": str(logbook["_id"]),
+        "project_id": str(logbook.get("project_id") or ""),
+        **r.model_dump(),
+        "reported_by": uid, "reported_at": now,
+        "device": body.device or {},
+    } for r in body.reports]
+    if docs:
+        await db.photo_recovery_probes.insert_many(docs)
+    present = sum(1 for d in docs if d["exists"])
+    await audit_log("photo_recovery_probe", uid, "logbook", str(logbook["_id"]), {
+        "reports": len(docs), "present": present, "missing": len(docs) - present,
+    })
+    return {"recorded": len(docs), "present": present, "missing": len(docs) - present}
+
+
+@api_router.post("/photo-recovery/{logbook_id}/recover",
+                 dependencies=[Depends(require_approved)])
+async def photo_recovery_recover(
+    logbook_id: str,
+    activity_index: int = Form(...),
+    photo_index: int = Form(...),
+    uri: str = Form(...),
+    timestamp: str = Form(""),
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+):
+    """Put the phone's copy of ONE listed photo into the entry that lists it."""
+    logbook = await _recovery_log_or_404(logbook_id, current_user)
+    acts = (logbook.get("data") or {}).get("activities") or []
+    try:
+        entry = acts[activity_index]["photos"][photo_index]
+    except Exception:
+        entry = None
+    # IDENTITY: its own phone path AND its capture time, and still waiting.
+    if (not isinstance(entry, dict) or entry.get("uri") != uri
+            or str(entry.get("timestamp") or "") != str(timestamp or "")
+            or not entry.get("upload_pending") or _photo_has_a_server_copy(entry)
+            or entry.get("recovery_candidate_r2_key")):
+        raise HTTPException(status_code=409, detail={"code": "PHOTO_NOT_RECOVERABLE"})
+
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded photo: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded photo is empty.")
+    if len(file_bytes) > _LOGBOOK_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Photo too large. Maximum 15 MB.")
+    content_type = _logbook_photo_content_type(file_bytes)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise HTTPException(status_code=503, detail="Photo storage (R2) is not configured")
+
+    import hashlib as _hashlib
+    sha = _hashlib.sha256(file_bytes).hexdigest()
+    project_id = str(logbook.get("project_id") or "")
+    shares = sum(1 for a in acts if isinstance(a, dict)
+                 for p in (a.get("photos") or [])
+                 if isinstance(p, dict) and p.get("uri") == uri) > 1
+    activity_id = str((acts[activity_index] or {}).get("activity_id") or "") or None
+    if shares:
+        r2_key = (f"logbook-photos/{_logbook_photo_key_segment(project_id)}/recovery/"
+                  f"{_logbook_photo_key_segment(str(logbook['_id']))}/{sha[:32]}.jpg")
+    else:
+        r2_key = _logbook_capture_photo_r2_key(
+            project_id, activity_id or str(logbook["_id"]), f"recovered_{sha[:32]}")
+    try:
+        await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, content_type)
+    except Exception as e:
+        logger.error("[photo-recovery] R2 upload failed log=%s key=%s: %r",
+                     logbook_id, r2_key, e)
+        raise HTTPException(status_code=502, detail="Photo storage upload failed")
+
+    now = datetime.now(timezone.utc)
+    uid = actor_id(current_user)
+    field = f"data.activities.{activity_index}.photos.{photo_index}"
+    # POSITIONAL PATH, IDENTITY FILTER: the write lands only if the entry at
+    # that position is still the one with this phone path and capture time.
+    match = {"_id": logbook["_id"], f"{field}.uri": uri,
+             f"{field}.upload_pending": {"$exists": True},
+             f"{field}.original_r2_key": {"$exists": False}}
+    if shares:
+        update = {"$set": {f"{field}.recovery_candidate_r2_key": r2_key,
+                           f"{field}.recovery_candidate_sha256": sha,
+                           f"{field}.recovery_candidate_at": now,
+                           f"{field}.recovery_candidate_by": uid}}
+        action, status = "logbook_photo_recovery_held", "held_for_review"
+    else:
+        update = {"$set": {f"{field}.original_r2_key": r2_key,
+                           f"{field}.recovered_at": now,
+                           f"{field}.recovered_by": uid,
+                           f"{field}.recovered_from": "capturing_device",
+                           f"{field}.recovered_sha256": sha,
+                           "updated_at": now},
+                  "$unset": {f"{field}.upload_pending": "",
+                             f"{field}.upload_rejected": ""}}
+        action, status = "logbook_photo_recovered", "recovered"
+    res = await db.logbooks.update_one(match, update)
+    if not getattr(res, "matched_count", 0):
+        raise HTTPException(status_code=409, detail={"code": "PHOTO_NOT_RECOVERABLE"})
+    await audit_log(action, uid, "logbook", str(logbook["_id"]), {
+        "activity_index": activity_index, "photo_index": photo_index,
+        "uri": uri, "timestamp": timestamp, "r2_key": r2_key, "sha256": sha,
+        "bytes": len(file_bytes), "shares_file": shares,
+    })
+    if not shares:
+        asyncio.create_task(_enhance_appended_photo(str(logbook["_id"]), activity_id, r2_key))
+    return {"status": status, "r2_key": r2_key, "sha256": sha}
 
 
 async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
