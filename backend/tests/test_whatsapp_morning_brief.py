@@ -277,6 +277,35 @@ class TheMessage(unittest.TestCase):
             "588 Thomas S Boyland St", "On site so far: 3 — GC 3", "",
             "No check-ins yet: 8 Prescott St, 12 Pacific St."]))
 
+    def test_jobs_without_check_in_setup(self):
+        viol = wa_brief.job_items([_violation(WALWORTH, "35123456")],
+                                  YESTERDAY - timedelta(hours=1), THU_7)
+        text = wa_brief.compose(THU_7, [
+            {"label": "8 Walworth St", "items": viol,
+             "headcount": "No check-ins yet.", "uses_checkins": False},
+            {"label": "12 Pacific St", "items": [],
+             "headcount": "No check-ins yet.", "uses_checkins": False},
+            {"label": "8 Prescott St", "items": [],
+             "headcount": "No check-ins yet.", "uses_checkins": True}])
+        self.assertEqual(text, "\n".join([
+            "Morning — Thu Oct 8", "",
+            "8 Walworth St",                       # items, no headcount line
+            "🔴 New violation 35123456, issued Oct 7, open. DOB.", "",
+            "No check-ins yet: 8 Prescott St."]))  # 12 Pacific St left out
+        self.assertNotIn("Pacific", text)
+
+    def test_every_job_left_out_is_one_line(self):
+        text = wa_brief.compose(THU_7, [
+            {"label": "12 Pacific St", "items": [],
+             "headcount": "No check-ins yet.", "uses_checkins": False}])
+        self.assertEqual(text, "Good morning. No action needed today.")
+
+    def test_address_casing_is_kept(self):
+        text = wa_brief.compose(THU_7, [
+            {"label": "588 Thomas S Boyland St", "items": [],
+             "headcount": "On site so far: 1 — GC 1", "uses_checkins": True}])
+        self.assertIn("588 Thomas S Boyland St", text)
+
     def test_all_quiet(self):
         text = wa_brief.compose(THU_7, [
             {"label": "8 Walworth St", "items": [], "headcount": "No check-ins yet."},
@@ -371,6 +400,51 @@ class WhoGetsWhat(unittest.TestCase):
         self.assertEqual(_sends(c)[0]["message"], "\n".join([
             "Good morning. No action needed today.", "",
             "588 Thomas S Boyland St", "On site so far: 1 — ABC Concrete 1"]))
+
+
+class UsesCheckIns(unittest.TestCase):
+
+    def _brief(self, db):
+        _optin(db, "u_pm", PM_PHONE)
+        with _Ctx(db) as c:
+            _tick(c, THU_7)
+        return _sends(c)[0]["message"] if _sends(c) else None
+
+    def test_no_setup_and_nothing_to_do_is_left_out(self):
+        self.assertEqual(self._brief(_db()), "Good morning. No action needed today.")
+
+    def test_an_active_tag_means_it_uses_check_ins(self):
+        db = _db()
+        db.nfc_tags.rows.append({"_id": "t1", "project_id": THOMAS, "status": "active"})
+        self.assertIn("No check-ins yet: 588 Thomas S Boyland St.", self._brief(db))
+
+    def test_an_inactive_tag_does_not(self):
+        db = _db()
+        db.nfc_tags.rows.append({"_id": "t1", "project_id": THOMAS, "status": "inactive"})
+        self.assertEqual(self._brief(db), "Good morning. No action needed today.")
+
+    def test_a_site_device_means_it_uses_check_ins(self):
+        db = _db()
+        db.site_devices.rows.append({"_id": "d1", "project_id": THOMAS, "is_active": True})
+        self.assertIn("No check-ins yet: 588 Thomas S Boyland St.", self._brief(db))
+
+    def test_a_check_in_in_the_last_14_days(self):
+        db = _db()
+        db.checkins.rows.append({**_checkin(THOMAS, "w1", "GC"),
+                                 "check_in_time": THU_7 - timedelta(days=10)})
+        self.assertIn("No check-ins yet: 588 Thomas S Boyland St.", self._brief(db))
+        db = _db()
+        db.checkins.rows.append({**_checkin(THOMAS, "w1", "GC"),
+                                 "check_in_time": THU_7 - timedelta(days=20)})
+        self.assertEqual(self._brief(db), "Good morning. No action needed today.")
+
+    def test_items_without_setup_have_no_headcount_line(self):
+        db = _db()
+        db.dob_logs.rows.append(_permit(THOMAS, "B01141294", "2026-10-14"))
+        text = self._brief(db)
+        self.assertIn("🟠 Permit B01141294", text)
+        self.assertNotIn("check-ins", text.lower())
+        self.assertNotIn("On site", text)
 
 
 class TimeAndOnce(unittest.TestCase):

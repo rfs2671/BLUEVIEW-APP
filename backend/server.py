@@ -45389,7 +45389,28 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
     }).to_list(2000)
     return {"label": wa_assistant.street_label(project),
             "items": wa_brief.job_items(rows, since, now, dot_rows),
-            "headcount": wa_brief.headcount_line(checkins)}
+            "headcount": wa_brief.headcount_line(checkins),
+            "uses_checkins": bool(checkins) or await _brief_uses_checkins(
+                pid, company_id, now)}
+
+
+async def _brief_uses_checkins(project_id: str, company_id: str,
+                               now: datetime) -> bool:
+    """Does this job check people in at all? An active NFC tag or site
+    device, or any check-in in the last 14 days. A job that does not gets no
+    'No check-ins yet' line in the brief."""
+    if await db.nfc_tags.find_one(
+            {"project_id": project_id, "status": "active",
+             "is_deleted": {"$ne": True}}, {"_id": 1}):
+        return True
+    if await db.site_devices.find_one(
+            {"project_id": project_id, "is_active": True}, {"_id": 1}):
+        return True
+    return bool(await db.checkins.find_one(
+        {"project_id": project_id,
+         "company_id": _company_id_filter(company_id),
+         "check_in_time": {"$gte": now - timedelta(days=14)},
+         "is_deleted": {"$ne": True}}, {"_id": 1}))
 
 
 def wa_brief_day_range(now: datetime):

@@ -310,10 +310,15 @@ NOTHING_TODAY = "Good morning. No action needed today."
 
 
 def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
-    """jobs: [{label, items, headcount}] in display order. At most MAX_ITEMS
-    items across all jobs, the most pressing first. A job with items or
-    check-ins gets its own block (address, items, headcount); jobs with
-    neither are named together: "No check-ins yet: 8 Walworth, 8 Prescott." """
+    """jobs: [{label, items, headcount, uses_checkins}] in display order. At
+    most MAX_ITEMS items across all jobs, the most pressing first.
+
+    A job with items, or with someone on site, gets its own block (address,
+    items, and the headcount line only if the job uses check-ins). A job that
+    uses check-ins with neither is named in "No check-ins yet: 8 Walworth,
+    8 Prescott." A job that does not use check-ins and has nothing to do is
+    left out; if that leaves nothing, the brief is the one line
+    "Good morning. No action needed today." """
     ranked: List[Tuple[Tuple, int, str]] = []
     for j_idx, job in enumerate(jobs):
         for it in job.get("items") or []:
@@ -325,19 +330,25 @@ def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     for _k, j_idx, text in kept:
         per_job.setdefault(j_idx, []).append(text)
 
-    # A job with nothing to do AND nobody on site is not a block of its own:
-    # those are named together in one line at the end.
+    # A job that does not use check-ins (no active tag or site device, no
+    # check-in in 14 days) has no headcount line, and with nothing to do it
+    # is left out entirely. A job that does use them, with nothing to do and
+    # nobody on site, is named in one line at the end.
+    def uses(j):
+        return jobs[j].get("uses_checkins", True)
     quiet = [j for j in range(len(jobs))
-             if j not in per_job and jobs[j]["headcount"] == NO_CHECKINS]
-    lines = [header(now_utc) if kept else NOTHING_TODAY]
-    # Jobs with something to do first (in order of their most pressing
-    # item), then the rest that have someone on site.
+             if j not in per_job and uses(j) and jobs[j]["headcount"] == NO_CHECKINS]
     with_items = sorted(per_job, key=lambda j: min(
         r[0] for r in kept if r[1] == j))
-    order = with_items + [j for j in range(len(jobs))
-                          if j not in per_job and j not in quiet]
-    for j in order:
-        lines += ["", jobs[j]["label"]] + per_job.get(j, []) + [jobs[j]["headcount"]]
+    others = [j for j in range(len(jobs))
+              if j not in per_job and uses(j) and j not in quiet]
+    if not kept and not others and not quiet:
+        return NOTHING_TODAY
+    lines = [header(now_utc) if kept else NOTHING_TODAY]
+    for j in with_items + others:
+        lines += ["", jobs[j]["label"]] + per_job.get(j, [])
+        if uses(j):
+            lines.append(jobs[j]["headcount"])
     if quiet:
         lines += ["", "No check-ins yet: "
                   + ", ".join(jobs[j]["label"] for j in quiet) + "."]
