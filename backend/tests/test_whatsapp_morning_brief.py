@@ -125,16 +125,22 @@ class WhenItGoes(unittest.TestCase):
                          "a missed brief is not sent at noon")
 
     def test_days(self):
-        self.assertFalse(wa_brief.is_due(SAT_7, "07:00", False))
-        self.assertTrue(wa_brief.is_due(SAT_7, "07:00", True))
-        self.assertFalse(wa_brief.is_due(SUN_7, "07:00", True))
+        for day in (SAT_7, SUN_7):
+            self.assertFalse(wa_brief.is_due(day, "07:00", False))
+            self.assertTrue(wa_brief.is_due(day, "07:00", True))
+        self.assertTrue(wa_brief.is_due(THU_7, "07:00", False))
 
     def test_defaults(self):
-        self.assertEqual(wa_brief.clean_settings(None),
-                         {"brief_time": "07:00", "brief_saturday": False})
+        off = {"brief_time": "07:00", "brief_weekend": False, "brief_saturday": False}
+        self.assertEqual(wa_brief.clean_settings(None), off)
         self.assertEqual(wa_brief.clean_settings({"brief_time": "10:00",
-                                                  "brief_saturday": "yes"}),
-                         {"brief_time": "07:00", "brief_saturday": False})
+                                                  "brief_weekend": "yes"}), off)
+
+    def test_an_unmigrated_saturday_counts_as_weekend(self):
+        self.assertTrue(wa_brief.clean_settings({"brief_saturday": True})["brief_weekend"])
+        # Once brief_weekend is stored it alone decides.
+        self.assertFalse(wa_brief.clean_settings(
+            {"brief_saturday": True, "brief_weekend": False})["brief_weekend"])
 
 
 class Headcount(unittest.TestCase):
@@ -492,19 +498,34 @@ class TimeAndOnce(unittest.TestCase):
             _tick(c, THU_8)
         self.assertEqual(_sends(c), [])
 
-    def test_saturday_toggle(self):
+    def test_weekend_toggle(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
-        with _Ctx(db) as c:
-            _tick(c, SAT_7)
-            self.assertEqual(_sends(c), [])
-        db = _world()
-        _optin(db, "u_admin", ADMIN_PHONE)
-        self._set(db, "u_admin", brief_saturday=True)
         with _Ctx(db) as c:
             _tick(c, SAT_7)
             _tick(c, SUN_7)
-        self.assertEqual(len(_sends(c)), 1)
+            self.assertEqual(_sends(c), [])
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        self._set(db, "u_admin", brief_weekend=True)
+        with _Ctx(db) as c:
+            _tick(c, SAT_7)
+            _tick(c, SUN_7)
+        self.assertEqual(len(_sends(c)), 2)         # Saturday AND Sunday
+
+    def test_saturday_on_is_migrated_to_weekend(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        self._set(db, "u_admin", brief_time="08:00", brief_saturday=True)
+        db.notification_preferences.rows.append(
+            {"_id": "np_off", "user_id": "u_pm", "project_id": None,
+             "whatsapp": {"brief_saturday": False}})
+        with _Ctx(db):
+            _run(server.run_whatsapp_startup_migrations())
+            _run(server.run_whatsapp_startup_migrations())     # idempotent
+        rows = {r["_id"]: r["whatsapp"] for r in db.notification_preferences.rows}
+        self.assertEqual(rows["np_u_admin"], {"brief_time": "08:00", "brief_weekend": True})
+        self.assertEqual(rows["np_off"], {"brief_weekend": False})
 
     def test_new_means_since_the_last_brief(self):
         db = _world()
@@ -529,11 +550,20 @@ class TheSettings(unittest.TestCase):
                      id="u_admin")
         with _Ctx(db):
             out = _run(server.put_whatsapp_brief(
-                {"brief_time": "09:00", "brief_saturday": True}, current_user=admin))
-            self.assertEqual(out, {"brief_time": "09:00", "brief_saturday": True})
+                {"brief_time": "09:00", "brief_weekend": True}, current_user=admin))
+            on = {"brief_weekend": True, "brief_saturday": True}
+            self.assertEqual(out, {"brief_time": "09:00", **on})
             out = _run(server.put_whatsapp_brief({"brief_time": "off"}, current_user=admin))
-            self.assertEqual(out, {"brief_time": "off", "brief_saturday": True})
-            for bad in ({"brief_time": "10:00"}, {"brief_saturday": "yes"},
+            self.assertEqual(out, {"brief_time": "off", **on})
+            # An app version from before the weekend switch still works.
+            out = _run(server.put_whatsapp_brief({"brief_saturday": False},
+                                                 current_user=admin))
+            self.assertFalse(out["brief_weekend"])
+            stored = next(r for r in db.notification_preferences.rows
+                          if r.get("user_id") == "u_admin")["whatsapp"]
+            self.assertNotIn("brief_saturday", stored)
+            for bad in ({"brief_time": "10:00"}, {"brief_weekend": "yes"},
+                        {"brief_weekend": True, "brief_saturday": False},
                         {"other": 1}, {}):
                 with self.assertRaises(HTTPException) as e:
                     _run(server.put_whatsapp_brief(bad, current_user=admin))
@@ -555,7 +585,8 @@ class TheSettings(unittest.TestCase):
             self.assertIsNone(_run(server.whatsapp_me(current_user=admin))["brief"])
             _optin(db, "u_admin", ADMIN_PHONE)
             self.assertEqual(_run(server.whatsapp_me(current_user=admin))["brief"],
-                             {"brief_time": "07:00", "brief_saturday": False})
+                             {"brief_time": "07:00", "brief_weekend": False,
+                              "brief_saturday": False})
 
 
 class Wiring(unittest.TestCase):

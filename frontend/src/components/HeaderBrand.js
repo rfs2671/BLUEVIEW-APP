@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { Text, Platform } from 'react-native';
-import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 
 /* Load Montserrat once from Google Fonts on web */
@@ -15,28 +14,26 @@ function injectMontserrat() {
   document.head.appendChild(link);
 }
 
+export const BRAND_LABEL = 'Levelog';
+
 /**
- * Displays the logged-in user's company (GC) name as a clean, modern
- * geometric sans-serif wordmark in the app header, replacing the
- * static product logo.
+ * The app header wordmark: "Levelog", in a clean geometric sans-serif.
+ *
+ * It used to show the company's name, which on a phone was cut to
+ * "BLUEVIE…" (a 280px cap with an ellipsis). The product name is short
+ * enough to fit every header, so nothing is cut: one line, and on a very
+ * narrow screen the text shrinks instead of being truncated.
  */
 export default function HeaderBrand({ style }) {
   useEffect(() => { injectMontserrat(); }, []);
-  const { user } = useAuth();
   const { colors } = useTheme();
-
-  const raw =
-    user?.gc_business_name ||
-    user?.company_name ||
-    'LeveLog';
-
-  // Keep it clean: uppercased, letter-spaced serif wordmark.
-  const label = String(raw).toUpperCase();
 
   return (
     <Text
       numberOfLines={1}
-      ellipsizeMode="tail"
+      adjustsFontSizeToFit
+      minimumFontScale={0.6}
+      accessibilityRole="header"
       style={[
         {
           fontSize: 27,
@@ -50,12 +47,12 @@ export default function HeaderBrand({ style }) {
             default: 'sans-serif',
           }),
           textTransform: 'uppercase',
-          maxWidth: 280,
+          flexShrink: 0,
         },
         style,
       ]}
     >
-      {label}
+      {BRAND_LABEL}
     </Text>
   );
 }

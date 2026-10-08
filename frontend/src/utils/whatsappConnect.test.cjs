@@ -5,7 +5,7 @@
  *   header       Levelog number + one chip + Save to Contacts
  *   Levelog Assistant  one chip + one plain line per state; Turn on / Turn off only
  *                when the server sent the link
- *   Groups       Admins only; "Link new groups" with a count, or one line
+ *   Groups       Admins only; every group the number is in, or one line
  *
  * Run:  node src/utils/whatsappConnect.test.cjs
  */
@@ -104,11 +104,33 @@ console.log('\nwho sees what');
 
 console.log('\ngroups (admin)');
 {
-  const g = card(me('connected'), { isAdmin: true, pendingCount: 3 }).groups;
-  ok(g.action && g.action.label === 'Link new groups' && g.action.count === 3 && g.line === null,
-     'pending groups: Link new groups with count');
-  const e = card(me('connected'), { isAdmin: true, pendingCount: 0 }).groups;
-  ok(e.action === null && e.line === W.GROUPS_EMPTY_LINE, 'none pending: no button, one line');
+  const list = [
+    { group_id: 'a', group_name: '588 Thomas Project', project_id: 'p1',
+      project_label: '588 Thomas S Boyland St', status: 'gc_confirmed' },
+    { group_id: 'b', group_name: 'Thomas Plumbing', project_id: 'p1',
+      project_label: '588 Thomas S Boyland St', status: 'trade' },
+    { group_id: 'c', group_name: 'Walworth', project_id: 'p2',
+      project_label: '8 Walworth St', status: 'gc_waiting' },
+    { group_id: 'd', group_name: 'New Job Crew', project_id: null,
+      project_label: null, status: 'not_linked' },
+  ];
+  const g = card(me('connected'), { isAdmin: true, groups: list }).groups;
+  ok(g.line === null && g.rows.length === 4, 'every group is a row, no empty line');
+  ok(g.rows[0].name === '588 Thomas Project' && g.rows[0].place === '588 Thomas S Boyland St',
+     'linked: group name, then the job address');
+  ok(g.rows[0].chip.label === 'GC group confirmed' && g.rows[0].chip.tone === 'ok', 'GC group confirmed');
+  ok(g.rows[1].chip.label === 'Trade group', 'trade group');
+  ok(g.rows[2].chip.label === 'Waiting for confirm' && g.rows[2].chip.tone === 'warn', 'waiting for confirm');
+  ok(g.rows[3].place === 'Not linked' && g.rows[3].link === true && g.rows[3].chip === null,
+     'not linked: says so, with a Link button');
+  ok(g.rows.slice(0, 3).every((r) => r.link === false), 'linked groups have no Link button');
+  const one = card(me('connected'), { isAdmin: true, groups: [list[0]] }).groups;
+  ok(one.rows.length === 1 && one.line === null,
+     'one linked group and nothing pending is NOT the empty state (the 588 Thomas bug)');
+  const e = card(me('connected'), { isAdmin: true, groups: [] }).groups;
+  ok(e.rows.length === 0 && e.line === W.GROUPS_EMPTY_LINE, 'in no group at all: the empty line');
+  const loading = card(me('connected'), { isAdmin: true }).groups;
+  ok(loading.rows.length === 0 && loading.line === null, 'not loaded yet: no empty line');
   ok(W.GROUPS_EMPTY_LINE ===
      "Add the Levelog number to a job's WhatsApp group. It will appear here to link.",
      'the empty line, word for word');
@@ -136,6 +158,20 @@ ok(!/WhatsApp Integration Card|whatsappStatus|handleActivateWhatsapp|WhatsAppCon
 ok((cardSrc.match(/<MessageCircle /g) || []).length === 1, 'one WhatsApp icon in the card');
 ok(/const shouldPoll = !me \|\| WA_POLLING_STATES\.has\(state\)/.test(cardSrc),
    'live refresh kept, and a failed first read is retried');
+ok(/DOB\/DOT alert switches are in each project's WhatsApp tab\./.test(cardSrc)
+   && /router\.push\('\/projects'\)/.test(cardSrc),
+   'Levelog Assistant: where the DOB/DOT switches are, linking to the project list');
+ok(/whatsappAPI\.getCompanyGroups\(\)/.test(cardSrc) && /groups\.rows\.map/.test(cardSrc),
+   'Groups: every group from /whatsapp/company-groups, one row each');
+ok(/g\.link \?[\s\S]{0,120}router\.push\('\/admin\/whatsapp-groups'\)/.test(cardSrc),
+   'a group not linked yet has a Link button');
+{
+  const brand = read('src/components/HeaderBrand.js');
+  ok(/export const BRAND_LABEL = 'Levelog';/.test(brand) && /\{BRAND_LABEL\}/.test(brand),
+     'header says Levelog');
+  ok(!/ellipsizeMode|maxWidth: 280|company_name|gc_business_name/.test(brand),
+     'header is not truncated and no longer shows the company name');
+}
 ok(!/whatsappAPI|Connect WhatsApp|waMe/.test(read('app/settings.jsx')), 'nothing in Settings');
 ok(/whatsappAPI\.connectLink\(\)/.test(cardSrc) && /connectUrl: link && link\.url/.test(cardSrc),
    'the card fetches the single-use link before the tap and uses it');

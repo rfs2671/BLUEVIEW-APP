@@ -8,7 +8,9 @@
  *               company (GET /whatsapp/status), with Save to Contacts
  *   Levelog Assistant  this person's own updates (GET /whatsapp/me state, from
  *               backend lib/wa_dm.py::connect_state) — Admins and PMs
- *   Groups      linking job groups — Admins only
+ *   Groups      every group the Levelog number is in (GET
+ *               /whatsapp/company-groups): name → job address and what it is
+ *               to that job, or "Not linked" + Link — Admins only
  *
  * One status chip and one plain line per state. A button appears only where
  * pressing it can work: the server sends `connect_url` / `stop_url` only then.
@@ -100,22 +102,47 @@ export function alertsView(me, connectUrl = null) {
   }
 }
 
-/** The Groups section (Admins only), or null. */
-export function groupsView({ status, pendingCount, isAdmin }) {
+// What a group is to its job (server: GROUP_* in server.py).
+export const GROUP_STATUS = {
+  gc_confirmed: chip('GC group confirmed', 'ok'),
+  gc_waiting: chip('Waiting for confirm', 'warn'),
+  trade: chip('Trade group', 'idle'),
+};
+
+/** One row per group: its WhatsApp name, then the job or "Not linked". */
+export function groupRows(groups) {
+  return (Array.isArray(groups) ? groups : []).map((g) => {
+    const linked = g.status !== 'not_linked' && !!g.project_label;
+    return {
+      key: g.group_id,
+      name: g.group_name || 'WhatsApp group',
+      place: linked ? g.project_label : 'Not linked',
+      chip: linked ? (GROUP_STATUS[g.status] || GROUP_STATUS.trade) : null,
+      link: !linked,
+    };
+  });
+}
+
+/**
+ * The Groups section (Admins only), or null. `groups` is the
+ * /whatsapp/company-groups list, or null while it has not loaded.
+ */
+export function groupsView({ status, groups = null, isAdmin }) {
   if (!isAdmin || !status) return null;
   if (!status.platform_configured) {
-    return { line: "WhatsApp isn't available yet. Contact Levelog support.", action: null };
+    return { line: "WhatsApp isn't available yet. Contact Levelog support.", action: null, rows: [] };
   }
   if (!status.company_active) {
     return {
       line: 'Turn on WhatsApp for your company to link job groups.',
       action: { kind: 'activate', label: 'Turn on WhatsApp' },
+      rows: [],
     };
   }
-  if (pendingCount > 0) {
-    return { line: null, action: { kind: 'link', label: 'Link new groups', count: pendingCount } };
-  }
-  return { line: GROUPS_EMPTY_LINE, action: null };
+  if (groups === null) return { line: null, action: null, rows: [] };
+  const rows = groupRows(groups);
+  // The empty line only when the number is in no group at all.
+  return { line: rows.length ? null : GROUPS_EMPTY_LINE, action: null, rows };
 }
 
 /**
@@ -123,10 +150,10 @@ export function groupsView({ status, pendingCount, isAdmin }) {
  * not an Admin, and the server says alerts are not for them.
  */
 export function whatsappCardView({
-  me, status, pendingCount = 0, isAdmin = false, connectUrl = null,
+  me, status, groups: groupList = null, isAdmin = false, connectUrl = null,
 }) {
   const alerts = alertsView(me, connectUrl);
-  const groups = groupsView({ status, pendingCount, isAdmin });
+  const groups = groupsView({ status, groups: groupList, isAdmin });
   if (!alerts && !isAdmin) return { visible: false };
   const number = (me && me.bot_number) || (status && status.whatsapp_number) || '';
   const header = {
