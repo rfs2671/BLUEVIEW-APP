@@ -688,6 +688,26 @@ class WhoAMessageIsForIsKept(unittest.TestCase):
         self.assertEqual(row["quoted_message_id"], "Q1")
         self.assertEqual(row["quoted_author"], f"{CP_PHONE}@c.us")
         self.assertIs(row["from_me"], False)
+        # The full sender id is kept beside the digits (attention engine):
+        # a phone and a WhatsApp privacy id are told apart by it.
+        self.assertEqual(row["sender_jid"], f"{PM_PHONE}@c.us")
+        self.assertEqual(row["sender"], PM_PHONE)
+
+    def test_a_privacy_id_sender_keeps_its_lid_suffix(self):
+        payload = {"event": "message", "data": {"message": {
+            "id": {"id": "M10", "fromMe": False, "_serialized": "y"},
+            "from": GROUP, "author": "123456789012345@lid",
+            "body": "hello all", "type": "chat"}}}
+
+        async def agent(**kw):
+            return None
+
+        with _Ctx(self._db()) as c, \
+                patch.object(server, "_run_group_agent", agent):
+            _run(server._process_whatsapp_message(payload))
+        row = [r for r in c.db.whatsapp_messages.rows if r.get("sender") != "bot"][0]
+        self.assertEqual(row["sender_jid"], "123456789012345@lid")
+        self.assertEqual(row["sender"], "123456789012345")
 
     def test_bot_rows_carry_company_and_project(self):
         with _Ctx(self._db()) as c:

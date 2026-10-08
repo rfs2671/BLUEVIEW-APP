@@ -70,6 +70,7 @@ from lib import wa_security  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
+from lib import wa_attention  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -43895,6 +43896,472 @@ async def _whatsapp_gc_tick() -> None:
     except Exception as e:
         logger.error(f"[wa-gc] alerts tick failed: {type(e).__name__}: {e}")
 
+# ── PROJECT ATTENTION ENGINE v1 (SHADOW MODE) ──────────────────────────────
+#
+# Reads stored group messages and records what needs someone's attention in
+# `attention_items`. POSTS NOTHING, ANYWHERE: no group message, no DM, no
+# @mention, no reaction. An admin reviews items in the app (Project →
+# WhatsApp → Attention (beta)) so precision is known before any of it is shown.
+#
+# NOT IN THE WEBHOOK. Message handling is one fire-and-forget task per message
+# with no retry; a model call there would delay the bot's own answer and an
+# exception would take the rest of that task with it. This is a scheduled job
+# that follows a saved cursor per group, so a slow model or a restart costs a
+# few minutes of lag and loses nothing.
+#
+# WHICH GROUPS. Active, linked, owned by a live project of the same company
+# (_resolve_group_binding), and with the group's bot switch ON. A group with
+# the bot off gets no AI processing at all: its cursor moves past what was
+# said meanwhile, so turning it back on never sends that backlog to a model.
+#
+# NO BACKFILL. A group's cursor starts at the moment the engine first sees it;
+# nothing said before that is ever read (operator ruling: the existing rows are
+# test chatter).
+
+ATTENTION_ITEMS = "attention_items"
+ATTENTION_CURSORS = "attention_cursors"
+ATTENTION_METRICS = "attention_metrics"
+ATTENTION_BATCH = 200             # messages per group per run
+ATTENTION_MAX_CALLS = 400         # model calls per run, all groups
+ATTENTION_MAX_FAILS = 3           # model failures on one message, then skip
+ATTENTION_PROBE_SECONDS = 60 * 60 * 24
+_ATTENTION_ZERO_ID = ObjectId("0" * 24)
+
+
+def _attention_disabled() -> bool:
+    return str(os.environ.get("WA_ATTENTION_DISABLED", "")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+async def _attention_llm(messages: list) -> Optional[dict]:
+    """One gpt-4o-mini call: {content, prompt_tokens, completion_tokens}, or
+    None on any failure."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=30) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 500,
+                    "messages": messages,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[attention] model http {resp.status_code}")
+                return None
+            data = resp.json()
+            usage = data.get("usage") or {}
+            return {"content": data["choices"][0]["message"]["content"],
+                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(usage.get("completion_tokens") or 0)}
+    except Exception as e:
+        logger.warning(f"[attention] model call failed: {type(e).__name__}")
+        return None
+
+
+async def _attention_resolve(jid: str, company_id: str, project_id: str,
+                             cache: dict) -> dict:
+    """A JID -> a person, deterministically, or unresolved with the JID kept.
+
+    Phone: a user of this company (resolve_wa_identity), else a worker who
+    checked in at THIS project with that phone (exactly one). @lid: only
+    through an active opt-in that recorded that chat id, and only to a user of
+    this company. Never a guess, never another tenant."""
+    key = (jid, company_id, project_id)
+    if key in cache:
+        return cache[key]
+    out = {"kind": "none", "id": None, "name": "", "status": "unresolved",
+           "jid": jid or None, "reason": "no_id"}
+    kind = wa_attention.jid_kind(jid)
+    digits = wa_dm.phone_digits(jid)
+    try:
+        if kind == "phone" and digits:
+            ident = await resolve_wa_identity(f"{digits}@c.us", company_id)
+            if ident.get("resolved"):
+                out = {**out, "kind": "user", "id": ident["user_id"],
+                       "name": ident.get("name") or "", "status": "resolved",
+                       "reason": None}
+            else:
+                variants = _contact_phone_variants(digits) + [format_phone(digits)]
+                rows = await db.checkins.find(
+                    {"project_id": str(project_id),
+                     "company_id": _company_id_filter(company_id),
+                     "worker_phone": {"$in": [v for v in variants if v]},
+                     "is_deleted": {"$ne": True}},
+                    {"worker_id": 1, "worker_name": 1}).to_list(20)
+                ids = {str(r.get("worker_id")) for r in rows if r.get("worker_id")}
+                if len(ids) == 1:
+                    out = {**out, "kind": "worker", "id": ids.pop(),
+                           "name": rows[0].get("worker_name") or "",
+                           "status": "resolved", "reason": None}
+                else:
+                    out["reason"] = "ambiguous" if ids else "no_match"
+        elif kind == "lid" and digits:
+            optin = await db[WA_OPTINS].find_one(
+                {"status": "active", "chat_digits": digits})
+            user = None
+            if optin and optin.get("user_id"):
+                user = await db.users.find_one(
+                    {"_id": to_query_id(str(optin["user_id"])),
+                     "company_id": _company_id_filter(company_id),
+                     "is_deleted": {"$ne": True}}, {"name": 1})
+            if user:
+                out = {**out, "kind": "user", "id": str(user["_id"]),
+                       "name": user.get("name") or "", "status": "resolved",
+                       "reason": None}
+            else:
+                out["reason"] = "lid_unmapped"
+    except Exception as e:
+        logger.warning(f"[attention] resolve failed: {type(e).__name__}")
+        out = {**out, "reason": "read_failed"}
+    cache[key] = out
+    return out
+
+
+def _attention_msg_filter(group_id: str, project_id: str, company_id: str,
+                          after: Optional[dict]) -> dict:
+    """This binding's human rows after a cursor (created_at, _id). One dict
+    literal, returned directly, so scripts/find_unserved_sorts.py can read it."""
+    at = (after or {}).get("at") or _HISTORY_EPOCH
+    after_id = (after or {}).get("id") or _ATTENTION_ZERO_ID
+    return {
+        "group_id": group_id,
+        "project_id": project_id,
+        "company_id": _company_id_filter(company_id),
+        "sender": {"$ne": "bot"},
+        "$or": [{"created_at": {"$gt": at}},
+                {"created_at": at, "_id": {"$gt": after_id}}],
+    }
+
+
+async def _attention_mark_replies(msg: dict, group_id: str, project_id: str) -> int:
+    """A reply to the message an open item cites marks the item
+    possibly_resolved (never closed: an admin decides). The asker replying to
+    their own message does not count."""
+    qid = str(msg.get("quoted_message_id") or "").strip()
+    if not qid:
+        return 0
+    try:
+        res = await db[ATTENTION_ITEMS].update_many(
+            {"group_id": group_id, "project_id": project_id,
+             "evidence.message_id": qid, "status": "open",
+             "type": {"$ne": "decision"},
+             "evidence.sender": {"$ne": str(msg.get("sender") or "")}},
+            {"$set": {"status": "possibly_resolved",
+                      "resolution": {
+                          "message_id": str(msg.get("message_id") or ""),
+                          "quote": str(msg.get("body") or "")[:wa_attention.MAX_QUOTE_CHARS],
+                          "sender_last4": str(msg.get("sender") or "")[-4:],
+                          "at": msg.get("created_at")},
+                      "updated_at": datetime.now(timezone.utc)}})
+        return res.modified_count
+    except Exception as e:
+        logger.warning(f"[attention] reply mark failed: {type(e).__name__}")
+        return 0
+
+
+async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
+    """Add to this group's counters for the current ISO week."""
+    week = wa_attention.iso_week(now)
+    try:
+        await db[ATTENTION_METRICS].update_one(
+            {"_id": f"{week}|{ctx['group_id']}|{ctx['project_id']}"},
+            {"$inc": inc,
+             "$setOnInsert": {"week": week, "group_id": ctx["group_id"],
+                              "project_id": ctx["project_id"],
+                              "company_id": ctx["company_id"]}},
+            upsert=True)
+    except Exception as e:
+        logger.warning(f"[attention] metrics write failed: {type(e).__name__}")
+
+
+async def _attention_process(msg: dict, ctx: dict, report: dict,
+                             llm=None) -> bool:
+    """One stored message through the pipeline. False only when the model
+    call failed or the run's call cap is reached (retried next run)."""
+    group_id, project_id, company_id = ctx["group_id"], ctx["project_id"], ctx["company_id"]
+    report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
+    reason = wa_attention.filter_reason(msg)
+    if not reason:
+        report["filtered_out"] += 1
+        await _attention_count(ctx, ctx["now"], messages=1)
+        return True
+    if report["calls"] >= ATTENTION_MAX_CALLS:
+        report["call_cap"] = True
+        return False
+    try:
+        context = await db.whatsapp_messages.find(
+            {"group_id": group_id, "project_id": project_id,
+             "company_id": _company_id_filter(company_id),
+             "created_at": {"$lt": msg.get("created_at")}}).sort(
+            [("created_at", -1)]).to_list(wa_attention.CONTEXT_MESSAGES)
+        context.reverse()
+        quoted = None
+        qid = str(msg.get("quoted_message_id") or "").strip()
+        if qid:
+            quoted = await db.whatsapp_messages.find_one(
+                {"group_id": group_id, "project_id": project_id,
+                 "company_id": _company_id_filter(company_id),
+                 "message_id": qid})
+    except Exception as e:
+        logger.warning(f"[attention] context read failed: {type(e).__name__}")
+        return False
+    report["calls"] += 1
+    answer = await (llm or _attention_llm)(
+        wa_attention.build_messages(msg, context, quoted))
+    if not answer:
+        report["model_failed"] += 1
+        return False
+    report["prompt_tokens"] += answer.get("prompt_tokens", 0)
+    report["completion_tokens"] += answer.get("completion_tokens", 0)
+    body = str(msg.get("body") or "")
+    sent_at = msg.get("created_at") or datetime.now(timezone.utc)
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=timezone.utc)
+    written = 0
+    for it in wa_attention.parse_items(answer.get("content")):
+        quote = wa_attention.verify_quote(it["quote"], body)
+        if not quote:
+            report["dropped_unverified"] += 1
+            continue
+        cand = wa_attention.owner_candidate(it["type"], msg)
+        owner = {"kind": "none", "id": None, "name": "", "status": "unresolved",
+                 "jid": None, "reason": "nobody_named", "source": "text"}
+        if cand.get("jid"):
+            res = await _attention_resolve(cand["jid"], company_id, project_id,
+                                           ctx["cache"])
+            owner = {**res, "source": cand["source"]}
+        owner["owner_text"] = wa_attention.text_in_body(it["owner_text"], body)
+        req_c = wa_attention.requester_candidate(it["type"], msg)
+        requester = None
+        if req_c.get("jid"):
+            requester = {**(await _attention_resolve(
+                req_c["jid"], company_id, project_id, ctx["cache"])),
+                "source": req_c["source"]}
+        due_text = wa_attention.text_in_body(it["due_text"], body)
+        due_at = wa_attention.parse_due(due_text, sent_at)
+        owner_key = (f"{owner['kind']}:{owner['id']}" if owner.get("id")
+                     else owner.get("jid") or (owner.get("owner_text") or "").lower())
+        key = wa_attention.dedupe_key(group_id, it["type"], owner_key, quote)
+        msg_id = str(msg.get("message_id") or "") or str(msg.get("_id"))
+        now = datetime.now(timezone.utc)
+        try:
+            dup = await db[ATTENTION_ITEMS].find_one_and_update(
+                {"dedupe_key": key, "project_id": project_id,
+                 "evidence.sent_at": {"$gte": sent_at - timedelta(
+                     days=wa_attention.DEDUPE_DAYS)}},
+                {"$addToSet": {"also_seen": msg_id},
+                 "$set": {"updated_at": now}})
+            if dup:
+                report["deduped"] += 1
+                continue
+            await db[ATTENTION_ITEMS].insert_one({
+                "company_id": company_id,
+                "project_id": project_id,
+                "group_id": group_id,
+                "type": it["type"],
+                "status": "open",
+                "summary": it["summary"],
+                "owner": owner,
+                "requester": requester,
+                "due": {"due_text": due_text,
+                        "due_at": due_at.isoformat() if due_at else None,
+                        "due_source": "parsed" if due_at else "none"},
+                **wa_attention.importance(it["importance"], body),
+                "tags": it["tags"],
+                "evidence": {"message_id": msg_id,
+                             "message_row_id": str(msg.get("_id")),
+                             "quote": quote, "verified": True,
+                             "sent_at": sent_at,
+                             "sender": str(msg.get("sender") or ""),
+                             "sender_last4": str(msg.get("sender") or "")[-4:]},
+                "context_message_ids": [str(c.get("message_id") or c.get("_id"))
+                                        for c in context],
+                "resolution": None,
+                "extraction": {"source": "live",
+                               "model": wa_attention.MODEL,
+                               "prompt_version": wa_attention.PROMPT_VERSION,
+                               "filter_reason": reason},
+                "dedupe_key": key,
+                "merged_into": None,
+                "also_seen": [],
+                "review": None,
+                "created_at": now,
+                "updated_at": now,
+            })
+            written += 1
+            report["items"] += 1
+            report["owner_" + owner["status"]] += 1
+        except Exception as e:
+            logger.warning(f"[attention] item write failed: {type(e).__name__}")
+    await _attention_count(ctx, ctx["now"], messages=1, passed=1, calls=1,
+                           items=written,
+                           prompt_tokens=answer.get("prompt_tokens", 0),
+                           completion_tokens=answer.get("completion_tokens", 0))
+    return True
+
+
+async def _attention_run_group(cur: dict, ctx: dict, report: dict,
+                               llm=None) -> int:
+    """Process up to ATTENTION_BATCH rows after the group's cursor, saving it
+    as it moves. Stops at a failed model call (retried next run; skipped after
+    ATTENTION_MAX_FAILS) or at the run's call cap."""
+    pos = cur.get("live") or {}
+    try:
+        rows = await db.whatsapp_messages.find(
+            _attention_msg_filter(ctx["group_id"], ctx["project_id"],
+                                  ctx["company_id"], pos)).sort(
+            [("created_at", 1), ("_id", 1)]).to_list(ATTENTION_BATCH)
+    except Exception as e:
+        logger.warning(f"[attention] message read failed: {type(e).__name__}")
+        return 0
+    done = 0
+    for msg in rows:
+        ok = await _attention_process(msg, ctx, report, llm=llm)
+        if not ok:
+            if report.get("call_cap"):
+                break
+            fails = cur.get("fail") or {}
+            count = fails.get("count", 0) + 1 if fails.get("id") == msg["_id"] else 1
+            if count < ATTENTION_MAX_FAILS:
+                cur["fail"] = {"id": msg["_id"], "count": count}
+                await db[ATTENTION_CURSORS].update_one(
+                    {"_id": cur["_id"]}, {"$set": {"fail": cur["fail"]}})
+                break
+            report["skipped_failing"] += 1
+        pos = {"at": msg.get("created_at"), "id": msg["_id"]}
+        cur["live"], cur["fail"] = pos, None
+        await db[ATTENTION_CURSORS].update_one(
+            {"_id": cur["_id"]}, {"$set": {"live": pos, "fail": None,
+                                           "updated_at": datetime.now(timezone.utc)}})
+        done += 1
+    return done
+
+
+async def _attention_probe(cur: dict, group_id: str, now: datetime) -> None:
+    """Step 0: once a day per group, log how many members get-group-info lists
+    and of what kind. COUNTS ONLY — never an id or a number."""
+    last = cur.get("probed_at")
+    if last and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last and (now - last).total_seconds() < ATTENTION_PROBE_SECONDS:
+        return
+    payload = await _waapi_group_info(group_id)
+    counts = wa_attention.participant_counts(payload) if payload is not None else None
+    logger.info(f"[wa-probe] participants group=…{group_id[-6:]} "
+                f"{counts if counts is not None else 'no response'}")
+    await db[ATTENTION_CURSORS].update_one(
+        {"_id": cur["_id"]}, {"$set": {"probed_at": now, "probe": counts}})
+
+
+async def _attention_tick(now: Optional[datetime] = None, llm=None,
+                          probe: bool = True) -> dict:
+    """The scheduled job. Shadow mode: nothing is sent."""
+    now = now or datetime.now(timezone.utc)
+    report = {"groups": 0, "new_groups": 0, "bot_off": 0, "unbound": 0,
+              "messages": 0, "calls": 0, "items": 0, "deduped": 0,
+              "filtered_out": 0, "dropped_unverified": 0, "model_failed": 0,
+              "skipped_failing": 0, "marked_resolved": 0, "owner_resolved": 0,
+              "owner_unresolved": 0, "prompt_tokens": 0,
+              "completion_tokens": 0, "call_cap": False}
+    if _attention_disabled():
+        return report
+    try:
+        rows = await db.whatsapp_groups.find({"active": True}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"[attention] groups read failed: {type(e).__name__}")
+        return report
+    for row in rows:
+        group_id = str(row.get("wa_group_id") or "")
+        if not group_id:
+            continue
+        binding = await _resolve_group_binding(group_id)
+        if (binding.get("status") != wa_security.GROUP_OK
+                or str((binding.get("group") or {}).get("_id")) != str(row.get("_id"))):
+            report["unbound"] += 1
+            continue
+        company_id, project_id = binding["company_id"], binding["project_id"]
+        cur_id = f"{group_id}|{project_id}"
+        start = {"at": now, "id": _ATTENTION_ZERO_ID}
+        try:
+            cur = await db[ATTENTION_CURSORS].find_one({"_id": cur_id})
+            if not _effective_bot_config(row.get("bot_config"))["bot_enabled"]:
+                # No AI processing. Move past what is said meanwhile, so
+                # switching the bot back on never sends that to a model.
+                report["bot_off"] += 1
+                if cur:
+                    await db[ATTENTION_CURSORS].update_one(
+                        {"_id": cur_id}, {"$set": {"live": start, "updated_at": now}})
+                continue
+            if not cur:
+                # NO BACKFILL: the first sight of a group starts its cursor now.
+                cur = {"_id": cur_id, "group_id": group_id,
+                       "project_id": project_id, "company_id": company_id,
+                       "live_from": now, "live": start, "fail": None,
+                       "created_at": now}
+                await db[ATTENTION_CURSORS].update_one(
+                    {"_id": cur_id}, {"$setOnInsert": cur}, upsert=True)
+                cur = await db[ATTENTION_CURSORS].find_one({"_id": cur_id}) or cur
+                report["new_groups"] += 1
+        except Exception as e:
+            logger.warning(f"[attention] cursor read failed: {type(e).__name__}")
+            continue
+        report["groups"] += 1
+        if probe:
+            try:
+                await _attention_probe(cur, group_id, now)
+            except Exception as e:
+                logger.warning(f"[wa-probe] failed: {type(e).__name__}")
+        if report["call_cap"]:
+            continue
+        ctx = {"group_id": group_id, "project_id": project_id,
+               "company_id": company_id, "cache": {}, "now": now}
+        report["messages"] += await _attention_run_group(cur, ctx, report, llm=llm)
+    logger.info(f"[attention] {report}")
+    return report
+
+
+async def _attention_weekly_metrics(now: Optional[datetime] = None) -> List[dict]:
+    """Last ISO week, one log line per group: items, filter pass %, model
+    calls, tokens and cost. Read from the counters _attention_process keeps."""
+    now = now or datetime.now(timezone.utc)
+    week = wa_attention.iso_week(now - timedelta(days=7))
+    try:
+        rows = await db[ATTENTION_METRICS].find({"week": week}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[attention] metrics read failed: {type(e).__name__}")
+        return []
+    lines = [wa_attention.weekly_line(r) for r in rows]
+    for line in lines:
+        logger.info(f"[attention-weekly] {line}")
+    total = wa_attention.weekly_line({
+        "week": week, "group_id": "ALL",
+        **{k: sum(int(r.get(k) or 0) for r in rows)
+           for k in ("messages", "passed", "calls", "items",
+                     "prompt_tokens", "completion_tokens")}})
+    logger.info(f"[attention-weekly] {total} groups={len(rows)}")
+    return lines + [total]
+
+
+async def _whatsapp_attention_job() -> None:
+    try:
+        await _attention_tick()
+    except Exception as e:
+        logger.error(f"[attention] tick failed: {type(e).__name__}: {e}")
+
+
+async def _whatsapp_attention_weekly_job() -> None:
+    try:
+        await _attention_weekly_metrics()
+    except Exception as e:
+        logger.error(f"[attention] weekly metrics failed: {type(e).__name__}: {e}")
+
+
 async def _waapi_contact_phone(jid: str) -> str:
     """Ask WaAPI who a @lid is. NOT VERIFIED: WaAPI's docs are not reachable
     from here, so this tries the whatsapp-web.js contact action by name, logs
@@ -53388,22 +53855,10 @@ async def _ensure_group_names(rows: list, *, coll: str = "whatsapp_groups",
     return rows
 
 
-async def _fetch_group_subject(group_id: str) -> str:
-    """The group's name, from WaAPI. Empty string on any failure.
-
-    ── ONE CALL, ON FIRST SIGHT ONLY ──────────────────────────────────────
-    #
-    # The name is the entire input to project auto-detection, and no webhook
-    # carries it: a message event has the group id and the sender, and
-    # group_join has neither a subject nor a name field. get-group-info is the
-    # only source, so it is called once when a pending row is created and the
-    # answer is stored.
-    #
-    # NEVER RAISES. A pending row with no name is still a row an admin can
-    # confirm by hand; a failed lookup that propagated would lose the group
-    # entirely, which is the outcome this registry exists to prevent."""
+async def _waapi_group_info(group_id: str) -> Optional[Any]:
+    """WaAPI get-group-info for a group, parsed. None on any failure."""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and group_id):
-        return ""
+        return None
     try:
         async with ServerHttpClient(timeout=15.0) as client_http:
             resp = await client_http.post(
@@ -53418,10 +53873,29 @@ async def _fetch_group_subject(group_id: str) -> str:
             if resp.status_code < 200 or resp.status_code >= 300:
                 logger.info(
                     f"get-group-info {resp.status_code} for {group_id[-12:]}")
-                return ""
-            payload = resp.json() if resp.content else {}
+                return None
+            return resp.json() if resp.content else {}
     except Exception as e:
         logger.info(f"get-group-info failed for {group_id[-12:]}: {e}")
+        return None
+
+
+async def _fetch_group_subject(group_id: str) -> str:
+    """The group's name, from WaAPI. Empty string on any failure.
+
+    ── ONE CALL, ON FIRST SIGHT ONLY ──────────────────────────────────────
+    #
+    # The name is the entire input to project auto-detection, and no webhook
+    # carries it: a message event has the group id and the sender, and
+    # group_join has neither a subject nor a name field. get-group-info is the
+    # only source, so it is called once when a pending row is created and the
+    # answer is stored.
+    #
+    # NEVER RAISES. A pending row with no name is still a row an admin can
+    # confirm by hand; a failed lookup that propagated would lose the group
+    # entirely, which is the outcome this registry exists to prevent."""
+    payload = await _waapi_group_info(group_id)
+    if payload is None:
         return ""
 
     # WaAPI nests the useful part differently across plans, so the subject is
@@ -53961,6 +54435,11 @@ async def _process_whatsapp_message(payload: dict):
                 "project_id": project_id,
                 "company_id": msg_company_id,
                 "sender": sender,
+                # THE FULL ID, KEPT. `sender` is the digits only, which loses
+                # whether this was a phone (@c.us) or a WhatsApp privacy id
+                # (@lid) — and only a phone can be matched to a person. Added
+                # going forward; older rows are read by length (wa_attention).
+                "sender_jid": str(parsed.get("sender") or ""),
                 "body": body,
                 "has_audio": parsed["has_audio"],
                 "transcribed": bool(parsed["has_audio"]),
@@ -56036,6 +56515,129 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     await _set_whatsapp_project_fields(project_id, company_id, fields,
                                        actor=actor_id(current_user))
     return await _wa_settings_view(project_id, str(company_id))
+
+
+def _attention_item_view(it: dict, group_names: dict) -> dict:
+    """What the review screen shows. The phone digits stay on the server: a
+    person is a name when resolved, else the words used and the last 4."""
+    owner = it.get("owner") or {}
+    req = it.get("requester") or {}
+    ev = it.get("evidence") or {}
+    res = it.get("resolution") or None
+    review = it.get("review") or None
+
+    def _who(p: dict) -> Optional[str]:
+        if not p:
+            return None
+        if p.get("status") == "resolved" and p.get("name"):
+            return p["name"]
+        if p.get("owner_text"):
+            return p["owner_text"]
+        jid = str(p.get("jid") or "")
+        return f"…{jid.split('@')[0][-4:]}" if jid else None
+
+    sent = ev.get("sent_at")
+    return {
+        "id": str(it.get("_id")),
+        "type": it.get("type"),
+        "status": it.get("status"),
+        "summary": it.get("summary") or "",
+        "importance": it.get("importance"),
+        "tags": it.get("tags") or [],
+        "owner": _who(owner),
+        "owner_status": owner.get("status") or "unresolved",
+        "owner_kind": owner.get("kind") or "none",
+        "requester": _who(req),
+        "due_text": (it.get("due") or {}).get("due_text"),
+        "due_at": (it.get("due") or {}).get("due_at"),
+        "quote": ev.get("quote") or "",
+        "sent_at": sent.isoformat() if isinstance(sent, datetime) else None,
+        "sender_last4": ev.get("sender_last4") or "",
+        "group_name": wa_groups.display_name(group_names.get(it.get("group_id"))),
+        "also_seen": len(it.get("also_seen") or []),
+        "resolution_quote": (res or {}).get("quote"),
+        "verdict": (review or {}).get("verdict"),
+        "source": (it.get("extraction") or {}).get("source") or "live",
+    }
+
+
+async def _attention_admin_project(project_id: str, current_user) -> str:
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    if not await _bot_project_scope(company_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return str(company_id)
+
+
+@api_router.get("/projects/{project_id}/attention",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_attention(project_id: str, status: str = "open",
+                                current_user=Depends(get_current_user)):
+    """Admin only, beta: the attention items recorded for this project
+    (shadow mode — nothing here was posted anywhere), and precision per type
+    from the verdicts given so far."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    if status == "open":
+        status_cond, review_cond = {"$in": ["open", "possibly_resolved"]}, None
+    elif status == "reviewed":
+        status_cond, review_cond = {"$exists": True}, {"$ne": None}
+    elif status == "all":
+        status_cond, review_cond = {"$exists": True}, {"$exists": True}
+    else:
+        raise HTTPException(status_code=422, detail="status: open, reviewed or all")
+    q = {"project_id": str(project_id),
+         "company_id": _company_id_filter(company_id),
+         "status": status_cond, "review": review_cond}
+    items = await db.attention_items.find(q).sort(
+        [("created_at", -1)]).to_list(200)
+    stats_rows = await db.attention_items.find(
+        {"project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)},
+        {"type": 1, "review.verdict": 1}).to_list(10000)
+    groups = await db.whatsapp_groups.find(
+        {"project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)},
+        {"wa_group_id": 1, "group_name": 1}).to_list(200)
+    names = {g.get("wa_group_id"): g.get("group_name") for g in groups}
+    return {
+        "items": [_attention_item_view(it, names) for it in items],
+        "precision": wa_attention.precision(stats_rows),
+        "total": len(stats_rows),
+        "shadow_mode": True,
+    }
+
+
+@api_router.post("/projects/{project_id}/attention/{item_id}/review",
+                  dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_project_attention(project_id: str, item_id: str, body: dict,
+                                   current_user=Depends(get_current_user)):
+    """Admin only: Correct / Wrong / Dismiss on one item. A later verdict
+    replaces an earlier one. Dismiss also takes the item off the open list."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    verdict = (body or {}).get("verdict") if isinstance(body, dict) else None
+    if verdict not in wa_attention.VERDICTS:
+        raise HTTPException(status_code=422,
+                            detail="verdict: correct, wrong or dismissed")
+    oid = to_query_id(str(item_id or ""))
+    if not oid:
+        raise HTTPException(status_code=404, detail="Item not found")
+    now = datetime.now(timezone.utc)
+    fields = {"review": {"verdict": verdict, "by": actor_id(current_user),
+                         "at": now},
+              "updated_at": now}
+    if verdict == "dismissed":
+        fields["status"] = "dismissed"
+    it = await db.attention_items.find_one_and_update(
+        {"_id": oid, "project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)},
+        {"$set": fields}, return_document=_canary_return_after())
+    if not it:
+        raise HTTPException(status_code=404, detail="Item not found")
+    g = await db.whatsapp_groups.find_one(
+        {"wa_group_id": it.get("group_id"), "project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)}, {"group_name": 1})
+    return _attention_item_view(it, {it.get("group_id"): (g or {}).get("group_name")})
 
 
 @api_router.post(
@@ -59505,6 +60107,16 @@ async def startup_event():
     await db.whatsapp_groups.create_index("project_id")
     await db.whatsapp_messages.create_index([("project_id", 1), ("timestamp", -1)])
     await db.whatsapp_messages.create_index([("group_id", 1), ("created_at", -1)])
+    # Attention engine (shadow mode): the cursor walk, the dedupe probe, the
+    # reply-to-evidence match and the review list.
+    await db.whatsapp_messages.create_index(
+        [("group_id", 1), ("project_id", 1), ("created_at", 1), ("_id", 1)])
+    await db.attention_items.create_index([("project_id", 1), ("created_at", -1)])
+    await db.attention_items.create_index(
+        [("dedupe_key", 1), ("project_id", 1), ("evidence.sent_at", -1)])
+    await db.attention_items.create_index(
+        [("group_id", 1), ("evidence.message_id", 1), ("status", 1)])
+    await db.attention_metrics.create_index([("week", 1)])
     await _ensure_index_resilient(
         db.whatsapp_contacts,
         keys=[("company_id", 1), ("phone", 1)],
@@ -60823,6 +61435,26 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+
+    # Attention engine v1 — SHADOW MODE: records items, posts nothing. Every
+    # 5 minutes behind a saved cursor per group (not in the webhook).
+    # WA_ATTENTION_DISABLED=1 stops it.
+    scheduler.add_job(
+        _whatsapp_attention_job,
+        IntervalTrigger(minutes=5),
+        id='whatsapp_attention',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
+    )
+    # One log line per group for last week: items, filter pass %, tokens, cost.
+    scheduler.add_job(
+        _whatsapp_attention_weekly_job,
+        CronTrigger(day_of_week='mon', hour=13, minute=7),  # ~9 AM ET
+        id='whatsapp_attention_weekly',
+        replace_existing=True,
     )
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL

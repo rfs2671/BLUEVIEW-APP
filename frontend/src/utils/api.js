@@ -1779,6 +1779,20 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Attention (beta), admins: { items, precision, total, shadow_mode }.
+  getAttention: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/attention`);
+    return response.data;
+  },
+
+  // verdict: 'correct' | 'wrong' | 'dismissed'
+  reviewAttention: async (projectId, itemId, verdict) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/attention/${encodeURIComponent(itemId)}/review`,
+      { verdict });
+    return response.data;
+  },
+
   getGroups: async (projectId) => {
     const response = await apiClient.get(`/api/whatsapp/groups/${projectId}`);
     return response.data;

@@ -36,6 +36,7 @@ import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import GroupConfigPanel from '../../../src/components/whatsapp/GroupConfigPanel';
 import LevelogAssistantCard from '../../../src/components/whatsapp/LevelogAssistantCard';
+import AttentionCard from '../../../src/components/whatsapp/AttentionCard';
 import { groupLabel, headerTitle, messageCountLabel } from '../../../src/utils/whatsappSettings';
 import { withAlpha } from '../../../src/styles/semanticColors';
 import OfflineNotice from '../../../src/components/OfflineNotice';
@@ -403,6 +404,11 @@ export default function WhatsAppGroupsScreen() {
               {/* ── LEVELOG ASSISTANT (admins) ──────────────────────────── */}
               {isAdmin && !readOnly ? (
                 <LevelogAssistantCard projectId={projectId} />
+              ) : null}
+
+              {/* ── ATTENTION (BETA), admins: shadow mode, review only ────── */}
+              {isAdmin && !readOnly && groups.length > 0 ? (
+                <AttentionCard projectId={projectId} />
               ) : null}
 
               {/* ── WHAT THE BOT DOES IN GROUPS (admins) ─────────────────── */}
