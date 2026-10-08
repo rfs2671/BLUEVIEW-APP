@@ -16,6 +16,7 @@ import { initSentry, captureException as sentryCaptureException } from '../src/l
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { setupFiledPhotoAutoDrain } from '../src/utils/filedPhotoQueue';
+import { setupPhotoRecovery } from '../src/utils/photoRecovery';
 import { setupSiteManifestSync, syncSiteManifest } from '../src/utils/siteManifestStore';
 import { awaitQuiet } from '../src/utils/syncPriority';
 import { setupAdminPlanPrefetch } from '../src/utils/adminPlanPrefetch';
@@ -409,6 +410,16 @@ function AppShell() {
   // all three inside setupFiledPhotoAutoDrain. `sendPendingSignatures` is why
   // this line is written down rather than assumed: it existed, it was correct,
   // and nothing ever called it, so nothing ever drained.
+  // A PHOTOGRAPH THAT NEVER LEFT THE PHONE. Entries on this account's logs that
+  // exist only on the capturing phone are probed -- the phone reports what it
+  // holds BEFORE anything uploads -- and then recovered into the entry the
+  // record lists. Same three moments as the drain below. Operator's ruling,
+  // 2026-10-08; see src/utils/photoRecovery.js.
+  useEffect(() => {
+    const unsubscribe = setupPhotoRecovery();
+    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
+
   useEffect(() => {
     const unsubscribe = setupFiledPhotoAutoDrain();
     return () => { if (typeof unsubscribe === 'function') unsubscribe(); };

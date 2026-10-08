@@ -362,9 +362,28 @@ export const photoNeedsUpload = (p) => Boolean(
  * retrying — and uploadPendingActivityPhotos marks it `upload_rejected`
  * accordingly.
  */
+/**
+ * A stable id for a photo that has none, from its own file name.
+ *
+ * A photo reloaded from a server copy written before ids were kept carries no
+ * `id`, and the upload key needs one. The persisted file name is unique to
+ * the capture (persistPhoto names it from the id, or the capture time), so it
+ * names the same photo on every retry and the key stays idempotent.
+ */
+export const photoIdFromUri = (uri) => {
+  const base = String(uri || '').split('?')[0].split('/').pop() || '';
+  const stem = base.replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  return stem ? `file_${stem}` : '';
+};
+
+/** Thrown when a photo cannot be sent as it stands -- a fact about THIS photo,
+ *  never about the network. */
+export const PHOTO_PRECONDITION = 'PHOTO_PRECONDITION';
+
 export async function uploadCapturePhoto({ projectId, logbookId, activityId, photoId, uri }) {
   if (!projectId || !photoId || !uri) {
-    throw new Error('uploadCapturePhoto needs projectId, photoId and uri');
+    throw Object.assign(new Error('uploadCapturePhoto needs projectId, photoId and uri'),
+      { code: PHOTO_PRECONDITION });
   }
   const form = new FormData();
   if (logbookId) form.append('logbook_id', String(logbookId));
@@ -512,7 +531,7 @@ export async function uploadPendingActivityPhotos(projectId, activities, logbook
           projectId,
           logbookId,
           activityId: activity.activity_id,
-          photoId: photo.id || photo.photo_id,
+          photoId: photo.id || photo.photo_id || photoIdFromUri(photo.uri),
           uri: photo.uri,
         });
         const { upload_pending, ...rest } = photo;  // eslint-disable-line no-unused-vars
@@ -520,6 +539,14 @@ export async function uploadPendingActivityPhotos(projectId, activities, logbook
         out.uploaded += 1;
       } catch (e) {
         const status = e?.response?.status || 0;
+        // A REFUSAL BEFORE ANY REQUEST IS NOT THE NETWORK. It used to fall into
+        // the branch below (no status => "offline"), which STOPPED the loop:
+        // one photo with no id stranded itself and every photo after it.
+        if (e && e.code === PHOTO_PRECONDITION) {
+          out.remaining += 1;
+          nextPhotos.push({ ...photo, upload_pending: true });
+          continue;
+        }
         if (isOfflineError(e) || status >= 500 || !status) {
           // Nothing is wrong with the photo; the world is unreachable.
           out.offline = out.offline || isOfflineError(e);

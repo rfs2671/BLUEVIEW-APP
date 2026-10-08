@@ -268,6 +268,11 @@ const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
  */
 const photoForPayload = (photo) => {
   if (!photo || typeof photo !== 'object') return photo;
+  // `id` IS CLIENT BOOKKEEPING AND STAYS OFF THE RECORD (pinned in
+  // logbookPhotoR2.test.cjs). A draft reloaded from the server copy therefore
+  // has pending photos with no id; uploadPendingActivityPhotos gives those an
+  // id from their own file name (photoIdFromUri) -- that, not an id on the
+  // record, is what un-strands them.
   const { pending, id, persist_failed, ...stored } = photo; // eslint-disable-line no-unused-vars
   if (stored.original_r2_key) {
     // `uri` IS DROPPED HERE, AND ONLY HERE. A file:///data/user/0/... path is

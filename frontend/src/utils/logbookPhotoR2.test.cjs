@@ -117,6 +117,10 @@ function loadDrafts({ copyFails = false, upload = null, store = {} } = {}) {
       photoNeedsUpload, uploadCapturePhoto, uploadPendingActivityPhotos,
       hasPendingPhotoUploads, draftKey, readDraft, writeDraft, markPending,
       getPendingKeys, clearPending,
+      // TYPEOF-GUARDED so this file still RUNS against a module that predates
+      // them -- a control run must fail on behaviour, not on a load error.
+      photoIdFromUri: typeof photoIdFromUri === 'function' ? photoIdFromUri : undefined,
+      PHOTO_PRECONDITION: typeof PHOTO_PRECONDITION === 'string' ? PHOTO_PRECONDITION : undefined,
     };
   `)(env);
   return { ...mod, copies, posts, store };
@@ -339,6 +343,41 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
   }
 
   {
+    // THE STRANDING, REPRODUCED. Two filed logs on 588 Thomas hold photos that
+    // came back from a server copy with no `id` (photoForPayload used to strip
+    // it). uploadCapturePhoto refused them before any request, the loop read
+    // that as "offline", and nothing ever uploaded again.
+    const D = loadDrafts({ upload: okUpload() });
+    const stranded = [{ activity_id: 'act_1', photos: [
+      { uri: 'file:///docs/logbook_photos/1785935941873_0.jpeg', upload_pending: true },
+      { id: 'cap_2', uri: 'file:///docs/logbook_photos/cap_2_5.jpg', upload_pending: true },
+    ] }];
+    const r = await D.uploadPendingActivityPhotos('proj1', stranded);
+    ok(r.uploaded === 2,
+      'a photo with no id uploads -- under an id taken from its own file name');
+    ok(D.posts[0].form.parts.photo_id === 'file_1785935941873_0',
+      'and that id is the file name, so a retry builds the same key');
+    ok(typeof D.photoIdFromUri === 'function'
+      && D.photoIdFromUri('file:///docs/logbook_photos/cap_1785935200722_1_19.jpg')
+      === 'file_cap_1785935200722_1_19', 'photoIdFromUri drops the folder and the extension');
+  }
+
+  {
+    // A PHOTO THAT CANNOT BE SENT NO LONGER STRANDS THE ONES AFTER IT.
+    const D = loadDrafts({ upload: okUpload() });
+    const rows2 = [{ activity_id: 'act_1', photos: [
+      { uri: 'file:///docs/', upload_pending: true },
+      { id: 'cap_3', uri: 'file:///docs/logbook_photos/cap_3_5.jpg', upload_pending: true },
+    ] }];
+    const r = await D.uploadPendingActivityPhotos('proj1', rows2);
+    ok(r.uploaded === 1 && D.posts.length === 1,
+      'the next photo still uploads -- a refusal before any request is not "offline"');
+    ok(r.activities[0].photos[0].upload_pending === true
+      && r.activities[0].photos[0].upload_rejected === undefined,
+      'and the one that could not be sent stays pending, not rejected');
+  }
+
+  {
     const D = loadDrafts({ upload: okUpload() });
     ok(D.hasPendingPhotoUploads(rows()) === true,
       'hasPendingPhotoUploads sees a photo with no key');
@@ -506,6 +545,16 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
     ${sliceDecl(editorSrc, 'photoForPayload', '\n};\n')}
     return { photoForPayload };
   `)();
+
+  {
+    // A PENDING PHOTO STILL REACHES THE RECORD WITHOUT AN ID -- and that is
+    // now survivable: the upload loop names it from its file (see the
+    // stranding test above), so nothing depends on an id coming back.
+    const sent = photoForPayload({ id: 'cap_9', uri: 'file:///docs/logbook_photos/9.jpg',
+      timestamp: '2026-08-05T13:06:40.722Z', pending: true, persist_failed: false });
+    ok(sent && sent.upload_pending === true && sent.id === undefined,
+      'a pending photo goes up as pending, with no id on the record');
+  }
 
   const MONGO_MAX = 16 * 1024 * 1024;
   const SUBS = 10;

@@ -57,6 +57,11 @@ BASELINE = {
     ("document_page_index", "file_hash"),
     ("document_page_index", "file_id"),
     ("document_page_index", "index_version"),
+    # logbooks.signed_by: written by _signed_by(), which RETURNS the dict
+    # {"signed_by": uid} that create_logbook spreads into its insert and
+    # update_logbook merges into its $set -- a returned dict, so the sweep
+    # sees no writer. Read by /photo-recovery/pending (2026-10-08).
+    ("logbooks", "signed_by"),
     # document_page_chunks: all four written by _write_page_chunks, which builds
     # its rows in a loop into a list and calls insert_many(docs) — a variable,
     # not a literal, so the sweep sees no writer (2026-09-15).
