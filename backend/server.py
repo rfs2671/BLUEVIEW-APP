@@ -44406,7 +44406,8 @@ async def _dm_llm(system: str, user_text: str) -> Optional[str]:
         return None
 
 
-async def _dm_job_facts(company_id: str, project: dict, now: datetime) -> str:
+async def _dm_job_facts(company_id: str, project: dict, now: datetime,
+                        detail: bool = True) -> str:
     """One job's facts for a cross-job answer. Every read carries the job's
     project id and is behind _bot_project_scope; nothing here is guessed."""
     pid = str(project.get("_id"))
@@ -44470,7 +44471,7 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime) -> str:
                  "sender": {"$ne": "bot"},
                  "created_at": {"$gte": start}}).sort("created_at", 1).to_list(60)
             lines.append(f"  group messages in the last 24 h: {len(msgs)}")
-            for m in msgs[-12:]:
+            for m in (msgs[-12:] if detail else []):
                 b = str(m.get("body") or "").strip().replace("\n", " ")
                 if b:
                     lines.append(f"    - {b[:140]}")
@@ -44482,8 +44483,12 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime) -> str:
 async def _dm_answer_all(ident: dict, body: str) -> str:
     now = datetime.now(timezone.utc)
     blocks = []
-    for p in ident["projects"][:15]:
-        f = await _dm_job_facts(ident["company_id"], p, now)
+    # EVERY job they may see — a question about "all my jobs" answered from
+    # the first fifteen would be confidently incomplete. Many jobs keep the
+    # counts and drop the message excerpts, so the prompt stays bounded.
+    detail = len(ident["projects"]) <= wa_assistant.CROSS_DETAIL_MAX_JOBS
+    for p in ident["projects"]:
+        f = await _dm_job_facts(ident["company_id"], p, now, detail=detail)
         if f:
             blocks.append(f)
     facts = "\n\n".join(blocks) or "(no jobs)"
@@ -52900,8 +52905,14 @@ async def _agent_context_block(
 # source is longer than a reply that does neither, and a truncated answer is
 # worse than a slightly slower one.
 AGENT_MODEL = "gpt-4o"
-# Tools that change something or start a flow; never offered in a DM.
-_DM_WRITE_TOOLS = frozenset({"start_permit_renewal", "start_checklist"})
+# Never offered in a DM:
+#   start_permit_renewal, start_checklist  change something / start a flow;
+#   list_workers  reads the WHOLE company's roster, which a PM may not see
+#                 (who_on_site answers for the job);
+#   query_plan    sends sheet images straight to WaAPI, outside the DM send
+#                 gate (search_plans still answers what the drawings say).
+_DM_WRITE_TOOLS = frozenset({"start_permit_renewal", "start_checklist",
+                             "list_workers", "query_plan"})
 AGENT_MAX_TOKENS = 800
 
 

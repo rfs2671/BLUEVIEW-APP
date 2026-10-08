@@ -23,6 +23,9 @@ MENU_EXPIRED_TEXT = "Which job did you mean? Name the address and I'll answer."
 JOB_MEMORY_SECONDS = 30 * 60      # the last job used in this DM
 MENU_SECONDS = 10 * 60            # how long a "Which job?" menu stays open
 MENU_MAX = 9
+# Up to this many jobs, an all-jobs answer gets message excerpts too; above
+# it, counts only — but always every job.
+CROSS_DETAIL_MAX_JOBS = 15
 
 SCOPE_PROJECT = "project"
 SCOPE_ALL = "all"
@@ -153,7 +156,10 @@ DM_AGENT_CLAUSE = (
     "by its address. Answer only about the job named in the facts above. Use "
     "the tools for data; never invent a DOB number, date, fine, permit or "
     "violation. You cannot file, renew, change or create anything here: if "
-    "asked, say that is done in the Levelog app."
+    "asked, say that is done in the Levelog app. You cannot send drawing "
+    "images or the company's full worker roster here: say what the drawings "
+    "say (search_plans) or who is on this job (who_on_site), and that sheets "
+    "are in the app."
 )
 
 CROSS_SYSTEM_PROMPT = (

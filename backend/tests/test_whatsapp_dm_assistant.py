@@ -198,6 +198,22 @@ class Scope(_Harness, unittest.TestCase):
         self.assertEqual({str(p["_id"]) for p in pm}, {THOMAS})   # PROJ_B assigned but not CO_A
 
 
+class AllJobsMeansAll(_Harness, unittest.TestCase):
+
+    def test_every_job_is_in_the_facts_even_past_fifteen(self):
+        db = _db()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        for i in range(20):
+            db.projects.rows.append({"_id": f"px{i}", "company_id": CO_A,
+                                     "name": f"J{i}", "address": f"{100 + i} Extra St"})
+        with _Ctx(db=db) as c:
+            self._send(c, f"{ADMIN_PHONE}@c.us", "any new violations this week?")
+        facts = self.llm_calls[-1][1]
+        for i in range(20):
+            self.assertIn(f"{100 + i} Extra St", facts)
+        self.assertIn("8 Walworth St", facts)
+
+
 class WhichJob(_Harness, unittest.TestCase):
 
     def _admin(self):
@@ -294,7 +310,8 @@ class KindsOfQuestion(_Harness, unittest.TestCase):
 
     def test_the_dm_agent_is_read_only(self):
         self.assertEqual(server._DM_WRITE_TOOLS,
-                         {"start_permit_renewal", "start_checklist"})
+                         {"start_permit_renewal", "start_checklist",
+                          "list_workers", "query_plan"})
         self.assertIn("cannot file", wa_assistant.DM_AGENT_CLAUSE)
 
 
@@ -348,7 +365,8 @@ class TheDmAgentRequest(unittest.TestCase):
         self.assertIsNone(refused)                      # another company's job
         req = sent[0]
         names = {t["function"]["name"] for t in req["tools"]}
-        self.assertFalse(names & {"start_permit_renewal", "start_checklist"})
+        self.assertFalse(names & {"start_permit_renewal", "start_checklist",
+                                  "list_workers", "query_plan"})
         self.assertIn("who_on_site", names)
         self.assertIn("PRIVATE WHATSAPP CHAT", req["messages"][0]["content"])
         self.assertNotIn("GROUP SECRET", str(req["messages"]))
