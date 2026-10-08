@@ -534,8 +534,8 @@ class DotSyncJob(unittest.TestCase):
 
         with patch.object(server, "db", db):
             r = _run(server._dot_sync_tick(now=NOON, fetch=fetch))
-        self.assertEqual(r["segment_permits"], 1)
-        self.assertEqual([x["number"] for x in db.dot_logs.rows], ["P1"])
+        self.assertNotIn("segment_permits", r)
+        self.assertEqual([x["number"] for x in db.dot_logs.rows], ["P1"])   # P2 never matched
         self.assertTrue(db.dot_logs.rows[0]["permittee_is_company"])
 
     def test_a_failed_request_stores_nothing(self):

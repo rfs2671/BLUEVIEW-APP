@@ -21,8 +21,9 @@ Street Construction Permits 2022–present — tqtj-sjs8 (daily)
   boroughname (full name, "STATEN ISLAND"), permithousenumber (~36%
   filled), onstreetname, fromstreetname, tostreetname. NO BIN, NO BBL.
   MATCH: borough + house number + street, all three, exact normalized.
-  A segment permit (no house number) never matches — it is counted, not
-  guessed. Status "ISSUED & PRINTED" is the active one; EXPIRED*, VOIDED*,
+  A segment permit (no house number) never matches — it is not guessed
+  (and the request, filtered on the house number, does not fetch them).
+  Status "ISSUED & PRINTED" is the active one; EXPIRED*, VOIDED*,
   DELINQUENT* rows get no reminder and no alert.
 
 Never fuzzy: "588 THOMAS S BOYLAND ST" does not match "586 …" or "THOMAS
