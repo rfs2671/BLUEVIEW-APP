@@ -192,6 +192,43 @@ class AddAdminTest(unittest.TestCase):
         self.assertEqual(_audit(db, "owner_admin_add")[0]["details"]["mode"],
                          "created")
 
+    def test_email_match_ignores_case_both_ways(self):
+        """A stored mixed-case email is found by any spelling, so an account
+        in another company is refused rather than duplicated."""
+        db = _db()
+        next(u for u in db.users.rows if u["_id"] == OTHER)["email"] = "Oz@Other.test"
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as ctx:
+                run(server.owner_add_company_admin(
+                    CID, server.OwnerAddAdmin(email="OZ@OTHER.TEST", name="Oz",
+                                              password=STRONG),
+                    operator=OPERATOR))
+        self.assertEqual(_err(ctx)[1]["code"], "OTHER_COMPANY")
+        self.assertEqual(sum(1 for u in db.users.rows
+                             if (u.get("email") or "").lower() == "oz@other.test"), 1)
+
+    def test_email_with_regex_characters_is_matched_literally(self):
+        db = _db()
+        with patch.object(server, "db", db):
+            out = run(server.owner_add_company_admin(
+                CID, server.OwnerAddAdmin(email="a.b+c@acme.test", name="AB",
+                                          password=STRONG),
+                operator=OPERATOR))
+        self.assertTrue(out["created"])
+
+    def test_deleted_account_is_refused_not_duplicated(self):
+        db = _db()
+        db.users.rows.append({"_id": ObjectId(), "email": "Gone@acme.test",
+                              "company_id": CID, "role": "pm",
+                              "is_deleted": True})
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as ctx:
+                run(server.owner_add_company_admin(
+                    CID, server.OwnerAddAdmin(email="gone@acme.test", name="G",
+                                              password=STRONG),
+                    operator=OPERATOR))
+        self.assertEqual(_err(ctx)[1]["code"], "ACCOUNT_DELETED")
+
     def test_new_account_needs_a_name(self):
         with patch.object(server, "db", _db()):
             with self.assertRaises(HTTPException) as ctx:
@@ -273,6 +310,52 @@ class RoleChangeAndRemoveTest(unittest.TestCase):
                 CID, str(A1), server.OwnerRoleChange(role="pm"),
                 operator=OPERATOR))
         self.assertTrue(out["changed"])
+
+    def test_a_concurrent_change_that_empties_the_company_is_undone(self):
+        """Two admins, two requests: the other admin was demoted between this
+        request's read and its write. The re-check after the write catches
+        it and puts this one back."""
+        db = _db()
+        db.users.rows.append({"_id": A2, "email": "a2@acme.test",
+                              "role": "admin", "company_id": CID})
+        real_update = db.users.update_one
+
+        async def racing_update(q, u, **k):
+            # The other request lands first: A2 is demoted.
+            next(r for r in db.users.rows if r["_id"] == A2)["role"] = "pm"
+            db.users.update_one = real_update
+            return await real_update(q, u, **k)
+
+        db.users.update_one = racing_update
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as ctx:
+                run(server.owner_change_user_role(
+                    CID, str(A1), server.OwnerRoleChange(role="pm"),
+                    operator=OPERATOR))
+        self.assertEqual(_err(ctx)[1]["code"], "LAST_ADMIN")
+        self.assertEqual(next(u for u in db.users.rows if u["_id"] == A1)["role"], "admin")
+        self.assertEqual(_audit(db, "owner_role_change"), [])
+
+    def test_a_concurrent_remove_that_empties_the_company_is_undone(self):
+        db = _db()
+        db.users.rows.append({"_id": A2, "email": "a2@acme.test",
+                              "role": "admin", "company_id": CID})
+        real_update = db.users.update_one
+
+        async def racing_update(q, u, **k):
+            next(r for r in db.users.rows if r["_id"] == A2)["is_deleted"] = True
+            db.users.update_one = real_update
+            return await real_update(q, u, **k)
+
+        db.users.update_one = racing_update
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as ctx:
+                run(server.owner_remove_company_user(CID, str(A1),
+                                                     operator=OPERATOR))
+        self.assertEqual(_err(ctx)[1]["code"], "LAST_ADMIN")
+        a1 = next(u for u in db.users.rows if u["_id"] == A1)
+        self.assertFalse(a1["is_deleted"])
+        self.assertNotIn("deleted_at", a1)
 
     def test_role_must_be_assignable(self):
         with patch.object(server, "db", _db()):
@@ -435,6 +518,37 @@ class RestoreTest(unittest.TestCase):
                 run(server.owner_restore_deleted("project", str(ids["legacy"]),
                                                  operator=OPERATOR))
         self.assertEqual(_err(ctx)[1]["code"], "COMPANY_NOT_LIVE")
+
+    def test_project_with_no_company_is_refused(self):
+        db, ids = _deleted_db()
+        next(p for p in db.projects.rows if p["_id"] == ids["legacy"]).pop("company_id")
+        with patch.object(server, "db", db):
+            with self.assertRaises(HTTPException) as ctx:
+                run(server.owner_restore_deleted("project", str(ids["legacy"]),
+                                                 operator=OPERATOR))
+        self.assertEqual(_err(ctx)[1]["code"], "COMPANY_NOT_LIVE")
+
+    def test_a_failed_child_update_leaves_restore_retryable(self):
+        """Children first, the row itself last: if a child update fails the
+        row is still deleted, and Restore can be pressed again."""
+        db, ids = _deleted_db()
+        real = db.nfc_tags.update_many
+
+        async def boom(*a, **k):
+            raise RuntimeError("network")
+
+        db.nfc_tags.update_many = boom
+        with patch.object(server, "db", db):
+            with self.assertRaises(RuntimeError):
+                run(server.owner_restore_deleted(
+                    "project", str(ids["marked"]), operator=OPERATOR))
+            p = next(r for r in db.projects.rows if r["_id"] == ids["marked"])
+            self.assertTrue(p["marked_for_deletion"])
+            db.nfc_tags.update_many = real
+            out = run(server.owner_restore_deleted(
+                "project", str(ids["marked"]), operator=OPERATOR))
+        self.assertTrue(out["restored"])
+        self.assertFalse(p["marked_for_deletion"])
 
     def test_live_row_is_not_restored(self):
         db, _ = _deleted_db()

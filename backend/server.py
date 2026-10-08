@@ -15472,6 +15472,20 @@ async def _owner_company_users(company_id: str) -> list:
     ).to_list(2000)
 
 
+async def _owner_admin_gone(company_id: str) -> bool:
+    """AFTER a demote or remove: did the company just lose its last admin?
+
+    The check before the write reads a snapshot; two changes to two different
+    admins can each see the other still there. Re-reading after the write
+    catches that, and the caller undoes its own change. One of two concurrent
+    requests may be refused that the other would have allowed; neither can
+    leave the company with no admin."""
+    return await db.users.count_documents({
+        "company_id": company_id, "role": "admin",
+        "is_deleted": {"$ne": True},
+    }) == 0
+
+
 def _owner_last_admin():
     return HTTPException(status_code=409, detail={
         "code": "LAST_ADMIN",
@@ -15518,10 +15532,21 @@ async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
     now = datetime.now(timezone.utc)
     op = actor_id(operator)
 
-    existing = await db.users.find_one({
-        "email": {"$in": sorted({email, email.lower()})},
-        "is_deleted": {"$ne": True},
-    })
+    # CASE-INSENSITIVE, AND DELETED ACCOUNTS COUNT. Stored emails are not
+    # all lowercase, and `users.email` is unique across deleted rows too, so
+    # "no account" must mean no account in any spelling and any state.
+    matches = await db.users.find(
+        {"email": {"$regex": f"(?i)^{re.escape(email)}$"}},
+        {"password": 0},
+    ).to_list(10)
+    live = [u for u in matches if u.get("is_deleted") is not True]
+    if not live and matches:
+        raise HTTPException(status_code=409, detail={
+            "code": "ACCOUNT_DELETED",
+            "message": "That email belongs to a deleted account. Restore it "
+                       "from Deleted items instead.",
+        })
+    existing = live[0] if live else None
     if existing:
         if str(existing.get("company_id") or "") != company_id:
             raise HTTPException(status_code=409, detail={
@@ -15573,7 +15598,14 @@ async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
         "assigned_projects": [],
         "is_deleted": False,
     }
-    result = await db.users.insert_one(user_doc)
+    from pymongo.errors import DuplicateKeyError
+    try:
+        result = await db.users.insert_one(user_doc)
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail={
+            "code": "EMAIL_IN_USE",
+            "message": "An account with that email already exists.",
+        })
     uid = str(result.inserted_id)
     await audit_log("owner_admin_add", op, "user", uid, {
         "company_id": company_id, "email": user_doc["email"],
@@ -15605,6 +15637,12 @@ async def owner_change_user_role(company_id: str, user_id: str,
         {"_id": target["_id"]},
         {"$set": {"role": role, "updated_at": now}},
     )
+    if await _owner_admin_gone(company_id):
+        await db.users.update_one(
+            {"_id": target["_id"]},
+            {"$set": {"role": before, "updated_at": now}},
+        )
+        raise _owner_last_admin()
     await audit_log("owner_role_change", actor_id(operator), "user",
                     str(user_id), {"company_id": company_id,
                                    "email": target.get("email"),
@@ -15631,6 +15669,13 @@ async def owner_remove_company_user(company_id: str, user_id: str,
         {"_id": target["_id"]},
         {"$set": _mark_user_deleted(user_id, by=op)},
     )
+    if await _owner_admin_gone(company_id):
+        await db.users.update_one(
+            {"_id": target["_id"]},
+            {"$set": {"is_deleted": False},
+             "$unset": {f: "" for f in owner_portal.RESTORE_UNSET["user"]}},
+        )
+        raise _owner_last_admin()
     if target.get("phone"):
         try:
             await db.whatsapp_contacts.update_one(
@@ -15715,9 +15760,13 @@ async def owner_restore_deleted(kind: str, item_id: str,
         raise HTTPException(status_code=409, detail={
             "code": "NOT_DELETED", "message": "This is not deleted.",
         })
-    if kind in ("project", "user") and doc.get("company_id"):
-        parent = await db.companies.find_one(
-            {"_id": to_query_id(str(doc["company_id"]))})
+    # A PROJECT NEEDS A LIVE COMPANY, including one with no company_id at
+    # all: restoring it would make it live under no tenant. A user with no
+    # company (a self-serve signup) has nothing to check.
+    if kind == "project" or (kind == "user" and doc.get("company_id")):
+        cid = str(doc.get("company_id") or "")
+        parent = (await db.companies.find_one({"_id": to_query_id(cid)})
+                  if cid else None)
         if not parent or parent.get("is_deleted") is True:
             raise HTTPException(status_code=409, detail={
                 "code": "COMPANY_NOT_LIVE",
@@ -15745,8 +15794,9 @@ async def owner_restore_deleted(kind: str, item_id: str,
         return {"$set": s,
                 "$unset": {f: "" for f in owner_portal.RESTORE_UNSET[k]}}
 
-    await coll.update_one({"_id": doc["_id"]}, _update(kind))
-
+    # CHILDREN FIRST, THE ROW ITSELF LAST. If anything below fails, the row is
+    # still deleted, so the operator can press Restore again; every step is
+    # safe to repeat.
     children: Dict[str, int] = {}
     batch = doc.get("delete_batch_id")
     if kind == "project":
@@ -15766,6 +15816,8 @@ async def owner_restore_deleted(kind: str, item_id: str,
             n = getattr(r, "modified_count", 0) or 0
             if n:
                 children[_OWNER_KIND_COLLECTION[k]] = n
+
+    await coll.update_one({"_id": doc["_id"]}, _update(kind))
 
     await audit_log("owner_restore", op, kind, str(doc["_id"]), {
         "name": owner_portal.deleted_row(
