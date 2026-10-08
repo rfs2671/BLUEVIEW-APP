@@ -1781,6 +1781,12 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# INFO/DEBUG to stdout, WARNING+ to stderr (Railway reads stderr as "error").
+# The uvicorn logger has its own stderr handler and does not propagate.
+from lib import log_streams
+log_streams.install(logging.getLogger(), logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+log_streams.install(logging.getLogger("uvicorn"))
 logger = logging.getLogger(__name__)
 
 
