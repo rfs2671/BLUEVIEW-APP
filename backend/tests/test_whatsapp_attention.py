@@ -376,6 +376,15 @@ class ShadowModeAndCursor(unittest.TestCase):
         self.assertEqual(report["groups"], 0)
         self.assertEqual(db[server.ATTENTION_CURSORS].rows, [])
 
+    def test_no_model_key_does_nothing(self):
+        db = _world()
+        with patch.object(server, "db", db), \
+                patch.object(server, "OPENAI_API_KEY", ""), \
+                patch.dict(os.environ, {"WA_ATTENTION_DISABLED": ""}):
+            report = _run(server._attention_tick(now=T0, probe=False))
+        self.assertTrue(report["no_model"])
+        self.assertEqual(db.attention_cursors.rows, [])
+
     def test_a_failed_model_call_is_retried_then_skipped(self):
         db = _world()
         _first_sight(db)
@@ -513,8 +522,13 @@ class TenantScope(unittest.TestCase):
         db.whatsapp_groups.rows.append(
             {"_id": "g9", "wa_group_id": G_A, "project_id": "proj_b",
              "company_id": CO_B, "active": True})
-        report, _ = _first_sight(db)
+        warned = []
+        with patch.object(server.logger, "warning", lambda m, *a, **k: warned.append(m)):
+            report, _ = _first_sight(db)
         self.assertNotIn(f"{G_A}|proj_a", [c["_id"] for c in db[server.ATTENTION_CURSORS].rows])
+        # Quiet: the 5-minute job does not repeat the message path's
+        # security event for a duplicated group.
+        self.assertEqual(warned, [])
 
 
 class DedupeAndReplies(unittest.TestCase):

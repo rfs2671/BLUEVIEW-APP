@@ -44047,7 +44047,7 @@ async def _attention_mark_replies(msg: dict, group_id: str, project_id: str) -> 
     if not qid:
         return 0
     try:
-        res = await db[ATTENTION_ITEMS].update_many(
+        res = await db.attention_items.update_many(
             {"group_id": group_id, "project_id": project_id,
              "evidence.message_id": qid, "status": "open",
              "type": {"$ne": "decision"},
@@ -44069,7 +44069,7 @@ async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
     """Add to this group's counters for the current ISO week."""
     week = wa_attention.iso_week(now)
     try:
-        await db[ATTENTION_METRICS].update_one(
+        await db.attention_metrics.update_one(
             {"_id": f"{week}|{ctx['group_id']}|{ctx['project_id']}"},
             {"$inc": inc,
              "$setOnInsert": {"week": week, "group_id": ctx["group_id"],
@@ -44151,7 +44151,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         msg_id = str(msg.get("message_id") or "") or str(msg.get("_id"))
         now = datetime.now(timezone.utc)
         try:
-            dup = await db[ATTENTION_ITEMS].find_one_and_update(
+            dup = await db.attention_items.find_one_and_update(
                 {"dedupe_key": key, "project_id": project_id,
                  "evidence.sent_at": {"$gte": sent_at - timedelta(
                      days=wa_attention.DEDUPE_DAYS)}},
@@ -44160,7 +44160,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             if dup:
                 report["deduped"] += 1
                 continue
-            await db[ATTENTION_ITEMS].insert_one({
+            await db.attention_items.insert_one({
                 "company_id": company_id,
                 "project_id": project_id,
                 "group_id": group_id,
@@ -44230,13 +44230,13 @@ async def _attention_run_group(cur: dict, ctx: dict, report: dict,
             count = fails.get("count", 0) + 1 if fails.get("id") == msg["_id"] else 1
             if count < ATTENTION_MAX_FAILS:
                 cur["fail"] = {"id": msg["_id"], "count": count}
-                await db[ATTENTION_CURSORS].update_one(
+                await db.attention_cursors.update_one(
                     {"_id": cur["_id"]}, {"$set": {"fail": cur["fail"]}})
                 break
             report["skipped_failing"] += 1
         pos = {"at": msg.get("created_at"), "id": msg["_id"]}
         cur["live"], cur["fail"] = pos, None
-        await db[ATTENTION_CURSORS].update_one(
+        await db.attention_cursors.update_one(
             {"_id": cur["_id"]}, {"$set": {"live": pos, "fail": None,
                                            "updated_at": datetime.now(timezone.utc)}})
         done += 1
@@ -44255,8 +44255,23 @@ async def _attention_probe(cur: dict, group_id: str, now: datetime) -> None:
     counts = wa_attention.participant_counts(payload) if payload is not None else None
     logger.info(f"[wa-probe] participants group=…{group_id[-6:]} "
                 f"{counts if counts is not None else 'no response'}")
-    await db[ATTENTION_CURSORS].update_one(
+    await db.attention_cursors.update_one(
         {"_id": cur["_id"]}, {"$set": {"probed_at": now, "probe": counts}})
+
+
+async def _attention_binding(group_id: str, active_rows: list) -> Optional[dict]:
+    """The group's binding by the same rules as _resolve_group_binding
+    (exactly one valid active row; its project live and of its company), but
+    QUIET: this runs for every group every 5 minutes, and a duplicate or
+    invalid group is already reported by the message path when it is used."""
+    rows = [r for r in active_rows if str(r.get("wa_group_id") or "") == group_id]
+    status, row, _reason = wa_security.classify_group_rows(rows)
+    if status != wa_security.GROUP_OK or not row:
+        return None
+    company_id, project_id = str(row.get("company_id")), str(row.get("project_id"))
+    if not await _bot_project_scope(company_id, project_id):
+        return None
+    return {"company_id": company_id, "project_id": project_id, "group": row}
 
 
 async def _attention_tick(now: Optional[datetime] = None, llm=None,
@@ -44271,6 +44286,11 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "completion_tokens": 0, "call_cap": False}
     if _attention_disabled():
         return report
+    if llm is None and not OPENAI_API_KEY:
+        # No model: start no cursor and move none, rather than fail every
+        # message three times and skip it.
+        report["no_model"] = True
+        return report
     try:
         rows = await db.whatsapp_groups.find({"active": True}).to_list(2000)
     except Exception as e:
@@ -44280,22 +44300,21 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
         group_id = str(row.get("wa_group_id") or "")
         if not group_id:
             continue
-        binding = await _resolve_group_binding(group_id)
-        if (binding.get("status") != wa_security.GROUP_OK
-                or str((binding.get("group") or {}).get("_id")) != str(row.get("_id"))):
+        binding = await _attention_binding(group_id, rows)
+        if not binding or str(binding["group"].get("_id")) != str(row.get("_id")):
             report["unbound"] += 1
             continue
         company_id, project_id = binding["company_id"], binding["project_id"]
         cur_id = f"{group_id}|{project_id}"
         start = {"at": now, "id": _ATTENTION_ZERO_ID}
         try:
-            cur = await db[ATTENTION_CURSORS].find_one({"_id": cur_id})
+            cur = await db.attention_cursors.find_one({"_id": cur_id})
             if not _effective_bot_config(row.get("bot_config"))["bot_enabled"]:
                 # No AI processing. Move past what is said meanwhile, so
                 # switching the bot back on never sends that to a model.
                 report["bot_off"] += 1
                 if cur:
-                    await db[ATTENTION_CURSORS].update_one(
+                    await db.attention_cursors.update_one(
                         {"_id": cur_id}, {"$set": {"live": start, "updated_at": now}})
                 continue
             if not cur:
@@ -44304,9 +44323,9 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
                        "project_id": project_id, "company_id": company_id,
                        "live_from": now, "live": start, "fail": None,
                        "created_at": now}
-                await db[ATTENTION_CURSORS].update_one(
+                await db.attention_cursors.update_one(
                     {"_id": cur_id}, {"$setOnInsert": cur}, upsert=True)
-                cur = await db[ATTENTION_CURSORS].find_one({"_id": cur_id}) or cur
+                cur = await db.attention_cursors.find_one({"_id": cur_id}) or cur
                 report["new_groups"] += 1
         except Exception as e:
             logger.warning(f"[attention] cursor read failed: {type(e).__name__}")
@@ -44332,7 +44351,7 @@ async def _attention_weekly_metrics(now: Optional[datetime] = None) -> List[dict
     now = now or datetime.now(timezone.utc)
     week = wa_attention.iso_week(now - timedelta(days=7))
     try:
-        rows = await db[ATTENTION_METRICS].find({"week": week}).to_list(5000)
+        rows = await db.attention_metrics.find({"week": week}).to_list(5000)
     except Exception as e:
         logger.warning(f"[attention] metrics read failed: {type(e).__name__}")
         return []
