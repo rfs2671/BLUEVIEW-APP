@@ -156,7 +156,12 @@ export default function AdminUsersScreen() {
   // the Registration sheet once the DOB number is in rather than being returned
   // to the list to find the button himself. Cleared by resetForm, which every
   // exit from that sheet calls.
-  const [registerAfterEdit, setRegisterAfterEdit] = useState(false);
+  //
+  // IT HOLDS THE ACCOUNT'S ID AND NOT `true`, so that a flag which somehow
+  // outlived its sheet cannot open a CS Registration sheet on the NEXT, wholly
+  // unrelated account the admin edits. The hand-off compares it; a boolean
+  // could only say that some promotion once happened.
+  const [registerAfterEdit, setRegisterAfterEdit] = useState(null);
 
   const isAdmin = user?.role === 'admin';
 
@@ -341,7 +346,8 @@ export default function AdminUsersScreen() {
       // one and the sheet's own Save is disabled, so opening it here would be
       // handing him a dead end — the sheet already says what is missing and
       // where, and the list is the better place to be told.
-      if (chained && chainTarget && chainHasNumber && roleHasLicence(formRole)) {
+      if (chained && chainTarget && chained === chainTarget.id
+          && chainHasNumber && roleHasLicence(formRole)) {
         openCsModal({ ...chainTarget, role: ROLE_SUPERINTENDENT });
       }
     } catch (error) {
@@ -605,7 +611,7 @@ export default function AdminUsersScreen() {
       if (hasNumber) {
         openCsModal(promoted);
       } else {
-        setRegisterAfterEdit(true);
+        setRegisterAfterEdit(userItem.id);
         openEditModal(promoted);
         toast.success(
           'Role changed',
@@ -643,7 +649,7 @@ export default function AdminUsersScreen() {
     // the close control and a successful Save — calls this, so a promotion the
     // admin abandoned cannot pop a Registration sheet on the next unrelated
     // edit. The chained hand-off reads the flag before calling this.
-    setRegisterAfterEdit(false);
+    setRegisterAfterEdit(null);
   };
 
   // ONE PICKER, RENDERED TWICE. The Add and Edit modals each carried their own

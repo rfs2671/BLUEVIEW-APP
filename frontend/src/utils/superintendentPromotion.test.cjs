@@ -173,6 +173,20 @@ console.log('\n-- 3. THE PROMOTION PATCH CARRIES THE ROLE AND NOTHING ELSE --');
     promote.length === 1 && !/assigned_projects|dob_|name:|email:/.test(promote[0]),
     'a patch that sets the role AND assigned_projects is 422d by the server, '
     + 'so the admin would see a refusal about projects he never touched');
+
+  // ── AND THE HAND-OFF CANNOT LAND ON THE WRONG ACCOUNT ───────────────────
+  //
+  // The promotion opens the Edit sheet and, on save, the Registration sheet.
+  // That hand-off is remembered across one sheet, and a REMEMBERED INTENT THAT
+  // ONLY SAYS "YES" is one that can be spent on whatever comes next — here, a
+  // CS Registration sheet opening on an unrelated account the admin edited
+  // afterwards. It holds the id and the hand-off compares it.
+  ok('the Edit→Registration hand-off is keyed on the account, not a boolean',
+    /setRegisterAfterEdit\(userItem\.id\)/.test(USERS)
+    && /chained === chainTarget\.id/.test(USERS),
+    'a boolean can only say that some promotion once happened');
+  ok('and nothing sets it to a bare true',
+    !/setRegisterAfterEdit\(true\)/.test(USERS));
 }
 
 console.log('\n-- 4. EVERY CONSEQUENCE THE COPY NAMES IS STILL TRUE --');
