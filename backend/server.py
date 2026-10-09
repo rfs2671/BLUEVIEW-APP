@@ -74,6 +74,7 @@ from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
 from lib import wa_attention_state  # noqa: E402
+from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
@@ -47461,9 +47462,15 @@ async def _praise_reaction_allowed(group_id: str, sender: str) -> bool:
 #           phone still the one on the profile. Everyone else: one line.
 #   scope   admin → every live project of their company; PM → their
 #           assigned projects of their company. Never another company.
-#   job     named in the message → that job; a bare number → the open menu;
-#           else the last job used here (30 min); else the only job; else
-#           "Which job? 1) … 2) …". Cross-project questions → all jobs.
+#   job     named in the message → that job; an open menu (10 min) takes a
+#           number, the house number ("588"), part of the address or a
+#           reply-to the menu, and answers the ORIGINAL question; else the
+#           last job used here (30 min); else the only job; else "Which job?
+#           1) … 2) …". Cross-project questions → all jobs. A reply-to uses
+#           the quoted message as context ("." under your question = it).
+#   count   headcount from the check-ins only (lib/wa_headcount.py): by
+#           company, who came since the brief, who is on site; the model
+#           may only rephrase and is checked; every answer is logged.
 #   answer  one job: the group agent's tools, read-only, scoped; all jobs:
 #           a facts block per job, the model may use nothing else; general:
 #           no data at all.
@@ -47894,23 +47901,138 @@ async def _dm_answer_general(body: str) -> str:
 
 
 async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
-                         message_id: str) -> Optional[str]:
+                         message_id: str, trace: Optional[list] = None) -> Optional[str]:
     """One job, through the group agent's tools — read-only, scoped."""
     return await _run_group_agent(
         project_id=str(project.get("_id")), group_id=dm_chat,
         company_id=ident["company_id"], sender=wa_dm.phone_digits(dm_chat),
         body=body, features=_default_bot_config()["features"],
         explicit_mention=True, reply_to=message_id or None,
-        address_mode="loose", dm=True)
+        address_mode="loose", dm=True, tool_trace=trace)
+
+
+# ── HEADCOUNT IN A DM: from the check-ins, never from memory ───────────────
+# (lib/wa_headcount.py). Every DM answer is logged with what it was built
+# from, so an answer can be audited against the records.
+
+DM_ANSWERS = "whatsapp_dm_answers"
+DM_LAST_SECONDS = 30 * 60
+_PHONE_RUN = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+
+
+def _dm_redact(v: Any) -> Any:
+    """No phone numbers in the answer log."""
+    if isinstance(v, str):
+        return _PHONE_RUN.sub("[number]", v)
+    if isinstance(v, list):
+        return [_dm_redact(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _dm_redact(x) for k, x in v.items()
+                if k not in ("worker_phone", "phone", "chat_id", "sender")}
+    return v
+
+
+async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
+                         answer: Optional[str], path: str, tool_data: Any = None,
+                         **extra) -> None:
+    try:
+        await db[DM_ANSWERS].insert_one({
+            "user_id": ident.get("user_id"), "company_id": ident.get("company_id"),
+            "project_id": project_id, "path": path,
+            "question": _dm_redact(str(question or "")[:1000]),
+            "answer": _dm_redact(str(answer or "")[:4000]),
+            "tool_data": _dm_redact(tool_data), **extra,
+            "created_at": datetime.now(timezone.utc)})
+    except Exception as e:
+        logger.warning(f"[wa-assistant] answer log failed: {type(e).__name__}")
+
+
+async def _dm_brief_sent_today(user_id: str, now: datetime) -> Optional[datetime]:
+    """When this person's morning brief went out today (New York), else None."""
+    start, _end = wa_brief_day_range(now)
+    try:
+        row = await db[WA_LEDGER].find_one(
+            {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND, "status": "sent",
+             "created_at": {"$gte": start}}, sort=[("created_at", -1)])
+    except Exception:
+        return None
+    at = (row or {}).get("created_at")
+    if isinstance(at, datetime):
+        return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    return None
+
+
+async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
+                               dm_chat: str, *, since_iso: Optional[str] = None,
+                               since_said: str = "", challenged: bool = False) -> str:
+    """Count / who was added / who is on site, from today's check-ins for
+    this job (the brief's rule). The model may only rephrase; `verify`
+    decides whether its wording or the fixed answer goes out."""
+    now = datetime.now(timezone.utc)
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    since, since_label = None, ""
+    if since_iso:
+        try:
+            since, since_label = datetime.fromisoformat(since_iso), since_said
+        except ValueError:
+            since = None
+    said = wa_headcount.parse_since(question, now)
+    if said:
+        since = said
+    if since is None and kind in (wa_headcount.COUNT, wa_headcount.ADDED):
+        brief = await _dm_brief_sent_today(ident["user_id"], now)
+        if brief:
+            since, since_label = brief, f"your brief at {wa_headcount.clock(brief)}"
+    if since and not since_label:
+        since_label = wa_headcount.clock(since)
+    start, end = wa_brief_day_range(now)
+    rows = await db.checkins.find({
+        "project_id": pid, "company_id": _company_id_filter(ident["company_id"]),
+        "check_in_time": {"$gte": start, "$lt": end},
+        "is_deleted": {"$ne": True}}).to_list(2000)
+    data = wa_headcount.summarize(rows, since)
+    fixed = wa_headcount.compose(kind, data, job["label"], since_label)
+    reply, used = fixed, "fixed"
+    phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) if OPENAI_API_KEY else None
+    if phrased:
+        if wa_headcount.verify(phrased, data, job["label"], since_label):
+            reply, used = phrased, "phrased"
+        else:
+            used = "fixed_after_check_failed"
+    if challenged:
+        reply = "I checked the check-ins again.\n" + reply
+    await _dm_state_set("dm_last", dm_chat, DM_LAST_SECONDS, project_id=pid,
+                        headcount=kind, since=since.isoformat() if since else None,
+                        since_label=since_label)
+    await _dm_log_answer(
+        ident, pid, question, reply, "headcount",
+        tool_data={"kind": kind, "since": since.isoformat() if since else None,
+                   "total": data["total"], "by_company": data["by_company"],
+                   "workers": [{"name": w["name"], "company": w["company"],
+                                "at": w["at"].isoformat() if w["at"] else None}
+                               for w in data["workers"]],
+                   "added": [w["name"] for w in data["added"]]},
+        wording=used, challenged=challenged)
+    return reply
 
 
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
-                              message_id: str, heard: Optional[str] = None) -> None:
-    """Answer one DM from an Admin/PM (see the block comment above)."""
+                              message_id: str, heard: Optional[str] = None,
+                              quoted: Optional[dict] = None) -> None:
+    """Answer one DM from an Admin/PM (see the block comment above).
+
+    `quoted`: {body, from_bot} when the message is a reply-to. As in groups,
+    the quoted message is context; a "." under your own question is that
+    question again; a reply to the "Which job?" menu is a pick."""
     text = (body or "").strip()
     if not text:
         return
-    social = wa_react.social_reaction(text)
+    quoted = quoted or {}
+    qbody = str(quoted.get("body") or "").strip()
+    qbot = bool(quoted.get("from_bot"))
+    social = None if qbody else wa_react.social_reaction(text)
     if social:
         # 🙏 for a thank-you; a compliment gets the same here — a private
         # chat has no "once a day per person" audience to spare.
@@ -47922,28 +48044,60 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     jobs = await _dm_jobs(ident)
     by_id = {j["id"]: j for j in jobs}
+    to_menu = qbot and wa_assistant.is_menu_message(qbody)
 
-    # A bare number answers the open "Which job?" menu.
+    # ── An open "Which job?" menu (10 minutes): a number, the house number
+    # ("588"), part of the address, or a reply-to the menu picks; the answer
+    # is to the ORIGINAL question.
     menu = await _dm_state_get("dm_menu", dm_chat)
     question, job = text, None
     if menu:
-        pick = wa_assistant.parse_menu_choice(text, len(menu.get("options") or []))
-        if pick is not None:
-            jid = str(menu["options"][pick])
-            if jid in by_id:                      # still theirs, still live
-                job = by_id[jid]
-                question = str(menu.get("question") or "")
+        options = [by_id[str(i)] for i in menu.get("options") or [] if str(i) in by_id]
+        pick = wa_assistant.pick_from_menu(text, options)
+        if pick:
+            job, question = by_id[pick], str(menu.get("question") or text)
             await _dm_state_clear("dm_menu", dm_chat)
-            if job is None:
-                await send_whatsapp_message(dm_chat, wa_assistant.MENU_EXPIRED_TEXT)
-                return
+        elif to_menu or wa_assistant.is_nudge(text) or _dm_looks_like_pick(text):
+            # Still choosing: the menu again, the question kept.
+            await _dm_ask_which(dm_chat, options or jobs,
+                                str(menu.get("question") or ""), again=True)
+            await _dm_log_answer(ident, None, text, "menu again", "menu")
+            return
+    elif to_menu:
+        await send_whatsapp_message(dm_chat, wa_assistant.MENU_EXPIRED_TEXT)
+        await _dm_log_answer(ident, None, text, wa_assistant.MENU_EXPIRED_TEXT,
+                             "menu_expired")
+        return
+
+    # ── A reply-to: the quoted message is the context.
+    core = question
+    if job is None and qbody:
+        question = wa_assistant.with_quoted(text, qbody, qbot)
+        core = question if (not qbot and wa_assistant.is_nudge(text)) else text
+    elif job is None and wa_assistant.is_nudge(text):
+        await send_whatsapp_message(dm_chat, wa_assistant.NUDGE_TEXT)
+        return
+
+    # ── "That doesn't make sense": the last headcount answer, read again
+    # from the records -- never revised from memory.
+    hc = wa_headcount.intent(core)
+    if hc == wa_headcount.CHALLENGE:
+        last = await _dm_state_get("dm_last", dm_chat)
+        if last and str(last.get("project_id")) in by_id:
+            await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
+                ident, by_id[str(last["project_id"])], question,
+                str(last.get("headcount") or wa_headcount.COUNT), dm_chat,
+                since_iso=last.get("since"), since_said=str(last.get("since_label") or ""),
+                challenged=True), heard)
+            return
+        hc = None
 
     if job is None:
-        named = [by_id[i] for i in wa_assistant.match_jobs(text, jobs)]
+        named = [by_id[i] for i in wa_assistant.match_jobs(question, jobs)]
         if not named and ident["role"] == ROLE_PM:
             # A PM naming one of the company's OTHER jobs gets told so, not an
             # answer about their own job. Only their own company is looked at.
-            other = await _dm_other_company_job(ident, text)
+            other = await _dm_other_company_job(ident, question)
             if other:
                 await send_whatsapp_message(dm_chat, (
                     f"You're not on {other} in Levelog, so Levelog Assistant "
@@ -47953,17 +48107,17 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         if len(named) == 1:
             job = named[0]
         elif len(named) > 1:
-            await _dm_ask_which(dm_chat, named, text)
+            await _dm_ask_which(dm_chat, named, question)
             return
         else:
-            scope = await _dm_scope(text)
-            if scope == wa_assistant.SCOPE_GENERAL:
+            scope = wa_assistant.SCOPE_PROJECT if hc else await _dm_scope(core)
+            if scope == wa_assistant.SCOPE_GENERAL and not qbody:
                 await _dm_send_answer(dm_chat, message_id, _dm_answer_general(text),
-                                      heard)
+                                      heard, log=(ident, None, text, "general"))
                 return
             if scope == wa_assistant.SCOPE_ALL:
-                await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, text),
-                                      heard)
+                await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, question),
+                                      heard, log=(ident, None, question, "all_jobs"))
                 return
             remembered = await _dm_state_get("dm_job", dm_chat)
             if remembered and str(remembered.get("project_id")) in by_id:
@@ -47971,14 +48125,28 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             elif len(jobs) == 1:
                 job = jobs[0]
             else:
-                await _dm_ask_which(dm_chat, jobs, text)
+                await _dm_ask_which(dm_chat, jobs, question)
                 return
 
     await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                         project_id=job["id"])
+    hc = wa_headcount.intent(core)
+    if hc in (wa_headcount.COUNT, wa_headcount.ADDED, wa_headcount.LIST):
+        await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
+            ident, job, question, hc, dm_chat), heard)
+        return
+    trace: list = []
     await _dm_send_answer(dm_chat, message_id,
                           _dm_answer_job(ident, job["project"], dm_chat,
-                                         question, message_id), heard)
+                                         question, message_id, trace), heard,
+                          log=(ident, job["id"], question, "job_agent", trace))
+
+
+def _dm_looks_like_pick(text: str) -> bool:
+    """A short message with a number in it, while a menu is open: an attempt
+    at picking, not a new question."""
+    t = str(text or "").strip()
+    return len(t.split()) <= 8 and bool(re.search(r"\d", t)) and "?" not in t
 
 
 async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
@@ -47998,15 +48166,19 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
     return next((o["label"] for o in others if o["id"] in hit), None) if hit else None
 
 
-async def _dm_ask_which(dm_chat: str, jobs: list, question: str) -> None:
+async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
+                        again: bool = False) -> None:
     shown = jobs[:wa_assistant.MENU_MAX]
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
                         options=[j["id"] for j in shown], question=question)
-    await send_whatsapp_message(dm_chat, wa_assistant.menu_text(shown))
+    text = wa_assistant.menu_text(shown)
+    if again:
+        text += "\n" + wa_assistant.MENU_AGAIN_TEXT
+    await send_whatsapp_message(dm_chat, text)
 
 
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
-                          heard: Optional[str] = None) -> None:
+                          heard: Optional[str] = None, log: Optional[tuple] = None) -> None:
     """Send the answer; 👀 on the question first if it takes over 5 s, and
     taken back if no answer comes. A voice note's answer opens with
     `Heard: "…"`."""
@@ -48018,6 +48190,10 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     except asyncio.TimeoutError:
         eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
         reply = await task
+    if log:
+        # (ident, project_id, question, path[, tool trace])
+        await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
+                             tool_data=log[4] if len(log) > 4 else None)
     if reply:
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
@@ -56200,7 +56376,10 @@ async def _run_group_agent(
     reply_to: Optional[str] = None,
     address_mode: str = "loose",
     dm: bool = False,
+    tool_trace: Optional[list] = None,
 ) -> Optional[str]:
+    # `tool_trace`: when a list, each tool call and what it returned is
+    # appended (the DM answer log: what an answer was built from).
     # `dm`: Levelog Assistant in a private chat (_dm_answer_job). No group
     # history, no tool that writes, and the DM voice in the prompt.
     # `body` is already a parameter of this function — the user's message, as
@@ -56517,6 +56696,9 @@ async def _run_group_agent(
                         sender=sender,
                         record_sink=plan_evidence,
                     )
+                    if tool_trace is not None:
+                        tool_trace.append({"tool": tc_name, "args": tc_args,
+                                           "result": str(tool_result)[:3000]})
                     messages.append({
                         "role":         "tool",
                         "tool_call_id": tc["id"],
@@ -57901,7 +58083,10 @@ async def _process_whatsapp_message(payload: dict):
         # which confirmed a write this assistant no longer makes).
         await _dm_assistant_reply(
             ident, dm_chat, body, parsed.get("message_id_serialized") or "",
-            heard=body if parsed.get("has_audio") else None)
+            heard=body if parsed.get("has_audio") else None,
+            quoted={"body": parsed.get("quoted_body") or "",
+                    "from_bot": bool(parsed.get("quoted_from_me"))}
+            if (parsed.get("quoted_body") or "").strip() else None)
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)
@@ -63495,6 +63680,8 @@ async def startup_event():
     await db.attention_items.create_index(
         [("group_id", 1), ("project_id", 1), ("status", 1), ("evidence.sent_at", -1)])
     await db.attention_metrics.create_index([("week", 1)])
+    # DM assistant answer log (audit: what each answer was built from).
+    await db.whatsapp_dm_answers.create_index([("user_id", 1), ("created_at", -1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(

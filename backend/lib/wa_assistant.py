@@ -115,6 +115,65 @@ def parse_menu_choice(body: Any, count: int) -> Optional[int]:
     return n - 1 if 1 <= n <= min(count, MENU_MAX) else None
 
 
+MENU_AGAIN_TEXT = "Reply with the number or the address."
+NUDGE_TEXT = "I'm here. Ask about a job and I'll check it."
+
+
+def house_number(label: str) -> str:
+    first = str(label or "").strip().split(" ")[0]
+    return first if first.isdigit() else ""
+
+
+def pick_from_menu(text: Any, options: List[Dict[str, Any]]) -> Optional[str]:
+    """The id of the job a reply to an open "Which job?" menu picks, else
+    None. Accepts the menu number ("2"), the house number ("588", also inside
+    a sentence: "I said 588"), or a partial address / group name
+    ("walworth"). Only the menu's own jobs; two matches is no pick."""
+    i = parse_menu_choice(text, len(options))
+    if i is not None:
+        return str(options[i]["id"])
+    t = _norm(text)
+    by_number = [o for o in options if house_number(o.get("label"))
+                 and f" {house_number(o.get('label'))} " in t]
+    if len(by_number) == 1:
+        return str(by_number[0]["id"])
+    hit = match_jobs(str(text or ""), options)
+    return str(hit[0]) if len(hit) == 1 else None
+
+
+def is_menu_message(body: Any) -> bool:
+    return str(body or "").strip().startswith("Which job?")
+
+
+_EMPTY_RE = re.compile(r"^[\s.?!…,;:-]*$")
+_NUDGE = {"hello", "hi", "hey", "ping", "bump", "anyone", "and", "so", "well", "hello?"}
+
+
+def is_nudge(text: Any) -> bool:
+    """'.', '?', '??', 'hello?', 'bump': no question of its own -- with a
+    reply-to, the quoted message is the question."""
+    t = str(text or "").strip().lower()
+    if _EMPTY_RE.match(t):
+        return True
+    words = re.findall(r"[a-z]+", t)
+    return 0 < len(words) <= 2 and all(w in _NUDGE for w in words)
+
+
+def with_quoted(text: str, quoted_body: str, quoted_from_bot: bool) -> str:
+    """The question to answer for a reply-to in a DM (as in groups): the
+    quoted message is the context. A nudge under your own question is that
+    question again."""
+    q = str(quoted_body or "").strip()
+    t = str(text or "").strip()
+    if not q:
+        return t
+    if not quoted_from_bot and is_nudge(t):
+        return q
+    who = "your (Levelog Assistant's) earlier message" if quoted_from_bot \
+        else "their earlier message"
+    return f"{t}\n\n(This is a reply to {who}: \"{q[:400]}\")"
+
+
 # ── Which kind of question ─────────────────────────────────────────────────
 
 _ALL_RE = re.compile(
