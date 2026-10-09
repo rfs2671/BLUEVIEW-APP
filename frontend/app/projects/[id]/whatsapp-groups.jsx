@@ -37,6 +37,8 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 import GroupConfigPanel from '../../../src/components/whatsapp/GroupConfigPanel';
 import LevelogAssistantCard from '../../../src/components/whatsapp/LevelogAssistantCard';
 import AttentionCard from '../../../src/components/whatsapp/AttentionCard';
+import PeopleCard from '../../../src/components/whatsapp/PeopleCard';
+import { canManagePeople } from '../../../src/utils/whatsappPeople';
 import { groupLabel, headerTitle, messageCountLabel } from '../../../src/utils/whatsappSettings';
 import { withAlpha } from '../../../src/styles/semanticColors';
 import OfflineNotice from '../../../src/components/OfflineNotice';
@@ -410,6 +412,12 @@ export default function WhatsAppGroupsScreen() {
               ) : null}
 
               {/* ── ATTENTION (BETA), admins: shadow mode, review only ────── */}
+              {/* PEOPLE: who the unknown group senders are. Admins and the
+                  project's PM, on a live screen with groups. */}
+              {canManagePeople(user) && !readOnly && groups.length > 0 ? (
+                <PeopleCard projectId={projectId} />
+              ) : null}
+
               {isAdmin && !readOnly && groups.length > 0 ? (
                 <AttentionCard projectId={projectId} />
               ) : null}
