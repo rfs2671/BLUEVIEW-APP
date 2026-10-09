@@ -287,8 +287,10 @@ class TheOperatorGateIsNotEnvironmentDependent(unittest.TestCase):
     project's as a second line."""
 
     def test_the_gate_has_no_shadow_and_no_flag(self):
-        self.assertNotIn("async def require_platform_operator(", _SRC)
-        self.assertNotIn('"PLATFORM_GATES_ENFORCED"', _SRC)
+        self.assertNotIn("async def require_platform_operator(", _SRC,
+                         "the shadowed gate is back")
+        self.assertNotIn('"PLATFORM_GATES_ENFORCED"', _SRC,
+                         "the shadow-mode env flag is back")
         i = _SRC.index("async def require_operator_404(")
         j = _SRC.index("\nasync def ", i + 10)
         body = _SRC[i:j]
