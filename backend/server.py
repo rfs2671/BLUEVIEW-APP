@@ -47183,9 +47183,24 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     batches: Dict[tuple, dict] = {}
     settings_cache: Dict[str, dict] = {}
     group_ok: Dict[str, bool] = {}
+    # A request that a live commitment answers is chased through that
+    # commitment (its words, its date -- moved or not), never as well.
+    asks = [str(it.get("_id")) for it in items if it.get("type") == "request"]
+    answered: set = set()
+    if asks:
+        try:
+            answered = {str(c.get("parent_id")) for c in await db.attention_items.find(
+                {"type": "commitment", "parent_id": {"$in": asks},
+                 "status": {"$in": list(wa_attention_state.LIVE)}},
+                {"parent_id": 1}).to_list(5000)}
+        except Exception as e:
+            logger.warning(f"[chase] answers read failed: {type(e).__name__}")
+            return report
     for it in items:
         report["items"] += 1
         why = wa_chase.skip_reason(it, day)
+        if not why and str(it.get("_id")) in answered:
+            why = "answered_by_commitment"
         if why:
             report["skipped"][why] = report["skipped"].get(why, 0) + 1
             continue
@@ -49048,6 +49063,18 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                         break
             if quoted_message_id:
                 break
+        # WaAPI's raw WhatsApp-Web data (`_data`) carries the reply's id and
+        # author at its TOP level: _data.quotedStanzaID, _data.quotedParticipant
+        # (a JID string, or {_serialized: ...}). Not inside contextInfo, and the
+        # quotedMsg node itself has no id -- so a reply could be stored with
+        # its words but no id, and nothing could tell what it answered.
+        if not quoted_message_id:
+            for src in (msg, inner):
+                if isinstance(src, dict):
+                    v = src.get("quotedStanzaID") or src.get("quotedStanzaId")
+                    if isinstance(v, str) and v:
+                        quoted_message_id = v
+                        break
         # Fallback: if the quoted node itself carries an id, use it.
         if not quoted_message_id and isinstance(quoted_node, dict):
             qid = quoted_node.get("id")
@@ -49100,6 +49127,16 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                         break
             if quoted_author:
                 break
+        if not quoted_author:
+            for src in (msg, inner):
+                if not isinstance(src, dict):
+                    continue
+                v = src.get("quotedParticipant")
+                if isinstance(v, dict):
+                    v = v.get("_serialized") or ""
+                if isinstance(v, str) and v:
+                    quoted_author = v
+                    break
         if not quoted_author and isinstance(quoted_node, dict):
             for key in ("author", "from", "participant"):
                 v = quoted_node.get(key)
@@ -57828,6 +57865,53 @@ def _is_own_message(parsed: dict) -> bool:
     return _digits_match_bot(_jid_digits(author), _bot_identifier_digits())
 
 
+def _group_message_row(parsed: dict, group_id: str, project_id: Any,
+                       msg_company_id: Any, body: str, now: datetime) -> dict:
+    """The row a group message is stored as, from the parsed webhook. One
+    place, so the attention dry run (scripts/attention_dry_run.py) stores
+    exactly what the webhook stores."""
+    sender = str(parsed.get("sender") or "").split("@")[0]
+    return {
+        "group_id": group_id,
+        "project_id": project_id,
+        "company_id": msg_company_id,
+        "sender": sender,
+        # THE FULL ID, KEPT. `sender` is the digits only, which loses
+        # whether this was a phone (@c.us) or a WhatsApp privacy id
+        # (@lid) — and only a phone can be matched to a person. Added
+        # going forward; older rows are read by length (wa_attention).
+        "sender_jid": str(parsed.get("sender") or ""),
+        "sender_name": parsed.get("push_name") or "",
+        "body": body,
+        "has_audio": parsed["has_audio"],
+        "transcribed": bool(parsed["has_audio"]),
+        "message_id": parsed["message_id"],
+        # THE QUOTABLE FORM. `message_id` is the short hash; WaAPI's
+        # replyToMessageId wants {fromMe}_{chatId}_{messageId}. It was
+        # parsed and thrown away, so any reply composed after the
+        # webhook had been forgotten could not quote anything.
+        "message_id_serialized": parsed.get("message_id_serialized") or "",
+        # WHO THIS MESSAGE IS ADDRESSED TO, KEPT. Mentions and the
+        # reply-to author were parsed and discarded, so nothing after
+        # the webhook could tell whom a message asked. They are the
+        # deterministic signals for "this needs YOUR answer"; the
+        # identities are resolved later, company-scoped, by
+        # resolve_wa_identity. from_me is always False here — the
+        # bot's own echoes are dropped above — and True on bot rows.
+        "mentioned_jids": list(parsed.get("mentioned_jids") or []),
+        "quoted_message_id": parsed.get("quoted_message_id") or "",
+        "quoted_author": parsed.get("quoted_author") or "",
+        # The words of the message replied to: for the attention
+        # engine they say what the reply is about (pass 2).
+        "quoted_body": str(parsed.get("quoted_body") or "")[:500],
+        "media_type": parsed.get("media_type") or "",
+        "file_name": parsed.get("file_name") or "",
+        "from_me": bool(parsed.get("from_me")),
+        "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
+        "created_at": now,
+    }
+
+
 async def _process_whatsapp_message(payload: dict):
     """Background task to process an inbound WhatsApp message."""
     try:
@@ -58141,45 +58225,8 @@ async def _process_whatsapp_message(payload: dict):
             # `transcribed` marks a row whose body is Whisper's words rather
             # than the sender's typing, so anyone reading the corpus later can
             # tell speech from text instead of guessing.
-            await db.whatsapp_messages.insert_one({
-                "group_id": group_id,
-                "project_id": project_id,
-                "company_id": msg_company_id,
-                "sender": sender,
-                # THE FULL ID, KEPT. `sender` is the digits only, which loses
-                # whether this was a phone (@c.us) or a WhatsApp privacy id
-                # (@lid) — and only a phone can be matched to a person. Added
-                # going forward; older rows are read by length (wa_attention).
-                "sender_jid": str(parsed.get("sender") or ""),
-                "sender_name": parsed.get("push_name") or "",
-                "body": body,
-                "has_audio": parsed["has_audio"],
-                "transcribed": bool(parsed["has_audio"]),
-                "message_id": parsed["message_id"],
-                # THE QUOTABLE FORM. `message_id` is the short hash; WaAPI's
-                # replyToMessageId wants {fromMe}_{chatId}_{messageId}. It was
-                # parsed and thrown away, so any reply composed after the
-                # webhook had been forgotten could not quote anything.
-                "message_id_serialized": parsed.get("message_id_serialized") or "",
-                # WHO THIS MESSAGE IS ADDRESSED TO, KEPT. Mentions and the
-                # reply-to author were parsed and discarded, so nothing after
-                # the webhook could tell whom a message asked. They are the
-                # deterministic signals for "this needs YOUR answer"; the
-                # identities are resolved later, company-scoped, by
-                # resolve_wa_identity. from_me is always False here — the
-                # bot's own echoes are dropped above — and True on bot rows.
-                "mentioned_jids": list(parsed.get("mentioned_jids") or []),
-                "quoted_message_id": parsed.get("quoted_message_id") or "",
-                "quoted_author": parsed.get("quoted_author") or "",
-                # The words of the message replied to: for the attention
-                # engine they say what the reply is about (pass 2).
-                "quoted_body": str(parsed.get("quoted_body") or "")[:500],
-                "media_type": parsed.get("media_type") or "",
-                "file_name": parsed.get("file_name") or "",
-                "from_me": bool(parsed.get("from_me")),
-                "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
-                "created_at": now,
-            })
+            await db.whatsapp_messages.insert_one(_group_message_row(
+                parsed, group_id, project_id, msg_company_id, body, now))
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:

@@ -1,0 +1,16 @@
+{
+ "placeholder": true,
+ "name": "pass-4 (tonight's script)",
+ "about": "Placeholder: paste tonight's pass-4 script and it will be filled in here (same format as pass3_2026_10.json). Until then the dry run refuses to run it (exit 2).",
+ "tz": "America/New_York",
+ "project": {
+  "name": "588 Thomas S Boyland St",
+  "chase_weekends": true
+ },
+ "senders": {},
+ "messages": [],
+ "chase": {
+  "days": [],
+  "expect": []
+ }
+}

@@ -191,6 +191,32 @@ class TheGroup(_Base):
         self.assertEqual(self.rows(), [])
 
 
+class AnAskAndItsAnswer(_Base):
+    """A request and the commitment answering it are one thing to chase:
+    the commitment (its words, its date)."""
+
+    def test_both_due_today_one_entry(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"])
+        self.chase(_et(8, 35))
+        (r,) = self.rows()
+        self.assertEqual([i["quote"] for i in r["items"]], ["on it"])
+
+    def test_the_answer_moved_the_ask_is_not_chased_on_its_old_date(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"], status="rescheduled",
+              due={"due_text": "Monday", "due_at": "2026-10-12"})
+        self.chase(_et(8, 35))
+        self.assertEqual(self.rows(), [])
+
+    def test_a_closed_answer_does_not_hide_the_ask(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"], status="cancelled")
+        self.chase(_et(8, 35))
+        self.assertEqual([i["quote"] for i in self.rows()[0]["items"]],
+                         ["@Mike send the RFI today"])
+
+
 class TheSlots(_Base):
 
     def test_the_day(self):
