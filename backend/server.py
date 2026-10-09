@@ -73,6 +73,7 @@ from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
+from lib import wa_attention_state  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
@@ -46065,6 +46066,7 @@ ATTENTION_BATCH = 200             # messages per group per run
 ATTENTION_MAX_CALLS = 400         # model calls per run, all groups
 ATTENTION_MAX_FAILS = 3           # model failures on one message, then skip
 ATTENTION_PROBE_SECONDS = 60 * 60 * 24
+ATTENTION_TICK_SECONDS = 60           # how often the worker runs
 _ATTENTION_ZERO_ID = ObjectId("0" * 24)
 
 
@@ -46190,17 +46192,19 @@ def _attention_msg_filter(group_id: str, project_id: str, company_id: str,
 
 
 async def _attention_mark_replies(msg: dict, group_id: str, project_id: str) -> int:
-    """A reply to the message an open item cites marks the item
-    possibly_resolved (never closed: an admin decides). The asker replying to
-    their own message does not count."""
+    """A reply to an open question marks it possibly_resolved (never closed:
+    an admin decides). The asker replying to their own message does not
+    count. A reply to a request, a commitment or an issue is read by the
+    state step (done / rescheduled / cancelled) and the extraction instead."""
     qid = str(msg.get("quoted_message_id") or "").strip()
     if not qid:
         return 0
     try:
         res = await db.attention_items.update_many(
             {"group_id": group_id, "project_id": project_id,
-             "evidence.message_id": qid, "status": "open",
-             "type": {"$ne": "decision"},
+             "$or": [{"evidence.message_id": qid},
+                     {"evidence.message_key": wa_attention_state.short_id(qid)}],
+             "status": "open", "type": "question",
              "evidence.sender": {"$ne": str(msg.get("sender") or "")}},
             {"$set": {"status": "possibly_resolved",
                       "resolution": {
@@ -46213,6 +46217,187 @@ async def _attention_mark_replies(msg: dict, group_id: str, project_id: str) -> 
     except Exception as e:
         logger.warning(f"[attention] reply mark failed: {type(e).__name__}")
         return 0
+
+
+# ── COMMITMENT STATE UPDATES (lib/wa_attention_state.py) ────────────────────
+#
+# open → rescheduled → done | cancelled, from a later message: by the owner
+# (done, rescheduled) or the requester (cancelled), linked by reply-to, the
+# message just before, or the topic. Unclear → "possibly done" for an admin;
+# never closed on a guess. Every change keeps the words (or the file) that
+# made it, in the item's timeline. Shadow mode: nothing is sent.
+
+ATTENTION_STATE_DAYS = 30
+
+
+def _attention_sent_at(msg: dict) -> datetime:
+    sent_at = msg.get("timestamp")
+    if not isinstance(sent_at, datetime):
+        sent_at = msg.get("created_at") or datetime.now(timezone.utc)
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=timezone.utc)
+    return sent_at
+
+
+def _attention_owner_digits(it: dict) -> str:
+    """Whose it is to do, as sender digits: a commitment is its sender's; a
+    request or question is the person it was put to, when that is known."""
+    if it.get("type") == "commitment":
+        return str((it.get("evidence") or {}).get("sender") or "")
+    jid = str((it.get("owner") or {}).get("jid") or "")
+    return re.sub(r"\D", "", jid.split("@")[0]) if jid else ""
+
+
+def _attention_candidate(it: dict) -> dict:
+    ev = it.get("evidence") or {}
+    return {
+        "id": str(it.get("_id")),
+        "type": it.get("type"),
+        "status": it.get("status"),
+        "owner": _attention_owner_digits(it),
+        "requester": str(ev.get("sender") or "") if it.get("type") in (
+            "request", "question") else "",
+        "key": ev.get("message_key") or wa_attention_state.short_id(ev.get("message_id")),
+        "parent_key": it.get("parent_key") or "",
+        "parent_id": it.get("parent_id") or "",
+        "topic": set(it.get("topic") or []),
+        "multi": bool(it.get("multi")),
+    }
+
+
+async def _attention_live_items(ctx: dict, sent_at: datetime) -> List[dict]:
+    try:
+        return await db.attention_items.find(
+            {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
+             "company_id": ctx["company_id"],
+             "status": {"$in": list(wa_attention_state.LIVE)},
+             "evidence.sent_at": {"$gte": sent_at - timedelta(
+                 days=ATTENTION_STATE_DAYS)}}).to_list(500)
+    except Exception as e:
+        logger.warning(f"[attention] live items read failed: {type(e).__name__}")
+        return []
+
+
+async def _attention_previous(msg: dict, ctx: dict) -> Optional[dict]:
+    """The human message just before this one in the group, when recent."""
+    try:
+        rows = await db.whatsapp_messages.find(
+            {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
+             "company_id": _company_id_filter(ctx["company_id"]),
+             "sender": {"$ne": "bot"},
+             "created_at": {"$lt": msg.get("created_at")}}).sort(
+            [("created_at", -1)]).to_list(1)
+    except Exception:
+        return None
+    prev = rows[0] if rows else None
+    if not prev:
+        return None
+    gap = (_attention_sent_at(msg) - _attention_sent_at(prev)).total_seconds()
+    return prev if gap <= wa_attention_state.PREVIOUS_SECONDS else None
+
+
+def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict,
+                     quote: str, evidence_kind: str, **extra) -> dict:
+    return {"id": wa_attention_state.new_event_id(), "kind": kind,
+            "from": frm, "to": to, "at": _attention_sent_at(msg),
+            "message_id": str(msg.get("message_id") or msg.get("_id") or ""),
+            "message_key": wa_attention_state.short_id(msg.get("message_id")),
+            "quote": quote, "evidence_kind": evidence_kind, "verified": True,
+            "sender_last4": str(msg.get("sender") or "")[-4:],
+            "review": None, **extra}
+
+
+async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
+                                  ctx: dict, report: dict) -> Optional[set]:
+    """Apply what this message says about earlier items. Returns the topic
+    words of the items it changed or flagged (empty when none), so the same
+    thing restated is not also recorded as new -- the rest of the message
+    still is ("Never mind the load calcs; send the schedule by Friday").
+    None when a write failed: the message is retried next run, and what was
+    already written is recognised by its message id, not applied twice."""
+    has_file = bool(wa_attention_state.media_of(msg))
+    cls = wa_attention_state.classify(text, has_file=has_file)
+    if not cls:
+        return set()
+    sender = str(msg.get("sender") or "")
+    sent_at = _attention_sent_at(msg)
+    rows = await _attention_live_items(ctx, sent_at)
+    if not rows:
+        return set()
+    by_id = {str(r["_id"]): r for r in rows}
+    own = wa_attention_state.topic_terms(text)
+    terms = set(own)
+    prev_key = ""
+    if prev:
+        prev_key = wa_attention_state.short_id(prev.get("message_id"))
+        if str(prev.get("sender") or "") != sender:
+            terms |= wa_attention_state.topic_terms(prev.get("body"))
+    upd = {"kind": cls["kind"], "sender": sender,
+           "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
+           "previous_key": prev_key, "terms": terms, "own_terms": own,
+           "due_text": cls.get("due_text")}
+    actions = wa_attention_state.decide(
+        upd, [_attention_candidate(r) for r in rows])
+    if not actions:
+        return set()
+    # EVIDENCE OR SILENCE: the words as written, or the file itself.
+    if text:
+        quote = wa_attention.verify_quote(text, text) or text[:wa_attention.MAX_QUOTE_CHARS]
+        ev_kind = "text"
+    else:
+        quote, ev_kind = wa_attention_state.file_quote(msg), "file"
+    now = datetime.now(timezone.utc)
+    this_id = str(msg.get("message_id") or msg.get("_id") or "")
+    topics: set = set()
+    for a in actions:
+        it = by_id.get(a["item_id"])
+        if not it:
+            continue
+        topics |= set(it.get("topic") or [])
+        if any(isinstance(h, dict) and h.get("message_id") == this_id
+               and h.get("kind") != "created" for h in it.get("history") or []):
+            continue    # a retry: this message already changed this item
+        frm = it.get("status")
+        sets: dict = {"updated_at": now}
+        push: dict = {}
+        extra = {"link": a["link"], "by": a["by"]}
+        if a.get("note"):
+            extra["note"] = a["note"]
+        if a["action"] == "state" and a["to"] == "rescheduled":
+            due_text = wa_attention.text_in_body(cls.get("due_text"), text)
+            if not due_text:
+                continue
+            due_at = wa_attention.parse_due(due_text, sent_at)
+            old = it.get("due") or {}
+            extra.update(due_from=old.get("due_text"), due_from_at=old.get("due_at"),
+                         due_to=due_text, due_to_at=due_at.isoformat() if due_at else None)
+            sets["due"] = {"due_text": due_text,
+                           "due_at": due_at.isoformat() if due_at else None,
+                           "due_source": "parsed" if due_at else "none"}
+            sets["status"] = "rescheduled"
+            event = _attention_event("state", frm, "rescheduled", msg, quote, ev_kind, **extra)
+        elif a["action"] in ("state", "possibly_done"):
+            sets["status"] = a["to"]
+            event = _attention_event("state", frm, a["to"], msg, quote, ev_kind, **extra)
+        elif a["action"] == "part_done":
+            push["parts_done"] = {"sender": sender, "sender_last4": sender[-4:],
+                                  "at": sent_at, "quote": quote}
+            event = _attention_event("part_done", frm, frm, msg, quote, ev_kind, **extra)
+        else:  # flag: for an admin, nothing changes
+            sets["needs_review"] = True
+            event = _attention_event("flag", frm, frm, msg, quote, ev_kind, **extra)
+        push["history"] = event
+        try:
+            res = await db.attention_items.update_one(
+                {"_id": it["_id"], "status": frm}, {"$set": sets, "$push": push})
+        except Exception as e:
+            logger.warning(f"[attention] state write failed: {type(e).__name__}")
+            report["write_failed"] += 1
+            return None
+        if getattr(res, "matched_count", 1):
+            report["state_updates"] += 1
+        # matched nothing: an admin dismissed it meanwhile; that stands.
+    return topics
 
 
 async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
@@ -46230,12 +46415,47 @@ async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
         logger.warning(f"[attention] metrics write failed: {type(e).__name__}")
 
 
+async def _attention_quoted(msg: dict, ctx: dict) -> Optional[dict]:
+    """The message this one replies to: its stored words when the webhook
+    kept them (quoted_body), else the stored row, matched by the short id
+    whether the row holds the short or the serialized form."""
+    qid = str(msg.get("quoted_message_id") or "").strip()
+    if not qid:
+        return None
+    qbody = str(msg.get("quoted_body") or "").strip()
+    if qbody:
+        return {"body": qbody, "sender": re.sub(
+            r"\D", "", str(msg.get("quoted_author") or "").split("@")[0]),
+            "message_id": qid}
+    key = wa_attention_state.short_id(qid)
+    try:
+        return await db.whatsapp_messages.find_one(
+            {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
+             "company_id": _company_id_filter(ctx["company_id"]),
+             "$or": [{"message_id": qid}, {"message_id": key},
+                     {"message_id_serialized": {"$regex": "_" + re.escape(key) + "(_|$)"}},
+                     {"message_id": {"$regex": "_" + re.escape(key) + "(_|$)"}}]})
+    except Exception as e:
+        logger.warning(f"[attention] quoted read failed: {type(e).__name__}")
+        return None
+
+
 async def _attention_process(msg: dict, ctx: dict, report: dict,
                              llm=None) -> bool:
-    """One stored message through the pipeline. False only when the model
-    call failed or the run's call cap is reached (retried next run)."""
+    """One stored message (or a burst of one sender's, merged) through the
+    pipeline. False only when the model call failed or the run's call cap is
+    reached (retried next run)."""
     group_id, project_id, company_id = ctx["group_id"], ctx["project_id"], ctx["company_id"]
+    text = wa_attention_state.text_of(msg)
+    msg = dict(msg, body=text)
     report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
+    prev = await _attention_previous(msg, ctx)
+    # An update to an earlier item ("Sent this morning", "Actually Monday",
+    # "Never mind the load calcs", a file from the owner). What it updated is
+    # not recorded again as new; anything else the message asks still is.
+    updated = await _attention_state_update(msg, text, prev, ctx, report)
+    if updated is None:
+        return False
     reason = wa_attention.filter_reason(msg)
     if not reason:
         report["filtered_out"] += 1
@@ -46244,45 +46464,84 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     if report["calls"] >= ATTENTION_MAX_CALLS:
         report["call_cap"] = True
         return False
+    sent_at = _attention_sent_at(msg)
     try:
         context = await db.whatsapp_messages.find(
             {"group_id": group_id, "project_id": project_id,
              "company_id": _company_id_filter(company_id),
              "created_at": {"$lt": msg.get("created_at")}}).sort(
-            [("created_at", -1)]).to_list(wa_attention.CONTEXT_MESSAGES)
+            [("created_at", -1)]).to_list(wa_attention.CONTEXT_MESSAGES + 5)
+        merged = set(msg.get("merged_ids") or [])
+        context = [c for c in context
+                   if str(c.get("message_id") or c.get("_id")) not in merged]
+        context = context[:wa_attention.CONTEXT_MESSAGES]
         context.reverse()
-        quoted = None
-        qid = str(msg.get("quoted_message_id") or "").strip()
-        if qid:
-            quoted = await db.whatsapp_messages.find_one(
-                {"group_id": group_id, "project_id": project_id,
-                 "company_id": _company_id_filter(company_id),
-                 "message_id": qid})
+        quoted = await _attention_quoted(msg, ctx)
     except Exception as e:
         logger.warning(f"[attention] context read failed: {type(e).__name__}")
         return False
+    live = await _attention_live_items(ctx, sent_at)
+    cands = [_attention_candidate(r) for r in live]
+    by_key = {c["key"]: c for c in cands if c["key"]}
+    sender = str(msg.get("sender") or "")
+    # The ask this message may answer: the one it replies to, else the open
+    # question or request just before it (from someone else).
+    parent = None
+    if quoted:
+        parent = by_key.get(wa_attention_state.short_id(
+            msg.get("quoted_message_id") or quoted.get("message_id")))
+    answers = None
+    if not quoted and prev and str(prev.get("sender") or "") != sender:
+        p = by_key.get(wa_attention_state.short_id(prev.get("message_id")))
+        if p and p["type"] in ("question", "request"):
+            parent, answers = p, prev
     report["calls"] += 1
     answer = await (llm or _attention_llm)(
-        wa_attention.build_messages(msg, context, quoted))
+        wa_attention.build_messages(msg, context, quoted, answers))
     if not answer:
         report["model_failed"] += 1
         return False
     report["prompt_tokens"] += answer.get("prompt_tokens", 0)
     report["completion_tokens"] += answer.get("completion_tokens", 0)
-    body = str(msg.get("body") or "")
-    # When it was SENT (WaAPI's timestamp), not when the webhook arrived:
-    # "tomorrow" after a delayed delivery means the sender's tomorrow.
-    sent_at = msg.get("timestamp")
-    if not isinstance(sent_at, datetime):
-        sent_at = msg.get("created_at") or datetime.now(timezone.utc)
-    if sent_at.tzinfo is None:
-        sent_at = sent_at.replace(tzinfo=timezone.utc)
+    body = text
     written = 0
     for it in wa_attention.parse_items(answer.get("content")):
         quote = wa_attention.verify_quote(it["quote"], body)
         if not quote:
             report["dropped_unverified"] += 1
             continue
+        if it["type"] == "issue" and wa_attention.is_schedule_update(body):
+            # A schedule or info update is not an issue (pass-1 review).
+            report["dropped_not_issue"] += 1
+            continue
+        terms = wa_attention_state.topic_terms(quote, it["summary"])
+        if updated and terms & updated:
+            report["restated_update"] += 1    # the update itself, restated
+            continue
+        if it["type"] == "question" and not quoted:
+            # "B the risers came in?": chasing a promise, not a new item.
+            chased = wa_attention_state.follow_up_of(
+                wa_attention_state.topic_terms(body), sender, cands)
+            if chased:
+                await db.attention_items.update_one(
+                    {"_id": to_query_id(chased)},
+                    {"$push": {"history": _attention_event(
+                        "follow_up", None, None, msg, quote, "text", by="other")},
+                     "$set": {"updated_at": datetime.now(timezone.utc)}})
+                report["follow_ups"] += 1
+                continue
+        link = None
+        if it["type"] == "commitment":
+            link = parent
+            if not link:
+                # "Lift is mine, 7am Thursday": the one open question or
+                # request in the group on the same topic.
+                hits = [c for c in cands if c["type"] in ("question", "request")
+                        and c["status"] in wa_attention_state.LIVE
+                        and terms & c["topic"]]
+                link = hits[0] if len(hits) == 1 else None
+        if link:
+            terms |= link["topic"]
         cand = wa_attention.owner_candidate(it["type"], msg)
         owner = {"kind": "none", "id": None, "name": "", "status": "unresolved",
                  "jid": None, "reason": "nobody_named", "source": "text"}
@@ -46320,6 +46579,15 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             if dup:
                 report["deduped"] += 1
                 continue
+            evidence = {"message_id": msg_id,
+                        "message_key": wa_attention_state.short_id(msg_id),
+                        "message_row_id": str(msg.get("_id")),
+                        "quote": quote, "verified": True,
+                        "sent_at": sent_at,
+                        "sender": sender,
+                        "sender_last4": sender[-4:]}
+            if msg.get("merged_ids"):
+                evidence["merged_ids"] = msg["merged_ids"]
             await db.attention_items.insert_one({
                 "company_id": company_id,
                 "project_id": project_id,
@@ -46334,12 +46602,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                         "due_source": "parsed" if due_at else "none"},
                 **wa_attention.importance(it["importance"], body),
                 "tags": it["tags"],
-                "evidence": {"message_id": msg_id,
-                             "message_row_id": str(msg.get("_id")),
-                             "quote": quote, "verified": True,
-                             "sent_at": sent_at,
-                             "sender": str(msg.get("sender") or ""),
-                             "sender_last4": str(msg.get("sender") or "")[-4:]},
+                "evidence": evidence,
                 "context_message_ids": [str(c.get("message_id") or c.get("_id"))
                                         for c in context],
                 "resolution": None,
@@ -46348,6 +46611,17 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                                "prompt_version": wa_attention.PROMPT_VERSION,
                                "filter_reason": reason},
                 "dedupe_key": key,
+                "topic": sorted(terms),
+                "multi": it["type"] == "request" and wa_attention_state.is_multi_owner(
+                    owner.get("owner_text"), msg.get("mentioned_jids") or []),
+                "parent_id": link["id"] if link else None,
+                "parent_key": link["key"] if link else None,
+                "history": [_attention_event(
+                    "created", None, "open", msg, quote, "text",
+                    link="reply" if (link and quoted) else (
+                        "answers" if link else None),
+                    due_to=due_text)],
+                "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],
                 "review": None,
@@ -46357,6 +46631,14 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             written += 1
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
+            if link and link["type"] == "question" and it["type"] == "commitment":
+                # Someone took the question on: possibly answered, for an admin.
+                await db.attention_items.update_one(
+                    {"_id": to_query_id(link["id"]), "status": "open"},
+                    {"$set": {"status": "possibly_resolved", "updated_at": now,
+                              "resolution": {"message_id": msg_id, "quote": quote,
+                                             "sender_last4": sender[-4:],
+                                             "at": sent_at}}})
         except Exception as e:
             # Not past this message: the cursor stays and it is retried
             # (items already written are recognised above, not doubled).
@@ -46373,8 +46655,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
 async def _attention_run_group(cur: dict, ctx: dict, report: dict,
                                llm=None) -> int:
     """Process up to ATTENTION_BATCH rows after the group's cursor, saving it
-    as it moves. Stops at a failed model call (retried next run; skipped after
-    ATTENTION_MAX_FAILS) or at the run's call cap."""
+    as it moves. One sender's messages within a minute of each other are one
+    message ("Np" + "Tomorrow"), so the newest burst waits until a minute
+    has passed. Stops at a failed model call (retried next run; skipped
+    after ATTENTION_MAX_FAILS) or at the run's call cap."""
     pos = cur.get("live") or {}
     try:
         rows = await db.whatsapp_messages.find(
@@ -46384,26 +46668,44 @@ async def _attention_run_group(cur: dict, ctx: dict, report: dict,
     except Exception as e:
         logger.warning(f"[attention] message read failed: {type(e).__name__}")
         return 0
+    groups = wa_attention_state.bursts(rows)
+    if groups and len(rows) < ATTENTION_BATCH:
+        last = groups[-1][-1].get("created_at")
+        if isinstance(last, datetime):
+            last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+            if 0 <= (ctx["now"] - last).total_seconds() < wa_attention_state.BURST_SECONDS:
+                groups = groups[:-1]   # may still be typing; next run
+                report["held"] += 1
     done = 0
-    for msg in rows:
+    for burst in groups:
+        msg = wa_attention_state.merge(burst)
+        first = burst[0]
         ok = await _attention_process(msg, ctx, report, llm=llm)
         if not ok:
             if report.get("call_cap"):
                 break
             fails = cur.get("fail") or {}
-            count = fails.get("count", 0) + 1 if fails.get("id") == msg["_id"] else 1
+            count = fails.get("count", 0) + 1 if fails.get("id") == first["_id"] else 1
             if count < ATTENTION_MAX_FAILS:
-                cur["fail"] = {"id": msg["_id"], "count": count}
+                cur["fail"] = {"id": first["_id"], "count": count}
                 await db.attention_cursors.update_one(
                     {"_id": cur["_id"]}, {"$set": {"fail": cur["fail"]}})
                 break
             report["skipped_failing"] += 1
-        pos = {"at": msg.get("created_at"), "id": msg["_id"]}
+        for r in burst:
+            at = r.get("created_at")
+            if isinstance(at, datetime):
+                at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+                report["max_lag_seconds"] = max(
+                    report["max_lag_seconds"],
+                    int((datetime.now(timezone.utc) - at).total_seconds()))
+        tail = burst[-1]
+        pos = {"at": tail.get("created_at"), "id": tail["_id"]}
         cur["live"], cur["fail"] = pos, None
         await db.attention_cursors.update_one(
             {"_id": cur["_id"]}, {"$set": {"live": pos, "fail": None,
                                            "updated_at": datetime.now(timezone.utc)}})
-        done += 1
+        done += len(burst)
     return done
 
 
@@ -46444,7 +46746,11 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
     now = now or datetime.now(timezone.utc)
     report = {"groups": 0, "new_groups": 0, "bot_off": 0, "unbound": 0,
               "messages": 0, "calls": 0, "items": 0, "deduped": 0,
-              "filtered_out": 0, "dropped_unverified": 0, "model_failed": 0,
+              "filtered_out": 0, "dropped_unverified": 0,
+              "dropped_not_issue": 0, "model_failed": 0,
+              "state_updates": 0, "follow_ups": 0, "held": 0,
+              "restated_update": 0,
+              "max_lag_seconds": 0,
               "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
               "owner_resolved": 0,
               "owner_unresolved": 0, "prompt_tokens": 0,
@@ -48068,6 +48374,10 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "audio_url": audio_url,
             "has_image": has_image,
             "image_url": image_url,
+            # A file (document / image / video) and its name: "file attached
+            # by the owner" is evidence a commitment was done.
+            "media_type": mtype if mtype in ("document", "image", "video") else "",
+            "file_name": str(_pick("filename", "") or "")[:120],
             "raw": msg,
         }
     # Fallback — return as-is with safe defaults
@@ -56993,6 +57303,11 @@ async def _process_whatsapp_message(payload: dict):
                 "mentioned_jids": list(parsed.get("mentioned_jids") or []),
                 "quoted_message_id": parsed.get("quoted_message_id") or "",
                 "quoted_author": parsed.get("quoted_author") or "",
+                # The words of the message replied to: for the attention
+                # engine they say what the reply is about (pass 2).
+                "quoted_body": str(parsed.get("quoted_body") or "")[:500],
+                "media_type": parsed.get("media_type") or "",
+                "file_name": parsed.get("file_name") or "",
                 "from_me": bool(parsed.get("from_me")),
                 "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
                 "created_at": now,
@@ -59234,6 +59549,32 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         "resolution_quote": (res or {}).get("quote"),
         "verdict": (review or {}).get("verdict"),
         "source": (it.get("extraction") or {}).get("source") or "live",
+        "needs_review": bool(it.get("needs_review")),
+        "parts_done": len(it.get("parts_done") or []),
+        "history": [_attention_event_view(e) for e in (it.get("history") or [])
+                    if isinstance(e, dict)],
+    }
+
+
+def _attention_event_view(e: dict) -> dict:
+    """One timeline entry: what changed, the words that changed it, how it
+    was linked, and the admin's Correct / Wrong. No ids, no phone."""
+    at = e.get("at")
+    return {
+        "id": e.get("id"),
+        "kind": e.get("kind"),
+        "from": e.get("from"),
+        "to": e.get("to"),
+        "at": at.isoformat() if isinstance(at, datetime) else None,
+        "quote": e.get("quote") or "",
+        "evidence_kind": e.get("evidence_kind") or "text",
+        "link": e.get("link"),
+        "by": e.get("by"),
+        "note": e.get("note"),
+        "due_from": e.get("due_from"),
+        "due_to": e.get("due_to"),
+        "sender_last4": e.get("sender_last4") or "",
+        "verdict": (e.get("review") or {}).get("verdict"),
     }
 
 
@@ -59255,13 +59596,16 @@ async def get_project_attention(project_id: str, status: str = "open",
     from the verdicts given so far."""
     company_id = await _attention_admin_project(project_id, current_user)
     if status == "open":
-        status_cond, review_cond = {"$in": ["open", "possibly_resolved"]}, None
+        status_cond, review_cond = {"$in": list(wa_attention_state.OPEN_LIST)}, None
+    elif status == "closed":
+        status_cond, review_cond = {"$in": ["done", "cancelled"]}, {"$exists": True}
     elif status == "reviewed":
         status_cond, review_cond = {"$exists": True}, {"$ne": None}
     elif status == "all":
         status_cond, review_cond = {"$exists": True}, {"$exists": True}
     else:
-        raise HTTPException(status_code=422, detail="status: open, reviewed or all")
+        raise HTTPException(status_code=422,
+                            detail="status: open, closed, reviewed or all")
     q = {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id),
          "status": status_cond, "review": review_cond}
@@ -59270,7 +59614,7 @@ async def get_project_attention(project_id: str, status: str = "open",
     stats_rows = await db.attention_items.find(
         {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id)},
-        {"type": 1, "review.verdict": 1}).to_list(10000)
+        {"type": 1, "review.verdict": 1, "history": 1}).to_list(10000)
     groups = await db.whatsapp_groups.find(
         {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id)},
@@ -59279,6 +59623,7 @@ async def get_project_attention(project_id: str, status: str = "open",
     return {
         "items": [_attention_item_view(it, names) for it in items],
         "precision": wa_attention.precision(stats_rows),
+        "state_precision": wa_attention_state.state_precision(stats_rows),
         "total": len(stats_rows),
         "shadow_mode": True,
     }
@@ -59310,6 +59655,43 @@ async def review_project_attention(project_id: str, item_id: str, body: dict,
         {"$set": fields}, return_document=_canary_return_after())
     if not it:
         raise HTTPException(status_code=404, detail="Item not found")
+    g = await db.whatsapp_groups.find_one(
+        {"wa_group_id": it.get("group_id"), "project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)}, {"group_name": 1})
+    return _attention_item_view(it, {it.get("group_id"): (g or {}).get("group_name")})
+
+
+@api_router.post("/projects/{project_id}/attention/{item_id}/history/{event_id}/review",
+                  dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_project_attention_event(project_id: str, item_id: str, event_id: str,
+                                         body: dict, current_user=Depends(get_current_user)):
+    """Admin only: Correct / Wrong on ONE state change in an item's timeline
+    (rescheduled, done, cancelled, possibly done, a part done, a flag). A
+    later verdict replaces an earlier one. It records the verdict; it does
+    not undo the change (shadow mode: nothing was posted on it)."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    verdict = (body or {}).get("verdict") if isinstance(body, dict) else None
+    if verdict not in wa_attention_state.STATE_VERDICTS:
+        raise HTTPException(status_code=422, detail="verdict: correct or wrong")
+    oid = to_query_id(str(item_id or ""))
+    if not oid:
+        raise HTTPException(status_code=404, detail="Item not found")
+    q = {"_id": oid, "project_id": str(project_id),
+         "company_id": _company_id_filter(company_id)}
+    it = await db.attention_items.find_one(q)
+    history = list((it or {}).get("history") or [])
+    idx = next((i for i, e in enumerate(history) if isinstance(e, dict)
+                and e.get("id") == event_id and e.get("kind") != "created"), None)
+    if not it or idx is None:
+        raise HTTPException(status_code=404, detail="Change not found")
+    now = datetime.now(timezone.utc)
+    review = {"verdict": verdict, "by": actor_id(current_user), "at": now}
+    # Only this entry, in place: history is append-only, so its index holds
+    # while the worker adds entries, and other verdicts are left alone.
+    await db.attention_items.update_one(
+        {**q, f"history.{idx}.id": event_id},
+        {"$set": {f"history.{idx}.review": review, "updated_at": now}})
+    it = await db.attention_items.find_one(q) or it
     g = await db.whatsapp_groups.find_one(
         {"wa_group_id": it.get("group_id"), "project_id": str(project_id),
          "company_id": _company_id_filter(company_id)}, {"group_name": 1})
@@ -62999,6 +63381,9 @@ async def startup_event():
         [("dedupe_key", 1), ("project_id", 1), ("evidence.sent_at", -1)])
     await db.attention_items.create_index(
         [("group_id", 1), ("evidence.message_id", 1), ("status", 1)])
+    # The state step: a group's live items.
+    await db.attention_items.create_index(
+        [("group_id", 1), ("project_id", 1), ("status", 1), ("evidence.sent_at", -1)])
     await db.attention_metrics.create_index([("week", 1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
@@ -64327,11 +64712,13 @@ async def startup_event():
     )
 
     # Attention engine v1 — SHADOW MODE: records items, posts nothing. Every
-    # 5 minutes behind a saved cursor per group (not in the webhook).
-    # WA_ATTENTION_DISABLED=1 stops it.
+    # minute behind a saved cursor per group (not in the webhook). It was
+    # every 5: a message could wait up to 5 minutes plus the run (pass 2:
+    # 1:36-1:37 not read by 1:39). Now at most ~2 (a minute, plus the minute
+    # a sender's burst is given to finish). WA_ATTENTION_DISABLED=1 stops it.
     scheduler.add_job(
         _whatsapp_attention_job,
-        IntervalTrigger(minutes=5),
+        IntervalTrigger(seconds=ATTENTION_TICK_SECONDS),
         id='whatsapp_attention',
         replace_existing=True,
         max_instances=1,
