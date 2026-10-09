@@ -38,6 +38,7 @@ SCENARIO FILE (see scripts/dry_run/*.json)
   senders  {KEY: {name, lid, user: {role}?, people: {person_name, sub_company}?}}
   messages [{from, at: "YYYY-MM-DD HH:MM:SS" (local), text, reply_to: line?,
              mentions: [KEY]?, reply_shape: "stanza" | "missing"?,
+             quoted_text: "..."? (the quoted words as sent; default the line's),
              expect: {kind: item|none|state|merged|review|flag|follow_up|part_done,
                       type?, due_text?, owner?, owner_possibly?, of?, also?, to?,
                       into?}}]
@@ -87,7 +88,10 @@ class ScenarioError(Exception):
 # ── the scenario ────────────────────────────────────────────────────────────
 
 def load(path: str) -> dict:
-    sc = json.loads(Path(path).read_text(encoding="utf-8"))
+    return load_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def load_dict(sc: dict) -> dict:
     if sc.get("placeholder"):
         raise ScenarioError(sc.get("about") or "placeholder scenario: nothing to run yet")
     for i, m in enumerate(sc["messages"], 1):
@@ -143,7 +147,9 @@ def payload(sc: dict, m: dict) -> dict:
            "mentionedIds": mentions, "_data": data}
     if m.get("reply_to"):
         q = sc["messages"][m["reply_to"] - 1]
-        data["quotedMsg"] = {"type": "chat", "body": q["text"]}
+        # The quoted words as WhatsApp holds them (mentions as ids), unless
+        # the scenario gives them ("quoted_text", e.g. with curly quotes).
+        data["quotedMsg"] = {"type": "chat", "body": m.get("quoted_text") or wire_body(sc, q)}
         msg["hasQuotedMsg"] = True
         if (m.get("reply_shape") or "stanza") == "stanza":
             data["quotedStanzaID"] = _hash(sc, q["n"])

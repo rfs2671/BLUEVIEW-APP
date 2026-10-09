@@ -1,0 +1,254 @@
+{
+ "name": "pass-3, replies with quoted words only (no ids) — what WaAPI sent on 2026-10-09",
+ "about": "The same exchange as pass3_2026_10.json, but every reply arrives the way WaAPI actually sent it today: quotedMsg with the quoted words and NO quotedStanzaID / quotedParticipant. The webhook links each reply to the one message in the group (last 7 days) with exactly those words (trimmed, curly quotes straight). Expected: the same results as with ids.",
+ "tz": "America/New_York",
+ "project": {
+  "name": "588 Thomas S Boyland St",
+  "address": "588 Thomas S Boyland St, Brooklyn, NY",
+  "chase_weekends": true
+ },
+ "senders": {
+  "R": {
+   "name": "Roy Fishman",
+   "lid": "201000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "P": {
+   "name": "Patricia Lee",
+   "lid": "201000000000002",
+   "people": {
+    "person_name": "Patricia Lee",
+    "sub_company": "Quality Plumbing"
+   }
+  }
+ },
+ "messages": [
+  {
+   "from": "R",
+   "at": "2026-10-09 15:25:00",
+   "text": "@Patricia can you send the door hardware submittal tomorrow?",
+   "mentions": [
+    "P"
+   ],
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:38:00",
+   "text": "Sure I'll get it before 8am",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "due_text": "before 8am",
+    "owner_possibly": false
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 15:38:10",
+   "text": "can you confirm the dampers shipped tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:38:40",
+   "text": "Np",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 15:39:00",
+   "text": "can you file the scaffold permit renewal by Saturday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "by Saturday"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:39:40",
+   "text": "Sunday. I'll keep u posted",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "Sunday"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:40:05",
+   "text": "Actually give me till 11-12",
+   "reply_to": 2,
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "rescheduled",
+    "due_text": "till 11-12"
+   },
+   "reply_shape": "missing",
+   "quoted_text": "Sure I’ll get it before 8am"
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:40:50",
+   "text": "I'll also send the sleeve shop drawings Saturday morning",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": false,
+    "due_text": "Saturday morning"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 15:41:20",
+   "text": "Lol",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:42:00",
+   "text": "Actually Monday morning",
+   "reply_to": 6,
+   "expect": {
+    "kind": "state",
+    "of": 6,
+    "to": "rescheduled",
+    "due_text": "Monday"
+   },
+   "reply_shape": "missing"
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 15:42:20",
+   "text": "@Patricia can you count the fire stopping inventory Saturday?",
+   "mentions": [
+    "P"
+   ],
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "due_text": "Saturday"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:42:40",
+   "text": "I",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": false,
+    "due_text": "Saturday"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:42:45",
+   "text": "Kk",
+   "expect": {
+    "kind": "merged",
+    "into": 12
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 15:43:00",
+   "text": "Never mind the fire stopping, already counted",
+   "expect": {
+    "kind": "state",
+    "of": 11,
+    "also": [
+     12
+    ],
+    "to": "cancelled"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-09 15:43:20",
+   "text": "Just sent, check ur email",
+   "reply_to": 1,
+   "expect": {
+    "kind": "state",
+    "of": 1,
+    "also": [
+     2
+    ],
+    "to": "done"
+   },
+   "reply_shape": "missing"
+  }
+ ],
+ "chase": {
+  "days": [
+   "2026-10-10",
+   "2026-10-11",
+   "2026-10-12"
+  ],
+  "expect": [
+   {
+    "day": "2026-10-10",
+    "slot": "morning",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "midday",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "eod",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "admin_dm",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   }
+  ]
+ }
+}

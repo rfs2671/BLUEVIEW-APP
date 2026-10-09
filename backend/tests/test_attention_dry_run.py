@@ -102,17 +102,58 @@ class TheHarness(unittest.TestCase):
         self.assertTrue(parsed["is_group"])
         self.assertEqual(parsed["sender"], dry._jid(self.sc, reply["from"]))
 
-    def test_a_reply_without_its_id_is_shown_up(self):
-        # The live failure mode: a reply stored with its words but no id.
+    def test_a_reply_with_only_its_quoted_words_is_linked_by_them(self):
+        # What WaAPI sent on 2026-10-09: quotedMsg, no quotedStanzaID.
         sc = copy.deepcopy(self.sc)
         for m in sc["messages"]:
             if m.get("reply_to"):
                 m["reply_shape"] = "missing"
         out, r = _run(sc)
-        rows = [row for row in out["rows"].values() if row.get("quoted_body")]
-        self.assertTrue(rows)
-        self.assertTrue(all(not row["quoted_message_id"] for row in rows))
-        self.assertLess(r["score"]["hard"], r["score"]["lines"])
+        replies = [(m, out["rows"][m["n"]]) for m in sc["messages"] if m.get("reply_to")]
+        self.assertTrue(replies)
+        for m, row in replies:
+            q = sc["messages"][m["reply_to"] - 1]
+            self.assertEqual(row["quoted_message_id"], dry._hash(sc, q["n"]))
+            self.assertEqual(row["quoted_link"], "body_match")
+        self.assertEqual(r["score"]["hard"], r["score"]["lines"])
+        self.assertEqual(dry.exit_code(r), 0)
+
+    def test_the_same_words_twice_link_nothing(self):
+        # "ok" quoted when two messages say "ok": no guess, no link.
+        sc = {"name": "dup", "tz": "America/New_York", "project": {"name": "X"},
+              "senders": {"R": {"name": "Roy Admin", "lid": "401", "user": {"role": "admin"}},
+                          "P": {"name": "Pat Lee", "lid": "402"}},
+              "messages": [
+                  {"from": "P", "at": "2026-10-09 10:00:00", "text": "ok"},
+                  {"from": "P", "at": "2026-10-09 10:05:00", "text": "ok"},
+                  {"from": "R", "at": "2026-10-09 10:06:00", "text": "thanks",
+                   "reply_to": 2, "reply_shape": "missing"},
+                  {"from": "R", "at": "2026-10-09 10:07:00", "text": "Sunday works",
+                   "reply_to": 1, "reply_shape": "missing", "quoted_text": "something else"}],
+              "chase": {"days": [], "expect": []}}
+        sc = dry.load_dict(sc)
+        out, _r = _run(sc)
+        self.assertEqual(out["rows"][3]["quoted_message_id"], "")
+        self.assertEqual(out["rows"][3]["quoted_body"], "ok")
+        self.assertNotIn("quoted_link", out["rows"][3])
+        self.assertEqual(out["rows"][4]["quoted_message_id"], "")
+
+    def test_only_the_last_7_days(self):
+        from datetime import datetime, timedelta, timezone
+        from tests._fake_mongo import FakeDb
+        from unittest.mock import patch
+        now = datetime(2026, 10, 9, 20, 0, tzinfo=timezone.utc)
+        db = FakeDb(whatsapp_messages=[
+            {"_id": "a", "group_id": "G", "message_id": "OLD", "body": "Sure I'll get it",
+             "created_at": now - timedelta(days=8)},
+            {"_id": "b", "group_id": "G", "message_id": "NEW", "body": "Sure I\u2019ll get it ",
+             "created_at": now - timedelta(days=1), "sender_jid": "9@lid"}])
+        with patch.object(server, "db", db):
+            hit = asyncio.run(server._quoted_by_body("G", "Sure I'll get it", now))
+            self.assertEqual(hit["message_id"], "NEW")            # curly quote, trailing space
+            db.whatsapp_messages.rows[0]["created_at"] = now - timedelta(days=2)
+            self.assertIsNone(asyncio.run(server._quoted_by_body("G", "Sure I'll get it", now)))
+            self.assertIsNone(asyncio.run(server._quoted_by_body("G", "  ", now)))
 
     def test_mentions_arrive_as_ids_in_the_text(self):
         m = self.sc["messages"][0]

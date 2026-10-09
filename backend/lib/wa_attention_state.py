@@ -511,8 +511,21 @@ def starts_with_update(body: Any) -> bool:
 
 def _standalone(r: dict) -> bool:
     """A reply or an update is its own message: nothing merges into it and
-    it merges into nothing."""
-    return bool(str(r.get("quoted_message_id") or "").strip()) or starts_with_update(r.get("body"))
+    it merges into nothing. A reply is a reply even when only its quoted
+    words arrived."""
+    return (bool(str(r.get("quoted_message_id") or "").strip())
+            or bool(str(r.get("quoted_body") or "").strip())
+            or starts_with_update(r.get("body")))
+
+
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201b": "'", "\u2032": "'",
+                         "\u201c": '"', "\u201d": '"', "\u201f": '"', "\u2033": '"'})
+
+
+def norm_quote(text: Any) -> str:
+    """A message's words for matching a reply's quoted text: trimmed, curly
+    quotes straight."""
+    return str(text or "").translate(_QUOTES).strip()
 
 
 def bursts(rows: List[dict], gap_seconds: int = BURST_SECONDS) -> List[List[dict]]:

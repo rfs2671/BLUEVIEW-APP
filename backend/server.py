@@ -57916,8 +57916,42 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
     }
     if row_id is not None:
         row["_id"] = row_id
+    if not row["quoted_message_id"] and row["quoted_body"].strip():
+        # WaAPI can send a reply's quoted words without the quoted message's
+        # id (2026-10-09, 3:40 and 3:42 PM). The one message in this group in
+        # the last 7 days with exactly those words is what it replies to;
+        # none or several: no link, as before.
+        hit = await _quoted_by_body(group_id, row["quoted_body"], now)
+        if hit:
+            row["quoted_message_id"] = str(hit.get("message_id") or "")
+            row["quoted_author"] = row["quoted_author"] or str(hit.get("sender_jid") or "")
+            row["quoted_link"] = "body_match"
     await db.whatsapp_messages.insert_one(row)
     return row
+
+
+QUOTED_BODY_DAYS = 7
+
+
+async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime) -> Optional[dict]:
+    """The one earlier message of this group (last 7 days) whose words are
+    `quoted_body` (trimmed, curly quotes straight). None for no match or
+    more than one."""
+    want = wa_attention_state.norm_quote(quoted_body)
+    if not want:
+        return None
+    try:
+        rows = await db.whatsapp_messages.find(
+            {"group_id": group_id,
+             "created_at": {"$gte": now - timedelta(days=QUOTED_BODY_DAYS)}},
+            {"message_id": 1, "sender_jid": 1, "body": 1}).sort(
+            [("created_at", -1)]).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[wa] quoted-body lookup failed: {type(e).__name__}")
+        return None
+    hits = [r for r in rows if r.get("message_id")
+            and wa_attention_state.norm_quote(str(r.get("body") or "")[:500]) == want]
+    return hits[0] if len(hits) == 1 else None
 
 
 async def _process_whatsapp_message(payload: dict):
