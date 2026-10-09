@@ -59418,7 +59418,7 @@ async def _sender_map_apply(company_id: str, jid: str, row: Optional[dict]) -> i
 
 
 @api_router.get("/projects/{project_id}/whatsapp/people",
-                dependencies=[Depends(require_approved)])
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_whatsapp_people(project_id: str,
                               project=Depends(require_project_access),
                               current_user=Depends(get_project_admin_user)):
@@ -59442,7 +59442,7 @@ async def get_whatsapp_people(project_id: str,
 
 
 @api_router.put("/projects/{project_id}/whatsapp/people/{key}",
-                dependencies=[Depends(require_approved)])
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
                               project=Depends(require_project_access),
                               current_user=Depends(get_project_admin_user)):
@@ -59476,7 +59476,7 @@ async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
 
 
 @api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
-                   dependencies=[Depends(require_approved)])
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def clear_whatsapp_person(project_id: str, key: str,
                                 project=Depends(require_project_access),
                                 current_user=Depends(get_project_admin_user)):
