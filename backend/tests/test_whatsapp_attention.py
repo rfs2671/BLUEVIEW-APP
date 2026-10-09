@@ -607,8 +607,11 @@ class DedupeAndReplies(unittest.TestCase):
              at=T0 + timedelta(hours=2))
         _tick(db, _Model(), T0 + timedelta(hours=3))
         it = _items(db)[0]
-        self.assertEqual(it["status"], "possibly_resolved")
-        self.assertEqual(it["resolution"]["quote"], "sent it this morning")
+        # The ask named nobody, so who replied "sent" may or may not be who
+        # owed it: possibly done, for an admin, with the words.
+        self.assertEqual(it["status"], "possibly_done")
+        self.assertEqual(it["history"][-1]["quote"], "sent it this morning")
+        self.assertEqual(it["history"][-1]["link"], "reply")
 
     def test_the_asker_replying_to_themself_is_not_an_answer(self):
         db = _world()

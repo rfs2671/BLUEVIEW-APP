@@ -1844,9 +1844,19 @@ export const whatsappAPI = {
     return response.data;
   },
 
-  // Attention (beta), admins: { items, precision, total, shadow_mode }.
-  getAttention: async (projectId) => {
-    const response = await apiClient.get(`/api/projects/${projectId}/attention`);
+  // Attention (beta), admins: { items, precision, state_precision, total,
+  // shadow_mode }. status: 'open' (default) | 'closed' | 'reviewed' | 'all'.
+  getAttention: async (projectId, status = 'open') => {
+    const response = await apiClient.get(`/api/projects/${projectId}/attention`,
+      { params: { status } });
+    return response.data;
+  },
+
+  // Correct / Wrong on one change in an item's timeline.
+  reviewAttentionChange: async (projectId, itemId, changeId, verdict) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/attention/${encodeURIComponent(itemId)}`
+      + `/history/${encodeURIComponent(changeId)}/review`, { verdict });
     return response.data;
   },
 

@@ -209,6 +209,11 @@ class Coll:
             if v not in cur:
                 cur.append(v)
             _set(doc, k, cur)
+        for k, v in (update.get("$push") or {}).items():
+            cur = _get(doc, k)
+            cur = list(cur) if isinstance(cur, list) else []
+            cur.append(v)
+            _set(doc, k, cur)
 
     async def update_one(self, query, update, upsert=False, **k):
         for r in self.rows:

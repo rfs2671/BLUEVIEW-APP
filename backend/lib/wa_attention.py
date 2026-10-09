@@ -20,7 +20,9 @@ What lives here, each a plain function tested without a server:
   * the dedupe key, and precision per type from the admin's verdicts
 
 What the model never decides: who owns an item (resolved in code from the
-@mention / reply author / sender), a due date, or whether anything is posted.
+@mention / reply author / sender), a due date, a state change (done,
+rescheduled, cancelled: lib/wa_attention_state.py), or whether anything is
+posted.
 """
 
 from __future__ import annotations
@@ -37,13 +39,14 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "att-v1.1"
+PROMPT_VERSION = "att-v1.2"
 MODEL = "gpt-4o-mini"
 
 TYPES = ("question", "request", "commitment", "issue", "decision")
 IMPORTANCE = ("low", "normal", "high")
 VERDICTS = ("correct", "wrong", "dismissed")
-STATUSES = ("open", "possibly_resolved", "dismissed")
+STATUSES = ("open", "rescheduled", "possibly_done", "possibly_resolved",
+            "done", "cancelled", "dismissed")
 
 # How many earlier messages of the same group the model sees with one message.
 CONTEXT_MESSAGES = 10
@@ -146,7 +149,11 @@ Rules:
 - "due_text": the time words exactly as written (e.g. "by Friday", "tomorrow morning"). Otherwise null.
 - A schedule or info update is NOT an issue and NOT an item ("Inspection moved to Tuesday 10am", "Mike from the elevator company will be here Wed"). Skip it.
 - A message saying an earlier ask is done, sent, moved or called off is NOT a new item ("Sent this morning", "Never mind the load calcs").
-- importance: "high" ONLY when the message itself says so (urgent, ASAP, emergency, stop work, unsafe, someone hurt). Never infer it from the topic. Otherwise "normal".
+- If a message being replied to is shown, IT DEFINES THE TOPIC: the summary is about what that message asked, not about other recent messages.
+- If a question or request this message may answer is shown and the message takes it on ("I'll take care of it", "Lift is mine", "Np" + a day), that is a commitment on THAT topic.
+- "I'll try to ... sometime" is too vague to be a commitment. Skip it.
+- A question chasing something already promised ("the risers came in?") is NOT a new item.
+- importance: "high" ONLY when the message itself says it is urgent (urgent, ASAP, emergency, immediately, stop work). Never infer it from the topic or from a word like "fire" or "inspection". Otherwise "normal".
 - Greetings, thanks, jokes, sarcasm, rhetorical questions, photos with no ask, and plain status updates are NOT items.
 - At most 3 items. None is a fine answer.
 
@@ -160,15 +167,22 @@ def _line(m: Dict[str, Any]) -> str:
 
 
 def build_messages(msg: Dict[str, Any], context: Iterable[Dict[str, Any]],
-                   quoted: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+                   quoted: Optional[Dict[str, Any]] = None,
+                   answers: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
     """The chat request for one message. Senders are shown by their last four
-    digits only: the model needs to tell people apart, not who they are."""
+    digits only: the model needs to tell people apart, not who they are.
+
+    `quoted`: the message this one replies to (it defines the topic).
+    `answers`: when it is not a reply, the open question or request just
+    before it that it may be answering."""
     lines = [_line(c) for c in list(context)[-CONTEXT_MESSAGES:]]
     parts = []
     if lines:
         parts.append("Earlier messages:\n" + "\n".join(lines))
     if quoted and quoted.get("body"):
-        parts.append("The message being replied to:\n" + _line(quoted))
+        parts.append("The message being replied to (this is the topic):\n" + _line(quoted))
+    elif answers and answers.get("body"):
+        parts.append("The open question or request this may answer:\n" + _line(answers))
     parts.append(">>> " + _line(msg))
     return [{"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": "\n\n".join(parts)}]
@@ -350,11 +364,12 @@ def _resolve_md(today: date, mo: int, d: int, yr: Optional[int]) -> Optional[dat
 # Tuesday 10am" High because the topic was an inspection; the topic is not
 # the message saying it is urgent. So "high" needs one of these words in the
 # message itself, whatever the model said; without one it is at most normal.
+# Pass 2 rated "Who's ordering the fire caulk?" High on the word "fire": a
+# word for a thing is not urgency, so only words that state urgency count.
 
 STATED_SEVERITY_RE = re.compile(
-    r"\b(urgent\w*|asap|emergency|critical|immediately|right away|right now"
-    r"|high priority|top priority|stop work|swo|unsafe|danger\w*|hazard\w*"
-    r"|injur\w*|hurt|bleeding|fire|collaps\w*|electrocut\w*)\b", re.IGNORECASE)
+    r"\b(urgent\w*|asap|emergency|critical|immediately|right away"
+    r"|high priority|top priority|stop work|swo)\b", re.IGNORECASE)
 
 
 def importance(model_label: str, body: str) -> Dict[str, str]:
@@ -378,9 +393,9 @@ PROBLEM_RE = re.compile(
     r"|block\w*|stuck|held up|hold(ing)? up|waiting on|can'?t|cannot|couldn'?t"
     r"|unable|won'?t|fail\w*|problem\w*|issue\w*|wrong|missing|short|no power"
     r"|no water|not working|doesn'?t work|isn'?t working|flood\w*|water (is )?coming"
-    r"|mold|unsafe|danger\w*|hazard\w*|injur\w*|hurt|fell|fall\w*|collaps\w*"
-    r"|fire|smoke|gas|violation|swo|stop work|rejected|clash\w*|conflict\w*"
-    r"|out of)\b", re.IGNORECASE)
+    r"|mold|unsafe|danger\w*|hazard\w*|injur\w*|hurt|fell|collaps\w*"
+    r"|on fire|smoke|gas leak|violation|swo|stop work|rejected|clash\w*"
+    r"|conflict\w*|ran out|out of stock)\b", re.IGNORECASE)
 
 
 def names_a_problem(body: str) -> bool:
@@ -394,6 +409,7 @@ is are was were be been am i im i'm we you he she they it this that these those
 my our your his her their me us them do does did done have has had will would
 can could should shall may might must not no yes ok okay pls please thanks
 just get got go going gonna there here what when where who why how which
+take care handle send sending sent give make yeah np sure
 """.split())
 
 
