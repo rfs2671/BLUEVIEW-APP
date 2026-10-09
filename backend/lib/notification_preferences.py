@@ -1307,4 +1307,6 @@ def default_whatsapp_project_settings() -> Dict[str, Any]:
             "dot_violation_alerts": True, "dot_permit_alerts": True,
             "gc_proposal": None, "gc_declined": [],
             # When alerts and the GC-group question may go out (lib/wa_gc).
-            "send_window": {"mode": "anytime", "start": "07:00", "end": "19:00"}}
+            "send_window": {"mode": "anytime", "start": "07:00", "end": "19:00"},
+            # Sub chasing (lib/wa_chase.py) on Saturday and Sunday. Off.
+            "chase_weekends": False}

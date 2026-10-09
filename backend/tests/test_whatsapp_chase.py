@@ -376,6 +376,147 @@ class AlertHours(_Base):
             self.assertEqual([r["slot"] for r in self.rows()], ["eod", "admin_dm"], window)
 
 
+class Weekends(_Base):
+    """Saturday and Sunday: only with the project's "Chase on weekends" on
+    (default off). All four slots."""
+
+    SAT = "2026-10-10"
+
+    def _on(self, value=True):
+        self.db.notification_preferences.rows.append({
+            "_id": "npw", "user_id": None, "project_id": "proj_a", "scope": "project",
+            "whatsapp_project": {"chase_weekends": value}})
+
+    def _day(self):
+        for t in (_et(8, 35, day=10), _et(12, 35, day=10), _et(15, 5, day=10),
+                  _et(16, 5, day=10)):
+            self.chase(t)
+        return [r["slot"] for r in self.rows()]
+
+    def test_off_by_default_no_slot_runs(self):
+        _item(self.db, due={"due_text": "Saturday", "due_at": self.SAT},
+              evidence={"sent_at": _et(7, 0, day=10)})
+        self.assertEqual(self._day(), [])
+
+    def test_on_all_four_slots_run(self):
+        self._on()
+        _item(self.db, due={"due_text": "Saturday", "due_at": self.SAT},
+              evidence={"sent_at": _et(7, 0, day=10)})
+        self.assertEqual(self._day(), ["morning", "midday", "eod", "admin_dm"])
+
+    def test_sunday_too(self):
+        _item(self.db, due={"due_text": "Sunday", "due_at": "2026-10-11"},
+              evidence={"sent_at": _et(7, 0, day=11)})
+        self.chase(_et(8, 35, day=11))
+        self.assertEqual(self.rows(), [])
+        self._on()
+        self.chase(_et(12, 35, day=11))
+        self.assertEqual([r["slot"] for r in self.rows()], ["midday"])
+
+    def test_weekdays_ignore_the_switch(self):
+        self._on(False)
+        _item(self.db)
+        self.chase(_et(8, 35))                                 # Thursday
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_the_rule(self):
+        from datetime import date
+        self.assertTrue(wa_chase.chases_on(date(2026, 10, 9), {}))
+        self.assertFalse(wa_chase.chases_on(date(2026, 10, 10), {}))
+        self.assertFalse(wa_chase.chases_on(date(2026, 10, 11), {"chase_weekends": False}))
+        self.assertTrue(wa_chase.chases_on(date(2026, 10, 11), {"chase_weekends": True}))
+
+
+class TheWeekendSwitch(_Base):
+
+    def test_admin_sets_it_and_the_view_shows_it(self):
+        with patch.object(server, "db", self.db):
+            v = _run(server.get_project_whatsapp_settings("proj_a", current_user=ADMIN))
+            self.assertIs(v["chase_weekends"], False)
+            v = _run(server.patch_project_whatsapp_alerts(
+                "proj_a", {"chase_weekends": True}, current_user=ADMIN))
+            self.assertIs(v["chase_weekends"], True)
+            for bad in ({"chase_weekends": "yes"}, {"chase_weekend": True}):
+                with self.assertRaises(HTTPException) as e:
+                    _run(server.patch_project_whatsapp_alerts("proj_a", bad,
+                                                              current_user=ADMIN))
+                self.assertEqual(e.exception.status_code, 422)
+            with self.assertRaises(HTTPException) as e:
+                _run(server.patch_project_whatsapp_alerts(
+                    "proj_a", {"chase_weekends": False}, current_user=PM))
+            self.assertEqual(e.exception.status_code, 403)
+        settings = self.db.notification_preferences.rows[0]["whatsapp_project"]
+        self.assertIs(settings["chase_weekends"], True)
+
+
+class The588Migration(_Base):
+
+    def _projects(self, *rows):
+        self.db.projects.rows = [dict(r) for r in rows]
+
+    def _migrate(self):
+        with patch.object(server, "db", self.db):
+            return _run(server._chase_weekends_for_588_thomas())
+
+    def _value(self, pid):
+        for r in self.db.notification_preferences.rows:
+            if r.get("project_id") == pid:
+                return (r.get("whatsapp_project") or {}).get("chase_weekends")
+        return None
+
+    THOMAS = {"_id": "p588", "company_id": CO_A, "name": "588 Thomas",
+              "address": "588 Thomas S Boyland St, Brooklyn, NY 11212"}
+    WALWORTH = {"_id": "p8", "company_id": CO_A, "name": "8 Walworth",
+                "address": "8 Walworth St, Brooklyn, NY"}
+
+    def test_on_for_588_only(self):
+        self._projects(self.THOMAS, self.WALWORTH)
+        self.assertEqual(self._migrate(), "p588")
+        self.assertIs(self._value("p588"), True)
+        self.assertIsNone(self._value("p8"))
+
+    def test_turning_it_off_in_the_app_sticks(self):
+        self._projects(self.THOMAS)
+        self._migrate()
+        self.db.notification_preferences.rows[0]["whatsapp_project"]["chase_weekends"] = False
+        self.assertIsNone(self._migrate())
+        self.assertIs(self._value("p588"), False)
+
+    def test_an_existing_row_without_the_switch_gets_it(self):
+        self._projects(self.THOMAS)
+        self.db.notification_preferences.rows.append({
+            "_id": "np588", "user_id": None, "project_id": "p588", "scope": "project",
+            "whatsapp_project": {"gc_group_id": "g", "violation_alerts": False}})
+        self.assertEqual(self._migrate(), "p588")
+        wp = self.db.notification_preferences.rows[0]["whatsapp_project"]
+        self.assertIs(wp["chase_weekends"], True)
+        self.assertEqual((wp["gc_group_id"], wp["violation_alerts"]), ("g", False))
+        self.assertEqual(len(self.db.notification_preferences.rows), 1)
+
+    def test_a_false_saved_meanwhile_is_not_overwritten(self):
+        # The write itself is conditional: a row carrying false is left alone,
+        # and no second row is made.
+        self._projects(self.THOMAS)
+        self.db.notification_preferences.rows.append({
+            "_id": "np588", "user_id": None, "project_id": "p588", "scope": "project",
+            "whatsapp_project": {"chase_weekends": False}})
+        self.assertIsNone(self._migrate())
+        self.assertIs(self._value("p588"), False)
+        self.assertEqual(len(self.db.notification_preferences.rows), 1)
+
+    def test_two_matches_or_a_deleted_one_set_nothing(self):
+        self._projects(self.THOMAS, {**self.THOMAS, "_id": "p588b"})
+        self.assertIsNone(self._migrate())
+        self._projects({**self.THOMAS, "is_deleted": True})
+        self.assertIsNone(self._migrate())
+        self.assertEqual(self.db.notification_preferences.rows, [])
+
+    def test_it_runs_at_startup(self):
+        import inspect
+        self.assertIn("_chase_weekends_for_588_thomas()",
+                      inspect.getsource(server.run_whatsapp_startup_migrations))
+
+
 class KillSwitch(_Base):
 
     def test_off(self):

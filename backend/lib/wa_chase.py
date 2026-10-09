@@ -29,6 +29,9 @@ HOW: in the item's own group, @mentioning the owner, quoting the original
 message. At most one nudge per owner per group per slot: their items due
 today go in one message. The words are a fixed template and the item's own
 quote. No model writes any of it.
+
+WEEKENDS: Saturday and Sunday only for a project with "Chase on weekends" on
+(Project → WhatsApp → Levelog Assistant; default off). All four slots.
 """
 
 from __future__ import annotations
@@ -95,6 +98,12 @@ def current_slot(now: datetime) -> Optional[str]:
         if t >= at:
             hit = name
     return hit
+
+
+def chases_on(day: date, settings: Dict[str, Any]) -> bool:
+    """Saturday and Sunday only when the project's "Chase on weekends" is
+    on (default off). All four slots."""
+    return day.weekday() < 5 or bool((settings or {}).get("chase_weekends"))
 
 
 def owner_key(item: Dict[str, Any]) -> str:

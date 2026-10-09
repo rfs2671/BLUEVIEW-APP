@@ -45270,6 +45270,7 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
         out["gc_declined"] = [str(x) for x in stored["gc_declined"]]
     out["send_window"] = (wa_gc.clean_send_window(stored.get("send_window"))
                           or wa_gc.default_send_window())
+    out["chase_weekends"] = stored.get("chase_weekends") is True
     return out
 
 
@@ -47008,7 +47009,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"items": 0, "eligible": 0, "would_chase": 0, "admin_dm": 0,
               "stopped": 0, "outside_hours": 0, "after_slot": 0,
-              "already": 0, "group_off": 0, "skipped": {}}
+              "already": 0, "group_off": 0, "weekend_off": 0, "skipped": {}}
     if wa_chase.disabled():
         report["disabled"] = True
         return report
@@ -47057,6 +47058,9 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             continue
         if pid not in settings_cache:
             settings_cache[pid] = await _whatsapp_project_settings(pid)
+        if not wa_chase.chases_on(day, settings_cache[pid]):
+            report["weekend_off"] += 1          # all four slots, Sat and Sun
+            continue
         if not wa_gc.in_send_window(now, settings_cache[pid].get("send_window")):
             report["outside_hours"] += 1
             continue
@@ -50999,6 +51003,48 @@ async def ensure_whatsapp_phase1_indexes():
         name="whatsapp_connect_codes_by_user")
 
 
+_THOMAS_588 = re.compile(r"^\s*588\s+thomas\s+s(?:\.|outh)?\s+boyland\b", re.IGNORECASE)
+
+
+async def _chase_weekends_for_588_thomas() -> Optional[str]:
+    """Turn "Chase on weekends" on for 588 Thomas S Boyland St, once. Only
+    when exactly one live project is that address, and only if its switch
+    was never saved. Returns the project id it set, else None."""
+    rows = await db.projects.find(
+        {"is_deleted": {"$ne": True}},
+        {"name": 1, "address": 1, "location": 1, "company_id": 1}).to_list(5000)
+    hits = [p for p in rows if any(_THOMAS_588.match(str(p.get(k) or ""))
+                                   for k in ("address", "location", "name"))]
+    if len(hits) != 1:
+        logger.info(f"WhatsApp migration: chase weekends not set "
+                    f"({len(hits)} projects match 588 Thomas)")
+        return None
+    pid = str(hits[0]["_id"])
+    key = {"user_id": None, "project_id": pid, "scope": "project"}
+    now = datetime.now(timezone.utc)
+    # Each write is conditional, so a value saved meanwhile (by an admin or
+    # another instance) is never overwritten.
+    res = await db.notification_preferences.update_one(
+        {**key, "whatsapp_project.chase_weekends": {"$exists": False}},
+        {"$set": {"whatsapp_project.chase_weekends": True,
+                  "whatsapp_project.updated_at": now,
+                  "whatsapp_project.updated_by": "migration", "updated_at": now}})
+    if not res.matched_count:
+        # No row yet: create one only if still none ($setOnInsert does
+        # nothing to a row that appeared meanwhile).
+        res = await db.notification_preferences.update_one(
+            key, {"$setOnInsert": {
+                **key, "company_id": str(hits[0].get("company_id")),
+                "whatsapp_project.chase_weekends": True,
+                "whatsapp_project.updated_at": now,
+                "whatsapp_project.updated_by": "migration",
+                "created_at": now, "updated_at": now}}, upsert=True)
+        if not getattr(res, "upserted_id", None):
+            return None
+    logger.info(f"WhatsApp migration: chase weekends on for 588 Thomas ({pid})")
+    return pid
+
+
 async def run_whatsapp_startup_migrations():
     """Idempotent startup migrations for the WhatsApp feature set.
 
@@ -51041,6 +51087,14 @@ async def run_whatsapp_startup_migrations():
                         f"{moved} preference row(s)")
     except Exception as e:
         logger.warning(f"whatsapp migration 0 (brief weekend): {e}")
+
+    # Migration 0b — sub chasing on weekends is off by default; 588 Thomas
+    # gets it on for the weekend test. Only while the project has never had
+    # the switch saved, so turning it off in the app sticks.
+    try:
+        await _chase_weekends_for_588_thomas()
+    except Exception as e:
+        logger.warning(f"whatsapp migration 0b (chase weekends 588): {e}")
 
     # Migration 1 — backfill bot_config on legacy group docs
     try:
@@ -60120,6 +60174,7 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
         "groups": groups,
         **{k: bool(settings[k]) for k in wa_alerts.SWITCHES},
         "send_window": settings["send_window"],
+        "chase_weekends": bool(settings.get("chase_weekends")),
     }
 
 
@@ -60147,7 +60202,8 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    switches = wa_alerts.SWITCHES
+    # The alert switches, and chase_weekends (sub chasing on Sat/Sun).
+    switches = wa_alerts.SWITCHES + ("chase_weekends",)
     if (not isinstance(body, dict) or not body
             or any(k not in switches + ("send_window",) for k in body)
             or any(not isinstance(body[k], bool) for k in switches if k in body)):

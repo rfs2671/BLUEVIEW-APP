@@ -5,6 +5,7 @@
  *   New DOB violations → GC group           on / off
  *   Permit expiry reminders → GC group      on / off
  *   Send alerts: Anytime / Work hours (7 AM–7 PM) / Custom hours
+ *   Chase on weekends                       on / off (default off)
  *
  * Copy and state for each case: src/utils/whatsappSettings.js.
  */
@@ -191,6 +192,22 @@ export default function LevelogAssistantCard({ projectId }) {
               <Text style={s.muted}>{sendWindowLine(view.sendWindow)}</Text>
             )}
             <Text style={s.muted}>The GC-group question to the main admin follows the same hours.</Text>
+
+            {/* Sub chasing on Saturday and Sunday */}
+            <View style={s.switchRow}>
+              <View style={{ flex: 1, marginRight: spacing.sm }}>
+                <Text style={s.value}>{view.chaseWeekends.label}</Text>
+                <Text style={s.muted}>{view.chaseWeekends.line}</Text>
+              </View>
+              <Switch
+                value={view.chaseWeekends.value}
+                disabled={!!busy}
+                onValueChange={(v) => patch('chase_weekends', { chase_weekends: v })}
+                accessibilityLabel={view.chaseWeekends.label}
+                trackColor={{ false: colors.glass.border, true: colors.primary }}
+                thumbColor={colors.white}
+              />
+            </View>
           </>
         )}
       </GlassCard>

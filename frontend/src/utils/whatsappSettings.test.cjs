@@ -69,6 +69,16 @@ console.log('\nwhen to send');
 ok(W.SEND_WINDOW_OPTIONS.map((o) => o.label).join('|')
    === 'Anytime|Work hours (7 AM–7 PM)|Custom hours', 'the three choices, word for word');
 ok(W.assistantView({ ...base, send_window: undefined }).sendWindow.mode === 'anytime', 'default Anytime');
+console.log('\nchase on weekends');
+ok(W.assistantView(base).chaseWeekends.value === false, 'chase on weekends: off by default');
+ok(W.assistantView({ ...base, chase_weekends: true }).chaseWeekends.value === true, 'on when saved on');
+ok(W.CHASE_WEEKENDS_SWITCH.key === 'chase_weekends'
+   && W.CHASE_WEEKENDS_SWITCH.label === 'Chase on weekends', 'switch key and label');
+{
+  const card = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'components', 'whatsapp', 'LevelogAssistantCard.jsx'), 'utf8');
+  ok(/patch\('chase_weekends', \{ chase_weekends: v \}\)/.test(card), 'the switch saves chase_weekends');
+}
 ok(/as soon as/.test(W.sendWindowLine({ mode: 'anytime' })), 'anytime line');
 ok(/7 AM to 7 PM.*goes out at 7 AM/.test(W.sendWindowLine({ mode: 'work_hours' })), 'work hours: held to 7 AM');
 ok(/6:30 AM to 3:00 PM.*goes out at 6:30 AM/.test(

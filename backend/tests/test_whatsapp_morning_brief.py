@@ -523,7 +523,9 @@ class TimeAndOnce(unittest.TestCase):
         with _Ctx(db):
             _run(server.run_whatsapp_startup_migrations())
             _run(server.run_whatsapp_startup_migrations())     # idempotent
-        rows = {r["_id"]: r["whatsapp"] for r in db.notification_preferences.rows}
+        # Person rows only (the chase-weekends migration may add a project row).
+        rows = {r["_id"]: r["whatsapp"] for r in db.notification_preferences.rows
+                if "whatsapp" in r}
         self.assertEqual(rows["np_u_admin"], {"brief_time": "08:00", "brief_weekend": True})
         self.assertEqual(rows["np_off"], {"brief_weekend": False})
 
