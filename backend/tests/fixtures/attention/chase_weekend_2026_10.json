@@ -9,10 +9,12 @@
   "R": {
    "name": "Roy Admin",
    "role": "admin"
-  },
+  }
+ },
+ "people": {
   "P": {
-   "name": "Patricia Lee",
-   "role": "pm"
+   "person_name": "Patricia Lee",
+   "sub_company": "Quality Plumbing"
   }
  },
  "final": {

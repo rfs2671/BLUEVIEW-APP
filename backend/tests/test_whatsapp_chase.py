@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,8 +49,8 @@ def _item(db, quote="I'll send the stair RFI today", **over):
         "_id": f"it{_n[0]}", "company_id": CO_A, "project_id": "proj_a",
         "group_id": G_A, "type": "commitment", "status": "open",
         "summary": quote,
-        "owner": {"kind": "user", "id": "u_mike", "name": "Mike Rivera",
-                  "status": "resolved", "jid": f"{MIKE}@c.us", "source": "sender"},
+        "owner": {"kind": "sender_map", "id": "u_mike", "name": "Mike Rivera",
+                  "sub_company": "Rivera Electric", "status": "resolved", "jid": f"{MIKE}@c.us", "source": "sender"},
         "due": {"due_text": "today", "due_at": DAY, "due_source": "parsed"},
         "evidence": {"message_id": f"M{_n[0]}", "quote": quote,
                      "sent_at": _et(7, 0), "sender": MIKE},
@@ -140,6 +140,23 @@ class WhatIsChased(_Base):
         self.chase(_et(8, 35))
         self.assertTrue(self.rows()[0]["text"].startswith("@Jose morning"))
 
+    def test_gc_staff_are_never_chased(self):
+        """Subs only: a company user, or someone mapped in People to "GC
+        team", is never nudged in a group (and so never reaches the admin
+        DM)."""
+        for label, owner in {
+                "a company user": {"kind": "user", "id": "u_kev", "sub_company": None},
+                "mapped GC team": {"kind": "sender_map", "id": "sm9", "sub_company": "GC team"},
+                "mapped gc  TEAM": {"kind": "sender_map", "id": "sm9", "sub_company": " gc  TEAM "},
+        }.items():
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            it = _item(self.db, owner=owner)
+            self.assertEqual(wa_chase.skip_reason(it, date.fromisoformat(DAY)), "gc_staff", label)
+            for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+                self.chase(_et(h, m))
+            self.assertEqual(self.rows(), [], label)
+
     def test_skipped(self):
         cases = {
             "possibly": dict(owner={"possibly": True}),
@@ -189,6 +206,43 @@ class TheGroup(_Base):
         _item(self.db)
         self.chase(_et(8, 35))
         self.assertEqual(self.rows(), [])
+
+
+class AnAskAndItsAnswer(_Base):
+    """A request and the commitment answering it are one thing to chase:
+    the commitment (its words, its date)."""
+
+    def test_both_due_today_one_entry(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"])
+        self.chase(_et(8, 35))
+        (r,) = self.rows()
+        self.assertEqual([i["quote"] for i in r["items"]], ["on it"])
+
+    def test_the_answer_moved_the_ask_is_not_chased_on_its_old_date(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"], status="rescheduled",
+              due={"due_text": "Monday", "due_at": "2026-10-12"})
+        self.chase(_et(8, 35))
+        self.assertEqual(self.rows(), [])
+
+    def test_a_tentative_answer_does_not_hide_the_ask(self):
+        for over in (dict(needs_review=True), dict(owner={"possibly": True}),
+                     dict(status="possibly_done")):
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+            _item(self.db, quote="ok", parent_id=ask["_id"], **over)
+            self.chase(_et(8, 35))
+            self.assertEqual([i["quote"] for i in self.rows()[0]["items"]],
+                             ["@Mike send the RFI today"], over)
+
+    def test_a_closed_answer_does_not_hide_the_ask(self):
+        ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+        _item(self.db, quote="on it", parent_id=ask["_id"], status="cancelled")
+        self.chase(_et(8, 35))
+        self.assertEqual([i["quote"] for i in self.rows()[0]["items"]],
+                         ["@Mike send the RFI today"])
 
 
 class TheSlots(_Base):

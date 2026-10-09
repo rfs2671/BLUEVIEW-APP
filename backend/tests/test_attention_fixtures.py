@@ -96,13 +96,18 @@ class _ScriptedModel:
                 "prompt_tokens": 1200, "completion_tokens": 10}
 
 
-def replay(lines, base=T0, users=None):
+def replay(lines, base=T0, users=None, people=None):
     """All lines through the worker in one run, as they were sent. `users`:
-    speakers who are Levelog users of the company ({key: {name, role}})."""
+    speakers who are Levelog users of the company ({key: {name, role}}).
+    `people`: speakers mapped in Project → WhatsApp → People
+    ({key: {person_name, sub_company}})."""
     db = _world()
     for k, u in (users or {}).items():
         db.users.rows.append({"_id": f"u_{k.lower()}", "company_id": "co_a",
                               "phone": SENDERS[k], **u})
+    for k, p in (people or {}).items():
+        db.whatsapp_sender_map.rows.append({"_id": f"sm_{k.lower()}", "company_id": "co_a",
+                                            "sender_jid": SENDERS[k] + "@c.us", **p})
     _first_sight(db)
     rows = {}
     for ln in lines:
@@ -138,10 +143,11 @@ class _FixtureChecks:
     OWNER_NONE: list = []
     BASE = T0
     USERS: dict = {}
+    PEOPLE: dict = {}
 
     @classmethod
     def setUpClass(cls):
-        cls.out = replay(cls.LINES, cls.BASE, cls.USERS)
+        cls.out = replay(cls.LINES, cls.BASE, cls.USERS, cls.PEOPLE)
         cls.reviews = [it for it in cls.out["items"] if it["type"] == "update_review"]
         cls.items = [it for it in cls.out["items"] if it["type"] != "update_review"]
         cls.by_msg = {it["evidence"]["message_id"]: it for it in cls.items}
@@ -414,6 +420,7 @@ class ChaseWeekend(_FixtureChecks, unittest.TestCase):
     drawings are chased; nothing is sent."""
 
     LINES, FINAL, USERS = CHASE["lines"], CHASE["final"], CHASE["users"]
+    PEOPLE = CHASE["people"]          # Patricia is a sub: GC staff are never chased
     BASE = datetime.fromisoformat(CHASE["base"])
 
     @classmethod

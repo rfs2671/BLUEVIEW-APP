@@ -1,0 +1,599 @@
+{
+ "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases Patricia (risers) and Mike Rivera (panel confirm); Friday chases Jose (risers) and Mike Rivera (lighting cut sheets). Not chased: GC staff (Kevin, a company user, on the door schedule; Gina, mapped \"GC team\", on the logistics plan) -- subs only; anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "tz": "America/New_York",
+ "project": {
+  "name": "8 Walworth St",
+  "address": "8 Walworth St, Brooklyn, NY",
+  "group_name": "8 Walworth site"
+ },
+ "senders": {
+  "R": {
+   "name": "Roy Fishman",
+   "lid": "301000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "K": {
+   "name": "Kevin Shah",
+   "lid": "301000000000002",
+   "user": {
+    "role": "pm"
+   }
+  },
+  "P": {
+   "name": "Patricia Lee",
+   "lid": "301000000000003",
+   "people": {
+    "person_name": "Patricia Lee",
+    "sub_company": "Quality Plumbing"
+   }
+  },
+  "J": {
+   "name": "Jose Zarate",
+   "lid": "301000000000004",
+   "people": {
+    "person_name": "Jose Zarate",
+    "sub_company": "Quality Plumbing"
+   }
+  },
+  "M": {
+   "name": "Mike Rivera",
+   "lid": "301000000000005",
+   "people": {
+    "person_name": "Mike Rivera",
+    "sub_company": "Bright Electric"
+   }
+  },
+  "MC": {
+   "name": "Mike Chen",
+   "lid": "301000000000006",
+   "people": {
+    "person_name": "Mike Chen",
+    "sub_company": "Iron Steel Co"
+   }
+  },
+  "A": {
+   "name": "Ana Ortiz",
+   "lid": "301000000000007",
+   "people": {
+    "person_name": "Ana Ortiz",
+    "sub_company": "Arkon Framing"
+   }
+  },
+  "L": {
+   "name": "Luis",
+   "lid": "301000000000008"
+  },
+  "D": {
+   "name": "Dave Kim",
+   "lid": "301000000000009",
+   "people": {
+    "person_name": "Dave Kim",
+    "sub_company": "Cool Air HVAC"
+   }
+  },
+  "S": {
+   "name": "Sam Patel",
+   "lid": "301000000000010",
+   "people": {
+    "person_name": "Sam Patel",
+    "sub_company": "FireSafe"
+   }
+  },
+  "T": {
+   "name": "Tony",
+   "lid": "301000000000011"
+  },
+  "N": {
+   "name": "Nina Park",
+   "lid": "301000000000012"
+  },
+  "B": {
+   "name": "Bob",
+   "lid": "301000000000013"
+  },
+  "C": {
+   "name": "Carla",
+   "lid": "301000000000014"
+  },
+  "E": {
+   "name": "Eddie Ruiz",
+   "lid": "301000000000015",
+   "people": {
+    "person_name": "Eddie Ruiz",
+    "sub_company": "Lift Co"
+   }
+  },
+  "G": {
+   "name": "Gina Lopez",
+   "lid": "301000000000016",
+   "people": {
+    "person_name": "Gina Lopez",
+    "sub_company": "GC team"
+   }
+  }
+ },
+ "messages": [
+  {
+   "from": "R",
+   "at": "2026-10-14 07:02:00",
+   "mentions": [
+    "P"
+   ],
+   "text": "@Patricia can you send the riser shop drawings by tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "due_text": "by tomorrow"
+   }
+  },
+  {
+   "from": "A",
+   "at": "2026-10-14 07:03:00",
+   "text": "Morning all, framing crew is 12 today",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "from": "P",
+   "at": "2026-10-14 07:04:00",
+   "reply_to": 1,
+   "text": "Yes, I'll send them tomorrow AM",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": false,
+    "due_text": "tomorrow AM"
+   }
+  },
+  {
+   "from": "M",
+   "at": "2026-10-14 07:05:00",
+   "text": "lol sure, whenever the steel shows up",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "from": "K",
+   "at": "2026-10-14 07:06:00",
+   "text": "Mike, can you confirm the panel delivery for Thursday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "MC",
+    "owner_possibly": true,
+    "due_text": "Thursday"
+   },
+   "why": "two People named Mike: not addressed to either; Mike Chen's 'ok' right after makes it POSSIBLY his"
+  },
+  {
+   "from": "MC",
+   "at": "2026-10-14 07:06:40",
+   "text": "ok",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "MC",
+    "owner_possibly": true,
+    "due_text": "Thursday"
+   },
+   "why": "a yes right after an ask put to nobody: possibly his, flagged, never chased"
+  },
+  {
+   "from": "M",
+   "at": "2026-10-14 07:08:00",
+   "text": "Panels are coming Thursday 7am, I'll confirm tomorrow",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "M",
+    "owner_possibly": false,
+    "due_text": "tomorrow"
+   },
+   "why": "its own words share the ask's subject (panels): confirmed Mike Rivera's"
+  },
+  {
+   "from": "J",
+   "at": "2026-10-14 07:10:00",
+   "text": "ok",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "wrong-thread ok: nothing was put to Jose"
+  },
+  {
+   "from": "S",
+   "at": "2026-10-14 07:12:00",
+   "text": "Fire stopping inspection moved to Friday 9am",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "a schedule update, not an item"
+  },
+  {
+   "from": "E",
+   "at": "2026-10-14 07:13:00",
+   "text": "Elevator pit is flooded again, need a pump today",
+   "expect": {
+    "kind": "item",
+    "type": "issue"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-14 07:14:00",
+   "mentions": [
+    "D"
+   ],
+   "text": "@Dave can you get the duct submittal in by Friday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "D",
+    "due_text": "by Friday"
+   }
+  },
+  {
+   "from": "D",
+   "at": "2026-10-14 07:20:00",
+   "text": "Will do",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "D",
+    "owner_possibly": false,
+    "due_text": "by Friday"
+   }
+  },
+  {
+   "from": "T",
+   "at": "2026-10-14 07:21:00",
+   "text": "who has the gang box key?",
+   "expect": {
+    "kind": "item",
+    "type": "question"
+   }
+  },
+  {
+   "from": "L",
+   "at": "2026-10-14 07:22:00",
+   "text": "Luis has it",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "from": "N",
+   "at": "2026-10-14 07:30:00",
+   "text": "Kevin: can you send me the updated door schedule by Thursday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "K",
+    "owner_possibly": false,
+    "due_text": "by Thursday"
+   },
+   "why": "opens with a name that is one user of the company"
+  },
+  {
+   "from": "K",
+   "at": "2026-10-14 07:31:00",
+   "reply_to": 15,
+   "text": "Sure, by noon tomorrow",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "K",
+    "owner_possibly": false,
+    "due_text": "by noon tomorrow"
+   }
+  },
+  {
+   "from": "J",
+   "at": "2026-10-14 07:35:00",
+   "text": "Patricia's out sick, I'll send the risers Friday",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "J",
+    "owner_possibly": false,
+    "due_text": "Friday"
+   },
+   "why": "two subs of one company: Jose's own commitment; Patricia's stays hers"
+  },
+  {
+   "from": "C",
+   "at": "2026-10-14 07:40:00",
+   "text": "great, another delay, love it",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "sarcasm"
+  },
+  {
+   "from": "M",
+   "at": "2026-10-14 07:45:00",
+   "text": "Kk",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "wrong-thread ok: no ask open to Mike Rivera"
+  },
+  {
+   "from": "B",
+   "at": "2026-10-14 07:50:00",
+   "mentions": [
+    "S"
+   ],
+   "text": "@Sam can you send the firestop submittal by Friday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "S",
+    "due_text": "by Friday"
+   }
+  },
+  {
+   "from": "S",
+   "at": "2026-10-14 07:52:00",
+   "text": "Already sent it Monday",
+   "expect": {
+    "kind": "state",
+    "of": 20,
+    "to": "done"
+   }
+  },
+  {
+   "from": "A",
+   "at": "2026-10-14 08:00:00",
+   "mentions": [
+    "L"
+   ],
+   "text": "@Luis bring the extra studs tomorrow",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "L",
+   "at": "2026-10-14 08:01:00",
+   "text": "ok",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "due_text": "tomorrow"
+   },
+   "why": "Luis is in nobody's People list: recorded, never chased"
+  },
+  {
+   "from": "K",
+   "at": "2026-10-14 08:10:00",
+   "text": "Mike Rivera, please send the lighting cut sheets by Friday",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "M",
+    "owner_possibly": false,
+    "due_text": "by Friday"
+   },
+   "why": "a full name that is one person: confirmed"
+  },
+  {
+   "from": "M",
+   "at": "2026-10-14 08:12:00",
+   "text": "on it",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "M",
+    "owner_possibly": false,
+    "due_text": "by Friday"
+   }
+  },
+  {
+   "from": "D",
+   "at": "2026-10-14 08:20:00",
+   "text": "Actually the duct submittal will be Monday",
+   "expect": {
+    "kind": "state",
+    "of": 12,
+    "to": "rescheduled"
+   }
+  },
+  {
+   "from": "E",
+   "at": "2026-10-14 08:30:00",
+   "text": "pump is here",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-14 08:35:00",
+   "text": "Never mind the panel confirm, Mike already did",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Kevin asked for the panel confirm, not Roy: Roy cannot cancel it"
+  },
+  {
+   "from": "J",
+   "at": "2026-10-14 08:40:00",
+   "mentions": [
+    "R"
+   ],
+   "text": "@Roy who's covering the sleeve inspection Friday?",
+   "expect": {
+    "kind": "item",
+    "type": "question"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-14 08:41:00",
+   "reply_to": 29,
+   "text": "I'll be there",
+   "expect": {
+    "kind": "item",
+    "type": "commitment"
+   }
+  },
+  {
+   "from": "G",
+   "at": "2026-10-14 09:30:00",
+   "text": "I'll send the updated logistics plan Thursday",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "G",
+    "owner_possibly": false,
+    "due_text": "Thursday"
+   }
+  }
+ ],
+ "chase": {
+  "days": [
+   "2026-10-15",
+   "2026-10-16"
+  ],
+  "expect": [
+   {
+    "day": "2026-10-15",
+    "slot": "morning",
+    "owner": "P",
+    "items": [
+     3
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "midday",
+    "owner": "P",
+    "items": [
+     3
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "eod",
+    "owner": "P",
+    "items": [
+     3
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "admin_dm",
+    "owner": "P",
+    "items": [
+     3
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "morning",
+    "owner": "M",
+    "items": [
+     7
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "midday",
+    "owner": "M",
+    "items": [
+     7
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "eod",
+    "owner": "M",
+    "items": [
+     7
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "admin_dm",
+    "owner": "M",
+    "items": [
+     7
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "morning",
+    "owner": "J",
+    "items": [
+     17
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "midday",
+    "owner": "J",
+    "items": [
+     17
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "eod",
+    "owner": "J",
+    "items": [
+     17
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "admin_dm",
+    "owner": "J",
+    "items": [
+     17
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "morning",
+    "owner": "M",
+    "items": [
+     25
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "midday",
+    "owner": "M",
+    "items": [
+     25
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "eod",
+    "owner": "M",
+    "items": [
+     25
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "admin_dm",
+    "owner": "M",
+    "items": [
+     25
+    ]
+   }
+  ]
+ }
+}
