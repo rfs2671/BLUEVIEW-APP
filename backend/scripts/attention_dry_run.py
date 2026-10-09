@@ -17,7 +17,7 @@ WHAT RUNS, AND HOW IT IS ISOLATED
      `_data` with quotedMsg / quotedStanzaID / quotedParticipant /
      mentionedIds -- and goes through the webhook's own parser
      (parse_inbound_message) and its own stored-row builder
-     (_group_message_row).
+     (_store_group_message).
   2. The attention worker (_attention_tick) runs every simulated minute:
      cheap filter, the REAL model (unless --scripted; prompt version logged),
      the state engine, the sender map.
@@ -278,11 +278,9 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         for t, _o, kind, arg in events:
             if kind == "msg":
                 parsed = server.parse_inbound_message(payload(sc, arg), vendor="waapi")
-                row = server._group_message_row(parsed, GROUP, PROJECT, COMPANY,
-                                                parsed.get("body") or "", t)
-                row["_id"] = ObjectId()
-                await db.whatsapp_messages.insert_one(row)
-                rows_by_line[arg["n"]] = row
+                rows_by_line[arg["n"]] = await server._store_group_message(
+                    parsed, GROUP, PROJECT, COMPANY, parsed.get("body") or "", t,
+                    row_id=ObjectId())
             elif kind == "attention":
                 await server._attention_tick(t, llm=llm, probe=False)
             else:
@@ -445,15 +443,20 @@ def report(sc: dict, out: dict) -> dict:
                             "due_to": h.get("due_to")})
     changes.sort(key=lambda c: (c["at"] or "", c["line"] or 0))
     ch = chase_check(sc, out)
-    n = len(sc["messages"])
+    # Counts of the scenario's own lists (not database fields).
+    want_chase, missing, unexpected = _expected(sc), ch["missing"], ch["unexpected"]
     return {"scenario": sc.get("name"), "model": out["model"],
             "prompt_version": out["prompt_version"], "model_calls": out["model_calls"],
             "lines": lines, "changes": changes, "chase": ch,
-            "score": {"lines": n, "hard": hard, "soft": soft,
-                      "chase_expected": len((sc.get("chase") or {}).get("expect") or []),
-                      "chase_missing": len(ch["missing"]),
-                      "chase_unexpected": len(ch["unexpected"])},
+            "score": {"lines": len(lines), "hard": hard, "soft": soft,
+                      "chase_expected": len(want_chase),
+                      "chase_missing": len(missing),
+                      "chase_unexpected": len(unexpected)},
             "sent": [list(map(str, s)) for s in out["sent"]]}
+
+
+def _expected(sc: dict) -> list:
+    return (sc.get("chase") or {}).get("expect") or []
 
 
 def print_report(r: dict) -> None:
@@ -492,8 +495,9 @@ def print_report(r: dict) -> None:
     p(f"\nSCORE  lines hard {s['hard']}/{s['lines']} · soft {s['soft']}/{s['lines']}"
       f"  ·  chase {s['chase_expected'] - s['chase_missing']}/{s['chase_expected']} expected,"
       f" {s['chase_unexpected']} unexpected")
-    if r["sent"]:
-        p(f"\nSEND PATHS CALLED ({len(r['sent'])}): {r['sent'][:5]}")
+    calls = r["sent"]
+    if calls:
+        p(f"\nSEND PATHS CALLED ({len(calls)}): {calls[:5]}")
 
 
 def _label(e: dict) -> str:

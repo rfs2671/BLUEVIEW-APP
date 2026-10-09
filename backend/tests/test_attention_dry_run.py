@@ -144,7 +144,7 @@ class TheParser(unittest.TestCase):
     def test_the_webhook_stores_the_row_the_dry_run_stores(self):
         import inspect
         src = inspect.getsource(server._process_whatsapp_message)
-        self.assertIn("_group_message_row(", src)
+        self.assertIn("_store_group_message(", src)
 
 
 if __name__ == "__main__":

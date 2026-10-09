@@ -57865,13 +57865,14 @@ def _is_own_message(parsed: dict) -> bool:
     return _digits_match_bot(_jid_digits(author), _bot_identifier_digits())
 
 
-def _group_message_row(parsed: dict, group_id: str, project_id: Any,
-                       msg_company_id: Any, body: str, now: datetime) -> dict:
-    """The row a group message is stored as, from the parsed webhook. One
-    place, so the attention dry run (scripts/attention_dry_run.py) stores
-    exactly what the webhook stores."""
+async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
+                               msg_company_id: Any, body: str, now: datetime,
+                               row_id: Any = None) -> dict:
+    """Store a group message as the webhook does, from the parsed payload, and
+    return the row. One place, so the attention dry run
+    (scripts/attention_dry_run.py) stores exactly what the webhook stores."""
     sender = str(parsed.get("sender") or "").split("@")[0]
-    return {
+    row = {
         "group_id": group_id,
         "project_id": project_id,
         "company_id": msg_company_id,
@@ -57910,6 +57911,10 @@ def _group_message_row(parsed: dict, group_id: str, project_id: Any,
         "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
         "created_at": now,
     }
+    if row_id is not None:
+        row["_id"] = row_id
+    await db.whatsapp_messages.insert_one(row)
+    return row
 
 
 async def _process_whatsapp_message(payload: dict):
@@ -58225,8 +58230,8 @@ async def _process_whatsapp_message(payload: dict):
             # `transcribed` marks a row whose body is Whisper's words rather
             # than the sender's typing, so anyone reading the corpus later can
             # tell speech from text instead of guessing.
-            await db.whatsapp_messages.insert_one(_group_message_row(
-                parsed, group_id, project_id, msg_company_id, body, now))
+            await _store_group_message(parsed, group_id, project_id, msg_company_id,
+                                       body, now)
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
