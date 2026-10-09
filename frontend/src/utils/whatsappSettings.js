@@ -55,6 +55,12 @@ export const ALERT_SWITCHES = [
     line: 'Posts 30, 14, 7 and 1 days before a DOT permit expires, and when it expires.' },
 ];
 
+// Sub chasing (shadow mode) on Saturday and Sunday. Off unless switched on.
+export const CHASE_WEEKENDS_SWITCH = {
+  key: 'chase_weekends', label: 'Chase on weekends',
+  line: 'Sub chasing also runs on Saturday and Sunday (all four times).',
+};
+
 export const SEND_WINDOW_OPTIONS = [
   { mode: 'anytime', label: 'Anytime' },
   { mode: 'work_hours', label: 'Work hours (7 AM–7 PM)' },
@@ -119,6 +125,7 @@ export function assistantView(data) {
       current: !!gc && gc.wa_group_id === g.wa_group_id,
     })),
     switches: ALERT_SWITCHES.map((s) => ({ ...s, value: data[s.key] !== false })),
+    chaseWeekends: { ...CHASE_WEEKENDS_SWITCH, value: data.chase_weekends === true },
     sendWindow: data.send_window && data.send_window.mode ? data.send_window : DEFAULT_SEND_WINDOW,
   };
 }
