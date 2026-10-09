@@ -141,7 +141,7 @@ class WhoMayUseIt(_Harness, unittest.TestCase):
         db = _db()
         _optin(db, "u_admin", ADMIN_PHONE, chat=f"{LID}@lid")
         with _Ctx(db=db) as c:
-            reply = self._send(c, f"{LID}@lid", "who's on site at 8 walworth")
+            reply = self._send(c, f"{LID}@lid", "open items at 8 walworth")
         self.assertEqual(reply, f"answer for {WALWORTH}")
         self.assertEqual(self.agent_calls[0]["company_id"], CO_A)
 
@@ -153,7 +153,7 @@ class Scope(_Harness, unittest.TestCase):
         _optin(db, "u_admin", ADMIN_PHONE)
         with _Ctx(db=db) as c:
             self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 8 walworth", "m1")
-            self._send(c, f"{ADMIN_PHONE}@c.us", "who is on site at 588 thomas", "m2")
+            self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 588 thomas", "m2")
             self._send(c, f"{ADMIN_PHONE}@c.us", "any new violations this week?", "m3")
         self.assertEqual(self._projects_asked(), [WALWORTH, THOMAS])
         facts = self.llm_calls[-1][1]
@@ -166,10 +166,10 @@ class Scope(_Harness, unittest.TestCase):
         db = _db()
         _optin(db, "u_pm", PM_PHONE)
         with _Ctx(db=db) as c:
-            reply = self._send(c, f"{PM_PHONE}@c.us", "who's on site at 8 walworth", "m1")
+            reply = self._send(c, f"{PM_PHONE}@c.us", "open items at 8 walworth", "m1")
             self.assertIn("You're not on 8 Walworth St", reply)
             self.assertIn("588 Thomas S Boyland St", reply)
-            reply = self._send(c, f"{PM_PHONE}@c.us", "who's on site", "m2")   # one job: no menu
+            reply = self._send(c, f"{PM_PHONE}@c.us", "what's open", "m2")   # one job: no menu
             self._send(c, f"{PM_PHONE}@c.us", "permits expiring this month?", "m3")
         self.assertEqual(self._projects_asked(), [THOMAS])
         self.assertEqual(reply, f"answer for {THOMAS}")
@@ -181,7 +181,7 @@ class Scope(_Harness, unittest.TestCase):
         db = _db()
         _optin(db, "u_admin", ADMIN_PHONE)
         with _Ctx(db=db) as c:
-            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site at 99 Bedford Ave")
+            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 99 Bedford Ave")
         self.assertTrue(reply.startswith("Which job?"))   # not named among THEIR jobs
         self.assertNotIn(PROJ_B, self._projects_asked())
         self.assertNotIn("Bedford", reply)
@@ -224,12 +224,12 @@ class WhichJob(_Harness, unittest.TestCase):
     def test_no_job_named_gives_the_menu_and_a_number_picks(self):
         db = self._admin()
         with _Ctx(db=db) as c:
-            menu = self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site?", "m1")
+            menu = self._send(c, f"{ADMIN_PHONE}@c.us", "what's open?", "m1")
             self.assertEqual(menu, "Which job? 1) 588 Thomas S Boyland St 2) 8 Walworth St")
             self.assertEqual(self.agent_calls, [])
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "2", "m2")
         self.assertEqual(reply, f"answer for {WALWORTH}")
-        self.assertEqual(self.agent_calls[0]["body"], "who's on site?")   # the original question
+        self.assertEqual(self.agent_calls[0]["body"], "what's open?")   # the original question
 
     def test_a_group_name_or_partial_address_names_the_job(self):
         db = self._admin()
@@ -241,7 +241,7 @@ class WhichJob(_Harness, unittest.TestCase):
     def test_the_last_job_is_remembered_for_30_minutes(self):
         db = self._admin()
         with _Ctx(db=db) as c:
-            self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site at 8 walworth", "m1")
+            self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 8 walworth", "m1")
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "and the open items?", "m2")
             self.assertEqual(reply, f"answer for {WALWORTH}")
             row = next(r for r in db.whatsapp_conversation_state.rows if r["kind"] == "dm_job")
@@ -290,7 +290,7 @@ class KindsOfQuestion(_Harness, unittest.TestCase):
 
     def test_a_slow_answer_gets_eyes_first(self):
         with _Ctx(db=self._admin()) as c:
-            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site at 8 walworth",
+            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "open items at 8 walworth",
                                agent_delay=0.2)
         self.assertEqual(self.reactions, ["👀"])
         self.assertEqual(reply, f"answer for {WALWORTH}")
