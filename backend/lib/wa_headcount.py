@@ -119,10 +119,34 @@ def since_ref(text: str, now: datetime):
     return None
 
 
-def day_start(now: datetime) -> datetime:
-    """7 AM New York today, in UTC: the other reading of "since earlier"."""
-    return _local(now).replace(hour=DAY_START_HOUR, minute=0, second=0,
+def _start_hm(start: Optional[str]):
+    """(hour, minute) of a "HH:MM" work-day start; 7:00 when none."""
+    m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", str(start or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else (DAY_START_HOUR, 0)
+
+
+def day_start(now: datetime, start: Optional[str] = None) -> datetime:
+    """The project's work-day start today (its alert timing's start, else
+    7 AM), New York, in UTC: the other reading of "since earlier"."""
+    h, mi = _start_hm(start)
+    return _local(now).replace(hour=h, minute=mi, second=0,
                                microsecond=0).astimezone(timezone.utc)
+
+
+def start_word(start: Optional[str] = None) -> str:
+    """'7am', '6:30am', '1pm' for a work-day start (7am when none)."""
+    h, mi = _start_hm(start)
+    h12 = h % 12 or 12
+    return f"{h12}{f':{mi:02d}' if mi else ''}{'am' if h < 12 else 'pm'}"
+
+
+def start_keys(start: Optional[str] = None) -> list:
+    """What a reply picking the work-day start may say: '7', '7am',
+    '6:30', '6:30am'."""
+    h, mi = _start_hm(start)
+    h12 = h % 12 or 12
+    base = f"{h12}:{mi:02d}" if mi else f"{h12}"
+    return [base, start_word(start)]
 
 
 # "those", "them", "that guy", "the 2 added": about the last headcount
@@ -372,8 +396,10 @@ PHRASE_PROMPT = (
 )
 
 
-def clarify_since(brief: Optional[datetime], now: datetime) -> str:
-    """One short question naming the options."""
+def clarify_since(brief: Optional[datetime], now: datetime,
+                  start: Optional[str] = None) -> str:
+    """One short question naming the options; the second is the project's
+    work-day start (7am when none is set)."""
     if brief:
-        return f"Since {hhmm(brief)} (your brief) or since {DAY_START_HOUR}am?"
-    return f"Since {DAY_START_HOUR}am or since a time? (e.g. since 9)"
+        return f"Since {hhmm(brief)} (your brief) or since {start_word(start)}?"
+    return f"Since {start_word(start)} or since a time? (e.g. since 9)"

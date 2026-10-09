@@ -118,6 +118,52 @@ def parse_menu_choice(body: Any, count: int) -> Optional[int]:
 MENU_AGAIN_TEXT = "Reply with the number or the address."
 NUDGE_TEXT = "I'm here. Ask about a job and I'll check it."
 
+# Answers that are not what was asked for: the model failed or its wording
+# failed the check, so a fixed text went out instead.
+RECORDS_PREFIX = "From the records:\n"
+NO_RECORDS_TEXT = "I don't have that in the records."
+ALL_JOBS_FAILED_TEXT = "Levelog Assistant couldn't put that together right now. Try again in a minute."
+GENERAL_FAILED_TEXT = "Levelog Assistant couldn't answer that right now. Try again in a minute."
+
+# path -> reason for an answer that is not a fallback.
+_OK_REASON = {"headcount": "phrased", "job_agent": "agent", "general": "model",
+              "all_jobs": "model", "menu": "menu_again", "clarify": "clarify",
+              "other_job": "not_on_job"}
+
+
+def answer_outcome(path: str, answer, wording=None):
+    """(fallback, reason) for one DM answer, for the [dm-answer] log line.
+
+    A fallback is an answer that is not the one meant: no answer at all,
+    the fixed headcount text because the model's wording failed the check
+    or the model gave none, the records as they are because the agent's
+    answer had a number not in the data, "I don't have that", a "try again"
+    text, or a menu reply that had expired."""
+    a = str(answer or "")
+    if not a.strip():
+        return True, "no_answer"
+    if path == "headcount":
+        if wording == "fixed_after_check_failed":
+            return True, "check_failed"
+        if wording == "fixed":
+            return True, "no_model_wording"
+        return False, "phrased"
+    if path == "job_agent":
+        if a.startswith(RECORDS_PREFIX):
+            return True, "numbers_not_in_data"
+        if a == NO_RECORDS_TEXT:
+            return True, "no_records"
+    if a in (ALL_JOBS_FAILED_TEXT, GENERAL_FAILED_TEXT):
+        return True, "model_failed"
+    if path == "menu_expired":
+        return True, "menu_expired"
+    return False, _OK_REASON.get(path, path or "answer")
+
+
+def fallback_alarm(answers: int, fallbacks: int, threshold: float = 0.10) -> bool:
+    """More than 10% of the day's answers were fallbacks."""
+    return answers > 0 and fallbacks / answers > threshold
+
 
 def house_number(label: str) -> str:
     first = str(label or "").strip().split(" ")[0]

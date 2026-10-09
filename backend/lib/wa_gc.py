@@ -109,6 +109,16 @@ def clean_send_window(value: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
+def work_start(window: Any) -> Optional[str]:
+    """When this project's work day starts ("HH:MM", New York), from its
+    alert timing: the custom start, 07:00 for work hours, None when alerts
+    go anytime (no work hours set)."""
+    w = clean_send_window(window)
+    if not w or w["mode"] == SEND_ANYTIME:
+        return None
+    return w["start"] if w["mode"] == SEND_CUSTOM else WORK_HOURS[0]
+
+
 def _minutes(hhmm: str) -> int:
     h, m = hhmm.split(":")
     return int(h) * 60 + int(m)

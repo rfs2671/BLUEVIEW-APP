@@ -445,5 +445,136 @@ class TheRules(unittest.TestCase):
         self.assertFalse(ok("3 on site incl. Juan Lopez", data, "588 Main St"))
 
 
+
+class FallbackIsLogged(_Chat, unittest.TestCase):
+    """Every answer logs [dm-answer] fallback=true|false reason=...; the
+    brief tick logs the day's count, a WARNING over 10%."""
+
+    def _logged(self, fn):
+        with self.assertLogs(server.logger, "INFO") as cm:
+            fn()
+        return [r for r in cm.output if "[dm-answer]" in r]
+
+    def test_a_failed_check_is_a_fallback(self):
+        with _Ctx(db=self.db) as c:
+            lines = self._logged(lambda: self.say(
+                c, "how many workers at 588 thomas",
+                llm=lambda t: "20 workers — 13 from Arkon.", key="sk-test"))
+        self.assertIn("[dm-answer] fallback=true reason=check_failed path=headcount",
+                      lines[-1])
+        row = self.db[server.DM_ANSWERS].rows[-1]
+        self.assertEqual((row["fallback"], row["reason"]), (True, "check_failed"))
+
+    def test_a_faithful_rephrase_is_not(self):
+        with _Ctx(db=self.db) as c:
+            lines = self._logged(lambda: self.say(
+                c, "how many workers at 588 thomas", key="sk-test",
+                llm=lambda t: "20 on site at 588 Thomas S Boyland St now."))
+        self.assertIn("[dm-answer] fallback=false reason=phrased path=headcount", lines[-1])
+
+    def test_agent_answers(self):
+        with _Ctx(db=self.db) as c:
+            lines = self._logged(lambda: self.say(c, "what's open at 8 walworth"))
+        self.assertIn("[dm-answer] fallback=false reason=agent path=job_agent", lines[-1])
+
+        async def agent(**kw):
+            kw["tool_trace"].append({"tool": "open_items", "result": "Open items: 3"})
+            return "You have 7 open items."
+        with _Ctx(db=self.db), patch.object(server, "_run_group_agent", agent):
+            lines = self._logged(lambda: _run(server._dm_send_answer(
+                CHAT, "m9", server._dm_answer_job(
+                    {"company_id": CO_A}, {"_id": WALWORTH, "address": "8 Walworth St"},
+                    CHAT, "what's open?", "m9", []),
+                log=({"user_id": "u_admin", "company_id": CO_A}, WALWORTH,
+                     "what's open?", "job_agent"))))
+        self.assertIn("fallback=true reason=numbers_not_in_data", lines[-1])
+
+    def _answers(self, total, fallbacks):
+        now = datetime.now(timezone.utc)
+        for i in range(total):
+            self.db[server.DM_ANSWERS].rows.append({
+                "_id": f"ans{i}", "path": "headcount", "fallback": i < fallbacks,
+                "created_at": now - timedelta(minutes=1)})
+        # Yesterday's do not count.
+        self.db[server.DM_ANSWERS].rows.append({
+            "_id": "old", "fallback": True, "created_at": now - timedelta(days=2)})
+
+    def test_the_daily_count_rides_the_brief_tick(self):
+        self._answers(20, 2)
+        with _Ctx(db=self.db):
+            with self.assertLogs(server.logger, "INFO") as cm:
+                _run(server._morning_brief_tick())
+        daily = [r for r in cm.output if "[dm-answer] daily" in r]
+        self.assertEqual(len(daily), 1)
+        self.assertTrue(daily[0].startswith("INFO"), daily[0])
+        self.assertIn("'answers': 20, 'fallback': 2, 'fallback_pct': 10.0", daily[0])
+
+    def test_over_10_percent_is_a_warning(self):
+        self._answers(20, 3)
+        with _Ctx(db=self.db):
+            with self.assertLogs(server.logger, "INFO") as cm:
+                day = _run(server._dm_answers_daily(datetime.now(timezone.utc)))
+        self.assertEqual((day["answers"], day["fallback"], day["fallback_pct"]), (20, 3, 15.0))
+        line = [r for r in cm.output if "[dm-answer] daily" in r][0]
+        self.assertTrue(line.startswith("WARNING"), line)
+        self.assertIn("fallback over 10%", line)
+
+
+class SinceTheWorkDayStart(_Chat, unittest.TestCase):
+    """The other option to "since earlier" is the project's work-hours start
+    (its WhatsApp alert timing), else 7am."""
+
+    def _window(self, window):
+        self.db.notification_preferences.rows.append({
+            "_id": "np1", "user_id": None, "project_id": THOMAS, "scope": "project",
+            "whatsapp_project": {"send_window": window}})
+
+    def test_a_custom_start_is_used(self):
+        self._window({"mode": "custom", "start": "09:00", "end": "17:00"})
+        with _Ctx(db=self.db) as c:
+            q = self.say(c, "who came in since earlier at 588 thomas")
+            self.assertEqual(q, "Since 8:07 (your brief) or since 9am?")
+            reply = self.say(c, "9am")
+        self.assertTrue(reply.startswith("2 since 9:00 — Jose Zarate and Pablo Sen"), reply)
+
+    def test_work_hours_and_anytime_are_7am(self):
+        self._window({"mode": "work_hours"})
+        with _Ctx(db=self.db) as c:
+            q = self.say(c, "who came in since earlier at 588 thomas")
+        self.assertEqual(q, "Since 8:07 (your brief) or since 7am?")
+
+    def test_the_rules(self):
+        from lib import wa_gc
+        self.assertEqual(wa_gc.work_start({"mode": "custom", "start": "06:30", "end": "15:00"}),
+                         "06:30")
+        self.assertEqual(wa_gc.work_start({"mode": "work_hours"}), "07:00")
+        self.assertIsNone(wa_gc.work_start({"mode": "anytime"}))
+        self.assertIsNone(wa_gc.work_start(None))
+        H = wa_headcount
+        self.assertEqual([H.start_word(x) for x in (None, "06:30", "13:00", "00:15")],
+                         ["7am", "6:30am", "1pm", "12:15am"])
+        self.assertEqual(H.start_keys("06:30"), ["6:30", "6:30am"])
+        self.assertEqual(H.clarify_since(None, datetime.now(timezone.utc), "06:30"),
+                         "Since 6:30am or since a time? (e.g. since 9)")
+        start = H.day_start(datetime.now(timezone.utc), "06:30")
+        self.assertEqual(H.hhmm(start), "6:30")
+
+    def test_answer_outcome(self):
+        A = wa_assistant
+        self.assertEqual(A.answer_outcome("headcount", "20 on site", "phrased"), (False, "phrased"))
+        self.assertEqual(A.answer_outcome("headcount", "20 on site", "fixed"),
+                         (True, "no_model_wording"))
+        self.assertEqual(A.answer_outcome("job_agent", None), (True, "no_answer"))
+        self.assertEqual(A.answer_outcome("job_agent", A.NO_RECORDS_TEXT), (True, "no_records"))
+        self.assertEqual(A.answer_outcome("general", A.GENERAL_FAILED_TEXT), (True, "model_failed"))
+        self.assertEqual(A.answer_outcome("menu_expired", A.MENU_EXPIRED_TEXT),
+                         (True, "menu_expired"))
+        self.assertEqual(A.answer_outcome("clarify", "Since 8:07 or since 7am?"),
+                         (False, "clarify"))
+        self.assertFalse(A.fallback_alarm(20, 2))
+        self.assertTrue(A.fallback_alarm(20, 3))
+        self.assertFalse(A.fallback_alarm(0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

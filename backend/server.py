@@ -47695,7 +47695,29 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
         except Exception as e:
             logger.warning(f"[wa-brief] user failed: {type(e).__name__}")
     logger.info(f"[wa-brief] {report}")
+    await _dm_answers_daily(now)
     return report
+
+
+async def _dm_answers_daily(now: datetime) -> Optional[dict]:
+    """Today's (New York) DM answers and how many were fallbacks, logged
+    like the brief's line; a WARNING when fallbacks are over 10%."""
+    start, end = wa_brief_day_range(now)
+    when = {"created_at": {"$gte": start, "$lt": end}}
+    try:
+        answers = await db[DM_ANSWERS].count_documents(when)
+        fallbacks = await db[DM_ANSWERS].count_documents({**when, "fallback": True})
+    except Exception as e:
+        logger.warning(f"[dm-answer] daily count failed: {type(e).__name__}")
+        return None
+    rate = round(100 * fallbacks / answers, 1) if answers else 0.0
+    day = {"day": wa_brief.local_now(now).date().isoformat(), "answers": answers,
+           "fallback": fallbacks, "fallback_pct": rate}
+    if wa_assistant.fallback_alarm(answers, fallbacks):
+        logger.warning(f"[dm-answer] daily {day} fallback over 10%")
+    else:
+        logger.info(f"[dm-answer] daily {day}")
+    return day
 
 
 async def _whatsapp_brief_job() -> None:
@@ -47892,12 +47914,12 @@ async def _dm_answer_all(ident: dict, body: str) -> str:
         wa_assistant.CROSS_SYSTEM_PROMPT,
         f"FACTS (as of {_eastern_now().strftime('%A %Y-%m-%d %H:%M')} New York):\n"
         f"{facts}\n\nQUESTION: {body}")
-    return reply or "Levelog Assistant couldn't put that together right now. Try again in a minute."
+    return reply or wa_assistant.ALL_JOBS_FAILED_TEXT
 
 
 async def _dm_answer_general(body: str) -> str:
     reply = await _dm_llm(wa_assistant.GENERAL_SYSTEM_PROMPT, body)
-    return reply or "Levelog Assistant couldn't answer that right now. Try again in a minute."
+    return reply or wa_assistant.GENERAL_FAILED_TEXT
 
 
 async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
@@ -47925,8 +47947,8 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
     logger.info(f"[wa-assistant] dm answer had numbers not in this turn's data "
                 f"({len(stray)}); sent the records instead")
     if trace:
-        return "From the records:\n" + str(trace[-1].get("result") or "")[:1500]
-    return "I don't have that in the records."
+        return wa_assistant.RECORDS_PREFIX + str(trace[-1].get("result") or "")[:1500]
+    return wa_assistant.NO_RECORDS_TEXT
 
 
 # ── HEADCOUNT IN A DM: from the check-ins, never from memory ───────────────
@@ -47953,10 +47975,14 @@ def _dm_redact(v: Any) -> Any:
 async def _dm_log_answer(ident: dict, project_id: Optional[str], question: str,
                          answer: Optional[str], path: str, tool_data: Any = None,
                          **extra) -> None:
+    fallback, reason = wa_assistant.answer_outcome(path, answer, extra.get("wording"))
+    logger.info(f"[dm-answer] fallback={'true' if fallback else 'false'} "
+                f"reason={reason} path={path}")
     try:
         await db[DM_ANSWERS].insert_one({
             "user_id": ident.get("user_id"), "company_id": ident.get("company_id"),
             "project_id": project_id, "path": path,
+            "fallback": fallback, "reason": reason,
             "question": _dm_redact(str(question or "")[:1000]),
             "answer": _dm_redact(str(answer or "")[:4000]),
             "tool_data": _dm_redact(tool_data), **extra,
@@ -48207,10 +48233,11 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             # answer about their own job. Only their own company is looked at.
             other = await _dm_other_company_job(ident, question)
             if other:
-                await send_whatsapp_message(dm_chat, (
-                    f"You're not on {other} in Levelog, so Levelog Assistant "
-                    f"can't answer about it. Your jobs: "
-                    + ", ".join(j["label"] for j in jobs) + "."))
+                refusal = (f"You're not on {other} in Levelog, so Levelog Assistant "
+                           f"can't answer about it. Your jobs: "
+                           + ", ".join(j["label"] for j in jobs) + ".")
+                await send_whatsapp_message(dm_chat, refusal)
+                await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
         if len(named) == 1:
             job = named[0]
@@ -48259,14 +48286,20 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 options.append({"label": f"your {wa_headcount.hhmm(brief)} brief",
                                 "since": brief.isoformat(), "keys": ["1", "brief",
                                 wa_headcount.hhmm(brief), "morning"]})
-            start = wa_headcount.day_start(now)
+            # The other option: the project's work-day start from its
+            # WhatsApp alert timing, else 7am.
+            work = wa_gc.work_start(
+                (await _whatsapp_project_settings(job["id"])).get("send_window"))
+            start = wa_headcount.day_start(now, work)
+            num = str(len(options) + 1)
+            keys = [num, "start"] + [k for k in wa_headcount.start_keys(work)
+                                     if k not in ("1", "2") or k == num]
             options.append({"label": wa_headcount.hhmm(start), "since": start.isoformat(),
-                            "keys": [str(len(options) + 1), f"{wa_headcount.DAY_START_HOUR}",
-                                     f"{wa_headcount.DAY_START_HOUR}am", "start"]})
+                            "keys": keys})
             await _dm_state_set("dm_clarify", dm_chat, wa_assistant.MENU_SECONDS,
                                 project_id=job["id"], question=question,
                                 headcount=wa_headcount.ADDED, options=options)
-            q = wa_headcount.clarify_since(brief, now)
+            q = wa_headcount.clarify_since(brief, now, work)
             await send_whatsapp_message(dm_chat, q)
             await _dm_log_answer(ident, job["id"], question, q, "clarify")
             return
@@ -63834,6 +63867,8 @@ async def startup_event():
     await db.attention_metrics.create_index([("week", 1)])
     # DM assistant answer log (audit: what each answer was built from).
     await db.whatsapp_dm_answers.create_index([("user_id", 1), ("created_at", -1)])
+    # The daily [dm-answer] count (answers, fallbacks) reads by day.
+    await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
     # per project, and the reads the GC alerts and the morning brief make.
     await _ensure_index_resilient(
