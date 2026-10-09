@@ -51035,8 +51035,9 @@ async def _chase_weekends_for_588_thomas() -> Optional[str]:
         res = await db.notification_preferences.update_one(
             key, {"$setOnInsert": {
                 **key, "company_id": str(hits[0].get("company_id")),
-                "whatsapp_project": {"chase_weekends": True, "updated_at": now,
-                                     "updated_by": "migration"},
+                "whatsapp_project.chase_weekends": True,
+                "whatsapp_project.updated_at": now,
+                "whatsapp_project.updated_by": "migration",
                 "created_at": now, "updated_at": now}}, upsert=True)
         if not getattr(res, "upserted_id", None):
             return None
