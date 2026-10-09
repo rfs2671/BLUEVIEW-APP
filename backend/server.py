@@ -51020,12 +51020,26 @@ async def _chase_weekends_for_588_thomas() -> Optional[str]:
                     f"({len(hits)} projects match 588 Thomas)")
         return None
     pid = str(hits[0]["_id"])
-    row = await db.notification_preferences.find_one(
-        {"user_id": None, "project_id": pid, "scope": "project"})
-    if "chase_weekends" in ((row or {}).get("whatsapp_project") or {}):
-        return None
-    await _set_whatsapp_project_fields(pid, hits[0].get("company_id"),
-                                       {"chase_weekends": True}, actor="migration")
+    key = {"user_id": None, "project_id": pid, "scope": "project"}
+    now = datetime.now(timezone.utc)
+    # Each write is conditional, so a value saved meanwhile (by an admin or
+    # another instance) is never overwritten.
+    res = await db.notification_preferences.update_one(
+        {**key, "whatsapp_project.chase_weekends": {"$exists": False}},
+        {"$set": {"whatsapp_project.chase_weekends": True,
+                  "whatsapp_project.updated_at": now,
+                  "whatsapp_project.updated_by": "migration", "updated_at": now}})
+    if not res.matched_count:
+        # No row yet: create one only if still none ($setOnInsert does
+        # nothing to a row that appeared meanwhile).
+        res = await db.notification_preferences.update_one(
+            key, {"$setOnInsert": {
+                **key, "company_id": str(hits[0].get("company_id")),
+                "whatsapp_project": {"chase_weekends": True, "updated_at": now,
+                                     "updated_by": "migration"},
+                "created_at": now, "updated_at": now}}, upsert=True)
+        if not getattr(res, "upserted_id", None):
+            return None
     logger.info(f"WhatsApp migration: chase weekends on for 588 Thomas ({pid})")
     return pid
 

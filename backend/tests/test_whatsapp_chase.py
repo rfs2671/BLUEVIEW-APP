@@ -482,6 +482,28 @@ class The588Migration(_Base):
         self.assertIsNone(self._migrate())
         self.assertIs(self._value("p588"), False)
 
+    def test_an_existing_row_without_the_switch_gets_it(self):
+        self._projects(self.THOMAS)
+        self.db.notification_preferences.rows.append({
+            "_id": "np588", "user_id": None, "project_id": "p588", "scope": "project",
+            "whatsapp_project": {"gc_group_id": "g", "violation_alerts": False}})
+        self.assertEqual(self._migrate(), "p588")
+        wp = self.db.notification_preferences.rows[0]["whatsapp_project"]
+        self.assertIs(wp["chase_weekends"], True)
+        self.assertEqual((wp["gc_group_id"], wp["violation_alerts"]), ("g", False))
+        self.assertEqual(len(self.db.notification_preferences.rows), 1)
+
+    def test_a_false_saved_meanwhile_is_not_overwritten(self):
+        # The write itself is conditional: a row carrying false is left alone,
+        # and no second row is made.
+        self._projects(self.THOMAS)
+        self.db.notification_preferences.rows.append({
+            "_id": "np588", "user_id": None, "project_id": "p588", "scope": "project",
+            "whatsapp_project": {"chase_weekends": False}})
+        self.assertIsNone(self._migrate())
+        self.assertIs(self._value("p588"), False)
+        self.assertEqual(len(self.db.notification_preferences.rows), 1)
+
     def test_two_matches_or_a_deleted_one_set_nothing(self):
         self._projects(self.THOMAS, {**self.THOMAS, "_id": "p588b"})
         self.assertIsNone(self._migrate())
