@@ -29,15 +29,19 @@ export const SLOT_LABELS = {
   admin_dm: 'DM to admin',
 };
 
-function clock(iso) {
+/** "8:35 AM", in New York time: the slots are New York times, so the
+ *  screen shows them that way on any device. */
+export function clock(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  let h = d.getHours();
-  const m = String(d.getMinutes()).padStart(2, '0');
-  const ap = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  return `${h}:${m} ${ap}`;
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit',
+    }).format(d).replace(/\s/g, ' ');   // newer ICU puts U+202F before AM
+  } catch (e) {
+    return '';
+  }
 }
 
 /** "Morning · 8:35 AM · Main St Project" / "DM to admin · 5:35 PM · to Ana". */

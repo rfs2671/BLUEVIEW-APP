@@ -37,7 +37,10 @@ console.log('\nentry lines');
   const dm = { slot: 'admin_dm', kind: 'admin_dm', day: '2026-10-08', to: ['Ana Admin'],
                group_name: 'Main St Project' };
   ok(C.headLine(dm) === 'DM to admin · 2026-10-08 · to Ana Admin', 'admin DM names who');
-  ok(/\d{1,2}:\d{2} (AM|PM)/.test(C.headLine({ ...g, at: '2026-10-08T12:35:00Z' })), 'a time');
+  ok(C.headLine({ ...g, at: '2026-10-08T12:35:00Z' })
+     === 'Morning · 2026-10-08 8:35 AM · Main St Project', 'the time, in New York');
+  ok(C.clock('2026-10-08T20:35:00Z') === '4:35 PM', 'New York time on any device');
+  ok(C.clock('nope') === '' && C.clock(null) === '', 'no time, no text');
 }
 
 console.log('\nprecision');

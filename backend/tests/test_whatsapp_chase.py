@@ -148,6 +148,7 @@ class WhatIsChased(_Base):
             "a date the code could not read": dict(due={"due_text": "soon", "due_at": None}),
             "due another day": dict(due={"due_at": "2026-10-09"}),
             "flagged for review": dict(needs_review=True),
+            "the item marked Wrong": dict(review={"verdict": "wrong"}),
             "a question": dict(type="question"),
             "an issue": dict(type="issue"),
             "done": dict(status="done"),
@@ -173,6 +174,15 @@ class TheGroup(_Base):
         from tests.test_whatsapp_attention import G_OFF
         _item(self.db, group_id=G_OFF)                      # bot switched off
         _item(self.db, group_id="120363000000000999@g.us")  # not linked
+        self.chase(_et(8, 35))
+        self.assertEqual(self.rows(), [])
+
+
+    def test_a_group_bound_to_two_projects_is_not_chased(self):
+        self.db.whatsapp_groups.rows.append({
+            "_id": "gdup", "wa_group_id": G_A, "group_name": "Dup",
+            "project_id": "proj_b", "company_id": "co_b", "active": True})
+        _item(self.db)
         self.chase(_et(8, 35))
         self.assertEqual(self.rows(), [])
 
@@ -309,6 +319,16 @@ class Batching(_Base):
               evidence={"sender": PAT})
         self.chase(_et(8, 35))
         self.assertEqual(len(self.rows()), 3)
+
+    def test_a_batched_admin_dm_lists_each_nudge_once(self):
+        _item(self.db)
+        _item(self.db, quote="Anchors today")
+        for t in (_et(8, 35), _et(12, 35), _et(16, 35), _et(17, 35)):
+            self.chase(t)
+        dm = self.rows("admin_dm")[0]
+        self.assertEqual(dm["text"].split("\n")[0],
+                         "Mike Rivera hasn't answered on these 2, due today in Main St Project:")
+        self.assertTrue(dm["text"].endswith("Nudged in the group at 8:35, 12:35 and 4:35."))
 
     def test_an_owner_already_nudged_this_slot_gets_no_second_message(self):
         _item(self.db)

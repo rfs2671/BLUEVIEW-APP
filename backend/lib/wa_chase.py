@@ -10,7 +10,8 @@ WHAT IS CHASED (all of these):
 - its owner confirmed: resolved, not "possibly theirs";
 - the owner is a Levelog user or mapped in Project → WhatsApp → People;
 - an explicit due date the code read from the words ("Friday", "10/12");
-- nothing about it flagged for an admin's review.
+- nothing about it flagged for an admin's review, and the item itself not
+  marked Wrong (or dismissed) by an admin.
 
 WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 4:30 end
 of day, each only when nothing came back since the last nudge. After the end
@@ -108,6 +109,8 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "status"
     if item.get("needs_review"):
         return "flagged_for_review"
+    if (item.get("review") or {}).get("verdict") in ("wrong", "dismissed"):
+        return "reviewed_wrong"         # an admin rejected the item itself
     o = item.get("owner") or {}
     if o.get("status") != "resolved" or not o.get("id"):
         return "owner_unconfirmed"

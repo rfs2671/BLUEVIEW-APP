@@ -47042,11 +47042,16 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             continue
         if gid not in group_ok:
             # Only a group still linked to this live project, with its bot on.
-            g = await db.whatsapp_groups.find_one(
-                {"wa_group_id": gid, "project_id": pid, "active": True})
+            # Bound by the same rules as the attention engine: exactly one
+            # valid active row, its project live and of its company.
+            rows = await db.whatsapp_groups.find(
+                {"wa_group_id": gid, "active": True}).to_list(50)
+            binding = await _attention_binding(gid, rows)
             group_ok[gid] = bool(
-                g and _effective_bot_config(g.get("bot_config"))["bot_enabled"]
-                and await _bot_project_scope(str(it.get("company_id")), pid))
+                binding and binding["project_id"] == pid
+                and binding["company_id"] == str(it.get("company_id"))
+                and _effective_bot_config(
+                    binding["group"].get("bot_config"))["bot_enabled"])
         if not group_ok[gid]:
             report["group_off"] += 1
             continue
@@ -47076,10 +47081,12 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 n.get("slot") == wa_chase.EOD for n in group_nudges):
             continue                            # only after the end of day nudge
         key = (pid, gid, wa_chase.owner_key(it))
-        b = batches.setdefault(key, {"items": [], "nudged": [], "last": None,
+        b = batches.setdefault(key, {"items": [], "nudged": {}, "last": None,
                                      "company_id": str(it.get("company_id"))})
         b["items"].append(it)
-        b["nudged"] += [n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)]
+        # One time per earlier nudge, though a batched nudge lists every item.
+        b["nudged"].update({n["_id"]: n["at"] for n in group_nudges
+                            if isinstance(n.get("at"), datetime)})
         if last and (b["last"] is None or last > b["last"]):
             b["last"] = last
     for (pid, gid, okey), b in batches.items():
@@ -47117,7 +47124,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            to=[a["name"] for a in admins],
                            to_user_ids=[a["id"] for a in admins],
                            text=wa_chase.admin_text(row["owner_name"], row["group_name"],
-                                                    b["items"], b["nudged"]))
+                                                    b["items"], list(b["nudged"].values())))
                 report["admin_dm"] += 1
             else:
                 row.update(kind="group",
