@@ -377,6 +377,52 @@ class TheAgentsNumbersAreChecked(_Chat, unittest.TestCase):
         self.assertEqual(reply, "3 open items at 8 Walworth.")
 
 
+class ReviewFindings(_Chat, unittest.TestCase):
+    """Codex review of #712."""
+
+    def test_swapped_counts_are_caught(self):
+        with _Ctx(db=self.db) as c:
+            reply = self.say(c, "how many workers at 588 thomas",
+                             llm=lambda t: "11 on site now — Arkon 20, Quality Plumbing 6, "
+                                           "Power Direct 3.", key="sk-test")
+        self.assertTrue(reply.startswith("20 on site at 588 Thomas S Boyland St now — Arkon 11"))
+        self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["wording"],
+                         "fixed_after_check_failed")
+
+    def test_a_lowercase_invented_name_is_caught(self):
+        with _Ctx(db=self.db) as c:
+            reply = self.say(c, "who came in after the brief at 588 thomas",
+                             llm=lambda t: "2 since your 8:07 brief: juan lopez and "
+                                           "pablo sen, in at 9:12 and 9:30.", key="sk-test")
+        self.assertNotIn("juan lopez", reply.lower())
+        self.assertIn("Jose Zarate and Pablo Sen (Quality Plumbing)", reply)
+
+    def test_checked_out_workers_are_not_on_site_now(self):
+        for r in self.db.checkins.rows:
+            if r["worker_name"] in ("Arkon Worker 1", "Arkon Worker 2"):
+                r["status"] = "checked_out"
+        with _Ctx(db=self.db) as c:
+            reply = self.say(c, "how many workers at 588 thomas")
+        # Worker 1 checked in twice; the later row is still checked out.
+        self.assertTrue(reply.startswith("18 on site at 588 Thomas S Boyland St now — Arkon 9,"),
+                        reply)
+        # Who checked in since the brief still counts anyone who came, gone or not.
+        self.assertIn("2 since your 8:07 brief", reply)
+
+    def test_all_my_jobs_stays_all_jobs(self):
+        with _Ctx(db=self.db) as c:
+            reply = self.say(c, "how many workers across all my jobs?")
+        self.assertEqual(reply, "general")                     # the all-jobs answer (stub)
+        self.assertEqual(self.llm_calls[-1][0], wa_assistant.CROSS_SYSTEM_PROMPT)
+
+    def test_a_challenge_naming_another_job_recounts_that_job(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "how many workers at 588 thomas")
+            reply = self.say(c, "the count at 8 walworth is wrong")
+        self.assertIn("8 Walworth St", reply)
+        self.assertNotIn("588 Thomas", reply)
+
+
 class TheRules(unittest.TestCase):
 
     def test_intents(self):

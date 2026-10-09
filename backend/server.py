@@ -48174,6 +48174,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if last_hc and str(last_hc.get("project_id")) in by_id and job is None and (
             hc == wa_headcount.CHALLENGE
             or (hc is None and (ref or wa_headcount.refers_back(core)))):
+        # A job named in the message wins over the last one counted ("the
+        # count at 8 Walworth is wrong").
+        named_now = wa_assistant.match_jobs(core, jobs) or (
+            [wa_assistant.job_named(core, jobs, in_sentence=True)]
+            if wa_assistant.job_named(core, jobs, in_sentence=True) else [])
+        if len(named_now) == 1 and named_now[0] != str(last_hc["project_id"]):
+            last_hc = {"project_id": named_now[0], "headcount": wa_headcount.COUNT}
         job = by_id[str(last_hc["project_id"])]
         if hc == wa_headcount.CHALLENGE:
             await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
@@ -48211,7 +48218,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_ask_which(dm_chat, named, question)
             return
         else:
-            if hc:
+            if hc and wa_assistant.question_scope(core) == wa_assistant.SCOPE_ALL:
+                scope = wa_assistant.SCOPE_ALL   # "how many workers across all my jobs?"
+            elif hc:
                 scope = wa_assistant.SCOPE_PROJECT
             elif history or qbody:
                 # A conversation is going: no generic answer -- only a

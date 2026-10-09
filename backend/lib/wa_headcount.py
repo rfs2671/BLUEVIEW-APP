@@ -181,9 +181,16 @@ def _text(v: Any) -> str:
 
 def workers(checkins: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Each worker once, at their first check-in today (the brief's rule):
-    [{name, company, at}] in check-in order. No phone numbers."""
-    seen, out = set(), []
-    for ci in sorted(checkins, key=lambda c: _at(c.get("check_in_time")) or datetime.min.replace(tzinfo=timezone.utc)):
+    [{name, company, at, on_site}] in check-in order. `on_site` is False
+    when their latest check-in today is checked out. No phone numbers."""
+    seen, out, latest = set(), [], {}
+    rows = sorted(checkins, key=lambda c: _at(c.get("check_in_time"))
+                  or datetime.min.replace(tzinfo=timezone.utc))
+    for ci in rows:
+        wid = _text(ci.get("worker_id")) or _text(ci.get("worker_phone")) or _text(ci.get("_id"))
+        if wid:
+            latest[wid] = ci
+    for ci in rows:
         wid = _text(ci.get("worker_id")) or _text(ci.get("worker_phone")) or _text(ci.get("_id"))
         if not wid or wid in seen:
             continue
@@ -195,7 +202,8 @@ def workers(checkins: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 break
         out.append({"name": _text(ci.get("worker_name")) or "Name not on record",
                     "company": company or NO_COMPANY,
-                    "at": _at(ci.get("check_in_time"))})
+                    "at": _at(ci.get("check_in_time")),
+                    "on_site": str(latest[wid].get("status") or "").lower() != "checked_out"})
     return out
 
 
@@ -208,14 +216,17 @@ def _at(v: Any) -> Optional[datetime]:
 def summarize(checkins: Iterable[Dict[str, Any]], since: Optional[datetime]) -> Dict[str, Any]:
     """The tool result for one turn: total, by company, every worker with
     their time, and who came after `since`."""
-    ws = workers(checkins)
+    everyone = workers(checkins)
+    ws = [w for w in everyone if w["on_site"]]          # "on site now"
     counts: Dict[str, int] = {}
     for w in ws:
         counts[w["company"]] = counts.get(w["company"], 0) + 1
     by_company = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-    added = [w for w in ws if since and w["at"] and w["at"] > since]
+    # Who checked in since: everyone who came, even if they have left since.
+    added = [w for w in everyone if since and w["at"] and w["at"] > since]
     return {"total": len(ws), "by_company": by_company, "workers": ws,
-            "since": since, "added": added}
+            "since": since, "added": added,
+            "checked_out": len(everyone) - len(ws)}
 
 
 def _join(items: List[str]) -> str:
@@ -290,23 +301,64 @@ note noted again checking checked-in onsite
 """.split())
 
 
+_COMMON = set("""
+is are was were be been being has have had do does did will would can could
+for to of in on at by with from about into over under up down out off near
+not but or if than then too very more most less least many much some any
+each both either one per its it's their them they he she his her him our
+us we you your yours me my mine i a an the and so as just only still yet
+already again also even here there now today morning since after before
+until till while when where who whom whose which what that this these
+those all every everyone nobody none no yes ok okay right got get came come
+coming went left in at site on-site onsite crew guys people workers worker
+total count headcount brief your new added extra plus checked check
+""".split())
+
+
 def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> bool:
-    """Every number and every capitalised word in `reply` is in this turn's
-    data (or the job's address / the since label). False = send the fixed
-    answer instead."""
+    """A rephrasing goes out only if it says the same facts:
+
+      * every word in it is from this turn's data or plain English (so no
+        invented name, in any case);
+      * every number is one of the data's;
+      * each company's number is ITS count ("Arkon 12", "12 from Arkon"),
+        and a number "on site" is the total, a number "since" the added --
+        so swapping verified numbers between facts is caught.
+
+    False = send the fixed answer instead."""
+    reply = reply or ""
     allowed_text = " ".join(
         [job, since_label, str(data["total"]), str(len(data.get("added") or []))]
         + [f"{c} {n}" for c, n in data["by_company"]]
-        + [f"{w['name']} {w['company']} {clock(w['at'])}" for w in data["workers"]]
+        + [f"{w['name']} {w['company']} {clock(w['at'])}"
+           for w in list(data["workers"]) + list(data.get("added") or [])]
         + [hhmm(data.get("since"))])
     nums = set(re.findall(r"\d+", allowed_text))
     words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", allowed_text)}
-    for n in re.findall(r"\d+", reply or ""):
+    for n in re.findall(r"\d+", reply):
         if n not in nums:
             return False
-    for w in re.findall(r"\b[A-Z][A-Za-z'’.-]*", reply or ""):
-        lw = w.lower().strip(".'’")
-        if lw not in words and lw not in _PLAIN:
+    for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", reply):
+        lw = w.lower().strip(".'’-")
+        if lw and lw not in words and lw not in _PLAIN and lw not in _COMMON:
+            return False
+    counts = dict(data["by_company"])
+    for company, n in counts.items():
+        c = re.escape(company)
+        for m in re.finditer(rf"{c}\W{{1,3}}(\d+)(?![\d:])", reply, re.IGNORECASE):
+            if int(m.group(1)) != n:
+                return False
+        for m in re.finditer(rf"(?<![\d:])(\d+)\s+(?:from |at |with |of |workers? from )?{c}",
+                             reply, re.IGNORECASE):
+            if int(m.group(1)) != n:
+                return False
+    for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?on\s?-?site",
+                         reply, re.IGNORECASE):
+        if int(m.group(1)) != data["total"]:
+            return False
+    for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?"
+                         r"(?:since|added|new|checked in since|came in)", reply, re.IGNORECASE):
+        if int(m.group(1)) != len(data.get("added") or []):
             return False
     return True
 
