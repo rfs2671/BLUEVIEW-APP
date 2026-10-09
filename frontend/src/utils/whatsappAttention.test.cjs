@@ -68,6 +68,13 @@ ok(A.eventLine({ kind: 'state', to: 'done', evidence_kind: 'file' }) === 'Done (
 ok(A.eventLine({ kind: 'state', to: 'cancelled' }) === 'Cancelled by who asked', 'cancelled');
 ok(A.eventLine({ kind: 'flag', note: 'not_owner' }) === 'Someone else gave a new date. Not applied.', 'flag');
 ok(A.eventLine({ kind: 'part_done', sender_last4: '1003' }) === 'One part done (…1003)', 'part done');
+ok(A.eventLine({ kind: 'handover', owner_from: 'Patricia Lee', owner_to: 'Jose Zarate', due_to: 'Friday' })
+  === 'Handed over: Patricia Lee → Jose Zarate · due Friday', 'handover');
+ok(/not chased/.test(A.eventLine({ kind: 'flag', note: 'possible_handover' })), 'possible handover');
+ok(A.eventLine({ kind: 'state', to: 'done', by: 'gc_staff' }) === 'Done (closed by GC staff)', 'done by GC');
+ok(A.eventLine({ kind: 'state', to: 'done', by: 'requester' }) === 'Done (closed by who asked)', 'done by asker');
+ok(A.eventLine({ kind: 'state', to: 'done', by: 'owner' }) === 'Done', 'done by owner');
+ok(A.eventLine({ kind: 'state', to: 'cancelled', by: 'gc_staff' }) === 'Cancelled by GC staff', 'cancel by GC');
 ok(A.linkLine({ link: 'reply' }) === 'Linked: a reply to it' && A.linkLine({}) === null, 'link');
 ok(A.reviewable({ id: 'x', kind: 'state' }) && !A.reviewable({ id: 'x', kind: 'created' })
    && !A.reviewable({ id: 'x', kind: 'follow_up' }), 'changes are reviewable, the record is not');

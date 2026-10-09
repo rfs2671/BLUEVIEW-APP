@@ -39,7 +39,7 @@ SCENARIO FILE (see scripts/dry_run/*.json)
   messages [{from, at: "YYYY-MM-DD HH:MM:SS" (local), text, reply_to: line?,
              mentions: [KEY]?, reply_shape: "stanza" | "missing"?,
              quoted_text: "..."? (the quoted words as sent; default the line's),
-             expect: {kind: item|none|state|merged|review|flag|follow_up|part_done,
+             expect: {kind: item|none|state|merged|review|flag|follow_up|part_done|handover,
                       type?, due_text?, owner?, owner_possibly?, of?, also?, to?,
                       into?}}]
   chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line]}]}
@@ -355,10 +355,14 @@ def got_per_line(sc: dict, out: dict) -> Dict[int, dict]:
         evs = [(it, h) for it in items for h in it.get("history") or []
                if h.get("message_id") == mid and h.get("kind") != "created"]
         if evs:
+            # The item the message is about first; what went with it after.
+            evs.sort(key=lambda e: e[1].get("link") in ("via_child", "via_parent"))
             it, h = evs[0]
             kind = "state" if h["kind"] == "state" else h["kind"]
+            # A handover is "to" whom: the sender key of who took it on.
+            to = _owner_key(sc, h.get("owner_to")) if kind == "handover" else h.get("to")
             got[n] = {"kind": kind, "of": line_of.get(it["evidence"]["message_id"]),
-                      "to": h.get("to"), "also": sorted(
+                      "to": to, "also": sorted(
                           line_of.get(i2["evidence"]["message_id"]) for i2, h2 in evs[1:]),
                       "due_text": h.get("due_to")}
             continue
@@ -390,11 +394,16 @@ def score_line(want: dict, got: dict) -> tuple:
                 notes.append(f"{k} {want[k]!r} → got {got.get(k)!r}")
                 hard = False
         return hard, soft, notes
-    if wk in ("state", "flag", "follow_up", "part_done"):
+    if wk in ("state", "flag", "follow_up", "part_done", "handover"):
         hard = want.get("of") == got.get("of") and want.get("to", got.get("to")) == got.get("to")
-        if want.get("also") is not None and sorted(want["also"]) != got.get("also"):
-            notes.append(f"also {want['also']} → got {got.get('also')}")
-            hard = False
+        if want.get("also") is not None:
+            # An ask and its answer closed together: the same two items
+            # whichever of them the label names first.
+            same = ({want.get("of"), *want["also"]} == {got.get("of"), *(got.get("also") or [])}
+                    and want.get("to", got.get("to")) == got.get("to"))
+            hard = same
+            if not same:
+                notes.append(f"also {want['also']} → got {got.get('also')}")
         if "due_text" in want and want["due_text"] != got.get("due_text"):
             notes.append(f"due {want['due_text']!r} → got {got.get('due_text')!r}")
             hard = False

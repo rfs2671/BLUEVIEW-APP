@@ -1,6 +1,6 @@
 {
  "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
- "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases Patricia (risers) and Mike Rivera (panel confirm); Friday chases Jose (risers) and Mike Rivera (lighting cut sheets). Not chased: GC staff (Kevin, a company user, on the door schedule; Gina, mapped \"GC team\", on the logistics plan) -- subs only; anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases nobody: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: GC staff (Kevin, a company user, on the door schedule; Gina, mapped \"GC team\", on the logistics plan) -- subs only; anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
  "tz": "America/New_York",
  "project": {
   "name": "8 Walworth St",
@@ -299,13 +299,12 @@
    "at": "2026-10-14 07:35:00",
    "text": "Patricia's out sick, I'll send the risers Friday",
    "expect": {
-    "kind": "item",
-    "type": "commitment",
-    "owner": "J",
-    "owner_possibly": false,
+    "kind": "handover",
+    "of": 3,
+    "to": "J",
     "due_text": "Friday"
    },
-   "why": "two subs of one company: Jose's own commitment; Patricia's stays hers"
+   "why": "Patricia (Quality Plumbing) is out; Jose (Quality Plumbing) takes her risers commitment on, due Friday. Patricia is not chased Thursday."
   },
   {
    "from": "C",
@@ -421,9 +420,14 @@
    "at": "2026-10-14 08:35:00",
    "text": "Never mind the panel confirm, Mike already did",
    "expect": {
-    "kind": "none"
+    "kind": "state",
+    "of": 7,
+    "also": [
+     5
+    ],
+    "to": "done"
    },
-   "why": "Kevin asked for the panel confirm, not Roy: Roy cannot cancel it"
+   "why": "GC staff may close anyone's item by what it is about; 'Mike already did' names whose: Mike Rivera's panel confirm is done (Roy's message is the evidence)."
   },
   {
    "from": "J",
@@ -467,75 +471,11 @@
   ],
   "expect": [
    {
-    "day": "2026-10-15",
-    "slot": "morning",
-    "owner": "P",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "midday",
-    "owner": "P",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "eod",
-    "owner": "P",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "admin_dm",
-    "owner": "P",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "morning",
-    "owner": "M",
-    "items": [
-     7
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "midday",
-    "owner": "M",
-    "items": [
-     7
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "eod",
-    "owner": "M",
-    "items": [
-     7
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "admin_dm",
-    "owner": "M",
-    "items": [
-     7
-    ]
-   },
-   {
     "day": "2026-10-16",
     "slot": "morning",
     "owner": "J",
     "items": [
-     17
+     3
     ]
    },
    {
@@ -543,7 +483,7 @@
     "slot": "midday",
     "owner": "J",
     "items": [
-     17
+     3
     ]
    },
    {
@@ -551,7 +491,7 @@
     "slot": "eod",
     "owner": "J",
     "items": [
-     17
+     3
     ]
    },
    {
@@ -559,7 +499,7 @@
     "slot": "admin_dm",
     "owner": "J",
     "items": [
-     17
+     3
     ]
    },
    {

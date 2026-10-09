@@ -212,3 +212,95 @@ class TheParser(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _line(r, n):
+    return next(ln for ln in r["lines"] if ln["n"] == n)
+
+
+class TheThreeGaps(unittest.TestCase):
+    """Live dry runs on 2026-10-09: a handover, a close from the asking side,
+    and an ack under a question."""
+
+    def setUp(self):
+        self.busy = dry.load(str(DIR / "busy_group_2026_10.json"))
+
+    def test_an_ack_under_a_question_takes_its_date(self):
+        # The real model read "can you confirm the dampers shipped tomorrow?"
+        # as a question and gave it no date; "Np" under it is still due
+        # tomorrow.
+        sc = copy.deepcopy(dry.load(str(DIR / "pass3_2026_10.json")))
+        m = sc["messages"][2]
+        m["model"] = [{"type": "question", "quote": m["text"], "due_text": None}]
+        m["expect"] = {"kind": "item", "type": "question"}
+        out, r = _run(sc)
+        self.assertEqual(_line(r, 3)["got"]["type"], "question")
+        np = _line(r, 4)["got"]
+        self.assertEqual((np["type"], np["due_text"], np["owner_possibly"]),
+                         ("commitment", "tomorrow", True))
+        it = next(i for i in out["db"].attention_items.rows if str(i["_id"]) == np["id"])
+        self.assertEqual((it["due"]["due_at"], it["due"]["due_source"]), ("2026-10-10", "parent"))
+
+    def test_the_handover_moves_the_item_and_its_chase(self):
+        out, r = _run(self.busy)
+        self.assertTrue(_line(r, 17)["hard"])
+        it = next(i for i in out["db"].attention_items.rows
+                  if i["evidence"]["message_id"] == out["rows"][3]["message_id"])
+        self.assertEqual((it["owner"]["name"], it["owner"]["source"]), ("Jose Zarate", "handover"))
+        self.assertEqual((it["due"]["due_text"], it["due"]["due_at"]), ("Friday", "2026-10-16"))
+        h = it["history"][-1]
+        self.assertEqual((h["kind"], h["owner_from"]["name"], h["owner_to"]["name"]),
+                         ("handover", "Patricia Lee", "Jose Zarate"))
+        # Jose's words are the handover, not a second commitment.
+        self.assertFalse([i for i in out["db"].attention_items.rows
+                          if i["evidence"]["message_id"] == out["rows"][17]["message_id"]])
+        self.assertFalse([c for c in r["chase"]["got"] if c["owner"] == "P"])
+
+    def test_a_handover_that_is_not_clear_is_flagged_and_nobody_is_chased(self):
+        # Jose at another company, words that do not say what: possibly a
+        # handover. Patricia's item is flagged; so is Jose's commitment.
+        sc = copy.deepcopy(self.busy)
+        sc["senders"]["J"]["people"]["sub_company"] = "Other Plumbing Co"
+        m = sc["messages"][16]
+        m["text"] = "Patricia's out sick, I'll take care of it Friday"
+        m["expect"] = {"kind": "item", "type": "commitment", "owner": "J", "due_text": "Friday"}
+        m["model"] = [{"type": "commitment", "quote": m["text"], "due_text": "Friday"}]
+        sc["chase"]["expect"] = [e for e in sc["chase"]["expect"] if e["owner"] != "J"]
+        out, r = _run(sc)
+        items = out["db"].attention_items.rows
+        hers = next(i for i in items if i["evidence"]["message_id"] == out["rows"][3]["message_id"])
+        his = next(i for i in items if i["evidence"]["message_id"] == out["rows"][17]["message_id"])
+        self.assertTrue(hers["needs_review"])
+        self.assertEqual(hers["owner"]["name"], "Patricia Lee")
+        self.assertEqual(hers["history"][-1]["note"], "possible_handover")
+        self.assertTrue(his["needs_review"])
+        self.assertEqual(his["history"][-1]["note"], "possible_handover")
+        ask = next(i for i in items if i["evidence"]["message_id"] == out["rows"][1]["message_id"])
+        self.assertTrue(ask["needs_review"])          # the ask her item answers, too
+        self.assertFalse([c for c in r["chase"]["got"] if c["owner"] in ("P", "J")])
+        self.assertEqual(dry.exit_code(r), 0)
+
+    def test_a_sub_who_did_not_ask_cannot_close_it(self):
+        sc = copy.deepcopy(self.busy)
+        m = sc["messages"][27]
+        m["from"] = "A"                      # Ana: a sub, asked nothing
+        m["expect"] = {"kind": "none"}
+        sc["chase"]["expect"] += [{"day": "2026-10-15", "slot": s, "owner": "M", "items": [7]}
+                                  for s in ("morning", "midday", "eod", "admin_dm")]
+        _out, r = _run(sc)
+        self.assertTrue(_line(r, 28)["hard"])
+        self.assertEqual(dry.exit_code(r), 0)
+
+    def test_the_asker_closes_it_too(self):
+        sc = copy.deepcopy(self.busy)
+        sc["messages"][27]["from"] = "K"     # Kevin asked for the panel confirm
+        _out, r = _run(sc)
+        self.assertTrue(_line(r, 28)["hard"])
+        self.assertEqual(dry.exit_code(r), 0)
+
+    def test_sets_not_order_for_items_closed_together(self):
+        want = {"kind": "state", "of": 1, "also": [2], "to": "done"}
+        self.assertTrue(dry.score_line(want, {"kind": "state", "of": 2, "also": [1],
+                                              "to": "done"})[0])
+        self.assertFalse(dry.score_line(want, {"kind": "state", "of": 2, "also": [],
+                                               "to": "done"})[0])
