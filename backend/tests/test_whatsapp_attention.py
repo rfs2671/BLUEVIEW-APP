@@ -601,7 +601,10 @@ class DedupeAndReplies(unittest.TestCase):
     def test_a_reply_marks_possibly_resolved_never_closed(self):
         db = _world()
         _first_sight(db)
-        ask = _msg(db, "can you send the stair RFI by Friday?", sender="17185550909")
+        # Times pinned: _msg's default clock follows how many rows earlier
+        # tests made, which could put the ask after its own reply.
+        ask = _msg(db, "can you send the stair RFI by Friday?", sender="17185550909",
+                   at=T0 + timedelta(minutes=30))
         _tick(db, _Model({"stair RFI": ASK}), T0 + timedelta(hours=1))
         _msg(db, "sent it this morning", quoted_message_id=ask["message_id"],
              at=T0 + timedelta(hours=2))
