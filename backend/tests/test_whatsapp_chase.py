@@ -201,17 +201,17 @@ class TheSlots(_Base):
         self.assertEqual(mid["text"], "@Mike Rivera checking in — still on for today?\n"
                                       "“I'll send the stair RFI today”")
         self.assertIn("since the 8:35 nudge", mid["reason"])
-        self.chase(_et(16, 35))
+        self.chase(_et(15, 5))
         self.assertEqual(self.rows("eod")[0]["text"].split("\n")[0],
                          "@Mike Rivera end of day — did this get done?")
-        self.chase(_et(17, 35))
+        self.chase(_et(16, 5))
         dm = self.rows("admin_dm")[0]
         self.assertEqual(dm["kind"], "admin_dm")
         self.assertEqual(dm["to"], ["Ana Admin"])
         self.assertEqual(dm["text"],
                          "Mike Rivera hasn't answered on this, due today in Main St Project:\n"
                          "“I'll send the stair RFI today”\n"
-                         "Nudged in the group at 8:35, 12:35 and 4:35.")
+                         "Nudged in the group at 8:35, 12:35 and 3:05.")
         self.chase(_et(18, 0))
         self.assertEqual(len(self.rows()), 4)
 
@@ -229,7 +229,7 @@ class TheSlots(_Base):
 
     def test_no_admin_dm_without_the_end_of_day_nudge(self):
         _item(self.db)
-        self.chase(_et(17, 35))
+        self.chase(_et(16, 5))
         self.assertEqual(self.rows(), [])
 
     def test_not_on_another_day(self):
@@ -245,8 +245,8 @@ class StopConditions(_Base):
         self.chase(_et(8, 35))
         self.say("on it", _et(9, 10))
         self.chase(_et(12, 35))
-        self.chase(_et(16, 35))
-        self.chase(_et(17, 35))
+        self.chase(_et(15, 5))
+        self.chase(_et(16, 5))
         self.assertEqual([r["slot"] for r in self.rows()], ["morning"])
 
     def test_the_owner_in_another_group_does_not_stop_it(self):
@@ -323,12 +323,12 @@ class Batching(_Base):
     def test_a_batched_admin_dm_lists_each_nudge_once(self):
         _item(self.db)
         _item(self.db, quote="Anchors today")
-        for t in (_et(8, 35), _et(12, 35), _et(16, 35), _et(17, 35)):
+        for t in (_et(8, 35), _et(12, 35), _et(15, 5), _et(16, 5)):
             self.chase(t)
         dm = self.rows("admin_dm")[0]
         self.assertEqual(dm["text"].split("\n")[0],
                          "Mike Rivera hasn't answered on these 2, due today in Main St Project:")
-        self.assertTrue(dm["text"].endswith("Nudged in the group at 8:35, 12:35 and 4:35."))
+        self.assertTrue(dm["text"].endswith("Nudged in the group at 8:35, 12:35 and 3:05."))
 
     def test_an_owner_already_nudged_this_slot_gets_no_second_message(self):
         _item(self.db)
@@ -357,9 +357,9 @@ class AlertHours(_Base):
         self.assertEqual([r["slot"] for r in self.rows()], ["morning"])
 
     def test_after_the_window_nothing(self):
-        self._window({"mode": "custom", "start": "09:00", "end": "17:00"})
+        self._window({"mode": "custom", "start": "09:00", "end": "15:30"})
         _item(self.db)
-        for t in (_et(9, 5), _et(12, 35), _et(16, 35), _et(17, 35)):
+        for t in (_et(9, 5), _et(12, 35), _et(15, 5), _et(16, 5)):
             self.chase(t)
         self.assertEqual([r["slot"] for r in self.rows()], ["morning", "midday", "eod"])
 
@@ -370,9 +370,9 @@ class AlertHours(_Base):
             self.db.attention_items.rows = []
             self._window(window)
             _item(self.db)
-            self.chase(_et(17, 35))
-            self.chase(_et(16, 35))
-            self.chase(_et(17, 35))
+            self.chase(_et(16, 5))
+            self.chase(_et(15, 5))
+            self.chase(_et(16, 5))
             self.assertEqual([r["slot"] for r in self.rows()], ["eod", "admin_dm"], window)
 
 
@@ -461,7 +461,10 @@ class TheRules(unittest.TestCase):
         self.assertEqual(C.current_slot(_et(8, 30)), "morning")
         self.assertEqual(C.current_slot(_et(12, 29)), "morning")
         self.assertEqual(C.current_slot(_et(13, 0)), "midday")
-        self.assertEqual(C.current_slot(_et(16, 30)), "eod")
+        self.assertEqual(C.current_slot(_et(14, 59)), "midday")
+        self.assertEqual(C.current_slot(_et(15, 0)), "eod")
+        self.assertEqual(C.current_slot(_et(15, 59)), "eod")
+        self.assertEqual(C.current_slot(_et(16, 0)), "admin_dm")
         self.assertEqual(C.current_slot(_et(23, 0)), "admin_dm")
 
     def test_long_quotes_are_cut(self):

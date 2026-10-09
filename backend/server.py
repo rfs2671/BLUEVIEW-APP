@@ -65455,7 +65455,7 @@ async def startup_event():
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # Sub chasing v1, SHADOW: records the nudges it would send (8:30, 12:30,
-    # 4:30, then an admin DM at 5:30, New York); sends nothing.
+    # 3:00, then an admin DM at 4:00, New York); sends nothing.
     scheduler.add_job(
         _whatsapp_chase_job,
         IntervalTrigger(minutes=CHASE_TICK_MINUTES),

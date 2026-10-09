@@ -13,9 +13,10 @@ WHAT IS CHASED (all of these):
 - nothing about it flagged for an admin's review, and the item itself not
   marked Wrong (or dismissed) by an admin.
 
-WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 4:30 end
-of day, each only when nothing came back since the last nudge. After the end
-of day nudge, 5:30: a private DM to the company admin. An item said after a
+WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 3:00 end
+of day (NYC sites wrap up around 3:30), each only when nothing came back since
+the last nudge. After the end of day nudge, 4:00: a private DM to the company
+admin. Constants for now; per-company settings later. An item said after a
 slot's time is first chased at the next slot. A slot outside the project's
 alert hours is not sent; one that comes due later the same day, inside them,
 is.
@@ -47,8 +48,8 @@ COLLECTION = "chase_shadow"
 
 MORNING, MIDDAY, EOD, ADMIN = "morning", "midday", "eod", "admin_dm"
 # (slot, New York time), in order.
-SLOTS = ((MORNING, time(8, 30)), (MIDDAY, time(12, 30)), (EOD, time(16, 30)),
-         (ADMIN, time(17, 30)))
+SLOTS = ((MORNING, time(8, 30)), (MIDDAY, time(12, 30)), (EOD, time(15, 0)),
+         (ADMIN, time(16, 0)))
 GROUP_SLOTS = (MORNING, MIDDAY, EOD)
 SLOT_LABELS = {MORNING: "morning", MIDDAY: "midday", EOD: "end of day",
                ADMIN: "admin DM"}
