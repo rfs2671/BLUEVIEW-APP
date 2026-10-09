@@ -89,6 +89,51 @@ def intent(text: str) -> Optional[str]:
 
 _SINCE_RE = re.compile(r"\b(?:since|after)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
                        re.IGNORECASE)
+# "Since the morning" = since this person's brief went out (their words,
+# 2026-10-09). "Since earlier / before / then" could be the brief or the start
+# of the day: one short question, never a guess.
+_SINCE_BRIEF_RE = re.compile(
+    r"\b(?:since|after) (?:the |this |my |your )?(?:morning|brief|report|update)\b"
+    r"|\bsince (?:you|u) (?:sent|texted|messaged)\b|\b(?:the )?added\b|\bnew (?:guys|workers|people|ones)\b",
+    re.IGNORECASE)
+_SINCE_VAGUE_RE = re.compile(
+    r"\b(?:since|after) (?:earlier|before|then|the start|this am|we last talked|last time)\b",
+    re.IGNORECASE)
+DAY_START_HOUR = 7
+
+BRIEF, AMBIGUOUS, AT = "brief", "ambiguous", "at"
+
+
+def since_ref(text: str, now: datetime):
+    """(AT, datetime) for a time said; (BRIEF, None) for "since the
+    morning" / "the added"; (AMBIGUOUS, None) for "since earlier"; else
+    None."""
+    at = parse_since(text, now)
+    if at:
+        return (AT, at)
+    t = str(text or "")
+    if _SINCE_VAGUE_RE.search(t):
+        return (AMBIGUOUS, None)
+    if _SINCE_BRIEF_RE.search(t):
+        return (BRIEF, None)
+    return None
+
+
+def day_start(now: datetime) -> datetime:
+    """7 AM New York today, in UTC: the other reading of "since earlier"."""
+    return _local(now).replace(hour=DAY_START_HOUR, minute=0, second=0,
+                               microsecond=0).astimezone(timezone.utc)
+
+
+# "those", "them", "that guy", "the 2 added": about the last headcount
+# answer in this chat.
+_REFERENCE_RE = re.compile(
+    r"\b(?:those|them|they|these|that guy|this guy|those guys|the (?:\d+|two|three) "
+    r"(?:added|new|guys|workers|ones)?)\b", re.IGNORECASE)
+
+
+def refers_back(text: str) -> bool:
+    return bool(_REFERENCE_RE.search(str(text or "")))
 
 
 def parse_since(text: str, now: datetime) -> Optional[datetime]:
@@ -122,6 +167,12 @@ def clock(dt: Optional[datetime]) -> str:
         return ""
     s = _local(dt).strftime("%I:%M %p")
     return s[1:] if s.startswith("0") else s
+
+
+def hhmm(dt: Optional[datetime]) -> str:
+    """'9:12' (New York) -- a site day reads without AM/PM."""
+    c = clock(dt)
+    return c.rsplit(" ", 1)[0] if c else ""
 
 
 def _text(v: Any) -> str:
@@ -167,44 +218,60 @@ def summarize(checkins: Iterable[Dict[str, Any]], since: Optional[datetime]) -> 
             "since": since, "added": added}
 
 
-def _who(w: Dict[str, Any]) -> str:
-    return f"{w['name']} ({w['company']}) {clock(w['at'])}".strip()
+def _join(items: List[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _by_company(ws: List[Dict[str, Any]]) -> str:
+    """'Jose Zarate and Pablo Sen (Quality Plumbing), in at 9:12 and 9:30;
+    Luis Ortega (Arkon), in at 8:31' -- in check-in order, grouped by company."""
+    order: List[str] = []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for w in ws:
+        if w["company"] not in groups:
+            order.append(w["company"])
+        groups.setdefault(w["company"], []).append(w)
+    parts = []
+    for co in order:
+        g = groups[co]
+        parts.append(f"{_join([w['name'] for w in g])} ({co}), in at "
+                     f"{_join([hhmm(w['at']) for w in g])}")
+    return "; ".join(parts)
+
+
+def _line(w: Dict[str, Any]) -> str:
+    return f"• {w['name']} ({w['company']}) {hhmm(w['at'])}".rstrip()
 
 
 def compose(kind: str, data: Dict[str, Any], job: str, since_label: str = "") -> str:
-    """The fixed answer, from the data and nothing else. `since_label`: 'your
-    brief at 8:07 AM' or '9:00 AM'."""
+    """The fixed answer, from the data and nothing else. Leads with the
+    answer, short, like a super texting a PM. `since_label`: 'your 8:07
+    brief' or '9:00'."""
     total, by_co = data["total"], data["by_company"]
     breakdown = ", ".join(f"{c} {n}" for c, n in by_co)
-    if kind == ADDED:
-        if not data.get("since"):
-            kind = LIST
-        else:
-            added = data["added"]
-            if not added:
-                return f"{job}: nobody checked in after {since_label}. {total} on site now."
-            lines = [f"{job}: {len(added)} checked in after {since_label}:"]
-            lines += [f"• {_who(w)}" for w in added[:MAX_LISTED]]
-            if len(added) > MAX_LISTED:
-                lines.append(f"…and {len(added) - MAX_LISTED} more (see the app).")
-            lines.append(f"{total} on site now — {breakdown}.")
-            return "\n".join(lines)
+    on_site = f"{total} on site at {job} now" + (f" — {breakdown}." if total else ".")
+    if kind == ADDED and data.get("since"):
+        added = data["added"]
+        if not added:
+            return f"Nobody new since {since_label}. {on_site}"
+        head = f"{len(added)} since {since_label} — {_by_company(added[:MAX_LISTED])}."
+        if len(added) > MAX_LISTED:
+            head += f" (+{len(added) - MAX_LISTED} more in the app.)"
+        return f"{head}\n{on_site}"
     if total == 0:
-        return f"{job}: nobody has checked in today."
-    if kind == LIST:
-        lines = [f"{job}: {total} on site now — {breakdown}."]
-        lines += [f"• {_who(w)}" for w in data["workers"][:MAX_LISTED]]
+        return f"Nobody has checked in at {job} today."
+    if kind in (LIST, ADDED):
+        lines = [on_site] + [_line(w) for w in data["workers"][:MAX_LISTED]]
         if total > MAX_LISTED:
-            lines.append(f"…and {total - MAX_LISTED} more (see the app).")
+            lines.append(f"+{total - MAX_LISTED} more in the app.")
         return "\n".join(lines)
-    out = f"{job}: {total} on site now — {breakdown}."
+    out = on_site
     if data.get("since"):
         added = data["added"]
-        if added:
-            out += f"\n{len(added)} checked in after {since_label}: " + \
-                ", ".join(_who(w) for w in added[:MAX_LISTED]) + "."
-        else:
-            out += f"\nNobody new since {since_label}."
+        out += (f"\n{len(added)} since {since_label} — {_by_company(added[:MAX_LISTED])}."
+                if added else f"\nNobody new since {since_label}.")
     return out
 
 
@@ -230,7 +297,8 @@ def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") ->
     allowed_text = " ".join(
         [job, since_label, str(data["total"]), str(len(data.get("added") or []))]
         + [f"{c} {n}" for c, n in data["by_company"]]
-        + [f"{w['name']} {w['company']} {clock(w['at'])}" for w in data["workers"]])
+        + [f"{w['name']} {w['company']} {clock(w['at'])}" for w in data["workers"]]
+        + [hhmm(data.get("since"))])
     nums = set(re.findall(r"\d+", allowed_text))
     words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", allowed_text)}
     for n in re.findall(r"\d+", reply or ""):
@@ -244,7 +312,16 @@ def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") ->
 
 
 PHRASE_PROMPT = (
-    "Rewrite this WhatsApp answer for a construction PM so it reads naturally, "
-    "in at most 4 short lines. Use ONLY the names, companies, numbers and times "
-    "in it. Do not add, drop, round or compute anything. No greeting."
+    "You are a sharp assistant super texting a PM. Rewrite this answer so it "
+    "reads like a quick text: lead with the answer, short, no filler, no "
+    "greeting, no 'Yes, that's current information'. Use ONLY the names, "
+    "companies, numbers and times in it. Do not add, drop, round or compute "
+    "anything. At most 4 short lines."
 )
+
+
+def clarify_since(brief: Optional[datetime], now: datetime) -> str:
+    """One short question naming the options."""
+    if brief:
+        return f"Since {hhmm(brief)} (your brief) or since {DAY_START_HOUR}am?"
+    return f"Since {DAY_START_HOUR}am or since a time? (e.g. since 9)"

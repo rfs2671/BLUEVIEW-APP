@@ -174,6 +174,59 @@ def with_quoted(text: str, quoted_body: str, quoted_from_bot: bool) -> str:
     return f"{t}\n\n(This is a reply to {who}: \"{q[:400]}\")"
 
 
+HISTORY_HOURS = 4
+HISTORY_MAX = 20
+
+
+def history_messages(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """This chat's recent messages, oldest first, as chat turns for the
+    model: theirs as 'user', Levelog's (answers, menus, the brief) as
+    'assistant'."""
+    out = []
+    for r in rows:
+        b = str(r.get("body") or "").strip()
+        if not b:
+            continue
+        out.append({"role": "assistant" if str(r.get("sender") or "") == "bot" else "user",
+                    "content": b[:1500]})
+    return out[-HISTORY_MAX:]
+
+
+def last_question(rows: Iterable[Dict[str, Any]], jobs: List[Dict[str, Any]]) -> str:
+    """Their latest message in the history that asks something (not a
+    bare job name, not a nudge)."""
+    for r in reversed(list(rows)):
+        if str(r.get("sender") or "") == "bot":
+            continue
+        b = str(r.get("body") or "").strip()
+        if b and not is_nudge(b) and not is_job_only(b, jobs):
+            return b
+    return ""
+
+
+def job_named(text: Any, jobs: List[Dict[str, Any]], *, in_sentence: bool = False
+              ) -> Optional[str]:
+    """The one job a message names by house number ("588", "I said 588")
+    or address -- not by menu number (no menu is open). In a sentence only
+    a house number of 2+ digits counts ("since 8:07" is not 8 Walworth)."""
+    t = _norm(text)
+    by_number = [o for o in jobs if house_number(o.get("label"))
+                 and (not in_sentence or len(house_number(o.get("label"))) >= 2)
+                 and f" {house_number(o.get('label'))} " in t]
+    if len(by_number) == 1:
+        return str(by_number[0]["id"])
+    hit = match_jobs(str(text or ""), jobs)
+    return str(hit[0]) if len(hit) == 1 else None
+
+
+def is_job_only(text: Any, jobs: List[Dict[str, Any]]) -> bool:
+    """'588', '8 walworth', 'the 588 one': names a job and asks nothing."""
+    t = str(text or "").strip()
+    if not t or "?" in t or len(t.split()) > 4:
+        return False
+    return job_named(t, jobs) is not None
+
+
 # ── Which kind of question ─────────────────────────────────────────────────
 
 _ALL_RE = re.compile(
@@ -211,7 +264,14 @@ def question_scope(text: str) -> Optional[str]:
 
 DM_AGENT_CLAUSE = (
     "\n\nYOU ARE IN A PRIVATE WHATSAPP CHAT with one project admin or PM, not "
-    "the group. Speak as Levelog Assistant: short, plain, specific. Name a job "
+    "the group. Talk like a sharp assistant super texting a PM: lead with the "
+    "answer, short, direct, no filler, no greeting, never 'Yes, that's current "
+    "information'. The earlier messages of this chat (both sides, including the "
+    "morning brief you sent) are above: use them to understand what 'that', "
+    "'those', 'the 2 added' or 'since the morning' mean, and never pivot to an "
+    "unrelated topic. Numbers and names come ONLY from this turn's tool results, "
+    "never from the earlier messages or memory. If a reference is truly "
+    "ambiguous, ask ONE short question naming the options. Name a job "
     "by its address. Answer only about the job named in the facts above. Use "
     "the tools for data; never invent a DOB number, date, fine, permit or "
     "violation. You cannot file, renew, change or create anything here: if "

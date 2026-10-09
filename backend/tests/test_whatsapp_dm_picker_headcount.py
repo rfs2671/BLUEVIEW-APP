@@ -59,11 +59,12 @@ def _payload(chat, body, mid, quoted=None, quoted_from_bot=False):
 
 
 # The brief at 8:07 said 18: Arkon 11, Quality Plumbing 4, Power Direct 3.
-# Two more came after: one Arkon at 8:31, one Quality Plumbing at 9:12.
+# Two more came after it.
 BEFORE = ([("Arkon", f"Arkon Worker {i}") for i in range(1, 12)]
           + [("Quality Plumbing", f"QP Worker {i}") for i in range(1, 5)]
           + [("Power Direct", f"PD Worker {i}") for i in range(1, 4)])
-AFTER = [("Arkon", "Luis Ortega", (8, 31)), ("Quality Plumbing", "Mark Diaz", (9, 12))]
+# The real 9:44 picture: the two added were Quality Plumbing, in at 9:12 and 9:30.
+AFTER = [("Quality Plumbing", "Jose Zarate", (9, 12)), ("Quality Plumbing", "Pablo Sen", (9, 30))]
 
 
 def _site(db):
@@ -130,7 +131,7 @@ class ThePicker(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.assertEqual(self.say(c, "Any updates on worker count?"), MENU)
             reply = self.say(c, "588")
-        self.assertIn("588 Thomas S Boyland St: 20 on site now", reply)
+        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
         self.assertNotIn("Could you provide more context", reply)
 
     def test_a_number_picks(self):
@@ -143,7 +144,7 @@ class ThePicker(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.say(c, "Any updates on worker count?")
             reply = self.say(c, "U asked which address I said 588", quoted=MENU, from_bot=True)
-        self.assertIn("20 on site now", reply)
+        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
 
     def test_part_of_the_address_picks(self):
         with _Ctx(db=self.db) as c:
@@ -157,7 +158,7 @@ class ThePicker(_Chat, unittest.TestCase):
             self.assertTrue(again.startswith(MENU))
             self.assertIn(wa_assistant.MENU_AGAIN_TEXT, again)
             reply = self.say(c, "1")
-        self.assertIn("20 on site now", reply)
+        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
         self.assertEqual(self.llm_calls, [])          # never a generic answer
 
     def test_a_reply_to_an_expired_menu_says_so(self):
@@ -178,7 +179,7 @@ class ReplyTo(_Chat, unittest.TestCase):
     def test_a_dot_under_your_headcount_question_counts(self):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, ".", quoted="how many workers at 588 thomas?")
-        self.assertIn("20 on site now", reply)
+        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
 
     def test_a_reply_to_an_answer_carries_it_as_context(self):
         with _Ctx(db=self.db) as c:
@@ -204,17 +205,14 @@ class TheExchange(_Chat, unittest.TestCase):
             count = self.say(c, "588")
             added = self.say(c, "Who are the 2 added?")
             again = self.say(c, "That doesn't make sense", quoted=added, from_bot=True)
-        self.assertEqual(count, (
-            "588 Thomas S Boyland St: 20 on site now — Arkon 12, Quality Plumbing 5, "
-            "Power Direct 3.\n2 checked in after your brief at 8:07 AM: "
-            "Luis Ortega (Arkon) 8:31 AM, Mark Diaz (Quality Plumbing) 9:12 AM."))
-        self.assertEqual(added, (
-            "588 Thomas S Boyland St: 2 checked in after your brief at 8:07 AM:\n"
-            "• Luis Ortega (Arkon) 8:31 AM\n"
-            "• Mark Diaz (Quality Plumbing) 9:12 AM\n"
-            "20 on site now — Arkon 12, Quality Plumbing 5, Power Direct 3."))
-        self.assertEqual(again, "I checked the check-ins again.\n" + added)
-        for invented in ("Juan Lopez", "Jose Zarate", "Pablo Sen"):
+        on_site = ("20 on site at 588 Thomas S Boyland St now — Arkon 11, "
+                   "Quality Plumbing 6, Power Direct 3.")
+        two = ("2 since your 8:07 brief — Jose Zarate and Pablo Sen (Quality Plumbing), "
+               "in at 9:12 and 9:30.")
+        self.assertEqual(count, on_site + "\n" + two)
+        self.assertEqual(added, two + "\n" + on_site)
+        self.assertEqual(again, "Rechecked the check-ins.\n" + added)
+        for invented in ("Juan Lopez", "Power Direct, Juan"):
             self.assertNotIn(invented, count + added + again)
         self.assertEqual(self.agent_calls, [])         # never the free agent
 
@@ -224,33 +222,31 @@ class TheExchange(_Chat, unittest.TestCase):
                              llm=lambda t: "2 added: Juan Lopez (Arkon) and Jose Zarate.",
                              key="sk-test")
         self.assertNotIn("Juan Lopez", reply)
-        self.assertIn("Luis Ortega (Arkon) 8:31 AM", reply)
+        self.assertIn("Jose Zarate and Pablo Sen (Quality Plumbing), in at 9:12 and 9:30", reply)
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual(log["wording"], "fixed_after_check_failed")
 
     def test_a_faithful_rephrase_is_used(self):
         def rephrase(t):
-            return ("2 checked in after your brief at 8:07 AM: Luis Ortega (Arkon) at "
-                    "8:31 AM and Mark Diaz (Quality Plumbing) at 9:12 AM. 20 on site now.")
+            return ("2 since your 8:07 brief: Jose Zarate and Pablo Sen, both Quality "
+                    "Plumbing, in at 9:12 and 9:30. 20 on site now.")
         with _Ctx(db=self.db) as c:
             reply = self.say(c, "who came in after the brief at 588 thomas",
                              llm=rephrase, key="sk-test")
-        self.assertTrue(reply.startswith("2 checked in after your brief"))
+        self.assertTrue(reply.startswith("2 since your 8:07 brief: Jose Zarate"))
         self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["wording"], "phrased")
 
     def test_a_wrong_number_from_the_model_is_never_sent(self):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, "how many workers at 588 thomas",
                              llm=lambda t: "20 workers — 13 from Arkon.", key="sk-test")
-        self.assertIn("Arkon 12", reply)
+        self.assertIn("Arkon 11", reply)
         self.assertNotIn("13", reply)
 
     def test_since_a_time_said_in_the_question(self):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, "who checked in since 9 at 588 thomas")
-        self.assertIn("1 checked in after 9:00 AM", reply)
-        self.assertIn("Mark Diaz (Quality Plumbing) 9:12 AM", reply)
-        self.assertNotIn("Luis Ortega", reply)
+        self.assertIn("2 since 9:00 — Jose Zarate and Pablo Sen", reply)
 
     def test_every_answer_is_logged_with_its_data_and_no_phone_numbers(self):
         with _Ctx(db=self.db) as c:
@@ -259,12 +255,126 @@ class TheExchange(_Chat, unittest.TestCase):
         logs = self.db[server.DM_ANSWERS].rows
         self.assertEqual([r["path"] for r in logs], ["headcount", "job_agent"])
         hc = logs[0]["tool_data"]
-        self.assertEqual((hc["total"], hc["added"]), (20, ["Luis Ortega", "Mark Diaz"]))
+        self.assertEqual((hc["total"], hc["added"]), (20, ["Jose Zarate", "Pablo Sen"]))
         self.assertEqual(len(hc["workers"]), 20)
         import json
         blob = json.dumps(logs, default=str)
         self.assertNotIn("171855501", blob)
         self.assertNotIn(ADMIN_PHONE, blob)
+
+
+class TheConversation(_Chat, unittest.TestCase):
+    """2026-10-09 9:41-9:47, the messages as sent. It used to act like each
+    message was a new chat; now each one is read in the conversation."""
+
+    def setUp(self):
+        super().setUp()
+        # The morning brief it sent, in this chat's history.
+        self.db.whatsapp_messages.rows.append({
+            "_id": "brief_msg", "group_id": CHAT, "is_dm": True, "sender": "bot",
+            "body": "Good morning. 588 Thomas S Boyland St — On site so far: 18 — "
+                    "Arkon 11, Quality Plumbing 4, Power Direct 3",
+            "created_at": datetime.now(timezone.utc) - timedelta(hours=1)})
+
+    def test_the_exchange_as_sent(self):
+        two = ("2 since your 8:07 brief — Jose Zarate and Pablo Sen (Quality Plumbing), "
+               "in at 9:12 and 9:30.")
+        with _Ctx(db=self.db) as c:
+            menu = self.say(c, "Any updates on worker count?")                # 9:41
+            self.assertEqual(menu, MENU)
+            first = self.say(c, "588")                                        # answers it
+            self.assertTrue(first.startswith("20 on site at 588 Thomas S Boyland St now"))
+            self.assertIn(two, first)
+            again = self.say(c, "U asked which address I said 588", quoted=MENU, from_bot=True)
+            self.assertEqual(again, first)                                    # same question, same job
+            dot = self.say(c, ".", quoted="Any updates on worker count?")
+            self.assertEqual(dot, first)
+            added = self.say(c, "Who's the 2 added workers")                  # first try
+            self.assertTrue(added.startswith(two))
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.llm_calls, [])       # no generic model answer, ever
+
+    def test_since_the_morning_means_since_the_brief(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "how many workers at 588 thomas")
+            reply = self.say(c, "and since the morning?")
+        self.assertTrue(reply.startswith("2 since your 8:07 brief — Jose Zarate"))
+
+    def test_those_refers_to_the_last_answer(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "Who's the 2 added workers at 588")
+            reply = self.say(c, "when did those come in")
+        self.assertIn("in at 9:12 and 9:30", reply)
+
+    def test_an_ambiguous_since_gets_one_short_question(self):
+        with _Ctx(db=self.db) as c:
+            q = self.say(c, "who came in since earlier at 588 thomas")
+            self.assertEqual(q, "Since 8:07 (your brief) or since 7am?")
+            reply = self.say(c, "8:07")
+        self.assertTrue(reply.startswith("2 since your 8:07 brief"))
+        self.assertEqual(self.llm_calls, [])
+
+    def test_the_other_option(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "who came in since earlier at 588 thomas")
+            reply = self.say(c, "7am")
+        # Everyone else was in before 7 (6:30-6:48).
+        self.assertTrue(reply.startswith("2 since 7:00 — Jose Zarate and Pablo Sen"))
+
+    def test_the_current_job_holds_no_picker(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "how many workers at 588 thomas")
+            reply = self.say(c, "what's open?")
+        self.assertEqual(reply, f"answer for {THOMAS}")
+
+    def test_the_history_reaches_the_model_with_the_brief(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "how many workers at 588 thomas")
+            self.say(c, "what's open there?")
+        hist = self.agent_calls[0]["dm_history"]
+        texts = [m["content"] for m in hist]
+        self.assertTrue(any("On site so far: 18" in t for t in texts))       # the brief
+        self.assertIn("how many workers at 588 thomas", texts)               # their side
+        self.assertTrue(any(t.startswith("20 on site at") for t in texts))   # its side
+        self.assertEqual({m["role"] for m in hist}, {"user", "assistant"})
+
+    def test_a_question_mark_follows_up_instead_of_a_greeting(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "what's open at 8 walworth?")
+            reply = self.say(c, "?")
+        self.assertEqual(reply, f"answer for {WALWORTH}")
+        self.assertEqual(self.agent_calls[-1]["body"], "what's open at 8 walworth?")
+        self.assertEqual(self.llm_calls, [])
+
+    def test_a_vague_message_with_history_is_never_a_generic_answer(self):
+        with _Ctx(db=self.db) as c:
+            self.say(c, "what's open at 8 walworth?")
+            self.say(c, "hmm ok and the rest")
+        self.assertEqual(self.llm_calls, [])
+        self.assertEqual(self.agent_calls[-1]["project_id"], WALWORTH)
+
+
+class TheAgentsNumbersAreChecked(_Chat, unittest.TestCase):
+
+    def test_a_number_not_in_the_tool_results_is_not_sent(self):
+        async def agent(**kw):
+            kw["tool_trace"].append({"tool": "open_items", "result": "Open items: 3"})
+            return "You have 7 open items."
+        with _Ctx(db=self.db), patch.object(server, "_run_group_agent", agent):
+            reply = _run(server._dm_answer_job(
+                {"company_id": CO_A}, {"_id": WALWORTH, "address": "8 Walworth St"},
+                CHAT, "what's open?", "m1", []))
+        self.assertEqual(reply, "From the records:\nOpen items: 3")
+
+    def test_numbers_from_the_tools_pass(self):
+        async def agent(**kw):
+            kw["tool_trace"].append({"tool": "open_items", "result": "Open items: 3"})
+            return "3 open items at 8 Walworth."
+        with _Ctx(db=self.db), patch.object(server, "_run_group_agent", agent):
+            reply = _run(server._dm_answer_job(
+                {"company_id": CO_A}, {"_id": WALWORTH, "address": "8 Walworth St"},
+                CHAT, "what's open?", "m1", []))
+        self.assertEqual(reply, "3 open items at 8 Walworth.")
 
 
 class TheRules(unittest.TestCase):
