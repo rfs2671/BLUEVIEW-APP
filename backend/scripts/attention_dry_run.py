@@ -52,6 +52,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -123,7 +124,13 @@ def wire_body(sc: dict, m: dict) -> str:
     body = m["text"]
     for k in m.get("mentions") or []:
         name = sc["senders"][k]["name"].split(" ")[0]
-        body = body.replace(f"@{name}", f"@{sc['senders'][k]['lid']}", 1)
+        lid = sc["senders"][k]["lid"]
+        if f"@{name}" in body:
+            body = body.replace(f"@{name}", f"@{lid}", 1)
+        else:
+            # Tagged under another name (how the sender's phone saved the
+            # contact): the wire still carries the tagged person's id.
+            body = re.sub(r"@[^\s@\d][^\s@]*", f"@{lid}", body, count=1)
     return body
 
 
@@ -543,6 +550,13 @@ def main(argv=None) -> int:
                     help="no model: expected labels are the model's answers")
     ap.add_argument("--json", help="write the full report here")
     a = ap.parse_args(argv)
+    # A Windows console behind a pipe (railway run) is cp1252: the report's
+    # quotes and arrows must not crash it.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     import logging
     logging.getLogger("server").setLevel(logging.WARNING)   # the report is the output
     try:

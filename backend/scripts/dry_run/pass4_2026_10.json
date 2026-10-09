@@ -1,16 +1,225 @@
 {
- "placeholder": true,
- "name": "pass-4 (tonight's script)",
- "about": "Placeholder: paste tonight's pass-4 script and it will be filled in here (same format as pass3_2026_10.json). Until then the dry run refuses to run it (exit 2).",
+ "name": "pass-4 (Fri 2026-10-09 evening)",
+ "about": "Roy (GC admin) and Chris (Quality Plumbing, a sub, mapped in People). 'tomorrow' = Saturday. Roy's @Patricia tags Chris's number (the name is how Roy's phone shows the contact). Times are illustrative: the script gave only the +30s gap before 'Actually give me till 11-12'. Saturday chases only the stair stringer calcs (all four slots); Sunday nothing (the elevator pit moved to Monday); Monday the elevator pit. Not chased: the window shop drawings (sent), the roof drain (asked of no one; Chris's 'Np' is only possibly his, flagged). 588 Thomas has Chase on weekends on.",
  "tz": "America/New_York",
  "project": {
   "name": "588 Thomas S Boyland St",
+  "address": "588 Thomas S Boyland St, Brooklyn, NY",
   "chase_weekends": true
  },
- "senders": {},
- "messages": [],
+ "senders": {
+  "R": {
+   "name": "Roy Fishman",
+   "lid": "201000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "C": {
+   "name": "Chris",
+   "lid": "201000000000003",
+   "people": {
+    "person_name": "Chris",
+    "sub_company": "Quality Plumbing"
+   }
+  }
+ },
+ "messages": [
+  {
+   "from": "R",
+   "at": "2026-10-09 18:10:00",
+   "text": "Chris, can you send the window shop drawings tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:12:00",
+   "text": "Yeah I'll send them tomorrow morning",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "tomorrow morning"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 18:12:30",
+   "text": "can someone check the roof drain sizes tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:13:00",
+   "text": "Np",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "owner_possibly": true,
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "from": "R",
+   "at": "2026-10-09 18:14:00",
+   "text": "@Patricia can you get the elevator pit inspection booked by Saturday?",
+   "mentions": [
+    "C"
+   ],
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "by Saturday"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:15:00",
+   "text": "Sunday. I'll keep u posted",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "Sunday"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:15:30",
+   "text": "Actually give me till 11-12",
+   "reply_to": 2,
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "rescheduled",
+    "due_text": "till 11-12"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:16:30",
+   "text": "I'll send the stair stringer calcs Saturday morning",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "Saturday morning"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:18:00",
+   "text": "Actually Monday morning",
+   "reply_to": 6,
+   "expect": {
+    "kind": "state",
+    "of": 6,
+    "to": "rescheduled",
+    "due_text": "Monday"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-09 18:19:00",
+   "text": "Just sent, check ur email",
+   "reply_to": 1,
+   "expect": {
+    "kind": "state",
+    "of": 1,
+    "also": [
+     2
+    ],
+    "to": "done"
+   }
+  }
+ ],
  "chase": {
-  "days": [],
-  "expect": []
+  "days": [
+   "2026-10-10",
+   "2026-10-11",
+   "2026-10-12"
+  ],
+  "expect": [
+   {
+    "day": "2026-10-10",
+    "slot": "morning",
+    "owner": "C",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "midday",
+    "owner": "C",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "eod",
+    "owner": "C",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-10",
+    "slot": "admin_dm",
+    "owner": "C",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "morning",
+    "owner": "C",
+    "items": [
+     6
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "midday",
+    "owner": "C",
+    "items": [
+     6
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "eod",
+    "owner": "C",
+    "items": [
+     6
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "admin_dm",
+    "owner": "C",
+    "items": [
+     6
+    ]
+   }
+  ]
  }
 }

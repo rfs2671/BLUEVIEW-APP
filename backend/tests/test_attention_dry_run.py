@@ -169,7 +169,20 @@ class TheHarness(unittest.TestCase):
                 asyncio.run(dry.run(self.sc, scripted=False))
 
     def test_a_placeholder_exits_2(self):
-        self.assertEqual(dry.main([str(DIR / "pass4_2026_10.json")]), 2)
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "placeholder.json"
+            f.write_text(json.dumps({"placeholder": True, "name": "x", "senders": {},
+                                     "messages": [], "chase": {"days": [], "expect": []}}))
+            self.assertEqual(dry.main([str(f)]), 2)
+
+    def test_tagged_under_another_name(self):
+        """Roy's phone shows Chris as "Patricia": the wire still carries
+        Chris's id."""
+        sc = dry.load(DIR / "pass4_2026_10.json")
+        m = next(m for m in sc["messages"] if m["text"].startswith("@Patricia"))
+        self.assertEqual(dry.wire_body(sc, m),
+                         "@" + sc["senders"]["C"]["lid"] + m["text"][len("@Patricia"):])
 
 
 class TheParser(unittest.TestCase):

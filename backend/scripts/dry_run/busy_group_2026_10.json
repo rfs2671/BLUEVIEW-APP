@@ -1,6 +1,6 @@
 {
  "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
- "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases Patricia (risers), Mike Rivera (panel confirm) and Kevin (door schedule); Friday chases Jose (risers) and Mike Rivera (lighting cut sheets). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases Patricia (risers) and Mike Rivera (panel confirm); Friday chases Jose (risers) and Mike Rivera (lighting cut sheets). Not chased: GC staff (Kevin, a company user, on the door schedule; Gina, mapped \"GC team\", on the logistics plan) -- subs only; anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
  "tz": "America/New_York",
  "project": {
   "name": "8 Walworth St",
@@ -104,6 +104,14 @@
    "people": {
     "person_name": "Eddie Ruiz",
     "sub_company": "Lift Co"
+   }
+  },
+  "G": {
+   "name": "Gina Lopez",
+   "lid": "301000000000016",
+   "people": {
+    "person_name": "Gina Lopez",
+    "sub_company": "GC team"
    }
   }
  },
@@ -438,6 +446,18 @@
     "kind": "item",
     "type": "commitment"
    }
+  },
+  {
+   "from": "G",
+   "at": "2026-10-14 09:30:00",
+   "text": "I'll send the updated logistics plan Thursday",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "G",
+    "owner_possibly": false,
+    "due_text": "Thursday"
+   }
   }
  ],
  "chase": {
@@ -508,38 +528,6 @@
     "owner": "M",
     "items": [
      7
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "morning",
-    "owner": "K",
-    "items": [
-     16
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "midday",
-    "owner": "K",
-    "items": [
-     16
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "eod",
-    "owner": "K",
-    "items": [
-     16
-    ]
-   },
-   {
-    "day": "2026-10-15",
-    "slot": "admin_dm",
-    "owner": "K",
-    "items": [
-     16
     ]
    },
    {

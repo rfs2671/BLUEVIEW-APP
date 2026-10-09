@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,8 +49,8 @@ def _item(db, quote="I'll send the stair RFI today", **over):
         "_id": f"it{_n[0]}", "company_id": CO_A, "project_id": "proj_a",
         "group_id": G_A, "type": "commitment", "status": "open",
         "summary": quote,
-        "owner": {"kind": "user", "id": "u_mike", "name": "Mike Rivera",
-                  "status": "resolved", "jid": f"{MIKE}@c.us", "source": "sender"},
+        "owner": {"kind": "sender_map", "id": "u_mike", "name": "Mike Rivera",
+                  "sub_company": "Rivera Electric", "status": "resolved", "jid": f"{MIKE}@c.us", "source": "sender"},
         "due": {"due_text": "today", "due_at": DAY, "due_source": "parsed"},
         "evidence": {"message_id": f"M{_n[0]}", "quote": quote,
                      "sent_at": _et(7, 0), "sender": MIKE},
@@ -139,6 +139,23 @@ class WhatIsChased(_Base):
                               "jid": "123@lid"})
         self.chase(_et(8, 35))
         self.assertTrue(self.rows()[0]["text"].startswith("@Jose morning"))
+
+    def test_gc_staff_are_never_chased(self):
+        """Subs only: a company user, or someone mapped in People to "GC
+        team", is never nudged in a group (and so never reaches the admin
+        DM)."""
+        for label, owner in {
+                "a company user": {"kind": "user", "id": "u_kev", "sub_company": None},
+                "mapped GC team": {"kind": "sender_map", "id": "sm9", "sub_company": "GC team"},
+                "mapped gc  TEAM": {"kind": "sender_map", "id": "sm9", "sub_company": " gc  TEAM "},
+        }.items():
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            it = _item(self.db, owner=owner)
+            self.assertEqual(wa_chase.skip_reason(it, date.fromisoformat(DAY)), "gc_staff", label)
+            for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+                self.chase(_et(h, m))
+            self.assertEqual(self.rows(), [], label)
 
     def test_skipped(self):
         cases = {

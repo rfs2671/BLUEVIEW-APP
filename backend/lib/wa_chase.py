@@ -8,7 +8,9 @@ nudge it WOULD send in `chase_shadow` for an admin to mark Correct / Wrong
 WHAT IS CHASED (all of these):
 - an open or rescheduled commitment or request;
 - its owner confirmed: resolved, not "possibly theirs";
-- the owner is a Levelog user or mapped in Project → WhatsApp → People;
+- the owner is a SUB: mapped in Project → WhatsApp → People to one of the
+  project's subs. GC staff are never chased in a group: a Levelog user of
+  the company, or a person mapped to "GC team";
 - an explicit due date the code read from the words ("Friday", "10/12");
 - nothing about it flagged for an admin's review, and the item itself not
   marked Wrong (or dismissed) by an admin;
@@ -60,7 +62,9 @@ SLOT_LABELS = {MORNING: "morning", MIDDAY: "midday", EOD: "end of day",
 
 CHASE_TYPES = ("commitment", "request")
 CHASE_STATUSES = ("open", "rescheduled")
-OWNER_KINDS = ("user", "sender_map")
+# Subs only: a company user is GC staff, and so is a person mapped "GC team".
+OWNER_KINDS = ("sender_map",)
+GC_KINDS = ("user",)
 QUOTE_MAX = 200
 VERDICTS = ("correct", "wrong")
 # Items extracted under an older prompt are never chased.
@@ -131,6 +135,8 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "owner_unconfirmed"
     if o.get("possibly"):
         return "owner_possibly"
+    if is_gc_staff(o):
+        return "gc_staff"
     if o.get("kind") not in OWNER_KINDS:
         return "owner_not_known"
     if not o.get("jid"):
@@ -141,6 +147,16 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
     if str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
     return None
+
+
+def is_gc_staff(owner: Dict[str, Any]) -> bool:
+    """A company user, or someone mapped in People to "GC team"."""
+    from lib import wa_sender_map
+    o = owner or {}
+    if o.get("kind") in GC_KINDS:
+        return True
+    return (o.get("kind") == "sender_map" and " ".join(
+        str(o.get("sub_company") or "").split()).lower() == wa_sender_map.GC_TEAM.lower())
 
 
 def _prompt_ok(item: Dict[str, Any]) -> bool:
