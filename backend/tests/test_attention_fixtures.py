@@ -421,5 +421,97 @@ class TheTimelineOnTheReviewScreen(unittest.TestCase):
             self.assertEqual(e.exception.status_code, code)
 
 
+
+class ReviewFindings(unittest.TestCase):
+    """Codex review of #709."""
+
+    def _world_with(self, lines):
+        out = replay(lines)
+        return out["db"], {it["evidence"]["quote"]: it for it in out["items"]}
+
+    def test_an_update_and_a_new_ask_in_one_message(self):
+        lines = [
+            {"n": 1, "from": "D", "body": "C, need the load calcs by Friday",
+             "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
+            {"n": 2, "from": "D",
+             "body": "Never mind the load calcs; send the revised schedule by Friday",
+             "expect": {"kind": "none"},
+             "model": [{"type": "request", "quote": "send the revised schedule by Friday",
+                        "summary": "Send revised schedule", "due_text": "by Friday"},
+                       {"type": "request", "quote": "Never mind the load calcs",
+                        "summary": "Load calcs no longer needed"}]},
+        ]
+        db, items = self._world_with(lines)
+        self.assertEqual(items["C, need the load calcs by Friday"]["status"], "cancelled")
+        self.assertIn("send the revised schedule by Friday", items)        # kept
+        self.assertNotIn("Never mind the load calcs", items)                # the update itself
+
+    def test_a_failed_state_write_is_retried_once(self):
+        lines = [
+            {"n": 1, "from": "A", "body": "B, can you send the riser dimensions by Friday?",
+             "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
+            {"n": 2, "from": "B", "body": "I'll send the riser dimensions Friday",
+             "expect": {"kind": "item", "type": "commitment", "due_text": "Friday"}},
+        ]
+        out = replay(lines)
+        db = out["db"]
+        at = T0 + timedelta(hours=1)
+        _msg(db, "Actually risers will be Monday", sender=SENDERS["B"], at=at,
+             message_id="RESCHED1")
+        col = db[server.ATTENTION_ITEMS]
+        real = col.update_one
+        calls = {"n": 0}
+
+        async def flaky(q, u, **k):
+            if "$push" in u and calls["n"] == 0:
+                calls["n"] += 1
+                raise RuntimeError("mongo down")
+            return await real(q, u, **k)
+
+        model = _ScriptedModel(lines)
+        with patch.object(col, "update_one", flaky):
+            report, _ = _tick(db, model, at + timedelta(minutes=5))
+        self.assertEqual(report["write_failed"], 1)
+        _tick(db, model, at + timedelta(minutes=6))       # the retry
+        it = next(i for i in _items(db) if i["type"] == "commitment")
+        moves = [h for h in it["history"] if h.get("message_id") == "RESCHED1"]
+        self.assertEqual(len(moves), 1)
+        self.assertEqual((it["status"], it["due"]["due_text"]), ("rescheduled", "Monday"))
+
+    def test_an_issue_in_other_words_is_kept(self):
+        self.assertFalse(wa.is_schedule_update("Inspection found exposed live wires"))
+        self.assertTrue(wa.is_schedule_update("Inspection moved to Tuesday 10am"))
+        self.assertFalse(wa.is_schedule_update("Pour pushed to Friday, pump broke"))
+        lines = [{"n": 1, "from": "A", "body": "Inspection found exposed live wires",
+                  "expect": {"kind": "item", "type": "issue"}}]
+        _, items = self._world_with(lines)
+        self.assertEqual(items["Inspection found exposed live wires"]["type"], "issue")
+
+    def test_a_review_never_loses_an_entry_the_worker_adds_meanwhile(self):
+        out = replay(SCRIPT["lines"])
+        db = out["db"]
+        col = db[server.ATTENTION_ITEMS]
+        it = next(i for i in out["items"]
+                  if i["evidence"]["quote"] == "Yeah I'll send them tomorrow morning")
+        real = col.find_one
+        late = {"id": "late01", "kind": "flag", "to": None, "review": None}
+
+        async def read_then_worker_appends(q, *a, **k):
+            doc = await real(q, *a, **k)
+            stored = next(r for r in col.rows if r["_id"] == it["_id"])
+            if late not in stored["history"]:
+                stored["history"].append(dict(late))  # the worker, between read and write
+            return doc
+
+        with patch.object(server, "db", db), \
+                patch.object(col, "find_one", read_then_worker_appends):
+            _run(server.review_project_attention_event(
+                "proj_a", str(it["_id"]), it["history"][1]["id"], {"verdict": "correct"},
+                current_user=ADMIN))
+        stored = next(r for r in col.rows if r["_id"] == it["_id"])
+        self.assertIn("late01", [h["id"] for h in stored["history"]])
+        self.assertEqual(stored["history"][1]["review"]["verdict"], "correct")
+
+
 if __name__ == "__main__":
     unittest.main()

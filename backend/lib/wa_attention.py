@@ -385,9 +385,9 @@ def importance(model_label: str, body: str) -> Dict[str, str]:
 
 
 # An issue is a problem: a defect or damage, a delay, a safety hazard, blocked
-# work. The message has to name one; a schedule or info update ("Inspection
-# moved to Tuesday 10am") does not, and is dropped whatever the model said.
-# (A later "schedule change" type may keep those; v1 skips them.)
+# work. A schedule or info update ("Inspection moved to Tuesday 10am") is not
+# one, and is dropped whatever the model said (is_schedule_update). A later
+# "schedule change" type may keep those; v1 skips them.
 PROBLEM_RE = re.compile(
     r"\b(leak\w*|crack\w*|broke\w*|damag\w*|defect\w*|delay\w*|behind|late"
     r"|block\w*|stuck|held up|hold(ing)? up|waiting on|can'?t|cannot|couldn'?t"
@@ -400,6 +400,27 @@ PROBLEM_RE = re.compile(
 
 def names_a_problem(body: str) -> bool:
     return bool(PROBLEM_RE.search((body or "").translate(_TYPO)))
+
+
+# What a schedule or info update looks like: a move / arrival word and a day,
+# date or time ("Inspection moved to Tuesday 10am", "Mike from the elevator
+# company will be here Wed"). Only these are dropped as issues -- an issue in
+# any other words ("Inspection found exposed live wires") is the model's call.
+_SCHEDULE_RE = re.compile(
+    r"\b(moved|moving|rescheduled|pushed|postponed|changed to|is now|now on|set for"
+    r"|scheduled|will be (here|there|on site|onsite)|coming (on|in)|is on|starts?)\b",
+    re.IGNORECASE)
+_WHEN_RE = re.compile(
+    r"\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\btomorrow\b|\btoday\b"
+    r"|\bnext week\b|\b\d{1,2}(:\d{2})?\s?(am|pm)\b|\b\d{1,2}/\d{1,2}\b",
+    re.IGNORECASE)
+
+
+def is_schedule_update(body: str) -> bool:
+    """A schedule or info update that names no problem: not an issue."""
+    text = (body or "").translate(_TYPO)
+    return (bool(_SCHEDULE_RE.search(text)) and bool(_WHEN_RE.search(text))
+            and not names_a_problem(text))
 
 
 # ── 7. DEDUPE ───────────────────────────────────────────────────────────────

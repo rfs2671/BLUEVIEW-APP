@@ -46308,18 +46308,22 @@ def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict
 
 
 async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
-                                  ctx: dict, report: dict) -> bool:
-    """Apply what this message says about an earlier item. True when it
-    changed or flagged one (then it is not read for new items)."""
+                                  ctx: dict, report: dict) -> Optional[set]:
+    """Apply what this message says about earlier items. Returns the topic
+    words of the items it changed or flagged (empty when none), so the same
+    thing restated is not also recorded as new -- the rest of the message
+    still is ("Never mind the load calcs; send the schedule by Friday").
+    None when a write failed: the message is retried next run, and what was
+    already written is recognised by its message id, not applied twice."""
     has_file = bool(wa_attention_state.media_of(msg))
     cls = wa_attention_state.classify(text, has_file=has_file)
     if not cls:
-        return False
+        return set()
     sender = str(msg.get("sender") or "")
     sent_at = _attention_sent_at(msg)
     rows = await _attention_live_items(ctx, sent_at)
     if not rows:
-        return False
+        return set()
     by_id = {str(r["_id"]): r for r in rows}
     own = wa_attention_state.topic_terms(text)
     terms = set(own)
@@ -46335,7 +46339,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     actions = wa_attention_state.decide(
         upd, [_attention_candidate(r) for r in rows])
     if not actions:
-        return False
+        return set()
     # EVIDENCE OR SILENCE: the words as written, or the file itself.
     if text:
         quote = wa_attention.verify_quote(text, text) or text[:wa_attention.MAX_QUOTE_CHARS]
@@ -46343,10 +46347,16 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     else:
         quote, ev_kind = wa_attention_state.file_quote(msg), "file"
     now = datetime.now(timezone.utc)
+    this_id = str(msg.get("message_id") or msg.get("_id") or "")
+    topics: set = set()
     for a in actions:
         it = by_id.get(a["item_id"])
         if not it:
             continue
+        topics |= set(it.get("topic") or [])
+        if any(isinstance(h, dict) and h.get("message_id") == this_id
+               and h.get("kind") != "created" for h in it.get("history") or []):
+            continue    # a retry: this message already changed this item
         frm = it.get("status")
         sets: dict = {"updated_at": now}
         push: dict = {}
@@ -46378,12 +46388,16 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
             event = _attention_event("flag", frm, frm, msg, quote, ev_kind, **extra)
         push["history"] = event
         try:
-            await db.attention_items.update_one(
+            res = await db.attention_items.update_one(
                 {"_id": it["_id"], "status": frm}, {"$set": sets, "$push": push})
-            report["state_updates"] += 1
         except Exception as e:
             logger.warning(f"[attention] state write failed: {type(e).__name__}")
-    return True
+            report["write_failed"] += 1
+            return None
+        if getattr(res, "matched_count", 1):
+            report["state_updates"] += 1
+        # matched nothing: an admin dismissed it meanwhile; that stands.
+    return topics
 
 
 async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
@@ -46437,10 +46451,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
     prev = await _attention_previous(msg, ctx)
     # An update to an earlier item ("Sent this morning", "Actually Monday",
-    # "Never mind the load calcs", a file from the owner) is not a new item.
-    if await _attention_state_update(msg, text, prev, ctx, report):
-        await _attention_count(ctx, ctx["now"], messages=1)
-        return True
+    # "Never mind the load calcs", a file from the owner). What it updated is
+    # not recorded again as new; anything else the message asks still is.
+    updated = await _attention_state_update(msg, text, prev, ctx, report)
+    if updated is None:
+        return False
     reason = wa_attention.filter_reason(msg)
     if not reason:
         report["filtered_out"] += 1
@@ -46495,11 +46510,14 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         if not quote:
             report["dropped_unverified"] += 1
             continue
-        if it["type"] == "issue" and not wa_attention.names_a_problem(body):
+        if it["type"] == "issue" and wa_attention.is_schedule_update(body):
             # A schedule or info update is not an issue (pass-1 review).
             report["dropped_not_issue"] += 1
             continue
         terms = wa_attention_state.topic_terms(quote, it["summary"])
+        if updated and terms & updated:
+            report["restated_update"] += 1    # the update itself, restated
+            continue
         if it["type"] == "question" and not quoted:
             # "B the risers came in?": chasing a promise, not a new item.
             chased = wa_attention_state.follow_up_of(
@@ -46731,6 +46749,7 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "filtered_out": 0, "dropped_unverified": 0,
               "dropped_not_issue": 0, "model_failed": 0,
               "state_updates": 0, "follow_ups": 0, "held": 0,
+              "restated_update": 0,
               "max_lag_seconds": 0,
               "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
               "owner_resolved": 0,
@@ -59666,11 +59685,13 @@ async def review_project_attention_event(project_id: str, item_id: str, event_id
     if not it or idx is None:
         raise HTTPException(status_code=404, detail="Change not found")
     now = datetime.now(timezone.utc)
-    history[idx] = {**history[idx], "review": {
-        "verdict": verdict, "by": actor_id(current_user), "at": now}}
-    await db.attention_items.update_one(q, {"$set": {"history": history,
-                                                      "updated_at": now}})
-    it["history"] = history
+    review = {"verdict": verdict, "by": actor_id(current_user), "at": now}
+    # Only this entry, in place: history is append-only, so its index holds
+    # while the worker adds entries, and other verdicts are left alone.
+    await db.attention_items.update_one(
+        {**q, f"history.{idx}.id": event_id},
+        {"$set": {f"history.{idx}.review": review, "updated_at": now}})
+    it = await db.attention_items.find_one(q) or it
     g = await db.whatsapp_groups.find_one(
         {"wa_group_id": it.get("group_id"), "project_id": str(project_id),
          "company_id": _company_id_filter(company_id)}, {"group_name": 1})

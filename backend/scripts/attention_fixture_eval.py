@@ -4,7 +4,7 @@ Read-only: no database, nothing sent to any group. For every line that
 should not be handled before the model (state updates, merged parts), one
 gpt-4o-mini call with the lines before it as context -- the replied-to
 message, or the open ask just before it, shown as the worker shows them --
-then the checks the worker applies (evidence, an issue names a problem,
+then the checks the worker applies (evidence, a schedule update is no issue,
 severity only as stated). Prints one row per line and the agreement.
 
     OPENAI_API_KEY=... python scripts/attention_fixture_eval.py \\
@@ -68,7 +68,7 @@ def main(path: str) -> int:
             for it in wa.parse_items(call(wa.build_messages(msg, prev, quoted, answers))):
                 if not wa.verify_quote(it["quote"], body):
                     continue
-                if it["type"] == "issue" and not wa.names_a_problem(body):
+                if it["type"] == "issue" and wa.is_schedule_update(body):
                     continue
                 imp = wa.importance(it["importance"], body)["importance"]
                 got.append(f"{it['type']}/{imp}")

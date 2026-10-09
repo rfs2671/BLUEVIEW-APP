@@ -73,6 +73,10 @@ def _get(doc, dotted):
     for i, part in enumerate(parts):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit():
+            if int(part) >= len(cur):
+                return _MISSING
+            cur = cur[int(part)]
         elif isinstance(cur, list) and not part.isdigit():
             rest = ".".join(parts[i:])
             vals = [_get(x, rest) for x in cur if isinstance(x, dict)]
@@ -98,8 +102,11 @@ def _set(doc, dotted, value):
     parts = dotted.split(".")
     cur = doc
     for p in parts[:-1]:
-        cur = cur.setdefault(p, {})
-    cur[parts[-1]] = value
+        cur = cur[int(p)] if isinstance(cur, list) else cur.setdefault(p, {})
+    if isinstance(cur, list):
+        cur[int(parts[-1])] = value
+    else:
+        cur[parts[-1]] = value
 
 
 class _Res:
