@@ -100,7 +100,10 @@ const FLAGS = {
   which_item: 'New date, but not clear for which item. Not applied.',
   possible_owner: 'Said yes right after this ask, which named nobody. Possibly theirs.',
   possible_subject: 'Said right after an ask that named nobody, in words that do not say what it is about. Possibly theirs, possibly that ask.',
+  possible_handover: 'Someone said its owner is out and took work on, but not clearly this. Not applied; not chased.',
 };
+
+const CLOSED_BY = { requester: 'by who asked', gc_staff: 'by GC staff' };
 
 /** What one timeline entry says happened. */
 export function eventLine(e) {
@@ -109,13 +112,18 @@ export function eventLine(e) {
   if (e.kind === 'follow_up') return 'Followed up (no change)';
   if (e.kind === 'part_done') return `One part done (…${e.sender_last4 || '????'})`;
   if (e.kind === 'flag') return FLAGS[e.note] || 'Flagged for review. Not applied.';
+  if (e.kind === 'handover') {
+    const who = `Handed over: ${e.owner_from || 'owner'} → ${e.owner_to || 'someone else'}`;
+    return e.due_to ? `${who} · due ${e.due_to}` : who;
+  }
   switch (e.to) {
     case 'rescheduled':
       return `Rescheduled: ${e.due_from || 'no date'} → ${e.due_to || 'no date'}`;
     case 'done':
-      return e.evidence_kind === 'file' ? 'Done (file sent)' : 'Done';
+      if (e.evidence_kind === 'file') return 'Done (file sent)';
+      return CLOSED_BY[e.by] ? `Done (closed ${CLOSED_BY[e.by]})` : 'Done';
     case 'cancelled':
-      return 'Cancelled by who asked';
+      return e.by === 'gc_staff' ? 'Cancelled by GC staff' : 'Cancelled by who asked';
     case 'possibly_done':
       return 'Possibly done';
     default:
@@ -137,6 +145,7 @@ export function reviewable(e) {
 const CHANGE_LABELS = {
   rescheduled: 'Rescheduled', done: 'Done', cancelled: 'Cancelled',
   possibly_done: 'Possibly done', part_done: 'Part done', flag: 'Flagged',
+  handover: 'Handed over',
 };
 
 /** "Done: 3 of 4 correct (75%)" per kind of change. */

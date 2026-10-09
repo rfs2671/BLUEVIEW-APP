@@ -165,15 +165,50 @@ def time_phrase(body: str) -> Optional[str]:
     return found[-1] if found else None
 
 
+# "Mike already did", "Jose sent them", "already done": it is done, and the
+# words say someone else did it -- what the asking side says to close an
+# item ("Never mind the panel confirm, Mike already did" is done, not
+# cancelled). A name is capitalised; "I" is never "someone else".
+_NOT_DOERS = {"Yes", "No", "Never", "Who", "What", "Already", "Just", "Also", "Ok",
+              "Okay", "It", "That", "This", "Nvm", "Mind", "And", "But", "So", "We"}
+_DONE_BY = re.compile(
+    r"\b(?:([A-Z][a-z]+)|(?i:he|she|they))\s+(?:(?i:already|just)\s+)?"
+    r"(?i:did(?: it)?|sent (?:it|them)|handled it|took care of it|got it done|finished it)\b"
+    r"|(?i:\balready (?:done|sent|did|delivered|submitted|handled|taken care of)\b)")
+
+
+def done_by_other(text: str) -> bool:
+    return doer(text) is not None
+
+
+def doer(text: str) -> Optional[str]:
+    """Who the words say did it: a first name (lowercase), "" for he / she /
+    they / "already done", None when they say nobody else did."""
+    for m in _DONE_BY.finditer(text or ""):
+        if m.group(1) and m.group(1) in _NOT_DOERS:
+            continue
+        before = re.findall(r"[a-z']+", (text or "")[:m.start()].lower())
+        if not m.group(1) and before and before[-1] in _FIRST_PERSON:
+            continue    # "I already sent the panel": the sender did it
+        return (m.group(1) or "").lower()
+    return None
+
+
+_FIRST_PERSON = {"i", "we", "i've", "we've", "ive", "weve", "me", "us"}
+
+
 def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
-    """{kind: done|cancel|reschedule, due_text?} from the words alone, or
-    None. A question is never an update ("is it done?")."""
+    """{kind: done|cancel|reschedule, due_text?, by_other?} from the words
+    alone, or None. A question is never an update ("is it done?")."""
     text = (body or "").strip()
     if not text:
         return {"kind": "done", "file": True} if has_file else None
     if "?" in text:
         return None
     if _CANCEL.search(text) or _FORGET.search(text):
+        if done_by_other(text):
+            # "Never mind the panel confirm, Mike already did": done.
+            return {"kind": "done", "by_other": True}
         return {"kind": "cancel"}
     if _RESCHEDULE.search(text):
         due = due_phrase(text)
@@ -183,6 +218,8 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         if at:
             # "Actually give me till 11-12": same day, a new time.
             return {"kind": "reschedule", "due_text": at, "time_only": True}
+    if done_by_other(text) and not _FUTURE.search(text):
+        return {"kind": "done", "by_other": True}
     if _DONE.search(text) and not _FUTURE.search(text):
         return {"kind": "done", "file": bool(has_file)}
     if has_file and len(text) <= 60 and not _FUTURE.search(text):
@@ -373,14 +410,22 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
         mine = [c for c in live if c.get("requester") == sender
                 and c.get("type") in ("request", "question")]
         got = _pick(mine, upd)
+        if not got["items"] and upd.get("sender_gc"):
+            # GC staff call off anyone's ask by what it is about (a reply to
+            # it, or its own subject words): never by "the one open".
+            got = _by_subject([c for c in live if c.get("type") in ("request", "question")],
+                              upd)
+            if len(got["items"]) == 1:
+                got = {**got, "by": "gc_staff"}
         if len(got["items"]) == 1 and got["link"] != "only_open":
             target = got["items"][0]
+            by = got.get("by") or "requester"
             out.append({"item_id": target["id"], "action": "state", "to": "cancelled",
-                        "link": got["link"], "by": "requester"})
+                        "link": got["link"], "by": by})
             for c in live:   # what answered the ask goes with it
                 if c.get("parent_id") == target["id"]:
                     out.append({"item_id": c["id"], "action": "state", "to": "cancelled",
-                                "link": "via_parent", "by": "requester"})
+                                "link": "via_parent", "by": by})
         elif got["items"]:
             out.append(_review("cancel", got["items"], got["link"], "requester",
                                "possibly_cancelled"))
@@ -424,9 +469,17 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
     if len(m["items"]) == 1 and m["link"] in ("reply", "previous", "owner_topic"):
         return [{"item_id": m["items"][0]["id"], "action": "part_done", "to": None,
                  "link": m["link"], "by": "owner"}]
+    # FROM THE ASKING SIDE: whoever asked, or GC staff, close an item by what
+    # it is about (its subject words, or a reply to it) -- "Never mind the
+    # panel confirm, Mike already did". Only when the words say someone else
+    # did it ("sent it" is the sender's own doing); never by "the one open".
+    rk = upd.get("reply_key")
+    if not got["items"] and upd.get("by_other"):
+        closed = _close_from_asking_side(upd, live)
+        if closed is not None:
+            return closed
     # A reply saying it is done to an ask put to nobody in particular: the
     # replier may well be who did it, but that is a guess, so an admin decides.
-    rk = upd.get("reply_key")
     if rk and not got["items"]:
         unowned = [c for c in live if not c.get("owner") and not c.get("multi")
                    and c.get("type") in ("request", "commitment") and c.get("key") == rk
@@ -442,6 +495,119 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
         return [{"item_id": c["id"], "action": "possibly_done", "to": "possibly_done",
                  "link": "ambiguous", "by": "owner"} for c in got["items"]]
     return []
+
+
+def _by_subject(cands: List[dict], upd: dict) -> Dict[str, Any]:
+    """{items, link} by a reply to it or its own subject words only."""
+    got = _pick(cands, {**upd, "previous_key": None,
+                        "terms": upd.get("own_terms") or set(), "own_terms": True})
+    return got if got["link"] in ("reply", "owner_topic") else {"items": [], "link": None}
+
+
+def _closer(c: dict, upd: dict, live: List[dict]) -> Optional[str]:
+    """"requester" when the sender asked for it (or for the ask it answers),
+    "gc_staff" when the sender is GC staff, else None."""
+    sender = upd.get("sender") or ""
+    if c.get("requester") == sender:
+        return "requester"
+    parent = next((p for p in live if p["id"] == c.get("parent_id")), None)
+    if parent and parent.get("requester") == sender:
+        return "requester"
+    return "gc_staff" if upd.get("sender_gc") else None
+
+
+def _close_from_asking_side(upd: dict, live: List[dict]) -> Optional[List[Dict[str, Any]]]:
+    cands = [c for c in live if not c.get("multi") and not is_mine(c, upd)
+             and c.get("type") in ("request", "commitment") and _closer(c, upd, live)]
+    name = upd.get("doer") or ""
+    # Who did it is not what it is about: "Mike" matches every item Mike has.
+    got = _by_subject(cands, {**upd, "own_terms": set(upd.get("own_terms") or ()) - {name}})
+    hit = got["items"]
+    if not hit:
+        return None
+    if len(hit) > 1 and name:
+        # "Mike already did": the item of the one it names.
+        named = [c for c in hit if name in re.findall(r"[a-z]+", (c.get("owner_name") or "").lower())]
+        hit = named or hit
+    if len(hit) > 1:
+        # A confirmed owner's item over one only possibly theirs.
+        sure = [c for c in hit if not c.get("owner_possibly")]
+        hit = sure or hit
+    if len(hit) > 1:
+        return [_review("done", hit, got["link"], "requester", "which_item")]
+    target = hit[0]
+    return [{**a, "by": _closer(target, upd, live)} for a in _done(target, got["link"], live)]
+
+
+# ── HANDOVER ─────────────────────────────────────────────────────────────────
+#
+# "Patricia's out sick, I'll send the risers Friday": Patricia's item is the
+# sender's now. A named person is out / can't, and the sender takes it on --
+# or "covering for Patricia". Confident (reassigned) when the item is the one
+# the words are about, or the two work for the same company; otherwise the
+# item is flagged for an admin and nobody is chased on it.
+
+_ABSENT = re.compile(
+    r"\b([a-z]{2,})(?:'s| is| was| has been)?\s+(?:out|off|sick|away|home sick|on vacation"
+    r"|on leave|not (?:in|here|around|coming)|can'?t make it|can'?t do it|cannot"
+    r"|can'?t|won'?t be able|isn'?t able)\b", re.IGNORECASE)
+_TAKEOVER = re.compile(
+    r"\b(?:covering for|cover(?:ing)? for|taking over (?:for|from)|filling in for"
+    r"|i'?ll take over (?:for|from)|i'?ll cover for)\s+([a-z]{2,})\b", re.IGNORECASE)
+_TAKE_ON = re.compile(
+    r"\b(?:i'?ll|i will|i'?m gonna|i got it|i'?ll take it|i'?ll handle|i'?ll cover|on me)\b",
+    re.IGNORECASE)
+_NOT_NAMES = {"he", "she", "they", "it", "we", "you", "that", "this", "there", "who",
+              "pump", "power", "water", "elevator", "lift", "crew", "truck", "everyone"}
+
+
+def handover_name(body: str) -> Optional[str]:
+    """The first name (lowercase) of who is out, when the sender takes their
+    work on; else None."""
+    text = norm_quote(body)
+    m = _TAKEOVER.search(text)
+    if m and m.group(1).lower() not in _NOT_NAMES:
+        return m.group(1).lower()
+    if not _TAKE_ON.search(text):
+        return None
+    for m in _ABSENT.finditer(text):
+        name = m.group(1).lower()
+        if name not in _NOT_NAMES and name not in wa._STOP:
+            return name
+    return None
+
+
+def decide_handover(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
+    """`upd`: sender, sender_ref, own_terms, reply_key, same_company (the
+    sender and the named person work for one company), named_ref.
+    Returns [{item_id, action: handover|flag, link, by, note?}] or one
+    review entry."""
+    ref = upd.get("named_ref")
+    if not ref or ref == upd.get("sender_ref"):
+        return []
+    theirs = [c for c in items if c.get("status") in LIVE and c.get("owner_ref") == ref
+              and not c.get("multi") and c.get("type") in ("commitment", "request")]
+    theirs = _one_thread(theirs)
+    if not theirs:
+        return []
+    got = _by_subject(theirs, upd)
+    hit, subject = got["items"], bool(got["items"])
+    link = got["link"]
+    if not hit and len(theirs) == 1:
+        hit, link = theirs, "only_open"
+    if len(hit) != 1:
+        return [_review("handover", hit or theirs, link or "ambiguous", "other",
+                        "possible_handover")]
+    if subject or upd.get("same_company"):
+        return [{"item_id": hit[0]["id"], "action": "handover", "to": None,
+                 "link": link, "by": "other"}]
+    # Flagged with the ask it answers: a flagged answer no longer stands in
+    # for its ask, and nobody is to be chased on either.
+    flagged = [hit[0]] + [c for c in items if c["id"] == hit[0].get("parent_id")
+                          and c.get("status") in LIVE]
+    return [{"item_id": c["id"], "action": "flag", "to": None,
+             "link": link if c is hit[0] else "via_child", "by": "other",
+             "note": "possible_handover"} for c in flagged]
 
 
 def _review(kind: str, items: List[dict], link: Optional[str], by: str,

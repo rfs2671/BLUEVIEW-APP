@@ -46245,8 +46245,9 @@ def _attention_sent_at(msg: dict) -> datetime:
 def _attention_owner_digits(it: dict) -> str:
     """Whose it is to do, as sender digits: a commitment is its sender's; a
     request or question is the person it was put to, when that is known."""
-    if it.get("type") == "commitment":
+    if it.get("type") == "commitment" and (it.get("owner") or {}).get("source") != "handover":
         return str((it.get("evidence") or {}).get("sender") or "")
+    # A request is the person it was put to; a handed-over item, who took it.
     jid = str((it.get("owner") or {}).get("jid") or "")
     return re.sub(r"\D", "", jid.split("@")[0]) if jid else ""
 
@@ -46260,11 +46261,28 @@ def _attention_ref(person: Optional[dict]) -> Optional[str]:
 
 
 async def _attention_sender_ref(msg: dict, ctx: dict) -> Optional[str]:
+    return _attention_ref(await _attention_sender(msg, ctx))
+
+
+async def _attention_sender(msg: dict, ctx: dict) -> Optional[dict]:
+    """Who sent it: a user of the company or someone in People (resolved),
+    else unresolved; None without a sender id."""
     jid = wa_attention.sender_jid(msg)
     if not jid:
         return None
-    return _attention_ref(await _attention_resolve(
-        jid, ctx["company_id"], ctx["project_id"], ctx["cache"]))
+    return {**(await _attention_resolve(jid, ctx["company_id"], ctx["project_id"],
+                                        ctx["cache"])), "jid": jid}
+
+
+def _attention_company(person: Optional[dict]) -> str:
+    """The company a resolved person works for, lowercase: their sub in
+    People, or the GC team for a user of the company."""
+    p = person or {}
+    if p.get("status") != "resolved":
+        return ""
+    if p.get("kind") == "user":
+        return wa_sender_map.GC_TEAM.lower()
+    return " ".join(str(p.get("sub_company") or "").split()).lower()
 
 
 def _attention_candidate(it: dict) -> dict:
@@ -46285,6 +46303,8 @@ def _attention_candidate(it: dict) -> dict:
         "owner_text": (it.get("owner") or {}).get("owner_text") or "",
         "owner_possibly": bool((it.get("owner") or {}).get("possibly")),
         "owner_ref": _attention_ref(it.get("owner")),
+        "owner_name": (it.get("owner") or {}).get("name") or "",
+        "quote": ev.get("quote") or "",
         "sent_at": ev.get("sent_at"),
         "summary": it.get("summary") or "",
     }
@@ -46334,7 +46354,8 @@ def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict
             "review": None, **extra}
 
 
-_REVIEW_KIND = {"done": "Done", "reschedule": "New date", "cancel": "Cancelled"}
+_REVIEW_KIND = {"done": "Done", "reschedule": "New date", "cancel": "Cancelled",
+                "handover": "Handed over"}
 
 
 async def _attention_review_entry(msg: dict, a: dict, cands: List[dict], quote: str,
@@ -46394,7 +46415,14 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     already written is recognised by its message id, not applied twice."""
     has_file = bool(wa_attention_state.media_of(msg))
     cls = wa_attention_state.classify(text, has_file=has_file)
-    if not cls:
+    # A handover first: "Patricia's out sick, I'll send the risers Friday
+    # instead" names a new date, but the sender is taking her item on, not
+    # moving their own. A done or a cancel stays what it says.
+    handover = None if cls and cls["kind"] in ("done", "cancel") \
+        else wa_attention_state.handover_name(text)
+    if handover:
+        cls = None
+    if not cls and not handover:
         return {"topics": set(), "ids": set()}
     sender = str(msg.get("sender") or "")
     sent_at = _attention_sent_at(msg)
@@ -46409,13 +46437,33 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         prev_key = wa_attention_state.short_id(prev.get("message_id"))
         if str(prev.get("sender") or "") != sender:
             terms |= wa_attention_state.topic_terms(prev.get("body"))
-    upd = {"kind": cls["kind"], "sender": sender,
-           "sender_ref": await _attention_sender_ref(msg, ctx),
+    who = await _attention_sender(msg, ctx)
+    upd = {"kind": cls["kind"] if cls else "handover", "sender": sender,
+           "sender_ref": _attention_ref(who),
+           # GC staff (a user of the company, or "GC team" in People) close
+           # or call off anyone's item by what it is about.
+           "sender_gc": bool(who and who.get("status") == "resolved"
+                             and wa_chase.is_gc_staff(who)),
+           "by_other": bool(cls and cls.get("by_other")),
+           "doer": wa_attention_state.doer(text) if cls and cls.get("by_other") else None,
            "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
            "previous_key": prev_key, "terms": terms, "own_terms": own,
-           "due_text": cls.get("due_text")}
-    actions = wa_attention_state.decide(
-        upd, [_attention_candidate(r) for r in rows])
+           "due_text": (cls or {}).get("due_text")}
+    cands = [_attention_candidate(r) for r in rows]
+    new_owner = None
+    if handover:
+        named = await _attention_named_owner(handover, ctx["company_id"], ctx["cache"])
+        if not named or not who or who.get("status") != "resolved":
+            return {"topics": set(), "ids": set()}
+        new_owner = {k: who.get(k) for k in ("kind", "id", "name", "sub_company", "jid")}
+        new_owner.update(status="resolved", reason=None, source="handover")
+        upd.update(named_ref=_attention_ref(named), same_company=bool(
+            _attention_company(who) and _attention_company(who) == _attention_company(named)))
+        actions = wa_attention_state.decide_handover(upd, cands)
+        due_text = wa_attention.text_in_body(wa_attention_state.due_phrase(text), text)
+        cls = {"kind": "handover", "due_text": due_text}
+    else:
+        actions = wa_attention_state.decide(upd, cands)
     if not actions:
         return {"topics": set(), "ids": set()}
     # EVIDENCE OR SILENCE: the words as written, or the file itself.
@@ -46475,6 +46523,29 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
                                           else "parsed" if due_at else "none")}
             sets["status"] = "rescheduled"
             event = _attention_event("state", frm, "rescheduled", msg, quote, ev_kind, **extra)
+        elif a["action"] == "handover":
+            # The item is the sender's from now on; a date they name is its
+            # new date ("I'll send the risers Friday").
+            old_owner = it.get("owner") or {}
+            sets["owner"] = {**new_owner, "owner_text": None}
+            extra.update(owner_from={"kind": old_owner.get("kind"), "id": old_owner.get("id"),
+                                     "name": old_owner.get("name") or ""},
+                         owner_to={"kind": new_owner.get("kind"), "id": new_owner.get("id"),
+                                   "name": new_owner.get("name") or "",
+                                   "jid": new_owner.get("jid")})
+            due_text = cls.get("due_text")
+            due_at = wa_attention.parse_due(due_text, sent_at) if due_text else None
+            if due_at:
+                old = it.get("due") or {}
+                sets["due"] = {"due_text": due_text, "due_at": due_at.isoformat(),
+                               "due_source": "parsed"}
+                extra.update(due_from=old.get("due_text"), due_from_at=old.get("due_at"),
+                             due_to=due_text, due_to_at=due_at.isoformat())
+            # Nudges quote who took it on; the original words stay the
+            # item's evidence and history.
+            sets["chase_quote"] = {"quote": quote, "message_id": this_id,
+                                   "sent_at": sent_at, "source": "handover"}
+            event = _attention_event("handover", frm, frm, msg, quote, ev_kind, **extra)
         elif a["action"] in ("state", "possibly_done"):
             sets["status"] = a["to"]
             event = _attention_event("state", frm, a["to"], msg, quote, ev_kind, **extra)
@@ -46496,7 +46567,13 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         if getattr(res, "matched_count", 1):
             report["state_updates"] += 1
         # matched nothing: an admin dismissed it meanwhile; that stands.
-    return {"topics": topics, "ids": ids}
+    # A handover: the commitment the message makes IS the handed-over item
+    # (not a second one); when it was only possibly a handover, what the
+    # message commits to is flagged as well -- nobody is chased on either.
+    handed = None
+    if cls.get("kind") == "handover":
+        handed = "confident" if any(a["action"] == "handover" for a in actions) else "flagged"
+    return {"topics": topics, "ids": ids, "handover": handed}
 
 
 async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
@@ -46574,6 +46651,19 @@ async def _attention_named_owner(name: Optional[str], company_id: str,
     out = {**hits[0], "source": "named"} if len(hits) == 1 else None
     cache[key] = out
     return out
+
+
+def _attention_link_due(link: dict) -> dict:
+    """The date of the ask a commitment answers: its stored date, else (a
+    question keeps none) the date its own words name, read from when it was
+    asked."""
+    due = link.get("due") or {}
+    if due.get("due_text"):
+        return due
+    text = wa_attention_state.due_phrase(link.get("quote") or "")
+    sent = link.get("sent_at")
+    at = wa_attention.parse_due(text, sent) if text and isinstance(sent, datetime) else None
+    return {"due_text": text, "due_at": at.isoformat() if at else None} if at else {}
 
 
 async def _attention_answer_followups(link: Optional[dict], typ: str, owner: dict,
@@ -46734,6 +46824,9 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             report["dropped_not_issue"] += 1
             continue
         terms = wa_attention_state.topic_terms(quote, it["summary"])
+        if it["type"] == "commitment" and updated.get("handover") == "confident":
+            report["restated_update"] += 1    # the handed-over item itself
+            continue
         if terms & updated["topics"] or (
                 # A reply to an ask whose answer this message just moved,
                 # finished or called off ("Wednesday is not happening. Gonna
@@ -46795,12 +46888,12 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         due_at = wa_attention.parse_due(due_text, sent_at)
         due = {"due_text": due_text, "due_at": due_at.isoformat() if due_at else None,
                "due_source": "parsed" if due_at else "none"}
-        if it["type"] == "commitment" and not due_text and link \
-                and (link.get("due") or {}).get("due_text"):
-            # "Sure you got it" to "... by Wednesday": the ask's date, as
-            # the ask said it.
-            pd = link["due"]
-            due = {"due_text": pd.get("due_text"), "due_at": pd.get("due_at"),
+        link_due = _attention_link_due(link) if link else {}
+        if it["type"] == "commitment" and not due_text and link_due.get("due_text"):
+            # "Sure you got it" to "... by Wednesday", "Np" under "can you
+            # confirm the dampers shipped tomorrow?": the ask's date, as the
+            # ask said it -- a question's too.
+            due = {"due_text": link_due.get("due_text"), "due_at": link_due.get("due_at"),
                    "due_source": "parent"}
         elif it["type"] == "commitment" and not due["due_at"] and link \
                 and wa_attention.time_only(due_text) and (link.get("due") or {}).get("due_at"):
@@ -46817,6 +46910,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             and not wa_attention_state.is_mine(
                 link, {"sender": sender, "sender_ref": _attention_ref(owner)})
             and not (wa_attention_state.topic_terms(quote) & set(link.get("topic") or ())))
+        possible_handover = it["type"] == "commitment" and updated.get("handover") == "flagged"
         if possible_subject:
             owner["possibly"] = True
         owner_key = (f"{owner['kind']}:{owner['id']}" if owner.get("id")
@@ -46888,8 +46982,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                     due_to=due["due_text"], due_source=due["due_source"])] + ([
                     _attention_event("flag", None, "open", msg, quote, "text",
                                      by="other", link="previous", note="possible_subject")]
-                    if possible_subject else []),
-                **({"needs_review": True} if possible_subject else {}),
+                    if possible_subject else []) + ([
+                    _attention_event("flag", None, "open", msg, quote, "text",
+                                     by="other", link=None, note="possible_handover")]
+                    if possible_handover else []),
+                **({"needs_review": True} if possible_subject or possible_handover else {}),
                 "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],
@@ -47132,7 +47229,8 @@ async def _chase_owner_spoke_at(group_id: str, item: dict,
                                 after: datetime) -> Optional[datetime]:
     """The owner's latest message in the group after `after`, if any."""
     ids = {wa_chase.digits((item.get("owner") or {}).get("jid"))}
-    if item.get("type") == "commitment":
+    if item.get("type") == "commitment" and (item.get("owner") or {}).get("source") != "handover":
+        # Who said it -- unless it was handed over: then only who took it on.
         ids.add(str((item.get("evidence") or {}).get("sender") or ""))
     ids.discard("")
     if not ids:
@@ -47289,7 +47387,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            "summary": i.get("summary") or "",
                            "quote": wa_chase.quote(i),
                            "due_text": (i.get("due") or {}).get("due_text"),
-                           "message_id": (i.get("evidence") or {}).get("message_id")}
+                           "message_id": wa_chase.quoted(i).get("message_id")}
                           for i in b["items"]],
                 "reason": wa_chase.reason(slot, b["items"], b["last"], day),
                 "review": None, "created_at": now, "shadow": True,
@@ -47304,7 +47402,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 report["admin_dm"] += 1
             else:
                 row.update(kind="group",
-                           reply_to=(first.get("evidence") or {}).get("message_id"),
+                           reply_to=wa_chase.quoted(first).get("message_id"),
                            text=wa_chase.group_text(row["owner_name"], b["items"], slot))
                 report["would_chase"] += 1
             await db[wa_chase.COLLECTION].update_one(
@@ -60537,6 +60635,9 @@ def _attention_event_view(e: dict) -> dict:
         "note": e.get("note"),
         "due_from": e.get("due_from"),
         "due_to": e.get("due_to"),
+        # A handover: who had it, who took it on (names only).
+        "owner_from": (e.get("owner_from") or {}).get("name") or None,
+        "owner_to": (e.get("owner_to") or {}).get("name") or None,
         "sender_last4": e.get("sender_last4") or "",
         "verdict": (e.get("review") or {}).get("verdict"),
     }
