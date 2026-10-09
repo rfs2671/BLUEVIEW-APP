@@ -1851,6 +1851,26 @@ export const whatsappAPI = {
   },
 
   // verdict: 'correct' | 'wrong' | 'dismissed'
+  // Project → WhatsApp → People: unknown group senders and who they are.
+  // Admin / PM. Senders are addressed by an opaque key, never their id.
+  getWhatsAppPeople: async (projectId) => {
+    const r = await apiClient.get(`/api/projects/${projectId}/whatsapp/people`);
+    return r.data;
+  },
+
+  setWhatsAppPerson: async (projectId, key, personName, subCompany) => {
+    const r = await apiClient.put(
+      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`,
+      { person_name: personName, sub_company: subCompany });
+    return r.data;
+  },
+
+  clearWhatsAppPerson: async (projectId, key) => {
+    const r = await apiClient.delete(
+      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`);
+    return r.data;
+  },
+
   reviewAttention: async (projectId, itemId, verdict) => {
     const response = await apiClient.post(
       `/api/projects/${projectId}/attention/${encodeURIComponent(itemId)}/review`,

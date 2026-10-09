@@ -68,6 +68,7 @@ from lib.report import view as report_view
 # module; server.py only supplies the database reads they need.
 from lib import wa_security  # noqa: E402
 from lib import owner_portal  # noqa: E402
+from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
@@ -46158,6 +46159,16 @@ async def _attention_resolve(jid: str, company_id: str, project_id: str,
     except Exception as e:
         logger.warning(f"[attention] resolve failed: {type(e).__name__}")
         out = {**out, "reason": "read_failed"}
+    # NOBODY ON FILE: WHAT AN ADMIN OR PM SAID THIS SENDER IS. The sender map
+    # (Project → WhatsApp → People) is this company's only; never another's.
+    if out.get("status") != "resolved" and jid:
+        try:
+            row = await db[wa_sender_map.COLLECTION].find_one(
+                {"company_id": str(company_id), "sender_jid": jid})
+            if row:
+                out = {**out, **wa_sender_map.owner_from_map(row)}
+        except Exception as e:
+            logger.warning(f"[attention] sender map read failed: {type(e).__name__}")
     cache[key] = out
     return out
 
@@ -47820,6 +47831,11 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         body = _pick("body", "")
         mtype = _pick("type", "")
         author = _pick("author", "") or from_field  # in groups, author = sender
+        # THE SENDER'S WHATSAPP DISPLAY NAME, when WaAPI sends one. It is the
+        # only human-readable thing about an @lid sender, and the People
+        # screen (lib/wa_sender_map.py) shows it instead of the id.
+        push_name = wa_sender_map.clean_push_name(
+            _pick("notifyName", "") or _pick("pushname", ""))
 
         is_group = "@g.us" in from_field
 
@@ -48035,6 +48051,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "message_id_serialized": msg_id_serialized,
             "from": from_field,
             "sender": author,
+            "push_name": push_name,
             "to": to_field,
             "body": body,
             "quoted_body": quoted_body,
@@ -56956,6 +56973,7 @@ async def _process_whatsapp_message(payload: dict):
                 # (@lid) — and only a phone can be matched to a person. Added
                 # going forward; older rows are read by length (wa_attention).
                 "sender_jid": str(parsed.get("sender") or ""),
+                "sender_name": parsed.get("push_name") or "",
                 "body": body,
                 "has_audio": parsed["has_audio"],
                 "transcribed": bool(parsed["has_audio"]),
@@ -59186,6 +59204,8 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         if not p:
             return None
         if p.get("status") == "resolved" and p.get("name"):
+            if p.get("kind") == "sender_map" and p.get("sub_company"):
+                return f"{p['name']} · {p['sub_company']}"
             return p["name"]
         if p.get("owner_text"):
             return p["owner_text"]
@@ -59294,6 +59314,208 @@ async def review_project_attention(project_id: str, item_id: str, body: dict,
         {"wa_group_id": it.get("group_id"), "project_id": str(project_id),
          "company_id": _company_id_filter(company_id)}, {"group_name": 1})
     return _attention_item_view(it, {it.get("group_id"): (g or {}).get("group_name")})
+
+
+# ── WHATSAPP SENDER MAP: Project → WhatsApp → People ───────────────────────
+#
+# Group senders mostly arrive as @lid privacy ids that match no phone on file,
+# so attention items named nobody. An admin or the project's PM says who each
+# unknown sender is (a name and their company on the job); the mapping is
+# per COMPANY and every group of that company uses it. Rules and shapes are in
+# lib/wa_sender_map.py.
+#
+# NOTHING IS SENT. Mapping a sender changes who an attention item names and
+# nothing else: no DM, no @mention, no group message (sub chasing comes later).
+# Raw ids never reach the screen; it works with an opaque per-company key.
+
+
+class SenderMapBody(BaseModel):
+    person_name: str
+    sub_company: str
+
+
+async def _people_senders(company_id: str, project_id: str,
+                          company_wide: bool) -> Dict[str, dict]:
+    """This company's group senders who are not a known user or worker:
+    jid -> summary (+ the mapping, when one exists).
+
+    WHOSE GROUPS. A company admin sees every group of the company; a PM only
+    the groups of the project they opened (require_project_access already
+    confined them to their assigned projects). The mapping itself is still
+    company-wide."""
+    gq = {"company_id": _company_id_filter(company_id), "active": True}
+    if not company_wide:
+        gq["project_id"] = str(project_id)
+    groups = await db.whatsapp_groups.find(
+        gq, {"wa_group_id": 1, "group_name": 1}).to_list(500)
+    names = {g.get("wa_group_id"): wa_groups.display_name(g.get("group_name"))
+             for g in groups if g.get("wa_group_id")}
+    if not names:
+        return {}
+    # THIS COMPANY'S ROWS ONLY. A group id can be unlinked from one company
+    # and linked to another; the earlier company's history keeps its own
+    # company_id and is never shown here.
+    rows = await db.whatsapp_messages.find(
+        {"group_id": {"$in": list(names)}, "sender": {"$ne": "bot"},
+         "company_id": _company_id_filter(company_id)},
+        {"sender": 1, "sender_jid": 1, "sender_name": 1, "group_id": 1,
+         "created_at": 1, "timestamp": 1, "from_me": 1},
+    ).sort([("created_at", -1)]).to_list(20000)
+    summary = wa_sender_map.summarize(rows, names)
+    maps = await db[wa_sender_map.COLLECTION].find(
+        {"company_id": str(company_id)}).to_list(5000)
+    by_jid = {m.get("sender_jid"): m for m in maps}
+    cache: dict = {}
+    out = {}
+    for jid, s in summary.items():
+        if jid not in by_jid:
+            res = await _attention_resolve(jid, company_id, project_id, cache)
+            if res.get("status") == "resolved":
+                continue          # a known user or worker: not unknown
+        s["mapping"] = by_jid.get(jid)
+        out[jid] = s
+    return out
+
+
+def _people_row(company_id: str, s: dict) -> dict:
+    m = s.get("mapping") or None
+    at = s.get("last_message_at")
+    return {
+        "key": wa_sender_map.sender_key(company_id, s["jid"]),
+        "label": wa_sender_map.label(s.get("push_name"), s["jid"]),
+        "push_name": wa_sender_map.safe_push_name(s.get("push_name")) or None,
+        "groups": sorted({n for n in s["groups"].values() if n}),
+        "message_count": s["message_count"],
+        "last_message_at": at.isoformat() if isinstance(at, datetime) else None,
+        "assigned": ({"person_name": m.get("person_name"),
+                      "sub_company": m.get("sub_company"),
+                      "set_at": (m.get("set_at").isoformat()
+                                 if isinstance(m.get("set_at"), datetime) else None)}
+                     if m else None),
+    }
+
+
+async def _people_find(company_id: str, project_id: str, key: str,
+                       company_wide: bool) -> dict:
+    senders = await _people_senders(company_id, project_id, company_wide)
+    for jid, s in senders.items():
+        if wa_sender_map.sender_key(company_id, jid) == key:
+            return s
+    raise HTTPException(status_code=404, detail="Sender not found")
+
+
+async def _sender_map_apply(company_id: str, jid: str, row: Optional[dict]) -> int:
+    """Re-point OPEN attention items whose owner (or requester) is this sender.
+
+    With a mapping: items still unresolved, or resolved through an earlier
+    mapping, take the new one. Without (cleared): items resolved through the
+    map go back to unresolved. Items resolved to a user or worker, and items
+    not open, are untouched. Nothing is created and nothing is posted."""
+    base = {"company_id": _company_id_filter(company_id), "status": "open"}
+    fields = (wa_sender_map.owner_from_map(row) if row
+              else dict(wa_sender_map.UNMAPPED_OWNER))
+    changed = 0
+    for role in ("owner", "requester"):
+        if row:
+            q = {**base, f"{role}.jid": jid,
+                 "$or": [{f"{role}.status": {"$ne": "resolved"}},
+                         {f"{role}.kind": "sender_map"}]}
+        else:
+            q = {**base, f"{role}.jid": jid, f"{role}.kind": "sender_map"}
+        res = await db.attention_items.update_many(
+            q, {"$set": {**{f"{role}.{k}": v for k, v in fields.items()},
+                         "updated_at": datetime.now(timezone.utc)}})
+        if role == "owner":
+            changed = getattr(res, "modified_count", 0) or 0
+    return changed
+
+
+@api_router.get("/projects/{project_id}/whatsapp/people",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_whatsapp_people(project_id: str,
+                              project=Depends(require_project_access),
+                              current_user=Depends(get_project_admin_user)):
+    """Admin / PM: this company's unknown group senders, and who they were
+    said to be. Company choices are this project's subs and the GC team."""
+    company_id = str(project.get("company_id") or "")
+    if not company_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    senders = await _people_senders(company_id, str(project_id),
+                                    is_company_admin(current_user))
+    rows = [_people_row(company_id, s) for s in senders.values()]
+    # Not yet assigned first; newest message first within each.
+    unassigned = [r for r in rows if not r["assigned"]]
+    assigned = [r for r in rows if r["assigned"]]
+    unassigned.sort(key=lambda r: r["last_message_at"] or "", reverse=True)
+    assigned.sort(key=lambda r: r["last_message_at"] or "", reverse=True)
+    return {
+        "senders": unassigned + assigned,
+        "unassigned": len(unassigned),
+        "companies": wa_sender_map.company_choices(project),
+    }
+
+
+@api_router.put("/projects/{project_id}/whatsapp/people/{key}",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
+                              project=Depends(require_project_access),
+                              current_user=Depends(get_project_admin_user)):
+    """Say who a sender is. Applies to every group of this company, and
+    re-points this company's OPEN attention items at them."""
+    company_id = str(project.get("company_id") or "")
+    if not company_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        clean = wa_sender_map.validate(body.person_name, body.sub_company,
+                                       wa_sender_map.company_choices(project))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    s = await _people_find(company_id, str(project_id), key,
+                           is_company_admin(current_user))
+    now = datetime.now(timezone.utc)
+    op = actor_id(current_user)
+    await db[wa_sender_map.COLLECTION].update_one(
+        {"company_id": company_id, "sender_jid": s["jid"]},
+        {"$set": {**clean, "set_by": op, "set_at": now},
+         "$setOnInsert": {"company_id": company_id, "sender_jid": s["jid"]}},
+        upsert=True)
+    row = await db[wa_sender_map.COLLECTION].find_one(
+        {"company_id": company_id, "sender_jid": s["jid"]})
+    updated = await _sender_map_apply(company_id, s["jid"], row)
+    await audit_log("whatsapp_sender_map_set", op, "whatsapp_sender_map",
+                    str((row or {}).get("_id") or ""),
+                    {"project_id": str(project_id), "key": key, **clean,
+                     "open_items_updated": updated})
+    s["mapping"] = row
+    return {**_people_row(company_id, s), "open_items_updated": updated}
+
+
+@api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def clear_whatsapp_person(project_id: str, key: str,
+                                project=Depends(require_project_access),
+                                current_user=Depends(get_project_admin_user)):
+    """Forget who a sender is. Open items that named them through the map go
+    back to unresolved."""
+    company_id = str(project.get("company_id") or "")
+    if not company_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    s = await _people_find(company_id, str(project_id), key,
+                           is_company_admin(current_user))
+    row = s.get("mapping")
+    if not row:
+        raise HTTPException(status_code=404, detail="Not assigned")
+    await db[wa_sender_map.COLLECTION].delete_one(
+        {"company_id": company_id, "sender_jid": s["jid"]})
+    updated = await _sender_map_apply(company_id, s["jid"], None)
+    await audit_log("whatsapp_sender_map_clear", actor_id(current_user),
+                    "whatsapp_sender_map", str(row.get("_id") or ""),
+                    {"project_id": str(project_id), "key": key,
+                     "was": {"person_name": row.get("person_name"),
+                             "sub_company": row.get("sub_company")},
+                     "open_items_updated": updated})
+    s["mapping"] = None
+    return {**_people_row(company_id, s), "open_items_updated": updated}
 
 
 @api_router.post(
@@ -62766,6 +62988,13 @@ async def startup_event():
     await db.whatsapp_messages.create_index(
         [("group_id", 1), ("project_id", 1), ("created_at", 1), ("_id", 1)])
     await db.attention_items.create_index([("project_id", 1), ("created_at", -1)])
+    await _ensure_index_resilient(
+        db[wa_sender_map.COLLECTION],
+        keys=[("company_id", 1), ("sender_jid", 1)],
+        name="company_id_1_sender_jid_1", unique=True,
+    )
+    await db.attention_items.create_index(
+        [("company_id", 1), ("status", 1), ("owner.jid", 1)])
     await db.attention_items.create_index(
         [("dedupe_key", 1), ("project_id", 1), ("evidence.sent_at", -1)])
     await db.attention_items.create_index(
