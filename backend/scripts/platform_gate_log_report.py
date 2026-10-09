@@ -49,7 +49,12 @@ OPERATOR_PATH = re.compile(
     r"migrate-company-data)|projects/(pending-deletion|[^/]+/(dependencies|"
     r"hard-delete|debug/)))")
 
-ID_SEGMENT = re.compile(r"/[0-9a-f]{24}(?=/|$)|/[0-9a-f]{32}(?=/|$)")
+#: A path segment is kept only if it is a plain lowercase word (route words
+#: like "owner", "filing-reps", "bis-license"). Anything else -- an id, a
+#: number, a UUID, an email, mixed case -- is a route PARAMETER the caller
+#: chose, and is printed as {param}. The caller is untrusted, so this is an
+#: allow-list rather than a list of id shapes.
+STATIC_SEGMENT = re.compile(r"^[a-z]+(?:[-_][a-z]+)*$")
 
 
 def _parse_line(raw: str) -> Tuple[Optional[datetime], str]:
@@ -80,8 +85,11 @@ def _ts(v) -> Optional[datetime]:
 
 
 def _route(method: str, path: str) -> str:
-    """The route with ids replaced, so no record id is printed."""
-    return f"{method} {ID_SEGMENT.sub('/{id}', path)}"
+    """The route with every non-word segment replaced, so nothing the caller
+    put in the path (an id, an email, a licence number) is printed."""
+    segs = [s if (not s or STATIC_SEGMENT.match(s)) else "{param}"
+            for s in path.split("/")]
+    return f"{method} {'/'.join(segs)}"
 
 
 def _role(token: str) -> str:

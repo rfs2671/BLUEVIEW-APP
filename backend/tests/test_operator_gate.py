@@ -223,12 +223,25 @@ class LogReportTest(unittest.TestCase):
     def test_counts_by_mode_role_route_without_pii(self):
         out = report.tally(self.LOG)
         self.assertEqual(out[("shadow (would have denied)", "admin",
-                              "GET /api/owner/companies/{id}/filing-reps")], 1)
+                              "GET /api/owner/companies/{param}/filing-reps")], 1)
         self.assertEqual(out[("enforced (denied)", "(not logged)", "(route unknown)")], 1)
         self.assertEqual(out[("shadow (would have denied)", "owner", "(route unknown)")], 1)
         flat = repr(out)
         for pii in ("@", "10.0.0", "6a5f63bc"):
             self.assertNotIn(pii, flat)
+
+    def test_every_caller_chosen_path_segment_is_redacted(self):
+        for path in ("/api/owner/companies/alice@example.com/filing-reps",
+                     "/api/owner/companies/6A5F63BC147407D3261DF2C7/users",
+                     "/api/owner/debug/bis-license/1234567",
+                     "/api/owner/deleted/user/0b7c-11ee-be56-0242ac120002/restore"):
+            with self.subTest(path=path):
+                got = report._route("GET", path)
+                for bad in ("alice", "@", "6A5F", "1234567", "0b7c"):
+                    self.assertNotIn(bad, got)
+                self.assertIn("{param}", got)
+        self.assertEqual(report._route("GET", "/api/owner/deleted/user/x1/restore"),
+                         "GET /api/owner/deleted/user/{param}/restore")
 
     def test_nothing_found(self):
         self.assertEqual(sum(report.tally(["INFO: started"]).values()), 0)
