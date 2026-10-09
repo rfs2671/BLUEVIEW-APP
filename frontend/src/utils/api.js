@@ -1860,6 +1860,21 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Would chase (beta), admins: { entries, precision, total, shadow_mode,
+  // disabled } -- the nudges sub chasing would have sent. Nothing was sent.
+  getChase: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/whatsapp/chase`);
+    return response.data;
+  },
+
+  // Correct / Wrong on one would-chase entry.
+  reviewChase: async (projectId, entryId, verdict) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/whatsapp/chase/${encodeURIComponent(entryId)}/review`,
+      { verdict });
+    return response.data;
+  },
+
   // verdict: 'correct' | 'wrong' | 'dismissed'
   // Project → WhatsApp → People: unknown group senders and who they are.
   // Admin / PM. Senders are addressed by an opaque key, never their id.

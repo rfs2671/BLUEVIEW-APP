@@ -37,6 +37,7 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 import GroupConfigPanel from '../../../src/components/whatsapp/GroupConfigPanel';
 import LevelogAssistantCard from '../../../src/components/whatsapp/LevelogAssistantCard';
 import AttentionCard from '../../../src/components/whatsapp/AttentionCard';
+import ChaseCard from '../../../src/components/whatsapp/ChaseCard';
 import PeopleCard from '../../../src/components/whatsapp/PeopleCard';
 import { canManagePeople } from '../../../src/utils/whatsappPeople';
 import { groupLabel, headerTitle, messageCountLabel } from '../../../src/utils/whatsappSettings';
@@ -420,6 +421,11 @@ export default function WhatsAppGroupsScreen() {
 
               {isAdmin && !readOnly && groups.length > 0 ? (
                 <AttentionCard projectId={projectId} />
+              ) : null}
+
+              {/* ── WOULD CHASE (BETA), admins: shadow mode, review only ─── */}
+              {isAdmin && !readOnly && groups.length > 0 ? (
+                <ChaseCard projectId={projectId} />
               ) : null}
 
               {/* ── WHAT THE BOT DOES IN GROUPS (admins) ─────────────────── */}
