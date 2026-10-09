@@ -171,6 +171,84 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ── SHORT ACKS ───────────────────────────────────────────────────────────────
+#
+# "Np", "ok", "will do", "Np / Tomorrow", "👍 tmrw": a yes to an ask, with a
+# date or not. Too short for the model to read on its own (pass 1 and 2 lost
+# them), so the code reads them: a yes from the person the ask was put to is
+# a commitment to THAT ask; a yes with no ask put to them is nothing.
+
+ACK_WINDOW_SECONDS = 30 * 60
+_ACK_STRONG = {"np", "ok", "okay", "k", "kk", "sure", "yep", "yup", "yes", "yeah",
+               "copy", "roger", "will", "got", "on", "👍", "👌", "🫡", "✅", "💪"}
+_ACK_WORDS = _ACK_STRONG | {"no", "problem", "prob", "do", "thing", "you", "it", "that",
+                            "thanks", "thx", "ty", "boss", "bro", "man", "🙏", "will"}
+
+
+def ack(body: str) -> Optional[Dict[str, Any]]:
+    """{due_text} when the whole message is a short yes (with or without a
+    date the code can read), else None."""
+    text = (body or "").strip()
+    if not text or "?" in text or len(text) > 40:
+        return None
+    due = due_phrase(text)
+    rest = text
+    if due:
+        i = rest.lower().rfind(due.lower())
+        rest = rest[:i] + rest[i + len(due):]
+    rest = re.sub(r"[,.!;:\-]+", " ", rest.lower().translate(wa._TYPO))
+    # Emoji glued to words ("👍tmrw") stand on their own.
+    rest = re.sub(r"([^\w\s'])", r" \1 ", rest)
+    words = [w for w in rest.split() if w not in ("\ufe0f",)]
+    if not words or len(words) > 5:
+        return None
+    if not all(w in _ACK_WORDS for w in words):
+        return None
+    if not any(w in _ACK_STRONG for w in words):
+        return None
+    if words == ["will"]:
+        return None
+    return {"due_text": due}
+
+
+def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[dict]:
+    """The open ask a short yes answers, or None. `upd`: sender,
+    sender_name, reply_key, previous_key, previous_sender, sent_at.
+
+    Strongest first: the ask it replies to; the ask just before it, from
+    someone else; else the one open ask put to this sender (by @mention or
+    by name) in the last 30 minutes. Two such asks and no reply: None --
+    never a guess."""
+    sender = upd.get("sender") or ""
+    sent_at = upd.get("sent_at")
+    asks = [c for c in items if c.get("type") in ("request", "question")
+            and c.get("status") in LIVE and c.get("requester") != sender
+            and not c.get("multi")]
+
+    def recent(c):
+        at = c.get("sent_at")
+        if not (isinstance(at, datetime) and isinstance(sent_at, datetime)):
+            return False
+        a = at.replace(tzinfo=None) if at.tzinfo else at
+        b = sent_at.replace(tzinfo=None) if sent_at.tzinfo else sent_at
+        return 0 <= (b - a).total_seconds() <= ACK_WINDOW_SECONDS
+
+    rk = upd.get("reply_key")
+    if rk:
+        hit = [c for c in asks if c.get("key") == rk]
+        return hit[0] if hit else None       # a reply to something else: no
+    pk = upd.get("previous_key")
+    if pk and upd.get("previous_sender") != sender:
+        hit = [c for c in asks if c.get("key") == pk and recent(c)]
+        if hit:
+            return hit[0]
+    first = (upd.get("sender_name") or "").strip().split(" ")[0].lower()
+    mine = [c for c in asks if recent(c) and (
+        (c.get("owner") and c.get("owner") == sender)
+        or (len(first) >= 2 and first in re.findall(r"[a-z]+", (c.get("owner_text") or "").lower())))]
+    return mine[0] if len(mine) == 1 else None
+
+
 def is_multi_owner(owner_text: Optional[str], mentions: Iterable[str] = ()) -> bool:
     return bool(MULTI_OWNER_RE.search(owner_text or "")) or len(list(mentions)) > 1
 
@@ -387,6 +465,7 @@ def merge(burst: List[dict]) -> dict:
         j for r in burst for j in (r.get("mentioned_jids") or [])))
     msg["merged_ids"] = [str(r.get("message_id") or r.get("_id")) for r in burst]
     msg["created_at"] = last.get("created_at")
+    msg["first_created_at"] = first.get("created_at")   # what came before it
     return msg
 
 

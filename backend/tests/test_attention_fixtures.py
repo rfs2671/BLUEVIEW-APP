@@ -105,6 +105,8 @@ def replay(lines):
             q = lines[ln["reply_to"] - 1]
             kw["quoted_message_id"] = was.short_id(rows[q["n"]]["message_id"])
             kw["quoted_author"] = SENDERS[q["from"]] + "@c.us"
+        if ln.get("name"):
+            kw["sender_name"] = ln["name"]
         if ln.get("mentions"):
             kw["mentioned_jids"] = [SENDERS[m] + "@c.us" for m in ln["mentions"]]
         if ln.get("file"):
@@ -247,8 +249,10 @@ class Pass2(_FixtureChecks, unittest.TestCase):
     LINES, FINAL = PASS2["lines"], PASS2["final"]
 
     def test_the_reply_defines_the_topic(self):
+        # "Sure you got it" is an ack: its topic is the ask it replies to.
         it = self._item_of(2)
-        self.assertEqual(it["summary"], "Send the 4th floor sleeve layout")
+        self.assertTrue(it["summary"].startswith("Will do: "))
+        self.assertIn("sleeve", it["summary"])
         self.assertNotIn("caulk", it["topic"])
 
     def test_wednesday_is_not_happening_moves_the_sleeve_commitment(self):
@@ -325,10 +329,12 @@ class Pass2(_FixtureChecks, unittest.TestCase):
         # one item for sharing "take care".
         self.assertEqual(self.out["report"]["deduped"], 0)
 
-    def test_np_tomorrow_is_one_model_call(self):
-        self.assertIn("Np\nTomorrow", self.out["model"].calls)
-        self.assertNotIn("Np", self.out["model"].calls)
-        self.assertNotIn("Tomorrow", self.out["model"].calls)
+    def test_np_tomorrow_is_one_commitment_read_by_code(self):
+        # One message, and an ack: no model call at all.
+        for body in ("Np\nTomorrow", "Np", "Tomorrow", "Sure you got it", "👍"):
+            self.assertNotIn(body, self.out["model"].calls)
+        self.assertEqual(self.out["report"]["acks"], 2)
+        self.assertEqual(self.out["report"]["ack_unaddressed"], 1)    # the 👍
 
 
 class StateScript(_FixtureChecks, unittest.TestCase):
@@ -422,13 +428,13 @@ class TheWorkerKeepsUp(unittest.TestCase):
         db = _world()
         _first_sight(db)
         at = T0 + timedelta(hours=1)
-        _msg(db, "Np", at=at)
+        _msg(db, "I'll check the riser layout", at=at)
         model = _ScriptedModel([])
         report, _ = _tick(db, model, at + timedelta(seconds=30))
         self.assertEqual((report["held"], model.calls), (1, []))
         _msg(db, "Tomorrow", at=at + timedelta(seconds=40))
         _tick(db, model, at + timedelta(seconds=150))
-        self.assertEqual(model.calls, ["Np\nTomorrow"])
+        self.assertEqual(model.calls, ["I'll check the riser layout\nTomorrow"])
 
     def test_the_run_reports_its_lag(self):
         run = replay(PASS2["lines"])
@@ -590,6 +596,93 @@ class ReviewFindings(unittest.TestCase):
         stored = next(r for r in col.rows if r["_id"] == it["_id"])
         self.assertIn("late01", [h["id"] for h in stored["history"]])
         self.assertEqual(stored["history"][1]["review"]["verdict"], "correct")
+
+
+
+class ShortAcks(unittest.TestCase):
+    """ "Np", "ok", "will do", "👍 tmrw": a yes to the ask put to that
+    sender, read by code. A yes to nobody is nothing."""
+
+    def _run(self, lines):
+        out = replay(lines)
+        return out, {it["evidence"]["quote"]: it for it in out["items"]}
+
+    def _ask(self, n, at, body, **kw):
+        return {"n": n, "from": "R", "at": at, "body": body,
+                "expect": {"kind": "item", "type": "request"}, **kw}
+
+    def test_addressed_by_name_with_a_date_in_the_ack(self):
+        out, items = self._run([
+            {"n": 1, "from": "R", "at": 0, "body": "Patricia can you send the damper submittal?",
+             "expect": {"kind": "item", "type": "request", "owner_text": "Patricia"}},
+            {"n": 2, "from": "B", "at": 60, "body": "Panel schedule is in the folder",
+             "expect": {"kind": "none"}},
+            {"n": 3, "from": "P", "at": 120, "name": "Patricia R", "body": "👍 tmrw",
+             "expect": {"kind": "item", "type": "commitment"}},
+        ])
+        it = items["👍 tmrw"]
+        self.assertEqual(it["type"], "commitment")
+        self.assertEqual(it["due"]["due_text"], "tmrw")
+        self.assertEqual(it["parent_id"], str(items[
+            "Patricia can you send the damper submittal?"]["_id"]))
+        self.assertEqual(out["model"].calls.count("👍 tmrw"), 0)
+
+    def test_an_ack_to_nobody_is_nothing(self):
+        out, items = self._run([
+            {"n": 1, "from": "B", "at": 0, "body": "Panel schedule is in the folder",
+             "expect": {"kind": "none"}},
+            {"n": 2, "from": "P", "at": 60, "body": "ok", "expect": {"kind": "none"}},
+            {"n": 3, "from": "P", "at": 120, "body": "will do", "expect": {"kind": "none"}},
+        ])
+        self.assertEqual(items, {})
+        self.assertEqual(out["report"]["ack_unaddressed"], 2)
+        self.assertEqual(out["model"].calls, [])
+
+    def test_an_ask_put_to_someone_else_is_not_theirs_to_ack(self):
+        _, items = self._run([
+            self._ask(1, 0, "@Bob can you send the riser layout?", mentions=["B"]),
+            {"n": 2, "from": "C", "at": 30, "body": "Gas meter is set",
+             "expect": {"kind": "none"}},
+            {"n": 3, "from": "P", "at": 60, "body": "Np", "expect": {"kind": "none"}},
+        ])
+        self.assertNotIn("Np", items)
+
+    def test_older_than_30_minutes_is_not_answered_by_an_ack(self):
+        _, items = self._run([
+            self._ask(1, 0, "@Patricia can you send the sleeve layout?", mentions=["P"]),
+            {"n": 2, "from": "C", "at": 60, "body": "Gas meter is set",
+             "expect": {"kind": "none"}},
+            {"n": 3, "from": "P", "at": 31 * 60, "body": "Np", "expect": {"kind": "none"}},
+        ])
+        self.assertNotIn("Np", items)
+
+    def test_two_asks_put_to_her_and_no_reply_is_nothing(self):
+        _, items = self._run([
+            self._ask(1, 0, "@Patricia can you send the sleeve layout?", mentions=["P"]),
+            self._ask(2, 60, "@Patricia can you confirm the meter location?", mentions=["P"]),
+            {"n": 3, "from": "C", "at": 90, "body": "Gas meter is set",
+             "expect": {"kind": "none"}},
+            {"n": 4, "from": "P", "at": 120, "body": "Np", "expect": {"kind": "none"}},
+        ])
+        self.assertNotIn("Np", items)
+
+    def test_a_reply_picks_which_one(self):
+        _, items = self._run([
+            self._ask(1, 0, "@Patricia can you send the sleeve layout?", mentions=["P"]),
+            self._ask(2, 60, "@Patricia can you confirm the meter location?", mentions=["P"]),
+            {"n": 3, "from": "P", "at": 120, "body": "will do", "reply_to": 1,
+             "expect": {"kind": "item", "type": "commitment"}},
+        ])
+        self.assertEqual(items["will do"]["parent_id"],
+                         str(items["@Patricia can you send the sleeve layout?"]["_id"]))
+
+    def test_what_is_an_ack(self):
+        for body in ("Np", "ok", "will do", "Np\nTomorrow", "👍 tmrw", "Sure you got it",
+                     "np, tomorrow morning", "yes"):
+            self.assertIsNotNone(was.ack(body), body)
+        for body in ("Lol... Sure", "ok?", "Sure, the riser is in", "thanks guys", "Sent",
+                     "I'll send it tomorrow"):
+            self.assertIsNone(was.ack(body), body)
 
 
 if __name__ == "__main__":

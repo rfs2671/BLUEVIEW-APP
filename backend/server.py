@@ -46263,6 +46263,9 @@ def _attention_candidate(it: dict) -> dict:
         "topic": set(it.get("topic") or []),
         "multi": bool(it.get("multi")),
         "due": it.get("due") or {},
+        "owner_text": (it.get("owner") or {}).get("owner_text") or "",
+        "sent_at": ev.get("sent_at"),
+        "summary": it.get("summary") or "",
     }
 
 
@@ -46286,7 +46289,9 @@ async def _attention_previous(msg: dict, ctx: dict) -> Optional[dict]:
             {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
              "company_id": _company_id_filter(ctx["company_id"]),
              "sender": {"$ne": "bot"},
-             "created_at": {"$lt": msg.get("created_at")}}).sort(
+             # Before the burst's first row: "Np" is not what came before
+             # "Np / Tomorrow".
+             "created_at": {"$lt": msg.get("first_created_at") or msg.get("created_at")}}).sort(
             [("created_at", -1)]).to_list(1)
     except Exception:
         return None
@@ -46485,12 +46490,32 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     updated = await _attention_state_update(msg, text, prev, ctx, report)
     if updated is None:
         return False
-    reason = wa_attention.filter_reason(msg)
+    sender = str(msg.get("sender") or "")
+    # A short yes ("Np", "will do", "Np / Tomorrow", "👍 tmrw") is read by
+    # code, not the model: a commitment to the ask put to this sender, or
+    # nothing when no ask was put to them.
+    ack_parent = None
+    ack = None if updated["ids"] else wa_attention_state.ack(text)
+    if ack is not None:
+        ack_sent = _attention_sent_at(msg)
+        live = await _attention_live_items(ctx, ack_sent)
+        ack_parent = wa_attention_state.ack_target(
+            {"sender": sender, "sender_name": msg.get("sender_name") or "",
+             "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
+             "previous_key": wa_attention_state.short_id((prev or {}).get("message_id")),
+             "previous_sender": str((prev or {}).get("sender") or ""),
+             "sent_at": ack_sent},
+            [_attention_candidate(r) for r in live])
+        if not ack_parent:
+            report["ack_unaddressed"] += 1
+            await _attention_count(ctx, ctx["now"], messages=1)
+            return True
+    reason = "ack" if ack_parent else wa_attention.filter_reason(msg)
     if not reason:
         report["filtered_out"] += 1
         await _attention_count(ctx, ctx["now"], messages=1)
         return True
-    if report["calls"] >= ATTENTION_MAX_CALLS:
+    if not ack_parent and report["calls"] >= ATTENTION_MAX_CALLS:
         report["call_cap"] = True
         return False
     sent_at = _attention_sent_at(msg)
@@ -46512,7 +46537,6 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     live = await _attention_live_items(ctx, sent_at)
     cands = [_attention_candidate(r) for r in live]
     by_key = {c["key"]: c for c in cands if c["key"]}
-    sender = str(msg.get("sender") or "")
     # The ask this message may answer: the one it replies to, else the open
     # question or request just before it (from someone else).
     parent = None
@@ -46524,9 +46548,19 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         p = by_key.get(wa_attention_state.short_id(prev.get("message_id")))
         if p and p["type"] in ("question", "request"):
             parent, answers = p, prev
-    report["calls"] += 1
-    answer = await (llm or _attention_llm)(
-        wa_attention.build_messages(msg, context, quoted, answers))
+    if ack_parent:
+        # The yes itself is the evidence; the ask says what it is about.
+        parent = by_key.get(ack_parent["key"]) or ack_parent
+        answer = {"content": json.dumps({"items": [{
+            "type": "commitment", "quote": text,
+            "summary": ("Will do: " + ack_parent["summary"])[:200],
+            "due_text": ack.get("due_text"), "importance": "normal"}]}),
+            "prompt_tokens": 0, "completion_tokens": 0}
+        report["acks"] += 1
+    else:
+        report["calls"] += 1
+        answer = await (llm or _attention_llm)(
+            wa_attention.build_messages(msg, context, quoted, answers))
     if not answer:
         report["model_failed"] += 1
         return False
@@ -46535,7 +46569,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     body = text
     written = 0
     for it in wa_attention.parse_items(answer.get("content")):
-        quote = wa_attention.verify_quote(it["quote"], body)
+        # An ack's quote is the whole message ("Np" is under the 3
+        # characters a quoted piece needs).
+        quote = body[:wa_attention.MAX_QUOTE_CHARS] if ack_parent \
+            else wa_attention.verify_quote(it["quote"], body)
         if not quote:
             report["dropped_unverified"] += 1
             continue
@@ -46686,7 +46723,8 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             logger.warning(f"[attention] item write failed: {type(e).__name__}")
             report["write_failed"] += 1
             return False
-    await _attention_count(ctx, ctx["now"], messages=1, passed=1, calls=1,
+    await _attention_count(ctx, ctx["now"], messages=1, passed=1,
+                           calls=0 if ack_parent else 1,
                            items=written,
                            prompt_tokens=answer.get("prompt_tokens", 0),
                            completion_tokens=answer.get("completion_tokens", 0))
@@ -46790,7 +46828,7 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "filtered_out": 0, "dropped_unverified": 0,
               "dropped_not_issue": 0, "model_failed": 0,
               "state_updates": 0, "follow_ups": 0, "held": 0,
-              "restated_update": 0,
+              "restated_update": 0, "acks": 0, "ack_unaddressed": 0,
               "max_lag_seconds": 0,
               "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
               "owner_resolved": 0,
