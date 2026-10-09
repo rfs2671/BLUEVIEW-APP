@@ -174,7 +174,7 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
 # ── SHORT ACKS ───────────────────────────────────────────────────────────────
 #
 # "Np", "ok", "will do", "Np / Tomorrow", "👍 tmrw": a yes to an ask, with a
-# date or not. Too short for the model to read on its own (pass 1 and 2 lost
+# date or not ("lol ok", "sure 😂" are not). Too short for the model to read on its own (pass 1 and 2 lost
 # them), so the code reads them: a yes from the person the ask was put to is
 # a commitment to THAT ask; a yes with no ask put to them is nothing.
 
@@ -202,6 +202,8 @@ def ack(body: str) -> Optional[Dict[str, Any]]:
     words = [w for w in rest.split() if w not in ("\ufe0f",)]
     if not words or len(words) > 5:
         return None
+    if any(w in _SARCASM for w in words):
+        return None     # "lol ok", "sure 😂": not a yes
     if not all(w in _ACK_WORDS for w in words):
         return None
     if not any(w in _ACK_STRONG for w in words):
@@ -211,42 +213,64 @@ def ack(body: str) -> Optional[Dict[str, Any]]:
     return {"due_text": due}
 
 
-def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[dict]:
-    """The open ask a short yes answers, or None. `upd`: sender,
-    sender_name, reply_key, previous_key, previous_sender, sent_at.
+ACK_PREVIOUS_SECONDS = 10 * 60
+_SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅"}
 
-    Strongest first: the ask it replies to; the ask just before it, from
-    someone else; else the one open ask put to this sender (by @mention or
-    by name) in the last 30 minutes. Two such asks and no reply: None --
-    never a guess."""
+
+def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[Dict[str, Any]]:
+    """{ask, how, confident} for the open ask a short yes answers, or None.
+    `upd`: sender, sender_name, reply_key, sent_at, and `recent` -- the
+    messages before the yes, oldest first, each {key, sender, sent_at}.
+
+      1. reply    it replies to the ask                         confident
+      2. previous an ask put to nobody, under 10 minutes old,    POSSIBLY
+                  with no one else (but who asked and who says
+                  yes) writing in between
+      3. named    the one ask put to this sender by @mention or  confident
+                  by name in the last 30 minutes
+
+    A reply to something else, two named asks, or a third person in
+    between: None -- never a guess."""
     sender = upd.get("sender") or ""
     sent_at = upd.get("sent_at")
     asks = [c for c in items if c.get("type") in ("request", "question")
             and c.get("status") in LIVE and c.get("requester") != sender
             and not c.get("multi")]
 
-    def recent(c):
-        at = c.get("sent_at")
+    def age(at):
         if not (isinstance(at, datetime) and isinstance(sent_at, datetime)):
-            return False
+            return None
         a = at.replace(tzinfo=None) if at.tzinfo else at
         b = sent_at.replace(tzinfo=None) if sent_at.tzinfo else sent_at
-        return 0 <= (b - a).total_seconds() <= ACK_WINDOW_SECONDS
+        return (b - a).total_seconds()
 
     rk = upd.get("reply_key")
     if rk:
         hit = [c for c in asks if c.get("key") == rk]
-        return hit[0] if hit else None       # a reply to something else: no
-    pk = upd.get("previous_key")
-    if pk and upd.get("previous_sender") != sender:
-        hit = [c for c in asks if c.get("key") == pk and recent(c)]
-        if hit:
-            return hit[0]
+        return {"ask": hit[0], "how": "reply", "confident": True} if hit else None
+
+    by_key = {c.get("key"): c for c in asks if c.get("key")}
+    seen = set()
+    for m in reversed(upd.get("recent") or []):
+        g = age(m.get("sent_at"))
+        if g is None or g < 0 or g > ACK_PREVIOUS_SECONDS:
+            break
+        c = by_key.get(m.get("key"))
+        if c and (not c.get("owner") or c.get("owner") == sender) \
+                and not c.get("owner_possibly"):
+            if seen <= {sender, c.get("requester")}:
+                return {"ask": c, "how": "previous",
+                        "confident": c.get("owner") == sender}
+            break
+        seen.add(str(m.get("sender") or ""))
+
     first = (upd.get("sender_name") or "").strip().split(" ")[0].lower()
-    mine = [c for c in asks if recent(c) and (
-        (c.get("owner") and c.get("owner") == sender)
+    mine = [c for c in asks if 0 <= (age(c.get("sent_at")) or -1) <= ACK_WINDOW_SECONDS and (
+        (c.get("owner") == sender and not c.get("owner_possibly"))
         or (len(first) >= 2 and first in re.findall(r"[a-z]+", (c.get("owner_text") or "").lower())))]
-    return mine[0] if len(mine) == 1 else None
+    if len(mine) == 1:
+        return {"ask": mine[0], "how": "named", "confident": True}
+    return None
 
 
 def is_multi_owner(owner_text: Optional[str], mentions: Iterable[str] = ()) -> bool:

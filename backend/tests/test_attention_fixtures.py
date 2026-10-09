@@ -125,6 +125,7 @@ class _FixtureChecks:
 
     LINES: list = []
     FINAL: dict = {}
+    OWNER_NONE: list = []
 
     @classmethod
     def setUpClass(cls):
@@ -167,6 +168,8 @@ class _FixtureChecks:
                         # @mention, or whoever took it on.
                         self.assertEqual(str(it["owner"].get("jid") or "").split("@")[0],
                                          SENDERS[e["owner"]])
+                    if "owner_possibly" in e:
+                        self.assertEqual(bool(it["owner"].get("possibly")), e["owner_possibly"])
                     if e.get("due_from"):
                         self.assertEqual(it["history"][0]["due_source"], e["due_from"])
                     if e.get("owner_text"):
@@ -222,6 +225,9 @@ class _FixtureChecks:
         for n, status in self.FINAL.items():
             with self.subTest(line=n):
                 self.assertEqual(self._item_of(int(n))["status"], status)
+        for n in self.OWNER_NONE:
+            with self.subTest(owner_of=n):
+                self.assertFalse(self._item_of(n)["owner"].get("jid"))
 
     def test_no_item_from_a_line_without_one(self):
         want = {self.out["rows"][ln["n"]]["message_id"] for ln in self.LINES
@@ -265,9 +271,16 @@ class Pass2(_FixtureChecks, unittest.TestCase):
         self.assertEqual(len(sleeves), 1)
         self.assertEqual(self.out["report"]["restated_update"], 1)
 
-    def test_the_meter_ask_belongs_to_who_took_it_on(self):
+    def test_the_meter_ask_is_possibly_hers(self):
+        # Named nobody; "Np / Tomorrow" came right after: possibly hers,
+        # for an admin to confirm.
         it = self._item_of(7)
-        self.assertEqual(it["owner"]["source"], "committed")
+        self.assertEqual((it["owner"]["source"], it["owner"]["possibly"]), ("committed", True))
+        self.assertTrue(it["needs_review"])
+        flag = [h for h in it["history"] if h["kind"] == "flag"]
+        self.assertEqual((flag[0]["note"], flag[0]["quote"]), ("possible_owner", "Np\nTomorrow"))
+        # The sleeve ask named her: confirmed, no flag.
+        self.assertFalse(self._item_of(1)["owner"].get("possibly"))
 
     def test_a_failed_owner_write_is_retried(self):
         lines = [
@@ -357,12 +370,14 @@ class StateScript(_FixtureChecks, unittest.TestCase):
 def _scenario(i):
     sc = SCRIPT["scenarios"][i]
     return type(f"Scenario{i + 1}", (_FixtureChecks, unittest.TestCase),
-                {"LINES": sc["lines"], "FINAL": sc["final"], "__doc__": sc["name"]})
+                {"LINES": sc["lines"], "FINAL": sc["final"],
+                 "OWNER_NONE": sc.get("owner_none") or [], "__doc__": sc["name"]})
 
 
 Scenario1 = _scenario(0)
 Scenario2 = _scenario(1)
 Scenario3 = _scenario(2)
+Scenario4 = _scenario(3)
 
 
 class TheRules(unittest.TestCase):
@@ -675,6 +690,42 @@ class ShortAcks(unittest.TestCase):
         ])
         self.assertEqual(items["will do"]["parent_id"],
                          str(items["@Patricia can you send the sleeve layout?"]["_id"]))
+
+    def test_rule_2_needs_no_third_person_in_between(self):
+        _, items = self._run([
+            self._ask(1, 0, "Can you confirm the water meter location?"),
+            {"n": 2, "from": "R", "at": 90, "body": "With the MEP engineer",
+             "expect": {"kind": "none"}},
+            {"n": 3, "from": "P", "at": 180, "body": "np tmrw",
+             "expect": {"kind": "item", "type": "commitment"}},
+        ])
+        # Only who asked wrote in between: still possibly hers.
+        req = items["Can you confirm the water meter location?"]
+        self.assertTrue(req["owner"]["possibly"])
+        self.assertIn("np tmrw", items)
+
+    def test_rule_2_is_10_minutes(self):
+        _, items = self._run([
+            self._ask(1, 0, "Can you confirm the water meter location?"),
+            {"n": 2, "from": "P", "at": 11 * 60, "body": "np", "expect": {"kind": "none"}},
+        ])
+        self.assertNotIn("np", items)
+        self.assertFalse(items["Can you confirm the water meter location?"]["owner"].get("jid"))
+
+    def test_a_reply_is_confident(self):
+        _, items = self._run([
+            self._ask(1, 0, "Can you confirm the water meter location?"),
+            {"n": 2, "from": "P", "at": 60, "body": "np", "reply_to": 1,
+             "expect": {"kind": "item", "type": "commitment"}},
+        ])
+        req = items["Can you confirm the water meter location?"]
+        self.assertEqual(req["owner"]["jid"], SENDERS["P"] + "@c.us")
+        self.assertFalse(req["owner"]["possibly"])
+        self.assertFalse(req.get("needs_review"))
+
+    def test_sarcasm_is_not_a_yes(self):
+        for body in ("lol ok", "sure 😂", "haha ok", "Sure lmao", "ok 🙄"):
+            self.assertIsNone(was.ack(body), body)
 
     def test_what_is_an_ack(self):
         for body in ("Np", "ok", "will do", "Np\nTomorrow", "👍 tmrw", "Sure you got it",

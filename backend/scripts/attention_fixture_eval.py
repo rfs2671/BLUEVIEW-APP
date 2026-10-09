@@ -67,12 +67,19 @@ def _ack_answers(lines, i) -> bool:
     if ln.get("reply_to"):
         q = lines[ln["reply_to"] - 1]
         return _is_ask(q) and q["from"] != ln["from"]
-    j = i - 1
-    while j >= 0 and lines[j]["expect"].get("kind") == "merged":
-        j -= 1
-    if j >= 0 and _is_ask(lines[j]) and lines[j]["from"] != ln["from"] \
-            and _at(ln) - _at(lines[j]) <= was.ACK_WINDOW_SECONDS:
-        return True
+    # Rule 2: an ask put to nobody, under 10 minutes old, with nobody but
+    # who asked and who says yes writing in between.
+    seen = set()
+    for p in reversed(lines[:i]):
+        if p["expect"].get("kind") == "merged":
+            continue
+        if _at(ln) - _at(p) > was.ACK_PREVIOUS_SECONDS:
+            break
+        if _is_ask(p) and p["from"] != ln["from"] and not p.get("mentions"):
+            if seen <= {ln["from"], p["from"]}:
+                return True
+            break
+        seen.add(p["from"])
     name = (ln.get("name") or "").split(" ")[0].lower()
     mine = [p for p in lines[:i] if _is_ask(p) and p["from"] != ln["from"]
             and _at(ln) - _at(p) <= was.ACK_WINDOW_SECONDS

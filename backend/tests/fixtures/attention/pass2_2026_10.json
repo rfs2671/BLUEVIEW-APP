@@ -1,5 +1,5 @@
 {
-  "about": "Attention pass 2 (Oct 2026), the real exchange. R = Roy (GC), P = Patricia (sub). Lines a minute apart except 'Np' / 'Tomorrow' (20 s). Line 12 is a reaction: stored, if at all, as an emoji-only message. Pass-2 bugs this pins: the reply to the sleeve ask came out as 'Fire caulk will be ordered on Friday' (the replied-to message must define the topic); 'I'll take care of it. Ordering it today' was missed; 'Question · High' with no urgency stated; 'Np' + 'Tomorrow' split; lag. Short acks (lines 2, 8-9, 12) are read by code, not the model: a yes to the ask put to that sender is a commitment to it; a yes to nobody is nothing.",
+  "about": "Attention pass 2 (Oct 2026), the real exchange. R = Roy (GC), P = Patricia (sub). Lines a minute apart except 'Np' / 'Tomorrow' (20 s). Line 12 is a reaction: stored, if at all, as an emoji-only message. Pass-2 bugs this pins: the reply to the sleeve ask came out as 'Fire caulk will be ordered on Friday' (the replied-to message must define the topic); 'I'll take care of it. Ordering it today' was missed; 'Question · High' with no urgency stated; 'Np' + 'Tomorrow' split; lag. Short acks (lines 2, 8-9, 12) are read by code, not the model: a yes to the ask put to that sender is a commitment to it; a yes to nobody is nothing. Line 7 named nobody, so 'Np / Tomorrow' right after it makes Patricia its POSSIBLE owner (flagged for review), not a confirmed one.",
   "speakers": {
     "R": "Roy (GC)",
     "P": "Patricia (sub)"
@@ -129,7 +129,8 @@
       "expect": {
         "kind": "item",
         "type": "request",
-        "owner": "P"
+        "owner": "P",
+        "owner_possibly": true
       }
     },
     {

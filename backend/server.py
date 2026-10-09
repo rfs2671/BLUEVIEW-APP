@@ -46264,6 +46264,7 @@ def _attention_candidate(it: dict) -> dict:
         "multi": bool(it.get("multi")),
         "due": it.get("due") or {},
         "owner_text": (it.get("owner") or {}).get("owner_text") or "",
+        "owner_possibly": bool((it.get("owner") or {}).get("possibly")),
         "sent_at": ev.get("sent_at"),
         "summary": it.get("summary") or "",
     }
@@ -46453,18 +46454,30 @@ async def _attention_quoted(msg: dict, ctx: dict) -> Optional[dict]:
 
 async def _attention_answer_followups(link: Optional[dict], typ: str, owner: dict,
                                       msg_id: str, quote: str, sender: str,
-                                      sent_at: datetime) -> None:
+                                      sent_at: datetime, confident: bool = False) -> None:
     """What a new commitment does to the ask it answers. Both writes are
-    conditional, so running them again on a retry changes nothing twice."""
+    conditional, so running them again on a retry changes nothing twice.
+
+    `confident`: the commitment replied to the ask, or the ask named its
+    sender. Otherwise (it only came right after an ask put to nobody) the
+    ask's owner is set as POSSIBLY theirs, flagged for an admin."""
     if not link or typ != "commitment":
         return
     now = datetime.now(timezone.utc)
     if link["type"] == "request" and not link["owner"] and not link["multi"]:
         # "Can you confirm the water meter location?" named nobody;
         # "Np / Tomorrow" says who: the ask is theirs from now on.
+        sets = {"owner": {**owner, "source": "committed", "possibly": not confident},
+                "updated_at": now}
+        update = {"$set": sets}
+        if not confident:
+            sets["needs_review"] = True
+            update["$push"] = {"history": _attention_event(
+                "flag", None, None,
+                {"message_id": msg_id, "sender": sender, "timestamp": sent_at},
+                quote, "text", by="other", link="previous", note="possible_owner")}
         await db.attention_items.update_one(
-            {"_id": to_query_id(link["id"]), "owner.jid": {"$in": [None, ""]}},
-            {"$set": {"owner": {**owner, "source": "committed"}, "updated_at": now}})
+            {"_id": to_query_id(link["id"]), "owner.jid": {"$in": [None, ""]}}, update)
     if link["type"] == "question":
         # Someone took the question on: possibly answered, for an admin.
         await db.attention_items.update_one(
@@ -46495,17 +46508,31 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     # code, not the model: a commitment to the ask put to this sender, or
     # nothing when no ask was put to them.
     ack_parent = None
+    link_confident = False
     ack = None if updated["ids"] else wa_attention_state.ack(text)
     if ack is not None:
         ack_sent = _attention_sent_at(msg)
         live = await _attention_live_items(ctx, ack_sent)
-        ack_parent = wa_attention_state.ack_target(
+        try:
+            before = await db.whatsapp_messages.find(
+                {"group_id": group_id, "project_id": project_id,
+                 "company_id": _company_id_filter(company_id),
+                 "sender": {"$ne": "bot"},
+                 "created_at": {"$lt": msg.get("first_created_at") or msg.get("created_at")}}
+            ).sort([("created_at", -1)]).to_list(wa_attention.CONTEXT_MESSAGES)
+        except Exception as e:
+            logger.warning(f"[attention] ack context read failed: {type(e).__name__}")
+            return False
+        found = wa_attention_state.ack_target(
             {"sender": sender, "sender_name": msg.get("sender_name") or "",
              "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
-             "previous_key": wa_attention_state.short_id((prev or {}).get("message_id")),
-             "previous_sender": str((prev or {}).get("sender") or ""),
-             "sent_at": ack_sent},
+             "sent_at": ack_sent,
+             "recent": [{"key": wa_attention_state.short_id(r.get("message_id")),
+                         "sender": str(r.get("sender") or ""),
+                         "sent_at": _attention_sent_at(r)} for r in reversed(before)]},
             [_attention_candidate(r) for r in live])
+        if found:
+            ack_parent, link_confident = found["ask"], found["confident"]
         if not ack_parent:
             report["ack_unaddressed"] += 1
             await _attention_count(ctx, ctx["now"], messages=1)
@@ -46543,6 +46570,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     if quoted:
         parent = by_key.get(wa_attention_state.short_id(
             msg.get("quoted_message_id") or quoted.get("message_id")))
+        link_confident = bool(parent)
     answers = None
     if not quoted and prev and str(prev.get("sender") or "") != sender:
         p = by_key.get(wa_attention_state.short_id(prev.get("message_id")))
@@ -46654,7 +46682,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 # not be (the write after it failed). That part again, once.
                 await _attention_answer_followups(
                     link, it["type"], done_before.get("owner") or owner,
-                    msg_id, quote, sender, sent_at)
+                    msg_id, quote, sender, sent_at, link_confident)
                 continue
             dup = await db.attention_items.find_one_and_update(
                 {"dedupe_key": key, "project_id": project_id,
@@ -46716,7 +46744,8 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
             await _attention_answer_followups(link, it["type"], owner, msg_id,
-                                              quote, sender, sent_at)
+                                              quote, sender, sent_at,
+                                              link_confident and link is parent)
         except Exception as e:
             # Not past this message: the cursor stays and it is retried
             # (items already written are recognised above, not doubled).
@@ -59616,6 +59645,8 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         "tags": it.get("tags") or [],
         "owner": _who(owner),
         "owner_status": owner.get("status") or "unresolved",
+        # Took it on right after an ask put to nobody: maybe theirs.
+        "owner_possibly": bool(owner.get("possibly")),
         "owner_kind": owner.get("kind") or "none",
         "requester": _who(req),
         "due_text": (it.get("due") or {}).get("due_text"),

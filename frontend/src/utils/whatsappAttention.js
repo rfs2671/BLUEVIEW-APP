@@ -37,10 +37,12 @@ export function typeLabel(type) {
   return TYPE_LABELS[type] || 'Item';
 }
 
-/** "Owner: Mike" / "Owner: Mike (not matched to a person)" / null. */
+/** "Owner: Mike" / "Owner: Mike (not matched to a person)" /
+ *  "Owner: possibly Mike (check)" / null. */
 export function ownerLine(item) {
   if (!item || !item.owner) return null;
   const tail = item.owner_status === 'resolved' ? '' : ' (not matched to a person)';
+  if (item.owner_possibly) return `Owner: possibly ${item.owner}${tail} (check)`;
   return `Owner: ${item.owner}${tail}`;
 }
 
@@ -93,6 +95,7 @@ const FLAGS = {
   not_owner: 'Someone else gave a new date. Not applied.',
   possibly_cancelled: 'Possibly cancelled. Not applied.',
   which_item: 'New date, but not clear for which item. Not applied.',
+  possible_owner: 'Said yes right after this ask, which named nobody. Possibly theirs.',
 };
 
 /** What one timeline entry says happened. */
