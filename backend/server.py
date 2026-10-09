@@ -46262,6 +46262,7 @@ def _attention_candidate(it: dict) -> dict:
         "parent_id": it.get("parent_id") or "",
         "topic": set(it.get("topic") or []),
         "multi": bool(it.get("multi")),
+        "due": it.get("due") or {},
     }
 
 
@@ -46308,22 +46309,23 @@ def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict
 
 
 async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
-                                  ctx: dict, report: dict) -> Optional[set]:
-    """Apply what this message says about earlier items. Returns the topic
-    words of the items it changed or flagged (empty when none), so the same
-    thing restated is not also recorded as new -- the rest of the message
-    still is ("Never mind the load calcs; send the schedule by Friday").
+                                  ctx: dict, report: dict) -> Optional[dict]:
+    """Apply what this message says about earlier items. Returns {topics,
+    ids}: the topic words and ids of the items it changed or flagged (empty
+    when none), so the same thing restated is not also recorded as new --
+    the rest of the message still is ("Never mind the load calcs; send the
+    schedule by Friday").
     None when a write failed: the message is retried next run, and what was
     already written is recognised by its message id, not applied twice."""
     has_file = bool(wa_attention_state.media_of(msg))
     cls = wa_attention_state.classify(text, has_file=has_file)
     if not cls:
-        return set()
+        return {"topics": set(), "ids": set()}
     sender = str(msg.get("sender") or "")
     sent_at = _attention_sent_at(msg)
     rows = await _attention_live_items(ctx, sent_at)
     if not rows:
-        return set()
+        return {"topics": set(), "ids": set()}
     by_id = {str(r["_id"]): r for r in rows}
     own = wa_attention_state.topic_terms(text)
     terms = set(own)
@@ -46339,7 +46341,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     actions = wa_attention_state.decide(
         upd, [_attention_candidate(r) for r in rows])
     if not actions:
-        return set()
+        return {"topics": set(), "ids": set()}
     # EVIDENCE OR SILENCE: the words as written, or the file itself.
     if text:
         quote = wa_attention.verify_quote(text, text) or text[:wa_attention.MAX_QUOTE_CHARS]
@@ -46349,11 +46351,15 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     now = datetime.now(timezone.utc)
     this_id = str(msg.get("message_id") or msg.get("_id") or "")
     topics: set = set()
+    ids: set = set()
     for a in actions:
         it = by_id.get(a["item_id"])
         if not it:
             continue
         topics |= set(it.get("topic") or [])
+        ids.add(a["item_id"])
+        if it.get("parent_id"):
+            ids.add(str(it["parent_id"]))
         if any(isinstance(h, dict) and h.get("message_id") == this_id
                and h.get("kind") != "created" for h in it.get("history") or []):
             continue    # a retry: this message already changed this item
@@ -46397,7 +46403,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         if getattr(res, "matched_count", 1):
             report["state_updates"] += 1
         # matched nothing: an admin dismissed it meanwhile; that stands.
-    return topics
+    return {"topics": topics, "ids": ids}
 
 
 async def _attention_count(ctx: dict, now: datetime, **inc) -> None:
@@ -46515,7 +46521,12 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             report["dropped_not_issue"] += 1
             continue
         terms = wa_attention_state.topic_terms(quote, it["summary"])
-        if updated and terms & updated:
+        if terms & updated["topics"] or (
+                # A reply to an ask whose answer this message just moved,
+                # finished or called off ("Wednesday is not happening. Gonna
+                # take care of it Friday" under the sleeve ask): the same
+                # commitment, not a second one.
+                it["type"] == "commitment" and parent and parent["id"] in updated["ids"]):
             report["restated_update"] += 1    # the update itself, restated
             continue
         if it["type"] == "question" and not quoted:
@@ -46558,6 +46569,15 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 "source": req_c["source"]}
         due_text = wa_attention.text_in_body(it["due_text"], body)
         due_at = wa_attention.parse_due(due_text, sent_at)
+        due = {"due_text": due_text, "due_at": due_at.isoformat() if due_at else None,
+               "due_source": "parsed" if due_at else "none"}
+        if it["type"] == "commitment" and not due_text and link \
+                and (link.get("due") or {}).get("due_text"):
+            # "Sure you got it" to "... by Wednesday": the ask's date, as
+            # the ask said it.
+            pd = link["due"]
+            due = {"due_text": pd.get("due_text"), "due_at": pd.get("due_at"),
+                   "due_source": "parent"}
         owner_key = (f"{owner['kind']}:{owner['id']}" if owner.get("id")
                      else owner.get("jid") or (owner.get("owner_text") or "").lower())
         key = wa_attention.dedupe_key(group_id, it["type"], owner_key, quote)
@@ -46597,9 +46617,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 "summary": it["summary"],
                 "owner": owner,
                 "requester": requester,
-                "due": {"due_text": due_text,
-                        "due_at": due_at.isoformat() if due_at else None,
-                        "due_source": "parsed" if due_at else "none"},
+                "due": due,
                 **wa_attention.importance(it["importance"], body),
                 "tags": it["tags"],
                 "evidence": evidence,
@@ -46620,7 +46638,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                     "created", None, "open", msg, quote, "text",
                     link="reply" if (link and quoted) else (
                         "answers" if link else None),
-                    due_to=due_text)],
+                    due_to=due["due_text"], due_source=due["due_source"])],
                 "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],
@@ -46631,6 +46649,14 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             written += 1
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
+            if (link and link["type"] == "request" and it["type"] == "commitment"
+                    and not link["owner"] and not link["multi"]):
+                # "Can you confirm the water meter location?" named nobody;
+                # "Np / Tomorrow" says who: the ask is theirs from now on.
+                await db.attention_items.update_one(
+                    {"_id": to_query_id(link["id"]), "owner.jid": {"$in": [None, ""]}},
+                    {"$set": {"owner": {**owner, "source": "committed"},
+                              "updated_at": now}})
             if link and link["type"] == "question" and it["type"] == "commitment":
                 # Someone took the question on: possibly answered, for an admin.
                 await db.attention_items.update_one(

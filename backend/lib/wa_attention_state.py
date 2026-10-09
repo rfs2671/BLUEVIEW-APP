@@ -60,7 +60,9 @@ _DONE = re.compile(
     re.IGNORECASE)
 _CANCEL = re.compile(
     r"\b(never ?mind|nvm|cancel(l?ed)?|scratch that|no longer need\w*"
-    r"|don'?t need|not needed|hold off|scope (has )?changed|changed (the )?scope)\b",
+    r"|don'?t need|not needed|hold off|scope (has )?changed|changed (the )?scope"
+    # "Forget the meter, DEP already approved it" -- never "don't forget".
+    r"|(?<!don't )(?<!dont )(?<!do not )forget (it|that|this|about|the)\b)\b",
     re.IGNORECASE)
 _RESCHEDULE = re.compile(
     r"\b(actually|instead|moved?|moving|pushed|push(ing)? it|not happening"
@@ -176,8 +178,26 @@ def is_multi_owner(owner_text: Optional[str], mentions: Iterable[str] = ()) -> b
 #   requester (sender digits), key (short id of its message), parent_key,
 #   parent_id, topic (set), multi (bool)
 
+def _one_thread(hit: List[dict]) -> List[dict]:
+    """An ask and the commitment answering it are one thing to finish:
+    "Just sent sleeves layout" matches both, and is about the commitment
+    (done on it closes the ask too). Keep the answer, drop its ask."""
+    ids = {c["id"] for c in hit}
+    return [c for c in hit if not any(o.get("parent_id") == c["id"] and o["id"] in ids
+                                      for o in hit)]
+
+
 def _pick(cands: List[dict], upd: dict) -> Dict[str, Any]:
     """{items, link} by reply, previous message, topic, only-open."""
+    got = _pick_raw(cands, upd)
+    items = _one_thread(got["items"])
+    if got["link"] == "ambiguous" and len(items) == 1:
+        # An ask and its own answer were all there was: one thing open.
+        return {"items": items, "link": "only_open"}
+    return {**got, "items": items}
+
+
+def _pick_raw(cands: List[dict], upd: dict) -> Dict[str, Any]:
     rk, pk = upd.get("reply_key"), upd.get("previous_key")
     if rk:
         hit = [c for c in cands if rk in (c.get("key"), c.get("parent_key"))]

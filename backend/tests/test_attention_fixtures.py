@@ -49,7 +49,7 @@ PASS1 = json.loads((DIR / "pass1_2026_10.json").read_text())
 PASS2 = json.loads((DIR / "pass2_2026_10.json").read_text())
 SCRIPT = json.loads((DIR / "state_script_2026_10.json").read_text())
 
-SENDERS = {k: f"1718555{1000 + i:04d}" for i, k in enumerate("ABCDGP")}
+SENDERS = {k: f"1718555{1000 + i:04d}" for i, k in enumerate("ABCDGPR")}
 
 
 class _ScriptedModel:
@@ -105,6 +105,8 @@ def replay(lines):
             q = lines[ln["reply_to"] - 1]
             kw["quoted_message_id"] = was.short_id(rows[q["n"]]["message_id"])
             kw["quoted_author"] = SENDERS[q["from"]] + "@c.us"
+        if ln.get("mentions"):
+            kw["mentioned_jids"] = [SENDERS[m] + "@c.us" for m in ln["mentions"]]
         if ln.get("file"):
             kw["media_type"] = "document"
             kw["file_name"] = ln["file"]
@@ -155,8 +157,16 @@ class _FixtureChecks:
                     self.assertEqual(it["type"], e["type"])
                     # As said when it was made (a later reschedule moves `due`).
                     self.assertEqual(it["history"][0]["due_to"], e.get("due_text"))
-                    if e.get("owner"):
+                    if e.get("owner") and it["type"] == "commitment":
+                        # A commitment is its sender's.
                         self.assertEqual(it["evidence"]["sender"], SENDERS[e["owner"]])
+                    elif e.get("owner"):
+                        # An ask is the person it was put to: named by
+                        # @mention, or whoever took it on.
+                        self.assertEqual(str(it["owner"].get("jid") or "").split("@")[0],
+                                         SENDERS[e["owner"]])
+                    if e.get("due_from"):
+                        self.assertEqual(it["history"][0]["due_source"], e["due_from"])
                     if e.get("owner_text"):
                         self.assertEqual(it["owner"]["owner_text"], e["owner_text"])
                     if e.get("links"):
@@ -238,8 +248,39 @@ class Pass2(_FixtureChecks, unittest.TestCase):
 
     def test_the_reply_defines_the_topic(self):
         it = self._item_of(2)
-        self.assertEqual(it["summary"], "Sleeve layout by Friday")
+        self.assertEqual(it["summary"], "Send the 4th floor sleeve layout")
         self.assertNotIn("caulk", it["topic"])
+
+    def test_wednesday_is_not_happening_moves_the_sleeve_commitment(self):
+        it = self._item_of(2)
+        rs = [h for h in it["history"] if h.get("to") == "rescheduled"][0]
+        self.assertEqual((rs["due_from"], rs["due_to"], rs["link"]),
+                         ("by Wednesday", "Friday", "reply"))
+        # ... and is not a second sleeve commitment.
+        sleeves = [i for i in self.items if i["type"] == "commitment" and "sleeve" in i["topic"]]
+        self.assertEqual(len(sleeves), 1)
+        self.assertEqual(self.out["report"]["restated_update"], 1)
+
+    def test_the_meter_ask_belongs_to_who_took_it_on(self):
+        it = self._item_of(7)
+        self.assertEqual(it["owner"]["source"], "committed")
+
+    def test_a_named_owner_is_never_replaced_by_who_answers(self):
+        lines = [
+            {"n": 1, "from": "R", "mentions": ["P"], "body": "@Patricia can you send the riser layout?",
+             "expect": {"kind": "item", "type": "request", "owner": "P"}},
+            {"n": 2, "from": "B", "body": "I'll send the riser layout tomorrow",
+             "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "tomorrow",
+                        "links": 1}},
+        ]
+        out = replay(lines)
+        req = next(i for i in out["items"] if i["type"] == "request")
+        self.assertEqual(req["owner"]["jid"], SENDERS["P"] + "@c.us")
+        self.assertEqual(req["owner"]["source"], "mention")
+
+    def test_dont_forget_is_not_a_cancel(self):
+        self.assertIsNone(was.classify("Don't forget the meter"))
+        self.assertEqual(was.classify(self.LINES[9]["body"])["kind"], "cancel")
 
     def test_two_take_care_of_it_messages_are_two_items(self):
         # "Gonna take care of it Friday" and "I'll take care of it" are not
