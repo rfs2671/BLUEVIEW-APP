@@ -79,6 +79,15 @@ class TheHarness(unittest.TestCase):
         self.assertEqual(len(r["chase"]["unexpected"]), 1)
         self.assertEqual(dry.exit_code(r), 1)
 
+    def test_a_reschedule_to_the_wrong_date_is_not_hard_correct(self):
+        want = {"kind": "state", "of": 6, "to": "rescheduled", "due_text": "Monday"}
+        got = {"kind": "state", "of": 6, "to": "rescheduled", "also": [], "due_text": "Tuesday"}
+        hard, soft, notes = dry.score_line(want, got)
+        self.assertFalse(hard)
+        self.assertTrue(soft)
+        self.assertIn("due 'Monday' → got 'Tuesday'", notes)
+        self.assertTrue(dry.score_line(want, {**got, "due_text": "Monday"})[0])
+
     def test_the_payload_is_waapis_and_the_webhook_parser_reads_the_reply(self):
         reply = next(m for m in self.sc["messages"] if m.get("reply_to"))
         p = dry.payload(self.sc, reply)

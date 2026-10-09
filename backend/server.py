@@ -47183,15 +47183,18 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     batches: Dict[tuple, dict] = {}
     settings_cache: Dict[str, dict] = {}
     group_ok: Dict[str, bool] = {}
-    # A request that a live commitment answers is chased through that
-    # commitment (its words, its date -- moved or not), never as well.
+    # A request that a confirmed commitment answers is chased through that
+    # commitment (its words, its date -- moved or not), never as well. A
+    # tentative answer (flagged, owner only possibly, possibly done) does not
+    # stand in for the request.
     asks = [str(it.get("_id")) for it in items if it.get("type") == "request"]
     answered: set = set()
     if asks:
         try:
             answered = {str(c.get("parent_id")) for c in await db.attention_items.find(
                 {"type": "commitment", "parent_id": {"$in": asks},
-                 "status": {"$in": list(wa_attention_state.LIVE)}},
+                 "status": {"$in": list(wa_chase.CHASE_STATUSES)},
+                 "needs_review": {"$ne": True}, "owner.possibly": {"$ne": True}},
                 {"parent_id": 1}).to_list(5000)}
         except Exception as e:
             logger.warning(f"[chase] answers read failed: {type(e).__name__}")

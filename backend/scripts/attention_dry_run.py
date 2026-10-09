@@ -382,6 +382,9 @@ def score_line(want: dict, got: dict) -> tuple:
         if want.get("also") is not None and sorted(want["also"]) != got.get("also"):
             notes.append(f"also {want['also']} → got {got.get('also')}")
             hard = False
+        if "due_text" in want and want["due_text"] != got.get("due_text"):
+            notes.append(f"due {want['due_text']!r} → got {got.get('due_text')!r}")
+            hard = False
         if not hard:
             notes.append(f"{wk} of {want.get('of')}→{want.get('to')} got of {got.get('of')}→{got.get('to')}")
         return hard, wk == gk, notes

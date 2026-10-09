@@ -209,6 +209,17 @@ class AnAskAndItsAnswer(_Base):
         self.chase(_et(8, 35))
         self.assertEqual(self.rows(), [])
 
+    def test_a_tentative_answer_does_not_hide_the_ask(self):
+        for over in (dict(needs_review=True), dict(owner={"possibly": True}),
+                     dict(status="possibly_done")):
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            ask = _item(self.db, type="request", quote="@Mike send the RFI today")
+            _item(self.db, quote="ok", parent_id=ask["_id"], **over)
+            self.chase(_et(8, 35))
+            self.assertEqual([i["quote"] for i in self.rows()[0]["items"]],
+                             ["@Mike send the RFI today"], over)
+
     def test_a_closed_answer_does_not_hide_the_ask(self):
         ask = _item(self.db, type="request", quote="@Mike send the RFI today")
         _item(self.db, quote="on it", parent_id=ask["_id"], status="cancelled")
