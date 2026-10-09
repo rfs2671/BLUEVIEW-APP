@@ -255,6 +255,35 @@ class TheThreeGaps(unittest.TestCase):
         self.assertFalse([i for i in out["db"].attention_items.rows
                           if i["evidence"]["message_id"] == out["rows"][17]["message_id"]])
         self.assertFalse([c for c in r["chase"]["got"] if c["owner"] == "P"])
+        # Nudges quote Jose's words and reply to his message; Patricia's stay
+        # the item's evidence.
+        self.assertEqual(it["evidence"]["quote"], "Yes, I'll send them tomorrow AM")
+        jose = out["rows"][17]["message_id"]
+        rows = [c for c in out["db"]["chase_shadow"].rows if c["owner_name"] == "Jose Zarate"
+                and c["day"] == "2026-10-16"]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]["text"], "@Jose Zarate morning — this is due today:\n"
+                                          "“Patricia's out sick, I'll send the risers Friday”")
+        for c in rows:
+            self.assertEqual(c["items"][0]["message_id"], jose)
+            if c["kind"] == "group":
+                self.assertEqual(c["reply_to"], jose)
+
+    def test_after_a_handover_only_who_took_it_on_stops_the_chase(self):
+        raw = json.loads((DIR / "busy_group_2026_10.json").read_text(encoding="utf-8"))
+
+        def with_(sender):
+            sc = copy.deepcopy(raw)
+            sc["messages"].append({"from": sender, "at": "2026-10-16 09:00:00",
+                                   "text": "Morning all", "expect": {"kind": "none"}})
+            return dry.load_dict(sc)
+        # Patricia, back Friday morning, says something: Jose is still chased.
+        _out, r = _run(with_("P"))
+        self.assertEqual(dry.exit_code(r), 0)
+        # Jose says something after the morning nudge: his chase stops.
+        _out, r = _run(with_("J"))
+        self.assertEqual(sorted(c["slot"] for c in r["chase"]["missing"] if c["owner"] == "J"),
+                         ["admin_dm", "eod", "midday"])
 
     def test_a_handover_that_is_not_clear_is_flagged_and_nobody_is_chased(self):
         # Jose at another company, words that do not say what: possibly a

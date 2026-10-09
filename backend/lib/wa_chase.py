@@ -29,7 +29,7 @@ rescheduled, cancelled, possibly done, a part done, a flag), or any message
 from the owner in that group since the last nudge.
 
 HOW: in the item's own group, @mentioning the owner, quoting the original
-message. At most one nudge per owner per group per slot: their items due
+message (after a handover, the message of who took it on). At most one nudge per owner per group per slot: their items due
 today go in one message. The words are a fixed template and the item's own
 quote. No model writes any of it.
 
@@ -196,8 +196,18 @@ def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]],
     return None
 
 
+def quoted(item: Dict[str, Any]) -> Dict[str, Any]:
+    """The message a nudge quotes: after a handover, the words of who took
+    it on ("I'll send the risers Friday"); otherwise the item's own. The
+    original stays the item's evidence and history."""
+    q = item.get("chase_quote") or {}
+    if q.get("quote") and q.get("message_id"):
+        return q
+    return item.get("evidence") or {}
+
+
 def quote(item: Dict[str, Any]) -> str:
-    q = " ".join(str((item.get("evidence") or {}).get("quote") or "").split())
+    q = " ".join(str(quoted(item).get("quote") or "").split())
     return q if len(q) <= QUOTE_MAX else q[:QUOTE_MAX - 1].rstrip() + "…"
 
 

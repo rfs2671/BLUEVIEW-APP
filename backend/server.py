@@ -46535,6 +46535,10 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
                                "due_source": "parsed"}
                 extra.update(due_from=old.get("due_text"), due_from_at=old.get("due_at"),
                              due_to=due_text, due_to_at=due_at.isoformat())
+            # Nudges quote who took it on; the original words stay the
+            # item's evidence and history.
+            sets["chase_quote"] = {"quote": quote, "message_id": this_id,
+                                   "sent_at": sent_at, "source": "handover"}
             event = _attention_event("handover", frm, frm, msg, quote, ev_kind, **extra)
         elif a["action"] in ("state", "possibly_done"):
             sets["status"] = a["to"]
@@ -47219,7 +47223,8 @@ async def _chase_owner_spoke_at(group_id: str, item: dict,
                                 after: datetime) -> Optional[datetime]:
     """The owner's latest message in the group after `after`, if any."""
     ids = {wa_chase.digits((item.get("owner") or {}).get("jid"))}
-    if item.get("type") == "commitment":
+    if item.get("type") == "commitment" and (item.get("owner") or {}).get("source") != "handover":
+        # Who said it -- unless it was handed over: then only who took it on.
         ids.add(str((item.get("evidence") or {}).get("sender") or ""))
     ids.discard("")
     if not ids:
@@ -47376,7 +47381,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            "summary": i.get("summary") or "",
                            "quote": wa_chase.quote(i),
                            "due_text": (i.get("due") or {}).get("due_text"),
-                           "message_id": (i.get("evidence") or {}).get("message_id")}
+                           "message_id": wa_chase.quoted(i).get("message_id")}
                           for i in b["items"]],
                 "reason": wa_chase.reason(slot, b["items"], b["last"], day),
                 "review": None, "created_at": now, "shadow": True,
@@ -47391,7 +47396,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 report["admin_dm"] += 1
             else:
                 row.update(kind="group",
-                           reply_to=(first.get("evidence") or {}).get("message_id"),
+                           reply_to=wa_chase.quoted(first).get("message_id"),
                            text=wa_chase.group_text(row["owner_name"], b["items"], slot))
                 report["would_chase"] += 1
             await db[wa_chase.COLLECTION].update_one(
