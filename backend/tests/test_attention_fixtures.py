@@ -20,6 +20,8 @@ the worker runs, and every label is checked:
   follow_up  a chase on line `of`, not a new item
   flag       for an admin on line `of`; nothing changed
   merged     one message with line `into` (same sender, under a minute)
+  review     an unclear update: ONE review entry naming the items `of`;
+             none of them changed
 
 then each item's final status. The model is scripted (the expected labels,
 plus the wrong answers the passes actually got) so what is tested is the code
@@ -140,7 +142,8 @@ class _FixtureChecks:
     @classmethod
     def setUpClass(cls):
         cls.out = replay(cls.LINES, cls.BASE, cls.USERS)
-        cls.items = cls.out["items"]
+        cls.reviews = [it for it in cls.out["items"] if it["type"] == "update_review"]
+        cls.items = [it for it in cls.out["items"] if it["type"] != "update_review"]
         cls.by_msg = {it["evidence"]["message_id"]: it for it in cls.items}
 
     def _item_of(self, n):
@@ -194,6 +197,18 @@ class _FixtureChecks:
                 elif kind == "none":
                     self.assertNotIn(self.out["rows"][n]["message_id"], self.by_msg)
                     self.assertEqual(self._events_quoting(n), [])
+                elif kind == "review":
+                    # An unclear update: ONE review entry naming the items
+                    # it could be about; none of them changed.
+                    mid = self.out["rows"][n]["message_id"]
+                    revs = [r for r in self.reviews if r["evidence"]["message_id"] == mid]
+                    self.assertEqual(len(revs), 1)
+                    self.assertEqual(revs[0]["update_kind"], e["update"])
+                    self.assertEqual(sorted(c["id"] for c in revs[0]["candidates"]),
+                                     sorted(str(self._item_of(t)["_id"]) for t in e["of"]))
+                    self.assertEqual(revs[0]["evidence"]["quote"], self._quote_of(ln))
+                    self.assertEqual(self._events_quoting(n), [])
+                    self.assertNotIn(mid, self.by_msg)
                 elif kind == "merged":
                     self.assertNotIn(self.out["rows"][n]["message_id"], self.by_msg)
                     into = self._item_of(e["into"])
@@ -457,8 +472,78 @@ class ChaseWeekend(_FixtureChecks, unittest.TestCase):
         self.assertEqual((rs["due_from"], rs["due_to"], rs["due_to_at"]),
                          ("before 8am", "till 11-12", "2026-10-10"))
 
+    def test_a_reply_or_update_is_never_merged(self):
+        # 3:39:40 / 3:40:05 / 3:40:50, all Patricia: three messages, each
+        # recorded under its own id.
+        self.assertEqual(self._item_of(6)["evidence"]["message_id"], self.out["rows"][6]["message_id"])
+        self.assertEqual(self._item_of(8)["evidence"]["message_id"], self.out["rows"][8]["message_id"])
+        self.assertEqual(len([h for h in self._item_of(2)["history"]
+                              if h.get("message_id") == self.out["rows"][7]["message_id"]]), 1)
+        merged = [it for it in self.items if it["evidence"].get("merged_ids")]
+        self.assertEqual([it["evidence"]["quote"] for it in merged], ["I\nKk"])
+        # The reply moved the hardware, not the scaffold said just before it.
+        self.assertEqual(self._item_of(6)["due"]["due_text"], "Monday")
+
     def test_nothing_is_sent_by_the_chase(self):
         self.assertEqual(self.chase_sends, [])
+
+
+class NamesAndDates(unittest.TestCase):
+    """An ask opening with a name; a due date outside the quoted part."""
+
+    USERS = {"R": {"name": "Roy Admin", "role": "admin"},
+             "P": {"name": "Patricia Lee", "role": "pm"}}
+
+    def _two(self, ask):
+        lines = [
+            {"n": 1, "from": "R", "body": ask,
+             "expect": {"kind": "item", "type": "request", "due_text": "by Saturday"}},
+            # The model quotes only part of it and gives no date.
+            {"n": 2, "from": "P", "body": "Sunday. I'll keep u posted",
+             "model": [{"type": "commitment", "quote": "I'll keep u posted"}],
+             "expect": {"kind": "item", "type": "commitment"}},
+        ]
+        out = replay(lines, T0, self.USERS)
+        req = next(i for i in out["items"] if i["type"] == "request")
+        com = next(i for i in out["items"] if i["type"] == "commitment")
+        return req, com
+
+    def test_the_due_date_is_read_from_the_whole_message(self):
+        _req, com = self._two("can you file the scaffold permit renewal by Saturday?")
+        self.assertEqual(com["due"]["due_text"], "Sunday")
+        self.assertIsNotNone(com["due"]["due_at"])
+
+    def test_a_name_that_matches_one_person_is_the_owner(self):
+        req, com = self._two("Patricia, can you file the scaffold permit renewal by Saturday?")
+        self.assertEqual((req["owner"]["kind"], req["owner"]["id"], req["owner"]["source"]),
+                         ("user", "u_p", "named"))
+        self.assertFalse(req["owner"].get("possibly"))
+        self.assertFalse(req.get("needs_review"))
+        # Her answer is to an ask put to her: confirmed, no flag.
+        self.assertFalse(com["owner"].get("possibly"))
+        self.assertFalse(com.get("needs_review"))
+
+    def test_no_match_is_as_before(self):
+        req, com = self._two("Zed, can you file the scaffold permit renewal by Saturday?")
+        self.assertTrue(req["owner"].get("possibly"))
+        self.assertTrue(com["owner"].get("possibly"))
+
+    def test_a_mapped_person_by_name(self):
+        from lib import wa_sender_map as sm
+        lines = [
+            {"n": 1, "from": "R", "body": "Jose, can you send the sleeve layout by Friday?",
+             "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
+        ]
+        db = _world()
+        db[sm.COLLECTION].rows.append({"_id": "m1", "company_id": "co_a",
+                                       "sender_jid": "999@lid", "person_name": "Jose Zarate",
+                                       "sub_company": "QP"})
+        _first_sight(db)
+        _msg(db, lines[0]["body"], sender=SENDERS["R"], at=T0 + timedelta(minutes=1))
+        _tick(db, _ScriptedModel(lines), T0 + timedelta(minutes=5))
+        req = _items(db)[0]
+        self.assertEqual((req["owner"]["kind"], req["owner"]["jid"], req["owner"]["source"]),
+                         ("sender_map", "999@lid", "named"))
 
 
 class TheRules(unittest.TestCase):
@@ -474,6 +559,47 @@ class TheRules(unittest.TestCase):
         # A bare range is not a time ("floors 11-12"); a day still wins.
         self.assertIsNone(was.classify("Actually floors 11-12"))
         self.assertEqual(was.classify("Actually Monday morning")["due_text"], "Monday")
+
+    def test_bursts_never_take_a_reply_or_an_update(self):
+        t = datetime(2026, 10, 9, 19, 39, 40, tzinfo=timezone.utc)
+
+        def row(body, s, **kw):
+            return {"sender": "P", "body": body, "created_at": t + timedelta(seconds=s), **kw}
+        rows = [row("Sunday. I'll keep u posted", 0),
+                row("Actually give me till 11-12", 25),       # no reply-to stored
+                row("I'll also send the sleeve shop drawings", 50),
+                row("Np", 70), row("Tomorrow", 80),
+                row("thanks", 90, quoted_message_id="X1"),
+                row("ok", 100)]
+        got = [[r["body"] for r in b] for b in was.bursts(rows)]
+        self.assertEqual(got, [["Sunday. I'll keep u posted"], ["Actually give me till 11-12"],
+                               ["I'll also send the sleeve shop drawings", "Np", "Tomorrow"],
+                               ["thanks"], ["ok"]])
+        for body in ("Actually Monday", "Just sent", "sent it", "Never mind the dampers",
+                     "nevermind", "Forget it", "Done!"):
+            self.assertTrue(was.starts_with_update(body), body)
+        for body in ("I sent it", "Sunday", "Is it done?x"):
+            self.assertFalse(was.starts_with_update(body), body)
+
+    def test_a_reply_is_the_strongest_link(self):
+        cands = [{"id": "a", "key": "K1", "topic": ["riser"]},
+                 {"id": "b", "key": "K2", "topic": ["sleeve"]}]
+        upd = {"reply_key": "ZZ", "previous_key": "K2", "terms": set(), "own_terms": set()}
+        # A reply to something that is no item is not pinned on the message before.
+        self.assertNotEqual(was._pick_raw(cands, upd)["link"], "previous")
+        self.assertEqual(was._pick_raw(cands, {**upd, "reply_key": "K1"})["items"][0]["id"], "a")
+
+    def test_an_ask_opening_with_a_name(self):
+        for body, want in (("B, can you send the riser dimensions?", "b"),
+                           ("Mike, can you send the RFI", "mike"),
+                           ("@Patricia: send it", "patricia"),
+                           ("Guys, who has the key?", None), ("Hey, can you…", None),
+                           ("can you send it", None), ("Mike can you send it", None)):
+            self.assertEqual(wa.addressed_name(body), want, body)
+        self.assertTrue(wa.prompt_at_least("att-v1.2"))
+        self.assertTrue(wa.prompt_at_least("att-v1.10"))
+        for v in ("att-v1.1", "att-v0.9", None, "", "v1.2"):
+            self.assertFalse(wa.prompt_at_least(v), v)
 
     def test_i_kk_is_a_yes(self):
         self.assertEqual(was.ack("I\nKk"), {"due_text": None})

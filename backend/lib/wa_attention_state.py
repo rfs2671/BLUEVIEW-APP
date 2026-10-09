@@ -330,7 +330,9 @@ def _pick_raw(cands: List[dict], upd: dict) -> Dict[str, Any]:
         hit = [c for c in cands if rk in (c.get("key"), c.get("parent_key"))]
         if hit:
             return {"items": hit, "link": "reply"}
-    if pk:
+    # A reply is the strongest link: a reply to something else is never
+    # pinned on the message that happened to come before it.
+    if pk and not rk:
         hit = [c for c in cands if c.get("key") == pk]
         if hit:
             return {"items": hit, "link": "previous"}
@@ -370,10 +372,8 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                     out.append({"item_id": c["id"], "action": "state", "to": "cancelled",
                                 "link": "via_parent", "by": "requester"})
         elif got["items"]:
-            for c in got["items"]:
-                out.append({"item_id": c["id"], "action": "flag", "to": None,
-                            "link": got["link"], "by": "requester",
-                            "note": "possibly_cancelled"})
+            out.append(_review("cancel", got["items"], got["link"], "requester",
+                               "possibly_cancelled"))
         return out
 
     owned = [c for c in live if c.get("owner") == sender and not c.get("multi")
@@ -386,9 +386,7 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
             return [{"item_id": got["items"][0]["id"], "action": "state",
                      "to": "rescheduled", "link": got["link"], "by": "owner"}]
         if got["items"]:
-            return [{"item_id": c["id"], "action": "flag", "to": None,
-                     "link": got["link"], "by": "owner", "note": "which_item"}
-                    for c in got["items"]]
+            return [_review("reschedule", got["items"], got["link"], "owner", "which_item")]
         # Someone else moving another person's date: flagged, never applied.
         others = [c for c in live if c.get("type") == "commitment"
                   and c.get("owner") and c.get("owner") != sender]
@@ -396,6 +394,9 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
         # before is not enough to pin someone else's date change on it.
         theirs = _pick(others, {**upd, "terms": upd.get("own_terms") or set(),
                                 "previous_key": None, "own_terms": True})
+        if len(theirs["items"]) > 1:
+            return [_review("reschedule", theirs["items"], theirs["link"], "other",
+                            "not_owner")]
         return [{"item_id": c["id"], "action": "flag", "to": None,
                  "link": theirs["link"], "by": "other", "note": "not_owner"}
                 for c in theirs["items"]]
@@ -425,10 +426,21 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                      "link": "reply", "by": "unknown_owner"} for c in unowned]
     if len(got["items"]) == 1 and got["link"] == "only_open":
         return _done(got["items"][0], "only_open", live)
+    if len(got["items"]) > 1:
+        return [_review("done", got["items"], "ambiguous", "owner", "possibly_done")]
     if got["items"]:
         return [{"item_id": c["id"], "action": "possibly_done", "to": "possibly_done",
                  "link": "ambiguous", "by": "owner"} for c in got["items"]]
     return []
+
+
+def _review(kind: str, items: List[dict], link: Optional[str], by: str,
+            note: str) -> Dict[str, Any]:
+    """ONE review entry for an update that could be about several items
+    ("Sent" with two things open): the items themselves are left as they
+    are; an admin says which one it was."""
+    return {"action": "review", "kind": kind, "item_ids": [c["id"] for c in items],
+            "link": link, "by": by, "note": note}
 
 
 def _done(target: dict, link: str, live: List[dict]) -> List[Dict[str, Any]]:
@@ -478,10 +490,27 @@ def follow_up_of(question_terms: Set[str], asker: str, items: List[dict]) -> Opt
     return hit[0]["id"] if len(hit) == 1 else None
 
 
+_UPDATE_START = re.compile(
+    r"^\W*(?:actually|just sent|sent|never ?mind|nvm|forget|done)\b", re.IGNORECASE)
+
+
+def starts_with_update(body: Any) -> bool:
+    """"Actually give me till 11-12", "Just sent", "Never mind the …"."""
+    return bool(_UPDATE_START.match(str(body or "").strip()))
+
+
+def _standalone(r: dict) -> bool:
+    """A reply or an update is its own message: nothing merges into it and
+    it merges into nothing."""
+    return bool(str(r.get("quoted_message_id") or "").strip()) or starts_with_update(r.get("body"))
+
+
 def bursts(rows: List[dict], gap_seconds: int = BURST_SECONDS) -> List[List[dict]]:
     """Consecutive TEXT rows from one sender, each within `gap_seconds` of
-    the one before, are one message ("Np" + "Tomorrow"). A file or a reply
-    starts its own."""
+    the one before, are one message ("Np" + "Tomorrow"). A file, a reply, or
+    an update ("Actually …", "Sent", "Never mind …") starts its own and
+    keeps its own id: what it updates is found from IT, not from what came
+    just before."""
     out: List[List[dict]] = []
     for r in rows:
         if out:
@@ -489,7 +518,7 @@ def bursts(rows: List[dict], gap_seconds: int = BURST_SECONDS) -> List[List[dict
             a, b = _when(last), _when(r)
             if (str(r.get("sender") or "") == str(last.get("sender") or "")
                     and not media_of(r) and not media_of(last)
-                    and not str(r.get("quoted_message_id") or "").strip()
+                    and not _standalone(r) and not _standalone(last)
                     and a and b and 0 <= (b - a).total_seconds() < gap_seconds):
                 out[-1].append(r)
                 continue

@@ -1,111 +1,503 @@
 {
-  "about": "State-update fixtures (owner's 25-line script). A = GC super, B = plumber, C = electrician, D = PM. Lines are a minute apart. 'model' is what the scripted model answers when it differs from the expected label (to test the code around it).",
-  "speakers": {"A": "GC super", "B": "plumber", "C": "electrician", "D": "PM"},
-  "lines": [
-    {"n": 1, "from": "A", "body": "B, can you send revised riser dimensions by tomorrow?",
-     "expect": {"kind": "item", "type": "request", "due_text": "by tomorrow"}},
-    {"n": 2, "from": "B", "body": "Yeah I'll send them tomorrow morning",
-     "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "tomorrow morning", "links": 1}},
-    {"n": 3, "from": "C", "body": "Who's bringing the lift Thursday?",
-     "expect": {"kind": "item", "type": "question"}},
-    {"n": 4, "from": "A", "body": "Great, another rain day, love this job",
-     "expect": {"kind": "none", "why": "sarcasm"}},
-    {"n": 5, "from": "D", "body": "Why does this always happen to us",
-     "expect": {"kind": "none", "why": "rhetorical"}},
-    {"n": 6, "from": "C", "body": "I'll get you the panel schedule later",
-     "expect": {"kind": "item", "type": "commitment", "owner": "C", "due_text": null}},
-    {"n": 7, "from": "A", "body": "Inspection moved to Tuesday 10am",
-     "expect": {"kind": "none", "why": "schedule info"},
-     "model": [{"type": "issue", "quote": "Inspection moved to Tuesday 10am", "importance": "high"}]},
-    {"n": 8, "from": "B", "body": "Actually risers will be Monday, engineer is out",
-     "expect": {"kind": "state", "of": 2, "to": "rescheduled", "due_text": "Monday"}},
-    {"n": 9, "from": "D", "body": "C, need the load calcs by Friday EOD, hard deadline",
-     "expect": {"kind": "item", "type": "request", "due_text": "by Friday EOD"}},
-    {"n": 10, "from": "C", "body": "Will do", "reply_to": 9,
-     "expect": {"kind": "item", "type": "commitment", "owner": "C", "links": 9,
-                "due_text": "by Friday EOD", "due_from": "parent"}},
-    {"n": 11, "from": "A", "body": "Does anyone have the updated drawings?",
-     "expect": {"kind": "item", "type": "question"}},
-    {"n": 12, "from": "B", "body": "I have them, sending now",
-     "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "now", "links": 11}},
-    {"n": 13, "from": "B", "body": "", "file": "drawings.pdf",
-     "expect": {"kind": "state", "of": 12, "to": "done", "evidence": "[document: drawings.pdf]"}},
-    {"n": 14, "from": "C", "body": "Lift is mine, 7am Thursday",
-     "expect": {"kind": "item", "type": "commitment", "owner": "C", "due_text": "7am Thursday", "links": 3}},
-    {"n": 15, "from": "D", "body": "Never mind the load calcs, owner changed scope",
-     "expect": {"kind": "state", "of": 9, "to": "cancelled", "also": [10]}},
-    {"n": 16, "from": "A", "body": "lol we'll see if that happens",
-     "expect": {"kind": "none"}},
-    {"n": 17, "from": "B", "body": "I'll try to swing by sometime next week",
-     "expect": {"kind": "none", "why": "too vague"}},
-    {"n": 18, "from": "C", "body": "Can someone confirm the core drill locations?",
-     "expect": {"kind": "item", "type": "question"}},
-    {"n": 19, "from": "B", "body": "Plumbing cores marked on 3rd floor, electric still needed",
-     "expect": {"kind": "none", "why": "partial answer, the question stays open"}},
-    {"n": 20, "from": "A", "body": "B the risers came in?",
-     "expect": {"kind": "follow_up", "of": 2},
-     "model": [{"type": "question", "quote": "B the risers came in?"}]},
-    {"n": 21, "from": "B", "body": "Sent this morning",
-     "expect": {"kind": "state", "of": 2, "to": "done", "also": [1]}},
-    {"n": 22, "from": "D", "body": "Everyone send insurance certs by the 15th",
-     "expect": {"kind": "item", "type": "request", "owner_text": "Everyone", "due_text": "by the 15th"}},
-    {"n": 23, "from": "C", "body": "Sent mine",
-     "expect": {"kind": "part_done", "of": 22}},
-    {"n": 24, "from": "A", "body": "Thanks guys",
-     "expect": {"kind": "none"}},
-    {"n": 25, "from": "D", "body": "Mike from the elevator company will be here Wed",
-     "expect": {"kind": "none", "why": "info; unknown person"}}
-  ],
-  "final": {"1": "done", "2": "done", "3": "possibly_resolved", "6": "open", "9": "cancelled",
-            "10": "cancelled", "11": "possibly_resolved", "12": "done", "14": "open",
-            "18": "open", "22": "open"},
-  "scenarios": [
-    {"name": "done, no reply, two open commitments: possibly done, nothing closed",
-     "lines": [
-       {"n": 1, "from": "A", "body": "B, can you send the riser dimensions by Friday?",
-        "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
-       {"n": 2, "from": "B", "body": "I'll send the riser dimensions Friday",
-        "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "Friday", "links": 1}},
-       {"n": 3, "from": "A", "body": "B, I need the sleeve layout too",
-        "expect": {"kind": "item", "type": "request"}},
-       {"n": 4, "from": "B", "body": "I'll do the sleeve layout tomorrow",
-        "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "tomorrow", "links": 3}},
-       {"n": 5, "from": "C", "body": "Thanks guys", "expect": {"kind": "none"}},
-       {"n": 6, "from": "B", "body": "done",
-        "expect": {"kind": "state", "of": 2, "to": "possibly_done", "also": [4]}}
-     ],
-     "final": {"1": "open", "2": "possibly_done", "3": "open", "4": "possibly_done"}},
-    {"name": "someone other than the owner says sent: no change",
-     "lines": [
-       {"n": 1, "from": "A", "body": "B, can you send the riser dimensions by Friday?",
-        "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
-       {"n": 2, "from": "B", "body": "I'll send them Friday",
-        "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "Friday", "links": 1}},
-       {"n": 3, "from": "C", "body": "sent", "reply_to": 2, "expect": {"kind": "none"}}
-     ],
-     "final": {"1": "open", "2": "open"}},
-    {"name": "Actually Monday from a non-owner: no reschedule, flagged",
-     "lines": [
-       {"n": 1, "from": "A", "body": "B, can you send the riser dimensions by Friday?",
-        "expect": {"kind": "item", "type": "request", "due_text": "by Friday"}},
-       {"n": 2, "from": "B", "body": "I'll send them Friday",
-        "expect": {"kind": "item", "type": "commitment", "owner": "B", "due_text": "Friday", "links": 1}},
-       {"n": 3, "from": "A", "body": "Actually Monday", "reply_to": 2,
-        "expect": {"kind": "flag", "of": 2, "note": "not_owner"}}
-     ],
-     "final": {"1": "open", "2": "open"}},
-    {"name": "three people: an ok to another thread, then np tmrw -- no confident owner",
-     "lines": [
-       {"n": 1, "from": "A", "at": 0, "body": "Hoist is down until noon",
-        "expect": {"kind": "none"}},
-       {"n": 2, "from": "A", "at": 60, "body": "Can someone confirm the water meter location with the engineer?",
-        "expect": {"kind": "item", "type": "request"}},
-       {"n": 3, "from": "B", "at": 120, "body": "ok", "reply_to": 1,
-        "expect": {"kind": "none", "why": "a yes to the hoist news, not to the ask"}},
-       {"n": 4, "from": "C", "at": 180, "body": "np tmrw",
-        "expect": {"kind": "none", "why": "someone else wrote in between: whose yes is it?"}}
-     ],
-     "final": {"2": "open"},
-     "owner_none": [2]}
-  ]
+ "about": "State-update fixtures (owner's 25-line script). A = GC super, B = plumber, C = electrician, D = PM. Lines are a minute apart. 'model' is what the scripted model answers when it differs from the expected label (to test the code around it).",
+ "speakers": {
+  "A": "GC super",
+  "B": "plumber",
+  "C": "electrician",
+  "D": "PM"
+ },
+ "lines": [
+  {
+   "n": 1,
+   "from": "A",
+   "body": "B, can you send revised riser dimensions by tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "due_text": "by tomorrow"
+   }
+  },
+  {
+   "n": 2,
+   "from": "B",
+   "body": "Yeah I'll send them tomorrow morning",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "B",
+    "due_text": "tomorrow morning",
+    "links": 1
+   }
+  },
+  {
+   "n": 3,
+   "from": "C",
+   "body": "Who's bringing the lift Thursday?",
+   "expect": {
+    "kind": "item",
+    "type": "question"
+   }
+  },
+  {
+   "n": 4,
+   "from": "A",
+   "body": "Great, another rain day, love this job",
+   "expect": {
+    "kind": "none",
+    "why": "sarcasm"
+   }
+  },
+  {
+   "n": 5,
+   "from": "D",
+   "body": "Why does this always happen to us",
+   "expect": {
+    "kind": "none",
+    "why": "rhetorical"
+   }
+  },
+  {
+   "n": 6,
+   "from": "C",
+   "body": "I'll get you the panel schedule later",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "due_text": null
+   }
+  },
+  {
+   "n": 7,
+   "from": "A",
+   "body": "Inspection moved to Tuesday 10am",
+   "expect": {
+    "kind": "none",
+    "why": "schedule info"
+   },
+   "model": [
+    {
+     "type": "issue",
+     "quote": "Inspection moved to Tuesday 10am",
+     "importance": "high"
+    }
+   ]
+  },
+  {
+   "n": 8,
+   "from": "B",
+   "body": "Actually risers will be Monday, engineer is out",
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "rescheduled",
+    "due_text": "Monday"
+   }
+  },
+  {
+   "n": 9,
+   "from": "D",
+   "body": "C, need the load calcs by Friday EOD, hard deadline",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "due_text": "by Friday EOD"
+   }
+  },
+  {
+   "n": 10,
+   "from": "C",
+   "body": "Will do",
+   "reply_to": 9,
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "links": 9,
+    "due_text": "by Friday EOD",
+    "due_from": "parent"
+   }
+  },
+  {
+   "n": 11,
+   "from": "A",
+   "body": "Does anyone have the updated drawings?",
+   "expect": {
+    "kind": "item",
+    "type": "question"
+   }
+  },
+  {
+   "n": 12,
+   "from": "B",
+   "body": "I have them, sending now",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "B",
+    "due_text": "now",
+    "links": 11
+   }
+  },
+  {
+   "n": 13,
+   "from": "B",
+   "body": "",
+   "file": "drawings.pdf",
+   "expect": {
+    "kind": "state",
+    "of": 12,
+    "to": "done",
+    "evidence": "[document: drawings.pdf]"
+   }
+  },
+  {
+   "n": 14,
+   "from": "C",
+   "body": "Lift is mine, 7am Thursday",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "due_text": "7am Thursday",
+    "links": 3
+   }
+  },
+  {
+   "n": 15,
+   "from": "D",
+   "body": "Never mind the load calcs, owner changed scope",
+   "expect": {
+    "kind": "state",
+    "of": 9,
+    "to": "cancelled",
+    "also": [
+     10
+    ]
+   }
+  },
+  {
+   "n": 16,
+   "from": "A",
+   "body": "lol we'll see if that happens",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "n": 17,
+   "from": "B",
+   "body": "I'll try to swing by sometime next week",
+   "expect": {
+    "kind": "none",
+    "why": "too vague"
+   }
+  },
+  {
+   "n": 18,
+   "from": "C",
+   "body": "Can someone confirm the core drill locations?",
+   "expect": {
+    "kind": "item",
+    "type": "question"
+   }
+  },
+  {
+   "n": 19,
+   "from": "B",
+   "body": "Plumbing cores marked on 3rd floor, electric still needed",
+   "expect": {
+    "kind": "none",
+    "why": "partial answer, the question stays open"
+   }
+  },
+  {
+   "n": 20,
+   "from": "A",
+   "body": "B the risers came in?",
+   "expect": {
+    "kind": "follow_up",
+    "of": 2
+   },
+   "model": [
+    {
+     "type": "question",
+     "quote": "B the risers came in?"
+    }
+   ]
+  },
+  {
+   "n": 21,
+   "from": "B",
+   "body": "Sent this morning",
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "done",
+    "also": [
+     1
+    ]
+   }
+  },
+  {
+   "n": 22,
+   "from": "D",
+   "body": "Everyone send insurance certs by the 15th",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner_text": "Everyone",
+    "due_text": "by the 15th"
+   }
+  },
+  {
+   "n": 23,
+   "from": "C",
+   "body": "Sent mine",
+   "expect": {
+    "kind": "part_done",
+    "of": 22
+   }
+  },
+  {
+   "n": 24,
+   "from": "A",
+   "body": "Thanks guys",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "n": 25,
+   "from": "D",
+   "body": "Mike from the elevator company will be here Wed",
+   "expect": {
+    "kind": "none",
+    "why": "info; unknown person"
+   }
+  }
+ ],
+ "final": {
+  "1": "done",
+  "2": "done",
+  "3": "possibly_resolved",
+  "6": "open",
+  "9": "cancelled",
+  "10": "cancelled",
+  "11": "possibly_resolved",
+  "12": "done",
+  "14": "open",
+  "18": "open",
+  "22": "open"
+ },
+ "scenarios": [
+  {
+   "name": "done, no reply, two open commitments: ONE review entry, nothing changed",
+   "lines": [
+    {
+     "n": 1,
+     "from": "A",
+     "body": "B, can you send the riser dimensions by Friday?",
+     "expect": {
+      "kind": "item",
+      "type": "request",
+      "due_text": "by Friday"
+     }
+    },
+    {
+     "n": 2,
+     "from": "B",
+     "body": "I'll send the riser dimensions Friday",
+     "expect": {
+      "kind": "item",
+      "type": "commitment",
+      "owner": "B",
+      "due_text": "Friday",
+      "links": 1
+     }
+    },
+    {
+     "n": 3,
+     "from": "A",
+     "body": "B, I need the sleeve layout too",
+     "expect": {
+      "kind": "item",
+      "type": "request"
+     }
+    },
+    {
+     "n": 4,
+     "from": "B",
+     "body": "I'll do the sleeve layout tomorrow",
+     "expect": {
+      "kind": "item",
+      "type": "commitment",
+      "owner": "B",
+      "due_text": "tomorrow",
+      "links": 3
+     }
+    },
+    {
+     "n": 5,
+     "from": "C",
+     "body": "Thanks guys",
+     "expect": {
+      "kind": "none"
+     }
+    },
+    {
+     "n": 6,
+     "from": "B",
+     "body": "done",
+     "expect": {
+      "kind": "review",
+      "of": [
+       2,
+       4
+      ],
+      "update": "done"
+     }
+    }
+   ],
+   "final": {
+    "1": "open",
+    "2": "open",
+    "3": "open",
+    "4": "open"
+   }
+  },
+  {
+   "name": "someone other than the owner says sent: no change",
+   "lines": [
+    {
+     "n": 1,
+     "from": "A",
+     "body": "B, can you send the riser dimensions by Friday?",
+     "expect": {
+      "kind": "item",
+      "type": "request",
+      "due_text": "by Friday"
+     }
+    },
+    {
+     "n": 2,
+     "from": "B",
+     "body": "I'll send them Friday",
+     "expect": {
+      "kind": "item",
+      "type": "commitment",
+      "owner": "B",
+      "due_text": "Friday",
+      "links": 1
+     }
+    },
+    {
+     "n": 3,
+     "from": "C",
+     "body": "sent",
+     "reply_to": 2,
+     "expect": {
+      "kind": "none"
+     }
+    }
+   ],
+   "final": {
+    "1": "open",
+    "2": "open"
+   }
+  },
+  {
+   "name": "Actually Monday from a non-owner: no reschedule, flagged",
+   "lines": [
+    {
+     "n": 1,
+     "from": "A",
+     "body": "B, can you send the riser dimensions by Friday?",
+     "expect": {
+      "kind": "item",
+      "type": "request",
+      "due_text": "by Friday"
+     }
+    },
+    {
+     "n": 2,
+     "from": "B",
+     "body": "I'll send them Friday",
+     "expect": {
+      "kind": "item",
+      "type": "commitment",
+      "owner": "B",
+      "due_text": "Friday",
+      "links": 1
+     }
+    },
+    {
+     "n": 3,
+     "from": "A",
+     "body": "Actually Monday",
+     "reply_to": 2,
+     "expect": {
+      "kind": "flag",
+      "of": 2,
+      "note": "not_owner"
+     }
+    }
+   ],
+   "final": {
+    "1": "open",
+    "2": "open"
+   }
+  },
+  {
+   "name": "three people: an ok to another thread, then np tmrw -- no confident owner",
+   "lines": [
+    {
+     "n": 1,
+     "from": "A",
+     "at": 0,
+     "body": "Hoist is down until noon",
+     "expect": {
+      "kind": "none"
+     }
+    },
+    {
+     "n": 2,
+     "from": "A",
+     "at": 60,
+     "body": "Can someone confirm the water meter location with the engineer?",
+     "expect": {
+      "kind": "item",
+      "type": "request"
+     }
+    },
+    {
+     "n": 3,
+     "from": "B",
+     "at": 120,
+     "body": "ok",
+     "reply_to": 1,
+     "expect": {
+      "kind": "none",
+      "why": "a yes to the hoist news, not to the ask"
+     }
+    },
+    {
+     "n": 4,
+     "from": "C",
+     "at": 180,
+     "body": "np tmrw",
+     "expect": {
+      "kind": "none",
+      "why": "someone else wrote in between: whose yes is it?"
+     }
+    }
+   ],
+   "final": {
+    "2": "open"
+   },
+   "owner_none": [
+    2
+   ]
+  }
+ ]
 }

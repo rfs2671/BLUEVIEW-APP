@@ -272,6 +272,33 @@ def verify_quote(quote: str, body: str) -> Optional[str]:
     return str(body)[start:end][:MAX_QUOTE_CHARS]
 
 
+# "B, can you…", "Mike: send the …": the ask opens with who it is for.
+_ADDRESSED = re.compile(r"^\s*@?([A-Za-z][A-Za-z'.-]{0,30})\s*[,:]\s*\S")
+_NOT_NAMES = {"guys", "everyone", "everybody", "all", "hey", "hi", "hello", "ok", "okay",
+              "so", "yes", "no", "actually", "also", "thanks", "team", "well", "sorry",
+              "please", "pls", "fyi", "update", "reminder", "note", "question", "btw",
+              "sure", "yo", "and", "but", "or", "today", "tomorrow", "guys"}
+
+
+def addressed_name(body: Optional[str]) -> Optional[str]:
+    """The name an ask opens with ("B, …", "Mike, can you…"), lowercased,
+    or None."""
+    m = _ADDRESSED.match(str(body or ""))
+    if not m:
+        return None
+    name = m.group(1).strip(".'-").lower()
+    return name if name and name not in _NOT_NAMES else None
+
+
+def prompt_at_least(version: Optional[str], floor: str = "att-v1.2") -> bool:
+    """Was this item extracted under `floor` or later? Unknown: no."""
+    def parts(v):
+        m = re.match(r"^att-v(\d+)\.(\d+)", str(v or ""))
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    have, want = parts(version), parts(floor)
+    return bool(have and want and have >= want)
+
+
 def text_in_body(text: Optional[str], body: str) -> Optional[str]:
     """`text` if it appears in the body (same forgiveness as the quote)."""
     if not text:

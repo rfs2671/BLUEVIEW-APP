@@ -25,6 +25,9 @@ export const TYPE_LABELS = {
   commitment: 'Commitment',
   issue: 'Issue',
   decision: 'Decision',
+  // One entry for an update that could be about several items ("Sent" with
+  // two open): its summary names them; none of them was changed.
+  update_review: 'Unclear update',
 };
 
 export const VERDICTS = [

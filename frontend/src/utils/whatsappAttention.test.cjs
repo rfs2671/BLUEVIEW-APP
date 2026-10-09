@@ -26,6 +26,7 @@ ok(/Nothing here was posted/.test(A.ATTENTION_NOTE), 'says nothing was posted');
 ok(A.VERDICTS.map((v) => v.label).join('|') === 'Correct|Wrong|Dismiss', 'three buttons');
 ok(A.VERDICTS.map((v) => v.verdict).join('|') === 'correct|wrong|dismissed', 'verdicts the server takes');
 ok(A.typeLabel('question') === 'Question' && A.typeLabel('x') === 'Item', 'type labels');
+ok(A.typeLabel('update_review') === 'Unclear update', 'one entry for an unclear update');
 
 console.log('\nitem lines');
 ok(A.ownerLine({ owner: 'Mike', owner_status: 'resolved' }) === 'Owner: Mike', 'resolved owner');

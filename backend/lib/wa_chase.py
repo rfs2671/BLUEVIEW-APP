@@ -11,7 +11,8 @@ WHAT IS CHASED (all of these):
 - the owner is a Levelog user or mapped in Project → WhatsApp → People;
 - an explicit due date the code read from the words ("Friday", "10/12");
 - nothing about it flagged for an admin's review, and the item itself not
-  marked Wrong (or dismissed) by an admin.
+  marked Wrong (or dismissed) by an admin;
+- extracted under prompt att-v1.2 or later.
 
 WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 3:00 end
 of day (NYC sites wrap up around 3:30), each only when nothing came back since
@@ -62,6 +63,8 @@ CHASE_STATUSES = ("open", "rescheduled")
 OWNER_KINDS = ("user", "sender_map")
 QUOTE_MAX = 200
 VERDICTS = ("correct", "wrong")
+# Items extracted under an older prompt are never chased.
+MIN_PROMPT = "att-v1.2"
 
 
 def disabled() -> bool:
@@ -119,6 +122,8 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "status"
     if item.get("needs_review"):
         return "flagged_for_review"
+    if not _prompt_ok(item):
+        return "old_prompt"             # extracted before att-v1.2
     if (item.get("review") or {}).get("verdict") in ("wrong", "dismissed"):
         return "reviewed_wrong"         # an admin rejected the item itself
     o = item.get("owner") or {}
@@ -136,6 +141,12 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
     if str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
     return None
+
+
+def _prompt_ok(item: Dict[str, Any]) -> bool:
+    from lib import wa_attention
+    return wa_attention.prompt_at_least(
+        (item.get("extraction") or {}).get("prompt_version"), MIN_PROMPT)
 
 
 def _at(v: Any) -> Optional[datetime]:
