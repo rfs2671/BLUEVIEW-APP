@@ -46283,6 +46283,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         if not quote:
             report["dropped_unverified"] += 1
             continue
+        if it["type"] == "issue" and not wa_attention.names_a_problem(body):
+            # A schedule or info update is not an issue (pass-1 review).
+            report["dropped_not_issue"] += 1
+            continue
         cand = wa_attention.owner_candidate(it["type"], msg)
         owner = {"kind": "none", "id": None, "name": "", "status": "unresolved",
                  "jid": None, "reason": "nobody_named", "source": "text"}
@@ -46444,7 +46448,8 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
     now = now or datetime.now(timezone.utc)
     report = {"groups": 0, "new_groups": 0, "bot_off": 0, "unbound": 0,
               "messages": 0, "calls": 0, "items": 0, "deduped": 0,
-              "filtered_out": 0, "dropped_unverified": 0, "model_failed": 0,
+              "filtered_out": 0, "dropped_unverified": 0,
+              "dropped_not_issue": 0, "model_failed": 0,
               "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
               "owner_resolved": 0,
               "owner_unresolved": 0, "prompt_tokens": 0,

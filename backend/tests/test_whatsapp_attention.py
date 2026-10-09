@@ -215,11 +215,27 @@ class TheDueDate(unittest.TestCase):
 
 class ImportanceAndDedupe(unittest.TestCase):
 
-    def test_safety_words_raise_never_lower(self):
-        self.assertEqual(wa.importance("low", "there's a leak on 4")["importance"], "high")
-        self.assertEqual(wa.importance("low", "there's a leak on 4")["importance_source"], "rule")
-        self.assertEqual(wa.importance("high", "send the invoice")["importance"], "high")
+    def test_high_only_when_the_message_states_it(self):
+        self.assertEqual(wa.importance("normal", "URGENT the hoist is down"),
+                         {"importance": "high", "importance_source": "stated"})
+        self.assertEqual(wa.importance("low", "stop work on 4, unsafe scaffold")["importance"],
+                         "high")
+        # Never inferred from the topic, whatever the model says.
+        for body in ("there's a leak on 4", "Inspection moved to Tuesday 10am",
+                     "send the invoice"):
+            self.assertEqual(wa.importance("high", body),
+                             {"importance": "normal", "importance_source": "capped"}, body)
+        self.assertEqual(wa.importance("low", "there's a leak on 4")["importance"], "low")
         self.assertEqual(wa.importance("bogus", "send it")["importance"], "normal")
+
+    def test_an_issue_names_a_problem(self):
+        for body in ("there's a leak on 4", "pour is delayed, pump broke",
+                     "we can't get into the basement", "riser is 2 inches short"):
+            self.assertTrue(wa.names_a_problem(body), body)
+        for body in ("Inspection moved to Tuesday 10am",
+                     "Mike from the elevator company will be here Wed",
+                     "concrete pour Friday 7am"):
+            self.assertFalse(wa.names_a_problem(body), body)
 
     def test_all_stop_word_quotes_stay_apart(self):
         a = wa.dedupe_key(G_A, "request", "u", "Can you do this?")

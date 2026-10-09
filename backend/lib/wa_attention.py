@@ -14,7 +14,9 @@ What lives here, each a plain function tested without a server:
     message it cites, checked here in code; otherwise the item is dropped
   * the due date: kept exactly as said; a date is set only when the code
     itself can read one from that text (never from the model)
-  * importance: the model's label, raised (never lowered) by safety words
+  * importance: "high" only when the message itself states it (urgent,
+    ASAP, stop work, unsafe...); never inferred from the topic
+  * an issue must name a problem: a schedule or info update is not one
   * the dedupe key, and precision per type from the admin's verdicts
 
 What the model never decides: who owns an item (resolved in code from the
@@ -35,7 +37,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "att-v1.0"
+PROMPT_VERSION = "att-v1.1"
 MODEL = "gpt-4o-mini"
 
 TYPES = ("question", "request", "commitment", "issue", "decision")
@@ -61,7 +63,17 @@ MAX_ITEMS_PER_MESSAGE = 3
 FILTER_WORDS_RE = re.compile(
     r"\b(will|i'll|we'll|gonna|tomorrow|by (mon|tue|wed|thu|fri|sat|sun|eod|end of)"
     r"|deadline|inspection|rfi|submittal|leak|crack|broken|unsafe|violation"
-    r"|stop work|decided|approved|go with)\b", re.IGNORECASE)
+    r"|stop work|decided|approved|go with"
+    # Pass 1 (Oct 2026) lost a request ("Everyone send insurance certs by the
+    # 15th") and two commitments ("I have them, sending now", "Lift is mine,
+    # 7am Thursday") here: asks, hand-offs, dates and times.
+    r"|send|sending|need|needs|needed|bring|bringing|mine|on it"
+    r"|by the \d{1,2}(st|nd|rd|th)?|\d{1,2}(:\d{2})?\s?(am|pm)"
+    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    # And the updates to an earlier one ("Sent this morning", "Never mind the
+    # load calcs"), which the state-update step reads.
+    r"|sent|done|finished|never ?mind|nvm|cancel\w*|scratch that|actually)\b",
+    re.IGNORECASE)
 
 MIN_BODY_CHARS = 6
 
@@ -124,7 +136,7 @@ Find what in THE MESSAGE needs someone's attention. Types:
 - question: asks something that needs an answer
 - request: asks someone to do or send something
 - commitment: someone says they will do something
-- issue: a problem on site (leak, damage, safety, delay, failed inspection)
+- issue: a PROBLEM — a defect or damage, a delay, a safety hazard, or work that is blocked
 - decision: something was decided or approved
 
 Rules:
@@ -132,8 +144,10 @@ Rules:
 - "quote" must be copied EXACTLY, character for character, from the >>> message. Never paraphrase. Short is fine.
 - "owner_text": the name or role exactly as written in the message, if one is named as the person to act. Otherwise null. Never guess.
 - "due_text": the time words exactly as written (e.g. "by Friday", "tomorrow morning"). Otherwise null.
-- importance: high only for safety, stop work, inspections, leaks or anything blocking work; low for small talk-level items; else normal.
-- Greetings, thanks, jokes, photos with no ask, and plain status updates are NOT items.
+- A schedule or info update is NOT an issue and NOT an item ("Inspection moved to Tuesday 10am", "Mike from the elevator company will be here Wed"). Skip it.
+- A message saying an earlier ask is done, sent, moved or called off is NOT a new item ("Sent this morning", "Never mind the load calcs").
+- importance: "high" ONLY when the message itself says so (urgent, ASAP, emergency, stop work, unsafe, someone hurt). Never infer it from the topic. Otherwise "normal".
+- Greetings, thanks, jokes, sarcasm, rhetorical questions, photos with no ask, and plain status updates are NOT items.
 - At most 3 items. None is a fine answer.
 
 Return JSON: {"items": [{"type": "...", "quote": "...", "summary": "under 15 words", "owner_text": null, "due_text": null, "importance": "normal", "tags": ["..."]}]}"""
@@ -256,8 +270,9 @@ def text_in_body(text: Optional[str], body: str) -> Optional[str]:
 # due_text is kept as said (and only if it is in the message). due_at is set
 # only when this code can read a date from it: today / tonight / EOD,
 # tomorrow, a weekday ("by Friday" = the next Friday, today excluded), or
-# M/D[/YY] and "Oct 15". Anything else ("next week", "ASAP", "soon") has no
-# date. Read in New York time from the moment the message was sent.
+# M/D[/YY], "Oct 15" and "the 15th". Anything else ("next week", "ASAP",
+# "soon") has no date. Read in New York time from the moment the message was
+# sent.
 
 _WEEKDAYS = {"mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1,
              "wed": 2, "weds": 2, "wednesday": 2, "thu": 3, "thur": 3,
@@ -281,8 +296,6 @@ def parse_due(due_text: Optional[str], sent_at: datetime) -> Optional[date]:
     today = _local_date(sent_at)
     if re.search(r"\bnext week\b|\bnext month\b|\basap\b|\bsoon\b", t):
         return None
-    if re.search(r"\b(today|tonight|eod|end of (the )?day|this afternoon|this morning)\b", t):
-        return today
     if re.search(r"\b(tomorrow|tmrw|tmr)\b", t):
         return today + timedelta(days=1)
     m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", t)
@@ -295,11 +308,26 @@ def parse_due(due_text: Optional[str], sent_at: datetime) -> Optional[date]:
     m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b", t)
     if m:
         return _resolve_md(today, _MONTHS[m.group(1)], int(m.group(2)), None)
+    m = re.search(r"\bthe (\d{1,2})(?:st|nd|rd|th)\b", t)
+    if m:  # "by the 15th": this month's, or next month's once it has passed
+        d = int(m.group(1))
+        nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+        for y, mo in ((today.year, today.month), (nxt.year, nxt.month)):
+            try:
+                cand = date(y, mo, d)
+            except ValueError:  # no 31st this month
+                continue
+            if cand >= today:
+                return cand
+        return None
     m = re.search(r"\b(" + "|".join(sorted(_WEEKDAYS, key=len, reverse=True)) + r")\b", t)
     if m:
         wd = _WEEKDAYS[m.group(1)]
         ahead = (wd - today.weekday()) % 7 or 7
         return today + timedelta(days=ahead)
+    # Last, so "by Friday EOD" is Friday's end of day, not today's.
+    if re.search(r"\b(today|tonight|eod|end of (the )?day|this afternoon|this morning)\b", t):
+        return today
     return None
 
 
@@ -317,21 +345,46 @@ def _resolve_md(today: date, mo: int, d: int, yr: Optional[int]) -> Optional[dat
 
 
 # ── 6. IMPORTANCE ───────────────────────────────────────────────────────────
+#
+# Severity only when the message states it. Pass 1 rated "Inspection moved to
+# Tuesday 10am" High because the topic was an inspection; the topic is not
+# the message saying it is urgent. So "high" needs one of these words in the
+# message itself, whatever the model said; without one it is at most normal.
 
-SAFETY_RE = re.compile(
-    r"\b(leak\w*|unsafe|crack\w*|collaps\w*|fell|fall|injur\w*|hurt|fire|smoke"
-    r"|gas|stop work|swo|violation|inspector|inspection|flood\w*|electrocut\w*"
-    r"|scaffold\w*|asbestos)\b", re.IGNORECASE)
+STATED_SEVERITY_RE = re.compile(
+    r"\b(urgent\w*|asap|emergency|critical|immediately|right away|right now"
+    r"|high priority|top priority|stop work|swo|unsafe|danger\w*|hazard\w*"
+    r"|injur\w*|hurt|bleeding|fire|collaps\w*|electrocut\w*)\b", re.IGNORECASE)
 
 
 def importance(model_label: str, body: str) -> Dict[str, str]:
-    """{importance, importance_source}. Safety words make it high; the model
-    alone never takes it below what the rules say."""
+    """{importance, importance_source}. "high" exactly when the message
+    states severity ("stated"); the model's "high" without it becomes
+    "normal" ("capped"). Never inferred from the topic."""
     label = model_label if model_label in IMPORTANCE else "normal"
-    if SAFETY_RE.search(body or ""):
-        return {"importance": "high", "importance_source":
-                "model" if label == "high" else "rule"}
+    if STATED_SEVERITY_RE.search(body or ""):
+        return {"importance": "high", "importance_source": "stated"}
+    if label == "high":
+        return {"importance": "normal", "importance_source": "capped"}
     return {"importance": label, "importance_source": "model"}
+
+
+# An issue is a problem: a defect or damage, a delay, a safety hazard, blocked
+# work. The message has to name one; a schedule or info update ("Inspection
+# moved to Tuesday 10am") does not, and is dropped whatever the model said.
+# (A later "schedule change" type may keep those; v1 skips them.)
+PROBLEM_RE = re.compile(
+    r"\b(leak\w*|crack\w*|broke\w*|damag\w*|defect\w*|delay\w*|behind|late"
+    r"|block\w*|stuck|held up|hold(ing)? up|waiting on|can'?t|cannot|couldn'?t"
+    r"|unable|won'?t|fail\w*|problem\w*|issue\w*|wrong|missing|short|no power"
+    r"|no water|not working|doesn'?t work|isn'?t working|flood\w*|water (is )?coming"
+    r"|mold|unsafe|danger\w*|hazard\w*|injur\w*|hurt|fell|fall\w*|collaps\w*"
+    r"|fire|smoke|gas|violation|swo|stop work|rejected|clash\w*|conflict\w*"
+    r"|out of)\b", re.IGNORECASE)
+
+
+def names_a_problem(body: str) -> bool:
+    return bool(PROBLEM_RE.search((body or "").translate(_TYPO)))
 
 
 # ── 7. DEDUPE ───────────────────────────────────────────────────────────────
