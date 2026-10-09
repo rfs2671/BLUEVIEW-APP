@@ -170,7 +170,7 @@ def time_phrase(body: str) -> Optional[str]:
 # item ("Never mind the panel confirm, Mike already did" is done, not
 # cancelled). A name is capitalised; "I" is never "someone else".
 _NOT_DOERS = {"Yes", "No", "Never", "Who", "What", "Already", "Just", "Also", "Ok",
-              "Okay", "It", "That", "This", "Nvm", "Mind", "And", "But", "So"}
+              "Okay", "It", "That", "This", "Nvm", "Mind", "And", "But", "So", "We"}
 _DONE_BY = re.compile(
     r"\b(?:([A-Z][a-z]+)|(?i:he|she|they))\s+(?:(?i:already|just)\s+)?"
     r"(?i:did(?: it)?|sent (?:it|them)|handled it|took care of it|got it done|finished it)\b"
@@ -187,8 +187,14 @@ def doer(text: str) -> Optional[str]:
     for m in _DONE_BY.finditer(text or ""):
         if m.group(1) and m.group(1) in _NOT_DOERS:
             continue
+        before = re.findall(r"[a-z']+", (text or "")[:m.start()].lower())
+        if not m.group(1) and before and before[-1] in _FIRST_PERSON:
+            continue    # "I already sent the panel": the sender did it
         return (m.group(1) or "").lower()
     return None
+
+
+_FIRST_PERSON = {"i", "we", "i've", "we've", "ive", "weve", "me", "us"}
 
 
 def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:

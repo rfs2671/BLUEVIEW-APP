@@ -36,6 +36,10 @@ class TheWords(unittest.TestCase):
         }.items():
             cls = was.classify(text)
             self.assertEqual((cls["kind"], was.doer(text)), want, text)
+        for mine in ("I already sent the panel", "We already sent it", "I've already done it",
+                     "Never mind, I already sent it"):
+            self.assertIsNone(was.doer(mine), mine)
+            self.assertFalse((was.classify(mine) or {}).get("by_other"), mine)
         self.assertIsNone(was.doer("I did"))
         self.assertIsNone(was.doer("Yes did"))
         self.assertIsNone(was.classify("Mike will do it tomorrow"))

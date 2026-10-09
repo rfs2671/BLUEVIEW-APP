@@ -46415,7 +46415,13 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     already written is recognised by its message id, not applied twice."""
     has_file = bool(wa_attention_state.media_of(msg))
     cls = wa_attention_state.classify(text, has_file=has_file)
-    handover = None if cls else wa_attention_state.handover_name(text)
+    # A handover first: "Patricia's out sick, I'll send the risers Friday
+    # instead" names a new date, but the sender is taking her item on, not
+    # moving their own. A done or a cancel stays what it says.
+    handover = None if cls and cls["kind"] in ("done", "cancel") \
+        else wa_attention_state.handover_name(text)
+    if handover:
+        cls = None
     if not cls and not handover:
         return {"topics": set(), "ids": set()}
     sender = str(msg.get("sender") or "")

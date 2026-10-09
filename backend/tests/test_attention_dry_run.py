@@ -269,6 +269,14 @@ class TheThreeGaps(unittest.TestCase):
             if c["kind"] == "group":
                 self.assertEqual(c["reply_to"], jose)
 
+    def test_a_handover_with_a_new_date_word_is_still_a_handover(self):
+        # "instead" reads as a reschedule; the takeover comes first.
+        sc = copy.deepcopy(self.busy)
+        sc["messages"][16]["text"] = "Patricia's out sick, I'll send the risers Friday instead"
+        out, r = _run(sc)
+        self.assertTrue(_line(r, 17)["hard"], _line(r, 17)["notes"])
+        self.assertEqual(dry.exit_code(r), 0)
+
     def test_after_a_handover_only_who_took_it_on_stops_the_chase(self):
         raw = json.loads((DIR / "busy_group_2026_10.json").read_text(encoding="utf-8"))
 
