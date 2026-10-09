@@ -78,11 +78,21 @@ export function canManagePeople(user) {
   return role === 'admin' || role === 'pm';
 }
 
-/** Never let a raw WhatsApp id reach the screen, whatever the server sends. */
+function looksLikeId(s) {
+  return /@/.test(s) || /\d{7,}/.test(s.replace(/[\s\-().+]/g, ''));
+}
+
+/** Never let a raw WhatsApp id reach the screen, whatever the server sends.
+ *  ("Unnamed sender …0101", the last 4 of a phone, is allowed.) */
 export function safeLabel(label) {
   const s = String(label || '').trim();
-  if (!s || /@(lid|c\.us|s\.whatsapp\.net)/i.test(s) || /\d{10,}/.test(s)) {
-    return 'Unnamed sender';
-  }
+  if (!s || looksLikeId(s)) return 'Unnamed sender';
   return s;
+}
+
+/** The name to pre-fill the form with: the WhatsApp name, or nothing when
+ *  that name is really a number or an id. */
+export function safeName(name) {
+  const s = String(name || '').trim();
+  return s && !looksLikeId(s) ? s : '';
 }

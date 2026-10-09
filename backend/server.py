@@ -59334,18 +59334,30 @@ class SenderMapBody(BaseModel):
     sub_company: str
 
 
-async def _people_senders(company_id: str, project_id: str) -> Dict[str, dict]:
+async def _people_senders(company_id: str, project_id: str,
+                          company_wide: bool) -> Dict[str, dict]:
     """This company's group senders who are not a known user or worker:
-    jid -> summary (+ the mapping, when one exists)."""
+    jid -> summary (+ the mapping, when one exists).
+
+    WHOSE GROUPS. A company admin sees every group of the company; a PM only
+    the groups of the project they opened (require_project_access already
+    confined them to their assigned projects). The mapping itself is still
+    company-wide."""
+    gq = {"company_id": _company_id_filter(company_id), "active": True}
+    if not company_wide:
+        gq["project_id"] = str(project_id)
     groups = await db.whatsapp_groups.find(
-        {"company_id": _company_id_filter(company_id), "active": True},
-        {"wa_group_id": 1, "group_name": 1}).to_list(500)
+        gq, {"wa_group_id": 1, "group_name": 1}).to_list(500)
     names = {g.get("wa_group_id"): wa_groups.display_name(g.get("group_name"))
              for g in groups if g.get("wa_group_id")}
     if not names:
         return {}
+    # THIS COMPANY'S ROWS ONLY. A group id can be unlinked from one company
+    # and linked to another; the earlier company's history keeps its own
+    # company_id and is never shown here.
     rows = await db.whatsapp_messages.find(
-        {"group_id": {"$in": list(names)}, "sender": {"$ne": "bot"}},
+        {"group_id": {"$in": list(names)}, "sender": {"$ne": "bot"},
+         "company_id": _company_id_filter(company_id)},
         {"sender": 1, "sender_jid": 1, "sender_name": 1, "group_id": 1,
          "created_at": 1, "timestamp": 1, "from_me": 1},
     ).sort([("created_at", -1)]).to_list(20000)
@@ -59371,7 +59383,7 @@ def _people_row(company_id: str, s: dict) -> dict:
     return {
         "key": wa_sender_map.sender_key(company_id, s["jid"]),
         "label": wa_sender_map.label(s.get("push_name"), s["jid"]),
-        "push_name": s.get("push_name") or None,
+        "push_name": wa_sender_map.safe_push_name(s.get("push_name")) or None,
         "groups": sorted({n for n in s["groups"].values() if n}),
         "message_count": s["message_count"],
         "last_message_at": at.isoformat() if isinstance(at, datetime) else None,
@@ -59383,8 +59395,9 @@ def _people_row(company_id: str, s: dict) -> dict:
     }
 
 
-async def _people_find(company_id: str, project_id: str, key: str) -> dict:
-    senders = await _people_senders(company_id, project_id)
+async def _people_find(company_id: str, project_id: str, key: str,
+                       company_wide: bool) -> dict:
+    senders = await _people_senders(company_id, project_id, company_wide)
     for jid, s in senders.items():
         if wa_sender_map.sender_key(company_id, jid) == key:
             return s
@@ -59427,7 +59440,8 @@ async def get_whatsapp_people(project_id: str,
     company_id = str(project.get("company_id") or "")
     if not company_id:
         raise HTTPException(status_code=404, detail="Project not found")
-    senders = await _people_senders(company_id, str(project_id))
+    senders = await _people_senders(company_id, str(project_id),
+                                    is_company_admin(current_user))
     rows = [_people_row(company_id, s) for s in senders.values()]
     # Not yet assigned first; newest message first within each.
     unassigned = [r for r in rows if not r["assigned"]]
@@ -59456,7 +59470,8 @@ async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
                                        wa_sender_map.company_choices(project))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    s = await _people_find(company_id, str(project_id), key)
+    s = await _people_find(company_id, str(project_id), key,
+                           is_company_admin(current_user))
     now = datetime.now(timezone.utc)
     op = actor_id(current_user)
     await db[wa_sender_map.COLLECTION].update_one(
@@ -59485,7 +59500,8 @@ async def clear_whatsapp_person(project_id: str, key: str,
     company_id = str(project.get("company_id") or "")
     if not company_id:
         raise HTTPException(status_code=404, detail="Project not found")
-    s = await _people_find(company_id, str(project_id), key)
+    s = await _people_find(company_id, str(project_id), key,
+                           is_company_admin(current_user))
     row = s.get("mapping")
     if not row:
         raise HTTPException(status_code=404, detail="Not assigned")

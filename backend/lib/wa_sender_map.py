@@ -22,6 +22,7 @@ Pure: no database, no network. server.py reads and writes.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -58,9 +59,19 @@ def clean_push_name(name: Any) -> str:
     return " ".join(name.split())[:MAX_NAME]
 
 
+def safe_push_name(name: Any) -> str:
+    """The display name, or "" when it looks like an id rather than a name:
+    a JID, or a run of 7+ digits. WhatsApp lets people set any name,
+    including their number or an id, and the screen must not show one."""
+    n = clean_push_name(name)
+    if not n or "@" in n or re.search(r"\d{7,}", re.sub(r"[\s\-().+]", "", n)):
+        return ""
+    return n
+
+
 def label(push_name: str, jid: str) -> str:
     """What the screen calls a sender. Never the @lid id, in whole or part."""
-    name = clean_push_name(push_name)
+    name = safe_push_name(push_name)
     if name:
         return name
     if not is_lid(jid) and jid_domain(jid) in ("c.us", "s.whatsapp.net"):

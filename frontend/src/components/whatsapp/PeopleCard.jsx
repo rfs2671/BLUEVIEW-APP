@@ -25,7 +25,7 @@ import { spacing, borderRadius } from '../../styles/theme';
 import { semantic, withAlpha } from '../../styles/semanticColors';
 import {
   PEOPLE_TITLE, PEOPLE_NOTE, emptyText, assignmentLine, detailLine,
-  assignRequest, savedText, safeLabel,
+  assignRequest, savedText, safeLabel, safeName,
 } from '../../utils/whatsappPeople';
 
 export default function PeopleCard({ projectId }) {
@@ -52,7 +52,7 @@ export default function PeopleCard({ projectId }) {
 
   const open = (row) => {
     setEditing(row);
-    setName(row.assigned ? row.assigned.person_name : (row.push_name || ''));
+    setName(row.assigned ? row.assigned.person_name : safeName(row.push_name));
     setCompany(row.assigned ? row.assigned.sub_company : null);
   };
 

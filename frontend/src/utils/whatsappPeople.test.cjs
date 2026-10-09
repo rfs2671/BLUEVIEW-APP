@@ -37,6 +37,11 @@ ok(P.safeLabel('Carlos B') === 'Carlos B', 'a name passes');
 ok(P.safeLabel('123456789012345@lid') === 'Unnamed sender', 'an @lid never shows');
 ok(P.safeLabel('123456789012345') === 'Unnamed sender', 'nor its digits');
 ok(P.safeLabel('Unnamed sender …0101') === 'Unnamed sender …0101', 'phone last 4 allowed');
+ok(P.safeLabel('+1 (718) 555-0101') === 'Unnamed sender', 'a formatted phone number never shows');
+ok(P.safeName('Carlos B') === 'Carlos B' && P.safeName('718-555-0101') === ''
+  && P.safeName('123456789012345@lid') === '', 'the form is never pre-filled with an id');
+ok(/safeName\(row\.push_name\)/.test(read('src/components/whatsapp/PeopleCard.jsx')),
+  'the card pre-fills through safeName');
 
 console.log('\nthe form');
 const cos = ['Bright Electric', 'GC team'];

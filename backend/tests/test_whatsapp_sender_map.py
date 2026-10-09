@@ -285,7 +285,58 @@ class CrossCompanyIsolation(unittest.TestCase):
         self.assertEqual(b_item["owner"]["status"], "unresolved")
 
 
+class ScopeOfTheList(unittest.TestCase):
+
+    def _other_project_group(self, db):
+        db.projects.rows.append({"_id": "proj_a2", "company_id": CO_A,
+                                 "name": "Elm St", "trade_assignments": []})
+        db.whatsapp_groups.rows.append(
+            {"_id": "g9", "wa_group_id": "120363000000000309@g.us",
+             "group_name": "Elm St", "project_id": "proj_a2",
+             "company_id": CO_A, "active": True})
+        _msg(db, "elm st here", group="120363000000000309@g.us",
+             project="proj_a2", sender=LID_2, jid=f"{LID_2}@lid",
+             sender_name="Elmo")
+
+    def test_a_pm_sees_only_the_groups_of_the_project_they_opened(self):
+        db = _db()
+        _msg(db, "main st", sender=LID, jid=f"{LID}@lid", sender_name="Carlos")
+        self._other_project_group(db)
+        pm_rows = _people(db, user=PM)["senders"]
+        self.assertEqual([r["label"] for r in pm_rows], ["Carlos"])
+        admin_rows = _people(db)["senders"]
+        self.assertEqual(sorted(r["label"] for r in admin_rows), ["Carlos", "Elmo"])
+
+    def test_a_pm_cannot_map_a_sender_from_another_project(self):
+        db = _db()
+        self._other_project_group(db)
+        key = next(r["key"] for r in _people(db)["senders"] if r["label"] == "Elmo")
+        with self.assertRaises(HTTPException) as ctx:
+            _assign(db, key, "Elmo", "GC team", user=PM)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_a_reused_group_never_shows_the_previous_companys_history(self):
+        """Group G_A was company B's before company A linked it."""
+        db = _db()
+        _msg(db, "old B chatter", company=CO_B, sender=LID_2,
+             jid=f"{LID_2}@lid", sender_name="From B")
+        _msg(db, "A now", sender=LID, jid=f"{LID}@lid", sender_name="Carlos")
+        labels = [r["label"] for r in _people(db)["senders"]]
+        self.assertEqual(labels, ["Carlos"])
+
+
 class TheDisplayName(unittest.TestCase):
+
+    def test_an_id_or_number_as_display_name_is_never_shown(self):
+        for bad in ("123456789012345@lid", "+1 (718) 555-0101", "7185550101"):
+            with self.subTest(name=bad):
+                self.assertEqual(sm.safe_push_name(bad), "")
+                self.assertEqual(sm.label(bad, f"{LID}@lid"), "Unnamed sender")
+        db = _db()
+        _msg(db, "hi", sender=LID, jid=f"{LID}@lid", sender_name=f"{LID}@lid")
+        row = _people(db)["senders"][0]
+        self.assertIsNone(row["push_name"])
+        self.assertNotIn(LID, json.dumps(row))
 
     def test_webhook_notify_name_is_parsed_and_cleaned(self):
         parsed = server.parse_inbound_message({"data": {"message": {
