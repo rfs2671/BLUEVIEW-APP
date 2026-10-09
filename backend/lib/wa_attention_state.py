@@ -60,10 +60,14 @@ _DONE = re.compile(
     re.IGNORECASE)
 _CANCEL = re.compile(
     r"\b(never ?mind|nvm|cancel(l?ed)?|scratch that|no longer need\w*"
-    r"|don'?t need|not needed|hold off|scope (has )?changed|changed (the )?scope"
-    # "Forget the meter, DEP already approved it" -- never "don't forget".
-    r"|(?<!don't )(?<!dont )(?<!do not )forget (it|that|this|about|the)\b)\b",
+    r"|don'?t need|not needed|hold off|scope (has )?changed|changed (the )?scope)\b",
     re.IGNORECASE)
+# "Forget the meter, DEP already approved it": "forget" as the instruction
+# that opens a sentence -- not "I always forget the meter", not "don't
+# (ever) forget the meter".
+_FORGET = re.compile(
+    r"(?:^|[.!?;,]\s*)(?:(?:ok(?:ay)?|actually|nah|so|oh)[,.]?\s+)?"
+    r"forget (it|that|this|about|the)\b", re.IGNORECASE)
 _RESCHEDULE = re.compile(
     r"\b(actually|instead|moved?|moving|pushed|push(ing)? it|not happening"
     r"|change[sd]? to|rather)\b", re.IGNORECASE)
@@ -154,7 +158,7 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         return {"kind": "done", "file": True} if has_file else None
     if "?" in text:
         return None
-    if _CANCEL.search(text):
+    if _CANCEL.search(text) or _FORGET.search(text):
         return {"kind": "cancel"}
     if _RESCHEDULE.search(text):
         due = due_phrase(text)

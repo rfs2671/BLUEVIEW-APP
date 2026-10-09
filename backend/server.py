@@ -46446,6 +46446,29 @@ async def _attention_quoted(msg: dict, ctx: dict) -> Optional[dict]:
         return None
 
 
+async def _attention_answer_followups(link: Optional[dict], typ: str, owner: dict,
+                                      msg_id: str, quote: str, sender: str,
+                                      sent_at: datetime) -> None:
+    """What a new commitment does to the ask it answers. Both writes are
+    conditional, so running them again on a retry changes nothing twice."""
+    if not link or typ != "commitment":
+        return
+    now = datetime.now(timezone.utc)
+    if link["type"] == "request" and not link["owner"] and not link["multi"]:
+        # "Can you confirm the water meter location?" named nobody;
+        # "Np / Tomorrow" says who: the ask is theirs from now on.
+        await db.attention_items.update_one(
+            {"_id": to_query_id(link["id"]), "owner.jid": {"$in": [None, ""]}},
+            {"$set": {"owner": {**owner, "source": "committed"}, "updated_at": now}})
+    if link["type"] == "question":
+        # Someone took the question on: possibly answered, for an admin.
+        await db.attention_items.update_one(
+            {"_id": to_query_id(link["id"]), "status": "open"},
+            {"$set": {"status": "possibly_resolved", "updated_at": now,
+                      "resolution": {"message_id": msg_id, "quote": quote,
+                                     "sender_last4": sender[-4:], "at": sent_at}}})
+
+
 async def _attention_process(msg: dict, ctx: dict, report: dict,
                              llm=None) -> bool:
     """One stored message (or a burst of one sender's, merged) through the
@@ -46586,9 +46609,15 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         try:
             # A retry of this same message after a failed write: what was
             # already written stays, once.
-            if await db.attention_items.find_one(
-                    {"dedupe_key": key, "project_id": project_id,
-                     "evidence.message_id": msg_id}, {"_id": 1}):
+            done_before = await db.attention_items.find_one(
+                {"dedupe_key": key, "project_id": project_id,
+                 "evidence.message_id": msg_id}, {"_id": 1, "owner": 1})
+            if done_before:
+                # The item is in; what it does to the ask it answers may
+                # not be (the write after it failed). That part again, once.
+                await _attention_answer_followups(
+                    link, it["type"], done_before.get("owner") or owner,
+                    msg_id, quote, sender, sent_at)
                 continue
             dup = await db.attention_items.find_one_and_update(
                 {"dedupe_key": key, "project_id": project_id,
@@ -46649,22 +46678,8 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             written += 1
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
-            if (link and link["type"] == "request" and it["type"] == "commitment"
-                    and not link["owner"] and not link["multi"]):
-                # "Can you confirm the water meter location?" named nobody;
-                # "Np / Tomorrow" says who: the ask is theirs from now on.
-                await db.attention_items.update_one(
-                    {"_id": to_query_id(link["id"]), "owner.jid": {"$in": [None, ""]}},
-                    {"$set": {"owner": {**owner, "source": "committed"},
-                              "updated_at": now}})
-            if link and link["type"] == "question" and it["type"] == "commitment":
-                # Someone took the question on: possibly answered, for an admin.
-                await db.attention_items.update_one(
-                    {"_id": to_query_id(link["id"]), "status": "open"},
-                    {"$set": {"status": "possibly_resolved", "updated_at": now,
-                              "resolution": {"message_id": msg_id, "quote": quote,
-                                             "sender_last4": sender[-4:],
-                                             "at": sent_at}}})
+            await _attention_answer_followups(link, it["type"], owner, msg_id,
+                                              quote, sender, sent_at)
         except Exception as e:
             # Not past this message: the cursor stays and it is retried
             # (items already written are recognised above, not doubled).

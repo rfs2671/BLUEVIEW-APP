@@ -265,6 +265,40 @@ class Pass2(_FixtureChecks, unittest.TestCase):
         it = self._item_of(7)
         self.assertEqual(it["owner"]["source"], "committed")
 
+    def test_a_failed_owner_write_is_retried(self):
+        lines = [
+            {"n": 1, "from": "R", "body": "Can you confirm the water meter location with the engineer?",
+             "expect": {"kind": "item", "type": "request"}},
+            {"n": 2, "from": "P", "body": "I'll confirm the water meter location tomorrow",
+             "expect": {"kind": "item", "type": "commitment", "due_text": "tomorrow", "links": 1}},
+        ]
+        db = _world()
+        _first_sight(db)
+        for ln in lines:
+            _msg(db, ln["body"], sender=SENDERS[ln["from"]],
+                 at=T0 + timedelta(minutes=ln["n"]), message_id=f"OWN{ln['n']}")
+        col = db[server.ATTENTION_ITEMS]
+        real = col.update_one
+        failed = []
+
+        async def flaky(q, u, **k):
+            if "owner.jid" in q and not failed:
+                failed.append(1)
+                raise RuntimeError("mongo down")
+            return await real(q, u, **k)
+
+        model = _ScriptedModel(lines)
+        with patch.object(col, "update_one", flaky):
+            report, _ = _tick(db, model, T0 + timedelta(minutes=10))
+        self.assertEqual(report["write_failed"], 1)
+        req = next(i for i in _items(db) if i["type"] == "request")
+        self.assertIsNone(req["owner"].get("jid"))           # not yet
+        _tick(db, model, T0 + timedelta(minutes=11))          # the retry
+        req = next(i for i in _items(db) if i["type"] == "request")
+        self.assertEqual((req["owner"]["jid"], req["owner"]["source"]),
+                         (SENDERS["P"] + "@c.us", "committed"))
+        self.assertEqual(len([i for i in _items(db) if i["type"] == "commitment"]), 1)
+
     def test_a_named_owner_is_never_replaced_by_who_answers(self):
         lines = [
             {"n": 1, "from": "R", "mentions": ["P"], "body": "@Patricia can you send the riser layout?",
@@ -279,7 +313,11 @@ class Pass2(_FixtureChecks, unittest.TestCase):
         self.assertEqual(req["owner"]["source"], "mention")
 
     def test_dont_forget_is_not_a_cancel(self):
-        self.assertIsNone(was.classify("Don't forget the meter"))
+        for body in ("Don't forget the meter", "I always forget the meter",
+                     "Please don't ever forget the meter", "dont forget the permits"):
+            self.assertIsNone(was.classify(body), body)
+        for body in ("Ok forget it", "Thanks. Forget about the riser layout"):
+            self.assertEqual(was.classify(body)["kind"], "cancel", body)
         self.assertEqual(was.classify(self.LINES[9]["body"])["kind"], "cancel")
 
     def test_two_take_care_of_it_messages_are_two_items(self):
