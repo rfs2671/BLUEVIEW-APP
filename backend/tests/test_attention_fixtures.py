@@ -4,6 +4,8 @@
   tests/fixtures/attention/pass2_2026_10.json        pass 2 (two senders)
   tests/fixtures/attention/state_script_2026_10.json the 25-line state-update
                                                      script + ambiguity cases
+  tests/fixtures/attention/chase_weekend_2026_10.json the weekend chase script,
+                                                     then the chase worker
 
 Each line carries the label it should get. A line is replayed as a stored
 group message (a reply, a file, a serialized id where the fixture says so),
@@ -30,7 +32,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -38,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server  # noqa: E402
 from lib import wa_attention as wa  # noqa: E402
 from lib import wa_attention_state as was  # noqa: E402
+from lib import wa_chase  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 from tests.test_whatsapp_attention import (  # noqa: E402
@@ -48,6 +51,7 @@ DIR = Path(__file__).parent / "fixtures" / "attention"
 PASS1 = json.loads((DIR / "pass1_2026_10.json").read_text())
 PASS2 = json.loads((DIR / "pass2_2026_10.json").read_text())
 SCRIPT = json.loads((DIR / "state_script_2026_10.json").read_text())
+CHASE = json.loads((DIR / "chase_weekend_2026_10.json").read_text(encoding="utf-8"))
 
 SENDERS = {k: f"1718555{1000 + i:04d}" for i, k in enumerate("ABCDGPR")}
 
@@ -90,13 +94,17 @@ class _ScriptedModel:
                 "prompt_tokens": 1200, "completion_tokens": 10}
 
 
-def replay(lines):
-    """All lines through the worker in one run, as they were sent."""
+def replay(lines, base=T0, users=None):
+    """All lines through the worker in one run, as they were sent. `users`:
+    speakers who are Levelog users of the company ({key: {name, role}})."""
     db = _world()
+    for k, u in (users or {}).items():
+        db.users.rows.append({"_id": f"u_{k.lower()}", "company_id": "co_a",
+                              "phone": SENDERS[k], **u})
     _first_sight(db)
     rows = {}
     for ln in lines:
-        at = T0 + timedelta(seconds=ln["at"] if "at" in ln else ln["n"] * 60)
+        at = base + timedelta(seconds=ln["at"] if "at" in ln else ln["n"] * 60)
         mid = f"3EB0{ln['n']:04d}{id(lines) % 10000:04d}"
         kw = {"message_id": (f"false_{G_A}_{mid}_{SENDERS[ln['from']]}@c.us"
                              if ln.get("serialized_id") else mid),
@@ -126,10 +134,12 @@ class _FixtureChecks:
     LINES: list = []
     FINAL: dict = {}
     OWNER_NONE: list = []
+    BASE = T0
+    USERS: dict = {}
 
     @classmethod
     def setUpClass(cls):
-        cls.out = replay(cls.LINES)
+        cls.out = replay(cls.LINES, cls.BASE, cls.USERS)
         cls.items = cls.out["items"]
         cls.by_msg = {it["evidence"]["message_id"]: it for it in cls.items}
 
@@ -356,9 +366,12 @@ class StateScript(_FixtureChecks, unittest.TestCase):
     def test_reschedule_keeps_the_history(self):
         it = self._item_of(2)
         kinds = [(h["kind"], h["to"]) for h in it["history"]]
-        self.assertEqual(kinds, [("created", "open"), ("state", "rescheduled"),
+        # Said right after an ask that named nobody, its subject only that
+        # ask's ("them"): possibly B's, flagged (as the ask is).
+        self.assertEqual(kinds, [("created", "open"), ("flag", "open"), ("state", "rescheduled"),
                                  ("follow_up", None), ("state", "done")])
-        rs = it["history"][1]
+        self.assertEqual(it["history"][1]["note"], "possible_subject")
+        rs = it["history"][2]
         self.assertEqual((rs["due_from"], rs["due_to"]), ("tomorrow morning", "Monday"))
         self.assertEqual(it["due"]["due_text"], "Monday")
 
@@ -380,8 +393,91 @@ Scenario3 = _scenario(2)
 Scenario4 = _scenario(3)
 
 
+class ChaseWeekend(_FixtureChecks, unittest.TestCase):
+    """Fri 3:25-3:43 PM, then the chase worker on Saturday, Sunday and
+    Monday (588 Thomas has Chase on weekends on). Only the sleeve shop
+    drawings are chased; nothing is sent."""
+
+    LINES, FINAL, USERS = CHASE["lines"], CHASE["final"], CHASE["users"]
+    BASE = datetime.fromisoformat(CHASE["base"])
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        db = cls.out["db"]
+        db.notification_preferences.rows.append({
+            "_id": "np_chase", "user_id": None, "project_id": "proj_a", "scope": "project",
+            "whatsapp_project": {"chase_weekends": CHASE["chase"]["chase_weekends"]}})
+        sent = []
+
+        async def no_send(*a, **k):
+            sent.append((a, k))
+        cls.chase_rows = {}
+        with patch.object(server, "db", db), \
+                patch.object(server, "send_whatsapp_message", no_send), \
+                patch.object(server, "send_whatsapp_dm", no_send):
+            for name in ("saturday", "sunday", "monday"):
+                d = date.fromisoformat(CHASE["chase"][name]["date"])
+                before = len(db[wa_chase.COLLECTION].rows)
+                for slot, at in wa_chase.SLOTS:
+                    local = datetime.combine(d, at).replace(tzinfo=wa_chase._ET)
+                    _run(server._chase_tick((local + timedelta(minutes=5)).astimezone(timezone.utc)))
+                cls.chase_rows[name] = db[wa_chase.COLLECTION].rows[before:]
+        cls.chase_sends = sent
+
+    def _chased(self, name):
+        ids = {i for r in self.chase_rows[name] for i in r["item_ids"]}
+        return sorted(n for n in self.out["rows"]
+                      if str((self.by_msg.get(self.out["rows"][n]["message_id"]) or {}).get("_id")) in ids)
+
+    def test_saturday_only_the_sleeve_shop_drawings(self):
+        want = CHASE["chase"]["saturday"]
+        self.assertEqual(self._chased("saturday"), want["items"])
+        self.assertEqual([r["slot"] for r in self.chase_rows["saturday"]], want["slots"])
+        first = self.chase_rows["saturday"][0]
+        self.assertEqual(first["text"], "@Patricia Lee morning — this is due today:\n"
+                                        "“I'll also send the sleeve shop drawings Saturday morning”")
+
+    def test_sunday_and_monday_nothing(self):
+        for name in ("sunday", "monday"):
+            self.assertEqual(self._chased(name), CHASE["chase"][name]["items"], name)
+
+    def test_the_possible_owner_items_are_flagged_not_chased(self):
+        for n in (3, 4, 5, 6):
+            it = self._item_of(n)
+            self.assertTrue(it["owner"].get("possibly"), n)
+            self.assertTrue(it.get("needs_review"), n)
+        notes = [h.get("note") for h in self._item_of(4)["history"] if h["kind"] == "flag"]
+        self.assertEqual(notes, ["possible_subject"])
+
+    def test_a_time_only_due_takes_the_asks_day_and_keeps_it(self):
+        it = self._item_of(2)
+        self.assertEqual(it["history"][0]["due_source"], "parent_day")
+        rs = [h for h in it["history"] if h.get("to") == "rescheduled"][0]
+        self.assertEqual((rs["due_from"], rs["due_to"], rs["due_to_at"]),
+                         ("before 8am", "till 11-12", "2026-10-10"))
+
+    def test_nothing_is_sent_by_the_chase(self):
+        self.assertEqual(self.chase_sends, [])
+
+
 class TheRules(unittest.TestCase):
     """The pure checks the fixtures rest on."""
+
+    def test_time_of_day_without_a_day(self):
+        for t in ("before 8am", "by 3pm", "till 11-12", "11:30am", "around 9-10am"):
+            self.assertTrue(wa.time_only(t), t)
+        for t in ("tomorrow", "Saturday morning", "by Friday 3pm", "", None):
+            self.assertFalse(wa.time_only(t), t)
+        self.assertEqual(was.classify("Actually give me till 11-12"),
+                         {"kind": "reschedule", "due_text": "till 11-12", "time_only": True})
+        # A bare range is not a time ("floors 11-12"); a day still wins.
+        self.assertIsNone(was.classify("Actually floors 11-12"))
+        self.assertEqual(was.classify("Actually Monday morning")["due_text"], "Monday")
+
+    def test_i_kk_is_a_yes(self):
+        self.assertEqual(was.ack("I\nKk"), {"due_text": None})
+        self.assertIsNone(was.ack("I"))
 
     def test_every_line_with_something_to_record_reaches_the_model(self):
         for ln in PASS1["lines"] + SCRIPT["lines"]:
@@ -484,9 +580,9 @@ class TheTimelineOnTheReviewScreen(unittest.TestCase):
         out = self._get("closed")
         v = next(i for i in out["items"] if i["quote"] == "Yeah I'll send them tomorrow morning")
         self.assertEqual([(h["kind"], h["to"]) for h in v["history"]],
-                         [("created", "open"), ("state", "rescheduled"),
+                         [("created", "open"), ("flag", "open"), ("state", "rescheduled"),
                           ("follow_up", None), ("state", "done")])
-        rs = v["history"][1]
+        rs = v["history"][2]
         self.assertEqual((rs["quote"], rs["due_from"], rs["due_to"], rs["link"]),
                          ("Actually risers will be Monday, engineer is out",
                           "tomorrow morning", "Monday", "owner_topic"))
@@ -497,11 +593,11 @@ class TheTimelineOnTheReviewScreen(unittest.TestCase):
 
     def test_correct_and_wrong_per_change(self):
         ev = self.riser["history"]
-        v = self._review(ev[1]["id"], "correct")
-        self.assertEqual(v["history"][1]["verdict"], "correct")
-        v = self._review(ev[3]["id"], "wrong")
+        v = self._review(ev[2]["id"], "correct")
+        self.assertEqual(v["history"][2]["verdict"], "correct")
+        v = self._review(ev[4]["id"], "wrong")
         self.assertEqual([h["verdict"] for h in v["history"]],
-                         [None, "correct", None, "wrong"])
+                         [None, None, "correct", None, "wrong"])
         sp = self._get("all")["state_precision"]
         self.assertEqual((sp["rescheduled"]["correct"], sp["done"]["wrong"]), (1, 1))
         # A verdict records; it does not undo the change.
@@ -511,9 +607,9 @@ class TheTimelineOnTheReviewScreen(unittest.TestCase):
         ev = self.riser["history"]
         for user, code in ((PM, 403), (ADMIN_B, 404)):
             with self.assertRaises(HTTPException) as e:
-                self._review(ev[1]["id"], "correct", user=user)
+                self._review(ev[2]["id"], "correct", user=user)
             self.assertEqual(e.exception.status_code, code)
-        for event_id, verdict, code in ((ev[1]["id"], "dismissed", 422),
+        for event_id, verdict, code in ((ev[2]["id"], "dismissed", 422),
                                         (ev[0]["id"], "correct", 404),   # creation
                                         ("nope", "correct", 404)):
             with self.assertRaises(HTTPException) as e:

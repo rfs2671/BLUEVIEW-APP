@@ -303,6 +303,19 @@ def _local_date(ts: datetime) -> date:
     return ts.astimezone(_ET).date() if _ET else ts.date()
 
 
+# "before 8am", "by 3pm", "till 11-12": a time of day and no day.
+_TIME_ONLY = re.compile(
+    r"^(?:(?:by|before|at|till|until|til|around|about)\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?$",
+    re.IGNORECASE)
+
+
+def time_only(due_text: Optional[str]) -> bool:
+    """A time of day with no day ("before 8am"): the day is the ask's, or
+    the item's own when it moves ("Actually give me till 11-12")."""
+    return bool(_TIME_ONLY.match(str(due_text or "").strip()))
+
+
 def parse_due(due_text: Optional[str], sent_at: datetime) -> Optional[date]:
     if not due_text:
         return None

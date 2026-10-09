@@ -46382,13 +46382,19 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
             due_text = wa_attention.text_in_body(cls.get("due_text"), text)
             if not due_text:
                 continue
-            due_at = wa_attention.parse_due(due_text, sent_at)
             old = it.get("due") or {}
+            if cls.get("time_only"):
+                # A new time, the same day: the day stays the item's.
+                day = old.get("due_at")
+                due_at = datetime.strptime(str(day)[:10], "%Y-%m-%d").date() if day else None
+            else:
+                due_at = wa_attention.parse_due(due_text, sent_at)
             extra.update(due_from=old.get("due_text"), due_from_at=old.get("due_at"),
                          due_to=due_text, due_to_at=due_at.isoformat() if due_at else None)
             sets["due"] = {"due_text": due_text,
                            "due_at": due_at.isoformat() if due_at else None,
-                           "due_source": "parsed" if due_at else "none"}
+                           "due_source": ("same_day" if cls.get("time_only") and due_at
+                                          else "parsed" if due_at else "none")}
             sets["status"] = "rescheduled"
             event = _attention_event("state", frm, "rescheduled", msg, quote, ev_kind, **extra)
         elif a["action"] in ("state", "possibly_done"):
@@ -46669,6 +46675,22 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             pd = link["due"]
             due = {"due_text": pd.get("due_text"), "due_at": pd.get("due_at"),
                    "due_source": "parent"}
+        elif it["type"] == "commitment" and not due["due_at"] and link \
+                and wa_attention.time_only(due_text) and (link.get("due") or {}).get("due_at"):
+            # "Sure I'll get it before 8am" to "... tomorrow": the ask's day.
+            due = {"due_text": due_text, "due_at": link["due"]["due_at"],
+                   "due_source": "parent_day"}
+        # A commitment that takes its subject only from an ask put to nobody
+        # just before it ("Np", "Sunday. I'll keep u posted"): not a reply,
+        # the ask did not name them, and its own words share nothing with
+        # it. Possibly theirs, possibly about something else: for an admin.
+        possible_subject = bool(
+            it["type"] == "commitment" and link
+            and not (link_confident and link is parent)
+            and link.get("owner") != sender
+            and not (wa_attention_state.topic_terms(quote) & set(link.get("topic") or ())))
+        if possible_subject:
+            owner["possibly"] = True
         owner_key = (f"{owner['kind']}:{owner['id']}" if owner.get("id")
                      else owner.get("jid") or (owner.get("owner_text") or "").lower())
         key = wa_attention.dedupe_key(group_id, it["type"], owner_key, quote)
@@ -46735,7 +46757,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                     "created", None, "open", msg, quote, "text",
                     link="reply" if (link and quoted) else (
                         "answers" if link else None),
-                    due_to=due["due_text"], due_source=due["due_source"])],
+                    due_to=due["due_text"], due_source=due["due_source"])] + ([
+                    _attention_event("flag", None, "open", msg, quote, "text",
+                                     by="other", link="previous", note="possible_subject")]
+                    if possible_subject else []),
+                **({"needs_review": True} if possible_subject else {}),
                 "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],

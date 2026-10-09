@@ -150,6 +150,21 @@ def due_phrase(body: str) -> Optional[str]:
     return None
 
 
+# A new time on the same day: "till 11-12", "by 3pm", "before 8am". A bare
+# "11-12" counts only after till/until/by/before/at/around.
+_TIME_RE = re.compile(
+    r"\b(?:(?:by|before|at|till|until|til|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
+    r"(?:\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?"
+    r"|\d{1,2}(?::\d{2})?\s*(?:am|pm)(?:\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)"
+    r"(?![\w:])", re.IGNORECASE)
+
+
+def time_phrase(body: str) -> Optional[str]:
+    """The last time of day the message names, as written, else None."""
+    found = [m.group(0) for m in _TIME_RE.finditer(body or "")]
+    return found[-1] if found else None
+
+
 def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
     """{kind: done|cancel|reschedule, due_text?} from the words alone, or
     None. A question is never an update ("is it done?")."""
@@ -164,6 +179,10 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         due = due_phrase(text)
         if due:
             return {"kind": "reschedule", "due_text": due}
+        at = time_phrase(text)
+        if at:
+            # "Actually give me till 11-12": same day, a new time.
+            return {"kind": "reschedule", "due_text": at, "time_only": True}
     if _DONE.search(text) and not _FUTURE.search(text):
         return {"kind": "done", "file": bool(has_file)}
     if has_file and len(text) <= 60 and not _FUTURE.search(text):
@@ -182,7 +201,9 @@ ACK_WINDOW_SECONDS = 30 * 60
 _ACK_STRONG = {"np", "ok", "okay", "k", "kk", "sure", "yep", "yup", "yes", "yeah",
                "copy", "roger", "will", "got", "on", "👍", "👌", "🫡", "✅", "💪"}
 _ACK_WORDS = _ACK_STRONG | {"no", "problem", "prob", "do", "thing", "you", "it", "that",
-                            "thanks", "thx", "ty", "boss", "bro", "man", "🙏", "will"}
+                            "thanks", "thx", "ty", "boss", "bro", "man", "🙏", "will",
+                            # "I" / "Kk" sent as two messages, merged.
+                            "i"}
 
 
 def ack(body: str) -> Optional[Dict[str, Any]]:
