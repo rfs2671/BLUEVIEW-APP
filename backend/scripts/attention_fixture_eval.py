@@ -13,28 +13,32 @@ severity only as stated). Prints one row per line and the agreement.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
 from pathlib import Path
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib import wa_attention as wa  # noqa: E402
+from lib.server_http import ServerHttpClient  # noqa: E402
 
 SKIP = ("state", "part_done", "follow_up", "flag", "merged")
 
 
+async def _call(messages):
+    async with ServerHttpClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+            json={"model": wa.MODEL, "temperature": 0, "max_tokens": 500,
+                  "messages": messages, "response_format": {"type": "json_object"}})
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+
 def call(messages):
-    resp = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-        json={"model": wa.MODEL, "temperature": 0, "max_tokens": 500,
-              "messages": messages, "response_format": {"type": "json_object"}},
-        timeout=60)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    return asyncio.run(_call(messages))
 
 
 def _row(ln, body=None):
