@@ -20,6 +20,8 @@ import asyncio
 import os
 import sys
 import unittest
+
+from fastapi import HTTPException
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -152,10 +154,9 @@ def _setup_client(*, role: str = "admin", operator: bool = False,
     """TestClient with auth + db overrides. Returns (client, restore_fn).
 
     company_id defaults to "co_a" — the company these tests address in their
-    URLs. The filing-reps routes are tenant-scoped (require_company_scope) AND
-    platform-operator-only: the operator configures DOB authorization on a
-    client's behalf, so a company admin is refused. Pass company_id=... to
-    exercise the cross-company denial.
+    URLs. The filing-reps routes are platform-operator-only
+    (require_operator_404): the operator configures DOB authorization on a
+    client's behalf, so a company admin gets 404.
 
     THE PRINCIPAL THESE ROUTES WANT IS THE PLATFORM OPERATOR, NOT A ROLE.
     They gated on `role != "owner"` until the role was retired -- and "owner"
@@ -176,13 +177,20 @@ def _setup_client(*, role: str = "admin", operator: bool = False,
     async def _fake_user():
         return user
 
+    # The real gate reads the token itself (tests/test_operator_gate.py covers
+    # it over HTTP); here it applies the same rule to the fake user.
+    async def _fake_gate():
+        if not server.is_platform_operator(user):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return user
+
     server.app.dependency_overrides[server.get_current_user] = _fake_user
+    server.app.dependency_overrides[server.require_operator_404] = _fake_gate
     return TestClient(server.app), lambda: server.app.dependency_overrides.clear()
 
 
 class TestEndpointAuthGate(unittest.TestCase):
-    """Everyone but the platform operator is rejected with 403 on every CRUD
-    endpoint.
+    """Everyone but the platform operator gets 404 on every CRUD endpoint.
 
     IT USED TO BE role == "owner", which every self-serve signup received, so
     any customer who had registered could edit any company's filing
@@ -197,7 +205,7 @@ class TestEndpointAuthGate(unittest.TestCase):
         client, restore = _setup_client(role="owner")
         try:
             resp = client.get("/api/owner/companies/co_a/filing-reps")
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
@@ -205,7 +213,7 @@ class TestEndpointAuthGate(unittest.TestCase):
         client, restore = _setup_client(role="admin")
         try:
             resp = client.get("/api/owner/companies/co_a/filing-reps")
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
@@ -217,7 +225,7 @@ class TestEndpointAuthGate(unittest.TestCase):
                 json={"name": "Jane", "license_class": "GC",
                       "license_number": "626198", "email": "j@example.com"},
             )
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
@@ -228,7 +236,7 @@ class TestEndpointAuthGate(unittest.TestCase):
                 "/api/owner/companies/co_a/filing-reps/rep_x",
                 json={"is_primary": True},
             )
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
@@ -236,7 +244,7 @@ class TestEndpointAuthGate(unittest.TestCase):
         client, restore = _setup_client(role="admin")
         try:
             resp = client.delete("/api/owner/companies/co_a/filing-reps/rep_x")
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 

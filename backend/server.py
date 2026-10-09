@@ -3188,8 +3188,8 @@ class UserResponse(BaseModel):
     # test_flag_is_in_no_allowlist asserts. It is DB-write only, by a human.
     #
     # Hiding the door is a UX courtesy, NOT the security boundary: the boundary
-    # is require_platform_operator on the endpoints themselves. A client that
-    # ignores this field still gets 403s.
+    # is require_operator_404 on the endpoints themselves. A client that
+    # ignores this field still gets 404s.
     is_platform_operator: bool = False
     # ── The superintendent's DOB registration ───────────────────────────────
     # Present on a superintendent and None on everybody else. `dob_card_r2_url`
@@ -7572,33 +7572,33 @@ async def get_admin_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-async def get_platform_operator_user(current_user = Depends(get_current_user)):
-    """PLATFORM OPERATOR ONLY, AND IT IS NOT IN SHADOW MODE.
+async def require_operator_404(
+    request: Request = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """THE ONE GATE FOR PLATFORM-OPERATOR ROUTES. Everyone else gets 404.
 
-    THIS WAS `get_owner_user`, AND IT COMPARED A ROLE STRING. It formalised
-    the `role != "owner" -> 403` idiom copied across the owner-portal
-    endpoints, and every self-serve signup received exactly that role — so the
-    gate on the irreversible project hard-delete and on the cross-company
-    pending-deletion list was satisfied by having registered. It now asks
-    `is_platform_operator`, the flag no API path can write.
+    Every /owner/* route and every operator-only route carries this, and
+    tests/test_operator_gate.py fails CI if one does not. A signed-in
+    non-operator, a request with no token and a request with a bad token all
+    get 404 -- not 403, not 401 -- so the routes do not tell anyone they exist.
 
-    ── WHY THIS EXISTS BESIDE `require_platform_operator` ──────────────────
+    THE OPERATOR FLAG IS THE ONLY TEST. `is_platform_operator` (the
+    `is_platform_operator` field no API path can write, or the
+    PLATFORM_OPERATOR_EMAILS bootstrap). Never `role`: "owner" is a retired
+    role string every self-serve signup used to receive.
 
-    They answer the same question and behave differently on the way to it.
-    `require_platform_operator` is SHADOWED: while PLATFORM_GATES_ENFORCED is
-    unset it LOGS the non-operator and returns them, so that the gates could
-    ship before the flag was bootstrapped without locking the operator out.
-    That shadow is correct for a gate being rolled out and wrong for the two
-    routes here, which destroy things.
-
-    So this one is strict, unconditionally, and a gate built on it cannot pass
-    its own tests while protecting nothing — which is the failure
-    test_pending_deletion_and_purge_scope.py was written to hold shut.
+    THERE IS NO SHADOW MODE. The old `require_platform_operator` logged and let
+    non-operators through unless PLATFORM_GATES_ENFORCED was set; it and the
+    flag are gone, and this is always enforced.
     """
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
-    return current_user
+    try:
+        user = await get_current_user(request=request, credentials=credentials)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not is_platform_operator(user):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return user
 
 # MOVED TO lib/project_state.py, and imported rather than redefined. The
 # compliance detectors carried their own {"status": "active", "is_deleted": ...}
@@ -8902,19 +8902,6 @@ PLATFORM_OPERATOR_EMAILS = frozenset(
     if e.strip()
 )
 
-# Shadow mode. While False the platform gate LOGS what it would have blocked
-# and allows the request, so the gates can ship BEFORE the operator flag is
-# bootstrapped without locking the operator out of the very routes they need.
-# Behaviour while False is exactly today's (the existing role checks still
-# apply underneath); flipping it to True only ever TIGHTENS.
-#
-# ENABLE ONLY AFTER: the flag is set on the real operator account AND
-# audit_account_roles.py confirms it landed. Enabling first locks them out.
-PLATFORM_GATES_ENFORCED = os.environ.get(
-    "PLATFORM_GATES_ENFORCED", "false",
-).strip().lower() in ("1", "true", "yes")
-
-
 def is_platform_operator(user: dict) -> bool:
     """True for the platform operator. Never inferred from `role`."""
     if not user:
@@ -8923,27 +8910,6 @@ def is_platform_operator(user: dict) -> bool:
         return True
     email = (user.get("email") or "").strip().lower()
     return bool(email) and email in PLATFORM_OPERATOR_EMAILS
-
-
-async def require_platform_operator(current_user = Depends(get_current_user)):
-    """Gate for cross-tenant platform operations.
-
-    While PLATFORM_GATES_ENFORCED is False this only logs — see the flag above.
-    """
-    if is_platform_operator(current_user):
-        return current_user
-    who = (current_user or {}).get("email") or (current_user or {}).get("_id")
-    if not PLATFORM_GATES_ENFORCED:
-        logger.warning(
-            "[platform-gate SHADOW] would have blocked non-operator %r "
-            "(role=%r). Set PLATFORM_GATES_ENFORCED=true after bootstrapping "
-            "is_platform_operator.", who, (current_user or {}).get("role"),
-        )
-        return current_user
-    logger.warning("[platform-gate] blocked non-operator %r", who)
-    raise HTTPException(
-        status_code=403, detail="Platform operator access required",
-    )
 
 
 # ── RANK, WITH THE OPERATOR ALWAYS ADMITTED ─────────────────────────────────
@@ -8989,32 +8955,6 @@ def is_company_admin(user) -> bool:
     `get_project_admin_user` prints, for the same reason.
     """
     return holds_rank(user, COMPANY_ADMIN_ROLES)
-
-
-async def require_company_scope(
-    company_id: str,
-    current_user = Depends(get_current_user),
-) -> dict:
-    """Tenant gate for routes that name a {company_id} in the path.
-
-    A customer may act on THEIR OWN company only; the platform operator may act
-    on any. This is the safe default for a route whose bucket is arguable: a
-    tenant-scoped company action cannot reach another tenant, and the operator
-    still gets everywhere through the bypass — so mis-classifying a
-    platform-ish route as company-owner costs nothing, while the reverse locks
-    customers out of their own organisation.
-
-    Authorization only — it does not assert the company exists. Handlers do
-    their own lookups and already 404 appropriately.
-    """
-    if is_platform_operator(current_user):
-        return current_user
-    user_company = get_user_company_id(current_user)
-    if user_company and str(user_company) == str(company_id):
-        return current_user
-    raise HTTPException(
-        status_code=403, detail="Not authorized for this company",
-    )
 
 
 def _same_company(actor: dict, target: dict) -> bool:
@@ -9706,7 +9646,7 @@ async def get_me(current_user = Depends(get_current_user)):
     # below, so the two ways of being the operator give one answer.
     #
     # STILL NOT A SECURITY BOUNDARY. Hiding a door is a courtesy; the boundary
-    # is get_platform_operator_user / require_platform_operator on the routes.
+    # is require_operator_404 on the routes.
     out["is_platform_operator"] = is_platform_operator(current_user)
 
     # ── A CAPABILITY, NOT A STORED FIELD ────────────────────────────────────
@@ -12420,7 +12360,7 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
 
 # ==================== OWNER - COMPANY MANAGEMENT ====================
 
-@api_router.get("/owner/companies", dependencies=[Depends(require_platform_operator)])
+@api_router.get("/owner/companies", dependencies=[Depends(require_operator_404)])
 async def get_companies(current_user = Depends(get_current_user)):
     """EVERY company, and every project that belongs to none of them.
 
@@ -12452,8 +12392,6 @@ async def get_companies(current_user = Depends(get_current_user)):
     "Blueview llc". A card showing only a name cannot be told apart from the
     other one, and the operation underneath it is a permanent delete.
     """
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     companies = await db.companies.find({}).sort("created_at", -1).to_list(500)
     known = {str(c["_id"]) for c in companies}
@@ -12521,8 +12459,8 @@ class TestFlagUpdate(BaseModel):
 
 
 @api_router.patch("/owner/companies/{company_id}/test-flag",
-                  dependencies=[Depends(require_approved),
-                                Depends(require_platform_operator)])
+                  dependencies=[Depends(require_operator_404),
+                                Depends(require_approved)])
 async def set_company_test_flag(
     company_id: str, body: TestFlagUpdate,
     current_user = Depends(get_current_user),
@@ -12564,7 +12502,7 @@ async def set_company_test_flag(
 
 
 @api_router.get("/owner/companies/{company_id}/dependencies",
-                dependencies=[Depends(require_platform_operator)])
+                dependencies=[Depends(require_operator_404)])
 async def get_company_dependencies(
     company_id: str, current_user = Depends(get_current_user),
 ):
@@ -12582,7 +12520,7 @@ async def get_company_dependencies(
 
 
 @api_router.get("/projects/{project_id}/dependencies",
-                dependencies=[Depends(require_platform_operator)])
+                dependencies=[Depends(require_operator_404)])
 async def get_project_dependencies(
     project_id: str, current_user = Depends(get_current_user),
 ):
@@ -12603,11 +12541,9 @@ async def get_project_dependencies(
     out["confirm_name"] = project.get("name") or project.get("address") or ""
     return out
 
-@api_router.post("/owner/companies", dependencies=[Depends(require_platform_operator)])
+@api_router.post("/owner/companies", dependencies=[Depends(require_operator_404)])
 async def create_company(company_data: CompanyCreate, current_user = Depends(get_current_user)):
     """Create a new company (owner only). Optionally links to a GC license and fetches insurance from BIS."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     # Check if company name already exists
     existing = await db.companies.find_one({"name": company_data.name, "is_deleted": {"$ne": True}})
@@ -12654,12 +12590,10 @@ class LinkGcLicenseRequest(BaseModel):
     gc_license_number: str
 
 
-@api_router.get("/owner/debug/bis-license/{license_number}", tags=["Owner"], dependencies=[Depends(require_platform_operator)])
+@api_router.get("/owner/debug/bis-license/{license_number}", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def debug_bis_license(license_number: str, current_user=Depends(get_current_user)):
     """Diagnostic: fetch the raw BIS license page and return a sanitized snippet
     plus what the current regex extracts. Owner only."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     import httpx
     from permit_renewal import DOB_BIS_LICENSE_URL, _fetch_insurance_details
@@ -12714,7 +12648,7 @@ async def debug_bis_license(license_number: str, current_user=Depends(get_curren
 
 
 
-@api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def link_gc_license_to_company(
     company_id: str,
     body: LinkGcLicenseRequest,
@@ -12724,12 +12658,6 @@ async def link_gc_license_to_company(
     Link an existing company to an NYC DOB GC license number, then fetch
     insurance records from BIS. Owner only.
     """
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
     if not company:
@@ -12813,7 +12741,7 @@ async def link_gc_license_to_company(
     }
 
 
-@api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_approved), Depends(require_platform_operator)])
+@api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_operator_404), Depends(require_approved)])
 async def hard_delete_company(
     company_id: str,
     confirm_name: str = Query(
@@ -12845,8 +12773,6 @@ async def hard_delete_company(
     """
     from lib.purge_dependencies import company_dependencies, confirm_matches
 
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     company = await db.companies.find_one({"_id": to_query_id(company_id)})
     if not company:
@@ -12942,15 +12868,9 @@ async def _demote_other_primaries(company_id: str, except_rep_id: str):
     )
 
 
-@api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def list_filing_reps(company_id: str, current_user=Depends(get_current_user)):
     """List filing_reps for a company (owner only)."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
@@ -12961,7 +12881,7 @@ async def list_filing_reps(company_id: str, current_user=Depends(get_current_use
     return company.get("filing_reps") or []
 
 
-@api_router.post("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.post("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def add_filing_rep(
     company_id: str,
     body: FilingRepCreate,
@@ -12971,12 +12891,6 @@ async def add_filing_rep(
     (uuid4 hex). If is_primary=True is sent, any other primary on
     this company is demoted in the same transaction so exactly one
     primary holds across the array."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     if body.license_class not in FILING_REP_LICENSE_CLASSES:
         raise HTTPException(
@@ -13021,7 +12935,7 @@ async def add_filing_rep(
     return rep_doc
 
 
-@api_router.patch("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.patch("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def update_filing_rep(
     company_id: str,
     rep_id: str,
@@ -13031,12 +12945,6 @@ async def update_filing_rep(
     """Patch fields on an existing filing_rep. Same is_primary
     uniqueness rule as the create endpoint — flipping a rep TO
     primary demotes any other primary on the same company."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     if body.license_class is not None and body.license_class not in FILING_REP_LICENSE_CLASSES:
         raise HTTPException(
@@ -13089,19 +12997,13 @@ async def update_filing_rep(
     return updated_rep or {}
 
 
-@api_router.delete("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.delete("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def delete_filing_rep(
     company_id: str,
     rep_id: str,
     current_user=Depends(get_current_user),
 ):
     """Remove a filing_rep from a company by rep_id."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     result = await db.companies.update_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}},
@@ -13151,7 +13053,7 @@ VALID_FILING_JOB_SORT_FIELDS = {"created_at", "updated_at", "status"}
 
 @api_router.get("/admin/filing-jobs", tags=["Admin"])
 async def admin_list_filing_jobs(
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_operator_404),
     status: Optional[str] = Query(None, description="Filter by FilingJobStatus value"),
     company_id: Optional[str] = Query(None, description="Filter to a single tenant"),
     created_after: Optional[str] = Query(None, description="ISO-8601 lower bound on created_at"),
@@ -13165,12 +13067,6 @@ async def admin_list_filing_jobs(
     surface. Owner-only. Filters: status, company_id, date range
     (ISO-8601 strings; parsed via fromisoformat). Pagination uses the
     same skip/limit/total/has_more shape as paginated_query()."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     # Validate sort_by — refuse arbitrary fields so a typo doesn't
     # silently sort by a field that doesn't exist (Mongo returns
@@ -13265,7 +13161,7 @@ VALID_NOTIFICATION_TRIGGERS_FOR_FILTER = {
 
 @api_router.get("/admin/notifications", tags=["Admin"])
 async def admin_list_notifications(
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_operator_404),
     trigger_type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     permit_renewal_id: Optional[str] = Query(None),
@@ -13279,12 +13175,6 @@ async def admin_list_notifications(
     to answer "did the operator actually get the email?" — filters by
     trigger_type, status, permit_renewal_id, and ISO-8601 date range.
     Returns the paginated_query envelope shape."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     if sort_dir not in (-1, 1):
         raise HTTPException(status_code=400, detail="sort_dir must be -1 or 1")
@@ -13357,7 +13247,7 @@ async def admin_list_notifications(
 )
 async def admin_resend_notification(
     notification_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_operator_404),
 ):
     """Re-send a previously-failed notification by re-rendering the
     trigger template against the original renewal + recipient and
@@ -13370,12 +13260,6 @@ async def admin_resend_notification(
     last 23h, send_notification will short-circuit with
     `suppressed_idempotent`. To force a real send, the operator can
     call this endpoint again after the dedup window passes."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     from lib.notifications import send_notification
     from lib.email_templates import render_for_trigger
@@ -14340,7 +14224,7 @@ def _load_authorization_text() -> str:
         return ""
 
 
-@api_router.get("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.get("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def get_company_authorization(
     company_id: str,
     current_user=Depends(get_current_user),
@@ -14349,12 +14233,6 @@ async def get_company_authorization(
     the operator must accept. Always returns 200 — `accepted` field
     indicates whether a non-null record exists matching the current
     version."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     company = await db.companies.find_one(
         {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
@@ -14381,7 +14259,7 @@ async def get_company_authorization(
     }
 
 
-@api_router.post("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_company_scope)])
+@api_router.post("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_operator_404)])
 async def post_company_authorization(
     company_id: str,
     body: AuthorizationAccept,
@@ -14395,12 +14273,6 @@ async def post_company_authorization(
     Re-posting overwrites the existing record — operators can re-
     accept after a text version bump or after revoking + re-granting.
     The new record gets a fresh accepted_at and version stamp."""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
 
     typed = (body.licensee_name_typed or "").strip()
     if not typed:
@@ -14458,11 +14330,9 @@ async def post_company_authorization(
 
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
 
-@api_router.post("/owner/seed-gc-licenses", dependencies=[Depends(require_platform_operator)])
+@api_router.post("/owner/seed-gc-licenses", dependencies=[Depends(require_operator_404)])
 async def seed_gc_licenses(current_user=Depends(get_current_user)):
     """Bulk-load all GC licenses from NYC Open Data into gc_licenses collection (owner only)."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     import httpx
     DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
@@ -14529,11 +14399,9 @@ async def seed_gc_licenses(current_user=Depends(get_current_user)):
     return {"inserted": inserted, "updated": updated, "total_processed": offset}
 
 
-@api_router.post("/owner/run-gc-sync", dependencies=[Depends(require_platform_operator)])
+@api_router.post("/owner/run-gc-sync", dependencies=[Depends(require_operator_404)])
 async def run_gc_sync(current_user=Depends(get_current_user)):
     """Re-sync GC licenses from NYC Open Data. Flags status changes for companies in our DB (owner only)."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
 
     import httpx
     DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
@@ -15267,11 +15135,9 @@ class CreateAdminRequest(BaseModel):
     company_name: str
     phone: Optional[str] = None
 
-@api_router.post("/owner/admins", dependencies=[Depends(require_platform_operator)])
+@api_router.post("/owner/admins", dependencies=[Depends(require_operator_404)])
 async def create_admin_with_company(admin_data: CreateAdminRequest, current_user = Depends(get_current_user)):
     """Create admin account with company (owner only)"""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
     
     # Check if email exists
     existing_user = await db.users.find_one({"email": admin_data.email, "is_deleted": {"$ne": True}})
@@ -15362,20 +15228,16 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         "message": "Admin account created successfully"
     }
 
-@api_router.get("/owner/admins", dependencies=[Depends(require_platform_operator)])
+@api_router.get("/owner/admins", dependencies=[Depends(require_operator_404)])
 async def get_admin_accounts(current_user = Depends(get_current_user)):
     """Get all admin accounts (owner only)"""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
     
     admins = await db.users.find({"role": "admin", "is_deleted": {"$ne": True}}, {"password": 0}).to_list(200)
     return serialize_list(admins)
 
-@api_router.delete("/owner/admins/{admin_id}", dependencies=[Depends(require_platform_operator)])
+@api_router.delete("/owner/admins/{admin_id}", dependencies=[Depends(require_operator_404)])
 async def delete_admin_account(admin_id: str, current_user = Depends(get_current_user)):
     """Delete admin account (owner only)"""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
     
     # Same single writer as DELETE /admin/users/{id} — see the note there.
     result = await db.users.update_one(
@@ -15387,11 +15249,9 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     
     return {"message": "Admin account deleted successfully"}
 
-@api_router.put("/owner/admins/{admin_id}", dependencies=[Depends(require_platform_operator)])
+@api_router.put("/owner/admins/{admin_id}", dependencies=[Depends(require_operator_404)])
 async def update_admin_account(admin_id: str, admin_data: dict, current_user = Depends(get_current_user)):
     """Update admin account (owner only)"""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
     
     update_fields = {}
     if "name" in admin_data:
@@ -15422,26 +15282,11 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
 #
 # PLATFORM OPERATOR ONLY, AND NOBODY ELSE LEARNS THESE ROUTES EXIST. Every
 # route below carries `require_operator_404`: a signed-in non-operator, and a
-# request with no or a bad token, both get 404 -- not 403, not 401. This gate
-# is strict regardless of PLATFORM_GATES_ENFORCED (the shadowed
-# `require_platform_operator` logs and lets people through while that flag is
-# unset).
+# request with no or a bad token, both get 404 -- not 403, not 401. The gate
+# is defined with the other auth dependencies, near get_current_user.
 #
 # The rules -- what a deleted row says, when a change would leave a company
 # with no admin, what a restore clears -- are in lib/owner_portal.py.
-
-
-async def require_operator_404(
-    request: Request = None,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-):
-    try:
-        user = await get_current_user(request=request, credentials=credentials)
-    except HTTPException:
-        raise HTTPException(status_code=404, detail="Not Found")
-    if not is_platform_operator(user):
-        raise HTTPException(status_code=404, detail="Not Found")
-    return user
 
 
 class OwnerAddAdmin(BaseModel):
@@ -15875,14 +15720,8 @@ async def owner_preview_hard_delete(kind: str, item_id: str,
 
 
 @api_router.post("/admin/migrate-company-data")
-async def migrate_company_data(data: dict, current_user = Depends(get_current_user)):
+async def migrate_company_data(data: dict, current_user = Depends(require_operator_404)):
     """Migrate admin data to companies (owner only)"""
-    # PLATFORM OPERATOR ONLY -- see the ROLE_DEMO block for why this stopped
-    # being a role test. It read `role != "owner"`, which every self-serve
-    # signup satisfied.
-    if not is_platform_operator(current_user):
-        raise HTTPException(
-            status_code=403, detail="Platform operator access required")
     
     assignments = data.get("assignments", [])
     results = []
@@ -16519,7 +16358,7 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     return ProjectResponse(**project_dict)
 
 @api_router.get("/projects/pending-deletion")
-async def list_pending_deletion_projects(owner = Depends(get_platform_operator_user)):
+async def list_pending_deletion_projects(owner = Depends(require_operator_404)):
     """Review list of projects an admin has marked for deletion.
 
     MUST stay registered ABOVE GET /projects/{project_id} — FastAPI matches
@@ -16534,8 +16373,7 @@ async def list_pending_deletion_projects(owner = Depends(get_platform_operator_u
     cross-tenant purge.
 
     THE ROLE IS RETIRED AND THIS IS NOW PLATFORM-OPERATOR ONLY. The dependency
-    is the STRICT gate, not the shadowed `require_platform_operator` — see
-    `get_platform_operator_user` for why there are two.
+    is `require_operator_404`: everyone else gets 404.
 
     THE COMPANY SCOPING BELOW IS KEPT ANYWAY, and that is deliberate rather
     than leftover. It is the same shape GET /projects uses, it is what makes
@@ -17683,12 +17521,12 @@ async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
     return deleted
 
 
-@api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_approved), Depends(require_platform_operator)])
+@api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_operator_404), Depends(require_approved)])
 async def hard_delete_project(
     project_id: str,
     confirm_name: str = Query(
         "", description="The project's name, typed by the operator."),
-    owner = Depends(get_platform_operator_user),
+    owner = Depends(require_operator_404),
 ):
     """TIER 2 — irreversible purge. OWNER ONLY.
 
@@ -17748,19 +17586,14 @@ async def hard_delete_project(
         )
 
     # ── TENANT GATE ON AN IRREVERSIBLE PURGE ────────────────────────────────
-    # This compared NOTHING. The decorator's require_platform_operator is in
-    # SHADOW MODE while PLATFORM_GATES_ENFORCED is unset — it logs the
-    # non-operator and lets them through — so the only live gate was
+    # This compared NOTHING. The decorator's gate was once a shadow that
+    # logged a non-operator and let them through, so the only live gate was
     # `get_owner_user`, i.e. role == "owner", which is what every self-serve
     # signup received. Any customer owner could physically purge any company's
     # project, and GET /projects/pending-deletion handed them the ids.
     #
-    # is_platform_operator is the PURE FUNCTION on purpose. Writing this on
-    # the shadowed dependency would inherit the shadow and gate nothing, while
-    # passing its own tests. That is asserted with the flag unset.
-    #
-    # THE ROLE IS RETIRED AND `get_platform_operator_user` IS NOW STRICT, so
-    # the route's own dependency already refuses a non-operator. This stays as
+    # THE ROUTE'S DEPENDENCY IS NOW require_operator_404, so a non-operator
+    # never gets here. This stays as
     # the check that is readable without an injector and that survives the
     # dependency list being edited. Operator purges anything;
     # anyone else is confined to their own company.
@@ -28519,17 +28352,13 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
 # It is a `debug_` diagnostic whose whole subject is platform-level scraper
 # state, so the honest gate is the platform operator rather than a filter.
 #
-# THE INLINE ROLE CHECK BELOW WAS NOT ONE. `role in ("owner","admin")` is
-# satisfied by having registered -- `register` gives every self-serve signup
-# `role = "owner"`. It is kept as defence in depth, not as the gate.
-#
-# CAVEAT WORTH KNOWING: `require_platform_operator` only ENFORCES while
-# PLATFORM_GATES_ENFORCED is set. It defaults to "false", in which mode it logs
-# and returns the caller. Production sets it to true (verified 2026-09-05); a
-# new environment that does not would degrade this to the inline role check.
+# THE GATE IS require_operator_404 AND NOTHING ELSE. The inline
+# `role in ("owner","admin")` check that sat in the body is gone: it was
+# satisfied by having registered, and it would have refused the operator once
+# their account stopped carrying the retired "owner" role.
 @api_router.get(
     "/debug/bis-scraper-state",
-    dependencies=[Depends(require_platform_operator)],
+    dependencies=[Depends(require_operator_404)],
 )
 async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
     """Dump the state the BIS scraper has written to Mongo, so we can
@@ -28544,10 +28373,6 @@ async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
       - Recent dob_logs written with source='bis_scraper'
       - Tracked projects the scraper should be hitting (for reference)
     """
-    role = (current_user.get("role") or "").lower()
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     company_id = get_user_company_id(current_user)
     now = datetime.now(timezone.utc)
 
@@ -28690,11 +28515,10 @@ async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
 
 
 @api_router.get("/debug/upload-log")
-async def debug_upload_log(current_user=Depends(get_current_user)):
-    """Last 30 upload attempts with outcome — owner/admin only."""
-    role = (current_user.get("role") or "").lower()
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+async def debug_upload_log(current_user=Depends(require_operator_404)):
+    """Last 30 upload attempts with outcome, ACROSS EVERY TENANT (with the
+    uploader's email and IP) — so platform operator only. It used to admit any
+    company admin, and any account still carrying the retired "owner" role."""
     rows = await db.upload_attempts_log.find().sort("received_at", -1).limit(30).to_list(30)
     return {
         "count": len(rows),
@@ -57732,27 +57556,12 @@ async def whatsapp_webhook(request: Request):
     return {"status": "ok"}
 
 
-def _require_operator_flag(current_user: dict) -> None:
-    """The debug surfaces read across every tenant, so they answer the
-    platform operator and nobody else — decided by the DB flag alone.
-
-    Not `is_company_admin` (a rank test, not a tenant test: every customer's
-    admin passed it), not any role string, and not PLATFORM_OPERATOR_EMAILS:
-    the flag is in no API allow-list, so no request can grant it."""
-    if (current_user or {}).get("is_platform_operator") is not True:
-        raise HTTPException(
-            status_code=403,
-            detail=("Platform operator access required. / "
-                    "Se requiere acceso de operador de la plataforma."))
-
-
 @api_router.get("/whatsapp/debug/audio-probe")
 async def whatsapp_debug_audio_probe(
-    current_user=Depends(get_current_user), limit: int = 10
+    current_user=Depends(require_operator_404), limit: int = 10
 ):
     """Recent download-audio probe traces — which WaAPI endpoints were
     tried and what each returned."""
-    _require_operator_flag(current_user)
     try:
         rows = await db.whatsapp_audio_probe.find().sort(
             "received_at", -1
@@ -57768,10 +57577,9 @@ async def whatsapp_debug_audio_probe(
 
 @api_router.get("/whatsapp/debug/audio-diag")
 async def whatsapp_debug_audio_diag(
-    current_user=Depends(get_current_user), limit: int = 10
+    current_user=Depends(require_operator_404), limit: int = 10
 ):
     """Recent voicenote download/transcription outcomes."""
-    _require_operator_flag(current_user)
     try:
         rows = await db.whatsapp_audio_diag.find().sort(
             "received_at", -1
@@ -57786,7 +57594,7 @@ async def whatsapp_debug_audio_diag(
 
 
 @api_router.get("/whatsapp/debug/bot-identifiers")
-async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
+async def whatsapp_debug_bot_ids(current_user=Depends(require_operator_404)):
     """Dump the digit-strings the addressing matcher recognizes as 'the bot'.
 
     If your native @mention isn't being detected, compare the LID the
@@ -57794,7 +57602,6 @@ async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
     list this returns. A missing LID here = env var isn't loaded, or has
     whitespace/quote corruption.
     """
-    _require_operator_flag(current_user)
     env_phone_raw = os.environ.get("WAAPI_DISPLAY_NUMBER", "")
     env_lid_raw = os.environ.get("WAAPI_BOT_LID", "")
     return {
@@ -57821,7 +57628,7 @@ async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
 @api_router.get("/whatsapp/debug/page-index")
 async def whatsapp_debug_page_index(
     project_id: str, sheet: str = "", limit: int = 5, list_sheets: bool = False,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_operator_404),
 ):
     """The RAW stored extraction for a sheet. Owner/admin only.
 
@@ -57847,7 +57654,6 @@ async def whatsapp_debug_page_index(
     # NO EMBEDDING. It is 1536 floats that no human reads, and it would bury
     # the text this is here to show.
     """
-    _require_operator_flag(current_user)
 
     # SCOPED TO THE CALLER'S COMPANY. A project id in a query string is the
     # client's input, and a debug endpoint is still an endpoint.
@@ -57943,13 +57749,12 @@ async def whatsapp_debug_page_index(
 
 
 @api_router.get("/whatsapp/debug/convo-state-indexes")
-async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_user)):
+async def whatsapp_debug_convo_state_indexes(current_user=Depends(require_operator_404)):
     """Which indexes whatsapp_conversation_state actually carries right now.
 
     Asked of production and unanswerable: the old unique-on-group_id index is
     what silently ate every bot session, the drop runs at boot inside a try,
     and "did it go?" had no answer short of a database shell."""
-    _require_operator_flag(current_user)
     try:
         info = await db.whatsapp_conversation_state.index_information()
     except Exception as e:
@@ -57963,9 +57768,8 @@ async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_us
 
 
 @api_router.get("/whatsapp/debug/webhook-log")
-async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
+async def whatsapp_debug_webhook_log(current_user=Depends(require_operator_404)):
     """Return the last 20 raw webhook hits so we can see what WaAPI is sending."""
-    _require_operator_flag(current_user)
     rows = await db.whatsapp_webhook_log.find().sort("received_at", -1).limit(20).to_list(20)
     total = await db.whatsapp_webhook_log.estimated_document_count()
     return {
@@ -58112,10 +57916,9 @@ async def whatsapp_group_link_initiate(
 
 
 @api_router.get("/whatsapp/debug/waapi-config")
-async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
+async def whatsapp_debug_waapi_config(current_user=Depends(require_operator_404)):
     """Return which WaAPI instance the backend is actually pointing at.
     Helps diagnose mismatches between the dashboard and the env vars."""
-    _require_operator_flag(current_user)
 
     # Probe WaAPI for instance status
     status_data = None
@@ -58145,10 +57948,9 @@ async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
 
 
 @api_router.get("/whatsapp/debug/recent-messages")
-async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user)):
+async def whatsapp_debug_recent_messages(current_user=Depends(require_operator_404)):
     """Owner/admin: show the last 20 whatsapp_messages stored. Confirms whether
     the webhook is actually delivering events into the DB."""
-    _require_operator_flag(current_user)
     msgs = await db.whatsapp_messages.find().sort("created_at", -1).limit(20).to_list(20)
     return {
         "count": await db.whatsapp_messages.estimated_document_count(),
@@ -58165,10 +57967,9 @@ async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user))
 
 
 @api_router.get("/whatsapp/debug/pending-codes")
-async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
+async def whatsapp_debug_pending_codes(current_user=Depends(require_operator_404)):
     """Owner/admin only: list un-verified codes for this company so we can
     see what the webhook actually stored vs what the user is typing."""
-    _require_operator_flag(current_user)
     company_id = get_user_company_id(current_user)
     if not company_id and not is_platform_operator(current_user):
         # `company_id: None` IS NOT A TENANT FILTER -- it matches
@@ -60287,7 +60088,7 @@ async def public_logbook_pdf(token: str):
 @api_router.post("/debug/probe-waapi-endpoints")
 async def debug_probe_waapi_endpoints(
     body: dict,
-    current_user=Depends(get_admin_user),
+    current_user=Depends(require_operator_404),
 ):
     """Probe multiple WaAPI action paths with the same test payload to see
     which endpoint actually accepts our image sends. Returns {path: status}.
@@ -60297,7 +60098,6 @@ async def debug_probe_waapi_endpoints(
     PLATFORM OPERATOR ONLY. It posts into whatever group id it is handed, so a
     company admin could otherwise send into another company's chat.
     """
-    _require_operator_flag(current_user)
     image_url = (body or {}).get("image_url", "").strip()
     group_id = (body or {}).get("group_id", "").strip()
     if not image_url or not group_id:
@@ -60339,11 +60139,11 @@ async def debug_probe_waapi_endpoints(
     return {"base_url": WAAPI_BASE_URL, "instance": WAAPI_INSTANCE_ID, "results": results}
 
 
-@api_router.post("/projects/{project_id}/debug/test-plan-image-send", dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.post("/projects/{project_id}/debug/test-plan-image-send", dependencies=[Depends(require_operator_404), Depends(require_approved), Depends(require_project_access)])
 async def debug_test_plan_image_send(
     project_id: str,
     body: dict,
-    current_user=Depends(get_admin_user),
+    current_user=Depends(require_operator_404),
 ):
     """Admin diagnostic — try to send a specific sheet's pre-rendered JPEG
     to a WhatsApp group and return the exact WaAPI response + our internal
@@ -60364,7 +60164,6 @@ async def debug_test_plan_image_send(
     # destination must be a group whose binding is proven to be THIS project
     # of THIS project's company, and the caller must be the platform operator
     # (it is a debug surface, like the /whatsapp/debug routes).
-    _require_operator_flag(current_user)
     binding = await _resolve_group_binding(group_id)
     project_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
     if (binding.get("status") != wa_security.GROUP_OK

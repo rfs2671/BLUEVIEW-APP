@@ -159,31 +159,35 @@ class TestApproveScoping(unittest.TestCase):
 
 # ── 2d: the platform gate, both modes ────────────────────────────────────────
 class TestPlatformGate(unittest.TestCase):
-    def test_operator_passes_in_both_modes(self):
-        import server
-        for enforced in (False, True):
-            with patch.object(server, "PLATFORM_GATES_ENFORCED", enforced):
-                self.assertEqual(
-                    _run(server.require_platform_operator(current_user=OPERATOR)),
-                    OPERATOR)
+    """The one operator gate, `require_operator_404`: the operator passes,
+    everyone else gets 404. There is no shadow mode and no env flag."""
 
-    def test_shadow_mode_allows_non_operator(self):
-        """Ships non-enforcing so the gates can land before bootstrap."""
+    def _gate(self, user):
         import server
-        with patch.object(server, "PLATFORM_GATES_ENFORCED", False):
-            self.assertEqual(
-                _run(server.require_platform_operator(current_user=ADMIN_A)),
-                ADMIN_A)
 
-    def test_enforced_mode_blocks_non_operator_including_company_owner(self):
-        import server
+        async def go():
+            async def fake(**kw):
+                return user
+            with patch.object(server, "get_current_user", fake):
+                return await server.require_operator_404(request=None,
+                                                         credentials=None)
+        return _run(go())
+
+    def test_operator_passes(self):
+        self.assertEqual(self._gate(OPERATOR), OPERATOR)
+
+    def test_non_operators_get_404_including_company_owner(self):
         company_owner = {"_id": "o", "email": "o@acme.test", "role": "owner",
                          "company_id": "companyA", "account_status": "approved"}
-        with patch.object(server, "PLATFORM_GATES_ENFORCED", True):
-            for u in (ADMIN_A, company_owner):
-                with self.assertRaises(HTTPException) as ctx:
-                    _run(server.require_platform_operator(current_user=u))
-                self.assertEqual(ctx.exception.status_code, 403)
+        for u in (ADMIN_A, company_owner):
+            with self.assertRaises(HTTPException) as ctx:
+                self._gate(u)
+            self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_there_is_no_shadow_mode(self):
+        import server
+        self.assertFalse(hasattr(server, "PLATFORM_GATES_ENFORCED"))
+        self.assertFalse(hasattr(server, "require_platform_operator"))
 
     def test_destructive_routes_declare_the_platform_gate(self):
         import server
@@ -198,17 +202,13 @@ class TestPlatformGate(unittest.TestCase):
                 if verb not in (getattr(r, "methods", None) or set()):
                     continue
                 deps = getattr(getattr(r, "dependant", None), "dependencies", []) or []
-                names = [getattr(d.call, "__name__", "") for d in deps if d.call]
-                for d in deps:
-                    names += [getattr(sd.call, "__name__", "")
-                              for sd in (d.dependencies or []) if sd.call]
-                if "require_platform_operator" in names:
+                if deps and deps[0].call is server.require_operator_404:
                     ok = True
                     break
             if not ok:
                 missing.append(f"{verb} {path}")
         self.assertEqual(missing, [],
-                         "lost require_platform_operator: " + ", ".join(missing))
+                         "lost require_operator_404: " + ", ".join(missing))
 
 
 
@@ -244,94 +244,26 @@ class TestCustomerOwnerNotOverGated(unittest.TestCase):
 
 # ── 2e: /owner/* classification, both directions ─────────────────────────────
 class TestOwnerRouteClassification(unittest.TestCase):
-    """Every /owner/* route must land in exactly one bucket, and the
-    company-owner bucket must keep working for the customer it belongs to."""
+    """Every /owner/* route is platform-operator only, behind
+    `require_operator_404`. The filing-reps, authorization and link-gc-license
+    routes used to sit behind `require_company_scope` as well as an inline
+    operator check; only the owner portal calls them, so the operator gate is
+    the whole of it. The full inventory is tests/test_operator_gate.py."""
 
-    COMPANY_OWNER = {"_id": "co", "email": "own@acme.test", "role": "owner",
-                     "company_id": "companyA", "account_status": "approved"}
-
-    COMPANY_SCOPED = [
-        "/owner/companies/{company_id}/filing-reps",
-        "/owner/companies/{company_id}/filing-reps/{rep_id}",
-        "/owner/companies/{company_id}/authorization",
-        "/owner/companies/{company_id}/link-gc-license",
-    ]
-    PLATFORM = [
-        "/owner/companies",
-        "/owner/companies/{company_id}",
-        "/owner/admins",
-        "/owner/admins/{admin_id}",
-        "/owner/seed-gc-licenses",
-        "/owner/run-gc-sync",
-        "/owner/debug/bis-license/{license_number}",
-    ]
-
-    def _deps(self, route):
-        deps = getattr(getattr(route, "dependant", None), "dependencies", []) or []
-        names = [getattr(d.call, "__name__", "") for d in deps if d.call]
-        for d in deps:
-            names += [getattr(sd.call, "__name__", "")
-                      for sd in (d.dependencies or []) if sd.call]
-        return names
-
-    def test_every_owner_route_is_bucketed(self):
+    def test_every_owner_route_carries_the_operator_gate(self):
         import server
-        ungated = []
-        for r in server.app.routes:
-            path = getattr(r, "path", "").replace("/api", "", 1)
-            if not path.startswith("/owner/") and path != "/owner/companies":
-                continue
-            names = self._deps(r)
-            # require_operator_404 is the owner portal's STRICT platform gate
-            # (404 for every non-operator, never shadowed) -- see server.py.
-            if not ({"require_platform_operator", "require_company_scope",
-                     "require_operator_404"} & set(names)):
-                ungated.append(path)
-        self.assertEqual(ungated, [],
-                         "/owner/* routes with NO tenant or platform gate: "
-                         + ", ".join(sorted(set(ungated))))
 
-    def test_company_scoped_routes_are_not_platform_gated(self):
-        """Over-gating check: these are customer actions on their own org.
-        Platform-gating them would strand customers (no other path exists)."""
-        import server
-        wrong = []
-        for r in server.app.routes:
-            path = getattr(r, "path", "").replace("/api", "", 1)
-            if path in self.COMPANY_SCOPED and                "require_platform_operator" in self._deps(r):
-                wrong.append(path)
-        self.assertEqual(wrong, [], "company-owner routes wrongly platform-gated: "
-                                    + ", ".join(sorted(set(wrong))))
+        def walk(d):
+            return any(x.call is server.require_operator_404 or walk(x)
+                       for x in d.dependencies)
+        ungated = [r.path for r in server.app.routes
+                   if getattr(r, "path", "").startswith("/api/owner/")
+                   and not walk(r.dependant)]
+        self.assertEqual(ungated, [], "/owner/* routes without the operator gate")
 
-    # ── require_company_scope, both directions ──
-    def test_company_owner_reaches_own_company(self):
+    def test_require_company_scope_is_gone(self):
         import server
-        self.assertEqual(
-            _run(server.require_company_scope(
-                company_id="companyA", current_user=self.COMPANY_OWNER)),
-            self.COMPANY_OWNER)
-
-    def test_company_owner_blocked_from_another_company(self):
-        import server
-        with self.assertRaises(HTTPException) as ctx:
-            _run(server.require_company_scope(
-                company_id="companyB", current_user=self.COMPANY_OWNER))
-        self.assertEqual(ctx.exception.status_code, 403)
-
-    def test_platform_operator_reaches_any_company(self):
-        import server
-        self.assertEqual(
-            _run(server.require_company_scope(
-                company_id="companyB", current_user=OPERATOR)),
-            OPERATOR)
-
-    def test_user_without_company_is_blocked(self):
-        import server
-        with self.assertRaises(HTTPException) as ctx:
-            _run(server.require_company_scope(
-                company_id="companyA",
-                current_user={"_id": "x", "role": "admin", "company_id": None}))
-        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertFalse(hasattr(server, "require_company_scope"))
 
 
 if __name__ == "__main__":

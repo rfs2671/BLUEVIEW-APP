@@ -62,8 +62,9 @@ _MUTATING = {"post", "put", "patch", "delete"}
 #: positives, which is worse than useless on a security check: the reader
 #: learns to skim the output. What it missed, and why each counts —
 #:
-#:   require_platform_operator      a STRONGER gate than project access; the
-#:                                  caller must be the platform operator, and
+#:   require_operator_404           a STRONGER gate than project access; the
+#:                                  caller must be the platform operator
+#:                                  (everyone else gets 404), and
 #:                                  hard_delete_project also compares the
 #:                                  caller's company to the project's and 403s
 #:   _can_caller_modify_user_in_project
@@ -76,11 +77,10 @@ _MUTATING = {"post", "put", "patch", "delete"}
 _BODY_GUARDS = (
     "_assert_project_access",
     "require_project_access",
-    "require_platform_operator",
+    "require_operator_404",
     "user_can_act_on_project",
     "_can_caller_modify_user_in_project",
     "_same_company_or_403",
-    "require_company_scope",
 )
 
 

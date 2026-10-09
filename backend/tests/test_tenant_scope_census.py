@@ -272,33 +272,28 @@ class TheRoleIsNeverTheCarveOut(unittest.TestCase):
 
     def test_is_platform_operator_reads_a_flag_and_not_a_role(self):
         i = _SRC.index("def is_platform_operator(")
-        j = _SRC.index("\nasync def require_platform_operator", i)
+        j = _SRC.index("\n\n\n", i)
         body = _SRC[i:j]
         self.assertIn("is_platform_operator", body)
         self.assertNotIn('get("role")', body)
 
 
-class TheOperatorGateIsEnvironmentDependent(unittest.TestCase):
-    """RECORDED, NOT ASSERTED AWAY. `require_platform_operator` only REFUSES
-    while PLATFORM_GATES_ENFORCED is set; it defaults to "false", in which mode
-    it logs and returns the caller. Production sets it to true (verified
-    2026-09-05 against the deployed environment).
+class TheOperatorGateIsNotEnvironmentDependent(unittest.TestCase):
+    """THE SHADOW MODE IS GONE. `require_platform_operator` used to refuse only
+    while PLATFORM_GATES_ENFORCED was set, and the sibling census in
+    test_project_writes_authorize_the_project.py had to carry that caveat. The
+    one gate is now `require_operator_404`, always enforced, with no env flag.
+    `hard_delete_project` still compares the caller's company to the
+    project's as a second line."""
 
-    This matters to the sibling census in
-    test_project_writes_authorize_the_project.py, which accepts that dependency
-    as a guard: in an environment without the variable it is not one. The route
-    it guards there, `hard_delete_project`, also compares the caller's company
-    to the project's and 403s, so it does not stand alone.
-    """
-
-    def test_the_shadow_mode_still_exists_and_is_documented(self):
-        i = _SRC.index("async def require_platform_operator(")
+    def test_the_gate_has_no_shadow_and_no_flag(self):
+        self.assertNotIn("async def require_platform_operator(", _SRC)
+        self.assertNotIn('"PLATFORM_GATES_ENFORCED"', _SRC)
+        i = _SRC.index("async def require_operator_404(")
         j = _SRC.index("\nasync def ", i + 10)
         body = _SRC[i:j]
-        self.assertIn("PLATFORM_GATES_ENFORCED", body)
-        self.assertIn("return current_user", body,
-                      "shadow mode is gone — update this test and the sibling "
-                      "census's caveat, which both describe it")
+        self.assertIn('raise HTTPException(status_code=404', body)
+        self.assertNotIn("os.environ", body)
 
     def test_hard_delete_does_not_rely_on_that_gate_alone(self):
         i = _SRC.index("async def hard_delete_project(")
