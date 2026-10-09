@@ -26,6 +26,7 @@ ok(/Nothing here was posted/.test(A.ATTENTION_NOTE), 'says nothing was posted');
 ok(A.VERDICTS.map((v) => v.label).join('|') === 'Correct|Wrong|Dismiss', 'three buttons');
 ok(A.VERDICTS.map((v) => v.verdict).join('|') === 'correct|wrong|dismissed', 'verdicts the server takes');
 ok(A.typeLabel('question') === 'Question' && A.typeLabel('x') === 'Item', 'type labels');
+ok(A.typeLabel('update_review') === 'Unclear update', 'one entry for an unclear update');
 
 console.log('\nitem lines');
 ok(A.ownerLine({ owner: 'Mike', owner_status: 'resolved' }) === 'Owner: Mike', 'resolved owner');
@@ -35,6 +36,8 @@ ok(A.ownerLine({ owner: null }) === null, 'no owner, no line');
 ok(A.ownerLine({ owner: 'Patricia', owner_status: 'resolved', owner_possibly: true })
    === 'Owner: possibly Patricia (check)', 'a possible owner says so');
 ok(/Possibly theirs/.test(A.eventLine({ kind: 'flag', note: 'possible_owner' })), 'possible-owner flag');
+ok(/possibly that ask/.test(A.eventLine({ kind: 'flag', note: 'possible_subject' })),
+   'a commitment whose subject is only the ask before it');
 ok(A.dueLine({ due_text: 'by Friday', due_at: '2026-10-09' }) === 'Due: by Friday (2026-10-09)', 'due with a date');
 ok(A.dueLine({ due_text: 'next week', due_at: null }) === 'Due: next week', 'due as said, no date');
 ok(A.statusLine({ status: 'possibly_resolved' }) === 'Possibly answered (someone replied)', 'possibly answered');

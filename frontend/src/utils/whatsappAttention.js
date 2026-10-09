@@ -25,6 +25,9 @@ export const TYPE_LABELS = {
   commitment: 'Commitment',
   issue: 'Issue',
   decision: 'Decision',
+  // One entry for an update that could be about several items ("Sent" with
+  // two open): its summary names them; none of them was changed.
+  update_review: 'Unclear update',
 };
 
 export const VERDICTS = [
@@ -96,6 +99,7 @@ const FLAGS = {
   possibly_cancelled: 'Possibly cancelled. Not applied.',
   which_item: 'New date, but not clear for which item. Not applied.',
   possible_owner: 'Said yes right after this ask, which named nobody. Possibly theirs.',
+  possible_subject: 'Said right after an ask that named nobody, in words that do not say what it is about. Possibly theirs, possibly that ask.',
 };
 
 /** What one timeline entry says happened. */

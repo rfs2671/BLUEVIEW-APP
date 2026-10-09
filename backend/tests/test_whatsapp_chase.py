@@ -55,6 +55,7 @@ def _item(db, quote="I'll send the stair RFI today", **over):
         "evidence": {"message_id": f"M{_n[0]}", "quote": quote,
                      "sent_at": _et(7, 0), "sender": MIKE},
         "history": [{"id": "e0", "kind": "created", "at": _et(7, 0)}],
+        "extraction": {"source": "live", "prompt_version": "att-v1.2"},
         "review": None,
     }
     for k, v in over.items():
@@ -149,6 +150,9 @@ class WhatIsChased(_Base):
             "due another day": dict(due={"due_at": "2026-10-09"}),
             "flagged for review": dict(needs_review=True),
             "the item marked Wrong": dict(review={"verdict": "wrong"}),
+            "an older prompt (att-v1.1)": dict(extraction={"prompt_version": "att-v1.1"}),
+            "no prompt version": dict(extraction={"prompt_version": None}),
+            "an unclear-update review entry": dict(type="update_review"),
             "a question": dict(type="question"),
             "an issue": dict(type="issue"),
             "done": dict(status="done"),

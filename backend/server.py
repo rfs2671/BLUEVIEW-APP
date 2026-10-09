@@ -46251,6 +46251,22 @@ def _attention_owner_digits(it: dict) -> str:
     return re.sub(r"\D", "", jid.split("@")[0]) if jid else ""
 
 
+def _attention_ref(person: Optional[dict]) -> Optional[str]:
+    """"user:<id>" / "sender_map:<id>" for a resolved person, else None."""
+    p = person or {}
+    if p.get("status") == "resolved" and p.get("kind") in ("user", "sender_map") and p.get("id"):
+        return f"{p['kind']}:{p['id']}"
+    return None
+
+
+async def _attention_sender_ref(msg: dict, ctx: dict) -> Optional[str]:
+    jid = wa_attention.sender_jid(msg)
+    if not jid:
+        return None
+    return _attention_ref(await _attention_resolve(
+        jid, ctx["company_id"], ctx["project_id"], ctx["cache"]))
+
+
 def _attention_candidate(it: dict) -> dict:
     ev = it.get("evidence") or {}
     return {
@@ -46268,6 +46284,7 @@ def _attention_candidate(it: dict) -> dict:
         "due": it.get("due") or {},
         "owner_text": (it.get("owner") or {}).get("owner_text") or "",
         "owner_possibly": bool((it.get("owner") or {}).get("possibly")),
+        "owner_ref": _attention_ref(it.get("owner")),
         "sent_at": ev.get("sent_at"),
         "summary": it.get("summary") or "",
     }
@@ -46317,6 +46334,55 @@ def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict
             "review": None, **extra}
 
 
+_REVIEW_KIND = {"done": "Done", "reschedule": "New date", "cancel": "Cancelled"}
+
+
+async def _attention_review_entry(msg: dict, a: dict, cands: List[dict], quote: str,
+                                  ev_kind: str, ctx: dict, report: dict) -> bool:
+    """Write the one review entry for an unclear update (once per message).
+    False when the write failed (the message is retried)."""
+    this_id = str(msg.get("message_id") or msg.get("_id") or "")
+    now = datetime.now(timezone.utc)
+    sender = str(msg.get("sender") or "")
+    names = " or ".join(f"“{(c.get('evidence') or {}).get('quote') or c.get('summary') or ''}”"[:80]
+                        for c in cands[:4])
+    try:
+        if await db.attention_items.find_one(
+                {"type": "update_review", "project_id": ctx["project_id"],
+                 "evidence.message_id": this_id}, {"_id": 1}):
+            return True
+        await db.attention_items.insert_one({
+            "company_id": ctx["company_id"], "project_id": ctx["project_id"],
+            "group_id": ctx["group_id"], "type": "update_review", "status": "open",
+            "summary": f"{_REVIEW_KIND.get(a['kind'], 'Update')} — which one? {names}"[:300],
+            "update_kind": a["kind"], "note": a.get("note"),
+            "candidates": [{"id": str(c["_id"]), "type": c.get("type"),
+                            "summary": c.get("summary") or "",
+                            "quote": (c.get("evidence") or {}).get("quote") or ""}
+                           for c in cands],
+            "owner": {"kind": "none", "id": None, "status": "unresolved", "jid": None},
+            "requester": None, "due": {"due_text": None, "due_at": None, "due_source": "none"},
+            "importance": "normal", "tags": [],
+            "evidence": {"message_id": this_id,
+                         "message_key": wa_attention_state.short_id(this_id),
+                         "quote": quote, "verified": True,
+                         "sent_at": _attention_sent_at(msg), "sender": sender,
+                         "sender_last4": sender[-4:], "kind": ev_kind},
+            "extraction": {"source": "state", "prompt_version": wa_attention.PROMPT_VERSION},
+            "needs_review": True, "topic": [], "multi": False,
+            "history": [_attention_event("created", None, "open", msg, quote, ev_kind,
+                                         link=a.get("link"), by=a.get("by"),
+                                         note=a.get("note"))],
+            "parts_done": [], "review": None, "created_at": now, "updated_at": now,
+        })
+        report["state_updates"] += 1
+        return True
+    except Exception as e:
+        logger.warning(f"[attention] review entry write failed: {type(e).__name__}")
+        report["write_failed"] += 1
+        return False
+
+
 async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
                                   ctx: dict, report: dict) -> Optional[dict]:
     """Apply what this message says about earlier items. Returns {topics,
@@ -46344,6 +46410,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         if str(prev.get("sender") or "") != sender:
             terms |= wa_attention_state.topic_terms(prev.get("body"))
     upd = {"kind": cls["kind"], "sender": sender,
+           "sender_ref": await _attention_sender_ref(msg, ctx),
            "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
            "previous_key": prev_key, "terms": terms, "own_terms": own,
            "due_text": cls.get("due_text")}
@@ -46362,6 +46429,17 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
     topics: set = set()
     ids: set = set()
     for a in actions:
+        if a["action"] == "review":
+            # ONE entry for an update that could be about several items;
+            # the items are left as they are.
+            cands = [by_id[i] for i in a["item_ids"] if i in by_id]
+            for c in cands:
+                topics |= set(c.get("topic") or [])
+                ids.add(str(c["_id"]))
+            if cands and not await _attention_review_entry(
+                    msg, a, cands, quote, ev_kind, ctx, report):
+                return None
+            continue
         it = by_id.get(a["item_id"])
         if not it:
             continue
@@ -46382,13 +46460,19 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
             due_text = wa_attention.text_in_body(cls.get("due_text"), text)
             if not due_text:
                 continue
-            due_at = wa_attention.parse_due(due_text, sent_at)
             old = it.get("due") or {}
+            if cls.get("time_only"):
+                # A new time, the same day: the day stays the item's.
+                day = old.get("due_at")
+                due_at = datetime.strptime(str(day)[:10], "%Y-%m-%d").date() if day else None
+            else:
+                due_at = wa_attention.parse_due(due_text, sent_at)
             extra.update(due_from=old.get("due_text"), due_from_at=old.get("due_at"),
                          due_to=due_text, due_to_at=due_at.isoformat() if due_at else None)
             sets["due"] = {"due_text": due_text,
                            "due_at": due_at.isoformat() if due_at else None,
-                           "due_source": "parsed" if due_at else "none"}
+                           "due_source": ("same_day" if cls.get("time_only") and due_at
+                                          else "parsed" if due_at else "none")}
             sets["status"] = "rescheduled"
             event = _attention_event("state", frm, "rescheduled", msg, quote, ev_kind, **extra)
         elif a["action"] in ("state", "possibly_done"):
@@ -46453,6 +46537,43 @@ async def _attention_quoted(msg: dict, ctx: dict) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"[attention] quoted read failed: {type(e).__name__}")
         return None
+
+
+async def _attention_named_owner(name: Optional[str], company_id: str,
+                                 cache: dict) -> Optional[dict]:
+    """The owner an ask names by opening with a name: exactly one user of
+    this company or one person mapped in People whose first name (or full
+    name) is `name`. None otherwise -- never a guess."""
+    if not name:
+        return None
+    key = ("named", name, company_id)
+    if key in cache:
+        return cache[key]
+    hits = []
+    try:
+        users = await db.users.find(
+            {"company_id": _company_id_filter(company_id), "is_deleted": {"$ne": True}},
+            {"name": 1, "phone": 1}).to_list(2000)
+        for u in users:
+            full = " ".join(str(u.get("name") or "").lower().split())
+            if full and name in (full, full.split(" ")[0]):
+                digits = wa_dm.phone_digits(u.get("phone") or "")
+                hits.append({"kind": "user", "id": str(u["_id"]), "name": u.get("name") or "",
+                             "status": "resolved", "reason": None,
+                             "jid": f"{digits}@c.us" if digits else None})
+        maps = await db[wa_sender_map.COLLECTION].find(
+            {"company_id": str(company_id)}).to_list(2000)
+        for m in maps:
+            full = " ".join(str(m.get("person_name") or "").lower().split())
+            if full and name in (full, full.split(" ")[0]):
+                hits.append({**wa_sender_map.owner_from_map(m),
+                             "jid": m.get("sender_jid")})
+    except Exception as e:
+        logger.warning(f"[attention] named owner read failed: {type(e).__name__}")
+        return None
+    out = {**hits[0], "source": "named"} if len(hits) == 1 else None
+    cache[key] = out
+    return out
 
 
 async def _attention_answer_followups(link: Optional[dict], typ: str, owner: dict,
@@ -46528,6 +46649,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             return False
         found = wa_attention_state.ack_target(
             {"sender": sender, "sender_name": msg.get("sender_name") or "",
+             "sender_ref": await _attention_sender_ref(msg, ctx),
              "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
              "sent_at": ack_sent,
              "recent": [{"key": wa_attention_state.short_id(r.get("message_id")),
@@ -46651,6 +46773,13 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             res = await _attention_resolve(cand["jid"], company_id, project_id,
                                            ctx["cache"])
             owner = {**res, "source": cand["source"]}
+        elif it["type"] in ("request", "question"):
+            # "B, can you…", "Mike, can you…": the one person of this company
+            # by that name (a user, or someone mapped in People).
+            named = await _attention_named_owner(
+                wa_attention.addressed_name(body), company_id, ctx["cache"])
+            if named:
+                owner = named
         owner["owner_text"] = wa_attention.text_in_body(it["owner_text"], body)
         req_c = wa_attention.requester_candidate(it["type"], msg)
         requester = None
@@ -46659,6 +46788,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 req_c["jid"], company_id, project_id, ctx["cache"])),
                 "source": req_c["source"]}
         due_text = wa_attention.text_in_body(it["due_text"], body)
+        if not due_text and it["type"] in ("commitment", "request"):
+            # "Sunday. I'll keep u posted": the date is in the message, not
+            # in the quoted part.
+            due_text = wa_attention_state.due_phrase(body)
         due_at = wa_attention.parse_due(due_text, sent_at)
         due = {"due_text": due_text, "due_at": due_at.isoformat() if due_at else None,
                "due_source": "parsed" if due_at else "none"}
@@ -46669,6 +46802,23 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             pd = link["due"]
             due = {"due_text": pd.get("due_text"), "due_at": pd.get("due_at"),
                    "due_source": "parent"}
+        elif it["type"] == "commitment" and not due["due_at"] and link \
+                and wa_attention.time_only(due_text) and (link.get("due") or {}).get("due_at"):
+            # "Sure I'll get it before 8am" to "... tomorrow": the ask's day.
+            due = {"due_text": due_text, "due_at": link["due"]["due_at"],
+                   "due_source": "parent_day"}
+        # A commitment that takes its subject only from an ask put to nobody
+        # just before it ("Np", "Sunday. I'll keep u posted"): not a reply,
+        # the ask did not name them, and its own words share nothing with
+        # it. Possibly theirs, possibly about something else: for an admin.
+        possible_subject = bool(
+            it["type"] == "commitment" and link
+            and not (link_confident and link is parent)
+            and not wa_attention_state.is_mine(
+                link, {"sender": sender, "sender_ref": _attention_ref(owner)})
+            and not (wa_attention_state.topic_terms(quote) & set(link.get("topic") or ())))
+        if possible_subject:
+            owner["possibly"] = True
         owner_key = (f"{owner['kind']}:{owner['id']}" if owner.get("id")
                      else owner.get("jid") or (owner.get("owner_text") or "").lower())
         key = wa_attention.dedupe_key(group_id, it["type"], owner_key, quote)
@@ -46735,7 +46885,11 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                     "created", None, "open", msg, quote, "text",
                     link="reply" if (link and quoted) else (
                         "answers" if link else None),
-                    due_to=due["due_text"], due_source=due["due_source"])],
+                    due_to=due["due_text"], due_source=due["due_source"])] + ([
+                    _attention_event("flag", None, "open", msg, quote, "text",
+                                     by="other", link="previous", note="possible_subject")]
+                    if possible_subject else []),
+                **({"needs_review": True} if possible_subject else {}),
                 "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],

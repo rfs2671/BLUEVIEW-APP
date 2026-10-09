@@ -272,6 +272,36 @@ def verify_quote(quote: str, body: str) -> Optional[str]:
     return str(body)[start:end][:MAX_QUOTE_CHARS]
 
 
+# "B, can you…", "Mike: send the …": the ask opens with who it is for.
+_ADDRESSED = re.compile(
+    r"^\s*@?([A-Za-z][A-Za-z'.-]{0,30}(?:\s+[A-Za-z][A-Za-z'.-]{0,30}){0,2})\s*[,:]\s*\S")
+_NOT_NAMES = {"guys", "everyone", "everybody", "all", "hey", "hi", "hello", "ok", "okay",
+              "so", "yes", "no", "actually", "also", "thanks", "team", "well", "sorry",
+              "please", "pls", "fyi", "update", "reminder", "note", "question", "btw",
+              "sure", "yo", "and", "but", "or", "today", "tomorrow", "guys"}
+
+
+def addressed_name(body: Optional[str]) -> Optional[str]:
+    """The name an ask opens with ("B, …", "Mike, can you…", "Patricia Lee:
+    …"), lowercased, or None."""
+    m = _ADDRESSED.match(str(body or ""))
+    if not m:
+        return None
+    name = " ".join(m.group(1).strip(".'-").lower().split())
+    if not name or name.split(" ")[0] in _NOT_NAMES:
+        return None
+    return name
+
+
+def prompt_at_least(version: Optional[str], floor: str = "att-v1.2") -> bool:
+    """Was this item extracted under `floor` or later? Unknown: no."""
+    def parts(v):
+        m = re.match(r"^att-v(\d+)\.(\d+)", str(v or ""))
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    have, want = parts(version), parts(floor)
+    return bool(have and want and have >= want)
+
+
 def text_in_body(text: Optional[str], body: str) -> Optional[str]:
     """`text` if it appears in the body (same forgiveness as the quote)."""
     if not text:
@@ -301,6 +331,19 @@ def _local_date(ts: datetime) -> date:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(_ET).date() if _ET else ts.date()
+
+
+# "before 8am", "by 3pm", "till 11-12": a time of day and no day.
+_TIME_ONLY = re.compile(
+    r"^(?:(?:by|before|at|till|until|til|around|about)\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?$",
+    re.IGNORECASE)
+
+
+def time_only(due_text: Optional[str]) -> bool:
+    """A time of day with no day ("before 8am"): the day is the ask's, or
+    the item's own when it moves ("Actually give me till 11-12")."""
+    return bool(_TIME_ONLY.match(str(due_text or "").strip()))
 
 
 def parse_due(due_text: Optional[str], sent_at: datetime) -> Optional[date]:

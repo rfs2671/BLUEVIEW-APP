@@ -1,0 +1,256 @@
+{
+ "about": "Chase weekend test script (Fri 2026-10-09, 3:25-3:43 PM ET; 'tomorrow' = Saturday). R = Roy (GC, admin), P = Patricia (sub, a Levelog user). Pins: an ack or a bare date ('Np', 'Sunday. I'll keep u posted') right after an ask put to nobody is POSSIBLY hers, for the commitment as well as the ask, so neither is chased; a time-only due ('before 8am') takes the ask's day; a time-only reschedule ('Actually give me till 11-12') keeps the day; 'I' + 'Kk' is a yes. Expected chase: Saturday the sleeve shop drawings only; Sunday nothing; Monday nothing (the scaffold commitment's owner is only possibly hers). Real timing: 3:39 'Sunday. I'll keep u posted', 3:40 the reply 'Actually give me till 11-12', 3:40:50 the sleeve line, each under a minute after the one before: a reply or an update is never merged with its neighbours, so each keeps its own id and the reply decides what it updates.",
+ "base": "2026-10-09T19:25:00+00:00",
+ "speakers": {
+  "R": "Roy (GC)",
+  "P": "Patricia (sub)"
+ },
+ "users": {
+  "R": {
+   "name": "Roy Admin",
+   "role": "admin"
+  },
+  "P": {
+   "name": "Patricia Lee",
+   "role": "pm"
+  }
+ },
+ "final": {
+  "1": "done",
+  "2": "done",
+  "3": "open",
+  "4": "open",
+  "5": "open",
+  "6": "rescheduled",
+  "8": "open",
+  "11": "cancelled",
+  "12": "cancelled"
+ },
+ "chase": {
+  "chase_weekends": true,
+  "saturday": {
+   "date": "2026-10-10",
+   "items": [
+    8
+   ],
+   "slots": [
+    "morning",
+    "midday",
+    "eod",
+    "admin_dm"
+   ]
+  },
+  "sunday": {
+   "date": "2026-10-11",
+   "items": []
+  },
+  "monday": {
+   "date": "2026-10-12",
+   "items": []
+  }
+ },
+ "lines": [
+  {
+   "n": 1,
+   "from": "R",
+   "at": 0,
+   "mentions": [
+    "P"
+   ],
+   "body": "@Patricia can you send the door hardware submittal tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "n": 2,
+   "from": "P",
+   "at": 780,
+   "body": "Sure I'll get it before 8am",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "due_text": "before 8am",
+    "due_from": "parent_day",
+    "links": 1,
+    "owner_possibly": false
+   }
+  },
+  {
+   "n": 3,
+   "from": "R",
+   "at": 790,
+   "body": "can you confirm the dampers shipped tomorrow?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "tomorrow"
+   }
+  },
+  {
+   "n": 4,
+   "from": "P",
+   "at": 820,
+   "body": "Np",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "tomorrow",
+    "due_from": "parent",
+    "links": 3
+   }
+  },
+  {
+   "n": 5,
+   "from": "R",
+   "at": 840,
+   "body": "can you file the scaffold permit renewal by Saturday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "by Saturday"
+   }
+  },
+  {
+   "n": 6,
+   "from": "P",
+   "at": 880,
+   "body": "Sunday. I'll keep u posted",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": true,
+    "due_text": "Sunday",
+    "links": 5
+   }
+  },
+  {
+   "n": 7,
+   "from": "P",
+   "at": 905,
+   "reply_to": 2,
+   "body": "Actually give me till 11-12",
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "rescheduled",
+    "due_text": "till 11-12"
+   }
+  },
+  {
+   "n": 8,
+   "from": "P",
+   "at": 950,
+   "body": "I'll also send the sleeve shop drawings Saturday morning",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": false,
+    "due_text": "Saturday morning"
+   }
+  },
+  {
+   "n": 9,
+   "from": "R",
+   "at": 980,
+   "body": "Lol",
+   "expect": {
+    "kind": "none"
+   }
+  },
+  {
+   "n": 10,
+   "from": "P",
+   "at": 1020,
+   "reply_to": 6,
+   "body": "Actually Monday morning",
+   "expect": {
+    "kind": "state",
+    "of": 6,
+    "to": "rescheduled",
+    "due_text": "Monday"
+   }
+  },
+  {
+   "n": 11,
+   "from": "R",
+   "at": 1040,
+   "mentions": [
+    "P"
+   ],
+   "body": "@Patricia can you count the fire stopping inventory Saturday?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "P",
+    "due_text": "Saturday"
+   }
+  },
+  {
+   "n": 12,
+   "from": "P",
+   "at": 1060,
+   "body": "I",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "P",
+    "owner_possibly": false,
+    "due_text": "Saturday",
+    "due_from": "parent",
+    "links": 11
+   }
+  },
+  {
+   "n": 13,
+   "from": "P",
+   "at": 1065,
+   "body": "Kk",
+   "expect": {
+    "kind": "merged",
+    "into": 12
+   }
+  },
+  {
+   "n": 14,
+   "from": "R",
+   "at": 1080,
+   "body": "Never mind the fire stopping, already counted",
+   "expect": {
+    "kind": "state",
+    "of": 11,
+    "also": [
+     12
+    ],
+    "to": "cancelled"
+   }
+  },
+  {
+   "n": 15,
+   "from": "P",
+   "at": 1100,
+   "reply_to": 1,
+   "body": "Just sent, check ur email",
+   "expect": {
+    "kind": "state",
+    "of": 1,
+    "also": [
+     2
+    ],
+    "to": "done"
+   }
+  }
+ ]
+}
