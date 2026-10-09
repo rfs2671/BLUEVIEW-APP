@@ -21,6 +21,8 @@ import logging
 import os
 import sys
 import unittest
+
+from fastapi import HTTPException
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -321,6 +323,16 @@ def _call(db, method, path, *, user=None, json=None, sent=None, **kw):
         return user if user is not None else _user()
 
     server.app.dependency_overrides[server.get_current_user] = _fake_user
+
+    # The operator gate reads the token itself (tests/test_operator_gate.py
+    # covers it over HTTP); here it applies the same rule to the fake user.
+    async def _fake_gate():
+        u = await _fake_user()
+        if not server.is_platform_operator(u):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return u
+
+    server.app.dependency_overrides[server.require_operator_404] = _fake_gate
     try:
         with patch.object(server, "db", db), \
                 patch.object(server, "send_whatsapp_message",
@@ -813,16 +825,16 @@ class DebugEndpointsAreOperatorOnly(unittest.TestCase):
                   if getattr(r, "path", "").startswith("/api/whatsapp/debug/")}
         self.assertEqual(routes, {p.split("?")[0] for p in _DEBUG_GETS})
 
-    def test_a_company_admin_gets_403_everywhere(self):
+    def test_a_company_admin_gets_404_everywhere(self):
         db = _Db(projects=[PROJ_A])
         for path in _DEBUG_GETS:
             with self.subTest(path=path):
                 r = _call(db, "get", path, user=_user(CO_A, "admin"))
-                self.assertEqual(r.status_code, 403)
+                self.assertEqual(r.status_code, 404)
         r = _call(db, "post", "/api/debug/probe-waapi-endpoints",
                   user=_user(CO_A, "admin"),
                   json={"image_url": "https://x", "group_id": GROUP})
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.status_code, 404)
 
     def test_the_plan_image_debug_send_cannot_target_another_companys_group(self):
         """It posts a drawing into whatever group id it is handed. Even the
@@ -833,28 +845,37 @@ class DebugEndpointsAreOperatorOnly(unittest.TestCase):
                                        "sheet_number": "A-1"}])
         path = "/api/projects/proj_a/debug/test-plan-image-send"
         body = {"sheet_number": "A-1", "group_id": GROUP}
-        for user in (_user(CO_A, "admin"),
-                     _user(CO_A, "admin", is_platform_operator=True)):
+        # A company admin is refused at the operator gate (404); the operator
+        # gets through it and is refused by the group check (403).
+        for user, want in ((_user(CO_A, "admin"), 404),
+                           (_user(CO_A, "admin", is_platform_operator=True), 403)):
             with self.subTest(operator=user.get("is_platform_operator", False)):
                 sent = []
                 r = _call(db, "post", path, user=user, json=body, sent=sent)
-                self.assertEqual(r.status_code, 403)
+                self.assertEqual(r.status_code, want)
                 self.assertEqual(sent, [])
 
-    def test_an_operator_email_without_the_flag_gets_403(self):
+    def test_the_debug_routes_use_the_one_operator_rule(self):
+        """These used their own check (`is_platform_operator is True`, no
+        PLATFORM_OPERATOR_EMAILS bootstrap). They now carry the same
+        `require_operator_404` as every other operator route, so the
+        bootstrap email is the operator here too -- and an ordinary admin
+        email is not."""
         db = _Db(projects=[PROJ_A])
-        user = _user(CO_A, "admin", email="ops@levelog.com")
         with patch.object(server, "PLATFORM_OPERATOR_EMAILS",
                           frozenset({"ops@levelog.com"})):
             r = _call(db, "get", "/api/whatsapp/debug/recent-messages",
-                      user=user)
-        self.assertEqual(r.status_code, 403)
+                      user=_user(CO_A, "admin", email="ops@levelog.com"))
+            self.assertNotEqual(r.status_code, 404)
+            r = _call(db, "get", "/api/whatsapp/debug/recent-messages",
+                      user=_user(CO_A, "admin", email="someone@acme.test"))
+            self.assertEqual(r.status_code, 404)
 
     def test_the_flag_gets_through(self):
         db = _Db(projects=[PROJ_A])
         user = _user(CO_A, "admin", is_platform_operator=True)
         r = _call(db, "get", "/api/whatsapp/debug/recent-messages", user=user)
-        self.assertNotEqual(r.status_code, 403)
+        self.assertNotIn(r.status_code, (403, 404))
 
 
 # ══════════════════════════════════════════════════════════════════════════

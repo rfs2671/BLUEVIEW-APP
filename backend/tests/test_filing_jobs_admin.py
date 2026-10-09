@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+
+from fastapi import HTTPException
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -60,6 +62,16 @@ def _setup_client(*, role: str = "admin", operator: bool = False,
         return user
 
     server.app.dependency_overrides[server.get_current_user] = _fake_user
+
+    # The operator gate reads the token itself (tests/test_operator_gate.py
+    # covers it over HTTP); here it applies the same rule to the fake user.
+    async def _fake_gate():
+        u = await _fake_user()
+        if not server.is_platform_operator(u):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return u
+
+    server.app.dependency_overrides[server.require_operator_404] = _fake_gate
     return TestClient(server.app), lambda: server.app.dependency_overrides.clear()
 
 
@@ -104,7 +116,7 @@ class TestAdminListAuth(unittest.TestCase):
         client, restore = _setup_client(role="admin")
         try:
             resp = client.get("/api/admin/filing-jobs")
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
@@ -115,7 +127,7 @@ class TestAdminListAuth(unittest.TestCase):
         client, restore = _setup_client(role="owner")
         try:
             resp = client.get("/api/admin/filing-jobs")
-            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.status_code, 404)
         finally:
             restore()
 
