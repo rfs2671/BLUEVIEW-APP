@@ -528,6 +528,36 @@ class NamesAndDates(unittest.TestCase):
         self.assertTrue(req["owner"].get("possibly"))
         self.assertTrue(com["owner"].get("possibly"))
 
+    def test_a_full_name_and_an_answer_from_a_privacy_id(self):
+        # Pat PM is a user (phone on file) who posts in the group from an
+        # @lid id linked through her opt-in: the same person either way.
+        from tests.test_whatsapp_attention import LID_PM
+        lines = [
+            {"n": 1, "from": "R", "body": "Pat PM, can you file the scaffold permit renewal by Saturday?",
+             "expect": {"kind": "item", "type": "request", "due_text": "by Saturday"}},
+            {"n": 2, "from": "P", "body": "Sunday. I'll keep u posted",
+             "model": [{"type": "commitment", "quote": "Sunday. I'll keep u posted",
+                        "due_text": "Sunday"}],
+             "expect": {"kind": "item", "type": "commitment"}},
+            {"n": 3, "from": "P", "body": "Done, filed it",
+             "expect": {"kind": "state", "of": 2, "to": "done"}},
+        ]
+        db = _world()
+        _first_sight(db)
+        _msg(db, lines[0]["body"], sender=SENDERS["R"], at=T0 + timedelta(minutes=1))
+        for n in (1, 2):
+            _msg(db, lines[n]["body"], sender=LID_PM, jid=f"{LID_PM}@lid",
+                 at=T0 + timedelta(minutes=2 + n))
+        _tick(db, _ScriptedModel(lines), T0 + timedelta(minutes=10))
+        req = next(i for i in _items(db) if i["type"] == "request")
+        com = next(i for i in _items(db) if i["type"] == "commitment")
+        self.assertEqual((req["owner"]["kind"], req["owner"]["id"], req["owner"]["source"]),
+                         ("user", "u_pm", "named"))
+        self.assertFalse(com["owner"].get("possibly"))
+        self.assertFalse(com.get("needs_review"))
+        # Her "Done" from the privacy id is the owner's update.
+        self.assertEqual((com["status"], req["status"]), ("done", "done"))
+
     def test_a_mapped_person_by_name(self):
         from lib import wa_sender_map as sm
         lines = [
@@ -592,6 +622,8 @@ class TheRules(unittest.TestCase):
     def test_an_ask_opening_with_a_name(self):
         for body, want in (("B, can you send the riser dimensions?", "b"),
                            ("Mike, can you send the RFI", "mike"),
+                           ("Patricia Lee, can you send it?", "patricia lee"),
+                           ("Hey guys, who has the key?", None),
                            ("@Patricia: send it", "patricia"),
                            ("Guys, who has the key?", None), ("Hey, can you…", None),
                            ("can you send it", None), ("Mike can you send it", None)):

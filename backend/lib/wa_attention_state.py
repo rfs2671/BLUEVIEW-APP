@@ -238,6 +238,16 @@ ACK_PREVIOUS_SECONDS = 10 * 60
 _SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅"}
 
 
+def is_mine(c: Dict[str, Any], upd: Dict[str, Any]) -> bool:
+    """Is item `c` the sender's? By sender digits, or by who they resolve to
+    (a user or a person in People) -- one person can post from a phone id
+    and an @lid privacy id."""
+    if c.get("owner") and c.get("owner") == upd.get("sender"):
+        return True
+    ref = c.get("owner_ref")
+    return bool(ref and ref == upd.get("sender_ref"))
+
+
 def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[Dict[str, Any]]:
     """{ask, how, confident} for the open ask a short yes answers, or None.
     `upd`: sender, sender_name, reply_key, sent_at, and `recent` -- the
@@ -277,17 +287,17 @@ def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[Dict[str, Any
         if g is None or g < 0 or g > ACK_PREVIOUS_SECONDS:
             break
         c = by_key.get(m.get("key"))
-        if c and (not c.get("owner") or c.get("owner") == sender) \
+        if c and (not c.get("owner") or is_mine(c, upd)) \
                 and not c.get("owner_possibly"):
             if seen <= {sender, c.get("requester")}:
                 return {"ask": c, "how": "previous",
-                        "confident": c.get("owner") == sender}
+                        "confident": is_mine(c, upd)}
             break
         seen.add(str(m.get("sender") or ""))
 
     first = (upd.get("sender_name") or "").strip().split(" ")[0].lower()
     mine = [c for c in asks if 0 <= (age(c.get("sent_at")) or -1) <= ACK_WINDOW_SECONDS and (
-        (c.get("owner") == sender and not c.get("owner_possibly"))
+        (is_mine(c, upd) and not c.get("owner_possibly"))
         or (len(first) >= 2 and first in re.findall(r"[a-z]+", (c.get("owner_text") or "").lower())))]
     if len(mine) == 1:
         return {"ask": mine[0], "how": "named", "confident": True}
@@ -376,7 +386,7 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                                "possibly_cancelled"))
         return out
 
-    owned = [c for c in live if c.get("owner") == sender and not c.get("multi")
+    owned = [c for c in live if is_mine(c, upd) and not c.get("multi")
              and (c.get("type") == "commitment"
                   or (kind == "done" and c.get("type") == "request"))]
     got = _pick(owned, upd)
@@ -389,7 +399,7 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
             return [_review("reschedule", got["items"], got["link"], "owner", "which_item")]
         # Someone else moving another person's date: flagged, never applied.
         others = [c for c in live if c.get("type") == "commitment"
-                  and c.get("owner") and c.get("owner") != sender]
+                  and c.get("owner") and not is_mine(c, upd)]
         # Only by a reply to it or its own topic words: the message just
         # before is not enough to pin someone else's date change on it.
         theirs = _pick(others, {**upd, "terms": upd.get("own_terms") or set(),

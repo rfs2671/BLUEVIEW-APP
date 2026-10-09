@@ -273,7 +273,8 @@ def verify_quote(quote: str, body: str) -> Optional[str]:
 
 
 # "B, can you…", "Mike: send the …": the ask opens with who it is for.
-_ADDRESSED = re.compile(r"^\s*@?([A-Za-z][A-Za-z'.-]{0,30})\s*[,:]\s*\S")
+_ADDRESSED = re.compile(
+    r"^\s*@?([A-Za-z][A-Za-z'.-]{0,30}(?:\s+[A-Za-z][A-Za-z'.-]{0,30}){0,2})\s*[,:]\s*\S")
 _NOT_NAMES = {"guys", "everyone", "everybody", "all", "hey", "hi", "hello", "ok", "okay",
               "so", "yes", "no", "actually", "also", "thanks", "team", "well", "sorry",
               "please", "pls", "fyi", "update", "reminder", "note", "question", "btw",
@@ -281,13 +282,15 @@ _NOT_NAMES = {"guys", "everyone", "everybody", "all", "hey", "hi", "hello", "ok"
 
 
 def addressed_name(body: Optional[str]) -> Optional[str]:
-    """The name an ask opens with ("B, …", "Mike, can you…"), lowercased,
-    or None."""
+    """The name an ask opens with ("B, …", "Mike, can you…", "Patricia Lee:
+    …"), lowercased, or None."""
     m = _ADDRESSED.match(str(body or ""))
     if not m:
         return None
-    name = m.group(1).strip(".'-").lower()
-    return name if name and name not in _NOT_NAMES else None
+    name = " ".join(m.group(1).strip(".'-").lower().split())
+    if not name or name.split(" ")[0] in _NOT_NAMES:
+        return None
+    return name
 
 
 def prompt_at_least(version: Optional[str], floor: str = "att-v1.2") -> bool:

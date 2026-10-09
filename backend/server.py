@@ -46251,6 +46251,22 @@ def _attention_owner_digits(it: dict) -> str:
     return re.sub(r"\D", "", jid.split("@")[0]) if jid else ""
 
 
+def _attention_ref(person: Optional[dict]) -> Optional[str]:
+    """"user:<id>" / "sender_map:<id>" for a resolved person, else None."""
+    p = person or {}
+    if p.get("status") == "resolved" and p.get("kind") in ("user", "sender_map") and p.get("id"):
+        return f"{p['kind']}:{p['id']}"
+    return None
+
+
+async def _attention_sender_ref(msg: dict, ctx: dict) -> Optional[str]:
+    jid = wa_attention.sender_jid(msg)
+    if not jid:
+        return None
+    return _attention_ref(await _attention_resolve(
+        jid, ctx["company_id"], ctx["project_id"], ctx["cache"]))
+
+
 def _attention_candidate(it: dict) -> dict:
     ev = it.get("evidence") or {}
     return {
@@ -46268,6 +46284,7 @@ def _attention_candidate(it: dict) -> dict:
         "due": it.get("due") or {},
         "owner_text": (it.get("owner") or {}).get("owner_text") or "",
         "owner_possibly": bool((it.get("owner") or {}).get("possibly")),
+        "owner_ref": _attention_ref(it.get("owner")),
         "sent_at": ev.get("sent_at"),
         "summary": it.get("summary") or "",
     }
@@ -46393,6 +46410,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         if str(prev.get("sender") or "") != sender:
             terms |= wa_attention_state.topic_terms(prev.get("body"))
     upd = {"kind": cls["kind"], "sender": sender,
+           "sender_ref": await _attention_sender_ref(msg, ctx),
            "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
            "previous_key": prev_key, "terms": terms, "own_terms": own,
            "due_text": cls.get("due_text")}
@@ -46631,6 +46649,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             return False
         found = wa_attention_state.ack_target(
             {"sender": sender, "sender_name": msg.get("sender_name") or "",
+             "sender_ref": await _attention_sender_ref(msg, ctx),
              "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
              "sent_at": ack_sent,
              "recent": [{"key": wa_attention_state.short_id(r.get("message_id")),
@@ -46795,7 +46814,8 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         possible_subject = bool(
             it["type"] == "commitment" and link
             and not (link_confident and link is parent)
-            and link.get("owner") != sender
+            and not wa_attention_state.is_mine(
+                link, {"sender": sender, "sender_ref": _attention_ref(owner)})
             and not (wa_attention_state.topic_terms(quote) & set(link.get("topic") or ())))
         if possible_subject:
             owner["possibly"] = True
