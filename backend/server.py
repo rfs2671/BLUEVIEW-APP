@@ -74,6 +74,7 @@ from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
 from lib import wa_attention_state  # noqa: E402
+from lib import wa_chase  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -46961,6 +46962,183 @@ async def _whatsapp_attention_weekly_job() -> None:
         logger.error(f"[attention] weekly metrics failed: {type(e).__name__}: {e}")
 
 
+# ── SUB CHASING v1 (SHADOW MODE) ───────────────────────────────────────────
+#
+# Who would be nudged about what is due today, and in which words. Rules and
+# templates: lib/wa_chase.py. SENDS NOTHING: no group message, no @mention, no
+# DM. Each nudge it WOULD send is a row in `chase_shadow` that an admin marks
+# Correct / Wrong (Project → WhatsApp → Would chase). Kill switch:
+# WA_CHASE_DISABLED=1.
+
+CHASE_TICK_MINUTES = 5
+
+
+async def _chase_owner_spoke_at(group_id: str, item: dict,
+                                after: datetime) -> Optional[datetime]:
+    """The owner's latest message in the group after `after`, if any."""
+    ids = {wa_chase.digits((item.get("owner") or {}).get("jid"))}
+    if item.get("type") == "commitment":
+        ids.add(str((item.get("evidence") or {}).get("sender") or ""))
+    ids.discard("")
+    if not ids:
+        return None
+    try:
+        rows = await db.whatsapp_messages.find(
+            {"group_id": group_id, "sender": {"$in": sorted(ids)},
+             "created_at": {"$gt": after}}).sort([("created_at", -1)]).to_list(1)
+    except Exception:
+        return None
+    return _attention_sent_at(rows[0]) if rows else None
+
+
+async def _chase_admins(company_id: str) -> List[dict]:
+    try:
+        users = await db.users.find(
+            {"company_id": _company_id_filter(company_id),
+             "is_deleted": {"$ne": True}}, {"name": 1, "role": 1}).to_list(500)
+    except Exception:
+        return []
+    return [{"id": str(u.get("_id")), "name": u.get("name") or ""}
+            for u in users if is_company_admin(u)]
+
+
+async def _chase_tick(now: Optional[datetime] = None) -> dict:
+    """Every 5 minutes. Shadow mode: records what would be sent, sends
+    nothing."""
+    now = now or datetime.now(timezone.utc)
+    report = {"items": 0, "eligible": 0, "would_chase": 0, "admin_dm": 0,
+              "stopped": 0, "outside_hours": 0, "after_slot": 0,
+              "already": 0, "group_off": 0, "skipped": {}}
+    if wa_chase.disabled():
+        report["disabled"] = True
+        return report
+    slot = wa_chase.current_slot(now)
+    if slot is None:
+        return report
+    day = wa_chase.today(now)
+    slot_time = wa_chase.slot_at(day, slot)
+    try:
+        items = await db.attention_items.find(
+            {"type": {"$in": list(wa_chase.CHASE_TYPES)},
+             "status": {"$in": list(wa_chase.CHASE_STATUSES)},
+             "due.due_at": day.isoformat()}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[chase] items read failed: {type(e).__name__}")
+        return report
+    batches: Dict[tuple, dict] = {}
+    settings_cache: Dict[str, dict] = {}
+    group_ok: Dict[str, bool] = {}
+    for it in items:
+        report["items"] += 1
+        why = wa_chase.skip_reason(it, day)
+        if why:
+            report["skipped"][why] = report["skipped"].get(why, 0) + 1
+            continue
+        report["eligible"] += 1
+        pid, gid = str(it.get("project_id")), str(it.get("group_id"))
+        said = wa_chase.said_at(it)
+        if said and said >= slot_time:
+            report["after_slot"] += 1          # first chased at the next slot
+            continue
+        if gid not in group_ok:
+            # Only a group still linked to this live project, with its bot on.
+            g = await db.whatsapp_groups.find_one(
+                {"wa_group_id": gid, "project_id": pid, "active": True})
+            group_ok[gid] = bool(
+                g and _effective_bot_config(g.get("bot_config"))["bot_enabled"]
+                and await _bot_project_scope(str(it.get("company_id")), pid))
+        if not group_ok[gid]:
+            report["group_off"] += 1
+            continue
+        if pid not in settings_cache:
+            settings_cache[pid] = await _whatsapp_project_settings(pid)
+        if not wa_gc.in_send_window(now, settings_cache[pid].get("send_window")):
+            report["outside_hours"] += 1
+            continue
+        iid = str(it.get("_id"))
+        try:
+            nudges = await db[wa_chase.COLLECTION].find(
+                {"day": day.isoformat(), "item_ids": iid}).to_list(10)
+        except Exception:
+            continue
+        if any(n.get("slot") == slot for n in nudges):
+            report["already"] += 1
+            continue
+        group_nudges = [n for n in nudges if n.get("slot") in wa_chase.GROUP_SLOTS]
+        last = max((n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)),
+                   default=None)
+        spoke = await _chase_owner_spoke_at(gid, it, last) if last else None
+        stop = wa_chase.stop_reason(it, group_nudges, spoke)
+        if stop:
+            report["stopped"] += 1
+            continue
+        if slot == wa_chase.ADMIN and not any(
+                n.get("slot") == wa_chase.EOD for n in group_nudges):
+            continue                            # only after the end of day nudge
+        key = (pid, gid, wa_chase.owner_key(it))
+        b = batches.setdefault(key, {"items": [], "nudged": [], "last": None,
+                                     "company_id": str(it.get("company_id"))})
+        b["items"].append(it)
+        b["nudged"] += [n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)]
+        if last and (b["last"] is None or last > b["last"]):
+            b["last"] = last
+    for (pid, gid, okey), b in batches.items():
+        rid = wa_chase.row_id(day, gid, okey, slot)
+        try:
+            if await db[wa_chase.COLLECTION].find_one({"_id": rid}, {"_id": 1}):
+                report["already"] += 1          # one nudge per owner per group per slot
+                continue
+            first = b["items"][0]
+            owner = first.get("owner") or {}
+            g = await db.whatsapp_groups.find_one(
+                {"wa_group_id": gid, "project_id": pid}, {"group_name": 1}) or {}
+            row = {
+                "_id": rid, "day": day.isoformat(), "slot": slot, "at": now,
+                "slot_at": slot_time, "company_id": b["company_id"],
+                "project_id": pid, "group_id": gid,
+                "group_name": g.get("group_name") or "",
+                "owner_key": okey, "owner_name": owner.get("name") or "",
+                "owner_kind": owner.get("kind"),
+                # Server only: whom the @mention would tag.
+                "mention_jid": owner.get("jid"),
+                "item_ids": [str(i.get("_id")) for i in b["items"]],
+                "items": [{"id": str(i.get("_id")), "type": i.get("type"),
+                           "summary": i.get("summary") or "",
+                           "quote": wa_chase.quote(i),
+                           "due_text": (i.get("due") or {}).get("due_text"),
+                           "message_id": (i.get("evidence") or {}).get("message_id")}
+                          for i in b["items"]],
+                "reason": wa_chase.reason(slot, b["items"], b["last"], day),
+                "review": None, "created_at": now, "shadow": True,
+            }
+            if slot == wa_chase.ADMIN:
+                admins = await _chase_admins(b["company_id"])
+                row.update(kind="admin_dm",
+                           to=[a["name"] for a in admins],
+                           to_user_ids=[a["id"] for a in admins],
+                           text=wa_chase.admin_text(row["owner_name"], row["group_name"],
+                                                    b["items"], b["nudged"]))
+                report["admin_dm"] += 1
+            else:
+                row.update(kind="group",
+                           reply_to=(first.get("evidence") or {}).get("message_id"),
+                           text=wa_chase.group_text(row["owner_name"], b["items"], slot))
+                report["would_chase"] += 1
+            await db[wa_chase.COLLECTION].update_one(
+                {"_id": rid}, {"$setOnInsert": row}, upsert=True)
+        except Exception as e:
+            logger.warning(f"[chase] row write failed: {type(e).__name__}")
+    logger.info(f"[chase] shadow {slot} {report}")
+    return report
+
+
+async def _whatsapp_chase_job() -> None:
+    try:
+        await _chase_tick()
+    except Exception as e:
+        logger.error(f"[chase] tick failed: {type(e).__name__}: {e}")
+
+
 async def _waapi_contact_phone(jid: str) -> str:
     """Ask WaAPI who a @lid is. NOT VERIFIED: WaAPI's docs are not reachable
     from here, so this tries the whatsapp-web.js contact action by name, logs
@@ -60178,6 +60356,63 @@ async def review_project_attention_event(project_id: str, item_id: str, event_id
     return _attention_item_view(it, {it.get("group_id"): (g or {}).get("group_name")})
 
 
+def _chase_view(r: dict) -> dict:
+    """A would-chase row for the screen. No phone, no jid."""
+    at = r.get("at")
+    return {
+        "id": r.get("_id"), "kind": r.get("kind"), "slot": r.get("slot"),
+        "day": r.get("day"),
+        "at": at.isoformat() if isinstance(at, datetime) else None,
+        "group_name": r.get("group_name") or "",
+        "owner": r.get("owner_name") or "",
+        "to": r.get("to") or [],
+        "items": [{"id": i.get("id"), "type": i.get("type"), "quote": i.get("quote"),
+                   "due_text": i.get("due_text"), "summary": i.get("summary")}
+                  for i in r.get("items") or []],
+        "text": r.get("text") or "",
+        "reason": r.get("reason") or "",
+        "verdict": (r.get("review") or {}).get("verdict"),
+    }
+
+
+@api_router.get("/projects/{project_id}/whatsapp/chase",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_chase(project_id: str, current_user=Depends(get_current_user)):
+    """Admin only, shadow mode: the nudges sub chasing WOULD have sent for
+    this project (nothing was sent), newest first, with precision from the
+    Correct / Wrong given so far."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    q = {"project_id": str(project_id), "company_id": str(company_id)}
+    rows = await db[wa_chase.COLLECTION].find(q).sort([("at", -1)]).to_list(200)
+    stats = await db[wa_chase.COLLECTION].find(
+        q, {"slot": 1, "review.verdict": 1}).to_list(10000)
+    return {"entries": [_chase_view(r) for r in rows],
+            "precision": wa_chase.precision(stats), "total": len(stats),
+            "shadow_mode": True, "disabled": wa_chase.disabled()}
+
+
+@api_router.post("/projects/{project_id}/whatsapp/chase/{entry_id}/review",
+                  dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def review_project_chase(project_id: str, entry_id: str, body: dict,
+                               current_user=Depends(get_current_user)):
+    """Admin only: Correct / Wrong on one would-chase entry. A later verdict
+    replaces an earlier one."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    verdict = (body or {}).get("verdict") if isinstance(body, dict) else None
+    if verdict not in wa_chase.VERDICTS:
+        raise HTTPException(status_code=422, detail="verdict: correct or wrong")
+    now = datetime.now(timezone.utc)
+    r = await db[wa_chase.COLLECTION].find_one_and_update(
+        {"_id": str(entry_id), "project_id": str(project_id),
+         "company_id": str(company_id)},
+        {"$set": {"review": {"verdict": verdict, "by": actor_id(current_user),
+                             "at": now}}},
+        return_document=_canary_return_after())
+    if not r:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return _chase_view(r)
+
+
 # ── WHATSAPP SENDER MAP: Project → WhatsApp → People ───────────────────────
 #
 # Group senders mostly arrive as @lid privacy ids that match no phone on file,
@@ -63867,6 +64102,9 @@ async def startup_event():
     await db.attention_metrics.create_index([("week", 1)])
     # DM assistant answer log (audit: what each answer was built from).
     await db.whatsapp_dm_answers.create_index([("user_id", 1), ("created_at", -1)])
+    # Sub chasing (shadow): a day's nudges per item; a project's list.
+    await db.chase_shadow.create_index([("day", 1), ("item_ids", 1)])
+    await db.chase_shadow.create_index([("project_id", 1), ("company_id", 1), ("at", -1)])
     # The daily [dm-answer] count (answers, fallbacks) reads by day.
     await db.whatsapp_dm_answers.create_index([("created_at", -1), ("fallback", 1)])
     # DOT records matched to projects (lib/dot_sync.py): one row per record
@@ -65208,6 +65446,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
+    )
+    # Sub chasing v1, SHADOW: records the nudges it would send (8:30, 12:30,
+    # 4:30, then an admin DM at 5:30, New York); sends nothing.
+    scheduler.add_job(
+        _whatsapp_chase_job,
+        IntervalTrigger(minutes=CHASE_TICK_MINUTES),
+        id='whatsapp_chase_shadow',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
     )
     # Morning brief: each opted-in Admin/PM at the time they picked (7/8/9 AM
     # New York, Mon–Fri, Saturday optional). Every 10 minutes; the ledger
