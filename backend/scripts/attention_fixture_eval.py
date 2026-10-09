@@ -104,7 +104,11 @@ def _soft(want, got) -> bool:
 
 
 def main(path: str) -> int:
-    lines = json.loads(Path(path).read_text())["lines"]
+    # UTF-8 everywhere: the fixtures hold emoji ("👍"), and Windows reads
+    # files and writes the console as cp1252 by default.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    lines = json.loads(Path(path).read_text(encoding="utf-8"))["lines"]
     rows, hard, soft, judged = [], 0, 0, 0
     for i, ln in enumerate(lines):
         e = ln["expect"]
