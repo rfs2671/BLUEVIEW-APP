@@ -1,39 +1,208 @@
 {
-  "about": "Attention pass 2 (two senders, Oct 2026). G = GC, P = Patricia (sub). The quoted lines are as reported; the asks around them (lines 1, 3, 5) are reconstructed from the report. Pass-2 bugs: (1) Patricia's reply to the sleeve-layout ask came out as 'Fire caulk will be ordered on Friday' -- the replied-to message must define the topic; (2) 'I'll take care of it. Ordering it today' after 'Who's ordering the fire caulk?' was missed; (3) 'Question · High' with no urgency stated; (4) 'Np' + 'Tomorrow' a few seconds apart are one commitment; (5) lag.",
-  "speakers": {"G": "GC", "P": "Patricia (sub)"},
+  "about": "Attention pass 2 (Oct 2026), the real exchange. R = Roy (GC), P = Patricia (sub). Lines a minute apart except 'Np' / 'Tomorrow' (20 s). Line 12 is a reaction: stored, if at all, as an emoji-only message. Pass-2 bugs this pins: the reply to the sleeve ask came out as 'Fire caulk will be ordered on Friday' (the replied-to message must define the topic); 'I'll take care of it. Ordering it today' was missed; 'Question · High' with no urgency stated; 'Np' + 'Tomorrow' split; lag. Short acks (lines 2, 8-9, 12) are read by code, not the model: a yes to the ask put to that sender is a commitment to it; a yes to nobody is nothing. Line 7 named nobody, so 'Np / Tomorrow' right after it makes Patricia its POSSIBLE owner (flagged for review), not a confirmed one.",
+  "speakers": {
+    "R": "Roy (GC)",
+    "P": "Patricia (sub)"
+  },
   "lines": [
-    {"n": 1, "from": "G", "at": 0, "serialized_id": true,
-     "body": "Patricia can you send the sleeve layout by Wednesday?",
-     "expect": {"kind": "item", "type": "request", "owner_text": "Patricia", "due_text": "by Wednesday"}},
-    {"n": 2, "from": "P", "at": 60, "reply_to": 1,
-     "body": "Wednesday is not happening. Gonna take care of it Friday",
-     "expect": {"kind": "item", "type": "commitment", "owner": "P", "due_text": "Friday", "links": 1,
-                "topic_has": ["sleeve", "layout"]},
-     "model_if": {"prompt_has": ["The message being replied to (this is the topic)", "sleeve layout"],
-                  "then": [{"type": "commitment", "quote": "Gonna take care of it Friday",
-                            "summary": "Sleeve layout by Friday", "due_text": "Friday"}],
-                  "else": [{"type": "commitment", "quote": "Gonna take care of it Friday",
-                            "summary": "Fire caulk will be ordered on Friday", "due_text": "Friday"}]}},
-    {"n": 3, "from": "G", "at": 120, "body": "Who's ordering the fire caulk?",
-     "expect": {"kind": "item", "type": "question", "importance": "normal"},
-     "model": [{"type": "question", "quote": "Who's ordering the fire caulk?", "importance": "high"}]},
-    {"n": 4, "from": "P", "at": 180, "body": "I'll take care of it. Ordering it today",
-     "expect": {"kind": "item", "type": "commitment", "owner": "P", "due_text": "today", "links": 3,
-                "topic_has": ["fire", "caulk"]},
-     "model_if": {"prompt_has": ["The open question or request this may answer", "fire caulk"],
-                  "then": [{"type": "commitment", "quote": "I'll take care of it. Ordering it today",
-                            "summary": "Order the fire caulk today", "due_text": "today"}],
-                  "else": []}},
-    {"n": 5, "from": "G", "at": 240, "body": "Patricia can you send the damper submittal?",
-     "expect": {"kind": "item", "type": "request", "owner_text": "Patricia"}},
-    {"n": 6, "from": "P", "at": 300, "body": "Np",
-     "expect": {"kind": "item", "type": "commitment", "owner": "P", "due_text": "Tomorrow", "links": 5,
-                "quote": "Np\nTomorrow"},
-     "model_match": "Np\nTomorrow",
-     "model": [{"type": "commitment", "quote": "Np Tomorrow", "summary": "Damper submittal tomorrow",
-                "due_text": "Tomorrow"}]},
-    {"n": 7, "from": "P", "at": 320, "body": "Tomorrow",
-     "expect": {"kind": "merged", "into": 6}}
+    {
+      "n": 1,
+      "from": "R",
+      "at": 0,
+      "serialized_id": true,
+      "mentions": [
+        "P"
+      ],
+      "body": "@Patricia can you send the sleeve layout for 4th floor by Wednesday?",
+      "expect": {
+        "kind": "item",
+        "type": "request",
+        "owner": "P",
+        "due_text": "by Wednesday"
+      }
+    },
+    {
+      "n": 2,
+      "from": "P",
+      "at": 60,
+      "reply_to": 1,
+      "body": "Sure you got it",
+      "expect": {
+        "kind": "item",
+        "type": "commitment",
+        "owner": "P",
+        "due_text": "by Wednesday",
+        "due_from": "parent",
+        "links": 1,
+        "topic_has": [
+          "sleeve",
+          "layout"
+        ],
+        "quote": "Sure you got it"
+      }
+    },
+    {
+      "n": 3,
+      "from": "R",
+      "at": 120,
+      "body": "Who's ordering the fire caulk?",
+      "expect": {
+        "kind": "item",
+        "type": "question",
+        "importance": "normal"
+      },
+      "model": [
+        {
+          "type": "question",
+          "quote": "Who's ordering the fire caulk?",
+          "importance": "high"
+        }
+      ]
+    },
+    {
+      "n": 4,
+      "from": "P",
+      "at": 180,
+      "body": "I'll take care of it. Ordering it today",
+      "expect": {
+        "kind": "item",
+        "type": "commitment",
+        "owner": "P",
+        "due_text": "today",
+        "links": 3,
+        "topic_has": [
+          "fire",
+          "caulk"
+        ]
+      },
+      "model_if": {
+        "prompt_has": [
+          "The open question or request this may answer",
+          "fire caulk"
+        ],
+        "then": [
+          {
+            "type": "commitment",
+            "quote": "I'll take care of it. Ordering it today",
+            "summary": "Order the fire caulk today",
+            "due_text": "today"
+          }
+        ],
+        "else": []
+      }
+    },
+    {
+      "n": 5,
+      "from": "R",
+      "at": 240,
+      "body": "Lol... Sure",
+      "expect": {
+        "kind": "none"
+      }
+    },
+    {
+      "n": 6,
+      "from": "P",
+      "at": 300,
+      "reply_to": 1,
+      "body": "Wednesday is not happening. Gonna take care of it Friday",
+      "expect": {
+        "kind": "state",
+        "of": 2,
+        "to": "rescheduled",
+        "due_text": "Friday"
+      },
+      "model": [
+        {
+          "type": "commitment",
+          "quote": "Gonna take care of it Friday",
+          "summary": "Sleeve layout by Friday",
+          "due_text": "Friday"
+        }
+      ]
+    },
+    {
+      "n": 7,
+      "from": "R",
+      "at": 360,
+      "body": "Can you confirm the water meter location with the engineer?",
+      "expect": {
+        "kind": "item",
+        "type": "request",
+        "owner": "P",
+        "owner_possibly": true
+      }
+    },
+    {
+      "n": 8,
+      "from": "P",
+      "at": 420,
+      "body": "Np",
+      "expect": {
+        "kind": "item",
+        "type": "commitment",
+        "owner": "P",
+        "due_text": "Tomorrow",
+        "links": 7,
+        "quote": "Np\nTomorrow"
+      },
+      "model_match": "Np\nTomorrow"
+    },
+    {
+      "n": 9,
+      "from": "P",
+      "at": 440,
+      "body": "Tomorrow",
+      "expect": {
+        "kind": "merged",
+        "into": 8
+      }
+    },
+    {
+      "n": 10,
+      "from": "R",
+      "at": 500,
+      "body": "Forget the meter, DEP already approved it",
+      "expect": {
+        "kind": "state",
+        "of": 7,
+        "to": "cancelled",
+        "also": [
+          8
+        ]
+      }
+    },
+    {
+      "n": 11,
+      "from": "P",
+      "at": 560,
+      "body": "Just sent sleeves layout",
+      "expect": {
+        "kind": "state",
+        "of": 2,
+        "to": "done",
+        "also": [
+          1
+        ]
+      }
+    },
+    {
+      "n": 12,
+      "from": "R",
+      "at": 620,
+      "body": "👍",
+      "reaction": true,
+      "expect": {
+        "kind": "none"
+      }
+    }
   ],
-  "final": {"1": "open", "2": "open", "3": "possibly_resolved", "4": "open", "5": "open", "6": "open"}
+  "final": {
+    "1": "done",
+    "2": "done",
+    "3": "possibly_resolved",
+    "4": "open",
+    "7": "cancelled",
+    "8": "cancelled"
+  }
 }

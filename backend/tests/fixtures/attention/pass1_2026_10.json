@@ -114,7 +114,9 @@
         "kind": "item",
         "type": "commitment",
         "owner": "C",
-        "links": 9
+        "links": 9,
+        "due_text": "by Friday EOD",
+        "due_from": "parent"
       }
     },
     {

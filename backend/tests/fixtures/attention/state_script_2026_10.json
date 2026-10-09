@@ -22,7 +22,8 @@
     {"n": 9, "from": "D", "body": "C, need the load calcs by Friday EOD, hard deadline",
      "expect": {"kind": "item", "type": "request", "due_text": "by Friday EOD"}},
     {"n": 10, "from": "C", "body": "Will do", "reply_to": 9,
-     "expect": {"kind": "item", "type": "commitment", "owner": "C", "links": 9}},
+     "expect": {"kind": "item", "type": "commitment", "owner": "C", "links": 9,
+                "due_text": "by Friday EOD", "due_from": "parent"}},
     {"n": 11, "from": "A", "body": "Does anyone have the updated drawings?",
      "expect": {"kind": "item", "type": "question"}},
     {"n": 12, "from": "B", "body": "I have them, sending now",
@@ -92,6 +93,19 @@
        {"n": 3, "from": "A", "body": "Actually Monday", "reply_to": 2,
         "expect": {"kind": "flag", "of": 2, "note": "not_owner"}}
      ],
-     "final": {"1": "open", "2": "open"}}
+     "final": {"1": "open", "2": "open"}},
+    {"name": "three people: an ok to another thread, then np tmrw -- no confident owner",
+     "lines": [
+       {"n": 1, "from": "A", "at": 0, "body": "Hoist is down until noon",
+        "expect": {"kind": "none"}},
+       {"n": 2, "from": "A", "at": 60, "body": "Can someone confirm the water meter location with the engineer?",
+        "expect": {"kind": "item", "type": "request"}},
+       {"n": 3, "from": "B", "at": 120, "body": "ok", "reply_to": 1,
+        "expect": {"kind": "none", "why": "a yes to the hoist news, not to the ask"}},
+       {"n": 4, "from": "C", "at": 180, "body": "np tmrw",
+        "expect": {"kind": "none", "why": "someone else wrote in between: whose yes is it?"}}
+     ],
+     "final": {"2": "open"},
+     "owner_none": [2]}
   ]
 }

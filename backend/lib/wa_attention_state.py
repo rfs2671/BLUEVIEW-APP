@@ -62,6 +62,12 @@ _CANCEL = re.compile(
     r"\b(never ?mind|nvm|cancel(l?ed)?|scratch that|no longer need\w*"
     r"|don'?t need|not needed|hold off|scope (has )?changed|changed (the )?scope)\b",
     re.IGNORECASE)
+# "Forget the meter, DEP already approved it": "forget" as the instruction
+# that opens a sentence -- not "I always forget the meter", not "don't
+# (ever) forget the meter".
+_FORGET = re.compile(
+    r"(?:^|[.!?;,]\s*)(?:(?:ok(?:ay)?|actually|nah|so|oh)[,.]?\s+)?"
+    r"forget (it|that|this|about|the)\b", re.IGNORECASE)
 _RESCHEDULE = re.compile(
     r"\b(actually|instead|moved?|moving|pushed|push(ing)? it|not happening"
     r"|change[sd]? to|rather)\b", re.IGNORECASE)
@@ -152,7 +158,7 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         return {"kind": "done", "file": True} if has_file else None
     if "?" in text:
         return None
-    if _CANCEL.search(text):
+    if _CANCEL.search(text) or _FORGET.search(text):
         return {"kind": "cancel"}
     if _RESCHEDULE.search(text):
         due = due_phrase(text)
@@ -162,6 +168,108 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         return {"kind": "done", "file": bool(has_file)}
     if has_file and len(text) <= 60 and not _FUTURE.search(text):
         return {"kind": "done", "file": True}
+    return None
+
+
+# ── SHORT ACKS ───────────────────────────────────────────────────────────────
+#
+# "Np", "ok", "will do", "Np / Tomorrow", "👍 tmrw": a yes to an ask, with a
+# date or not ("lol ok", "sure 😂" are not). Too short for the model to read on its own (pass 1 and 2 lost
+# them), so the code reads them: a yes from the person the ask was put to is
+# a commitment to THAT ask; a yes with no ask put to them is nothing.
+
+ACK_WINDOW_SECONDS = 30 * 60
+_ACK_STRONG = {"np", "ok", "okay", "k", "kk", "sure", "yep", "yup", "yes", "yeah",
+               "copy", "roger", "will", "got", "on", "👍", "👌", "🫡", "✅", "💪"}
+_ACK_WORDS = _ACK_STRONG | {"no", "problem", "prob", "do", "thing", "you", "it", "that",
+                            "thanks", "thx", "ty", "boss", "bro", "man", "🙏", "will"}
+
+
+def ack(body: str) -> Optional[Dict[str, Any]]:
+    """{due_text} when the whole message is a short yes (with or without a
+    date the code can read), else None."""
+    text = (body or "").strip()
+    if not text or "?" in text or len(text) > 40:
+        return None
+    due = due_phrase(text)
+    rest = text
+    if due:
+        i = rest.lower().rfind(due.lower())
+        rest = rest[:i] + rest[i + len(due):]
+    rest = re.sub(r"[,.!;:\-]+", " ", rest.lower().translate(wa._TYPO))
+    # Emoji glued to words ("👍tmrw") stand on their own.
+    rest = re.sub(r"([^\w\s'])", r" \1 ", rest)
+    words = [w for w in rest.split() if w not in ("\ufe0f",)]
+    if not words or len(words) > 5:
+        return None
+    if any(w in _SARCASM for w in words):
+        return None     # "lol ok", "sure 😂": not a yes
+    if not all(w in _ACK_WORDS for w in words):
+        return None
+    if not any(w in _ACK_STRONG for w in words):
+        return None
+    if words == ["will"]:
+        return None
+    return {"due_text": due}
+
+
+ACK_PREVIOUS_SECONDS = 10 * 60
+_SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅"}
+
+
+def ack_target(upd: Dict[str, Any], items: List[dict]) -> Optional[Dict[str, Any]]:
+    """{ask, how, confident} for the open ask a short yes answers, or None.
+    `upd`: sender, sender_name, reply_key, sent_at, and `recent` -- the
+    messages before the yes, oldest first, each {key, sender, sent_at}.
+
+      1. reply    it replies to the ask                         confident
+      2. previous an ask put to nobody, under 10 minutes old,    POSSIBLY
+                  with no one else (but who asked and who says
+                  yes) writing in between
+      3. named    the one ask put to this sender by @mention or  confident
+                  by name in the last 30 minutes
+
+    A reply to something else, two named asks, or a third person in
+    between: None -- never a guess."""
+    sender = upd.get("sender") or ""
+    sent_at = upd.get("sent_at")
+    asks = [c for c in items if c.get("type") in ("request", "question")
+            and c.get("status") in LIVE and c.get("requester") != sender
+            and not c.get("multi")]
+
+    def age(at):
+        if not (isinstance(at, datetime) and isinstance(sent_at, datetime)):
+            return None
+        a = at.replace(tzinfo=None) if at.tzinfo else at
+        b = sent_at.replace(tzinfo=None) if sent_at.tzinfo else sent_at
+        return (b - a).total_seconds()
+
+    rk = upd.get("reply_key")
+    if rk:
+        hit = [c for c in asks if c.get("key") == rk]
+        return {"ask": hit[0], "how": "reply", "confident": True} if hit else None
+
+    by_key = {c.get("key"): c for c in asks if c.get("key")}
+    seen = set()
+    for m in reversed(upd.get("recent") or []):
+        g = age(m.get("sent_at"))
+        if g is None or g < 0 or g > ACK_PREVIOUS_SECONDS:
+            break
+        c = by_key.get(m.get("key"))
+        if c and (not c.get("owner") or c.get("owner") == sender) \
+                and not c.get("owner_possibly"):
+            if seen <= {sender, c.get("requester")}:
+                return {"ask": c, "how": "previous",
+                        "confident": c.get("owner") == sender}
+            break
+        seen.add(str(m.get("sender") or ""))
+
+    first = (upd.get("sender_name") or "").strip().split(" ")[0].lower()
+    mine = [c for c in asks if 0 <= (age(c.get("sent_at")) or -1) <= ACK_WINDOW_SECONDS and (
+        (c.get("owner") == sender and not c.get("owner_possibly"))
+        or (len(first) >= 2 and first in re.findall(r"[a-z]+", (c.get("owner_text") or "").lower())))]
+    if len(mine) == 1:
+        return {"ask": mine[0], "how": "named", "confident": True}
     return None
 
 
@@ -176,8 +284,26 @@ def is_multi_owner(owner_text: Optional[str], mentions: Iterable[str] = ()) -> b
 #   requester (sender digits), key (short id of its message), parent_key,
 #   parent_id, topic (set), multi (bool)
 
+def _one_thread(hit: List[dict]) -> List[dict]:
+    """An ask and the commitment answering it are one thing to finish:
+    "Just sent sleeves layout" matches both, and is about the commitment
+    (done on it closes the ask too). Keep the answer, drop its ask."""
+    ids = {c["id"] for c in hit}
+    return [c for c in hit if not any(o.get("parent_id") == c["id"] and o["id"] in ids
+                                      for o in hit)]
+
+
 def _pick(cands: List[dict], upd: dict) -> Dict[str, Any]:
     """{items, link} by reply, previous message, topic, only-open."""
+    got = _pick_raw(cands, upd)
+    items = _one_thread(got["items"])
+    if got["link"] == "ambiguous" and len(items) == 1:
+        # An ask and its own answer were all there was: one thing open.
+        return {"items": items, "link": "only_open"}
+    return {**got, "items": items}
+
+
+def _pick_raw(cands: List[dict], upd: dict) -> Dict[str, Any]:
     rk, pk = upd.get("reply_key"), upd.get("previous_key")
     if rk:
         hit = [c for c in cands if rk in (c.get("key"), c.get("parent_key"))]
@@ -363,6 +489,7 @@ def merge(burst: List[dict]) -> dict:
         j for r in burst for j in (r.get("mentioned_jids") or [])))
     msg["merged_ids"] = [str(r.get("message_id") or r.get("_id")) for r in burst]
     msg["created_at"] = last.get("created_at")
+    msg["first_created_at"] = first.get("created_at")   # what came before it
     return msg
 
 
