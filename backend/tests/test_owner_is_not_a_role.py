@@ -50,6 +50,7 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
@@ -255,25 +256,24 @@ class TheOperatorIsNotLockedOutOfHisOwnProduct(unittest.TestCase):
                     current_user={"id": "u3", "role": "cp"}))
                 self.assertEqual(exc.status_code, 403)
 
-    def test_the_platform_operator_gate_is_the_flag_and_not_the_role(self):
-        got = _run(server.get_platform_operator_user(current_user=_operator()))
-        self.assertEqual(got["id"], "op1")
-        self.assertEqual(
-            _refused(server.get_platform_operator_user(
-                current_user=_customer_owner())).status_code, 403)
-        self.assertEqual(
-            _refused(server.get_platform_operator_user(
-                current_user=_admin())).status_code, 403)
+    async def _gate(self, user):
+        async def fake(**kw):
+            return user
+        with patch.object(server, "get_current_user", fake):
+            return await server.require_operator_404(request=None, credentials=None)
 
-    def test_that_gate_does_not_inherit_the_shadow(self):
-        """`require_platform_operator` LOGS AND ALLOWS while
-        PLATFORM_GATES_ENFORCED is unset. A hard gate written on it would pass
-        its own tests and protect nothing, which is why there are two."""
-        self.assertFalse(server.PLATFORM_GATES_ENFORCED)
-        self.assertIsNotNone(
-            _run(server.require_platform_operator(current_user=_admin())),
-            "premise: the shadowed dependency really does let a non-operator "
-            "through, so the strict gate cannot be built on it")
+    def test_the_platform_operator_gate_is_the_flag_and_not_the_role(self):
+        got = _run(self._gate(_operator()))
+        self.assertEqual(got["id"], "op1")
+        self.assertEqual(_refused(self._gate(_customer_owner())).status_code, 404)
+        self.assertEqual(_refused(self._gate(_admin())).status_code, 404)
+
+    def test_there_is_no_shadow_gate_to_inherit(self):
+        """`require_platform_operator` logged and allowed while
+        PLATFORM_GATES_ENFORCED was unset. Both are gone: the one gate is
+        always enforced."""
+        self.assertFalse(hasattr(server, "require_platform_operator"))
+        self.assertFalse(hasattr(server, "PLATFORM_GATES_ENFORCED"))
 
     def test_the_negative_fixture_omits_the_key_rather_than_setting_it_false(self):
         """THE SHAPE PRODUCTION ACTUALLY HAS, asserted so it stays that way.
@@ -310,7 +310,6 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
     # → is_platform_operator. Cross-tenant, or the operator configuring DOB
     #   authorization on a client's behalf.
     PLATFORM = (
-        "get_platform_operator_user",
         "link_gc_license_to_company",
         "list_filing_reps", "add_filing_rep", "update_filing_rep",
         "delete_filing_rep",
@@ -332,11 +331,10 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
         "_get_checklist_candidates", "_process_whatsapp_message",
     )
 
-    # → platform operator, by the DB FLAG ONLY (2026-10-07). These were in
-    #   ADMIN, but they read across every tenant (recent messages, raw
-    #   webhook payloads), and `is_company_admin` is a rank test every
-    #   customer's admin passes. They ask `_require_operator_flag`, which
-    #   reads `is_platform_operator is True` and no role string at all.
+    # → platform operator (2026-10-07). These were in ADMIN, but they read
+    #   across every tenant (recent messages, raw webhook payloads), and
+    #   `is_company_admin` is a rank test every customer's admin passes. Like
+    #   PLATFORM, the route carries `require_operator_404`.
     OPERATOR_FLAG = (
         "whatsapp_debug_audio_probe", "whatsapp_debug_audio_diag",
         "whatsapp_debug_bot_ids", "whatsapp_debug_page_index",
@@ -366,7 +364,7 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
         but a name that silently matched a PREFIX of another function would
         not, so the census is pinned to its own size."""
         self.assertEqual(
-            len(self.PLATFORM) + len(self.ADMIN) + len(self.OPERATOR_FLAG), 30)
+            len(self.PLATFORM) + len(self.ADMIN) + len(self.OPERATOR_FLAG), 29)
         for name in self.PLATFORM + self.ADMIN + self.OPERATOR_FLAG:
             with self.subTest(fn=name):
                 self.assertTrue(self._body(name).strip())
@@ -376,17 +374,23 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
             with self.subTest(fn=name):
                 self.assertNotIn('"owner"', self._body(name))
 
-    def test_the_platform_ones_ask_the_operator_question(self):
-        for name in self.PLATFORM:
-            with self.subTest(fn=name):
-                self.assertIn("is_platform_operator(", self._body(name))
+    def _route_gated(self, name):
+        def walk(d):
+            return any(x.call is server.require_operator_404 or walk(x)
+                       for x in d.dependencies)
+        routes = [r for r in server.app.routes
+                  if getattr(r, "endpoint", None) is not None
+                  and r.endpoint.__name__ == name]
+        self.assertTrue(routes, f"{name} is not a registered route")
+        return all(walk(r.dependant) for r in routes)
 
-    def test_the_debug_ones_ask_only_the_operator_flag(self):
-        for name in self.OPERATOR_FLAG:
+    def test_the_platform_ones_carry_the_operator_gate(self):
+        """The gate is the route's dependency, not an inline check: a route
+        that dropped it would be caught here and in test_operator_gate.py."""
+        for name in self.PLATFORM + self.OPERATOR_FLAG:
             with self.subTest(fn=name):
-                body = self._body(name)
-                self.assertIn("_require_operator_flag(current_user)", body)
-                self.assertNotIn("is_company_admin(", body)
+                self.assertTrue(self._route_gated(name))
+                self.assertNotIn("is_company_admin(", self._body(name))
 
     def test_the_admin_ones_ask_the_company_admin_question(self):
         for name in self.ADMIN:

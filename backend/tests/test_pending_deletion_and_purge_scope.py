@@ -206,18 +206,15 @@ class Base(unittest.TestCase):
         return c.exception
 
 
-class TheShadowFlagIsOffForEveryTestHere(unittest.TestCase):
-    """The premise. If this ever fails, every other assertion in this file is
-    measuring a gate that was already closed by the flag."""
+class TheShadowGateIsGone(unittest.TestCase):
+    """The shadowed `require_platform_operator` (log and allow unless
+    PLATFORM_GATES_ENFORCED) no longer exists. Both routes here carry
+    `require_operator_404`, which is always enforced -- see
+    test_operator_gate.py. The in-body checks below are the second line."""
 
-    def test_platform_gates_are_NOT_enforced(self):
-        self.assertFalse(server.PLATFORM_GATES_ENFORCED)
-
-    def test_and_the_dependency_therefore_lets_a_customer_owner_through(self):
-        """Proves the shadow is real, and why the fix cannot be built on it."""
-        got = asyncio.new_event_loop().run_until_complete(
-            server.require_platform_operator(current_user=_owner("coA")))
-        self.assertIsNotNone(got, "shadow mode returns the non-operator")
+    def test_no_shadow_gate_or_flag(self):
+        self.assertFalse(hasattr(server, "require_platform_operator"))
+        self.assertFalse(hasattr(server, "PLATFORM_GATES_ENFORCED"))
 
     def test_the_guards_do_not_use_the_shadowed_dependency(self):
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")

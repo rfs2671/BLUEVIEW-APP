@@ -27,6 +27,8 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+
+from fastapi import HTTPException
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -152,9 +154,9 @@ def _reset_rate_limiter():
 def _client(role="admin", company_id="co_a", uid="u1", operator=False):
     """Build a TestClient acting as `role`, optionally as the operator.
 
-    Only `get_current_user` is overridden, so `get_admin_user` /
-    `get_platform_operator_user` still execute their REAL checks — that is
-    what the gating tests assert.
+    `get_current_user` is overridden, so `get_admin_user` still executes its
+    REAL check. `require_operator_404` is replaced by the same rule applied to
+    the fake user (it reads the token itself).
 
     `operator=True` SETS THE FLAG AND LEAVES `role` ALONE. That combination is
     not a contrivance: the real operator's account carries role "owner" to
@@ -178,7 +180,15 @@ def _client(role="admin", company_id="co_a", uid="u1", operator=False):
     async def _fake():
         return user
 
+    # The operator gate reads the token itself; tests/test_operator_gate.py
+    # covers it over HTTP. Here it applies the same rule to the fake user.
+    async def _fake_gate():
+        if not server.is_platform_operator(user):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return user
+
     server.app.dependency_overrides[server.get_current_user] = _fake
+    server.app.dependency_overrides[server.require_operator_404] = _fake_gate
     return TestClient(server.app), lambda: server.app.dependency_overrides.clear()
 
 
@@ -328,8 +338,8 @@ class OwnerGateTest(unittest.TestCase):
         whole point: it is the same role string the operator himself carries,
         without the flag."""
         db = _Db()
-        cases = (("admin", False, 403), ("cp", False, 403),
-                 ("owner", False, 403), ("owner", True, 200))
+        cases = (("admin", False, 404), ("cp", False, 404),
+                 ("owner", False, 404), ("owner", True, 200))
         for role, operator, expect in cases:
             c, cleanup = _client(role=role, operator=operator)
             try:
@@ -351,7 +361,7 @@ class OwnerGateTest(unittest.TestCase):
                     r = c.delete(f"/api/projects/{_PID}/hard-delete")
             finally:
                 cleanup()
-            self.assertEqual(r.status_code, 403, f"role={role}")
+            self.assertEqual(r.status_code, 404, f"role={role}")
             self.assertEqual(db.projects.deleted, [], "nothing may be deleted")
 
     def test_pending_route_registered_before_project_id(self):

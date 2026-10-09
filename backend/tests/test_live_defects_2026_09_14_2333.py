@@ -300,9 +300,9 @@ class ThePageIndexIsInspectable(unittest.TestCase):
         """It read `role not in ("admin", "owner")` inline, then
         `is_company_admin` -- a RANK test that every customer's admin passes.
         The debug surfaces read across tenants, so they now answer the
-        platform operator's DB flag and nothing else (2026-10-07)."""
+        platform operator only, through require_operator_404 (2026-10-09)."""
         code = _code_only(server.whatsapp_debug_page_index)
-        self.assertIn("_require_operator_flag(current_user)", code)
+        self.assertIn("Depends(require_operator_404)", code)
         self.assertNotIn("is_company_admin(current_user)", code)
         self.assertNotIn('"owner"', code)
         self.assertIn("403", code)
