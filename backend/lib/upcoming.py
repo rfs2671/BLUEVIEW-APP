@@ -296,7 +296,11 @@ def worth_a_call(body: Any) -> bool:
     b = str(body or "")
     if multilang.non_english(b):
         return True     # the filter words are English: Spanish / Yiddish go to the model
-    return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _CANCEL_WORDS.search(b)))
+    # Day words read after Spanish / Yiddish dates are put in English: a
+    # terse "FDNY 4 de diciembre" reads as English but its date does not.
+    day = multilang.normalize_when(b)
+    return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _DAYISH.search(day)
+                                         or _CANCEL_WORDS.search(b)))
 
 
 def _line(m: Dict[str, Any]) -> str:

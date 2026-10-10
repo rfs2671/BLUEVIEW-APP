@@ -786,6 +786,11 @@ class TestServerIntegrationPins(unittest.TestCase):
         slice_ = self.text[start:end]
         self.assertEqual(slice_.count("_upload_to_r2"), 1)
         self.assertIn("wa_voice.audio_key(project_id, group_id, voice_message_id)", slice_)
+        # Uploaded only after a successful transcription: a rejected note
+        # has no message row, so nothing could ever find (or delete) it.
+        self.assertLess(slice_.index("vresult = await _process_voice"),
+                        slice_.index("_upload_to_r2"))
+        self.assertIn("if vresult.ok:", slice_[:slice_.index("_upload_to_r2")])
         from lib import wa_voice
         self.assertTrue(wa_voice.audio_key("p1", "1203@g.us", "3EB0X").startswith("wa-audio/p1/"))
 

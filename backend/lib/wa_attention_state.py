@@ -237,15 +237,21 @@ _NEGATED = re.compile(r"(?:\bnot|\bnever|n't|\bno|\bnunca|\bnisht|\bnit)\s+(?:\w
                       re.IGNORECASE)
 
 
-def _cancel_said(text: str, ft: str) -> bool:
-    """A cancel or never-mind that is not denied ("not cancelled")."""
-    if _FORGET.search(text):
-        return True
-    for rx, t in ((_CANCEL, text), (_ML_CANCEL, ft)):
+def _said(pairs) -> bool:
+    """One of the phrases, not denied just before it ("not cancelled", "no
+    está listo", "nisht geshikt")."""
+    for rx, t in pairs:
         for m in rx.finditer(t):
             if not _NEGATED.search(t[:m.start()]):
                 return True
     return False
+
+
+def _cancel_said(text: str, ft: str) -> bool:
+    """A cancel or never-mind that is not denied ("not cancelled")."""
+    if _FORGET.search(text):
+        return True
+    return _said(((_CANCEL, text), (_ML_CANCEL, ft)))
 
 
 def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
@@ -273,7 +279,7 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
             return {"kind": "reschedule", "due_text": at, "time_only": True}
     if done_by_other(text) and not future:
         return {"kind": "done", "by_other": True}
-    if (_DONE.search(text) or _ML_DONE.search(ft)) and not future:
+    if _said(((_DONE, text), (_ML_DONE, ft))) and not future:
         return {"kind": "done", "file": bool(has_file)}
     if has_file and len(text) <= 60 and not future:
         return {"kind": "done", "file": True}
@@ -765,7 +771,9 @@ def bursts(rows: List[dict], gap_seconds: int = BURST_SECONDS) -> List[List[dict
     the one before, are one message ("Np" + "Tomorrow"). A file, a reply, or
     an update ("Actually …", "Sent", "Never mind …") starts its own and
     keeps its own id: what it updates is found from IT, not from what came
-    just before."""
+    just before. A voice note stands alone too: its transcript, its audio
+    and its review flag (an unsure transcript changes nothing by itself)
+    stay its own."""
     out: List[List[dict]] = []
     for r in rows:
         if out:
@@ -774,6 +782,7 @@ def bursts(rows: List[dict], gap_seconds: int = BURST_SECONDS) -> List[List[dict
             if (str(r.get("sender") or "") == str(last.get("sender") or "")
                     and not media_of(r) and not media_of(last)
                     and not _standalone(r) and not _standalone(last)
+                    and not r.get("voice") and not last.get("voice")
                     and a and b and 0 <= (b - a).total_seconds() < gap_seconds):
                 out[-1].append(r)
                 continue

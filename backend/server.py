@@ -60163,19 +60163,6 @@ async def _process_whatsapp_message(payload: dict):
                     )
                     return
 
-                # THE AUDIO IS KEPT (R2, under the project, so the project's
-                # delete sweeps it): the review screens play it next to the
-                # transcript, and the transcript can always be checked
-                # against what was said.
-                voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id)
-                try:
-                    if not await asyncio.to_thread(
-                            _upload_to_r2, audio_bytes, voice_audio_key, "audio/ogg"):
-                        voice_audio_key = None
-                except Exception as _e:
-                    logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")
-                    voice_audio_key = None
-
                 from lib.voice_ingest import process_voice_note as _process_voice
                 vresult = await _process_voice(
                     audio_bytes,
@@ -60187,6 +60174,21 @@ async def _process_whatsapp_message(payload: dict):
                         else None
                     ),
                 )
+                # THE AUDIO IS KEPT (R2, under the project, so the project's
+                # delete sweeps it) -- only for a note that is transcribed and
+                # stored: the review screens play it next to the transcript.
+                # A rejected note (no speech, too long, Whisper failed) has no
+                # message row to find it by, so it is never uploaded.
+                voice_audio_key = None
+                if vresult.ok:
+                    voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id)
+                    try:
+                        if not await asyncio.to_thread(
+                                _upload_to_r2, audio_bytes, voice_audio_key, "audio/ogg"):
+                            voice_audio_key = None
+                    except Exception as _e:
+                        logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")
+                        voice_audio_key = None
                 del audio_bytes
 
                 try:

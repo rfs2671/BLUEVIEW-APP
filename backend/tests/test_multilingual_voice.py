@@ -314,6 +314,29 @@ def _async(v):
     return f
 
 
+class CodexRound1(unittest.TestCase):
+
+    def test_a_denied_done_or_sent_changes_nothing(self):
+        for t in ("No está listo", "No lo mandé", "nisht geshikt", "Not done yet", "nope not sent"):
+            self.assertIsNone(st.classify(t), t)
+        for t in ("ya está listo", "ya lo mandé", "done", "no problem, done"):
+            self.assertEqual(st.classify(t)["kind"], "done", t)
+
+    def test_a_voice_note_is_never_merged_into_a_burst(self):
+        t0 = datetime(2026, 10, 8, 14, 0)
+        rows = [{"sender": "1", "body": "The delivery", "created_at": t0, "message_id": "a"},
+                {"sender": "1", "body": "is cancelled", "created_at": t0 + timedelta(seconds=20),
+                 "message_id": "b", "voice": {"review": True, "review_reason": "low_confidence"}}]
+        out = st.bursts(rows)
+        self.assertEqual([len(b) for b in out], [1, 1])
+        self.assertTrue(wa_voice.unsure(st.merge(out[1])))
+
+    def test_spanish_month_dates_pass_the_upcoming_filter(self):
+        self.assertTrue(u.worth_a_call("FDNY 4 de diciembre"))
+        self.assertTrue(u.worth_a_call("inspection 4 de diciembre"))
+        self.assertFalse(u.worth_a_call("inspection"))
+
+
 class TheDryRuns(unittest.TestCase):
 
     def test_spanish_attention_scripted(self):
