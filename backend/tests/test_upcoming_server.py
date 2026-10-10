@@ -212,6 +212,20 @@ class TheChatWorker(unittest.TestCase):
         rep, _ = _chat_tick(self.db, _Model({"Con Ed": [CON_ED]}), T0 + timedelta(minutes=20))
         self.assertEqual(_events(self.db), [])
 
+    def test_a_failed_write_keeps_the_message_for_the_next_run(self):
+        model = _Model({"Con Ed": [CON_ED]})
+        _msg(self.db, "Con Ed coming Oct 15 at 9am")
+        real = server._upcoming_apply
+
+        async def broken(*a, **k):
+            raise RuntimeError("primary stepped down")
+        with patch.object(server, "_upcoming_apply", broken):
+            rep, _ = _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        self.assertEqual((rep["write_failed"], _events(self.db)), (1, []))
+        with patch.object(server, "_upcoming_apply", real):
+            _chat_tick(self.db, model, T0 + timedelta(minutes=15))
+        self.assertEqual(len(_events(self.db, source="chat")), 1)
+
     def test_kill_switch(self):
         model = _Model({"Con Ed": [CON_ED]})
         _msg(self.db, "Con Ed coming Oct 15 at 9am")
@@ -243,6 +257,9 @@ def _city_world():
         {"_id": "d2", "project_id": "proj_a", "company_id": CO_A,
          "record_type": "dot_violation", "raw_id": "oath:5", "number": "0123",
          "hearing_date": "2026-10-13T00:00:00.000"},
+        {"_id": "d4", "project_id": "proj_a", "company_id": CO_A,
+         "record_type": "dot_violation", "raw_id": "oath:8", "number": "0888",
+         "hearing_date": "2026-10-14T00:00:00.000", "status": "PAID IN FULL"},   # settled
         {"_id": "d3", "project_id": "proj_b", "company_id": CO_B,
          "record_type": "dot_violation", "raw_id": "oath:6", "number": "0999",
          "hearing_date": "2026-10-13T00:00:00.000"},
@@ -277,6 +294,20 @@ class CityRecords(unittest.TestCase):
         self.assertEqual(ev["history"][-1]["action"], "rescheduled")
         self.assertEqual(rep["created"], 0)
         self.assertEqual(len(_events(db, source="city")), 5)
+
+    def test_a_record_that_stops_qualifying_closes_and_can_reopen(self):
+        db = _city_world()
+        _with(db, lambda: _run(server._upcoming_city_tick(now=T0)))
+        db.dot_logs.rows[1]["status"] = "PAID IN FULL"
+        rep, _ = _with(db, lambda: _run(server._upcoming_city_tick(now=T0 + timedelta(hours=2))))
+        (ev,) = [e for e in _events(db, source="city") if e["key"] == "city:hearing:dot:oath:5"]
+        self.assertEqual((ev["status"], ev["closed_by"], rep["closed"]), ("cancelled", "city", 1))
+        self.assertEqual(ev["history"][-1]["action"], "cancelled")
+        db.dot_logs.rows[1]["status"] = "DOCKETED"
+        db.dot_logs.rows[1]["hearing_date"] = "2026-11-03T00:00:00.000"
+        _with(db, lambda: _run(server._upcoming_city_tick(now=T0 + timedelta(hours=4))))
+        self.assertEqual((ev["status"], ev["date"], ev["history"][-1]["action"]),
+                         ("open", "2026-11-03", "reopened"))
 
     def test_a_dismissed_record_stays_dismissed(self):
         db = _city_world()
@@ -330,6 +361,8 @@ class ProjectUpcoming(unittest.TestCase):
         self._call(lambda: _run(server.edit_project_upcoming(
             "proj_a", eid, server.UpcomingEdit(date="2026-10-16", time=""), current_user=ADMIN)))
         self.assertEqual((self.chat["date"], self.chat["time"]), ("2026-10-16", None))
+        self.assertEqual(self.chat["key"], server.upcoming.event_key(
+            "proj_a", "utility", "Con Ed", server._Date(2026, 10, 16)))
         self.assertEqual(self.chat["history"][-1]["action"], "edited")
         self._call(lambda: _run(server.dismiss_project_upcoming("proj_a", eid,
                                                                 current_user=ADMIN)))
@@ -385,6 +418,15 @@ class TheCalendarFeed(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             self._do(lambda: _run(server.public_calendar_feed(token)))
         self.assertEqual(cm.exception.status_code, 404)
+
+    def test_the_platform_operator_can_read_the_link_it_made(self):
+        op = {**ADMIN, "_id": "u_op", "id": "u_op", "role": "owner",
+              "is_platform_operator": True}
+        self.db.users.rows.append(op)
+        made = self._do(lambda: _run(server.make_calendar_feed(current_user=op)))
+        resp = self._do(lambda: _run(server.public_calendar_feed(
+            made["url"].rsplit("/", 1)[1][:-4])))
+        self.assertIn("BEGIN:VCALENDAR", resp.body.decode())
 
     def test_a_new_link_retires_the_old(self):
         a = self._do(lambda: _run(server.make_calendar_feed(current_user=ADMIN)))["url"]

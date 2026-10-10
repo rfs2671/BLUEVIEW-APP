@@ -48582,6 +48582,7 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
         return False
     report["prompt_tokens"] += int(out.get("prompt_tokens") or 0)
     report["completion_tokens"] += int(out.get("completion_tokens") or 0)
+    wrote_all = True
     for ev in upcoming.parse_events(out.get("content")):
         op = upcoming.decide(ev, {"body": body, "sent_at": sent_at}, open_events,
                              now=ctx["now"])
@@ -48593,7 +48594,11 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
         except Exception as e:
             report["write_failed"] += 1
             logger.warning(f"[upcoming] write failed: {type(e).__name__}")
-    return True
+            wrote_all = False
+    # A failed write keeps the cursor on this message: retried next run, like
+    # a failed model call (a repeat of what did get written is deduped, and
+    # a move or a cancel is the same write again).
+    return wrote_all
 
 
 async def _upcoming_run_group(cur: dict, ctx: dict, report: dict, llm=None) -> int:
@@ -48710,7 +48715,7 @@ def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
                                      r.get("expiration_date"), f"DOB permit expires · #{num}",
                                      today, str(r.get("work_type") or ""))
         elif r.get("record_type") == "violation":
-            if r.get("resolution_state") in ("certified", "dismissed", "resolved", "paid"):
+            if wa_alerts.is_closed(r):
                 continue                     # settled: no hearing to go to
             num = r.get("violation_number") or rid
             ev = upcoming.city_event("hearing", "DOB", f"dob:{rid}", r.get("hearing_date"),
@@ -48730,6 +48735,8 @@ def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
                                      f"DOT permit expires · #{r.get('number') or rid}", today,
                                      str(r.get("description") or "")[:200])
         elif r.get("record_type") == "dot_violation":
+            if wa_alerts.is_closed(r):
+                continue                     # PAID IN FULL, dismissed...: no hearing
             ev = upcoming.city_event("hearing", "OATH", f"dot:{rid}", r.get("hearing_date"),
                                      f"OATH hearing · DOT ticket #{r.get('number') or rid}",
                                      today, str(r.get("description") or "")[:200])
@@ -48752,7 +48759,26 @@ async def _upcoming_city_sync_project(project: dict, today: _Date, now: datetime
         "project_id": pid,
         "company_id": _company_id_filter(cid),
     }).to_list(2000)
-    for ev in _upcoming_city_events(dob_rows, dot_rows, today):
+    current = _upcoming_city_events(dob_rows, dot_rows, today)
+    keys = {ev["key"] for ev in current}
+    # A record that no longer qualifies (paid, dismissed, revoked, gone):
+    # its event closes, by the city. It reopens if the record qualifies again.
+    stale = await db.upcoming_events.find({
+        "company_id": _company_id_filter(cid),
+        "project_id": pid,
+        "source": "city",
+        "status": "open",
+        "date": {"$gte": today.isoformat()},
+    }).to_list(2000)
+    for old in stale:
+        if old.get("key") in keys:
+            continue
+        await db.upcoming_events.update_one({"_id": old["_id"], "status": "open"}, {
+            "$set": {"status": "cancelled", "closed_by": "city", "updated_at": now},
+            "$push": {"history": upcoming.history_entry(
+                "cancelled", now, by="city", note="no longer on the city record")}})
+        report["closed"] += 1
+    for ev in current:
         cur = await db.upcoming_events.find_one({"project_id": pid, "key": ev["key"]})
         if cur is None:
             row = {
@@ -48776,19 +48802,28 @@ async def _upcoming_city_sync_project(project: dict, today: _Date, now: datetime
             }
             await db.upcoming_events.insert_one(row)
             report["created"] += 1
-        elif cur.get("date") != ev["date"] or cur.get("title") != ev["title"]:
+        else:
+            reopen = cur.get("status") == "cancelled" and cur.get("closed_by") == "city"
+            if not reopen and cur.get("date") == ev["date"] and cur.get("title") == ev["title"]:
+                continue
             upd = {"$set": {"date": ev["date"], "title": ev["title"], "detail": ev["detail"],
                             "updated_at": now}}
-            if cur.get("date") != ev["date"]:
+            moved = cur.get("date") != ev["date"]
+            if reopen:
+                upd["$set"].update(status="open", closed_by=None)
+                upd["$push"] = {"history": upcoming.history_entry(
+                    "reopened", now, by="city", frm=cur.get("date") if moved else None,
+                    to=ev["date"] if moved else None)}
+            elif moved:
                 upd["$push"] = {"history": upcoming.history_entry(
                     "rescheduled", now, frm=cur.get("date"), to=ev["date"], by="city")}
+            report["moved"] += int(moved)
             await db.upcoming_events.update_one({"_id": cur["_id"]}, upd)
-            report["moved"] += 1
 
 
 async def _upcoming_city_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    report = {"projects": 0, "created": 0, "moved": 0, "failed": 0}
+    report = {"projects": 0, "created": 0, "moved": 0, "closed": 0, "failed": 0}
     if _upcoming_disabled():
         report["disabled"] = True
         return report
@@ -62364,10 +62399,16 @@ async def edit_project_upcoming(project_id: str, event_id: str, body: UpcomingEd
         raise HTTPException(status_code=422, detail="Nothing to change")
     now = datetime.now(timezone.utc)
     who = str(current_user.get("id") or current_user.get("_id") or "")
-    was = {k: row.get(k) for k in upd}
+    if "date" in upd and row.get("source") == "chat":
+        # The dedupe key follows the day: a later mention of the corrected
+        # day is this event, a mention of the old day is not.
+        upd["key"] = upcoming.event_key(project_id, row.get("kind") or "", row.get("agency"),
+                                        _Date.fromisoformat(upd["date"]))
+    was = {k: row.get(k) for k in upd if k != "key"}
     await db.upcoming_events.update_one({"_id": row["_id"]}, {
         "$set": {**upd, "edited_by": who, "updated_at": now},
-        "$push": {"history": upcoming.history_entry("edited", now, by=who, frm=was, to=upd)}})
+        "$push": {"history": upcoming.history_entry(
+            "edited", now, by=who, frm=was, to={k: v for k, v in upd.items() if k != "key"})}})
     return _upcoming_view(await db.upcoming_events.find_one({"_id": row["_id"]}))
 
 
@@ -62441,10 +62482,12 @@ async def public_calendar_feed(token: str):
             {"_id": to_query_id(str(feed["user_id"])), "is_deleted": {"$ne": True}})
     except Exception:
         user = None
-    role = wa_dm.norm_role((user or {}).get("role"))
-    if (not user or role not in ("admin", ROLE_PM)
+    # The same rank test as making the link (holds_rank: admin, PM, or the
+    # platform operator), so a link that could be made can be read.
+    if (not user or not holds_rank(user, PROJECT_ADMIN_ROLES)
             or not wa_security.same_company(user.get("company_id"), feed.get("company_id"))):
         raise gone
+    role = wa_dm.norm_role(user.get("role"))
     now = datetime.now(timezone.utc)
     today = _upcoming_today(now)
     rows = await _upcoming_for(user, str(feed["company_id"]), role, today,
