@@ -12,6 +12,9 @@ import {
   alertsView, needsFreshLink, WA_POLL_MS, WA_POLL_MAX_MS, WA_POLLING_STATES,
 } from '../utils/whatsappConnect';
 import { BRIEF_OPTIONS, briefRow } from '../utils/whatsappBrief';
+import { canSeeUpcoming } from '../utils/upcoming';
+import { useAuth } from '../context/AuthContext';
+import CalendarFeedCard from './whatsapp/CalendarFeedCard';
 import { spacing, borderRadius } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
@@ -21,7 +24,8 @@ const WHATSAPP_GREEN = '#25D366';
 
 /**
  * PERSONAL ASSISTANT (Integrations → WhatsApp → Personal assistant): this
- * person's own Levelog Assistant — on/off, morning brief time, weekends.
+ * person's own Levelog Assistant — on/off, morning brief time, weekends —
+ * and, for admins and PMs, their private calendar feed (CalendarFeedCard).
  *
  * What it SAYS comes from utils/whatsappConnect.js and whatsappBrief.js
  * (pure, tested). This file only fetches and draws.
@@ -36,6 +40,7 @@ export default function WhatsAppAssistantPanel() {
   const { colors } = useTheme();
   const s = buildStyles(colors);
   const toast = useToast();
+  const { user } = useAuth();
   const [me, setMe] = useState(null);
   const [focused, setFocused] = useState(true);
   const [busy, setBusy] = useState(null); // 'brief' | null
@@ -163,6 +168,7 @@ export default function WhatsAppAssistantPanel() {
   }
 
   return (
+    <>
     <GlassCard style={s.card}>
       <View style={s.sectionHead}>
         <Text style={s.sectionTitle}>Levelog Assistant</Text>
@@ -233,6 +239,9 @@ export default function WhatsAppAssistantPanel() {
         </View>
       ) : null}
     </GlassCard>
+    {/* Admins and PMs: the private calendar feed of what's coming up. */}
+    {canSeeUpcoming(user) ? <CalendarFeedCard /> : null}
+    </>
   );
 }
 
