@@ -1,6 +1,6 @@
 {
  "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
- "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'); Dave (a sub) is chased in the group on his RTU startup report. Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). GC staff are chased PRIVATELY by DM, never in the group: Kevin (a company user) on the door schedule and Gina (mapped \"GC team\", opted in) on the logistics plan, Thursday, with the 4pm escalation to Roy (the admin). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Everyone with a confirmed, dated item is chased the same way, in the group: on Thursday Dave (a sub) on his RTU startup report, Kevin (a company user, PM) on the door schedule and Gina (mapped \"GC team\") on the logistics plan, each with the 4pm escalation to Roy (the admin). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
  "tz": "America/New_York",
  "project": {
   "name": "8 Walworth St",
@@ -112,9 +112,6 @@
    "people": {
     "person_name": "Gina Lopez",
     "sub_company": "GC team"
-   },
-   "user": {
-    "role": "pm"
    }
   }
  },
@@ -605,8 +602,7 @@
     "owner": "K",
     "items": [
      16
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -614,8 +610,7 @@
     "owner": "K",
     "items": [
      16
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -623,8 +618,7 @@
     "owner": "K",
     "items": [
      16
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -632,8 +626,7 @@
     "owner": "K",
     "items": [
      16
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -641,8 +634,7 @@
     "owner": "G",
     "items": [
      31
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -650,8 +642,7 @@
     "owner": "G",
     "items": [
      31
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -659,8 +650,7 @@
     "owner": "G",
     "items": [
      31
-    ],
-    "channel": "dm"
+    ]
    },
    {
     "day": "2026-10-15",
@@ -668,8 +658,7 @@
     "owner": "G",
     "items": [
      31
-    ],
-    "channel": "dm"
+    ]
    }
   ]
  }

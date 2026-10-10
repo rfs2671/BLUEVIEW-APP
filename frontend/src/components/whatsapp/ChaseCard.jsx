@@ -18,7 +18,6 @@ import { spacing } from '../../styles/theme';
 import {
   CHASE_TITLE, CHASE_NOTE, CHASE_OFF_NOTE, CHASE_VERDICTS, headLine, ownerLine,
   reasonLine, precisionLines, emptyText,
-  channelTag, bodyText,
 } from '../../utils/whatsappChase';
 
 export default function ChaseCard({ projectId }) {
@@ -77,10 +76,10 @@ export default function ChaseCard({ projectId }) {
               <Text style={[s.muted, { marginTop: spacing.sm }]}>{emptyText(data && data.total)}</Text>
             ) : entries.map((e) => (
               <View key={e.id} style={s.item}>
-                <Text style={s.type}>{`${channelTag(e)} · ${headLine(e)}`}</Text>
+                <Text style={s.type}>{headLine(e)}</Text>
                 {ownerLine(e) ? <Text style={s.muted}>{ownerLine(e)}</Text> : null}
                 <View style={s.message}>
-                  <Text style={s.messageText}>{bodyText(e)}</Text>
+                  <Text style={s.messageText}>{e.text}</Text>
                 </View>
                 {reasonLine(e) ? <Text style={s.muted}>{reasonLine(e)}</Text> : null}
                 <View style={s.buttons}>

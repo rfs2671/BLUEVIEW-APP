@@ -42,9 +42,7 @@ SCENARIO FILE (see scripts/dry_run/*.json)
              expect: {kind: item|none|state|merged|review|flag|follow_up|part_done|handover,
                       type?, due_text?, owner?, owner_possibly?, of?, also?, to?,
                       into?}}]
-  chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line],
-            channel?: "group" (default: a sub, in the group) | "dm" (GC staff,
-            privately)}]}
+  chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line]}]}
 """
 
 from __future__ import annotations
@@ -431,17 +429,13 @@ def chase_check(sc: dict, out: dict) -> dict:
         kind, _, oid = str(r.get("owner_key") or "").partition(":")
         owner = _owner_key(sc, {"kind": kind, "id": oid})
         got.append({"day": r["day"], "slot": r["slot"], "owner": owner,
-                    "channel": r.get("channel") or "group",
-                    "not_chased": r.get("not_chased") or "",
                     "items": sorted(line_of.get(items[i]["evidence"]["message_id"])
                                     for i in r["item_ids"] if i in items),
                     "text": r.get("text"), "reason": r.get("reason")})
     want = (sc.get("chase") or {}).get("expect") or []
 
     def key(e):
-        # channel: "group" (a sub, in the group) or "dm" (GC staff, privately).
-        return (e["day"], e["slot"], e["owner"], e.get("channel") or "group",
-                tuple(sorted(e["items"])))
+        return (e["day"], e["slot"], e["owner"], tuple(sorted(e["items"])))
     gk = {key(e): e for e in got}
     wk = {key(e): e for e in want}
     return {"got": got, "missing": [wk[k] for k in wk if k not in gk],
@@ -514,18 +508,14 @@ def print_report(r: dict) -> None:
     order = {"morning": 0, "midday": 1, "eod": 2, "admin_dm": 3}
     for e in sorted(r["chase"]["got"], key=lambda e: (e["day"], order.get(e["slot"], 9),
                                                       e["owner"] or "")):
-        what = (f"not chased: {e['not_chased']}" if e.get("not_chased")
-                else ((e["text"] or "").splitlines() or [""])[0][:60])
-        chan = "DM" if e.get("channel") == "dm" else "Group"
-        p(f"  {e['day']} {e['slot']:<9} {e['owner'] or '?':<4} {chan:<5} lines {e['items']}  {what}")
+        p(f"  {e['day']} {e['slot']:<9} {e['owner'] or '?':<4} lines {e['items']}  "
+          f"{(e['text'] or '').splitlines()[0][:60]}")
     if not r["chase"]["got"]:
         p("  (nothing would be chased)")
     for e in r["chase"]["missing"]:
-        p(f"  MISSING    {e['day']} {e['slot']} {e['owner']} {e.get('channel') or 'group'} "
-          f"lines {e['items']}")
+        p(f"  MISSING    {e['day']} {e['slot']} {e['owner']} lines {e['items']}")
     for e in r["chase"]["unexpected"]:
-        p(f"  UNEXPECTED {e['day']} {e['slot']} {e['owner']} {e.get('channel') or 'group'} "
-          f"lines {e['items']}")
+        p(f"  UNEXPECTED {e['day']} {e['slot']} {e['owner']} lines {e['items']}")
     s = r["score"]
     p(f"\nSCORE  lines hard {s['hard']}/{s['lines']} · soft {s['soft']}/{s['lines']}"
       f"  ·  chase {s['chase_expected'] - s['chase_missing']}/{s['chase_expected']} expected,"

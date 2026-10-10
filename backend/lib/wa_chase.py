@@ -8,11 +8,10 @@ nudge it WOULD send in `chase_shadow` for an admin to mark Correct / Wrong
 WHAT IS CHASED (all of these):
 - an open or rescheduled commitment or request;
 - its owner confirmed: resolved, not "possibly theirs";
-- the owner is a SUB (mapped in Project → WhatsApp → People to one of the
-  project's subs), chased in the group; or GC STAFF (a Levelog user of the
-  company, or a person mapped to "GC team"), chased PRIVATELY by DM, never in
-  the group, and only once they have opted in (START). GC staff not opted in
-  are listed "not chased: not opted in";
+- the owner is anyone we can @mention: a sub (mapped in Project → WhatsApp
+  → People to one of the project's subs) and GC staff alike (a Levelog user
+  of the company, PM, super or admin, or a person mapped to "GC team"). No
+  opt-in is needed: everyone is chased the same way, in the group;
 - an explicit due date the code read from the words ("Friday", "10/12");
 - nothing about it flagged for an admin's review, and the item itself not
   marked Wrong (or dismissed) by an admin;
@@ -21,7 +20,7 @@ WHAT IS CHASED (all of these):
 WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 3:00 end
 of day (NYC sites wrap up around 3:30), each only when nothing came back since
 the last nudge. After the end of day nudge, 4:00: a private DM to the company
-admin. Constants for now; per-company settings later. An item said after a
+admins except the owner; an owner who is the only admin gets none. Constants for now; per-company settings later. An item said after a
 slot's time is first chased at the next slot. A slot outside the project's
 alert hours is not sent; one that comes due later the same day, inside them,
 is.
@@ -30,15 +29,10 @@ STOP, immediately: any change to the item after its first nudge (done,
 rescheduled, cancelled, possibly done, a part done, a flag), or any message
 from the owner in that group since the last nudge.
 
-HOW: a sub, in the item's own group, @mentioning the owner, quoting the
-original message (after a handover, the message of who took it on). At most
-one nudge per owner per group per slot: their items due today go in one
-message. GC staff: one private DM per person per slot, every item due today
-on any of their jobs, each quoted with its group's name ("Following up: you
-said '…' in 588 Thomas – any update?"). A DM reply to the nudge stops it,
-like a message in the group. The 4:00 DM goes to the company admins except
-the owner; an owner who is the only admin gets none. The words are a fixed
-template and the item's own quote. No model writes any of it.
+HOW: in the item's own group, @mentioning the owner, quoting the original
+message (after a handover, the message of who took it on). At most one nudge per owner per group per slot: their items due
+today go in one message. The words are a fixed template and the item's own
+quote. No model writes any of it.
 
 WEEKENDS: Saturday and Sunday only for a project with "Chase on weekends" on
 (Project → WhatsApp → Levelog Assistant; default off). All four slots.
@@ -69,12 +63,10 @@ SLOT_LABELS = {MORNING: "morning", MIDDAY: "midday", EOD: "end of day",
 
 CHASE_TYPES = ("commitment", "request")
 CHASE_STATUSES = ("open", "rescheduled")
-# A sub is chased in the group; GC staff (a company user, or a person mapped
-# "GC team") by private DM.
-OWNER_KINDS = ("sender_map",)
+# Who can be chased: a person mapped in People (a sub or "GC team") or a
+# company user. Everyone in the group, @mentioned.
+OWNER_KINDS = ("sender_map", "user")
 GC_KINDS = ("user",)
-GROUP, DM = "group", "dm"
-NOT_OPTED_IN = "not opted in"
 QUOTE_MAX = 200
 VERDICTS = ("correct", "wrong")
 # Items extracted under an older prompt are never chased.
@@ -145,23 +137,16 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "owner_unconfirmed"
     if o.get("possibly"):
         return "owner_possibly"
-    if not is_gc_staff(o):
-        # A sub: chased in the group, so it needs someone to @mention.
-        if o.get("kind") not in OWNER_KINDS:
-            return "owner_not_known"
-        if not o.get("jid"):
-            return "owner_no_mention"
+    if o.get("kind") not in OWNER_KINDS:
+        return "owner_not_known"
+    if not o.get("jid"):
+        return "owner_no_mention"
     due = item.get("due") or {}
     if not due.get("due_text") or not due.get("due_at"):
         return "no_explicit_due"
     if str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
     return None
-
-
-def channel(owner: Dict[str, Any]) -> str:
-    """Where a nudge goes: GC staff privately (DM), a sub in the group."""
-    return DM if is_gc_staff(owner) else GROUP
 
 
 def is_gc_staff(owner: Dict[str, Any]) -> bool:
@@ -191,14 +176,11 @@ def said_at(item: Dict[str, Any]) -> Optional[datetime]:
 
 
 def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]],
-                owner_spoke_at: Optional[datetime],
-                dm_reply_at: Optional[datetime] = None) -> Optional[str]:
+                owner_spoke_at: Optional[datetime]) -> Optional[str]:
     """Why chasing this item stopped today, or None.
 
     `nudges`: today's earlier would-chase rows for this item, any order.
-    `owner_spoke_at`: the owner's latest message in the group, if any.
-    `dm_reply_at`: their latest DM to the assistant, if any (GC staff: a
-    reply to the private nudge stops it like a message in the group)."""
+    `owner_spoke_at`: the owner's latest message in the group, if any."""
     times = sorted(t for t in (_at(n.get("at")) for n in nudges) if t)
     if not times:
         return None
@@ -211,8 +193,6 @@ def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]],
             return f"state_change:{e.get('kind')}"
     if owner_spoke_at and owner_spoke_at > last:
         return "owner_replied"
-    if dm_reply_at and dm_reply_at > last:
-        return "owner_replied_dm"
     return None
 
 
@@ -254,23 +234,8 @@ def group_text(owner_name: str, items: List[Dict[str, Any]], slot: str) -> str:
     return "\n".join(lines)
 
 
-def dm_text(entries: List[Dict[str, Any]], slot: str) -> str:
-    """The private nudge to a GC staff member: each item quoted with the
-    group it was said in. `entries`: [{"item", "group_name"}].
-    One: "Following up: you said '…' in 588 Thomas – any update?" """
-    def said(e):
-        g = e.get("group_name") or ""
-        return f"you said “{quote(e['item'])}”" + (f" in {g}" if g else "")
-    lead = {MORNING: "Following up", MIDDAY: "Checking in", EOD: "End of day"}.get(
-        slot, "Following up")
-    if len(entries) == 1:
-        return f"{lead}: {said(entries[0])} – any update?"
-    return "\n".join([f"{lead} on these, due today:"]
-                     + [f"• {said(e)}" for e in entries] + ["Any update?"])
-
-
 def admin_text(owner_name: str, group_name: str, items: List[Dict[str, Any]],
-               nudged_at: List[datetime], channel_: str = GROUP) -> str:
+               nudged_at: List[datetime]) -> str:
     """The private DM to the company admin after the end of day nudge."""
     who = owner_name.strip() or "The owner"
     where = f" in {group_name}" if group_name else ""
@@ -279,8 +244,7 @@ def admin_text(owner_name: str, group_name: str, items: List[Dict[str, Any]],
     lines += [f"“{quote(it)}”" for it in items]
     times = [hhmm(t) for t in sorted(nudged_at)]
     if times:
-        how = "by DM" if channel_ == DM else "in the group"
-        lines.append(f"Nudged {how} at " + _join(times) + ".")
+        lines.append("Nudged in the group at " + _join(times) + ".")
     return "\n".join(lines)
 
 

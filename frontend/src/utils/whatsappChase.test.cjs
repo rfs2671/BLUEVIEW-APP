@@ -63,8 +63,7 @@ console.log('\nscreen wiring');
   const card = read('src/components/whatsapp/ChaseCard.jsx');
   ok(/whatsappAPI\.getChase\(projectId\)/.test(card), 'loads the list');
   ok(/whatsappAPI\.reviewChase\(projectId, entryId, verdict\)/.test(card), 'sends a verdict');
-  ok(/bodyText\(e\)/.test(card) && /reasonLine\(e\)/.test(card), 'shows the message text and why');
-  ok(/channelTag\(e\)/.test(card), 'each entry says Group or DM');
+  ok(/\{e\.text\}/.test(card) && /reasonLine\(e\)/.test(card), 'shows the message text and why');
   ok(!/sendWhatsApp|send-message|sendMessage/.test(card), 'the card sends nothing to anyone');
   const api = read('src/utils/api.js');
   ok(api.includes('`/api/projects/${projectId}/whatsapp/chase`'), 'GET path');
@@ -72,19 +71,6 @@ console.log('\nscreen wiring');
   const screen = read('app/projects/[id]/whatsapp-groups.jsx');
   ok(/isAdmin && !readOnly && groups\.length > 0 \? \(\s*<ChaseCard projectId=\{projectId\} \/>/.test(screen),
      'admins only, on the project WhatsApp screen');
-}
-
-{
-  // GC staff: privately by DM; not opted in is listed, not chased.
-  ok(C.channelTag({ channel: 'dm', kind: 'dm' }) === 'DM', 'GC staff: DM');
-  ok(C.channelTag({ channel: 'group', kind: 'group' }) === 'Group', 'a sub: Group');
-  ok(C.channelTag({ kind: 'admin_dm' }) === 'DM', 'the admin DM: DM');
-  ok(C.channelTag({ kind: 'group' }) === 'Group', 'an entry from before channels: Group');
-  ok(C.bodyText({ not_chased: 'not opted in', text: '' }) === 'Not chased: not opted in',
-     'not opted in: says so');
-  ok(C.bodyText({ text: 'Following up: you said “x” in 588 Thomas – any update?' })
-     .startsWith('Following up'), 'the DM text');
-  ok(C.SLOT_LABELS.not_chased === 'Not chased', 'the not-chased slot has a label');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
