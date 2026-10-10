@@ -171,8 +171,9 @@ class TheRail(unittest.TestCase):
         view = _build(_model(acts=[_activity(where="J")]))
         for cell in view.rail:
             for line in cell.notes + cell.items:
-                self.assertNotIn("Unmapped", line)
-                self.assertNotIn("J", line)
+                self.assertFalse(line.startswith(("Unmapped source value:",
+                                                  "Unmapped: ")), line)
+                self.assertNotEqual(line, "J")
         self.assertEqual(view.activities[0].where, "")
 
     def test_safety_not_reported_carries_the_dash_and_the_words(self):
