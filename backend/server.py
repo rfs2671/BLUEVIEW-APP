@@ -48569,6 +48569,13 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
         report["disabled"] = True
         return report
     state = await db[project_memory.STATE].find_one({"_id": "cursor"}) or {}
+    checked = _MEMORY_ATLAS.get("checked_at")
+    if _MEMORY_ATLAS.get("ok") is not True and (
+            not isinstance(checked, datetime)
+            or (now - checked).total_seconds() >= MEMORY_ATLAS_RETRY_SECONDS):
+        # Until both Atlas indexes are queryable (they build after the first
+        # boot), look again every 10 minutes; the line is logged on a change.
+        await _memory_atlas_check(create=True)
     test_cos = await fixture_company_ids(db)
     # 1. Linked-group messages, oldest first from the cursor (the backfill).
     q: Dict[str, Any] = {"project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
@@ -48691,25 +48698,84 @@ async def ensure_project_memory_indexes() -> None:
                                   name="project_memory_by_embedded")
     await _ensure_index_resilient(coll, keys=[("source", 1), ("source_id", 1)],
                                   name="project_memory_by_source")
+    await _memory_atlas_check(create=True, log=True)
+
+
+_MEMORY_SEARCH_INDEXES = (
+    {"name": project_memory.TEXT_INDEX, "type": "search", "definition": {"mappings": {
+        "dynamic": False, "fields": {
+            "text": {"type": "string", "analyzer": "lucene.english"},
+            "project_id": {"type": "token"}, "company_id": {"type": "token"},
+            "at": {"type": "date"}}}}},
+    {"name": project_memory.VECTOR_INDEX, "type": "vectorSearch", "definition": {
+        "fields": [
+            {"type": "vector", "path": "embedding",
+             "numDimensions": project_memory.EMBED_DIMS, "similarity": "cosine"},
+            {"type": "filter", "path": "project_id"},
+            {"type": "filter", "path": "company_id"},
+            {"type": "filter", "path": "at"}]}},
+)
+
+
+def _memory_err(e: Exception) -> str:
+    """A short, log-safe reason: the error class, Mongo's code name, and the
+    start of its message."""
+    name = (getattr(e, "details", None) or {}).get("codeName") if isinstance(
+        getattr(e, "details", None), dict) else None
+    msg = " ".join(str(e).split())[:120]
+    return f"{type(e).__name__}{':' + name if name else ''}{' ' + msg if msg else ''}"
+
+
+async def _memory_atlas_check(create: bool = False, log: bool = False) -> dict:
+    """Are the two Atlas Search indexes there and queryable? Creates the
+    missing ones when `create`. Logs ONE line:
+        [memory] atlas_search=ok|fallback, vector_index=ok|fallback, reason=...
+    (on boot, and again from the indexer whenever it changes)."""
+    status = {"atlas_search": "fallback", "vector_index": "fallback", "reason": ""}
+    reasons: List[str] = []
+
+    async def listed() -> Dict[str, dict]:
+        rows = await db.project_memory.aggregate([{"$listSearchIndexes": {}}]).to_list(None)
+        return {r.get("name"): r for r in rows}
+
     try:
-        await db.command({"createSearchIndexes": project_memory.COLLECTION, "indexes": [
-            {"name": project_memory.TEXT_INDEX, "definition": {"mappings": {
-                "dynamic": False, "fields": {
-                    "text": {"type": "string", "analyzer": "lucene.english"},
-                    "project_id": {"type": "token"}, "company_id": {"type": "token"},
-                    "at": {"type": "date"}}}}},
-            {"name": project_memory.VECTOR_INDEX, "type": "vectorSearch", "definition": {
-                "fields": [
-                    {"type": "vector", "path": "embedding",
-                     "numDimensions": project_memory.EMBED_DIMS, "similarity": "cosine"},
-                    {"type": "filter", "path": "project_id"},
-                    {"type": "filter", "path": "company_id"},
-                    {"type": "filter", "path": "at"}]}},
-        ]})
-        logger.info("[memory] Atlas Search indexes requested")
+        have = await listed()
     except Exception as e:
-        # Already there, or not an Atlas deployment.
-        logger.info(f"[memory] Atlas Search indexes not created: {type(e).__name__}")
+        status["reason"] = f"cannot list search indexes ({_memory_err(e)})"
+        have = None
+    if have is not None:
+        missing = [d for d in _MEMORY_SEARCH_INDEXES if d["name"] not in have]
+        if create and missing:
+            for d in missing:
+                try:
+                    await db.command({"createSearchIndexes": project_memory.COLLECTION,
+                                      "indexes": [d]})
+                    reasons.append(f"{d['name']} created")
+                except Exception as e:
+                    reasons.append(f"{d['name']} not created ({_memory_err(e)})")
+            try:
+                have = await listed()
+            except Exception as e:
+                reasons.append(f"cannot list search indexes ({_memory_err(e)})")
+                have = {}
+        for key, name in (("atlas_search", project_memory.TEXT_INDEX),
+                          ("vector_index", project_memory.VECTOR_INDEX)):
+            ix = have.get(name)
+            if ix and ix.get("queryable"):
+                status[key] = "ok"
+            else:
+                reasons.append(f"{name} " + ("missing" if not ix else
+                                             str(ix.get("status") or "not queryable").lower()))
+        status["reason"] = "; ".join(reasons) or "ready"
+    if status["atlas_search"] == "ok" and status["vector_index"] == "ok":
+        _MEMORY_ATLAS["ok"] = True
+    line = (f"[memory] atlas_search={status['atlas_search']}, "
+            f"vector_index={status['vector_index']}, reason={status['reason']}")
+    changed = _MEMORY_ATLAS.get("line") != line
+    _MEMORY_ATLAS.update(line=line, checked_at=datetime.now(timezone.utc))
+    if log or changed:
+        logger.info(line)
+    return status
 
 
 def _memory_span(base: dict) -> Dict[str, datetime]:
@@ -48758,11 +48824,11 @@ async def _memory_atlas_ranked(base: dict, query: str, qv: Optional[list],
                 "must": [{"text": {"query": query, "path": "text"}}], "filter": filt}}},
             {"$limit": limit}, {"$project": {"_id": 1}}]).to_list(None)
         meaning: List[dict] = []
+        vfilter: Dict[str, Any] = {"project_id": base["project_id"],
+                                   "company_id": base["company_id"]}
+        if span:
+            vfilter["at"] = span
         if qv:
-            vfilter: Dict[str, Any] = {"project_id": base["project_id"],
-                                       "company_id": base["company_id"]}
-            if span:
-                vfilter["at"] = span
             meaning = await coll.aggregate([
                 {"$vectorSearch": {"index": project_memory.VECTOR_INDEX, "path": "embedding",
                                    "queryVector": qv, "numCandidates": limit * 10,
@@ -48794,12 +48860,13 @@ async def _memory_code_ranked(base: dict, query: str, qv: Optional[list],
                          for c in cands), key=lambda x: (-x[0], x[1]))
         words = [i for s, i in scored if s > 0][:limit]
     meaning: List[str] = []
+    scope = {"company_id": base["company_id"], "project_id": base["project_id"],
+             "embedded": True}
     if qv:
         # The project's newest rows with a vector; a date range is applied
         # here, on the rows read.
         rows = await db.project_memory.find(
-            {"company_id": base["company_id"], "project_id": base["project_id"],
-             "embedded": True},
+            scope,
             {"_id": 1, "embedding": 1, "day": 1}).sort([("at", -1)]).limit(
             MEMORY_FALLBACK_ROWS).to_list(None)
         span = base.get("day") or {}
@@ -48816,6 +48883,8 @@ async def _memory_search(company_id: str, project_id: str, query: str,
                          date_from: Optional[str] = None, date_to: Optional[str] = None,
                          limit: int = 30) -> List[dict]:
     """The project's records for a question, best first (no embeddings)."""
+    if not str(company_id or "").strip() or not str(project_id or "").strip():
+        return []            # no company or no project: nobody's records
     base = _memory_filter(company_id, project_id, date_from, date_to)
     qv = await _memory_embed_one(query)
     got = await _memory_atlas_ranked(base, query, qv, limit)

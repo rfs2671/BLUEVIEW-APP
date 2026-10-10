@@ -251,6 +251,77 @@ class AtlasOrNot(unittest.TestCase):
         self.assertEqual(span["$lte"].isoformat(), "2026-09-22T03:59:59.999999+00:00")
 
 
+class TheBootLine(unittest.TestCase):
+    """[memory] atlas_search=ok|fallback, vector_index=ok|fallback, reason=..."""
+
+    def _check(self, listed, command=None):
+        db = FakeDb()
+
+        class Cur:
+            def __init__(self, rows):
+                self.rows = rows
+
+            async def to_list(self, n=None):
+                return list(self.rows)
+
+        calls = []
+
+        def aggregate(pipeline):
+            assert pipeline == [{"$listSearchIndexes": {}}]
+            return Cur(listed[min(len(calls), len(listed) - 1)])
+
+        async def cmd(c):
+            calls.append(c["indexes"][0]["name"])
+            if command:
+                raise command
+        db.project_memory.aggregate = aggregate
+        db.command = cmd
+        with patch.object(server, "db", db), \
+                patch.dict(server._MEMORY_ATLAS, {"ok": None, "line": None}), \
+                self.assertLogs("server", level="INFO") as logs:
+            st = _run(server._memory_atlas_check(create=True, log=True))
+            ok = server._MEMORY_ATLAS["ok"]
+        line = [m for m in logs.output if "atlas_search=" in m]
+        return st, calls, line, ok
+
+    def test_ready(self):
+        ready = [{"name": pm.TEXT_INDEX, "status": "READY", "queryable": True},
+                 {"name": pm.VECTOR_INDEX, "status": "READY", "queryable": True}]
+        st, calls, line, ok = self._check([ready])
+        self.assertEqual((st["atlas_search"], st["vector_index"], st["reason"]), ("ok", "ok", "ready"))
+        self.assertEqual(calls, [])
+        self.assertTrue(ok)
+        self.assertIn("[memory] atlas_search=ok, vector_index=ok, reason=ready", line[0])
+
+    def test_created_on_first_boot_and_still_building(self):
+        building = [{"name": pm.TEXT_INDEX, "status": "BUILDING", "queryable": False},
+                    {"name": pm.VECTOR_INDEX, "status": "PENDING", "queryable": False}]
+        st, calls, line, ok = self._check([[], building])
+        self.assertEqual(calls, [pm.TEXT_INDEX, pm.VECTOR_INDEX])
+        self.assertEqual((st["atlas_search"], st["vector_index"]), ("fallback", "fallback"))
+        self.assertEqual(st["reason"], f"{pm.TEXT_INDEX} created; {pm.VECTOR_INDEX} created; "
+                                       f"{pm.TEXT_INDEX} building; {pm.VECTOR_INDEX} pending")
+        self.assertNotEqual(ok, True)
+        self.assertEqual(len(line), 1)
+
+    def test_not_atlas(self):
+        db = FakeDb()                       # no $listSearchIndexes at all
+        with patch.object(server, "db", db), \
+                patch.dict(server._MEMORY_ATLAS, {"ok": None, "line": None}), \
+                self.assertLogs("server", level="INFO") as logs:
+            st = _run(server._memory_atlas_check(create=True, log=True))
+        self.assertEqual((st["atlas_search"], st["vector_index"]), ("fallback", "fallback"))
+        self.assertTrue(st["reason"].startswith("cannot list search indexes ("))
+        self.assertTrue(any("[memory] atlas_search=fallback, vector_index=fallback, reason=cannot list"
+                            in m for m in logs.output))
+
+    def test_a_create_that_fails_says_why(self):
+        st, calls, line, ok = self._check([[]], command=RuntimeError("Atlas Search not enabled"))
+        self.assertIn(f"{pm.TEXT_INDEX} not created (RuntimeError Atlas Search not enabled)",
+                      st["reason"])
+        self.assertIn(f"{pm.VECTOR_INDEX} missing", st["reason"])
+
+
 class TheDmTool(unittest.TestCase):
 
     def test_offered_in_a_dm_only(self):
