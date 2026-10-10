@@ -325,8 +325,11 @@ class FiveTheLocationTile(unittest.TestCase):
         acts = ACTIVITIES + [_crew("Power Direct", "Electrical", 3, "x",
                                    "Somewhere else: stair 2")]
         html = r.render(_view(_model(activities=acts)))
-        self.assertNotIn("Unmapped", html)
-        self.assertNotIn("stair 2", html)
+        # BOTH PRINTED FORMS, anchored: the tile's sole note and the trailing
+        # note beside named areas.
+        self.assertNotIn("Unmapped source value:", html)
+        self.assertNotIn("Unmapped: ", html)
+        self.assertNotIn("Somewhere else: stair 2", html)
 
     def test_every_chip_label_the_app_emits_is_read(self):
         res = lv.resolve(["Sub-cellar, Cellar, 1st Floor, Mezzanine, "
