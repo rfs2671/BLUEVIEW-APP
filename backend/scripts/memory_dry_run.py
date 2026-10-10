@@ -290,13 +290,24 @@ def _days(text: str) -> set:
     return out
 
 
+_WEEKDAY_WORD = re.compile(r"\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s*",
+                           re.IGNORECASE)
+
+
 def has_words(want: str, text: str) -> bool:
     """`want` is in `text`; a date in `want` matches the same day written any
-    way ("Tuesday 10/6" is found in "planned for October 6")."""
-    if want.lower() in (text or "").lower():
+    way ("Tuesday 10/6" is found in "planned for October 6"), and every other
+    word of `want` must still be there ("Dumpster swap planned for Tuesday
+    10/6" is not found in "Concrete pour was scheduled October 6")."""
+    low = (text or "").lower()
+    if want.lower() in low:
         return True
     days = _days(want)
-    return bool(days) and days <= _days(text)
+    if not days or not days <= _days(text):
+        return False
+    rest = _WEEKDAY_WORD.sub(" ", _MON_D.sub(" ", _MD.sub(" ", want)))
+    words = re.findall(r"[a-z0-9]+", rest.lower())
+    return all(re.search(r"\b" + re.escape(w), low) for w in words if w not in ("for", "on"))
 
 
 def score(sc: dict, q: dict, got: dict) -> dict:

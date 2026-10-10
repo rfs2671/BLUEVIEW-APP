@@ -46883,16 +46883,16 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         link = None
         mine = wa_attention_state.own_subject(quote) if it["type"] == "commitment" else set()
         if it["type"] == "commitment":
+            # The ask it answers (a reply, or the open ask just before it
+            # from someone else) stays linked even in other words ("arrange
+            # the material delivery?" -> "I'll get the rebar there Thursday").
             link = parent
-            if link and not (link_confident and link is parent) and mine \
-                    and not (mine & set(link.get("topic") or ())):
-                # "I'll send the updated logistics plan Thursday" after an
-                # unrelated ask: it names its own subject, so it is not an
-                # answer to that ask. Its own commitment, owner confirmed.
-                link = None
             if not link:
                 # "Lift is mine, 7am Thursday": the one open question or
-                # request in the group on the same topic.
+                # request in the group on the same topic. A commitment that
+                # names its own subject must share it ("I'll send the updated
+                # logistics plan Thursday" is not about the door schedule
+                # because the model's summary mentioned one).
                 hits = [c for c in cands if c["type"] in ("question", "request")
                         and c["status"] in wa_attention_state.LIVE
                         and ((mine & c["topic"]) if mine else (terms & c["topic"]))]
