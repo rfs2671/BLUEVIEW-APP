@@ -42,6 +42,7 @@ import {
   ListChecks,
   Activity,
   AlertTriangle,
+  Search,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -61,6 +62,7 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
+import { canSearch } from '../../src/utils/projectMemory';
 import { useProjects } from '../../src/hooks/useProjects';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
@@ -662,6 +664,8 @@ export default function ProjectDetailScreen() {
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
+    // Admins and PMs: search the project's WhatsApp messages and daily reports.
+    ...(canSearch(user) ? [{ title: 'Search', icon: Search, path: `/projects/${projectId}/search`, color: '#6366f1' }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
