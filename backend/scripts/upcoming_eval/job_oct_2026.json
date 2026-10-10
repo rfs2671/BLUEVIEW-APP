@@ -1,6 +1,6 @@
 {
  "name": "job_oct_2026 — one week of a Brooklyn GC group",
- "about": "Mon Oct 5 – Thu Oct 8 2026 (New York). Inspections (Con Ed, FDNY, DEP, National Grid), a pour, a crane pick, an ECB hearing; a reschedule of each kind, two cancels, a repeat, and the cases that must leave nothing: vague, an ambiguous day, past, a question, a weekday that is not that date's.",
+ "about": "Mon Oct 5 – Sat Oct 10 2026 (New York). Inspections (Con Ed, FDNY, DEP, National Grid), a pour, a crane pick, an ECB hearing; a reschedule of each kind, two cancels, a repeat, and the cases that must leave nothing: vague, an ambiguous day, past, a question, a weekday that is not that date's. Weekday words: \"next Tue\" said on a Tuesday is skipped (said Mon–Thu it is ambiguous) and the same words said on a Saturday are the coming Tuesday; \"next Wednesday\" on a Friday is the coming one; \"this Friday\" on a Thursday is tomorrow; \"this Thursday\" said on a Thursday is skipped.",
  "tz": "America/New_York",
  "project": "120 Atlantic Ave",
  "senders": {
@@ -133,10 +133,34 @@
    "text": "Reminder Con Ed Dec 4 for the meter set"
   },
   {
+   "id": "m21",
+   "from": "S",
+   "at": "2026-10-08 07:30",
+   "text": "Plumbing inspection this Friday, inspector confirmed"
+  },
+  {
+   "id": "m22",
+   "from": "R",
+   "at": "2026-10-08 07:45",
+   "text": "DOB sidewalk shed inspection this Thursday"
+  },
+  {
    "id": "m18",
    "from": "S",
    "at": "2026-10-08 08:00",
    "text": "DEP inspection is cancelled, they'll call to reschedule"
+  },
+  {
+   "id": "m19",
+   "from": "K",
+   "at": "2026-10-09 08:00",
+   "text": "Elevator inspection next Wednesday at 10am"
+  },
+  {
+   "id": "m20",
+   "from": "M",
+   "at": "2026-10-10 09:00",
+   "text": "National Grid gas service appointment next Tue between 8 and 12"
   }
  ],
  "expect": {
@@ -179,17 +203,6 @@
     "status": "open"
    },
    {
-    "from": "m10",
-    "what": "National Grid gas, next Tue",
-    "kind": [
-     "utility",
-     "inspection"
-    ],
-    "agency": "National Grid",
-    "date": "2026-10-13",
-    "status": "open"
-   },
-   {
     "from": "m12",
     "what": "DEP sewer inspection, cancelled",
     "kind": "inspection",
@@ -204,6 +217,32 @@
     "date": "2026-11-18",
     "time": "10:30",
     "status": "open"
+   },
+   {
+    "from": "m21",
+    "what": "plumbing inspection, 'this Friday' said Thursday",
+    "kind": "inspection",
+    "date": "2026-10-09",
+    "status": "open"
+   },
+   {
+    "from": "m19",
+    "what": "elevator inspection, 'next Wednesday' said Friday",
+    "kind": "inspection",
+    "date": "2026-10-14",
+    "time": "10:00",
+    "status": "open"
+   },
+   {
+    "from": "m20",
+    "what": "National Grid gas, 'next Tue' said Saturday",
+    "kind": [
+     "utility",
+     "inspection"
+    ],
+    "agency": "National Grid",
+    "date": "2026-10-13",
+    "status": "open"
    }
   ],
   "nothing_from": [
@@ -212,10 +251,13 @@
    "m5",
    "m11",
    "m13",
-   "m16"
+   "m16",
+   "m10",
+   "m22"
   ],
   "one_of": [
-   "Con Ed"
+   "Con Ed",
+   "National Grid"
   ]
  },
  "scripted": {
@@ -366,6 +408,44 @@
     "action": "cancel",
     "event_id": "$OPEN:m12",
     "quote": "DEP inspection is cancelled"
+   }
+  ],
+  "m21": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "title": "Plumbing inspection",
+    "date_text": "this Friday",
+    "quote": "Plumbing inspection this Friday"
+   }
+  ],
+  "m22": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "agency": "DOB",
+    "title": "DOB sidewalk shed inspection",
+    "date_text": "this Thursday",
+    "quote": "DOB sidewalk shed inspection this Thursday"
+   }
+  ],
+  "m19": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "title": "Elevator inspection",
+    "date_text": "next Wednesday at 10am",
+    "quote": "Elevator inspection next Wednesday at 10am"
+   }
+  ],
+  "m20": [
+   {
+    "action": "new",
+    "kind": "utility",
+    "agency": "National Grid",
+    "title": "National Grid gas service",
+    "date_text": "next Tue between 8 and 12",
+    "quote": "National Grid gas service appointment next Tue between 8 and 12"
    }
   ]
  }

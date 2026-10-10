@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,13 +36,33 @@ class TheDate(unittest.TestCase):
         for t, want in {
             "tomorrow": date(2026, 12, 1), "tmrw": date(2026, 12, 1),
             "today": date(2026, 11, 30), "day after tomorrow": date(2026, 12, 2),
-            "Thursday": date(2026, 12, 3), "next Tue": date(2026, 12, 1),
-            "this Sunday": date(2026, 12, 6), "next Monday": date(2026, 12, 7),
-            "this Monday": date(2026, 11, 30), "Tuesday next week": date(2026, 12, 8),
+            "Thursday": date(2026, 12, 3), "this Sunday": date(2026, 12, 6),
+            "on Wednesday": date(2026, 12, 2), "Tuesday next week": date(2026, 12, 8),
             "in 3 weeks": date(2026, 12, 21), "in two weeks": date(2026, 12, 14),
             "in 10 days": date(2026, 12, 10),
         }.items():
             self.assertEqual(when(t).get("date"), want, t)
+
+    def test_next_weekday_depends_on_the_day_it_is_said(self):
+        # Said Mon–Thu: this week's or the week after's? Skipped.
+        for day in range(4):                                # Mon Nov 30 .. Thu Dec 3
+            at = MON + timedelta(days=day)
+            for t in ("next Tue", "next Friday", "next Monday"):
+                self.assertEqual(when(t, at).get("skip"), "ambiguous", (t, day))
+        # Said Fri–Sun: the coming one.
+        fri, sat, sun = (MON + timedelta(days=d) for d in (4, 5, 6))   # Dec 4, 5, 6
+        self.assertEqual(when("next Tue", fri)["date"], date(2026, 12, 8))
+        self.assertEqual(when("next Friday", fri)["date"], date(2026, 12, 11))
+        self.assertEqual(when("next Monday", sat)["date"], date(2026, 12, 7))
+        self.assertEqual(when("next Sunday", sun)["date"], date(2026, 12, 13))
+        self.assertEqual(when("next Wed at 7am", sun),
+                         {"date": date(2026, 12, 9), "time": "07:00"})
+
+    def test_this_or_bare_weekday_is_the_coming_one_not_today(self):
+        self.assertEqual(when("this Friday")["date"], date(2026, 12, 4))
+        self.assertEqual(when("Friday")["date"], date(2026, 12, 4))
+        for t in ("Monday", "this Monday", "on Monday at 9am"):     # said on a Monday
+            self.assertEqual(when(t).get("skip"), "ambiguous", t)
 
     def test_never_guessed(self):
         for t, why in {
@@ -254,7 +274,7 @@ class TheDryRun(unittest.TestCase):
         r = dry.score(sc, asyncio.run(dry.run(sc, scripted=True)))
         self.assertEqual(r["sent"], [])
         self.assertEqual([(x["case"], x["notes"]) for x in r["rows"] if x["verdict"] == "FAIL"], [])
-        self.assertEqual(r["score"], {"HARD": 7, "PASS": 7, "FAIL": 0})
+        self.assertEqual(r["score"], {"HARD": 9, "PASS": 10, "FAIL": 0})
         self.assertEqual(dry.exit_code(r), 0)
 
     def test_a_wrong_answer_fails_the_run(self):

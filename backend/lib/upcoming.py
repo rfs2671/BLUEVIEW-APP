@@ -22,8 +22,12 @@ code turns them into a day in New York time, counted from when the message
 was sent. Anything it cannot pin to one day is skipped, never guessed:
   vague       "next week", "soon", "end of the month", "TBD"
   ambiguous   "the 5th" (which month?), "Tue 10/7" when 10/7 is a Wednesday,
-              two different days in one phrase, a bare weekday said on that
-              same weekday ("Tuesday", sent on a Tuesday)
+              two different days in one phrase, a weekday said on that same
+              weekday ("Tuesday" / "this Tuesday", sent on a Tuesday), and
+              "next <weekday>" said Monday–Thursday (this week's or the one
+              after? people split on it). Said Friday–Sunday, "next Tue" is
+              the coming Tuesday; a bare or "this" weekday is always the
+              coming one.
   past        a day before the message was sent
 
 What lives here, each a plain function tested without a server: the date
@@ -202,13 +206,17 @@ def resolve_when(date_text: Optional[str], sent_at: datetime) -> Dict[str, Any]:
             wd_day = monday_next + timedelta(days=wd)
         else:
             ahead = (wd - today.weekday()) % 7
-            if ahead == 0:
-                if lead == "next":
-                    ahead = 7
-                elif lead == "this":
-                    ahead = 0
-                else:
-                    return {"skip": "ambiguous"}  # "Tuesday", said on a Tuesday
+            if lead == "next":
+                # "next Tue" said Mon–Thu: this week's or the one after? People
+                # split on it, so it is skipped. Said Fri–Sun the week is over:
+                # the coming one ("next Friday" on a Friday: a week out).
+                if today.weekday() < 4:
+                    return {"skip": "ambiguous"}
+                ahead = ahead or 7
+            elif ahead == 0:
+                # "Tuesday" / "this Tuesday", said on a Tuesday: today, or a
+                # week out? Skipped.
+                return {"skip": "ambiguous"}
             wd_day = today + timedelta(days=ahead)
     elif _NEXT_WEEK.search(t) and not explicit:
         return {"skip": "vague"}
