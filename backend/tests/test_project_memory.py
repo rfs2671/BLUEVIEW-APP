@@ -106,6 +106,16 @@ class TheCheck(unittest.TestCase):
             self.assertEqual(pm.checked_claims(pm.parse_model(content).get("claims"),
                                                self.SOURCES), [])
 
+    def test_checkbox_groups_are_the_names_ticked(self):
+        log = {"data": {"equipment_on_site": {"boom_crane": False, "compressor": True,
+                                              "scissor_lift": True},
+                        "visitors_deliveries": ["Rebar delivery", "", "DOB inspector"]}}
+        e = {x["key"]: x["text"] for x in pm.daily_report_entries(log)}
+        self.assertEqual(e["equipment"], "compressor, scissor lift")
+        self.assertEqual(e["visitors"], "Rebar delivery, DOB inspector")
+        self.assertNotIn("boom", e["equipment"])
+        self.assertEqual(pm.daily_report_entries({"data": {"equipment_on_site": {"x": False}}}), [])
+
     def test_full_story_words(self):
         self.assertTrue(pm.is_full_story("what happened with the storefront?"))
         self.assertTrue(pm.is_full_story("give me the full story on the risers"))
@@ -151,6 +161,15 @@ class TheIndex(unittest.TestCase):
             _index(db, runs=6)
         self.assertEqual(len(db[pm.COLLECTION].rows), 7)
         self.assertTrue(all(r["embedding"] for r in db[pm.COLLECTION].rows))
+
+    def test_many_messages_at_one_instant_do_not_stall_the_cursor(self):
+        rows = [_msg(i, f"bulk import line {i}") for i in range(1, 8)]
+        for r in rows:
+            r["created_at"] = T0                     # all at the same instant
+        db = _world(rows)
+        with patch.object(server, "MEMORY_SCAN_PER_RUN", 2):
+            _index(db, runs=5)
+        self.assertEqual(len(db[pm.COLLECTION].rows), 7)
 
     def test_a_failed_embedding_is_retried(self):
         db = _world([_msg(1, "risers sent")])
@@ -251,6 +270,25 @@ class AtlasOrNot(unittest.TestCase):
         self.assertEqual(span["$lte"].isoformat(), "2026-09-22T03:59:59.999999+00:00")
 
 
+class TheTimelineDates(unittest.TestCase):
+
+    def test_tracked_item_history_keeps_to_the_date_range(self):
+        def ev(i, day):
+            return {"id": f"e{i}", "kind": "state", "to": "rescheduled", "due_to": "Monday",
+                    "quote": f"storefront moved {i}",
+                    "at": datetime.fromisoformat(f"{day}T15:00:00+00:00")}
+        db = FakeDb(attention_items=[{
+            "_id": "a1", "company_id": "co1", "project_id": "p1", "type": "commitment",
+            "summary": "storefront shop drawings", "topic": ["storefront"],
+            "owner": {"name": "Sam"}, "evidence": {"quote": "storefront", "sent_at": T0},
+            "history": [ev(1, "2026-08-30"), ev(2, "2026-09-10"), ev(3, "2026-10-02")]}])
+        with patch.object(server, "db", db):
+            rows = _run(server._memory_attention_sources(
+                "co1", "p1", "what happened with the storefront", date_from="2026-09-01",
+                date_to="2026-09-30"))
+        self.assertEqual([r["_id"] for r in rows], ["att:a1:e2"])
+
+
 class TheBootLine(unittest.TestCase):
     """[memory] atlas_search=ok|fallback, vector_index=ok|fallback, reason=..."""
 
@@ -324,6 +362,9 @@ class TheBootLine(unittest.TestCase):
 
 class TheDmTool(unittest.TestCase):
 
+    def test_two_questions_in_one_chat_keep_their_own_answers(self):
+        self.assertNotEqual(server._memory_dm_key("1@c.us", "M1"), server._memory_dm_key("1@c.us", "M2"))
+
     def test_offered_in_a_dm_only(self):
         tool = next(t for t in server._AGENT_TOOLS
                     if t["function"]["name"] == "search_project_history")
@@ -346,7 +387,7 @@ class TheDmTool(unittest.TestCase):
         async def fake_agent(**kw):
             await server._dispatch_agent_tool(
                 "search_project_history", {"query": "window"}, project_id="p1",
-                group_id=chat, company_id="co1", sender="1")
+                group_id=chat, company_id="co1", sender="1", reply_to=kw["reply_to"])
             kw["tool_trace"].append({"tool": "search_project_history", "args": {}, "result": "x"})
             return "The window was changed 3 times on 9/24."      # agent rewording: ignored
 

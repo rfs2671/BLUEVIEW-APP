@@ -46,7 +46,11 @@ export default function ProjectSearchScreen() {
       return;
     }
     setBusy(true);
+    // A new search clears the last one's results first: if this request
+    // fails, nothing from another query may look like its answer.
     setContext(null);
+    setResults(null);
+    setAnswer(null);
     try {
       const data = await memoryAPI.search(projectId, query, { answer: withAnswer });
       setResults(data.results || []);

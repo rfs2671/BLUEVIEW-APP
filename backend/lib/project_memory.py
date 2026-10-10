@@ -61,6 +61,17 @@ def clean(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
+def field_text(v: Any) -> str:
+    """A report field as words: a checkbox group (`{'boom_crane': True,
+    'compressor': False}`) is the names ticked, a list is its items joined
+    -- never the Python form of either (server._log_field, the same rule)."""
+    if isinstance(v, dict):
+        return ", ".join(str(k).replace("_", " ") for k, on in v.items() if on)
+    if isinstance(v, list):
+        return ", ".join(clean(x) for x in v if clean(x))
+    return clean(v)
+
+
 def daily_report_entries(log: Dict[str, Any]) -> List[Dict[str, str]]:
     """The text fields of a filed daily jobsite report, one entry each:
     [{key, label, text}]. Order as the report reads."""
@@ -86,9 +97,9 @@ def daily_report_entries(log: Dict[str, Any]) -> List[Dict[str, str]]:
         if not isinstance(o, dict):
             continue
         add(f"observation:{i}", "Observation", o.get("description") or o.get("note"))
-    add("visitors", "Visitors / deliveries", data.get("visitors_deliveries"))
-    add("equipment", "Equipment on site", data.get("equipment_on_site"))
-    add("areas", "Areas visited", data.get("areas_visited"))
+    add("visitors", "Visitors / deliveries", field_text(data.get("visitors_deliveries")))
+    add("equipment", "Equipment on site", field_text(data.get("equipment_on_site")))
+    add("areas", "Areas visited", field_text(data.get("areas_visited")))
     return out
 
 

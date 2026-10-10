@@ -31,6 +31,8 @@ const screen = fs.readFileSync(path.join(__dirname, '../../app/projects/[id]/sea
 ok(/memoryAPI\.search\(/.test(screen) && /memoryAPI\.context\(/.test(screen), 'the screen searches and opens context');
 ok(/chipText\(/.test(screen), 'every result shows its source chip');
 ok(!/sendWhatsApp|whatsappAPI\.send/.test(screen), 'the screen sends nothing to anyone');
+ok(/setResults\(null\);\s*\n\s*setAnswer\(null\);/.test(screen),
+  'a new search clears the last results before asking');
 const api = fs.readFileSync(path.join(__dirname, 'api.js'), 'utf8');
 ok(/\/memory\/search/.test(api) && /\/memory\/context\//.test(api), 'api paths');
 const project = fs.readFileSync(path.join(__dirname, '../../app/project/[id].jsx'), 'utf8');

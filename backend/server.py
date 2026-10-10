@@ -48390,7 +48390,8 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
     turn's tool results (or the question), else the records are sent as
     they are."""
     trace = trace if trace is not None else []
-    _MEMORY_DM_ANSWERS.pop(str(dm_chat), None)
+    mkey = _memory_dm_key(dm_chat, message_id or None)
+    _MEMORY_DM_ANSWERS.pop(mkey, None)
     reply = await _run_group_agent(
         project_id=str(project.get("_id")), group_id=dm_chat,
         company_id=ident["company_id"], sender=wa_dm.phone_digits(dm_chat),
@@ -48398,7 +48399,7 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         explicit_mention=True, reply_to=message_id or None,
         address_mode="loose", dm=True, tool_trace=trace,
         dm_history=wa_assistant.history_messages(history or []))
-    memory = _MEMORY_DM_ANSWERS.pop(str(dm_chat), None)
+    memory = _MEMORY_DM_ANSWERS.pop(mkey, None)
     if memory and any(t.get("tool") == "search_project_history" for t in trace):
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
@@ -48454,6 +48455,12 @@ _MEMORY_ATLAS: Dict[str, Any] = {"ok": None, "retry_at": None}
 # The last answer the DM tool built, per chat: sent as it is (the agent does
 # not reword a checked answer).
 _MEMORY_DM_ANSWERS: Dict[str, str] = {}
+
+
+def _memory_dm_key(chat: Any, message_id: Any) -> str:
+    """One question in one chat: two DMs answered at once never swap their
+    checked answers."""
+    return f"{chat}|{message_id or ''}"
 
 
 def _memory_disabled() -> bool:
@@ -48581,14 +48588,17 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
     q: Dict[str, Any] = {"project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
                          "sender": {"$ne": "bot"}}
     if isinstance(state.get("wa_at"), datetime):
-        q["created_at"] = {"$gte": state["wa_at"]}
-    rows = await db.whatsapp_messages.find(q).sort([("created_at", 1)]).limit(
+        # (created_at, _id): many rows at one instant (a bulk import) still
+        # move the cursor forward instead of reading the same batch forever.
+        q["$or"] = [{"created_at": {"$gt": state["wa_at"]}},
+                    {"created_at": state["wa_at"], "_id": {"$gt": state.get("wa_id")}}]
+    rows = await db.whatsapp_messages.find(q).sort([("created_at", 1), ("_id", 1)]).limit(
         MEMORY_SCAN_PER_RUN).to_list(None)
     names: Dict[str, str] = {}
-    wa_at = state.get("wa_at")
+    wa_at, wa_id = state.get("wa_at"), state.get("wa_id")
     for r in rows:
         if isinstance(r.get("created_at"), datetime):
-            wa_at = r["created_at"]
+            wa_at, wa_id = r["created_at"], r["_id"]
         if str(r.get("company_id") or "") in test_cos:
             report["skipped_test"] += 1
             continue
@@ -48605,12 +48615,14 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
     dq: Dict[str, Any] = {"log_type": "daily_jobsite", "status": "submitted",
                           "is_amendment": {"$ne": True}, "is_deleted": {"$ne": True}}
     if isinstance(state.get("dr_at"), datetime):
-        dq["updated_at"] = {"$gte": state["dr_at"]}
-    logs = await db.logbooks.find(dq).sort([("updated_at", 1)]).limit(200).to_list(None)
-    dr_at = state.get("dr_at")
+        dq["$or"] = [{"updated_at": {"$gt": state["dr_at"]}},
+                     {"updated_at": state["dr_at"], "_id": {"$gt": state.get("dr_id")}}]
+    logs = await db.logbooks.find(dq).sort([("updated_at", 1), ("_id", 1)]).limit(
+        200).to_list(None)
+    dr_at, dr_id = state.get("dr_at"), state.get("dr_id")
     for log in logs:
         if isinstance(log.get("updated_at"), datetime):
-            dr_at = log["updated_at"]
+            dr_at, dr_id = log["updated_at"], log["_id"]
         if str(log.get("company_id") or "") in test_cos:
             report["skipped_test"] += 1
             continue
@@ -48667,7 +48679,8 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
         report["removed"] = getattr(res, "deleted_count", 0) or 0
     await db[project_memory.STATE].update_one(
         {"_id": "cursor"},
-        {"$set": {"wa_at": wa_at, "dr_at": dr_at, "gc_after": gc_after, "ran_at": now}},
+        {"$set": {"wa_at": wa_at, "wa_id": wa_id, "dr_at": dr_at, "dr_id": dr_id,
+                  "gc_after": gc_after, "ran_at": now}},
         upsert=True)
     if any(report[k] for k in ("messages", "reports", "embedded", "removed", "embed_failed")):
         logger.info(f"[memory] index {report}")
@@ -48690,7 +48703,8 @@ async def ensure_project_memory_indexes() -> None:
                                   name="project_memory_by_project")
     # The indexer's two scans, oldest first from a cursor.
     await _ensure_index_resilient(db.logbooks,
-                                  keys=[("log_type", 1), ("status", 1), ("updated_at", 1)],
+                                  keys=[("log_type", 1), ("status", 1), ("updated_at", 1),
+                                        ("_id", 1)],
                                   name="logbooks_by_type_status_updated")
     await _ensure_index_resilient(db.whatsapp_messages, keys=[("created_at", 1), ("_id", 1)],
                                   name="whatsapp_messages_by_created")
@@ -48901,7 +48915,9 @@ async def _memory_search(company_id: str, project_id: str, query: str,
 
 
 async def _memory_attention_sources(company_id: str, project_id: str,
-                                    query: str, limit: int = 8) -> List[dict]:
+                                    query: str, limit: int = 8,
+                                    date_from: Optional[str] = None,
+                                    date_to: Optional[str] = None) -> List[dict]:
     """For the full story: the tracked items on the subject and their
     history (made, moved, handed over, done), each event with its words."""
     qt = set(project_memory.terms(query))
@@ -48934,6 +48950,11 @@ async def _memory_attention_sources(company_id: str, project_id: str,
                 what = f"Tracked {it.get('type')}" + (f" (due {e['due_to']})" if e.get("due_to") else "")
             at = e.get("at")
             ny = _memory_ny(at)
+            day = ny.strftime("%Y-%m-%d") if ny else None
+            if (date_from or date_to) and not day:
+                continue
+            if (date_from and day < date_from) or (date_to and day > date_to):
+                continue        # the same range as the records searched
             out.append({"_id": f"att:{it['_id']}:{e.get('id')}",
                         "source": project_memory.SOURCE_ATTENTION, "at": at,
                         "day": ny.strftime("%Y-%m-%d") if ny else None,
@@ -49008,7 +49029,8 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
     rows = await _memory_search(company_id, project_id, query, date_from, date_to,
                                 limit=25 if timeline else project_memory.TOP_K)
     if timeline:
-        rows += await _memory_attention_sources(company_id, project_id, query)
+        rows += await _memory_attention_sources(company_id, project_id, query,
+                                                date_from=date_from, date_to=date_to)
         rows.sort(key=_memory_when_key)
     sources = await _memory_present(rows, company_id, project_id)
     result = {"text": project_memory.NO_SOURCE, "claims": [], "sources": sources,
@@ -58125,7 +58147,7 @@ async def _dispatch_agent_tool(
             got = await _memory_answer(
                 str(company_id), str(project_id), str(args.get("query") or user_body or ""),
                 _day(args.get("date_from")), _day(args.get("date_to")))
-            _MEMORY_DM_ANSWERS[str(group_id)] = got["text"]
+            _MEMORY_DM_ANSWERS[_memory_dm_key(group_id, reply_to)] = got["text"]
             return got["text"]
         if name == "check_drawing_set":
             rows = await referenced_sheets_not_in_set(project_id)
