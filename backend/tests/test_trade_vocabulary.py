@@ -58,7 +58,7 @@ class TheVocabulary(unittest.TestCase):
         admin can pick."""
         self.assertEqual(server.TRADE_VOCABULARY, [
             "Concrete", "Formwork", "Excavation", "Masonry", "Steel / Ironwork",
-            "Framing", "Drywall", "Roofing", "Waterproofing", "Plumber",
+            "Framing", "Drywall", "Roofing", "Waterproofing", "Plumbing",
             "Water Main", "Electrical", "HVAC / Mechanical", "Sprinkler",
             "Fire Protection", "Elevator", "Glazing", "Painting", "Flooring",
             "Demolition", "Abatement", "Scaffolding", "Surveying", "Safety",
@@ -73,9 +73,9 @@ class TheVocabulary(unittest.TestCase):
 
     def test_the_separations_the_operator_ruled_are_kept(self):
         """Formwork is a distinct crew from Concrete (always the foundation
-        company); Plumber and Water Main are never the same crew in NYC.
+        company); Plumbing and Water Main are never the same crew in NYC.
         Merging either later is a ruling, not a tidy-up."""
-        for a, b in [("Concrete", "Formwork"), ("Plumber", "Water Main")]:
+        for a, b in [("Concrete", "Formwork"), ("Plumbing", "Water Main")]:
             self.assertIn(a, server.TRADE_VOCABULARY)
             self.assertIn(b, server.TRADE_VOCABULARY)
 
@@ -87,12 +87,14 @@ class TheVocabulary(unittest.TestCase):
 class DeprecationNotRespelling(unittest.TestCase):
     """The immutability rule, enforced."""
 
-    def test_the_deprecated_labels_are_the_ruled_four(self):
+    def test_the_deprecated_labels_are_the_ruled_five(self):
+        """"Plumber" joined 2026-10-10: the trade is Plumbing."""
         self.assertEqual(dict(server.DEPRECATED_TRADES), {
             "Concrete / Cement": "Concrete",
             "Framers": "Framing",
             "Electrician": "Electrical",
             "Carpentry": "Framing",
+            "Plumber": "Plumbing",
         })
 
     def test_a_deprecated_label_is_never_also_active(self):

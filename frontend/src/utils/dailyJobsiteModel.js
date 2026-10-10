@@ -60,7 +60,27 @@ export const cleanTrade = (v) => (isUnassignedTrade(v) ? '' : String(v).trim());
 
 export const NO_TRADE_LABEL = 'No trade assigned';
 
-export const tradeLabel = (v) => (cleanTrade(v) || NO_TRADE_LABEL);
+/**
+ * The vocabulary's current spelling of a stored trade, for DISPLAY.
+ *
+ * ONE LIST EVERYWHERE, ruled 2026-10-10: the crew chip prints "Plumbing" for
+ * a roster row stored as "Plumber", exactly as the report and the gate do.
+ * `vocab` is GET /api/trades/vocabulary ({ trades, deprecated }); the server
+ * owns the list and this file carries no copy of it. Without one -- offline,
+ * or before it loads -- the stored string prints, which is what it always
+ * did. Mirrors server.py's _trade_label; the stored value is never changed.
+ */
+export const canonicalTrade = (v, vocab) => {
+  const raw = cleanTrade(v);
+  if (!raw || !vocab) return raw;
+  const k = rosterKey(raw);
+  const active = (vocab.trades || []).find((t) => rosterKey(t) === k);
+  if (active) return active;
+  const old = Object.keys(vocab.deprecated || {}).find((t) => rosterKey(t) === k);
+  return old ? vocab.deprecated[old] : raw;
+};
+
+export const tradeLabel = (v, vocab) => (canonicalTrade(v, vocab) || NO_TRADE_LABEL);
 
 // Client-minted stable ids. Deliberately not server-owned: a row can be
 // created with no signal at all (the whole point of the offline draft), so an
@@ -1426,6 +1446,7 @@ export default {
   isUnassignedCompany,
   isUnassignedTrade,
   cleanTrade,
+  canonicalTrade,
   tradeLabel,
   NO_TRADE_LABEL,
   newActivityId,

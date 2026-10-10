@@ -44,7 +44,7 @@ const M = new Function(`
            isUnassignedWorkerRow, workRows, crewsWithoutWork,
            observationComplete, incompleteObservations, formatLogDate,
            formatCheckInTime, stepComplete,
-           isUnassignedTrade, cleanTrade, tradeLabel, NO_TRADE_LABEL,
+           isUnassignedTrade, cleanTrade, canonicalTrade, tradeLabel, NO_TRADE_LABEL,
            INSPECTION_PASS, INSPECTION_FAIL, EMPTY_INSPECTION, inspectionRow,
            inspectionComplete, incompleteInspections,
            composeChipBands, CHIP_SLOTS, OTHER_CHIP_ID };
@@ -511,6 +511,24 @@ ok(M.tradeLabel('UNASSIGNED') === 'No trade assigned',
 ok(M.tradeLabel('') === M.NO_TRADE_LABEL && M.tradeLabel(null) === M.NO_TRADE_LABEL,
   'every empty form reads the same way');
 ok(M.tradeLabel('Electrical') === 'Electrical', 'and a real trade reads as itself');
+
+// ONE LIST EVERYWHERE, ruled 2026-10-10. The vocabulary arrives from the
+// server; this is its shape, with labels that are NOT the real list, so the
+// rule is tested rather than a copy of the list.
+const VOCAB = { trades: ['Plumbing', 'Framing', 'HVAC / Mechanical'],
+                deprecated: { Plumber: 'Plumbing', Framers: 'Framing' } };
+ok(M.tradeLabel('Plumber', VOCAB) === 'Plumbing',
+  'a deprecated label reads as what superseded it -- "Plumbing", not "Plumber"');
+ok(M.tradeLabel('framers', VOCAB) === 'Framing', 'whatever its case');
+ok(M.tradeLabel('hvac / mechanical', VOCAB) === 'HVAC / Mechanical',
+  'a case variant reads as the vocabulary spells it');
+ok(M.tradeLabel('Laborer', VOCAB) === 'Laborer', 'a custom trade reads as typed');
+ok(M.tradeLabel('UNASSIGNED', VOCAB) === M.NO_TRADE_LABEL,
+  'and the sentinel is still named as an absence, vocabulary or not');
+ok(M.tradeLabel('Plumber') === 'Plumber' && M.tradeLabel('Plumber', null) === 'Plumber',
+  'with no vocabulary loaded (offline) the stored name prints, as it always did');
+ok(M.canonicalTrade('Plumber', VOCAB) === 'Plumbing' && M.canonicalTrade('', VOCAB) === '',
+  'canonicalTrade is the label without the absence wording');
 ok(!/none/i.test(M.NO_TRADE_LABEL), 'it does not say "none" - he has no trade YET');
 
 // The boundary: it must not travel into a crew row at all.
