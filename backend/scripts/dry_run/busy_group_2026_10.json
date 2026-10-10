@@ -461,7 +461,37 @@
     "owner": "G",
     "owner_possibly": false,
     "due_text": "Thursday"
-   }
+   },
+   "model": [
+    {
+     "type": "commitment",
+     "quote": "I'll send the updated logistics plan Thursday",
+     "due_text": "Thursday",
+     "summary": "Gina will send the updated logistics plan with the door schedule"
+    }
+   ],
+   "why": "Live eval Oct 10: the model's summary shared words with an open ask (the door schedule), the commitment was linked to it and marked 'possibly' Gina's (possible_subject [previous]). It names its own subject (the logistics plan): never a borrowed one, owner confirmed."
+  },
+  {
+   "from": "D",
+   "at": "2026-10-14 09:45:00",
+   "text": "I'll send the RTU startup report Thursday",
+   "model": [
+    {
+     "type": "commitment",
+     "quote": "I'll send the RTU startup report Thursday",
+     "due_text": "Thursday",
+     "summary": "Dave will send the RTU startup report with the door schedule"
+    }
+   ],
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "D",
+    "owner_possibly": false,
+    "due_text": "Thursday"
+   },
+   "why": "The sub-owned variant of line 31: a 'possibly' owner is never chased, so this would silently drop Dave's chase. Own subject, owner confirmed, chased on its due day (Thursday)."
   }
  ],
  "chase": {
@@ -532,6 +562,38 @@
     "owner": "M",
     "items": [
      25
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "morning",
+    "owner": "D",
+    "items": [
+     32
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "midday",
+    "owner": "D",
+    "items": [
+     32
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "eod",
+    "owner": "D",
+    "items": [
+     32
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "admin_dm",
+    "owner": "D",
+    "items": [
+     32
     ]
    }
   ]

@@ -57,6 +57,21 @@ class TheWords(unittest.TestCase):
             self.assertEqual(was.handover_name(text), want, text)
 
 
+class OwnSubject(unittest.TestCase):
+    """A commitment that names what it is about never borrows an earlier
+    ask's subject (live eval Oct 10, busy line 31)."""
+
+    def test_own_subject(self):
+        for text, want in {
+            "I'll send the updated logistics plan Thursday": {"logistic", "plan"},
+            "I'll send the RTU startup report Thursday": {"rtu", "startup", "report"},
+            "Lift is mine, 7am Thursday": {"lift"},
+            "Np": set(), "I'll take care of it": set(),
+            "Sunday. I'll keep u posted": set(), "Sure I'll get it before 8am": set(),
+        }.items():
+            self.assertEqual(was.own_subject(text), want, text)
+
+
 class Handover(unittest.TestCase):
 
     def setUp(self):

@@ -676,6 +676,12 @@ class TheDryRun(unittest.TestCase):
         self.assertEqual(bad, [])
         self.assertEqual(dry.exit_code(r), 0)
 
+    def test_a_date_matches_however_it_is_written(self):
+        self.assertTrue(dry.has_words("Tuesday 10/6", "Dumpster swap planned for October 6"))
+        self.assertTrue(dry.has_words("Oct 2", "(Roy Fishman, October 2nd)"))
+        self.assertFalse(dry.has_words("Tuesday 10/6", "planned for Oct 7"))
+        self.assertFalse(dry.has_words("Dumpster swap", "pump planned"))
+
     def test_a_missing_source_says_whether_it_was_retrieved(self):
         sc = dry.load(str(SCENARIO))
         q = next(x for x in sc["questions"] if x["q"].startswith("what happened with the storefront"))

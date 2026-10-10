@@ -46881,14 +46881,21 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 report["follow_ups"] += 1
                 continue
         link = None
+        mine = wa_attention_state.own_subject(quote) if it["type"] == "commitment" else set()
         if it["type"] == "commitment":
             link = parent
+            if link and not (link_confident and link is parent) and mine \
+                    and not (mine & set(link.get("topic") or ())):
+                # "I'll send the updated logistics plan Thursday" after an
+                # unrelated ask: it names its own subject, so it is not an
+                # answer to that ask. Its own commitment, owner confirmed.
+                link = None
             if not link:
                 # "Lift is mine, 7am Thursday": the one open question or
                 # request in the group on the same topic.
                 hits = [c for c in cands if c["type"] in ("question", "request")
                         and c["status"] in wa_attention_state.LIVE
-                        and terms & c["topic"]]
+                        and ((mine & c["topic"]) if mine else (terms & c["topic"]))]
                 link = hits[0] if len(hits) == 1 else None
         if link:
             terms |= link["topic"]
@@ -46939,6 +46946,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         # it. Possibly theirs, possibly about something else: for an admin.
         possible_subject = bool(
             it["type"] == "commitment" and link
+            and not mine                     # a self-stated subject is never borrowed
             and not (link_confident and link is parent)
             and not wa_attention_state.is_mine(
                 link, {"sender": sender, "sender_ref": _attention_ref(owner)})
@@ -48536,6 +48544,12 @@ async def _upcoming_apply(op: dict, msg: dict, ctx: dict, report: dict) -> None:
             {"_id": to_query_id(op["event_id"]), "project_id": ctx["project_id"]})
         if not cur:
             return
+        if cur.get("date") == op["date"].isoformat() and (
+                op.get("time") is None or op.get("time") == cur.get("time")):
+            # Already on that day (a repeat or an echo of the move): nothing
+            # changes, and no history entry says it moved again.
+            report["unchanged"] = report.get("unchanged", 0) + 1
+            return
         kind, agency = cur.get("kind") or "", cur.get("agency")
         await db.upcoming_events.update_one({"_id": cur["_id"]}, {
             "$set": {"date": op["date"].isoformat(), "time": op.get("time"),
@@ -48561,6 +48575,9 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
     body = str(msg.get("body") or "")
     if not upcoming.worth_a_call(body):
         report["filtered_out"] += 1
+        if ctx.get("trace") is not None:
+            ctx["trace"].append({"row_id": str(msg.get("_id")), "op": "skip",
+                                 "reason": "filtered_out (no event word and day word)"})
         return True
     if report["calls"] >= UPCOMING_MAX_CALLS:
         report["call_cap"] = True
@@ -48586,6 +48603,16 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
     for ev in upcoming.parse_events(out.get("content")):
         op = upcoming.decide(ev, {"body": body, "sent_at": sent_at}, open_events,
                              now=ctx["now"])
+        if ctx.get("trace") is not None:
+            # The dry run's per-message lines: what the model said, what the
+            # code made of it (the date words in, the day out), and why.
+            ctx["trace"].append({
+                "row_id": str(msg.get("_id")), "action": ev.get("action"),
+                "kind": ev.get("kind"), "quote": ev.get("quote"),
+                "date_text": ev.get("date_text"), "event_id": ev.get("event_id"),
+                "resolved": (upcoming.resolve_when(ev.get("date_text"), sent_at)
+                             if ev.get("date_text") else None),
+                "op": op["op"], "reason": op.get("reason")})
         if op["op"] == "skip":
             report["skipped"][op["reason"]] = report["skipped"].get(op["reason"], 0) + 1
             continue
@@ -48629,7 +48656,8 @@ async def _upcoming_run_group(cur: dict, ctx: dict, report: dict, llm=None) -> i
     return done
 
 
-async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None) -> dict:
+async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None,
+                              trace: Optional[list] = None) -> dict:
     """Linked project groups' new messages → chat events. Never posts."""
     now = now or datetime.now(timezone.utc)
     report = {"groups": 0, "new_groups": 0, "bot_off": 0, "messages": 0, "calls": 0,
@@ -48683,7 +48711,7 @@ async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None) -> dict:
         if report["call_cap"]:
             continue
         ctx = {"group_id": group_id, "project_id": project_id, "company_id": company_id,
-               "now": now}
+               "now": now, "trace": trace}
         try:
             report["messages"] += await _upcoming_run_group(cur, ctx, report, llm=llm)
         except Exception as e:
