@@ -160,6 +160,69 @@ class TheJob(unittest.TestCase):
         self.assertEqual(rep["deleted"], 3)
 
 
+class FailsSafe(unittest.TestCase):
+    """Codex on #718."""
+
+    def test_unlinked_rows_with_no_company_still_go_at_24_months(self):
+        db = _world()
+        db.whatsapp_messages.rows += [
+            {"_id": "dm_out", "project_id": None, "created_at": NOW - timedelta(days=800)},
+            {"_id": "dm_new", "created_at": NOW - timedelta(days=10)}]
+        rep = _tick(db)
+        left = sorted(m["_id"] for m in db.whatsapp_messages.rows)
+        self.assertEqual(left, ["dm_new", "m0", "m1", "m2"])
+        self.assertEqual(rep["companies"]["none"]["whatsapp_messages"]["by_reason"],
+                         {"unlinked": 1})
+
+    def test_a_hold_placed_mid_run_stops_the_delete(self):
+        db = _world(completion="2019-03-01")
+        real = server._retention_still_expired
+
+        async def hold_first(b, today):
+            db.projects.rows[0]["legal_hold"] = True        # placed after the bucket read
+            return await real(b, today)
+        with patch.object(server, "_retention_still_expired", hold_first):
+            rep = _tick(db)
+        # The messages were counted before the hold; the later collections
+        # read the project after it, so they are not even counted.
+        self.assertEqual((rep["would_expire"], rep["deleted"]), (3, 0))
+        self.assertEqual(len(db.whatsapp_messages.rows), 3)
+        self.assertEqual(len(db.attention_items.rows), 1)
+
+    def test_a_cleared_date_mid_run_stops_the_delete(self):
+        db = _world(completion="2019-03-01")
+        real = server._retention_still_expired
+
+        async def clear_first(b, today):
+            db.projects.rows[0].pop("job_completion_date", None)
+            return await real(b, today)
+        with patch.object(server, "_retention_still_expired", clear_first):
+            self.assertEqual(_tick(db)["deleted"], 0)
+
+    def test_unreadable_fixture_companies_means_count_only(self):
+        db = _world(completion="2019-03-01")
+
+        def broken(*a, **k):
+            raise RuntimeError("down")
+        with patch.object(db.companies, "find", broken):
+            rep = _tick(db)
+        self.assertEqual((rep["mode"], rep["fixture_lookup_failed"], rep["deleted"]),
+                         ("dry_run", True, 0))
+        self.assertEqual(len(db.whatsapp_messages.rows), 3)
+
+    def test_a_failed_ttl_drop_is_retried_every_night(self):
+        db = _world()
+        _run(db.whatsapp_messages.create_index([("created_at", 1)], name="whatsapp_messages_ttl_24m",
+                                               expireAfterSeconds=730 * 86400))
+
+        async def broken():
+            raise RuntimeError("down")
+        with patch.object(db.whatsapp_messages, "index_information", broken):
+            self.assertFalse(_tick(db, purge=False)["legacy_ttl_gone"])
+        self.assertTrue(_tick(db, purge=False)["legacy_ttl_gone"])
+        self.assertFalse([ix for ix in db.whatsapp_messages.indexes if "expireAfterSeconds" in ix])
+
+
 class TheTtlIsGone(unittest.TestCase):
 
     def test_the_old_ttl_is_dropped_on_boot(self):

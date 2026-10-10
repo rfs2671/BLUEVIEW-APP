@@ -7610,7 +7610,7 @@ async def require_operator_404(
 # instead of this one and were still flagging a project an admin had marked for
 # deletion. A constant whose whole job is "every background scan agrees on this"
 # cannot live where a scan outside this file has to copy it.
-from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
+from lib.project_state import ACTIVE_PROJECT_FILTER, FIXTURE_COMPANY_QUERY  # noqa: E402
 # ON ITS OWN LINE, and not folded into the import above. That line is asserted
 # verbatim by test_missing_flag_correction.TheScopeFilter -- the detectors once
 # carried a project filter of their own that was wrong on live data, and the
@@ -47455,14 +47455,65 @@ async def _retention_buckets(coll: str, now: datetime, today: str) -> List[dict]
             why = "project_retention"
         else:
             continue
-        for cid in await db[coll].distinct("company_id", query):
+        for cid in await _retention_company_ids(coll, query):
             out.append({"company_id": cid, "project_id": pid, "why": why,
                         "query": {**query, "company_id": cid}})
     unlinked = {"project_id": {"$in": [None, ""]}, "created_at": {"$lt": cutoff}}
-    for cid in await db[coll].distinct("company_id", unlinked):
+    for cid in await _retention_company_ids(coll, unlinked):
         out.append({"company_id": cid, "project_id": None, "why": "unlinked",
                     "query": {**unlinked, "company_id": cid}})
     return out
+
+
+async def _retention_company_ids(coll: str, query: dict) -> list:
+    """The companies with rows matching `query`, plus None: rows with no
+    company_id at all (outbound DMs, replies whose group binding failed),
+    which `distinct` never returns. `{"company_id": None}` matches them."""
+    cids = list(await db[coll].distinct("company_id", query))
+    if None not in cids:
+        cids.append(None)
+    return cids
+
+
+async def _retention_still_expired(b: dict, today: str) -> bool:
+    """Re-read right before a delete: a legal hold placed, or a completion
+    date cleared or corrected, since the bucket was read stops it."""
+    if b["why"] == "unlinked":
+        return True
+    proj = await db.projects.find_one(
+        {"_id": to_query_id(str(b["project_id"]))},
+        {"company_id": 1, "job_completion_date": 1, "legal_hold": 1})
+    if b["why"] == "project_gone":
+        return proj is None
+    return bool(proj) and wa_retention.project_expired(proj, today)
+
+
+async def _retention_fixture_ids() -> Optional[set]:
+    """Fixture (is_test) company ids, or None when they cannot be read.
+    FAILS CLOSED, unlike project_state.fixture_company_ids (built for alerts,
+    where a missed exclusion is one wrong alert): a run that cannot tell
+    fixture companies apart deletes nothing."""
+    try:
+        rows = await db.companies.find(dict(FIXTURE_COMPANY_QUERY), {"_id": 1}).to_list(None)
+        return {str(r["_id"]) for r in rows}
+    except Exception as e:
+        logger.warning(f"[retention] fixture companies unreadable: {type(e).__name__}")
+        return None
+
+
+async def _retention_drop_legacy_ttl() -> bool:
+    """Drop the 24-month TTL this job replaces. True once it is gone. Tried
+    on every boot AND every nightly run, so one failed drop does not leave
+    Mongo's TTL monitor deleting linked messages at 24 months."""
+    try:
+        if "whatsapp_messages_ttl_24m" in (await db.whatsapp_messages.index_information()):
+            await db.whatsapp_messages.drop_index("whatsapp_messages_ttl_24m")
+            logger.info("[retention] dropped whatsapp_messages_ttl_24m (project-based retention)")
+        return True
+    except Exception as e:
+        logger.error(f"[retention] could not drop whatsapp_messages_ttl_24m: "
+                     f"{type(e).__name__}; retried next run")
+        return False
 
 
 async def _retention_tick(now: Optional[datetime] = None,
@@ -47471,10 +47522,16 @@ async def _retention_tick(now: Optional[datetime] = None,
     now = now or datetime.now(timezone.utc)
     today = eastern_date(now)
     purge = wa_retention.purge_enabled() if purge is None else purge
-    test_cos = await fixture_company_ids(db)
+    ttl_gone = await _retention_drop_legacy_ttl()
+    test_cos = await _retention_fixture_ids()
+    if test_cos is None:
+        purge = False                    # fail closed: count only this run
     report: Dict[str, Any] = {"mode": "purge" if purge else "dry_run", "today": today,
                               "companies": {}, "would_expire": 0, "deleted": 0,
-                              "capped": False, "skipped_test": 0, "errors": 0}
+                              "capped": False, "skipped_test": 0, "errors": 0,
+                              "fixture_lookup_failed": test_cos is None,
+                              "legacy_ttl_gone": ttl_gone}
+    test_cos = test_cos or set()
     budget = wa_retention.MAX_DELETES_PER_RUN
     for coll in wa_retention.COLLECTIONS:
         try:
@@ -47501,6 +47558,9 @@ async def _retention_tick(now: Optional[datetime] = None,
             c["by_reason"][b["why"]] = c["by_reason"].get(b["why"], 0) + n
             report["would_expire"] += n
             while purge and budget > 0:
+                if not await _retention_still_expired(b, today):
+                    c["stopped"] = c.get("stopped", 0) + 1
+                    break
                 ids = [r["_id"] for r in await db[coll].find(b["query"], {"_id": 1}).limit(
                     min(wa_retention.BATCH, budget)).to_list(None)]
                 if not ids:
@@ -51389,13 +51449,9 @@ async def ensure_whatsapp_phase1_indexes():
     # whatsapp_messages has NO TTL: retention is project-based now and runs
     # nightly as _retention_job (lib/wa_retention.py), counting only until
     # RETENTION_PURGE_ENABLED is on. The 24-month TTL it replaces is dropped
-    # here, so the TTL monitor deletes nothing on its own after this deploy.
-    try:
-        if "whatsapp_messages_ttl_24m" in (await db.whatsapp_messages.index_information()):
-            await db.whatsapp_messages.drop_index("whatsapp_messages_ttl_24m")
-            logger.info("[retention] dropped whatsapp_messages_ttl_24m (project-based retention)")
-    except Exception as e:
-        logger.warning(f"[retention] could not drop whatsapp_messages_ttl_24m: {type(e).__name__}")
+    # here -- and again by every nightly run until it is gone, so a failed
+    # drop does not leave the TTL monitor deleting on its own.
+    await _retention_drop_legacy_ttl()
     await _ensure_index_resilient(
         db["scheduler_leases"], keys=[("expires_at", 1)],
         name="scheduler_leases_ttl", expireAfterSeconds=0)
