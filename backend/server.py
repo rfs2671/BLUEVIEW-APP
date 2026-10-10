@@ -47360,8 +47360,17 @@ async def _chase_not_opted_in(item: dict, day, now: datetime, okey: str) -> None
                                   "chased by private DM after they send START)",
             "review": None, "created_at": now, "shadow": True,
         }
-        await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": row},
-                                                 upsert=True)
+        have = await db[wa_chase.COLLECTION].find_one({"_id": rid})
+        if not have:
+            await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": row},
+                                                     upsert=True)
+        elif row["item_ids"][0] not in (have.get("item_ids") or []):
+            # Every item they would be chased on that day, from every job.
+            await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$set": {
+                "item_ids": list(have.get("item_ids") or []) + row["item_ids"],
+                "items": list(have.get("items") or []) + row["items"],
+                "project_ids": sorted(set(have.get("project_ids") or []) | set(row["project_ids"])),
+            }})
     except Exception as e:
         logger.warning(f"[chase] not-opted-in row failed: {type(e).__name__}")
 
@@ -47456,7 +47465,21 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             if okey not in dm_targets:
                 dm_targets[okey] = await _chase_dm_target(it)
             target = dm_targets[okey]
-            if not target:
+            eod = None
+            if not target and slot == wa_chase.ADMIN:
+                # Opted out (STOP) after the end of day DM: the 4:00
+                # escalation goes to the other admins all the same.
+                try:
+                    prior = await db[wa_chase.COLLECTION].find(
+                        {"day": day.isoformat(), "item_ids": str(it.get("_id")),
+                         "slot": wa_chase.EOD}).to_list(5)
+                except Exception:
+                    prior = []
+                eod = next((n for n in prior if n.get("dm_user_id")), None)
+            if eod:
+                target = {"user_id": eod["dm_user_id"],
+                          "name": (eod.get("to") or [eod.get("owner_name") or ""])[0]}
+            elif not target:
                 report["not_opted_in"] += 1
                 await _chase_not_opted_in(it, day, now, okey)
                 continue

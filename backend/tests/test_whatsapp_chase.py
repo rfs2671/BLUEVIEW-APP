@@ -220,6 +220,29 @@ class GcStaffPrivately(_Base):
         view = server._chase_view(r)
         self.assertEqual((view["channel"], view["not_chased"]), ("dm", "not opted in"))
 
+    def test_not_opted_in_lists_every_item_that_day(self):
+        mike = {"kind": "user", "id": "u_mike", "name": "Mike Rivera", "sub_company": None}
+        _item(self.db, owner=dict(mike))
+        _item(self.db, owner=dict(mike), group_id=G_2, quote="door schedule by noon today")
+        self.chase(_et(8, 35))
+        self.chase(_et(12, 35))
+        (r,) = self.rows()
+        self.assertEqual(len(r["item_ids"]), 2)
+        self.assertEqual(sorted(i["quote"] for i in r["items"]),
+                         ["I'll send the stair RFI today", "door schedule by noon today"])
+
+    def test_stop_after_the_eod_dm_still_escalates(self):
+        self.gc_item()
+        for h, m in SLOTS_ALL[:-1]:
+            self.chase(_et(h, m))
+        for o in self.db[server.WA_OPTINS].rows:
+            if o.get("user_id") == "u_pm":
+                o["status"] = "stopped"
+        self.chase(_et(*SLOTS_ALL[-1]))
+        (adm,) = self.rows("admin_dm")
+        self.assertEqual(adm["to_user_ids"], ["u_ana"])
+        self.assertEqual(self.rows("not_chased"), [])
+
     def test_one_dm_per_person_per_slot_across_groups(self):
         self.gc_item()
         self.gc_item(group_id=G_2, quote="door schedule by noon today")
