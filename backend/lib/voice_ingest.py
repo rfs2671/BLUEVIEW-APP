@@ -1,9 +1,11 @@
 """Phase F1 — WhatsApp voice note ingestion pipeline.
 
 Orchestrates: Whisper transcription → English translation → Sentry-friendly
-error handling → cost telemetry. Audio bytes are processed in-memory only
-and discarded immediately after Whisper returns; nothing voice-related is
-ever written to R2 or any other persistent blob store.
+error handling → cost telemetry. This module processes audio bytes in
+memory only and keeps nothing. (The caller decides storage: a GROUP voice
+note's audio is kept in R2 under its project, wa-audio/<project>/…, so the
+review screens can play it next to the transcript -- lib/wa_voice.py; a DM
+voice note's audio is never stored.)
 
 ──────────────────────────────────────────────────────────────────
 Why this lives in lib/ rather than inline in server.py
@@ -131,6 +133,7 @@ class WhisperResult:
     no_speech_prob: float
     cost_usd: float
     raw_segments: int = 0
+    confidence: Optional[float] = None
 
 
 @dataclass
@@ -162,6 +165,10 @@ class VoiceIngestResult:
     user_reply: Optional[str] = None       # set when ok=False
     error_kind: Optional[str] = None       # "whisper_failed" / "low_confidence" / etc.
     telemetry: Dict[str, Any] = field(default_factory=dict)
+    # How sure Whisper was (0..1, from its per-segment log probabilities)
+    # and how long the note ran. None when Whisper never answered.
+    confidence: Optional[float] = None
+    duration_sec: Optional[float] = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -299,6 +306,21 @@ def should_short_circuit(
     return False, ""
 
 
+def aggregate_confidence(segments: list) -> Optional[float]:
+    """How sure Whisper was of the words, 0..1: exp of its avg_logprob,
+    weighted by each segment's length. None when no segment says."""
+    num = den = 0.0
+    for seg in segments or []:
+        if not isinstance(seg, dict) or not isinstance(seg.get("avg_logprob"), (int, float)):
+            continue
+        w = max(float(seg.get("end") or 0) - float(seg.get("start") or 0), 0.01)
+        num += float(seg["avg_logprob"]) * w
+        den += w
+    if not den:
+        return None
+    return round(max(0.0, min(1.0, math.exp(num / den))), 3)
+
+
 def aggregate_no_speech_prob(segments: list) -> float:
     """Whisper's verbose_json returns per-segment no_speech_prob. We
     take the MAX across segments — a single high-no-speech segment
@@ -384,6 +406,7 @@ async def transcribe_whisper(
             duration = float(payload.get("duration") or 0.0)
             segments = payload.get("segments") or []
             no_speech = aggregate_no_speech_prob(segments)
+            confidence = aggregate_confidence(segments)
             cost = estimate_whisper_cost_usd(duration)
             return WhisperResult(
                 transcript=text,
@@ -392,6 +415,7 @@ async def transcribe_whisper(
                 no_speech_prob=no_speech,
                 cost_usd=cost,
                 raw_segments=len(segments),
+                confidence=confidence,
             )
         except Exception as e:
             last_exc = e
@@ -597,6 +621,7 @@ async def process_voice_note(
     telemetry["whisper_cost_usd"] = wr.cost_usd
     telemetry["whisper_no_speech_prob"] = wr.no_speech_prob
     telemetry["whisper_segments"] = wr.raw_segments
+    telemetry["whisper_confidence"] = wr.confidence
 
     # ── Short-circuit ─────────────────────────────────────────────
     short_circuit, reason = should_short_circuit(wr.transcript, wr.no_speech_prob)
@@ -610,6 +635,8 @@ async def process_voice_note(
             original_transcript=wr.transcript,
             language_detected=wr.language,
             no_speech_prob=wr.no_speech_prob,
+            confidence=wr.confidence,
+            duration_sec=wr.duration_sec,
             user_reply=USER_REPLY_NO_SPEECH,
             error_kind="low_confidence",
             telemetry=telemetry,
@@ -633,6 +660,8 @@ async def process_voice_note(
             original_transcript=wr.transcript,
             language_detected=wr.language,
             no_speech_prob=wr.no_speech_prob,
+            confidence=wr.confidence,
+            duration_sec=wr.duration_sec,
             user_reply=USER_REPLY_TOO_LONG,
             error_kind="audio_too_long",
             telemetry=telemetry,
@@ -648,6 +677,8 @@ async def process_voice_note(
             original_transcript=wr.transcript,
             language_detected=wr.language,
             no_speech_prob=wr.no_speech_prob,
+            confidence=wr.confidence,
+            duration_sec=wr.duration_sec,
             telemetry=telemetry,
         )
 
@@ -668,5 +699,7 @@ async def process_voice_note(
         original_transcript=wr.transcript,
         language_detected=wr.language,
         no_speech_prob=wr.no_speech_prob,
+        confidence=wr.confidence,
+        duration_sec=wr.duration_sec,
         telemetry=telemetry,
     )

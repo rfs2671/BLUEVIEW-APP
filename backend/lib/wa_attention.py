@@ -39,7 +39,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "att-v1.2"
+PROMPT_VERSION = "att-v1.3"
 MODEL = "gpt-4o-mini"
 
 TYPES = ("question", "request", "commitment", "issue", "decision")
@@ -94,10 +94,15 @@ def filter_reason(msg: Dict[str, Any]) -> Optional[str]:
         return "mention"
     if str(msg.get("quoted_message_id") or "").strip():
         return "reply"
-    if "?" in body:
+    if "?" in body or "¿" in body:
         return "question_mark"
     if FILTER_WORDS_RE.search(body):
         return "keyword"
+    # The keyword list is English: a Spanish or Yiddish message (or a voice
+    # transcript in one) goes to the model rather than being dropped unread.
+    from lib import multilang
+    if multilang.non_english(body):
+        return "non_english"
     return None
 
 
@@ -156,6 +161,12 @@ Rules:
 - importance: "high" ONLY when the message itself says it is urgent (urgent, ASAP, emergency, immediately, stop work). Never infer it from the topic or from a word like "fire" or "inspection". Otherwise "normal".
 - Greetings, thanks, jokes, sarcasm, rhetorical questions, photos with no ask, and plain status updates are NOT items.
 - At most 3 items. None is a fine answer.
+
+Languages: a message may be in English, Spanish or Yiddish (in Hebrew letters, or written in English letters), or switch between them in one message. Read all three.
+- "summary" and "title" are ALWAYS in English.
+- "quote" stays EXACTLY as written, in its own language and script. Never translate a quote.
+- Day and name words stay as written too ("el viernes", "mañana", "morgn", "מארגן"): never translate or compute them.
+- A voice note arrives as its transcript: read it like typed text.
 
 Return JSON: {"items": [{"type": "...", "quote": "...", "summary": "under 15 words", "owner_text": null, "due_text": null, "importance": "normal", "tags": ["..."]}]}"""
 
@@ -349,12 +360,20 @@ def time_only(due_text: Optional[str]) -> bool:
 def parse_due(due_text: Optional[str], sent_at: datetime) -> Optional[date]:
     if not due_text:
         return None
-    t = due_text.lower()
+    # Spanish and Yiddish day words read as English ("mañana", "el
+    # viernes", "morgn", "פרייטיק"); due_text itself stays as said.
+    from lib import multilang
+    t = multilang.normalize_when(due_text)
     today = _local_date(sent_at)
     if re.search(r"\bnext week\b|\bnext month\b|\basap\b|\bsoon\b", t):
         return None
+    if re.search(r"\bday after tomorrow\b", t):
+        return today + timedelta(days=2)
     if re.search(r"\b(tomorrow|tmrw|tmr)\b", t):
         return today + timedelta(days=1)
+    m = re.search(r"\bin\s+(\d{1,2})\s+(day|week)s?\b", t)
+    if m:                                  # "in 3 weeks" / "en 3 semanas"
+        return today + timedelta(days=int(m.group(1)) * (7 if m.group(2) == "week" else 1))
     m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", t)
     if m:
         mo, d = int(m.group(1)), int(m.group(2))
