@@ -1,0 +1,198 @@
+{
+ "name": "job_es_2026_10 — a Spanish-speaking crew's week (Upcoming)",
+ "about": "Fri Oct 9 – Sat Oct 10 2026 (New York). Spanish day words read by the same resolver as English: 'el próximo martes' said on a Friday is the coming Tuesday; 'mañana a las 7am'; 'pasado mañana'; 'en 3 semanas'; 'pronto' is vague. 'El colado se canceló' cancels the pour by code (the model returned nothing for it). A confident Spanish voice note is read like text; a low-confidence one creates its event flagged for review and its move is held.",
+ "tz": "America/New_York",
+ "project": "120 Atlantic Ave",
+ "senders": {
+  "R": {
+   "name": "Roy Fishman",
+   "phone": "17185550301"
+  },
+  "C": {
+   "name": "Carlos Méndez",
+   "phone": "17185550302"
+  },
+  "M": {
+   "name": "María Gómez",
+   "phone": "17185550303"
+  },
+  "L": {
+   "name": "Luis Ortega",
+   "phone": "17185550304"
+  }
+ },
+ "messages": [
+  {
+   "id": "e1",
+   "from": "R",
+   "at": "2026-10-09 08:00",
+   "text": "La inspección de plomería del DOB es el próximo martes a las 10am"
+  },
+  {
+   "id": "e2",
+   "from": "C",
+   "at": "2026-10-09 09:00",
+   "text": "El colado del tercer piso es mañana a las 7am"
+  },
+  {
+   "id": "e3",
+   "from": "C",
+   "at": "2026-10-09 12:00",
+   "text": "El colado se canceló por la lluvia"
+  },
+  {
+   "id": "e4",
+   "from": "M",
+   "at": "2026-10-09 13:00",
+   "transcript": "La entrega de varilla es en 3 semanas",
+   "lang": "spanish",
+   "confidence": 0.88
+  },
+  {
+   "id": "e5",
+   "from": "L",
+   "at": "2026-10-09 14:00",
+   "text": "Con Ed viene pronto para el medidor"
+  },
+  {
+   "id": "e6",
+   "from": "M",
+   "at": "2026-10-09 15:00",
+   "transcript": "la entrega de bloques es el lunes",
+   "lang": "spanish",
+   "confidence": 0.32
+  },
+  {
+   "id": "e7",
+   "from": "M",
+   "at": "2026-10-09 16:00",
+   "transcript": "la inspección del DOB se movió al miércoles",
+   "lang": "spanish",
+   "confidence": 0.35
+  },
+  {
+   "id": "e8",
+   "from": "C",
+   "at": "2026-10-10 09:00",
+   "text": "La grúa llega pasado mañana a las 8am"
+  }
+ ],
+ "expect": {
+  "events": [
+   {
+    "from": "e1",
+    "what": "DOB plumbing, 'el próximo martes' said Friday",
+    "kind": "inspection",
+    "agency": "DOB",
+    "date": "2026-10-13",
+    "time": "10:00",
+    "status": "open",
+    "moves": 0
+   },
+   {
+    "from": "e2",
+    "what": "3rd floor pour, then 'se canceló' (code cancel)",
+    "kind": "pour",
+    "date": "2026-10-10",
+    "time": "07:00",
+    "status": "cancelled"
+   },
+   {
+    "from": "e4",
+    "what": "rebar, 'en 3 semanas' (confident voice)",
+    "kind": "delivery",
+    "date": "2026-10-30",
+    "status": "open",
+    "needs_review": false
+   },
+   {
+    "from": "e6",
+    "what": "block delivery, low-confidence voice: flagged",
+    "kind": "delivery",
+    "date": "2026-10-12",
+    "status": "open",
+    "needs_review": true
+   },
+   {
+    "from": "e8",
+    "what": "crane, 'pasado mañana' said Saturday",
+    "kind": "crane_pick",
+    "date": "2026-10-12",
+    "time": "08:00",
+    "status": "open"
+   }
+  ],
+  "nothing_from": [
+   "e5"
+  ]
+ },
+ "scripted": {
+  "e1": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "agency": "DOB",
+    "title": "DOB plumbing inspection",
+    "date_text": "el próximo martes a las 10am",
+    "quote": "La inspección de plomería del DOB es el próximo martes a las 10am"
+   }
+  ],
+  "e2": [
+   {
+    "action": "new",
+    "kind": "pour",
+    "title": "3rd floor pour",
+    "date_text": "mañana a las 7am",
+    "quote": "El colado del tercer piso es mañana a las 7am"
+   }
+  ],
+  "e3": [],
+  "e4": [
+   {
+    "action": "new",
+    "kind": "delivery",
+    "title": "Rebar delivery",
+    "date_text": "en 3 semanas",
+    "quote": "La entrega de varilla es en 3 semanas"
+   }
+  ],
+  "e5": [
+   {
+    "action": "new",
+    "kind": "utility",
+    "agency": "Con Ed",
+    "title": "Con Ed meter",
+    "date_text": "pronto",
+    "quote": "Con Ed viene pronto para el medidor"
+   }
+  ],
+  "e6": [
+   {
+    "action": "new",
+    "kind": "delivery",
+    "title": "Block delivery",
+    "date_text": "el lunes",
+    "quote": "la entrega de bloques es el lunes"
+   }
+  ],
+  "e7": [
+   {
+    "action": "reschedule",
+    "event_id": "$OPEN:e1",
+    "kind": "inspection",
+    "agency": "DOB",
+    "date_text": "al miércoles",
+    "quote": "la inspección del DOB se movió al miércoles"
+   }
+  ],
+  "e8": [
+   {
+    "action": "new",
+    "kind": "crane_pick",
+    "title": "Crane pick",
+    "date_text": "pasado mañana a las 8am",
+    "quote": "La grúa llega pasado mañana a las 8am"
+   }
+  ]
+ }
+}

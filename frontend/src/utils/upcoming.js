@@ -42,7 +42,9 @@ export function eventLine(e) {
 export function evidenceLine(e) {
   const x = e || {};
   if (x.source !== 'chat' || !x.quote) return '';
-  return x.who ? `“${x.quote}” — ${x.who}` : `“${x.quote}”`;
+  // A voice note's words are its transcript: marked 🎤.
+  const q = x.voice ? `🎤 “${x.quote}”` : `“${x.quote}”`;
+  return x.who ? `${q} — ${x.who}` : q;
 }
 
 /** The last move, if it moved: "Moved from Dec 2". */

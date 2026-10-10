@@ -19,6 +19,8 @@ import { GlassCard } from '../GlassCard';
 import { useToast } from '../Toast';
 import { useTheme } from '../../context/ThemeContext';
 import { whatsappAPI } from '../../utils/api';
+import { quoteText, reviewNote } from '../../utils/sourceMessage';
+import SourceSheet from './SourceSheet';
 import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
@@ -34,6 +36,7 @@ export default function AttentionCard({ projectId }) {
   const [state, setState] = useState('loading'); // loading | ok | error
   const [busy, setBusy] = useState(null);
   const [list, setList] = useState('open');
+  const [source, setSource] = useState(null);   // { rowId, reason } — the sheet
 
   const load = useCallback(async () => {
     try {
@@ -112,7 +115,13 @@ export default function AttentionCard({ projectId }) {
                   {typeLabel(it.type)}{it.importance === 'high' ? ' · High' : ''}
                   {it.group_name ? ` · ${it.group_name}` : ''}
                 </Text>
-                <Text style={s.quote}>“{it.quote}”</Text>
+                <Pressable disabled={!it.message_row_id}
+                  onPress={() => setSource({ rowId: it.message_row_id, reason: it.review_reason })}
+                  accessibilityRole="button" accessibilityLabel="Show the original message">
+                  <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>
+                </Pressable>
+                {reviewNote(null, it.review_reason)
+                  ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
                 {it.summary ? <Text style={s.muted}>{it.summary}</Text> : null}
                 {[ownerLine(it), dueLine(it), statusLine(it)].filter(Boolean).map((l) => (
                   <Text key={l} style={s.muted}>{l}</Text>
@@ -123,7 +132,13 @@ export default function AttentionCard({ projectId }) {
                       <View key={e.id || e.kind} style={s.event}>
                         <Text style={s.eventLine}>{eventLine(e)}</Text>
                         {e.kind !== 'created' && e.quote ? (
-                          <Text style={s.eventQuote}>“{e.quote}”</Text>
+                          <Pressable disabled={!e.message_row_id}
+                            onPress={() => setSource({ rowId: e.message_row_id })}
+                            accessibilityRole="button" accessibilityLabel="Show the original message">
+                            <Text style={s.eventQuote}>
+                              {quoteText(e.quote, e.evidence_kind === 'voice')}
+                            </Text>
+                          </Pressable>
                         ) : null}
                         {e.kind !== 'created' && linkLine(e) ? (
                           <Text style={s.muted}>{linkLine(e)}</Text>
@@ -169,6 +184,10 @@ export default function AttentionCard({ projectId }) {
           </>
         )}
       </GlassCard>
+      {source ? (
+        <SourceSheet projectId={projectId} rowId={source.rowId} reason={source.reason}
+          onClose={() => setSource(null)} />
+      ) : null}
     </>
   );
 }

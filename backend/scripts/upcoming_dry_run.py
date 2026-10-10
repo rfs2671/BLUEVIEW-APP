@@ -67,15 +67,33 @@ def load(path: str) -> dict:
         sc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ScenarioError(f"cannot read {path}: {e}")
+    if sc.get("placeholder"):
+        # A scenario still waiting for its real phrases (the Yiddish one):
+        # it refuses to run rather than score made-up words.
+        raise ScenarioError(sc.get("about") or "placeholder scenario: nothing to run yet")
     for k in ("senders", "messages", "expect"):
         if not sc.get(k):
             raise ScenarioError(f"scenario has no {k}")
+    for m in sc["messages"]:
+        if m.get("transcript") is not None and not m.get("text"):
+            m["text"] = m["transcript"]       # a voice note: its transcript is the message
     return sc
 
 
 def _at(sc: dict, s: str) -> datetime:
     tz = ZoneInfo(sc.get("tz") or "America/New_York") if ZoneInfo else timezone.utc
     return datetime.fromisoformat(s).replace(tzinfo=tz).astimezone(timezone.utc)
+
+
+def _voice(m: dict) -> dict:
+    """A voice note's row fields, as the webhook stores them."""
+    if m.get("transcript") is None:
+        return {}
+    from lib import wa_voice
+    lang = wa_voice.lang_code(m.get("lang"), m["transcript"])
+    return {"has_audio": True, "transcribed": True, **wa_voice.row_fields(
+        m["transcript"], m.get("english") or m["transcript"], lang, m.get("confidence"),
+        m.get("duration_sec") or 8.0, None)}
 
 
 def world(sc: dict):
@@ -87,7 +105,7 @@ def world(sc: dict):
         rows.append({"_id": f"row_{m['id']}", "group_id": GROUP, "project_id": PROJECT,
                      "company_id": COMPANY, "sender": s["phone"], "sender_name": s["name"],
                      "body": m["text"], "message_id": f"3EB0{m['id']}", "timestamp": at,
-                     "created_at": at, "from_me": False})
+                     "created_at": at, "from_me": False, **_voice(m)})
     return FakeDb(
         projects=[{"_id": PROJECT, "company_id": COMPANY, "name": sc.get("project", "Dry run")}],
         whatsapp_groups=[{"_id": "g_dry", "wa_group_id": GROUP, "group_name": "Site",
@@ -201,6 +219,8 @@ def score(sc: dict, out: dict) -> dict:
                     moves += 1
             if moves != want.get("moves", 0):
                 notes.append(f"moved {moves}x (want {want.get('moves', 0)})")
+            if "needs_review" in want and bool(ev.get("needs_review")) != want["needs_review"]:
+                notes.append(f"flagged {bool(ev.get('needs_review'))} (want {want['needs_review']})")
         rows.append({"case": f"event from {want['from']}: {want.get('what', '')}",
                      "verdict": "FAIL" if notes else "HARD", "notes": notes,
                      "got": [{k: hit[0].get(k) for k in ("kind", "agency", "title", "date",

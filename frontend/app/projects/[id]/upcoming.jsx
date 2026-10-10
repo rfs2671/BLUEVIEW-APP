@@ -24,6 +24,7 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import DateInput from '../../../src/components/DateInput';
+import SourceSheet from '../../../src/components/whatsapp/SourceSheet';
 
 // Project → Upcoming: hearings and permit expirations from the city's
 // records, and the dated events said in the job's WhatsApp group ("from
@@ -38,6 +39,7 @@ export default function ProjectUpcomingScreen() {
   const [events, setEvents] = useState(null);
   const [editing, setEditing] = useState(null);   // { id, date, time }
   const [busy, setBusy] = useState(null);
+  const [sourceRow, setSourceRow] = useState(null);   // the original-message sheet
   const [feed, setFeed] = useState(null);         // { active, url? }
 
   const load = useCallback(async () => {
@@ -172,8 +174,17 @@ export default function ProjectUpcomingScreen() {
                     {[e.chip, e.agency, movedLine(e)].filter(Boolean).join(' · ')}
                   </Text>
                   {!!evidenceLine(e) && (
-                    <Text style={[styles.quote, muted]}>{evidenceLine(e)}</Text>
+                    <Pressable disabled={!e.message_row_id}
+                      onPress={() => setSourceRow(e.message_row_id)}
+                      accessibilityRole="button" accessibilityLabel="Show the original message">
+                      <Text style={[styles.quote, muted]}>{evidenceLine(e)}</Text>
+                    </Pressable>
                   )}
+                  {e.needs_review ? (
+                    <Text style={[styles.chip, muted]}>
+                      Flagged: from a voice note that may be misheard. Check it before relying on it.
+                    </Text>
+                  ) : null}
                   {!!e.detail && <Text style={[styles.chip, muted]}>{e.detail}</Text>}
                   {editing && editing.id === e.id && (
                     <View style={styles.editRow}>
@@ -236,6 +247,9 @@ export default function ProjectUpcomingScreen() {
           </GlassCard>
         </ScrollView>
       </SafeAreaView>
+      {sourceRow ? (
+        <SourceSheet projectId={projectId} rowId={sourceRow} onClose={() => setSourceRow(null)} />
+      ) : null}
     </View>
   );
 }

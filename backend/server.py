@@ -71,6 +71,7 @@ from lib import wa_security  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import wa_voice  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
@@ -17727,6 +17728,23 @@ async def hard_delete_project(
     # ── R2: the page images, BY KEY, from the rows collected above. Against
     # this deployment this is the only half that removes anything.
     r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, page_keys)
+
+    # ── R2: the project's group voice notes, BY KEY from the message rows
+    # (before the rows go), then the wa-audio/<project>/ sweep.
+    try:
+        _audio_rows = await db.whatsapp_messages.find(
+            {"project_id": {"$in": [project_id, str(project_id)]},
+             "voice.audio_key": {"$exists": True, "$ne": None}},
+            {"voice.audio_key": 1}).to_list(None)
+        r2_deleted += await _r2_delete_keys(
+            _r2_client, R2_BUCKET_NAME,
+            [(r.get("voice") or {}).get("audio_key") for r in _audio_rows
+             if (r.get("voice") or {}).get("audio_key")])
+    except Exception as e:
+        logger.warning(f"[hard_delete] voice audio delete skipped: {e!r}")
+    r2_deleted += await _r2_delete_prefix(
+        _r2_client, R2_BUCKET_NAME, f"wa-audio/{project_id}/",
+    )
 
     # ── R2: prefix sweeps for artefacts NO DB ROW NAMES. A supplement, not the
     # mechanism — every one of these returns 0 here regardless of what is in
@@ -46382,6 +46400,9 @@ def _attention_event(kind: str, frm: Optional[str], to: Optional[str], msg: dict
             "from": frm, "to": to, "at": _attention_sent_at(msg),
             "message_id": str(msg.get("message_id") or msg.get("_id") or ""),
             "message_key": wa_attention_state.short_id(msg.get("message_id")),
+            # The source message's row: the app opens its original text, or
+            # plays its audio, from any state change.
+            "message_row_id": str(msg.get("_id") or "") or None,
             "quote": quote, "evidence_kind": evidence_kind, "verified": True,
             "sender_last4": str(msg.get("sender") or "")[-4:],
             "review": None, **extra}
@@ -46499,10 +46520,23 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
         actions = wa_attention_state.decide(upd, cands)
     if not actions:
         return {"topics": set(), "ids": set()}
+    if wa_voice.unsure(msg):
+        # AN UNSURE VOICE NOTE (Yiddish, or Whisper was not sure of the
+        # words) never closes, moves, cancels or hands over anything by
+        # itself: what it would have done becomes ONE entry for an admin.
+        involved: List[str] = []
+        for a in actions:
+            for i in a.get("item_ids") or ([a["item_id"]] if a.get("item_id") else []):
+                if i not in involved:
+                    involved.append(i)
+        actions = [{"action": "review", "kind": (cls or {}).get("kind") or "done",
+                    "item_ids": involved, "link": None, "by": "voice",
+                    "note": (msg.get("voice") or {}).get("review_reason")}]
+        report["voice_held"] = report.get("voice_held", 0) + 1
     # EVIDENCE OR SILENCE: the words as written, or the file itself.
     if text:
         quote = wa_attention.verify_quote(text, text) or text[:wa_attention.MAX_QUOTE_CHARS]
-        ev_kind = "text"
+        ev_kind = "voice" if wa_voice.is_voice(msg) else "text"
     else:
         quote, ev_kind = wa_attention_state.file_quote(msg), "file"
     now = datetime.now(timezone.utc)
@@ -46990,6 +47024,13 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                         "sender_last4": sender[-4:]}
             if msg.get("merged_ids"):
                 evidence["merged_ids"] = msg["merged_ids"]
+            unsure = wa_voice.unsure(msg)
+            ev_kind = "voice" if wa_voice.is_voice(msg) else "text"
+            if ev_kind == "voice":
+                v = msg.get("voice") or {}
+                evidence.update(kind="voice", lang=v.get("lang"),
+                                confidence=v.get("confidence"),
+                                audio=bool(v.get("audio_key")))
             await db.attention_items.insert_one({
                 "company_id": company_id,
                 "project_id": project_id,
@@ -47017,17 +47058,24 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 "parent_id": link["id"] if link else None,
                 "parent_key": link["key"] if link else None,
                 "history": [_attention_event(
-                    "created", None, "open", msg, quote, "text",
+                    "created", None, "open", msg, quote, ev_kind,
                     link="reply" if (link and quoted) else (
                         "answers" if link else None),
                     due_to=due["due_text"], due_source=due["due_source"])] + ([
-                    _attention_event("flag", None, "open", msg, quote, "text",
+                    _attention_event("flag", None, "open", msg, quote, ev_kind,
                                      by="other", link="previous", note="possible_subject")]
                     if possible_subject else []) + ([
-                    _attention_event("flag", None, "open", msg, quote, "text",
+                    _attention_event("flag", None, "open", msg, quote, ev_kind,
                                      by="other", link=None, note="possible_handover")]
-                    if possible_handover else []),
-                **({"needs_review": True} if possible_subject or possible_handover else {}),
+                    if possible_handover else []) + ([
+                    _attention_event("flag", None, "open", msg, quote, ev_kind,
+                                     by="voice", link=None,
+                                     note=(msg.get("voice") or {}).get("review_reason"))]
+                    if unsure else []),
+                # An unsure voice note (Yiddish, or a transcript Whisper was
+                # not sure of): the item is made, flagged, and never chased.
+                **({"needs_review": True}
+                   if possible_subject or possible_handover or unsure else {}),
                 "parts_done": [],
                 "merged_into": None,
                 "also_seen": [],
@@ -47038,9 +47086,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             written += 1
             report["items"] += 1
             report["owner_" + owner["status"]] += 1
-            await _attention_answer_followups(link, it["type"], owner, msg_id,
-                                              quote, sender, sent_at,
-                                              link_confident and link is parent)
+            if not unsure:      # an unsure voice note changes no other item
+                await _attention_answer_followups(link, it["type"], owner, msg_id,
+                                                  quote, sender, sent_at,
+                                                  link_confident and link is parent)
         except Exception as e:
             # Not past this message: the cursor stays and it is retried
             # (items already written are recognised above, not doubled).
@@ -47651,10 +47700,19 @@ async def _retention_tick(now: Optional[datetime] = None,
                 if not await _retention_still_expired(b, today):
                     c["stopped"] = c.get("stopped", 0) + 1
                     break
-                ids = [r["_id"] for r in await db[coll].find(b["query"], {"_id": 1}).limit(
-                    min(wa_retention.BATCH, budget)).to_list(None)]
+                rows = await db[coll].find(b["query"], {"_id": 1, "voice.audio_key": 1}).limit(
+                    min(wa_retention.BATCH, budget)).to_list(None)
+                ids = [r["_id"] for r in rows]
                 if not ids:
                     break
+                # A voice note's audio goes with its message (R2, by key).
+                audio = [(r.get("voice") or {}).get("audio_key") for r in rows]
+                audio = [k for k in audio if k]
+                if audio and _r2_client is not None:
+                    try:
+                        await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, audio)
+                    except Exception as e:
+                        logger.warning(f"[retention] audio delete failed: {type(e).__name__}")
                 try:
                     res = await db[coll].delete_many({"_id": {"$in": ids}})
                 except Exception as e:
@@ -48544,12 +48602,21 @@ def _upcoming_evidence(msg: dict, quote: str, group_id: str) -> dict:
             "sender_name": str(msg.get("sender_name") or "")[:80],
             "sender_last4": str(msg.get("sender") or "")[-4:],
             "sent_at": _upcoming_sent_at(msg),
-            "quote": quote}
+            "quote": quote,
+            **({"kind": "voice", "lang": (msg.get("voice") or {}).get("lang"),
+                "audio": bool((msg.get("voice") or {}).get("audio_key"))}
+               if wa_voice.is_voice(msg) else {})}
 
 
 async def _upcoming_apply(op: dict, msg: dict, ctx: dict, report: dict) -> None:
     """One checked action from upcoming.decide, written."""
     now = ctx["now"]
+    if op["op"] in ("reschedule", "cancel") and wa_voice.unsure(msg):
+        # An unsure voice note (Yiddish, or Whisper not sure of the words)
+        # never moves or cancels an event by itself.
+        report["voice_held"] = report.get("voice_held", 0) + 1
+        report["skipped"]["voice_unsure"] = report["skipped"].get("voice_unsure", 0) + 1
+        return
     ev = _upcoming_evidence(msg, op.get("quote") or "", ctx["group_id"])
     if op["op"] == "create":
         key = upcoming.event_key(ctx["project_id"], op["kind"], op.get("agency"), op["date"])
@@ -48583,6 +48650,9 @@ async def _upcoming_apply(op: dict, msg: dict, ctx: dict, report: dict) -> None:
             "detail": "",
             "source_ref": ev["message_row_id"],
             "extraction": {"model": upcoming.MODEL, "prompt_version": upcoming.PROMPT_VERSION},
+            # From an unsure voice note: listed, flagged for a look.
+            **({"needs_review": True, "review_reason": (msg.get("voice") or {}).get("review_reason")}
+               if wa_voice.unsure(msg) else {}),
             "history": [upcoming.history_entry("created", now, to=op["date"],
                                                quote=op["quote"], message_id=ev["message_id"])],
             "created_at": now,
@@ -48971,6 +49041,8 @@ def _upcoming_view(r: dict, names: Optional[Dict[str, str]] = None) -> dict:
             "time_label": upcoming.time_label(r.get("time")),
             "status": r.get("status"), "quote": r.get("quote") or "",
             "who": ev.get("sender_name") or "", "detail": r.get("detail") or "",
+            "voice": ev.get("kind") == "voice", "message_row_id": ev.get("message_row_id"),
+            "needs_review": bool(r.get("needs_review")),
             "history": [{k: (v.isoformat() if isinstance(v, datetime) else v)
                          for k, v in h.items()} for h in (r.get("history") or [])][-10:],
             "can_dismiss": r.get("status") == "open",
@@ -49497,6 +49569,9 @@ def _memory_wa_doc(row: dict, group_name: str) -> dict:
         "at": at,
         "day": ny.strftime("%Y-%m-%d") if ny else None,
         "text": project_memory.clean(row.get("body"))[:project_memory.TEXT_MAX],
+        # A voice note: its text is the transcript as said.
+        "voice": bool(row.get("voice")),
+        "lang": (row.get("voice") or {}).get("lang"),
     }
 
 
@@ -49973,7 +50048,8 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
                "at": r.get("at"), "when": project_memory.when(ny) if ny else "",
                "day_label": f"{ny.strftime('%b')} {ny.day}" if ny else (r.get("day") or ""),
                "label": r.get("label") or "", "who": "",
-               "group_id": r.get("group_id"), "source_id": r.get("source_id")}
+               "group_id": r.get("group_id"), "source_id": r.get("source_id"),
+               "voice": bool(r.get("voice"))}
         if r.get("source") == project_memory.SOURCE_WHATSAPP:
             jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
@@ -59668,9 +59744,50 @@ def _is_own_message(parsed: dict) -> bool:
     return _digits_match_bot(_jid_digits(author), _bot_identifier_digits())
 
 
+def _voice_day_id(company_id: Any, now: datetime) -> str:
+    return f"{company_id}|{wa_gc.today_et(now).isoformat()}"
+
+
+async def _voice_claim(company_id: Any, now: datetime) -> bool:
+    """One more transcription for this company today (New York day), or
+    False at VOICE_DAILY_CAP. A read failure lets the note through: the cap
+    bounds cost, it is not a gate on the job's words."""
+    rid = _voice_day_id(company_id, now)
+    col = db[wa_voice.DAILY]
+    try:
+        res = await col.update_one({"_id": rid, "count": {"$lt": wa_voice.VOICE_DAILY_CAP}},
+                                   {"$inc": {"count": 1}})
+        if res.modified_count:
+            return True
+        if await col.find_one({"_id": rid}, {"_id": 1}):
+            return False
+        try:
+            await col.insert_one({"_id": rid, "company_id": str(company_id),
+                                  "day": rid.split("|")[-1], "count": 1, "created_at": now})
+            return True
+        except Exception:
+            res = await col.update_one({"_id": rid, "count": {"$lt": wa_voice.VOICE_DAILY_CAP}},
+                                       {"$inc": {"count": 1}})
+            return bool(res.modified_count)
+    except Exception as e:
+        logger.warning(f"[voice] cap read failed: {type(e).__name__}")
+        return True
+
+
+async def _voice_count(company_id: Any, now: datetime, lang: str, review: bool) -> None:
+    """Per-language and review counts on the day's row (for the logs and
+    the threshold's tuning)."""
+    try:
+        await db[wa_voice.DAILY].update_one(
+            {"_id": _voice_day_id(company_id, now)},
+            {"$inc": {f"lang_{lang}": 1, "review": 1 if review else 0}})
+    except Exception:
+        pass
+
+
 async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
                                msg_company_id: Any, body: str, now: datetime,
-                               row_id: Any = None) -> dict:
+                               row_id: Any = None, voice: Optional[dict] = None) -> dict:
     """Store a group message as the webhook does, from the parsed payload, and
     return the row. One place, so the attention dry run
     (scripts/attention_dry_run.py) stores exactly what the webhook stores."""
@@ -59716,6 +59833,12 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
     }
     if row_id is not None:
         row["_id"] = row_id
+    if voice:
+        # A voice note: the body is its transcript as said; the language,
+        # Whisper's confidence, the duration, the R2 audio key and the
+        # English for the assistant ride along (lib/wa_voice.py).
+        row["voice"] = voice
+        row["transcribed"] = True
     if not row["quoted_message_id"] and row["quoted_body"].strip():
         # WaAPI can send a reply's quoted words without the quoted message's
         # id (2026-10-09, 3:40 and 3:42 PM). The one message in this group in
@@ -59961,6 +60084,7 @@ async def _process_whatsapp_message(payload: dict):
                     pass
                 return
 
+            stored_body, voice_block = None, None
             if parsed.get("has_audio") and bot_enabled:
                 # IDEMPOTENT ON message_id, because WaAPI redelivers. Whisper
                 # is billed per second and a redelivered webhook must not pay
@@ -59976,6 +60100,27 @@ async def _process_whatsapp_message(payload: dict):
                     except Exception:
                         already = None
                 if already is not None:
+                    return
+
+                # A DAILY CAP PER COMPANY. Whisper is billed per second; past
+                # the cap the note is kept, untranscribed, and nothing reads it.
+                if not await _voice_claim(msg_company_id, now):
+                    try:
+                        await db.whatsapp_messages.insert_one({
+                            "group_id": group_id, "project_id": project_id,
+                            "company_id": msg_company_id, "sender": sender,
+                            "body": "(voicenote — not transcribed: daily limit)",
+                            "has_audio": True, "message_id": voice_message_id,
+                            "timestamp": datetime.fromtimestamp(
+                                parsed["timestamp"], tz=timezone.utc
+                            ) if parsed.get("timestamp") else now,
+                            "created_at": now, "skipped": "voice_cap",
+                        })
+                    except Exception:
+                        pass
+                    logger.info(wa_voice.log_line(
+                        where="group", company=str(msg_company_id), capped=True,
+                        cap=wa_voice.VOICE_DAILY_CAP))
                     return
 
                 audio_bytes = await download_audio(parsed)
@@ -60029,6 +60174,21 @@ async def _process_whatsapp_message(payload: dict):
                         else None
                     ),
                 )
+                # THE AUDIO IS KEPT (R2, under the project, so the project's
+                # delete sweeps it) -- only for a note that is transcribed and
+                # stored: the review screens play it next to the transcript.
+                # A rejected note (no speech, too long, Whisper failed) has no
+                # message row to find it by, so it is never uploaded.
+                voice_audio_key = None
+                if vresult.ok:
+                    voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id)
+                    try:
+                        if not await asyncio.to_thread(
+                                _upload_to_r2, audio_bytes, voice_audio_key, "audio/ogg"):
+                            voice_audio_key = None
+                    except Exception as _e:
+                        logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")
+                        voice_audio_key = None
                 del audio_bytes
 
                 try:
@@ -60059,16 +60219,35 @@ async def _process_whatsapp_message(payload: dict):
                 # THE TRANSCRIPT IS THE MESSAGE FROM HERE DOWN. Everything
                 # below — storage, addressing, the agent — runs on it exactly
                 # as if it had been typed, which is the whole point: there is
-                # no second pipeline for spoken questions.
+                # no second pipeline for spoken questions. The row keeps the
+                # words AS SAID (quotes stay in the original language); the
+                # group assistant answers from the English (replies stay
+                # English).
+                voice_lang = wa_voice.lang_code(vresult.language_detected,
+                                                vresult.original_transcript)
+                voice_block = wa_voice.row_fields(
+                    vresult.original_transcript or vresult.english_transcript,
+                    vresult.english_transcript, voice_lang, vresult.confidence,
+                    vresult.duration_sec, voice_audio_key)["voice"]
+                stored_body = voice_block["transcript"]
                 body = vresult.english_transcript or body
                 parsed["body"] = body
+                await _voice_count(msg_company_id, now, voice_lang, voice_block["review"])
+                logger.info(wa_voice.log_line(
+                    where="group", company=str(msg_company_id), lang=voice_lang,
+                    confidence=vresult.confidence, threshold=wa_voice.VOICE_CONFIDENCE_MIN,
+                    review=voice_block["review"], duration_sec=vresult.duration_sec,
+                    cost_usd=round(float((vresult.telemetry or {}).get("whisper_cost_usd") or 0)
+                                   + float((vresult.telemetry or {}).get("translate_cost_usd") or 0), 5),
+                    audio=bool(voice_audio_key)))
 
             # Store message (always — history is not subject to bot_enabled).
             # `transcribed` marks a row whose body is Whisper's words rather
             # than the sender's typing, so anyone reading the corpus later can
             # tell speech from text instead of guessing.
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
-                                       body, now)
+                                       stored_body if voice_block else body, now,
+                                       voice=voice_block)
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
@@ -60453,6 +60632,14 @@ async def _process_whatsapp_message(payload: dict):
                         await send_whatsapp_message(parsed["from"], user_reply)
                     return
             else:
+                # The same daily cap per company as group voice notes.
+                if not await _voice_claim(ident.get("company_id"), datetime.now(timezone.utc)):
+                    logger.info(wa_voice.log_line(
+                        where="dm", company=str(ident.get("company_id")), capped=True,
+                        cap=wa_voice.VOICE_DAILY_CAP))
+                    await send_whatsapp_message(
+                        parsed["from"], "Voice notes are paused for today. Send it as text.")
+                    return
                 audio_bytes = await download_audio(parsed)
                 if not audio_bytes:
                     # WaAPI fetch failed (download_audio handles its own
@@ -60541,6 +60728,16 @@ async def _process_whatsapp_message(payload: dict):
                     return
 
                 body = vresult.english_transcript
+                _lang = wa_voice.lang_code(vresult.language_detected,
+                                           vresult.original_transcript)
+                await _voice_count(ident.get("company_id"), datetime.now(timezone.utc), _lang,
+                                   wa_voice.needs_review(_lang, vresult.confidence))
+                logger.info(wa_voice.log_line(
+                    where="dm", company=str(ident.get("company_id")), lang=_lang,
+                    confidence=vresult.confidence, threshold=wa_voice.VOICE_CONFIDENCE_MIN,
+                    duration_sec=vresult.duration_sec,
+                    cost_usd=round(float((vresult.telemetry or {}).get("whisper_cost_usd") or 0)
+                                   + float((vresult.telemetry or {}).get("translate_cost_usd") or 0), 5)))
 
         if not body:
             return
@@ -62307,6 +62504,13 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         "due_text": (it.get("due") or {}).get("due_text"),
         "due_at": (it.get("due") or {}).get("due_at"),
         "quote": ev.get("quote") or "",
+        # The source message: its row (the app opens the original text or
+        # plays the audio) and whether it was a voice note (🎤).
+        "message_row_id": ev.get("message_row_id"),
+        "voice": ev.get("kind") == "voice",
+        "review_reason": it.get("review_reason") or next(
+            (h.get("note") for h in (it.get("history") or [])
+             if isinstance(h, dict) and h.get("by") == "voice"), None),
         "sent_at": sent.isoformat() if isinstance(sent, datetime) else None,
         "sender_last4": ev.get("sender_last4") or "",
         "group_name": wa_groups.display_name(group_names.get(it.get("group_id"))),
@@ -62333,6 +62537,7 @@ def _attention_event_view(e: dict) -> dict:
         "at": at.isoformat() if isinstance(at, datetime) else None,
         "quote": e.get("quote") or "",
         "evidence_kind": e.get("evidence_kind") or "text",
+        "message_row_id": e.get("message_row_id"),
         "link": e.get("link"),
         "by": e.get("by"),
         "note": e.get("note"),
@@ -62357,6 +62562,38 @@ async def _attention_admin_project(project_id: str, current_user) -> str:
 
 # ── PROJECT MEMORY IN THE APP: Project → Search ─────────────────────────────
 
+@api_router.get("/projects/{project_id}/whatsapp/messages/{row_id}/source",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_whatsapp_source_message(project_id: str, row_id: str,
+                                      current_user=Depends(get_current_user)):
+    """The message an item, a state change, an event or an answer came from:
+    its words as said (a voice note's transcript, with its language,
+    Whisper's confidence and the English), who and when, and for a voice
+    note a short-lived link to play the audio. Admins, and PMs on their
+    projects. No phone number."""
+    company_id = await _memory_project(project_id, current_user)
+    try:
+        row = await db.whatsapp_messages.find_one(
+            {"_id": to_query_id(row_id), "project_id": str(project_id),
+             "company_id": _company_id_filter(company_id), "is_dm": {"$ne": True}})
+    except Exception:
+        row = None
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
+    v = row.get("voice") or {}
+    at = row.get("timestamp") if isinstance(row.get("timestamp"), datetime) else row.get("created_at")
+    audio_url = ""
+    if v.get("audio_key"):
+        audio_url = await asyncio.to_thread(_presign_r2_get, v["audio_key"], 900)
+    return {"id": str(row["_id"]), "text": row.get("body") or "",
+            "who": wa_sender_map.clean_push_name(row.get("sender_name")) or "",
+            "at": at.isoformat() if isinstance(at, datetime) else None,
+            "voice": ({"lang": v.get("lang"), "confidence": v.get("confidence"),
+                       "duration_sec": v.get("duration_sec"), "english": v.get("english"),
+                       "review": bool(v.get("review")), "audio_url": audio_url or None}
+                      if v else None)}
+
+
 async def _memory_project(project_id: str, current_user) -> str:
     """Admin, or a PM on one of their assigned projects (require_project_access
     on the route): the company id, else 403/404."""
@@ -62379,7 +62616,10 @@ def _memory_source_view(src: dict) -> dict:
             "when": src.get("when") or src.get("day_label") or "",
             "at": at.isoformat() if isinstance(at, datetime) else None,
             "label": src.get("label") or "",
-            "text": (src.get("text") or "")[:400]}
+            "text": (src.get("text") or "")[:400],
+            "voice": bool(src.get("voice")),
+            "message_row_id": (src.get("source_id")
+                               if src.get("source") == project_memory.SOURCE_WHATSAPP else None)}
 
 
 @api_router.get("/projects/{project_id}/memory/search",

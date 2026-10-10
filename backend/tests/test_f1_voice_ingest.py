@@ -760,15 +760,9 @@ class TestServerIntegrationPins(unittest.TestCase):
         self.assertIn("heard=body if parsed.get(\"has_audio\") else None",
                       self.text)
 
-    def test_no_r2_writes_in_voice_path(self):
-        """Hard rule: audio bytes never written to R2. Pin via
-        a static-source check that no R2 writer is called in the
-        voice path (text appears between the voice-event audit
-        row and the `del audio_bytes` line)."""
-        # Find the voice-ingest section and assert _upload_to_r2
-        # / r2_client.put_object don't appear in it. Slice the
-        # source between two known anchors that bracket the voice
-        # path.
+    def test_no_r2_writes_in_the_dm_voice_path(self):
+        """A DM voice note's audio is never stored: the DM path (between the
+        F1 anchor and `del audio_bytes`) calls no R2 writer."""
         anchor_start = "Phase F1: voice notes go through"
         anchor_end = "del audio_bytes"
         s_idx = self.text.find(anchor_start)
@@ -779,8 +773,26 @@ class TestServerIntegrationPins(unittest.TestCase):
         for forbidden in ("_upload_to_r2", "put_object", "boto3"):
             self.assertNotIn(
                 forbidden, slice_,
-                f"voice path must not write to R2 / S3 — found {forbidden!r}",
+                f"DM voice path must not write to R2 / S3 — found {forbidden!r}",
             )
+
+    def test_group_voice_audio_is_kept_under_its_project(self):
+        """A group voice note's audio IS kept (the review screens play it
+        next to the transcript), and only under wa-audio/<project>/, which
+        the project's delete sweeps."""
+        start = self.text.find("A DAILY CAP PER COMPANY")
+        end = self.text.find("del audio_bytes", start)
+        self.assertGreater(start, 0)
+        slice_ = self.text[start:end]
+        self.assertEqual(slice_.count("_upload_to_r2"), 1)
+        self.assertIn("wa_voice.audio_key(project_id, group_id, voice_message_id)", slice_)
+        # Uploaded only after a successful transcription: a rejected note
+        # has no message row, so nothing could ever find (or delete) it.
+        self.assertLess(slice_.index("vresult = await _process_voice"),
+                        slice_.index("_upload_to_r2"))
+        self.assertIn("if vresult.ok:", slice_[:slice_.index("_upload_to_r2")])
+        from lib import wa_voice
+        self.assertTrue(wa_voice.audio_key("p1", "1203@g.us", "3EB0X").startswith("wa-audio/p1/"))
 
 
 # ──────────────────────────────────────────────────────────────────

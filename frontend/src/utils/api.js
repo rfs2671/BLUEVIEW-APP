@@ -1913,6 +1913,15 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // The message an item, a change, an event or an answer came from: its words
+  // as said, and for a voice note its language, confidence, English and a
+  // short-lived audio link. Admins, and PMs on their projects.
+  getSource: async (projectId, rowId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/whatsapp/messages/${encodeURIComponent(rowId)}/source`);
+    return response.data;
+  },
+
   // Correct / Wrong on one would-chase entry.
   reviewChase: async (projectId, entryId, verdict) => {
     const response = await apiClient.post(
