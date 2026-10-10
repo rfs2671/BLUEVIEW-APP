@@ -52,8 +52,8 @@ ok(/setResults\(null\);\s*\n\s*setAnswer\(null\);/.test(screen),
 const api = fs.readFileSync(path.join(__dirname, 'api.js'), 'utf8');
 ok(/\/memory\/search/.test(api) && /\/memory\/context\//.test(api), 'api paths');
 const project = fs.readFileSync(path.join(__dirname, '../../app/project/[id].jsx'), 'utf8');
-ok(/\/projects\/\$\{projectId\}\/search/.test(project) && /canSearch\(user\)/.test(project),
-  'the project screen links Search for admins and PMs');
+ok(!/\/projects\/\$\{projectId\}\/search/.test(project) && !/title: 'Search'/.test(project),
+  'no Search tile on the project screen (search is in the WhatsApp DM assistant)');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

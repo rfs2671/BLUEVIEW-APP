@@ -235,5 +235,22 @@ ok(!/setLink\(null\)/.test(assistantSrc), 'a tap does not throw the link away (n
 }
 ok(!/whatsappAPI|Connect WhatsApp|waMe/.test(read('app/settings.jsx')), 'nothing in Settings');
 
+console.log('\nthe calendar feed stays reachable (platform operator)');
+{
+  // Not eligible for the assistant, not a company admin, but may use the
+  // calendar feed: the card shows, and its button opens Personal assistant.
+  const op = card(me('not_eligible'), { isAdmin: false, canFeed: true });
+  ok(op.visible === true, 'the card shows for an account that may use the feed');
+  ok(op.assistantButton && op.assistantButton.path === '/whatsapp/assistant'
+     && op.assistantButton.chip === null, 'with a Personal assistant button and no assistant chip');
+  ok(card(me('not_eligible'), { isAdmin: false }).visible === false, 'and without the feed, no card');
+  const panel = read('src/components/WhatsAppAssistantPanel.jsx');
+  const notFor = panel.slice(panel.indexOf('if (!alerts)'), panel.indexOf('if (!alerts)') + 600);
+  ok(/canSeeUpcoming\(user\) \? <CalendarFeedCard \/>/.test(notFor),
+     'the panel shows the feed card even when the assistant is not for this account');
+  ok(/canFeed: canSeeUpcoming\(user\)/.test(read('src/components/WhatsAppCard.jsx')),
+     'the card is told who may use the feed');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
