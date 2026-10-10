@@ -37,6 +37,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from lib import multilang as ml
 from lib import wa_attention as wa
 
 # Where an item can be. "open" and "rescheduled" are live; "possibly_done"
@@ -72,6 +73,16 @@ _RESCHEDULE = re.compile(
     r"\b(actually|instead|moved?|moving|pushed|push(ing)? it|not happening"
     r"|change[sd]? to|rather)\b", re.IGNORECASE)
 
+# The same in Spanish and Yiddish (lib/multilang.py), read on the folded text
+# (lowercase, accents stripped: "ya lo mandé" -> "ya lo mande").
+_ML_DONE = re.compile(r"\b(?:" + ml.alternation(ml.DONE) + "|" + ml.alternation(ml.SENT) + r")\b")
+_ML_CANCEL = re.compile(r"\b(?:" + ml.alternation(ml.CANCEL) + "|" + ml.alternation(ml.NEVER_MIND) + r")\b")
+_ML_RESCHEDULE = re.compile(r"\b(?:" + ml.alternation(ml.ACTUALLY)
+                            + r"|movid[oa]|cambiad[oa]|pasa(?:do)? (?:al|para)|lo pasamos"
+                            + r"|iberleygt|ibergeleygt|opgeleygt)\b")
+_ML_FUTURE = re.compile(r"\b(?:voy a|vamos a|va a|van a|manana|luego|despues|mas tarde|ahorita"
+                        r"|vel|veln|vet|morgn|morgen|shpeter)\b")
+
 # Date words the due parser reads; the LAST one in a message is the new date
 # ("Wednesday is not happening. Gonna take care of it Friday" → Friday).
 _DAY = (r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
@@ -82,6 +93,15 @@ _DUE_RE = re.compile(
     r"|tomorrow(?: morning| afternoon)?|tmrw|today|tonight|eod|end of (?:the )?day"
     r"|the \d{1,2}(?:st|nd|rd|th)|\d{1,2}/\d{1,2}(?:/\d{2,4})?"
     r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?"
+    # Spanish and Yiddish (read by wa.parse_due through multilang). "por la
+    # mañana" is the morning, not tomorrow.
+    r"|(?:el )?(?:pr[oó]xim[oa] )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
+    r"(?: (?:pr[oó]ximo|que viene))?"
+    r"|pasado ma[ñn]ana|(?<!la )ma[ñn]ana|hoy|en \d{1,2} (?:d[ií]as|semanas)"
+    r"|\d{1,2} de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)"
+    r"|(?:nekhstn |nechstn |kumendikn )?(?:zuntik|montik|dinstik|mitvokh|mitvoch|donershtik|fraytik|shabes|shabbos)"
+    r"|iber ?morg[e]?n|morg[e]?n|ha[iy]nt|in \d{1,2} (?:vokhn|teg)"
+    r"|איבערמארגן|מארגן|היינט|זונטיק|מאנטיק|דינסטיק|מיטוואך|דאנערשטיק|פרייטיק|שבת"
     r")\b", re.IGNORECASE)
 
 MULTI_OWNER_RE = re.compile(
@@ -218,14 +238,16 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
     text = (body or "").strip()
     if not text:
         return {"kind": "done", "file": True} if has_file else None
-    if "?" in text:
+    if "?" in text or "¿" in text:
         return None
-    if _CANCEL.search(text) or _FORGET.search(text):
+    ft = ml.fold(text)
+    future = bool(_FUTURE.search(text) or _ML_FUTURE.search(ft))
+    if _CANCEL.search(text) or _FORGET.search(text) or _ML_CANCEL.search(ft):
         if done_by_other(text):
             # "Never mind the panel confirm, Mike already did": done.
             return {"kind": "done", "by_other": True}
         return {"kind": "cancel"}
-    if _RESCHEDULE.search(text):
+    if _RESCHEDULE.search(text) or _ML_RESCHEDULE.search(ft):
         due = due_phrase(text)
         if due:
             return {"kind": "reschedule", "due_text": due}
@@ -233,11 +255,11 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         if at:
             # "Actually give me till 11-12": same day, a new time.
             return {"kind": "reschedule", "due_text": at, "time_only": True}
-    if done_by_other(text) and not _FUTURE.search(text):
+    if done_by_other(text) and not future:
         return {"kind": "done", "by_other": True}
-    if _DONE.search(text) and not _FUTURE.search(text):
+    if (_DONE.search(text) or _ML_DONE.search(ft)) and not future:
         return {"kind": "done", "file": bool(has_file)}
-    if has_file and len(text) <= 60 and not _FUTURE.search(text):
+    if has_file and len(text) <= 60 and not future:
         return {"kind": "done", "file": True}
     return None
 
@@ -252,7 +274,13 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
 ACK_WINDOW_SECONDS = 30 * 60
 _ACK_STRONG = {"np", "ok", "okay", "k", "kk", "sure", "yep", "yup", "yes", "yeah",
                "copy", "roger", "will", "got", "on", "👍", "👌", "🫡", "✅", "💪"}
+# Spanish and Yiddish yeses ("sí", "dale", "ya" / "yo", "gut", "zicher"),
+# compared accent-free.
+_ACK_STRONG |= {"si", "dale", "vale", "claro", "listo", "ya", "perfecto", "va", "okey",
+                "yo", "gut", "zicher", "zikher", "avade", "takeh", "יא", "גוט", "זיכער", "אוודאי"}
 _ACK_WORDS = _ACK_STRONG | {"no", "problem", "prob", "do", "thing", "you", "it", "that",
+                            "de", "una", "jefe", "bueno", "gracias", "shoyn", "a", "sheynem",
+                            "dank", "boss",
                             "thanks", "thx", "ty", "boss", "bro", "man", "🙏", "will",
                             # "I" / "Kk" sent as two messages, merged.
                             "i"}
@@ -269,7 +297,9 @@ def ack(body: str) -> Optional[Dict[str, Any]]:
     if due:
         i = rest.lower().rfind(due.lower())
         rest = rest[:i] + rest[i + len(due):]
-    rest = re.sub(r"[,.!;:\-]+", " ", rest.lower().translate(wa._TYPO))
+    if ml.alternation(ml.SARCASM) and re.search(ml.alternation(ml.SARCASM), ml.fold(text)):
+        return None     # "ya ya, seguro", "sí claro"
+    rest = re.sub(r"[,.!;:\-¡¿]+", " ", ml.fold(rest).translate(wa._TYPO))
     # Emoji glued to words ("👍tmrw") stand on their own.
     rest = re.sub(r"([^\w\s'])", r" \1 ", rest)
     words = [w for w in rest.split() if w not in ("\ufe0f",)]
@@ -287,7 +317,8 @@ def ack(body: str) -> Optional[Dict[str, Any]]:
 
 
 ACK_PREVIOUS_SECONDS = 10 * 60
-_SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅"}
+_SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅",
+            "jaja", "jajaja", "jajajaja", "jeje", "jejeje"}
 
 
 def is_mine(c: Dict[str, Any], upd: Dict[str, Any]) -> bool:
@@ -683,11 +714,15 @@ def follow_up_of(question_terms: Set[str], asker: str, items: List[dict]) -> Opt
 
 _UPDATE_START = re.compile(
     r"^\W*(?:actually|just sent|sent|never ?mind|nvm|forget|done)\b", re.IGNORECASE)
+_ML_UPDATE_START = re.compile(
+    r"^\W*(?:en realidad|ya (?:lo |la )?(?:mande|envie)|listo|olvidalo|olvida eso|no importa"
+    r"|eygntlekh|shoyn geshikt|geshikt|fartik|farges es)\b")
 
 
 def starts_with_update(body: Any) -> bool:
     """"Actually give me till 11-12", "Just sent", "Never mind the …"."""
-    return bool(_UPDATE_START.match(str(body or "").strip()))
+    b = str(body or "").strip()
+    return bool(_UPDATE_START.match(b) or _ML_UPDATE_START.match(ml.fold(b)))
 
 
 def _standalone(r: dict) -> bool:

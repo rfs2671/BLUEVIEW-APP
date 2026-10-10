@@ -44,6 +44,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from lib import multilang
 from lib.wa_attention import verify_quote
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
@@ -52,7 +53,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "upc-v1.1"
+PROMPT_VERSION = "upc-v1.2"
 MODEL = "gpt-4o-mini"
 
 KINDS = ("inspection", "delivery", "crane_pick", "pour", "utility", "hearing")
@@ -151,7 +152,10 @@ def resolve_when(date_text: Optional[str], sent_at: datetime) -> Dict[str, Any]:
     """{"date": date, "time": "HH:MM"|None} for words that name one day, else
     {"skip": "vague"|"ambiguous"|"past"|"no_date"}. Read in New York time,
     counted from when the message was sent."""
-    t = " ".join(str(date_text or "").lower().replace("’", "'").split())
+    # Spanish and Yiddish day words read as their English ones ("el
+    # próximo martes" is "next tuesday"), so every rule below applies to
+    # them unchanged.
+    t = multilang.normalize_when(date_text)
     if not t:
         return {"skip": "no_date"}
     today = local_date(sent_at)
@@ -266,6 +270,12 @@ Rules:
 - A reschedule or cancel must name an event from OPEN EVENTS by its event_id. If none fits, use "new" for a move with a day, and skip a cancel.
 - At most 3 events. None is a fine answer.
 
+Languages: a message may be in English, Spanish or Yiddish (in Hebrew letters, or written in English letters), or switch between them in one message. Read all three.
+- "summary" and "title" are ALWAYS in English.
+- "quote" stays EXACTLY as written, in its own language and script. Never translate a quote.
+- "date_text" stays as written too ("el próximo martes", "mañana 7am", "morgn", "מארגן", "en 3 semanas"): never translate or compute it. "en 3 semanas" / "in 3 vokhn" ARE a day, like "in 3 weeks".
+- A voice note arrives as its transcript: read it like typed text.
+
 Return JSON: {"events": [{"action": "new", "event_id": null, "kind": "inspection", "agency": "Con Ed", "title": "...", "date_text": "...", "quote": "..."}]}"""
 
 FILTER_RE = re.compile(
@@ -284,6 +294,8 @@ def worth_a_call(body: Any) -> bool:
     """The cheap filter: an event word AND a day word, or an event word and
     any cancel phrase the checks accept ("Rebar delivery scrapped")."""
     b = str(body or "")
+    if multilang.non_english(b):
+        return True     # the filter words are English: Spanish / Yiddish go to the model
     return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _CANCEL_WORDS.search(b)))
 
 

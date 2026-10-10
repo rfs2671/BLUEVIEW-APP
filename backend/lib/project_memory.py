@@ -632,6 +632,7 @@ RULES
 - ONE CLAIM PER FACT. When several records support the same fact, make ONE claim and list every record in "sources".
 - Keep each claim to one short sentence.
 
+- LANGUAGES. the question and the records may be in English, Spanish or Yiddish (Hebrew letters or English letters), or a mix. Answer in English. Quotes stay EXACTLY as written in the record, in its own language: never translate a quote. A record marked 🎤 is the transcript of a voice note.
 Return JSON: {"claims": [{"text": "...", "sources": [{"source": "S3", "quote": "..."}]}]}"""
 
 TIMELINE_PROMPT = """You tell what happened with something on ONE construction project, from its records: WhatsApp group messages, filed daily reports and tracked items (commitments, new dates, done). The records are below, each with an id like [S3] and its date.
@@ -645,4 +646,5 @@ RULES
 - One entry per event; when several records show the same event, list them all in "sources".
 - If the records say nothing about it, return no entries.
 
+- LANGUAGES. the question and the records may be in English, Spanish or Yiddish (Hebrew letters or English letters), or a mix. Answer in English. Quotes stay EXACTLY as written in the record, in its own language: never translate a quote. A record marked 🎤 is the transcript of a voice note.
 Return JSON: {"claims": [{"date": "Oct 3", "text": "...", "sources": [{"source": "S3", "quote": "..."}]}]}"""

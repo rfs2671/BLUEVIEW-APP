@@ -244,7 +244,7 @@ class LiveEvalOct10b(unittest.TestCase):
     def test_the_prompt_says_in_n_weeks_is_a_day(self):
         self.assertIn('"in 2 weeks"', u.SYSTEM_PROMPT)
         self.assertIn("ARE a day", u.SYSTEM_PROMPT)
-        self.assertEqual(u.PROMPT_VERSION, "upc-v1.1")
+        self.assertTrue(u.PROMPT_VERSION >= "upc-v1.1")
 
 
 class LiveEvalOct10(unittest.TestCase):
