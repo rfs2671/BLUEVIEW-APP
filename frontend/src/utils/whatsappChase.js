@@ -27,6 +27,7 @@ export const SLOT_LABELS = {
   midday: 'Midday',
   eod: 'End of day',
   admin_dm: 'DM to admin',
+  not_chased: 'Not chased',
 };
 
 /** "8:35 AM", in New York time: the slots are New York times, so the
@@ -64,6 +65,14 @@ export function ownerLine(e) {
   if (!e || !e.owner) return null;
   const n = (e.items || []).length;
   return n > 1 ? `Owner: ${e.owner} · ${n} items` : `Owner: ${e.owner}`;
+}
+
+/** The message it would send, or for an owner it could not reach, why
+ *  not ("Not chased: no WhatsApp number on file"). */
+export function bodyText(e) {
+  if (!e) return '';
+  if (e.not_chased) return `Not chased: ${e.not_chased}`;
+  return e.text || '';
 }
 
 export function reasonLine(e) {

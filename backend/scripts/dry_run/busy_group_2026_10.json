@@ -1,6 +1,6 @@
 {
  "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
- "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday chases nobody: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: GC staff (Kevin, a company user, on the door schedule; Gina, mapped \"GC team\", on the logistics plan) -- subs only; anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Everyone with a confirmed, dated item is chased the same way, in the group: on Thursday Dave (a sub) on his RTU startup report, Kevin (a company user, PM) on the door schedule and Gina (mapped \"GC team\") on the logistics plan, each with the 4pm escalation to Roy (the admin). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
  "tz": "America/New_York",
  "project": {
   "name": "8 Walworth St",
@@ -594,6 +594,70 @@
     "owner": "D",
     "items": [
      32
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "morning",
+    "owner": "K",
+    "items": [
+     16
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "midday",
+    "owner": "K",
+    "items": [
+     16
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "eod",
+    "owner": "K",
+    "items": [
+     16
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "admin_dm",
+    "owner": "K",
+    "items": [
+     16
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "morning",
+    "owner": "G",
+    "items": [
+     31
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "midday",
+    "owner": "G",
+    "items": [
+     31
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "eod",
+    "owner": "G",
+    "items": [
+     31
+    ]
+   },
+   {
+    "day": "2026-10-15",
+    "slot": "admin_dm",
+    "owner": "G",
+    "items": [
+     31
     ]
    }
   ]

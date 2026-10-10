@@ -47296,12 +47296,48 @@ async def _chase_admins(company_id: str) -> List[dict]:
             for u in users if is_company_admin(u)]
 
 
+async def _chase_no_number(item: dict, day, now: datetime) -> None:
+    """An owner who would be chased but has no WhatsApp number to @mention:
+    one Would chase entry a day per project, every item of theirs, "not
+    chased: no WhatsApp number on file". Nothing else."""
+    okey = wa_chase.owner_key(item)
+    pid = str(item.get("project_id"))
+    rid = wa_chase.row_id(day, pid, okey, "no_number")
+    owner = item.get("owner") or {}
+    entry = {"id": str(item.get("_id")), "type": item.get("type"),
+             "summary": item.get("summary") or "", "quote": wa_chase.quote(item),
+             "due_text": (item.get("due") or {}).get("due_text"),
+             "message_id": wa_chase.quoted(item).get("message_id")}
+    try:
+        have = await db[wa_chase.COLLECTION].find_one({"_id": rid})
+        if have:
+            if entry["id"] not in (have.get("item_ids") or []):
+                await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$set": {
+                    "item_ids": list(have.get("item_ids") or []) + [entry["id"]],
+                    "items": list(have.get("items") or []) + [entry]}})
+            return
+        g = await db.whatsapp_groups.find_one(
+            {"wa_group_id": str(item.get("group_id")), "project_id": pid},
+            {"group_name": 1}) or {}
+        await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": {
+            "_id": rid, "day": day.isoformat(), "slot": wa_chase.NOT_CHASED, "at": now,
+            "company_id": str(item.get("company_id")), "project_id": pid,
+            "group_id": str(item.get("group_id")), "group_name": g.get("group_name") or "",
+            "owner_key": okey, "owner_name": owner.get("name") or "",
+            "owner_kind": owner.get("kind"), "kind": wa_chase.NOT_CHASED,
+            "not_chased": wa_chase.NO_NUMBER, "item_ids": [entry["id"]], "items": [entry],
+            "text": "", "reason": f"not chased: {wa_chase.NO_NUMBER}",
+            "review": None, "created_at": now, "shadow": True}}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[chase] no-number row failed: {type(e).__name__}")
+
+
 async def _chase_tick(now: Optional[datetime] = None) -> dict:
     """Every 5 minutes. Shadow mode: records what would be sent, sends
     nothing."""
     now = now or datetime.now(timezone.utc)
     report = {"items": 0, "eligible": 0, "would_chase": 0, "admin_dm": 0,
-              "stopped": 0, "outside_hours": 0, "after_slot": 0,
+              "admin_self": 0, "no_number": 0, "stopped": 0, "outside_hours": 0, "after_slot": 0,
               "already": 0, "group_off": 0, "weekend_off": 0, "skipped": {}}
     if wa_chase.disabled():
         report["disabled"] = True
@@ -47341,9 +47377,12 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     for it in items:
         report["items"] += 1
         why = wa_chase.skip_reason(it, day)
-        if not why and str(it.get("_id")) in answered:
+        if why in (None, wa_chase.NO_MENTION) and str(it.get("_id")) in answered:
             why = "answered_by_commitment"
-        if why:
+        # Would be chased, but no WhatsApp number to @mention: listed below,
+        # once the slot, group and hours rules say it would have gone out.
+        no_number = why == wa_chase.NO_MENTION
+        if why and not no_number:
             report["skipped"][why] = report["skipped"].get(why, 0) + 1
             continue
         report["eligible"] += 1
@@ -47374,6 +47413,10 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             continue
         if not wa_gc.in_send_window(now, settings_cache[pid].get("send_window")):
             report["outside_hours"] += 1
+            continue
+        if no_number:
+            report["no_number"] += 1
+            await _chase_no_number(it, day, now)
             continue
         iid = str(it.get("_id"))
         try:
@@ -47434,7 +47477,14 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 "review": None, "created_at": now, "shadow": True,
             }
             if slot == wa_chase.ADMIN:
-                admins = await _chase_admins(b["company_id"])
+                # Every company admin except the owner (a PM, super or admin
+                # is chased like anyone); an owner who is the only admin: none.
+                admins = wa_chase.escalate_to(
+                    await _chase_admins(b["company_id"]),
+                    owner.get("id") if owner.get("kind") == "user" else None)
+                if not admins:
+                    report["admin_self"] += 1
+                    continue
                 row.update(kind="admin_dm",
                            to=[a["name"] for a in admins],
                            to_user_ids=[a["id"] for a in admins],
@@ -62698,6 +62748,7 @@ def _chase_view(r: dict) -> dict:
                   for i in r.get("items") or []],
         "text": r.get("text") or "",
         "reason": r.get("reason") or "",
+        "not_chased": r.get("not_chased") or None,
         "verdict": (r.get("review") or {}).get("verdict"),
     }
 

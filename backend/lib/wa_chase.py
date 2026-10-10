@@ -8,9 +8,13 @@ nudge it WOULD send in `chase_shadow` for an admin to mark Correct / Wrong
 WHAT IS CHASED (all of these):
 - an open or rescheduled commitment or request;
 - its owner confirmed: resolved, not "possibly theirs";
-- the owner is a SUB: mapped in Project → WhatsApp → People to one of the
-  project's subs. GC staff are never chased in a group: a Levelog user of
-  the company, or a person mapped to "GC team";
+- the owner is anyone we can @mention: a sub (mapped in Project → WhatsApp
+  → People to one of the project's subs), GC staff (a Levelog user of the
+  company, PM, super or admin, or a person mapped to "GC team") and a worker
+  who checked in at the project alike. No opt-in is needed: everyone is
+  chased the same way, in the group. An owner with no WhatsApp number to
+  @mention is listed once a day, every item of theirs that would have been
+  chased, "not chased: no WhatsApp number on file";
 - an explicit due date the code read from the words ("Friday", "10/12");
 - nothing about it flagged for an admin's review, and the item itself not
   marked Wrong (or dismissed) by an admin;
@@ -19,7 +23,7 @@ WHAT IS CHASED (all of these):
 WHEN, ON THE DUE DAY ONLY (New York): 8:30 morning, 12:30 midday, 3:00 end
 of day (NYC sites wrap up around 3:30), each only when nothing came back since
 the last nudge. After the end of day nudge, 4:00: a private DM to the company
-admin. Constants for now; per-company settings later. An item said after a
+admins except the owner; an owner who is the only admin gets none. Constants for now; per-company settings later. An item said after a
 slot's time is first chased at the next slot. A slot outside the project's
 alert hours is not sent; one that comes due later the same day, inside them,
 is.
@@ -62,8 +66,14 @@ SLOT_LABELS = {MORNING: "morning", MIDDAY: "midday", EOD: "end of day",
 
 CHASE_TYPES = ("commitment", "request")
 CHASE_STATUSES = ("open", "rescheduled")
-# Subs only: a company user is GC staff, and so is a person mapped "GC team".
-OWNER_KINDS = ("sender_map",)
+# Who can be chased: a person mapped in People (a sub or "GC team"), a
+# company user, or a worker who checked in at the project. Everyone in the
+# group, @mentioned.
+OWNER_KINDS = ("sender_map", "user", "worker")
+# Eligible but nobody to @mention: listed, not chased.
+NO_MENTION = "owner_no_mention"
+NOT_CHASED = "not_chased"
+NO_NUMBER = "no WhatsApp number on file"
 GC_KINDS = ("user",)
 QUOTE_MAX = 200
 VERDICTS = ("correct", "wrong")
@@ -135,17 +145,16 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "owner_unconfirmed"
     if o.get("possibly"):
         return "owner_possibly"
-    if is_gc_staff(o):
-        return "gc_staff"
     if o.get("kind") not in OWNER_KINDS:
         return "owner_not_known"
-    if not o.get("jid"):
-        return "owner_no_mention"
     due = item.get("due") or {}
     if not due.get("due_text") or not due.get("due_at"):
         return "no_explicit_due"
     if str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
+    if not o.get("jid"):
+        # Last, so it means "would be chased today, but nobody to @mention".
+        return NO_MENTION
     return None
 
 
@@ -248,6 +257,12 @@ def admin_text(owner_name: str, group_name: str, items: List[Dict[str, Any]],
     return "\n".join(lines)
 
 
+def escalate_to(admins: List[Dict[str, Any]], owner_user_id: Optional[str]) -> List[Dict[str, Any]]:
+    """The admins the 4:00 DM goes to: every company admin except the owner.
+    An owner who is the only admin: nobody."""
+    return [a for a in admins if str(a.get("id")) != str(owner_user_id or "")]
+
+
 def _join(parts: List[str]) -> str:
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
@@ -281,6 +296,8 @@ def precision(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         return {"correct": 0, "wrong": 0, "unreviewed": 0}
     total, by_slot = blank(), {}
     for r in rows:
+        if r.get("slot") == NOT_CHASED:
+            continue                    # a listing, not a nudge
         v = (r.get("review") or {}).get("verdict")
         k = v if v in VERDICTS else "unreviewed"
         total[k] += 1

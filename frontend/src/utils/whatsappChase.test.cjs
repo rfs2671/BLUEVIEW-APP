@@ -56,6 +56,15 @@ console.log('\nprecision');
   ok(C.precisionLines({ correct: 0, wrong: 0, unreviewed: 0 }).length === 0, 'nothing yet');
   ok(C.precisionLines(null).length === 0, 'no data');
 }
+{
+  const nc = { id: 'n', kind: 'not_chased', slot: 'not_chased', day: '2026-10-08',
+    group_name: 'Main St Project', owner: 'Kevin Shah', text: '',
+    not_chased: 'no WhatsApp number on file', items: [{ id: 'a' }, { id: 'b' }] };
+  ok(C.bodyText(nc) === 'Not chased: no WhatsApp number on file', 'not chased says why');
+  ok(C.headLine(nc) === 'Not chased · 2026-10-08 · Main St Project', 'not chased head line');
+  ok(C.ownerLine(nc) === 'Owner: Kevin Shah · 2 items', 'all their items');
+  ok(C.bodyText({ text: '@Mike morning' }) === '@Mike morning', 'a nudge shows its text');
+}
 ok(/Nothing yet/.test(C.emptyText(0)) && C.emptyText(3) === 'Nothing more to show.', 'empty states');
 
 console.log('\nscreen wiring');
@@ -63,7 +72,7 @@ console.log('\nscreen wiring');
   const card = read('src/components/whatsapp/ChaseCard.jsx');
   ok(/whatsappAPI\.getChase\(projectId\)/.test(card), 'loads the list');
   ok(/whatsappAPI\.reviewChase\(projectId, entryId, verdict\)/.test(card), 'sends a verdict');
-  ok(/\{e\.text\}/.test(card) && /reasonLine\(e\)/.test(card), 'shows the message text and why');
+  ok(/\{bodyText\(e\)\}/.test(card) && /reasonLine\(e\)/.test(card), 'shows the message text and why');
   ok(!/sendWhatsApp|send-message|sendMessage/.test(card), 'the card sends nothing to anyone');
   const api = read('src/utils/api.js');
   ok(api.includes('`/api/projects/${projectId}/whatsapp/chase`'), 'GET path');

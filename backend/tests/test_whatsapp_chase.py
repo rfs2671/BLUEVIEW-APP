@@ -140,28 +140,100 @@ class WhatIsChased(_Base):
         self.chase(_et(8, 35))
         self.assertTrue(self.rows()[0]["text"].startswith("@Jose morning"))
 
-    def test_gc_staff_are_never_chased(self):
-        """Subs only: a company user, or someone mapped in People to "GC
-        team", is never nudged in a group (and so never reaches the admin
-        DM)."""
+    def test_gc_staff_are_chased_in_the_group_like_anyone(self):
+        """A PM, super or admin (a company user) and someone mapped "GC team"
+        are chased the same way as a sub: in the group, @mentioned. No
+        opt-in."""
         for label, owner in {
-                "a company user": {"kind": "user", "id": "u_kev", "sub_company": None},
-                "mapped GC team": {"kind": "sender_map", "id": "sm9", "sub_company": "GC team"},
-                "mapped gc  TEAM": {"kind": "sender_map", "id": "sm9", "sub_company": " gc  TEAM "},
+                "a company user": {"kind": "user", "id": "u_kev", "name": "Kevin Shah",
+                                   "sub_company": None, "jid": f"{PAT}@c.us"},
+                "mapped GC team": {"kind": "sender_map", "id": "sm9", "name": "Gina Lopez",
+                                   "sub_company": "GC team", "jid": "301000000000016@lid"},
         }.items():
             self.db.attention_items.rows = []
             self.db[wa_chase.COLLECTION].rows = []
             it = _item(self.db, owner=owner)
-            self.assertEqual(wa_chase.skip_reason(it, date.fromisoformat(DAY)), "gc_staff", label)
-            for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
-                self.chase(_et(h, m))
+            self.assertIsNone(wa_chase.skip_reason(it, date.fromisoformat(DAY)), label)
+            self.chase(_et(8, 35))
+            (r,) = self.rows()
+            self.assertEqual((r["kind"], r["group_id"], r["mention_jid"]),
+                             ("group", G_A, owner["jid"]), label)
+            self.assertTrue(r["text"].startswith(f"@{owner['name']} morning"), label)
+
+    def test_a_checked_in_worker_is_chased_in_the_group(self):
+        it = _item(self.db, owner={"kind": "worker", "id": "w1", "name": "Luis Gomez",
+                                   "sub_company": None, "jid": "17185550404@c.us"})
+        self.assertIsNone(wa_chase.skip_reason(it, date.fromisoformat(DAY)))
+        for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+            self.chase(_et(h, m))
+        self.assertEqual([r["slot"] for r in self.rows()],
+                         ["morning", "midday", "eod", "admin_dm"])
+        r = self.rows("morning")[0]
+        self.assertEqual((r["kind"], r["mention_jid"]), ("group", "17185550404@c.us"))
+        self.assertTrue(r["text"].startswith("@Luis Gomez morning"))
+
+    def test_no_whatsapp_number_is_listed_not_chased(self):
+        # Kevin has two items due today and no number to @mention: one entry
+        # a day with both, no nudge, no admin DM.
+        kev = {"kind": "user", "id": "u_kev", "name": "Kevin Shah", "jid": None}
+        it = _item(self.db, owner=dict(kev))
+        _item(self.db, owner=dict(kev), group_id=G_2, quote="door schedule by noon today")
+        self.assertEqual(wa_chase.skip_reason(it, date.fromisoformat(DAY)), "owner_no_mention")
+        reports = [self.chase(_et(h, m)) for h, m in ((8, 35), (12, 35), (15, 5), (16, 5))]
+        (r,) = self.rows()
+        self.assertEqual((r["slot"], r["kind"], r["not_chased"], r["text"]),
+                         ("not_chased", "not_chased", "no WhatsApp number on file", ""))
+        self.assertEqual(r["owner_name"], "Kevin Shah")
+        self.assertEqual(sorted(i["quote"] for i in r["items"]),
+                         ["I'll send the stair RFI today", "door schedule by noon today"])
+        self.assertEqual(reports[0]["no_number"], 2)
+        view = server._chase_view(r)
+        self.assertEqual((view["not_chased"], view["text"]), ("no WhatsApp number on file", ""))
+        # A listing, not a nudge: not in the precision figures.
+        self.assertEqual(wa_chase.precision([r])["by_slot"], {})
+
+    def test_no_number_only_when_it_would_have_been_chased(self):
+        kev = {"kind": "user", "id": "u_kev", "name": "Kevin Shah", "jid": None}
+        for label, over in {
+                "not due today": dict(due={"due_at": "2026-10-09"}),
+                "flagged": dict(needs_review=True),
+                "possibly theirs": dict(owner={**kev, "possibly": True}),
+                "unconfirmed": dict(owner={**kev, "status": "unresolved"}),
+        }.items():
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            _item(self.db, **{"owner": dict(kev), **over})
+            self.chase(_et(8, 35))
             self.assertEqual(self.rows(), [], label)
+        # Before the first slot: nothing yet.
+        self.db.attention_items.rows = []
+        _item(self.db, owner=dict(kev))
+        self.chase(_et(7, 30))
+        self.assertEqual(self.rows(), [])
+
+    def test_the_4pm_dm_skips_the_owner(self):
+        # Ana, an admin, owns it: the 4:00 DM goes to the other admin only.
+        self.db.users.rows.append({"_id": "u_roy", "company_id": CO_A, "name": "Roy",
+                                   "role": "admin"})
+        _item(self.db, owner={"kind": "user", "id": "u_ana", "name": "Ana Admin",
+                              "jid": f"{PAT}@c.us"})
+        for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+            self.chase(_et(h, m))
+        (adm,) = self.rows("admin_dm")
+        self.assertNotIn("u_ana", adm["to_user_ids"])
+        self.assertIn("u_roy", adm["to_user_ids"])
+
+    def test_an_owner_who_is_the_only_admin_gets_no_escalation(self):
+        _item(self.db, owner={"kind": "user", "id": "u_ana", "name": "Ana Admin",
+                              "jid": f"{PAT}@c.us"})
+        reports = [self.chase(_et(h, m)) for h, m in ((8, 35), (12, 35), (15, 5), (16, 5))]
+        self.assertEqual([r["slot"] for r in self.rows()], ["morning", "midday", "eod"])
+        self.assertEqual(reports[-1]["admin_self"], 1)
 
     def test_skipped(self):
         cases = {
             "possibly": dict(owner={"possibly": True}),
             "unresolved": dict(owner={"status": "unresolved", "kind": "none", "id": None}),
-            "a worker, not a user or mapped": dict(owner={"kind": "worker", "id": "w1"}),
             "no explicit due date": dict(due={"due_text": "", "due_at": None}),
             "a date the code could not read": dict(due={"due_text": "soon", "due_at": None}),
             "due another day": dict(due={"due_at": "2026-10-09"}),
