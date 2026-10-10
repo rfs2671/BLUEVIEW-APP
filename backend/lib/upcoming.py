@@ -52,7 +52,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "upc-v1.0"
+PROMPT_VERSION = "upc-v1.1"
 MODEL = "gpt-4o-mini"
 
 KINDS = ("inspection", "delivery", "crane_pick", "pour", "utility", "hearing")
@@ -261,6 +261,7 @@ Rules:
 - "date_text": the day words EXACTLY as written in the message, with the time if one is given ("Dec 4", "next Tue at 9am", "tomorrow 7am", "in 3 weeks"). Never compute a date yourself. Never write a date that is not in the message.
 - "title": under 8 words, what it is ("Con Ed meter set", "DOB plumbing inspection", "Rebar delivery").
 - "agency": DOB, DOT, Con Ed, FDNY, DEP, National Grid, OATH, or null.
+- "in 3 days", "in 2 weeks", "in three weeks" ARE a day (counted from the message date): list the event, with date_text exactly as written ("in 3 weeks"). Vague, and skipped: "next week", "soon", "sometime", "in a few weeks", "in a couple of days".
 - Skip anything with no day or only a vague one ("next week", "soon", "sometime"). Skip what already happened ("poured this morning"). Skip questions that do not state a day ("when is the inspection?").
 - A reschedule or cancel must name an event from OPEN EVENTS by its event_id. If none fits, use "new" for a move with a day, and skip a cancel.
 - At most 3 events. None is a fine answer.
@@ -431,6 +432,87 @@ def match_open(quote: str, open_events: Sequence[Dict[str, Any]]) -> Optional[Di
     best = max(n for n, _ in scored)
     top = [e for n, e in scored if n == best]
     return top[0] if len(top) == 1 else None
+
+
+# THE CODE-SIDE CANCEL. A cancel the model missed ("Pump truck cancelled,
+# the pour is off until the weather clears" came back as no event) is still
+# read, by code alone: a strict cancel phrase, and in the same sentence the
+# subject of exactly one open event -- its kind ("pour", "delivery",
+# "inspection", "crane pick", "hearing") or its agency ("Con Ed", "FDNY").
+# None, or two or more that fit: nothing. A question is never a cancel.
+CODE_CANCEL_WORDS = re.compile(
+    r"\b(?:is|are|was|were|it'?s|'s)\s+off\b|\bcalled off\b|\boff until\b"
+    r"|\bcancell?ed\b|\bscrapped\b|\bnot happening\b", re.IGNORECASE)
+_SUBJECT = {
+    "pour": r"pours?|pouring",
+    "delivery": r"deliver(?:y|ies)",
+    "inspection": r"inspections?",
+    "crane_pick": r"crane(?:\s+picks?)?",
+    "hearing": r"hearings?",
+}
+_AGENCY_WORDS: Dict[str, List[str]] = {}
+for _k, _v in _AGENCIES.items():
+    _AGENCY_WORDS.setdefault(_v, []).append(_k)
+_SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
+# Clauses: the cancel must govern the subject ("Pump truck cancelled, but the
+# pour is still on" cancels no pour). "and" does not split: "inspection and
+# pour both cancelled" names two events, so nothing.
+_CLAUSE = re.compile(r"[,;:]|\s[-\u2013\u2014]\s|\b(?:but|however|though|although|while|whereas)\b",
+                     re.IGNORECASE)
+# "not cancelled", "hasn't been cancelled", "never got called off": no cancel.
+_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+_NEVER = re.compile(r"(?!x)x")
+
+
+def _rx(parts: List[str]) -> Optional[re.Pattern]:
+    return re.compile(r"\b(?:" + "|".join(parts) + r")\b", re.IGNORECASE) if parts else None
+
+
+def _agency_rx(ev: Dict[str, Any]) -> Optional[re.Pattern]:
+    return _rx([r"\s+".join(re.escape(x) for x in w.split())
+                for w in _AGENCY_WORDS.get(agency_of(ev.get("agency")) or "", [])])
+
+
+def _kind_rx(ev: Dict[str, Any]) -> Optional[re.Pattern]:
+    return _rx([_SUBJECT[ev["kind"]]] if _SUBJECT.get(ev.get("kind") or "") else [])
+
+
+def _cancels(clause: str) -> bool:
+    """A cancel phrase in the clause that is not negated."""
+    return any(not _NEGATED.search(clause[:m.start()])
+               for m in CODE_CANCEL_WORDS.finditer(clause))
+
+
+def code_cancel(body: Any, open_events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """{"op": "cancel", "event_id", "quote"} when one clause of the message
+    has a cancel phrase (not negated) and names the subject of exactly one
+    open event; {"op": "skip", "reason"} when it has the phrase but not one
+    match; None when there is no cancel phrase at all. The quote is the
+    sentence."""
+    text = str(body or "")
+    said = []                                   # (clause, its sentence)
+    for sentence in _SENTENCE.findall(text):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?"):
+            continue
+        said += [(c, sentence) for c in _CLAUSE.split(sentence) if c and _cancels(c)]
+    if not said:
+        return None
+    hits: Dict[str, tuple] = {}
+    for clause, sentence in said:
+        # An agency named narrows it to that agency's events ("FDNY
+        # inspection cancelled" with a DEP inspection also open); else the
+        # kind word ("the pour is off").
+        by_agency = [e for e in open_events if (_agency_rx(e) or _NEVER).search(clause)]
+        for e in by_agency or [e for e in open_events
+                               if (_kind_rx(e) or _NEVER).search(clause)]:
+            hits.setdefault(str(e["id"]), (e, sentence))
+    if len(hits) != 1:
+        return {"op": "skip",
+                "reason": "code_cancel_no_open_event" if not hits else "code_cancel_ambiguous"}
+    e, sentence = next(iter(hits.values()))
+    quote = match_quote(sentence.rstrip(".!"), text) or sentence
+    return {"op": "cancel", "event_id": e["id"], "quote": quote[:MAX_QUOTE_CHARS]}
 
 
 def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[str, Any]],
