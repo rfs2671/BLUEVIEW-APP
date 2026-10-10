@@ -156,6 +156,58 @@ class TheChatWorker(unittest.TestCase):
         self.assertEqual(ev["history"][-1]["action"], "cancelled")
         self.assertEqual(sends.group, [])                  # never posts in a group
 
+    POUR = {"action": "new", "kind": "pour", "title": "3rd floor deck pour",
+            "date_text": "Monday 10/12 7am", "quote": "Concrete pour Monday 10/12 7am"}
+
+    def test_the_model_missed_a_cancel_code_cancels_the_one_pour(self):
+        model = _Model({"Concrete pour Monday": [self.POUR]})     # nothing for the cancel
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "Pump truck cancelled, the pour is off until the weather clears")
+        rep, sends = _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        (ev,) = _events(self.db, source="chat")
+        self.assertEqual(ev["status"], "cancelled")
+        self.assertEqual(ev["history"][-1]["action"], "cancelled")
+        self.assertEqual(ev["history"][-1]["quote"],
+                         "Pump truck cancelled, the pour is off until the weather clears")
+        self.assertEqual(rep["code_cancelled"], 1)
+        self.assertEqual(sends.group, [])
+
+    def test_two_open_pours_code_cancels_nothing(self):
+        model = _Model({"Concrete pour Monday": [self.POUR],
+                        "Slab pour": [{"action": "new", "kind": "pour", "title": "Slab pour",
+                                       "date_text": "Tuesday 10/13",
+                                       "quote": "Slab pour Tuesday 10/13"}]})
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _msg(self.db, "Slab pour Tuesday 10/13")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "the pour is off until the weather clears")
+        rep, _ = _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        self.assertEqual({e["status"] for e in _events(self.db, source="chat")}, {"open"})
+        self.assertEqual(rep["skipped"].get("code_cancel_ambiguous"), 1)
+
+    def test_a_move_the_model_read_is_not_cancelled_by_code(self):
+        model = _Model({
+            "Concrete pour Monday": [self.POUR],
+            "pour moved": [{"action": "reschedule", "event_id": "$OPEN", "kind": "pour",
+                            "date_text": "Friday 10/16", "quote": "pour moved to Friday 10/16"}]})
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "Pump truck cancelled, pour moved to Friday 10/16")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        (ev,) = _events(self.db, source="chat")
+        self.assertEqual((ev["status"], ev["date"]), ("open", "2026-10-16"))
+
+    def test_in_3_weeks_is_created_three_weeks_out(self):
+        model = _Model({"FDNY standpipe": [{
+            "action": "new", "kind": "inspection", "agency": "FDNY",
+            "title": "FDNY standpipe inspection", "date_text": "in 3 weeks",
+            "quote": "FDNY standpipe inspection in 3 weeks"}]})
+        _msg(self.db, "FDNY standpipe inspection in 3 weeks")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        (ev,) = _events(self.db, source="chat")
+        self.assertEqual((ev["date"], ev["agency"]), ("2026-10-29", "FDNY"))      # Oct 8 + 21
+
     def test_an_echo_of_a_move_moves_nothing(self):
         model = _Model({
             "Con Ed coming": [CON_ED],

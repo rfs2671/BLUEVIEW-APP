@@ -177,6 +177,62 @@ class TheChecks(unittest.TestCase):
         self.assertNotEqual(k, u.event_key("p1", "utility", "Con Ed", date(2026, 12, 9)))
 
 
+class LiveEvalOct10b(unittest.TestCase):
+    """The second live run: two misses the model made, read without it."""
+
+    OPEN = [{"id": "pour", "kind": "pour", "agency": None, "title": "3rd floor deck pour"},
+            {"id": "fdny", "kind": "inspection", "agency": "FDNY",
+             "title": "FDNY standpipe inspection"},
+            {"id": "dep", "kind": "inspection", "agency": "DEP", "title": "DEP sewer inspection"},
+            {"id": "coned", "kind": "utility", "agency": "Con Ed", "title": "Con Ed meter set"}]
+
+    def test_m8_the_pour_is_off_cancels_the_pour_in_code(self):
+        body = "Pump truck cancelled, the pour is off until the weather clears"
+        self.assertEqual(u.code_cancel(body, self.OPEN),
+                         {"op": "cancel", "event_id": "pour", "quote": body})
+
+    def test_each_cancel_phrase(self):
+        for body in ("The pour is off", "pour called off", "Pour cancelled", "pour canceled",
+                     "Pour scrapped", "pour not happening", "pour off until Monday",
+                     "pour's off"):
+            self.assertEqual((u.code_cancel(body, self.OPEN) or {}).get("event_id"), "pour", body)
+
+    def test_an_agency_names_its_own_event(self):
+        self.assertEqual(u.code_cancel("FDNY inspection cancelled", self.OPEN)["event_id"], "fdny")
+        self.assertEqual(u.code_cancel("Con Edison not happening", self.OPEN)["event_id"], "coned")
+
+    def test_none_or_two_or_more_is_nothing(self):
+        self.assertEqual(u.code_cancel("Inspection cancelled", self.OPEN)["op"], "skip")
+        self.assertEqual(u.code_cancel("Rebar delivery scrapped", self.OPEN)["op"], "skip")
+        two = self.OPEN + [{"id": "pour2", "kind": "pour", "agency": None, "title": "Slab pour"}]
+        self.assertEqual(u.code_cancel("the pour is off", two),
+                         {"op": "skip", "reason": "code_cancel_ambiguous"})
+
+    def test_not_a_cancel(self):
+        for body in ("Is the pour off?", "Pour Thursday 7am", "Weather looks bad for the pour",
+                     "Pour Thursday. Pump truck cancelled"):     # subject not in that sentence
+            self.assertIn((u.code_cancel(body, self.OPEN) or {}).get("op"), (None, "skip"), body)
+
+    def test_m9_in_3_weeks_is_a_day(self):
+        sent = datetime(2026, 10, 6, 17, 0, tzinfo=timezone.utc)      # Tue 1pm New York
+        self.assertEqual(u.resolve_when("in 3 weeks", sent),
+                         {"date": date(2026, 10, 27), "time": None})
+        self.assertEqual(u.resolve_when("in 10 days", sent)["date"], date(2026, 10, 16))
+        self.assertEqual(u.resolve_when("in three weeks", sent)["date"], date(2026, 10, 27))
+        for vague in ("next week", "soon", "sometime", "in a few weeks", "in a couple of days"):
+            self.assertIn(u.resolve_when(vague, sent).get("skip"), ("vague", "no_date"), vague)
+        ev = {"action": "new", "kind": "inspection", "agency": "FDNY",
+              "title": "FDNY standpipe inspection", "date_text": "in 3 weeks",
+              "quote": "FDNY standpipe inspection in 3 weeks"}
+        op = u.decide(ev, {"body": "FDNY standpipe inspection in 3 weeks", "sent_at": sent}, [])
+        self.assertEqual((op["op"], op["date"], op["agency"]), ("create", date(2026, 10, 27), "FDNY"))
+
+    def test_the_prompt_says_in_n_weeks_is_a_day(self):
+        self.assertIn('"in 2 weeks"', u.SYSTEM_PROMPT)
+        self.assertIn("ARE a day", u.SYSTEM_PROMPT)
+        self.assertEqual(u.PROMPT_VERSION, "upc-v1.1")
+
+
 class LiveEvalOct10(unittest.TestCase):
     """The shapes the first live run failed on."""
 

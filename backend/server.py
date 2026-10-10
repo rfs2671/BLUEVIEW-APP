@@ -48524,7 +48524,8 @@ async def _upcoming_open_chat(company_id: str, project_id: str, today: _Date) ->
         "date": {"$gte": today.isoformat()},
     }).to_list(200)
     return [{"id": str(r["_id"]), "title": r.get("title"), "kind": r.get("kind"),
-             "date": r.get("date"), "time": r.get("time"), "key": r.get("key")}
+             "agency": r.get("agency"), "date": r.get("date"), "time": r.get("time"),
+             "key": r.get("key")}
             for r in rows]
 
 
@@ -48650,6 +48651,7 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
     report["prompt_tokens"] += int(out.get("prompt_tokens") or 0)
     report["completion_tokens"] += int(out.get("completion_tokens") or 0)
     wrote_all = True
+    model_acted = False
     for ev in upcoming.parse_events(out.get("content")):
         op = upcoming.decide(ev, {"body": body, "sent_at": sent_at}, open_events,
                              now=ctx["now"])
@@ -48666,12 +48668,35 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
         if op["op"] == "skip":
             report["skipped"][op["reason"]] = report["skipped"].get(op["reason"], 0) + 1
             continue
+        model_acted = True
         try:
             await _upcoming_apply(op, msg, ctx, report)
         except Exception as e:
             report["write_failed"] += 1
             logger.warning(f"[upcoming] write failed: {type(e).__name__}")
             wrote_all = False
+    if not model_acted and upcoming.CODE_CANCEL_WORDS.search(body):
+        # The code-side cancel: the model missed it ("the pour is off until
+        # the weather clears" came back as no event). Only when the model's
+        # answer changed nothing for this message ("pump cancelled, pour
+        # moved to Friday" is a move, not a cancel). Code alone, against
+        # what is open now: one event named, or nothing.
+        op = upcoming.code_cancel(body, await _upcoming_open_chat(
+            ctx["company_id"], ctx["project_id"], _upcoming_today(sent_at)))
+        if op and ctx.get("trace") is not None:
+            ctx["trace"].append({"row_id": str(msg.get("_id")), "action": "code_cancel",
+                                 "quote": op.get("quote"), "event_id": op.get("event_id"),
+                                 "op": op["op"], "reason": op.get("reason")})
+        if op and op["op"] == "cancel":
+            try:
+                await _upcoming_apply(op, msg, ctx, report)
+                report["code_cancelled"] = report.get("code_cancelled", 0) + 1
+            except Exception as e:
+                report["write_failed"] += 1
+                logger.warning(f"[upcoming] write failed: {type(e).__name__}")
+                wrote_all = False
+        elif op:
+            report["skipped"][op["reason"]] = report["skipped"].get(op["reason"], 0) + 1
     # A failed write keeps the cursor on this message: retried next run, like
     # a failed model call (a repeat of what did get written is deduped, and
     # a move or a cancel is the same write again).

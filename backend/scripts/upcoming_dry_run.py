@@ -237,6 +237,12 @@ def score(sc: dict, out: dict) -> dict:
             if t.get("action") is None:
                 per_msg.append({"id": m["id"], "text": m["text"], "line": t["reason"]})
                 continue
+            if t.get("action") == "code_cancel":
+                # No model event: the code-side cancel read the message itself.
+                what = t["op"] + (f" ({t['reason']})" if t.get("reason") else "")
+                per_msg.append({"id": m["id"], "text": m["text"], "line":
+                                f"code cancel (no model event) · {what} · quote {t.get('quote')!r}"})
+                continue
             res = t.get("resolved") or {}
             got = (res.get("date").isoformat() + (f" {res['time']}" if res.get("time") else "")
                    if res.get("date") else (f"skip:{res['skip']}" if res.get("skip") else "-"))
