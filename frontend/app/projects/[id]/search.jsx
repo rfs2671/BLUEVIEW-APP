@@ -17,7 +17,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import { memoryAPI } from '../../../src/utils/api';
 import {
-  cleanQuery, chipText, preview, opensContext, answerState,
+  cleanQuery, chipText, preview, opensContext, answerState, claimLine, claimSources,
 } from '../../../src/utils/projectMemory';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -120,13 +120,15 @@ export default function ProjectSearchScreen() {
               </Text>
               {!answer.found && <Text style={[styles.line, muted]}>{answer.text}</Text>}
               {answer.found && answer.claims.map((c, i) => (
-                <Pressable key={i} onPress={() => open(c.source)} style={styles.claim}>
-                  <Text style={[styles.line, text]}>
-                    {answer.timeline && c.date ? `${c.date} — ` : ''}{c.text}
-                  </Text>
-                  <Text style={[styles.quote, muted]}>“{c.quote}”</Text>
-                  <Text style={[styles.chip, muted]}>{chipText(c.source)}</Text>
-                </Pressable>
+                <View key={i} style={styles.claim}>
+                  <Text style={[styles.line, text]}>{claimLine(c, answer.timeline)}</Text>
+                  {claimSources(c).map((s, j) => (
+                    <Pressable key={`${i}-${j}`} onPress={() => open(s)}>
+                      <Text style={[styles.quote, muted]}>“{s.quote}”</Text>
+                      <Text style={[styles.chip, muted]}>{chipText(s)}</Text>
+                    </Pressable>
+                  ))}
+                </View>
               ))}
             </GlassCard>
           )}

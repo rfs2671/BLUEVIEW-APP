@@ -203,31 +203,216 @@ def parse_model(content: Any) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+# ── FAITHFULNESS: WHO DECIDED, AND WHETHER IT HAPPENED ───────────────────────
+#
+# Two ways a quote is right and the claim built on it is still wrong:
+#   RELAYED  "Owner wants the 3B window changed", posted by Wendy: Wendy SAID
+#            it; the owner WANTED it. The claim names the decider and says who
+#            relayed it -- never the poster as the one who decided.
+#   PLANNED  "We're getting a pump", "dumpster swap is set for Tuesday": an
+#            intention or a plan, not an event. A claim that says it was done
+#            is upgraded certainty: rewritten to "planned, as of <date>".
+
+_ROLES = (r"owner|owners|client|architect|engineer|structural engineer|landlord|inspector"
+          r"|dob|city|tenant|developer|consultant|expeditor|super|superintendent|pm|gc")
+_DECIDE = (r"wants|wanted|asked(?: for)?|asks(?: for)?|approved|approves|requested|requests"
+           r"|decided|decides|insists|insisted|prefers|preferred|needs|needed|said|says"
+           r"|signed off(?: on)?|rejected|rejects")
+_RELAYED = re.compile(
+    r"\b(?:the\s+)?(?:(?i:(" + _ROLES + r"))|([A-Z][a-z]+(?: [A-Z][a-z]+)?))(?:'s?)?\s+"
+    r"(?i:(?:has |have |just |already )?(" + _DECIDE + r"))\b")
+_NOT_DECIDERS = {"I", "We", "You", "He", "She", "They", "It", "This", "That", "Got",
+                 "Ok", "Okay", "Yes", "No", "Please", "Just", "Also"}
+
+
+def relayed_decider(quote: str, poster: str = "",
+                    people: Optional[Iterable[str]] = None) -> Optional[str]:
+    """Who the words say wanted / approved / decided -- "the owner", "Mike" --
+    when that is someone other than the poster. None when the poster speaks
+    for themself ("I want", "we decided") or nobody is named.
+
+    A role ("owner", "architect") always counts. A NAME counts only when it is
+    one of `people` (first names of the people in these records): "Drawings
+    approved" is not a person approving anything."""
+    first = (poster or "").strip().split(" ")[0].lower()
+    known = {p.strip().split(" ")[0].lower() for p in (people or []) if p and p.strip()}
+    for m in _RELAYED.finditer(quote or ""):
+        role, name = m.group(1), m.group(2)
+        if role:
+            r = role.lower()
+            return {"dob": "DOB", "pm": "the PM", "gc": "the GC"}.get(r, f"the {r}")
+        if name and name.split(" ")[0] not in _NOT_DECIDERS:
+            lead = name.split(" ")[0].lower()
+            if (first and lead == first) or lead not in known:
+                continue                     # the poster, or not a person
+            return name
+    return None
+
+
+_INTENT = re.compile(
+    r"\b(will|won'?t|'ll|going to|gonna|getting|get(?:ting)? (?:a|the)|plan(?:s|ned|ning)?"
+    r"|scheduled|set for|is set|are set|should|tomorrow|tmrw|next (?:week|mon|tue|wed|thu|fri"
+    r"|sat|sun)\w*|later today|this afternoon|pending|waiting (?:on|for)|expect(?:ed|ing)?"
+    r"|supposed to|to be (?:done|delivered|installed|poured)|on order|ordering|booked for)\b",
+    re.IGNORECASE)
+_DONE_WORDS = re.compile(
+    r"\b(done|finished|completed|sent|poured|installed|delivered|is here|are here|arrived"
+    r"|passed|is in|are in|received|picked up|dropped off|swapped|replaced|took care"
+    r"|signed off|already|running|approved|rejected|confirmed|inspected)\b", re.IGNORECASE)
+_PAST_CLAIM = re.compile(
+    r"\b((?:was|were|has been|have been|had been|got) \w+(?:ed|en|ne|t)"
+    r"|acquired|obtained|received|completed|finished|delivered|installed|poured|arrived"
+    r"|swapped|replaced|took place|happened|was done|were done|got done|got it)\b",
+    re.IGNORECASE)
+
+
+def is_intent(quote: str) -> bool:
+    """The words state a plan or an intention, and nothing in them says it
+    has happened."""
+    return bool(_INTENT.search(quote or "")) and not _DONE_WORDS.search(quote or "")
+
+
+_CLAUSE = re.compile(r"(?<=[.;!?])\s+|\n+|\s+but\s+", re.IGNORECASE)
+
+
+def planned_for(quote: str, claim_text: str) -> bool:
+    """The part of the quote the claim is about states only a plan.
+    "Drawings approved. Installation is set for Monday." -- a claim about the
+    installation is judged on the installation clause, not on "approved"."""
+    parts = [p for p in _CLAUSE.split(quote or "") if p and p.strip()]
+    if len(parts) < 2:
+        return is_intent(quote)
+    want = set(terms(claim_text))
+    scored = [(len(want & set(terms(p))), p) for p in parts]
+    best = max(n for n, _ in scored)
+    if best == 0:
+        return is_intent(quote)
+    return any(is_intent(p) for n, p in scored if n == best)
+
+
+def claims_done(text: str) -> bool:
+    return bool(_PAST_CLAIM.search(text or ""))
+
+
+def _words(text: str) -> set:
+    return set(terms(text))
+
+
+_NEGATION = re.compile(r"\b(?:not|no|never|none|nobody|nothing|cannot|without)\b|\w+n['’]t\b",
+                       re.IGNORECASE)
+
+
+def _negated(text: str) -> bool:
+    return bool(_NEGATION.search(text or ""))
+
+
+def same_fact(a: Dict[str, Any], b: Dict[str, Any], timeline: bool = False) -> bool:
+    """Two claims that say the same thing (one fact, several sources)."""
+    if timeline and (a.get("date") or "") != (b.get("date") or ""):
+        return False
+    if _negated(a["text"]) != _negated(b["text"]):
+        return False                 # "approved" and "not approved" are two facts
+    wa, wb = _words(a["text"]), _words(b["text"])
+    if not wa or not wb:
+        return norm(a["text"]) == norm(b["text"])
+    return len(wa & wb) / len(wa | wb) >= (0.75 if timeline else 0.6)
+
+
 def checked_claims(raw: Any, sources: Sequence[Dict[str, Any]],
-                   limit: int = 12) -> List[Dict[str, Any]]:
-    """The model's claims that survive the check: [{text, sid, quote, date?}].
-    A quote over QUOTE_MAX, or in no retrieved source, drops its claim."""
+                   limit: int = 12, timeline: bool = False,
+                   report: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
+    """The model's claims that survive the check, made faithful:
+    [{text, sid, quote, date?, also: [{sid, quote}], relayed_by?, decider?,
+      planned?}].
+
+      - every quote must be in a retrieved source, verbatim (<= QUOTE_MAX),
+        else the claim's source is dropped (no source left: the claim goes);
+      - RELAYED: the decider the words name replaces the poster as the one
+        who decided; the poster is kept as who relayed it;
+      - PLANNED: a done-sounding claim on words that only state a plan is
+        rewritten to "Planned, as of <date> -- not confirmed as done";
+      - one claim per fact: the same fact from several sources is one claim
+        with several sources.
+    """
     out: List[Dict[str, Any]] = []
-    seen = set()
+    people = {str(x.get("who") or "") for x in sources if x.get("who")}
+    tally = report if report is not None else {}
+    tally.update(dropped=0, merged=0, made_faithful=0)
     for c in raw if isinstance(raw, list) else []:
         if not isinstance(c, dict):
+            tally["dropped"] += 1
             continue
         text = clean(c.get("text"))
-        quote = clean(c.get("quote")).strip('"“”')
-        if not text or not quote:
+        cites = c.get("sources") if isinstance(c.get("sources"), list) else [
+            {"source": c.get("source"), "quote": c.get("quote")}]
+        found = []
+        for ci in cites:
+            if not isinstance(ci, dict):
+                continue
+            quote = clean(ci.get("quote")).strip('"“”')
+            if not quote:
+                continue
+            src = find_quote(quote, sources, prefer=str(ci.get("source") or ""))
+            if src and all(not (f[0]["sid"] == src["sid"] and norm(f[1]) == norm(quote))
+                           for f in found):
+                found.append((src, quote))
+        if not text or not found:
+            tally["dropped"] += 1           # no quote of it in any record retrieved
             continue
-        src = find_quote(quote, sources, prefer=str(c.get("source") or ""))
-        if not src:
+        src, quote = found[0]
+        claim: Dict[str, Any] = {"text": text, "sid": src["sid"], "quote": quote,
+                                 # A timeline entry's date is its record's.
+                                 "date": clean(c.get("date")) or (
+                                     src.get("day_label") or "" if timeline else ""),
+                                 "also": [{"sid": s["sid"], "quote": q} for s, q in found[1:]]}
+        before = claim["text"]
+        _make_faithful(claim, src, people)
+        if claim["text"] != before:
+            tally["made_faithful"] += 1
+        twin = next((o for o in out if same_fact(o, claim, timeline)), None)
+        if twin:
+            have = {(twin["sid"], norm(twin["quote"]))} | {
+                (a["sid"], norm(a["quote"])) for a in twin["also"]}
+            for a in [{"sid": claim["sid"], "quote": claim["quote"]}] + claim["also"]:
+                if (a["sid"], norm(a["quote"])) not in have:
+                    twin["also"].append(a)
+                    have.add((a["sid"], norm(a["quote"])))
+            tally["merged"] += 1
             continue
-        key = (src["sid"], norm(quote))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"text": text, "sid": src["sid"], "quote": quote,
-                    "date": clean(c.get("date"))})
+        out.append(claim)
         if len(out) >= limit:
             break
     return out
+
+
+_RELAY_NOTE = re.compile(r"\s*[(\[]\s*(?:relayed|passed on|forwarded)\s+(?:by|from|via)\b[^)\]]*[)\]]",
+                         re.IGNORECASE)
+
+
+def _make_faithful(claim: Dict[str, Any], src: Dict[str, Any],
+                   people: Iterable[str] = ()) -> None:
+    quote, text = claim["quote"], claim["text"]
+    poster = src.get("who") or ""
+    decider = (relayed_decider(quote, poster, people)
+               if src.get("source") == SOURCE_WHATSAPP else None)
+    if decider and poster:
+        claim["decider"], claim["relayed_by"] = decider, poster
+        # Who relayed it is said once, by format_answer: drop the model's own
+        # "(relayed by Wendy Cho)" so the poster's name in it is neither
+        # rewritten into the decider nor repeated.
+        text = _RELAY_NOTE.sub("", text).rstrip()
+        cap = decider[0].upper() + decider[1:]
+        for name in sorted({poster, poster.split(" ")[0]}, key=len, reverse=True):
+            if len(name) >= 2 and re.search(r"\b" + re.escape(name) + r"\b", text):
+                # Never the poster as the decider: who relayed it is said
+                # separately ("relayed by Wendy Cho, Sep 24").
+                text = re.sub(r"\b" + re.escape(name) + r"\b", cap, text, count=1)
+                break
+    if planned_for(quote, text) and claims_done(text):
+        day = src.get("day_label") or ""
+        text = f"Planned{', as of ' + day if day else ''} — not confirmed as done"
+        claim["planned"] = True
+    claim["text"] = text
 
 
 # ── WHAT THE PERSON READS ────────────────────────────────────────────────────
@@ -259,7 +444,13 @@ def format_answer(claims: Sequence[Dict[str, Any]], by_sid: Dict[str, Dict[str, 
     for c in claims:
         src = by_sid[c["sid"]]
         head = f"{c['date']} — {c['text']}" if timeline and c.get("date") else c["text"]
-        lines.append(f"• {head}\n   {cite(src)}: “{c['quote']}”")
+        if c.get("relayed_by"):
+            head += f" (relayed by {c['relayed_by']}" + (
+                f", {src.get('day_label')})" if src.get("day_label") else ")")
+        rows = [f"• {head}", f"   {cite(src)}: “{c['quote']}”"]
+        for a in c.get("also") or []:
+            rows.append(f"   {cite(by_sid[a['sid']])}: “{a['quote']}”")
+        lines.append("\n".join(rows))
     return "\n".join(lines)
 
 
@@ -277,10 +468,12 @@ RULES
 - Use ONLY the records. Never your own knowledge, never a guess.
 - Every claim needs the id of the record it comes from and an EXACT quote from that record: copied character for character, at most 200 characters, the shortest part that proves the claim.
 - If the records do not answer the question, return no claims.
-- Names: say who said it as the record shows (the name before the group).
+- WHO SAID IT IS NOT WHO DECIDED IT. The name before the group is who POSTED the words. When the words say someone else wants, asked, approved or decided ("Owner wants X", "the architect approved Y", "per Mike"), the claim says THAT person decided and the poster relayed it: "The owner wanted X (relayed by Wendy Cho)". Never make the poster the decider.
+- NO CERTAINTY UPGRADES. A plan or intention stays a plan: "getting a pump" is not "got a pump"; "set for Tuesday" is not "happened Tuesday". A future date in an older message is "planned for <date>, as of <the message's date>". Only say something was done when a record says it was done.
+- ONE CLAIM PER FACT. When several records support the same fact, make ONE claim and list every record in "sources".
 - Keep each claim to one short sentence.
 
-Return JSON: {"claims": [{"text": "...", "source": "S3", "quote": "..."}]}"""
+Return JSON: {"claims": [{"text": "...", "sources": [{"source": "S3", "quote": "..."}]}]}"""
 
 TIMELINE_PROMPT = """You tell what happened with something on ONE construction project, from its records: WhatsApp group messages, filed daily reports and tracked items (commitments, new dates, done). The records are below, each with an id like [S3] and its date.
 
@@ -288,6 +481,9 @@ RULES
 - Use ONLY the records. Never your own knowledge, never a guess.
 - A dated timeline, oldest first, 5 to 12 entries when the records have that many (fewer is fine).
 - Every entry needs the id of its record and an EXACT quote from that record: copied character for character, at most 200 characters.
+- The date of an entry is the date of its record. A plan stays a plan: "set for Oct 12" in a message of Oct 1 is "Oct 1 — install planned for Oct 12", not an Oct 12 event.
+- WHO SAID IT IS NOT WHO DECIDED IT: "Owner wants X" posted by Wendy is "The owner wanted X (relayed by Wendy Cho)".
+- One entry per event; when several records show the same event, list them all in "sources".
 - If the records say nothing about it, return no entries.
 
-Return JSON: {"claims": [{"date": "Oct 3", "text": "...", "source": "S3", "quote": "..."}]}"""
+Return JSON: {"claims": [{"date": "Oct 3", "text": "...", "sources": [{"source": "S3", "quote": "..."}]}]}"""

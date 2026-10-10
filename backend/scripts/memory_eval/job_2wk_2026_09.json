@@ -1,67 +1,531 @@
 {
  "name": "120 Atlantic Ave, two weeks (Mon 2026-09-21 to Fri 2026-10-02)",
- "about": "Two linked groups (Site, MEP) and the filed daily reports. 10 questions: 8 with cited answers, 2 the records cannot answer.",
+ "about": "Two linked groups (Site, MEP) and the filed daily reports. 12 questions: 10 with cited answers (incl. a relayed decision -- the poster is not the decider -- and a plan that must stay a plan), 2 the records cannot answer.",
  "tz": "America/New_York",
- "project": {"name": "120 Atlantic Ave", "address": "120 Atlantic Ave, Brooklyn, NY"},
- "groups": {"S": "120 Atlantic – Site", "E": "120 Atlantic – MEP"},
+ "project": {
+  "name": "120 Atlantic Ave",
+  "address": "120 Atlantic Ave, Brooklyn, NY"
+ },
+ "groups": {
+  "S": "120 Atlantic – Site",
+  "E": "120 Atlantic – MEP"
+ },
  "senders": {
-  "R": {"name": "Roy Fishman", "lid": "401000000000001", "user": {"role": "admin"}},
-  "K": {"name": "Kevin Shah", "lid": "401000000000002", "user": {"role": "pm"}},
-  "W": {"name": "Wendy Cho", "lid": "401000000000003", "people": {"person_name": "Wendy Cho", "sub_company": "Owner's rep"}},
-  "D": {"name": "Dave Kim", "lid": "401000000000004", "people": {"person_name": "Dave Kim", "sub_company": "Solid Concrete"}},
-  "P": {"name": "Patricia Lee", "lid": "401000000000005", "people": {"person_name": "Patricia Lee", "sub_company": "Quality Plumbing"}},
-  "M": {"name": "Mike Rivera", "lid": "401000000000006", "people": {"person_name": "Mike Rivera", "sub_company": "Bright Electric"}},
-  "G": {"name": "Sam Ortiz", "lid": "401000000000007", "people": {"person_name": "Sam Ortiz", "sub_company": "Metro Glass"}},
-  "E": {"name": "Eddie Ruiz", "lid": "401000000000008", "people": {"person_name": "Eddie Ruiz", "sub_company": "Lift Co"}},
-  "F": {"name": "Sam Patel", "lid": "401000000000009", "people": {"person_name": "Sam Patel", "sub_company": "FireSafe"}},
-  "X": {"name": "Tony", "lid": "401000000000010"}
+  "R": {
+   "name": "Roy Fishman",
+   "lid": "401000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "K": {
+   "name": "Kevin Shah",
+   "lid": "401000000000002",
+   "user": {
+    "role": "pm"
+   }
+  },
+  "W": {
+   "name": "Wendy Cho",
+   "lid": "401000000000003",
+   "people": {
+    "person_name": "Wendy Cho",
+    "sub_company": "Owner's rep"
+   }
+  },
+  "D": {
+   "name": "Dave Kim",
+   "lid": "401000000000004",
+   "people": {
+    "person_name": "Dave Kim",
+    "sub_company": "Solid Concrete"
+   }
+  },
+  "P": {
+   "name": "Patricia Lee",
+   "lid": "401000000000005",
+   "people": {
+    "person_name": "Patricia Lee",
+    "sub_company": "Quality Plumbing"
+   }
+  },
+  "M": {
+   "name": "Mike Rivera",
+   "lid": "401000000000006",
+   "people": {
+    "person_name": "Mike Rivera",
+    "sub_company": "Bright Electric"
+   }
+  },
+  "G": {
+   "name": "Sam Ortiz",
+   "lid": "401000000000007",
+   "people": {
+    "person_name": "Sam Ortiz",
+    "sub_company": "Metro Glass"
+   }
+  },
+  "E": {
+   "name": "Eddie Ruiz",
+   "lid": "401000000000008",
+   "people": {
+    "person_name": "Eddie Ruiz",
+    "sub_company": "Lift Co"
+   }
+  },
+  "F": {
+   "name": "Sam Patel",
+   "lid": "401000000000009",
+   "people": {
+    "person_name": "Sam Patel",
+    "sub_company": "FireSafe"
+   }
+  },
+  "X": {
+   "name": "Tony",
+   "lid": "401000000000010"
+  }
  },
  "messages": [
-  {"id": "m1", "group": "S", "from": "K", "at": "2026-09-21 07:05", "text": "Morning all. Week plan: underpinning pits 1-4 Tuesday/Wednesday, storefront shop drawings due Friday, MEP rough-in 2nd floor starts next week."},
-  {"id": "m2", "group": "S", "from": "K", "at": "2026-09-21 07:12", "text": "@Sam can you get us the storefront shop drawings by Friday?"},
-  {"id": "m3", "group": "S", "from": "G", "at": "2026-09-21 07:40", "text": "Yes, storefront shop drawings Friday"},
-  {"id": "m4", "group": "S", "from": "D", "at": "2026-09-21 09:30", "text": "Excavation for pits 1 and 2 done, waiting on special inspector before we pour"},
-  {"id": "m5", "group": "S", "from": "X", "at": "2026-09-21 10:02", "text": "who has the gang box key?"},
-  {"id": "m6", "group": "S", "from": "R", "at": "2026-09-21 10:05", "text": "Luis has it"},
-  {"id": "m7", "group": "E", "from": "P", "at": "2026-09-22 07:15", "text": "Riser shop drawings will be ready next Monday"},
-  {"id": "m8", "group": "S", "from": "D", "at": "2026-09-22 15:20", "text": "Special inspector signed off pits 1-4, we pour tomorrow 7am"},
-  {"id": "m9", "group": "S", "from": "D", "at": "2026-09-23 11:45", "text": "Underpinning pits 1–4 poured this morning, 12 yards, 4000 psi mix"},
-  {"id": "m10", "group": "S", "from": "K", "at": "2026-09-23 11:50", "text": "Great, thanks Dave"},
-  {"id": "m11", "group": "E", "from": "M", "at": "2026-09-23 13:10", "text": "Temp power panel moved to the east wall, Con Ed inspection Friday"},
-  {"id": "m12", "group": "S", "from": "W", "at": "2026-09-24 08:30", "text": "Owner wants the 3B bedroom window changed to a casement, not the double hung. Please revise the window schedule."},
-  {"id": "m13", "group": "S", "from": "K", "at": "2026-09-24 08:41", "text": "Got it Wendy, I'll send the revised window schedule to the architect today"},
-  {"id": "m14", "group": "S", "from": "K", "at": "2026-09-24 16:05", "text": "Revised window schedule with the 3B casement sent to the architect"},
-  {"id": "m15", "group": "S", "from": "D", "at": "2026-09-25 07:20", "text": "DOB inspector at footing F3 asked for more rebar chairs, we added them this morning"},
-  {"id": "m16", "group": "S", "from": "G", "at": "2026-09-25 14:00", "text": "Storefront shop drawings will slip to next Wednesday, the glass supplier is late with the specs"},
-  {"id": "m17", "group": "S", "from": "K", "at": "2026-09-25 14:06", "text": "Ok Sam, Wednesday latest please. We need them to release the frame order."},
-  {"id": "m18", "group": "E", "from": "E", "at": "2026-09-28 08:00", "text": "Elevator pit is flooded again after the rain, need a pump today"},
-  {"id": "m19", "group": "E", "from": "R", "at": "2026-09-28 08:20", "text": "Eddie we're getting a pump from the rental yard"},
-  {"id": "m20", "group": "E", "from": "E", "at": "2026-09-28 13:00", "text": "Pump is here and running, pit should be dry by tomorrow"},
-  {"id": "m21", "group": "E", "from": "P", "at": "2026-09-29 09:10", "text": "Riser shop drawings sent to Kevin, check your email"},
-  {"id": "m22", "group": "E", "from": "F", "at": "2026-09-29 10:00", "text": "FireSafe will start fire stopping on the 2nd floor Monday Oct 5"},
-  {"id": "m23", "group": "S", "from": "G", "at": "2026-09-30 15:30", "text": "Storefront shop drawings sent, revision A, check your email"},
-  {"id": "m24", "group": "S", "from": "K", "at": "2026-10-01 10:15", "text": "Storefront shop drawings approved with comments. Frame install is set for October 12."},
-  {"id": "m25", "group": "S", "from": "X", "at": "2026-10-01 10:20", "text": "lol finally"},
-  {"id": "m26", "group": "E", "from": "M", "at": "2026-10-01 12:00", "text": "Con Ed inspection passed for the temp power"},
-  {"id": "m27", "group": "S", "from": "D", "at": "2026-10-02 07:30", "text": "Slab on grade pour moved to next Thursday, waiting on the vapor barrier delivery"}
+  {
+   "id": "m1",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-21 07:05",
+   "text": "Morning all. Week plan: underpinning pits 1-4 Tuesday/Wednesday, storefront shop drawings due Friday, MEP rough-in 2nd floor starts next week."
+  },
+  {
+   "id": "m2",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-21 07:12",
+   "text": "@Sam can you get us the storefront shop drawings by Friday?"
+  },
+  {
+   "id": "m3",
+   "group": "S",
+   "from": "G",
+   "at": "2026-09-21 07:40",
+   "text": "Yes, storefront shop drawings Friday"
+  },
+  {
+   "id": "m4",
+   "group": "S",
+   "from": "D",
+   "at": "2026-09-21 09:30",
+   "text": "Excavation for pits 1 and 2 done, waiting on special inspector before we pour"
+  },
+  {
+   "id": "m5",
+   "group": "S",
+   "from": "X",
+   "at": "2026-09-21 10:02",
+   "text": "who has the gang box key?"
+  },
+  {
+   "id": "m6",
+   "group": "S",
+   "from": "R",
+   "at": "2026-09-21 10:05",
+   "text": "Luis has it"
+  },
+  {
+   "id": "m7",
+   "group": "E",
+   "from": "P",
+   "at": "2026-09-22 07:15",
+   "text": "Riser shop drawings will be ready next Monday"
+  },
+  {
+   "id": "m8",
+   "group": "S",
+   "from": "D",
+   "at": "2026-09-22 15:20",
+   "text": "Special inspector signed off pits 1-4, we pour tomorrow 7am"
+  },
+  {
+   "id": "m9",
+   "group": "S",
+   "from": "D",
+   "at": "2026-09-23 11:45",
+   "text": "Underpinning pits 1–4 poured this morning, 12 yards, 4000 psi mix"
+  },
+  {
+   "id": "m10",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-23 11:50",
+   "text": "Great, thanks Dave"
+  },
+  {
+   "id": "m11",
+   "group": "E",
+   "from": "M",
+   "at": "2026-09-23 13:10",
+   "text": "Temp power panel moved to the east wall, Con Ed inspection Friday"
+  },
+  {
+   "id": "m12",
+   "group": "S",
+   "from": "W",
+   "at": "2026-09-24 08:30",
+   "text": "Owner wants the 3B bedroom window changed to a casement, not the double hung. Please revise the window schedule."
+  },
+  {
+   "id": "m13",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-24 08:41",
+   "text": "Got it Wendy, I'll send the revised window schedule to the architect today"
+  },
+  {
+   "id": "m14",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-24 16:05",
+   "text": "Revised window schedule with the 3B casement sent to the architect"
+  },
+  {
+   "id": "m15",
+   "group": "S",
+   "from": "D",
+   "at": "2026-09-25 07:20",
+   "text": "DOB inspector at footing F3 asked for more rebar chairs, we added them this morning"
+  },
+  {
+   "id": "m16",
+   "group": "S",
+   "from": "G",
+   "at": "2026-09-25 14:00",
+   "text": "Storefront shop drawings will slip to next Wednesday, the glass supplier is late with the specs"
+  },
+  {
+   "id": "m17",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-25 14:06",
+   "text": "Ok Sam, Wednesday latest please. We need them to release the frame order."
+  },
+  {
+   "id": "m18",
+   "group": "E",
+   "from": "E",
+   "at": "2026-09-28 08:00",
+   "text": "Elevator pit is flooded again after the rain, need a pump today"
+  },
+  {
+   "id": "m19",
+   "group": "E",
+   "from": "R",
+   "at": "2026-09-28 08:20",
+   "text": "Eddie we're getting a pump from the rental yard"
+  },
+  {
+   "id": "m20",
+   "group": "E",
+   "from": "E",
+   "at": "2026-09-28 13:00",
+   "text": "Pump is here and running, pit should be dry by tomorrow"
+  },
+  {
+   "id": "m21",
+   "group": "E",
+   "from": "P",
+   "at": "2026-09-29 09:10",
+   "text": "Riser shop drawings sent to Kevin, check your email"
+  },
+  {
+   "id": "m22",
+   "group": "E",
+   "from": "F",
+   "at": "2026-09-29 10:00",
+   "text": "FireSafe will start fire stopping on the 2nd floor Monday Oct 5"
+  },
+  {
+   "id": "m23",
+   "group": "S",
+   "from": "G",
+   "at": "2026-09-30 15:30",
+   "text": "Storefront shop drawings sent, revision A, check your email"
+  },
+  {
+   "id": "m24",
+   "group": "S",
+   "from": "K",
+   "at": "2026-10-01 10:15",
+   "text": "Storefront shop drawings approved with comments. Frame install is set for October 12."
+  },
+  {
+   "id": "m25",
+   "group": "S",
+   "from": "X",
+   "at": "2026-10-01 10:20",
+   "text": "lol finally"
+  },
+  {
+   "id": "m26",
+   "group": "E",
+   "from": "M",
+   "at": "2026-10-01 12:00",
+   "text": "Con Ed inspection passed for the temp power"
+  },
+  {
+   "id": "m27",
+   "group": "S",
+   "from": "D",
+   "at": "2026-10-02 07:30",
+   "text": "Slab on grade pour moved to next Thursday, waiting on the vapor barrier delivery"
+  },
+  {
+   "id": "m28",
+   "group": "S",
+   "from": "K",
+   "at": "2026-09-30 09:00",
+   "text": "Structural engineer wants the beam pocket at grid C moved 6 inches east"
+  },
+  {
+   "id": "m29",
+   "group": "S",
+   "from": "R",
+   "at": "2026-10-02 08:15",
+   "text": "Dumpster swap is set for Tuesday 10/6"
+  }
  ],
  "daily_reports": [
-  {"id": "d1", "date": "2026-09-21", "by": "R", "general": "Excavation of underpinning pits 1 and 2. Site logistics set up.", "activities": [{"company": "Solid Concrete", "trade": "Concrete", "work": "Excavated underpinning pits 1 and 2 along the east wall", "where": "East wall"}]},
-  {"id": "d2", "date": "2026-09-23", "by": "R", "general": "Underpinning pour.", "activities": [{"company": "Solid Concrete", "trade": "Concrete", "work": "Poured underpinning pits 1-4 along the east wall", "where": "East wall"}, {"company": "Bright Electric", "trade": "Electrical", "work": "Relocated temporary power panel", "where": "East wall"}]},
-  {"id": "d3", "date": "2026-09-25", "by": "R", "general": "Footings and rebar.", "activities": [{"company": "Solid Concrete", "trade": "Concrete", "work": "Set rebar for footings F1-F4", "where": "Cellar"}], "observations": [{"description": "DOB inspector requested additional rebar chairs at footing F3; corrected the same day."}]},
-  {"id": "d4", "date": "2026-09-28", "by": "R", "general": "Rain overnight, elevator pit flooded, pumped out.", "activities": [{"company": "Lift Co", "trade": "Elevator", "work": "Pumped out the elevator pit with a rental pump", "where": "Elevator pit"}]},
-  {"id": "d5", "date": "2026-10-02", "by": "R", "general": "Prep for slab on grade. Storefront frame delivery to be scheduled after approval.", "activities": [{"company": "Solid Concrete", "trade": "Concrete", "work": "Graded and compacted subbase for slab on grade", "where": "Ground floor"}]}
+  {
+   "id": "d1",
+   "date": "2026-09-21",
+   "by": "R",
+   "general": "Excavation of underpinning pits 1 and 2. Site logistics set up.",
+   "activities": [
+    {
+     "company": "Solid Concrete",
+     "trade": "Concrete",
+     "work": "Excavated underpinning pits 1 and 2 along the east wall",
+     "where": "East wall"
+    }
+   ]
+  },
+  {
+   "id": "d2",
+   "date": "2026-09-23",
+   "by": "R",
+   "general": "Underpinning pour.",
+   "activities": [
+    {
+     "company": "Solid Concrete",
+     "trade": "Concrete",
+     "work": "Poured underpinning pits 1-4 along the east wall",
+     "where": "East wall"
+    },
+    {
+     "company": "Bright Electric",
+     "trade": "Electrical",
+     "work": "Relocated temporary power panel",
+     "where": "East wall"
+    }
+   ]
+  },
+  {
+   "id": "d3",
+   "date": "2026-09-25",
+   "by": "R",
+   "general": "Footings and rebar.",
+   "activities": [
+    {
+     "company": "Solid Concrete",
+     "trade": "Concrete",
+     "work": "Set rebar for footings F1-F4",
+     "where": "Cellar"
+    }
+   ],
+   "observations": [
+    {
+     "description": "DOB inspector requested additional rebar chairs at footing F3; corrected the same day."
+    }
+   ]
+  },
+  {
+   "id": "d4",
+   "date": "2026-09-28",
+   "by": "R",
+   "general": "Rain overnight, elevator pit flooded, pumped out.",
+   "activities": [
+    {
+     "company": "Lift Co",
+     "trade": "Elevator",
+     "work": "Pumped out the elevator pit with a rental pump",
+     "where": "Elevator pit"
+    }
+   ]
+  },
+  {
+   "id": "d5",
+   "date": "2026-10-02",
+   "by": "R",
+   "general": "Prep for slab on grade. Storefront frame delivery to be scheduled after approval.",
+   "activities": [
+    {
+     "company": "Solid Concrete",
+     "trade": "Concrete",
+     "work": "Graded and compacted subbase for slab on grade",
+     "where": "Ground floor"
+    }
+   ]
+  }
  ],
  "questions": [
-  {"q": "who said to change the window?", "expect": {"sources": ["m12"], "contains": ["Wendy"]}},
-  {"q": "when did we pour underpinning?", "expect": {"sources": ["m9", "d2:activity:0"], "contains": ["Sep 23"]}},
-  {"q": "what happened with the storefront?", "expect": {"mode": "timeline", "sources": ["m2", "m16", "m23", "m24"], "min_entries": 4, "contains": ["October 12"]}},
-  {"q": "what did the DOB inspector want at F3?", "expect": {"sources": ["m15", "d3:observation:0"], "contains": ["rebar chairs"]}},
-  {"q": "did Patricia send the riser drawings?", "expect": {"sources": ["m21"], "contains": ["sent"]}},
-  {"q": "when does fire stopping start?", "expect": {"sources": ["m22"], "contains": ["Oct 5"]}},
-  {"q": "what mix did we use for the underpinning?", "expect": {"sources": ["m9"], "contains": ["4000"]}},
-  {"q": "what happened with the elevator pit flooding?", "expect": {"mode": "timeline", "sources": ["m18", "m20"], "min_entries": 2, "contains": ["pump"]}},
-  {"q": "what finish did the owner pick for the elevator cab?", "expect": {"none": true}},
-  {"q": "who approved the tower crane permit?", "expect": {"none": true}}
+  {
+   "q": "who said to change the window?",
+   "expect": {
+    "sources": [
+     "m12"
+    ],
+    "contains": [
+     "owner",
+     "relayed by Wendy Cho"
+    ],
+    "forbid": [
+     "Wendy( Cho)? (wants|wanted|decided|asked|approved)"
+    ],
+    "scripted_text": "Wendy Cho wanted the 3B bedroom window changed to a casement"
+   }
+  },
+  {
+   "q": "when did we pour underpinning?",
+   "expect": {
+    "sources": [
+     "m9",
+     "d2:activity:0"
+    ],
+    "contains": [
+     "Sep 23"
+    ],
+    "max_claims": 1
+   }
+  },
+  {
+   "q": "what happened with the storefront?",
+   "expect": {
+    "mode": "timeline",
+    "sources": [
+     [
+      "m1",
+      "m2"
+     ],
+     "m16",
+     "m23",
+     "m24"
+    ],
+    "min_entries": 4,
+    "contains": [
+     "October 12"
+    ]
+   }
+  },
+  {
+   "q": "what did the DOB inspector want at F3?",
+   "expect": {
+    "sources": [
+     "m15",
+     "d3:observation:0"
+    ],
+    "contains": [
+     "rebar chairs"
+    ],
+    "max_claims": 1
+   }
+  },
+  {
+   "q": "did Patricia send the riser drawings?",
+   "expect": {
+    "sources": [
+     "m21"
+    ],
+    "contains": [
+     "sent"
+    ]
+   }
+  },
+  {
+   "q": "when does fire stopping start?",
+   "expect": {
+    "sources": [
+     "m22"
+    ],
+    "contains": [
+     "Oct 5"
+    ]
+   }
+  },
+  {
+   "q": "what mix did we use for the underpinning?",
+   "expect": {
+    "sources": [
+     "m9"
+    ],
+    "contains": [
+     "4000"
+    ]
+   }
+  },
+  {
+   "q": "what happened with the elevator pit flooding?",
+   "expect": {
+    "mode": "timeline",
+    "sources": [
+     "m18",
+     "m20"
+    ],
+    "min_entries": 2,
+    "contains": [
+     "pump"
+    ]
+   }
+  },
+  {
+   "q": "who decided to move the beam pocket?",
+   "expect": {
+    "sources": [
+     "m28"
+    ],
+    "contains": [
+     "structural engineer",
+     "relayed by Kevin Shah"
+    ],
+    "forbid": [
+     "Kevin( Shah)? (wants|wanted|decided|asked|approved)"
+    ],
+    "scripted_text": "Kevin Shah decided to move the beam pocket at grid C 6 inches east"
+   }
+  },
+  {
+   "q": "when was the dumpster swapped?",
+   "expect": {
+    "sources": [
+     "m29"
+    ],
+    "contains": [
+     "planned",
+     "as of Oct 2"
+    ],
+    "forbid": [
+     "\\b(was|were|got) swapped\\b"
+    ],
+    "scripted_text": "The dumpster was swapped on Tuesday 10/6"
+   }
+  },
+  {
+   "q": "what finish did the owner pick for the elevator cab?",
+   "expect": {
+    "none": true
+   }
+  },
+  {
+   "q": "who approved the tower crane permit?",
+   "expect": {
+    "none": true
+   }
+  }
  ]
 }

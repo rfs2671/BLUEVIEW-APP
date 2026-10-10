@@ -49,3 +49,19 @@ export function answerState(answer) {
   if (!claims.length) return { found: false, text: NO_SOURCE, claims: [] };
   return { found: true, timeline: answer.mode === 'timeline', claims };
 }
+
+/** A claim's head line: the timeline date, the words, and who relayed a
+ *  decision someone else made ("(relayed by Wendy Cho)"). */
+export function claimLine(c, timeline) {
+  const x = c || {};
+  const head = timeline && x.date ? `${x.date} — ${x.text || ''}` : (x.text || '');
+  return x.relayed_by ? `${head} (relayed by ${x.relayed_by})` : head;
+}
+
+/** Every source that shows a claim, each with its own words: one fact,
+ *  several chips. */
+export function claimSources(c) {
+  const x = c || {};
+  const first = x.source ? [{ ...x.source, quote: x.quote }] : [];
+  return first.concat(Array.isArray(x.also) ? x.also : []);
+}
