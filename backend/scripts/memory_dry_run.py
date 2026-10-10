@@ -203,11 +203,15 @@ class Scripted:
         block = messages[-1]["content"]
         claims = []
         for ref in e.get("sources") or []:
+            ref = ref[0] if isinstance(ref, list) else ref
             words = scenario_text(self.sc, ref)
             quote = words[:200]
             m = re.search(r"\[(S\d+)\][^\n]*\n" + re.escape(words[:60]), block)
-            claims.append({"text": " ".join(e.get("contains") or []) or quote,
-                           "source": m.group(1) if m else "S0", "quote": quote})
+            # `scripted_text`: what a careless model would write (the poster
+            # as decider, a plan as done) -- the post-check must fix it.
+            text = (e.get("scripted_text") or (quote[:80] if e.get("mode") == "timeline" else "")
+                    or " ".join(e.get("contains") or []) or quote)
+            claims.append({"text": text, "source": m.group(1) if m else "S0", "quote": quote})
         return json.dumps({"claims": claims})
 
 
@@ -267,7 +271,10 @@ def score(sc: dict, q: dict, got: dict) -> dict:
     e = q.get("expect") or {}
     text = got["text"]
     by_sid = {s["sid"]: s for s in got["sources"]}
-    cited = sorted({r for r in (_ref_of(sc, by_sid[c["sid"]]) for c in got["claims"]) if r})
+    sids = [c["sid"] for c in got["claims"]] + [a["sid"] for c in got["claims"]
+                                                 for a in c.get("also") or []]
+    cited = sorted({r for r in (_ref_of(sc, by_sid[s]) for s in sids) if r})
+    retrieved = [_ref_of(sc, s) for s in got["sources"]]
     notes = []
     if e.get("none"):
         ok = text == project_memory.NO_SOURCE
@@ -278,19 +285,34 @@ def score(sc: dict, q: dict, got: dict) -> dict:
     if text == project_memory.NO_SOURCE:
         return {"q": q["q"], "verdict": "MISS", "cited": [], "notes": ["no source found"],
                 "text": text, "mode": got["mode"]}
-    want = e.get("sources") or []
-    hit = [r for r in want if r in cited]
+    # An expected source may be a list: any one of them will do ("m1" or
+    # "m2" both open the storefront story).
+    want = [w if isinstance(w, list) else [w] for w in e.get("sources") or []]
+    hit = [w for w in want if any(r in cited for r in w)]
     n_hit, n_want = len(hit), len(want)
-    if n_hit < n_want:
-        notes.append(f"not cited: {[r for r in want if r not in cited]}")
-    low = text.lower()
-    missing = [w for w in e.get("contains") or [] if w.lower() not in low]
+    for w in want:
+        if any(r in cited for r in w):
+            continue
+        # WHY it is missing: never retrieved (a retrieval cut-off), or
+        # retrieved and not used (the model, or the timeline cap).
+        where = [f"{r} retrieved #{retrieved.index(r) + 1} of {len(retrieved)}, not cited"
+                 if r in retrieved else f"{r} not retrieved (top {len(retrieved)})" for r in w]
+        notes.append("missing: " + "; ".join(where))
+    if got.get("dropped"):
+        notes.append(f"{got['dropped']} claim(s) dropped by the quote check")
+    low_text = text.lower()
+    for bad in e.get("forbid") or []:
+        if re.search(bad, text, re.IGNORECASE):
+            notes.append(f"says what it must not: /{bad}/")
+    missing = [w for w in e.get("contains") or [] if w.lower() not in low_text]
     if missing:
         notes.append(f"missing words: {missing}")
     if e.get("mode") == "timeline" and got["mode"] != "timeline":
         notes.append("not a timeline")
     claims = got["claims"]
     n_claims = len(claims)
+    if e.get("max_claims") and n_claims > int(e["max_claims"]):
+        notes.append(f"{n_claims} claims, want at most {e['max_claims']} (one per fact)")
     if n_claims < int(e.get("min_entries") or 1):
         notes.append(f"{n_claims} entries, want {e.get('min_entries')}+")
     hard = not notes

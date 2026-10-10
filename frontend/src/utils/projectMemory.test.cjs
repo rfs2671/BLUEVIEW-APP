@@ -26,10 +26,19 @@ ok(M.opensContext({ source: 'whatsapp', id: 'wa:1' }) && !M.opensContext({ sourc
 ok(M.answerState({ claims: [] }).text === M.NO_SOURCE, 'no claims: no source');
 ok(M.answerState({ mode: 'timeline', claims: [{ text: 'x' }] }).timeline, 'timeline');
 ok(M.answerState(null) === null, 'no answer asked');
+ok(M.claimLine({ text: 'The owner wanted a casement', relayed_by: 'Wendy Cho' }, false)
+  === 'The owner wanted a casement (relayed by Wendy Cho)', 'relayed decision says who relayed it');
+ok(M.claimLine({ text: 'Install planned', date: 'Oct 1' }, true) === 'Oct 1 — Install planned', 'timeline line');
+const many = M.claimSources({ quote: 'q1', source: { id: 'wa:1', who: 'Dave' },
+  also: [{ id: 'dr:1:a', source: 'daily_report', quote: 'q2' }] });
+ok(many.length === 2 && many[0].quote === 'q1' && many[1].quote === 'q2', 'one fact, every source');
+ok(M.claimSources({}).length === 0, 'no source, no chip');
 
 const screen = fs.readFileSync(path.join(__dirname, '../../app/projects/[id]/search.jsx'), 'utf8');
 ok(/memoryAPI\.search\(/.test(screen) && /memoryAPI\.context\(/.test(screen), 'the screen searches and opens context');
 ok(/chipText\(/.test(screen), 'every result shows its source chip');
+ok(/claimSources\(c\)/.test(screen) && /claimLine\(c, answer\.timeline\)/.test(screen),
+  'an answer shows who relayed it and every source of a fact');
 ok(!/sendWhatsApp|whatsappAPI\.send/.test(screen), 'the screen sends nothing to anyone');
 ok(/setResults\(null\);\s*\n\s*setAnswer\(null\);/.test(screen),
   'a new search clears the last results before asking');

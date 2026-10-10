@@ -49227,8 +49227,10 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
         {"role": "user", "content": f"Question: {query}\n\nRecords:\n\n"
                                     f"{project_memory.source_block(sources)}"}])
     raw = project_memory.parse_model(content).get("claims") or []
+    tally: Dict[str, int] = {}
     claims = project_memory.checked_claims(
-        raw, sources, limit=project_memory.STORY_MAX if timeline else 6)
+        raw, sources, limit=project_memory.STORY_MAX if timeline else 6, timeline=timeline,
+        report=tally)
     by_sid = {s["sid"]: s for s in sources}
     if timeline:
         order = {s["sid"]: i for i, s in enumerate(sources)}
@@ -49236,9 +49238,11 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
         for c in claims:
             c["date"] = c.get("date") or by_sid[c["sid"]]["day_label"]
     result.update(text=project_memory.format_answer(claims, by_sid, timeline),
-                  claims=claims, dropped=max(0, len(raw) - len(claims)))
+                  claims=claims, dropped=tally.get("dropped", 0),
+                  merged=tally.get("merged", 0), made_faithful=tally.get("made_faithful", 0))
     logger.info(f"[memory] answer mode={mode} sources={len(sources)} "
-                f"claims={len(claims)} dropped={result['dropped']}")
+                f"claims={len(claims)} dropped={result['dropped']} merged={result['merged']} "
+                f"made_faithful={result['made_faithful']}")
     return result
 
 
@@ -61577,12 +61581,17 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     if answer:
         got = await _memory_answer(company_id, str(project_id), q, dfrom, dto)
         cited = {c["sid"] for c in got["claims"]}
+        by_sid = {s["sid"]: _memory_source_view(s) for s in got["sources"]}
         return {"results": [_memory_source_view(s) for s in got["sources"]],
                 "answer": {"text": got["text"], "mode": got["mode"],
                            "claims": [{"text": c["text"], "quote": c["quote"],
                                        "date": c.get("date") or "",
-                                       "source": next(_memory_source_view(s) for s in got["sources"]
-                                                      if s["sid"] == c["sid"])}
+                                       "relayed_by": c.get("relayed_by"),
+                                       "planned": bool(c.get("planned")),
+                                       "source": by_sid[c["sid"]],
+                                       # One fact, every source that shows it.
+                                       "also": [{**by_sid[a["sid"]], "quote": a["quote"]}
+                                                for a in c.get("also") or []]}
                                       for c in got["claims"]],
                            "found": bool(cited)}}
     rows = await _memory_search(company_id, str(project_id), q, dfrom, dto, limit=30)

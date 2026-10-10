@@ -133,6 +133,108 @@ class TheCheck(unittest.TestCase):
         self.assertEqual(e[1]["text"], "Poured pits 1-4 (East wall)")
 
 
+def _src(sid, text, who="Wendy Cho", day="Sep 24", source="whatsapp"):
+    return {"sid": sid, "text": text, "who": who, "day_label": day, "source": source,
+            "group": "Site", "when": f"{day}, 8:30 AM"}
+
+
+class Faithful(unittest.TestCase):
+    """Who decided is not who posted; a plan stays a plan; one claim per fact."""
+
+    def test_a_relayed_decision_names_the_decider_not_the_poster(self):
+        srcs = [_src("S1", "Owner wants the 3B bedroom window changed to a casement")]
+        (c,) = pm.checked_claims([{"text": "Wendy Cho wanted the 3B window changed",
+                                   "source": "S1", "quote": "Owner wants the 3B bedroom window"}],
+                                 srcs)
+        self.assertEqual(c["text"], "The owner wanted the 3B window changed")
+        self.assertEqual((c["decider"], c["relayed_by"]), ("the owner", "Wendy Cho"))
+        out = pm.format_answer([c], {"S1": srcs[0]})
+        self.assertTrue(out.startswith("• The owner wanted the 3B window changed "
+                                       "(relayed by Wendy Cho, Sep 24)"))
+
+    def test_the_poster_speaking_for_themself_is_the_decider(self):
+        srcs = [_src("S1", "I want the 3B window changed to a casement")]
+        (c,) = pm.checked_claims([{"text": "Wendy Cho wanted it changed", "source": "S1",
+                                   "quote": "I want the 3B window changed"}], srcs)
+        self.assertEqual(c["text"], "Wendy Cho wanted it changed")
+        self.assertNotIn("relayed_by", c)
+
+    def test_a_name_counts_only_when_it_is_a_person_in_the_records(self):
+        self.assertIsNone(pm.relayed_decider("Drawings approved by the architect", "Kevin Shah",
+                                             ["Kevin Shah", "Mike Rivera"]))
+        self.assertEqual(pm.relayed_decider("Mike approved the panel layout", "Kevin Shah",
+                                            ["Kevin Shah", "Mike Rivera"]), "Mike")
+        self.assertIsNone(pm.relayed_decider("Mike approved the panel layout", "Kevin Shah", []))
+
+    def test_a_plan_is_never_told_as_done(self):
+        srcs = [_src("S1", "Dumpster swap is set for Tuesday 10/6", who="Roy", day="Oct 2"),
+                _src("S2", "Eddie we're getting a pump from the rental yard", who="Roy", day="Sep 28")]
+        got = pm.checked_claims([
+            {"text": "The dumpster was swapped on Tuesday", "source": "S1",
+             "quote": "Dumpster swap is set for Tuesday 10/6"},
+            {"text": "A pump was acquired from the rental yard", "source": "S2",
+             "quote": "we're getting a pump from the rental yard"}], srcs)
+        self.assertEqual([c["text"] for c in got],
+                         ["Planned, as of Oct 2 — not confirmed as done",
+                          "Planned, as of Sep 28 — not confirmed as done"])
+        self.assertTrue(all(c["planned"] for c in got))
+
+    def test_done_words_and_plain_plans_are_left_alone(self):
+        srcs = [_src("S1", "Pump is here and running, pit should be dry by tomorrow", who="Eddie"),
+                _src("S2", "Storefront shop drawings approved with comments. Frame install is "
+                           "set for October 12.", who="Kevin"),
+                _src("S3", "Dumpster swap is set for Tuesday 10/6", who="Roy")]
+        got = pm.checked_claims([
+            {"text": "The pump arrived", "source": "S1", "quote": "Pump is here and running"},
+            {"text": "The drawings were approved with comments", "source": "S2",
+             "quote": "Storefront shop drawings approved with comments"},
+            {"text": "A dumpster swap is planned for Tuesday 10/6", "source": "S3",
+             "quote": "Dumpster swap is set for Tuesday 10/6"}], srcs)
+        self.assertEqual([c["text"] for c in got], ["The pump arrived",
+                                                    "The drawings were approved with comments",
+                                                    "A dumpster swap is planned for Tuesday 10/6"])
+
+    def test_one_claim_per_fact_with_every_source(self):
+        srcs = [_src("S1", "Underpinning pits 1–4 poured this morning, 12 yards", who="Dave"),
+                _src("S2", "Poured underpinning pits 1-4 along the east wall", source="daily_report"),
+                _src("S3", "Window in 3B changed to a casement", who="Kevin")]
+        tally = {}
+        got = pm.checked_claims([
+            {"text": "Underpinning pits 1-4 were poured on Sep 23", "source": "S1",
+             "quote": "Underpinning pits 1–4 poured this morning"},
+            {"text": "Underpinning pits 1–4 were poured Sep 23", "source": "S2",
+             "quote": "Poured underpinning pits 1-4"},
+            {"text": "The 3B window became a casement", "source": "S3",
+             "quote": "Window in 3B changed to a casement"},
+            {"text": "Made up", "source": "S1", "quote": "poured on Monday at noon"}],
+            srcs, report=tally)
+        self.assertEqual(len(got), 2)
+        self.assertEqual([a["sid"] for a in got[0]["also"]], ["S2"])
+        self.assertEqual(tally, {"dropped": 1, "merged": 1, "made_faithful": 0})
+        out = pm.format_answer(got, {s["sid"]: s for s in srcs})
+        self.assertEqual(out.count("Underpinning pits 1-4 were poured"), 1)
+        self.assertIn("Daily report", out)
+
+    def test_several_sources_in_one_claim(self):
+        srcs = [_src("S1", "rebar chairs added at F3", who="Dave"),
+                _src("S2", "DOB inspector requested additional rebar chairs at footing F3",
+                     source="daily_report")]
+        (c,) = pm.checked_claims([{"text": "More rebar chairs at F3", "sources": [
+            {"source": "S1", "quote": "rebar chairs added at F3"},
+            {"source": "S2", "quote": "additional rebar chairs at footing F3"},
+            {"source": "S2", "quote": "not in it at all"}]}], srcs)
+        self.assertEqual((c["sid"], [a["sid"] for a in c["also"]]), ("S1", ["S2"]))
+
+    def test_timeline_events_on_different_days_stay_apart(self):
+        srcs = [_src("S1", "Storefront shop drawings due Friday", who="Kevin", day="Sep 21"),
+                _src("S2", "Storefront shop drawings sent", who="Sam", day="Sep 30")]
+        got = pm.checked_claims([
+            {"text": "Storefront shop drawings", "source": "S1", "quote": "shop drawings due Friday"},
+            {"text": "Storefront shop drawings", "source": "S2", "quote": "shop drawings sent"}],
+            srcs, timeline=True)
+        self.assertEqual([c["date"] for c in got], ["Sep 21", "Sep 30"])
+
+
 class TheIndex(unittest.TestCase):
 
     def test_linked_group_messages_only(self):
@@ -444,13 +546,23 @@ class TheDryRun(unittest.TestCase):
 
     def test_the_two_week_job_scripted(self):
         sc = dry.load(str(SCENARIO))
-        self.assertEqual(len(sc["questions"]), 10)
+        self.assertEqual(len(sc["questions"]), 12)
         out = asyncio.run(dry.run(sc, scripted=True))
         r = dry.report(sc, out)
         self.assertEqual(r["sent"], [])
         bad = [(q["q"], q["notes"]) for q in r["questions"] if q["verdict"] not in ("HARD", "PASS")]
         self.assertEqual(bad, [])
         self.assertEqual(dry.exit_code(r), 0)
+
+    def test_a_missing_source_says_whether_it_was_retrieved(self):
+        sc = dry.load(str(SCENARIO))
+        q = next(x for x in sc["questions"] if x["q"].startswith("what happened with the storefront"))
+        got = {"text": "• x\n   Kevin: “y”", "mode": "timeline", "dropped": 0,
+               "sources": [{"sid": "S1", "id": "wa:row_m2"}, {"sid": "S2", "id": "wa:row_m16"}],
+               "claims": [{"sid": "S2", "text": "x", "quote": "y", "also": []}]}
+        notes = " | ".join(dry.score(sc, q, got)["notes"])
+        self.assertIn("m2 retrieved #1 of 2, not cited", notes)
+        self.assertIn("m23 not retrieved (top 2)", notes)
 
     def test_an_answer_to_an_unanswerable_question_fails_the_run(self):
         sc = dry.load(str(SCENARIO))
