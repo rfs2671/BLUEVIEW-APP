@@ -454,13 +454,16 @@ def match_open(quote: str, open_events: Sequence[Dict[str, Any]]) -> Optional[Di
 # None, or two or more that fit: nothing. A question is never a cancel.
 CODE_CANCEL_WORDS = re.compile(
     r"\b(?:is|are|was|were|it'?s|'s)\s+off\b|\bcalled off\b|\boff until\b"
-    r"|\bcancell?ed\b|\bscrapped\b|\bnot happening\b", re.IGNORECASE)
+    r"|\bcancell?ed\b|\bscrapped\b|\bnot happening\b"
+    # Spanish ("se canceló", "suspendido", "ya no va") and Yiddish.
+    r"|\bse cancel[oó]\b|\bcancelad[oa]s?\b|\bsuspendid[oa]s?\b|\bya no va\b|\bno va\b"
+    r"|\babgeshtelt\b|\bopgeshtelt\b|\bbatlt\b|אפגעשטעלט", re.IGNORECASE)
 _SUBJECT = {
-    "pour": r"pours?|pouring",
-    "delivery": r"deliver(?:y|ies)",
-    "inspection": r"inspections?",
-    "crane_pick": r"crane(?:\s+picks?)?",
-    "hearing": r"hearings?",
+    "pour": r"pours?|pouring|colados?|vaciados?|hormigonado|el concreto",
+    "delivery": r"deliver(?:y|ies)|entregas?",
+    "inspection": r"inspections?|inspecci[oó]n(?:es)?|inspector",
+    "crane_pick": r"crane(?:\s+picks?)?|gr[uú]as?",
+    "hearing": r"hearings?|audiencias?",
 }
 _AGENCY_WORDS: Dict[str, List[str]] = {}
 for _k, _v in _AGENCIES.items():
@@ -471,8 +474,10 @@ _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
 # pour both cancelled" names two events, so nothing.
 _CLAUSE = re.compile(r"[,;:]|\s[-\u2013\u2014]\s|\b(?:but|however|though|although|while|whereas)\b",
                      re.IGNORECASE)
-# "not cancelled", "hasn't been cancelled", "never got called off": no cancel.
-_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+# "not cancelled", "hasn't been cancelled", "never got called off", "no se
+# canceló", "nisht abgeshtelt": no cancel.
+_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't|\bno|\bnunca|\bnisht|\bnit|נישט)"
+                      r"\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 _NEVER = re.compile(r"(?!x)x")
 
 

@@ -60630,6 +60630,14 @@ async def _process_whatsapp_message(payload: dict):
                         await send_whatsapp_message(parsed["from"], user_reply)
                     return
             else:
+                # The same daily cap per company as group voice notes.
+                if not await _voice_claim(ident.get("company_id"), datetime.now(timezone.utc)):
+                    logger.info(wa_voice.log_line(
+                        where="dm", company=str(ident.get("company_id")), capped=True,
+                        cap=wa_voice.VOICE_DAILY_CAP))
+                    await send_whatsapp_message(
+                        parsed["from"], "Voice notes are paused for today. Send it as text.")
+                    return
                 audio_bytes = await download_audio(parsed)
                 if not audio_bytes:
                     # WaAPI fetch failed (download_audio handles its own
@@ -60718,6 +60726,16 @@ async def _process_whatsapp_message(payload: dict):
                     return
 
                 body = vresult.english_transcript
+                _lang = wa_voice.lang_code(vresult.language_detected,
+                                           vresult.original_transcript)
+                await _voice_count(ident.get("company_id"), datetime.now(timezone.utc), _lang,
+                                   wa_voice.needs_review(_lang, vresult.confidence))
+                logger.info(wa_voice.log_line(
+                    where="dm", company=str(ident.get("company_id")), lang=_lang,
+                    confidence=vresult.confidence, threshold=wa_voice.VOICE_CONFIDENCE_MIN,
+                    duration_sec=vresult.duration_sec,
+                    cost_usd=round(float((vresult.telemetry or {}).get("whisper_cost_usd") or 0)
+                                   + float((vresult.telemetry or {}).get("translate_cost_usd") or 0), 5)))
 
         if not body:
             return

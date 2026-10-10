@@ -232,6 +232,22 @@ def doer(text: str) -> Optional[str]:
 _FIRST_PERSON = {"i", "we", "i've", "we've", "ive", "weve", "me", "us"}
 
 
+# "not cancelled", "no se canceló", "nisht abgeshtelt": the cancel is denied.
+_NEGATED = re.compile(r"(?:\bnot|\bnever|n't|\bno|\bnunca|\bnisht|\bnit)\s+(?:\w+\s+){0,2}$",
+                      re.IGNORECASE)
+
+
+def _cancel_said(text: str, ft: str) -> bool:
+    """A cancel or never-mind that is not denied ("not cancelled")."""
+    if _FORGET.search(text):
+        return True
+    for rx, t in ((_CANCEL, text), (_ML_CANCEL, ft)):
+        for m in rx.finditer(t):
+            if not _NEGATED.search(t[:m.start()]):
+                return True
+    return False
+
+
 def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
     """{kind: done|cancel|reschedule, due_text?, by_other?} from the words
     alone, or None. A question is never an update ("is it done?")."""
@@ -242,7 +258,7 @@ def classify(body: str, has_file: bool = False) -> Optional[Dict[str, Any]]:
         return None
     ft = ml.fold(text)
     future = bool(_FUTURE.search(text) or _ML_FUTURE.search(ft))
-    if _CANCEL.search(text) or _FORGET.search(text) or _ML_CANCEL.search(ft):
+    if _cancel_said(text, ft):
         if done_by_other(text):
             # "Never mind the panel confirm, Mike already did": done.
             return {"kind": "done", "by_other": True}
