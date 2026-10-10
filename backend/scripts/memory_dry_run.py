@@ -30,6 +30,12 @@ SCORE, PER QUESTION
   expect.sources     scenario ids (m3, d2:activity:0) that must be cited;
                      HARD when all are cited, SOFT when at least one is.
   expect.contains    words the reply must contain (claims, quotes, sources).
+  expect.leads_with  the reply must start with these words ("No record that
+                     the dumpster was swapped").
+  expect.planned     True: at least one claim must be told as a plan.
+  expect.planned_contains  words every plan claim must keep (what was
+                     planned, when, the message date) -- never a bare label.
+  expect.no_relay    True: no "(relayed by …)" (the poster did it).
   expect.mode        "timeline" for a full-story question;
   expect.min_entries how many dated entries it needs at least.
 
@@ -301,12 +307,27 @@ def score(sc: dict, q: dict, got: dict) -> dict:
     if got.get("dropped"):
         notes.append(f"{got['dropped']} claim(s) dropped by the quote check")
     low_text = text.lower()
+    # What it must not say is checked on the claims, not on the "No record
+    # that the dumpster was swapped." lead.
+    lead = got.get("lead") or ""
+    body = text[len(lead):] if lead and text.startswith(lead) else text
     for bad in e.get("forbid") or []:
-        if re.search(bad, text, re.IGNORECASE):
+        if re.search(bad, body, re.IGNORECASE):
             notes.append(f"says what it must not: /{bad}/")
     missing = [w for w in e.get("contains") or [] if w.lower() not in low_text]
     if missing:
         notes.append(f"missing words: {missing}")
+    if e.get("leads_with") and not low_text.startswith(e["leads_with"].lower()):
+        notes.append(f"does not lead with {e['leads_with']!r}")
+    plans = [c for c in got["claims"] if c.get("planned")]
+    if e.get("planned") and not plans:
+        notes.append("no claim told as a plan")
+    for c in plans:
+        lost = [w for w in e.get("planned_contains") or [] if w.lower() not in c["text"].lower()]
+        if lost:
+            notes.append(f"plan claim lost {lost}: {c['text']!r}")
+    if e.get("no_relay") and "relayed by" in low_text:
+        notes.append("says 'relayed by' for what the poster did")
     if e.get("mode") == "timeline" and got["mode"] != "timeline":
         notes.append("not a timeline")
     claims = got["claims"]

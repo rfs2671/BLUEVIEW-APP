@@ -119,6 +119,9 @@ export default function ProjectSearchScreen() {
                 {answer.found ? (answer.timeline ? 'What happened' : 'Answer') : 'Answer'}
               </Text>
               {!answer.found && <Text style={[styles.line, muted]}>{answer.text}</Text>}
+              {answer.found && !!answer.lead && (
+                <Text style={[styles.line, styles.lead, text]}>{answer.lead}</Text>
+              )}
               {answer.found && answer.claims.map((c, i) => (
                 <View key={i} style={styles.claim}>
                   <Text style={[styles.line, text]}>{claimLine(c, answer.timeline)}</Text>
@@ -192,6 +195,7 @@ const styles = StyleSheet.create({
   spinner: { marginVertical: spacing.md },
   section: { fontWeight: '700', marginBottom: spacing.sm },
   claim: { marginBottom: spacing.md },
+  lead: { fontWeight: '600', marginBottom: spacing.sm },
   line: { fontSize: 15, lineHeight: 21 },
   quote: { fontStyle: 'italic', marginTop: 2 },
   chip: { fontSize: 12, marginTop: 2 },
