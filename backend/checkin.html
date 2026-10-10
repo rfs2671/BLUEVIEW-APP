@@ -1551,7 +1551,7 @@ async function lookupWorker() {
 function showReturningScreen(worker, needsOrientation = false) {
   document.getElementById('retAvatar').textContent = (worker.name || 'W').charAt(0).toUpperCase();
   document.getElementById('retName').textContent = worker.name;
-  document.getElementById('retInfo').textContent = [worker.trade, worker.company].filter(Boolean).join(' • ');
+  document.getElementById('retInfo').textContent = [worker.trade_label || worker.trade, worker.company].filter(Boolean).join(' • ');
 
   // The affirmation control, shown only when there is a signature to affirm.
   // Rendered HERE rather than at submit so the language he sees is the
@@ -2436,7 +2436,10 @@ function loadTradeAssignments() {
   tradeAssignments.forEach((a, i) => {
     const opt = document.createElement('option');
     opt.value = String(i);
-    opt.textContent = a.trade + ' — ' + a.company;
+    // THE CANONICAL NAME, ruled 2026-10-10 ("Plumbing", not "Plumber").
+    // The option VALUE is still the index, and the submit still sends the raw
+    // a.trade the roster match compares -- the label is only what he reads.
+    opt.textContent = (a.trade_label || a.trade) + ' — ' + a.company;
     sel.appendChild(opt);
   });
 
