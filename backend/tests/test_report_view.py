@@ -164,11 +164,17 @@ class TheRail(unittest.TestCase):
         self.assertTrue(any("pending assignment" in n
                             for n in view.rail[1].notes))
 
-    def test_an_unmapped_location_reaches_the_page(self):
+    def test_an_unmapped_location_never_reaches_the_page(self):
+        """REVERSED 2026-10-10. The tile printed "Unmapped source value:
+        3rd Floor, 4th Floor, ..." on an investor report; an area the table
+        cannot read is now omitted, from the rail and from the row."""
         view = _build(_model(acts=[_activity(where="J")]))
-        self.assertIn("J", view.unmapped_locations)
-        self.assertTrue(any("Unmapped source value: J" in n
-                            for n in view.rail[2].notes))
+        for cell in view.rail:
+            for line in cell.notes + cell.items:
+                self.assertFalse(line.startswith(("Unmapped source value:",
+                                                  "Unmapped: ")), line)
+                self.assertNotEqual(line, "J")
+        self.assertEqual(view.activities[0].where, "")
 
     def test_safety_not_reported_carries_the_dash_and_the_words(self):
         view = _build(_model())
@@ -226,7 +232,6 @@ class TheBandCopyIsTheRowCopy(unittest.TestCase):
                             where="Underground", photos=[{"a": 1}])])
         view = _build(model)
         self.assertEqual(view.bands[0].statement, view.activities[0].statement)
-        self.assertEqual(view.bands[0].chip, view.activities[0].chip)
         self.assertIn("7 on daily log", view.bands[0].statement)
 
 

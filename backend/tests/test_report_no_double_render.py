@@ -183,6 +183,9 @@ class TheReportsIndexIsDerivedFromTheSameRegistry(unittest.TestCase):
             "sheet, which only this type has",
         "subcontractor_orientation":
             "the oriented-worker figure is read from these records",
+        "toolbox_talk":
+            "the executive summary's toolbox sentence reads this log's "
+            "meeting time and attendee count, which only this type has",
     }
 
     def test_the_report_names_a_type_only_to_read_one_of_its_fields(self):
