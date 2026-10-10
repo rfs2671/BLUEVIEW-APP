@@ -48651,7 +48651,7 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
     report["prompt_tokens"] += int(out.get("prompt_tokens") or 0)
     report["completion_tokens"] += int(out.get("completion_tokens") or 0)
     wrote_all = True
-    model_acted = False
+    touched: set = set()             # events the model already read in this message
     for ev in upcoming.parse_events(out.get("content")):
         op = upcoming.decide(ev, {"body": body, "sent_at": sent_at}, open_events,
                              now=ctx["now"])
@@ -48668,21 +48668,28 @@ async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> boo
         if op["op"] == "skip":
             report["skipped"][op["reason"]] = report["skipped"].get(op["reason"], 0) + 1
             continue
-        model_acted = True
+        if op["op"] in ("reschedule", "cancel"):
+            touched.add(str(op["event_id"]))
+        elif op["op"] == "create":
+            touched.add(upcoming.event_key(ctx["project_id"], op["kind"], op.get("agency"),
+                                           op["date"]))
         try:
             await _upcoming_apply(op, msg, ctx, report)
         except Exception as e:
             report["write_failed"] += 1
             logger.warning(f"[upcoming] write failed: {type(e).__name__}")
             wrote_all = False
-    if not model_acted and upcoming.CODE_CANCEL_WORDS.search(body):
+    if upcoming.CODE_CANCEL_WORDS.search(body):
         # The code-side cancel: the model missed it ("the pour is off until
-        # the weather clears" came back as no event). Only when the model's
-        # answer changed nothing for this message ("pump cancelled, pour
-        # moved to Friday" is a move, not a cancel). Code alone, against
-        # what is open now: one event named, or nothing.
-        op = upcoming.code_cancel(body, await _upcoming_open_chat(
-            ctx["company_id"], ctx["project_id"], _upcoming_today(sent_at)))
+        # the weather clears" came back as no event). Code alone, against
+        # what is open now, leaving out what the model already read in this
+        # message: an event it moved ("pump cancelled, pour moved to
+        # Friday"), cancelled, or created ("pour cancelled, new pour
+        # Friday"). One event named, or nothing.
+        still = [e for e in await _upcoming_open_chat(
+                     ctx["company_id"], ctx["project_id"], _upcoming_today(sent_at))
+                 if e["id"] not in touched and e.get("key") not in touched]
+        op = upcoming.code_cancel(body, still)
         if op and ctx.get("trace") is not None:
             ctx["trace"].append({"row_id": str(msg.get("_id")), "action": "code_cancel",
                                  "quote": op.get("quote"), "event_id": op.get("event_id"),

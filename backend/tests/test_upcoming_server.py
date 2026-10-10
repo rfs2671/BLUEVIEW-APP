@@ -198,6 +198,41 @@ class TheChatWorker(unittest.TestCase):
         (ev,) = _events(self.db, source="chat")
         self.assertEqual((ev["status"], ev["date"]), ("open", "2026-10-16"))
 
+    def test_a_mixed_message_still_cancels_the_missed_pour(self):
+        # The model reads the delivery and misses the cancel in the same message.
+        model = _Model({
+            "Concrete pour Monday": [self.POUR],
+            "Rebar delivery": [{"action": "new", "kind": "delivery", "title": "Rebar delivery",
+                                "date_text": "Tuesday 10/13", "quote": "Rebar delivery Tuesday 10/13"}]})
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "Rebar delivery Tuesday 10/13; the pour is cancelled")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        by_kind = {e["kind"]: e["status"] for e in _events(self.db, source="chat")}
+        self.assertEqual(by_kind, {"pour": "cancelled", "delivery": "open"})
+
+    def test_a_new_pour_in_the_same_message_is_not_the_one_cancelled(self):
+        model = _Model({
+            "Concrete pour Monday": [self.POUR],
+            "new pour": [{"action": "new", "kind": "pour", "title": "Deck pour",
+                          "date_text": "Friday 10/16", "quote": "new pour Friday 10/16"}]})
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "Monday pour cancelled, new pour Friday 10/16")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        by_date = {e["date"]: e["status"] for e in _events(self.db, source="chat")}
+        self.assertEqual(by_date, {"2026-10-12": "cancelled", "2026-10-16": "open"})
+
+    def test_not_cancelled_leaves_the_pour_open(self):
+        model = _Model({"Concrete pour Monday": [self.POUR]})
+        _msg(self.db, "Concrete pour Monday 10/12 7am")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        _msg(self.db, "Pump truck cancelled, but the pour is still on")
+        _msg(self.db, "To be clear the pour is not cancelled")
+        _chat_tick(self.db, model, T0 + timedelta(minutes=20))
+        (ev,) = _events(self.db, source="chat")
+        self.assertEqual(ev["status"], "open")
+
     def test_in_3_weeks_is_created_three_weeks_out(self):
         model = _Model({"FDNY standpipe": [{
             "action": "new", "kind": "inspection", "agency": "FDNY",

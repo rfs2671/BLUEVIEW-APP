@@ -454,6 +454,13 @@ _AGENCY_WORDS: Dict[str, List[str]] = {}
 for _k, _v in _AGENCIES.items():
     _AGENCY_WORDS.setdefault(_v, []).append(_k)
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
+# Clauses: the cancel must govern the subject ("Pump truck cancelled, but the
+# pour is still on" cancels no pour). "and" does not split: "inspection and
+# pour both cancelled" names two events, so nothing.
+_CLAUSE = re.compile(r"[,;:]|\s[-\u2013\u2014]\s|\b(?:but|however|though|although|while|whereas)\b",
+                     re.IGNORECASE)
+# "not cancelled", "hasn't been cancelled", "never got called off": no cancel.
+_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 _NEVER = re.compile(r"(?!x)x")
 
 
@@ -470,24 +477,35 @@ def _kind_rx(ev: Dict[str, Any]) -> Optional[re.Pattern]:
     return _rx([_SUBJECT[ev["kind"]]] if _SUBJECT.get(ev.get("kind") or "") else [])
 
 
+def _cancels(clause: str) -> bool:
+    """A cancel phrase in the clause that is not negated."""
+    return any(not _NEGATED.search(clause[:m.start()])
+               for m in CODE_CANCEL_WORDS.finditer(clause))
+
+
 def code_cancel(body: Any, open_events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """{"op": "cancel", "event_id", "quote"} when one sentence of the message
-    has a cancel phrase and names the subject of exactly one open event;
-    {"op": "skip", "reason"} when it has the phrase but not one match; None
-    when there is no cancel phrase at all."""
+    """{"op": "cancel", "event_id", "quote"} when one clause of the message
+    has a cancel phrase (not negated) and names the subject of exactly one
+    open event; {"op": "skip", "reason"} when it has the phrase but not one
+    match; None when there is no cancel phrase at all. The quote is the
+    sentence."""
     text = str(body or "")
-    said = [s.strip() for s in _SENTENCE.findall(text)
-            if CODE_CANCEL_WORDS.search(s) and not s.strip().endswith("?")]
+    said = []                                   # (clause, its sentence)
+    for sentence in _SENTENCE.findall(text):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?"):
+            continue
+        said += [(c, sentence) for c in _CLAUSE.split(sentence) if c and _cancels(c)]
     if not said:
         return None
     hits: Dict[str, tuple] = {}
-    for sentence in said:
+    for clause, sentence in said:
         # An agency named narrows it to that agency's events ("FDNY
         # inspection cancelled" with a DEP inspection also open); else the
         # kind word ("the pour is off").
-        by_agency = [e for e in open_events if (_agency_rx(e) or _NEVER).search(sentence)]
+        by_agency = [e for e in open_events if (_agency_rx(e) or _NEVER).search(clause)]
         for e in by_agency or [e for e in open_events
-                               if (_kind_rx(e) or _NEVER).search(sentence)]:
+                               if (_kind_rx(e) or _NEVER).search(clause)]:
             hits.setdefault(str(e["id"]), (e, sentence))
     if len(hits) != 1:
         return {"op": "skip",

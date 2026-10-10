@@ -213,6 +213,20 @@ class LiveEvalOct10b(unittest.TestCase):
                      "Pour Thursday. Pump truck cancelled"):     # subject not in that sentence
             self.assertIn((u.code_cancel(body, self.OPEN) or {}).get("op"), (None, "skip"), body)
 
+    def test_a_negated_cancel_is_no_cancel(self):
+        for body in ("The pour is not cancelled", "Pour hasn't been cancelled",
+                     "pour was never called off", "Pour is not off"):
+            self.assertIsNone(u.code_cancel(body, self.OPEN), body)
+
+    def test_the_cancel_must_govern_the_subject(self):
+        for body in ("Pump truck cancelled, but the pour is still on",
+                     "Pump truck cancelled but pour still on",
+                     "Pump truck cancelled; pour goes ahead"):
+            self.assertNotEqual((u.code_cancel(body, self.OPEN) or {}).get("op"), "cancel", body)
+        # Its own clause still counts: m8.
+        self.assertEqual(u.code_cancel("Pump truck cancelled, the pour is off", self.OPEN)
+                         ["event_id"], "pour")
+
     def test_m9_in_3_weeks_is_a_day(self):
         sent = datetime(2026, 10, 6, 17, 0, tzinfo=timezone.utc)      # Tue 1pm New York
         self.assertEqual(u.resolve_when("in 3 weeks", sent),
