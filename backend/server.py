@@ -18,6 +18,7 @@ from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
+from datetime import date as _Date  # noqa: E402  (Upcoming: a calendar day)
 from email.utils import parsedate_to_datetime
 # perf_counter only — `time` itself is deliberately not a module-level
 # import here (see the local `import time as _time` further down).
@@ -79,6 +80,7 @@ from lib import project_memory  # noqa: E402
 from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
+from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
 from lib import source_sync  # noqa: E402
@@ -41372,6 +41374,9 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["resolution_state"] = _classify_resolution_state(rec)
     fields["notice_type"] = _classify_notice_type(rec)
     fields["compliance_deadline"] = _extract_compliance_deadline(rec)
+    # The ECB/OATH hearing day as its own field (Upcoming reads it; the
+    # disposition_date fallback above stays for what already reads that).
+    fields["hearing_date"] = rec.get("hearing_date") or rec.get("hearing_date_time") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -48231,7 +48236,12 @@ async def _brief_settings(user_id: str) -> dict:
     from lib import notification_preferences as _nprefs
     row = await _nprefs.fetch_preferences_record(db, user_id=str(user_id),
                                                  project_id=None)
-    return wa_brief.clean_settings((row or {}).get("whatsapp"))
+    stored = (row or {}).get("whatsapp")
+    out = wa_brief.clean_settings(stored)
+    # Upcoming's 5pm "Tomorrow, …" DM, set on the same row. Default on.
+    out["upcoming_reminders"] = (stored or {}).get("upcoming_reminders") is not False \
+        if isinstance(stored, dict) else True
+    return out
 
 
 async def _brief_since(user_id: str, now: datetime) -> datetime:
@@ -48319,7 +48329,13 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
         return None
     since = await _brief_since(str(user.get("_id")), now)
     jobs = [await _brief_job(p, company_id, since, now) for p in projects]
-    return wa_brief.compose(now, jobs)
+    text = wa_brief.compose(now, jobs)
+    try:
+        coming = await _upcoming_brief_lines(user, company_id, role, now)
+    except Exception as e:
+        logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
+        coming = []
+    return text + ("\n\n" + "\n".join(coming) if coming else "")
 
 
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
@@ -48394,6 +48410,646 @@ async def _whatsapp_brief_job() -> None:
         await _morning_brief_tick()
     except Exception as e:
         logger.error(f"[wa-brief] tick failed: {type(e).__name__}: {e}")
+
+
+# ── UPCOMING v1 (lib/upcoming.py) ─────────────────────────────────────────
+#
+# What is coming up on a job, in one collection, `upcoming_events`:
+#
+#   city  ECB/OATH hearings (DOB dob_logs violations, DOT dot_logs tickets)
+#         and DOB/DOT permit expirations, from the records already synced.
+#         One record is one event (key city:<kind>:<record id>); a changed
+#         city date moves it, with the old one in its history.
+#   chat  explicit future dated events in a linked project group, read by
+#         gpt-4o-mini from the group's NEW messages (no backfill; its own
+#         cursor, the attention engine's binding rules). The quote must be an
+#         exact piece of the message and the day is read in code
+#         (upcoming.decide). A later message moves or cancels it, by name.
+#   dm    "remind me …" to the assistant, confirmed once (YES / NO).
+#
+# OUT: the morning brief's "Upcoming this week", a DM at 5pm the day
+# before (opted-in admins and PMs, their jobs, batched), a DM the morning
+# of a personal reminder, Project → Upcoming in the app, and a private ICS
+# feed per user. NOTHING IS EVER POSTED IN A GROUP. UPCOMING_DISABLED=1
+# stops all of it.
+
+UPCOMING = "upcoming_events"
+UPCOMING_CURSORS = "upcoming_cursors"
+CALENDAR_FEEDS = "calendar_feeds"
+UPCOMING_BATCH = 200
+UPCOMING_MAX_CALLS = 300          # model calls per run, across groups
+UPCOMING_MAX_FAILS = 3
+UPCOMING_DAY_BEFORE_HOUR = 17     # New York
+UPCOMING_REMINDER_HOUR = 8
+UPCOMING_DAY_BEFORE_KIND = "upcoming_day_before"
+UPCOMING_REMINDER_KIND = "upcoming_reminder"
+UPCOMING_REMIND_STATE = "upcoming_remind"
+UPCOMING_REMIND_SECONDS = 900
+
+
+def _upcoming_disabled() -> bool:
+    return upcoming.disabled(os.environ)
+
+
+def _upcoming_today(now: datetime) -> _Date:
+    return upcoming.local_date(now)
+
+
+async def _upcoming_open_chat(company_id: str, project_id: str, today: _Date) -> list:
+    """This job's open chat events from today on: what a message may move
+    or cancel."""
+    rows = await db.upcoming_events.find({
+        "company_id": _company_id_filter(company_id),
+        "project_id": project_id,
+        "source": "chat",
+        "status": "open",
+        "date": {"$gte": today.isoformat()},
+    }).to_list(200)
+    return [{"id": str(r["_id"]), "title": r.get("title"), "kind": r.get("kind"),
+             "date": r.get("date"), "time": r.get("time"), "key": r.get("key")}
+            for r in rows]
+
+
+def _upcoming_sent_at(msg: dict) -> datetime:
+    """When the message was SENT (WhatsApp's timestamp), else stored."""
+    at = msg.get("timestamp") if isinstance(msg.get("timestamp"), datetime) else msg.get("created_at")
+    if not isinstance(at, datetime):
+        return datetime.now(timezone.utc)
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def _upcoming_evidence(msg: dict, quote: str, group_id: str) -> dict:
+    return {"message_id": str(msg.get("message_id") or ""),
+            "message_row_id": str(msg.get("_id") or ""),
+            "group_id": group_id,
+            "sender_name": str(msg.get("sender_name") or "")[:80],
+            "sender_last4": str(msg.get("sender") or "")[-4:],
+            "sent_at": _upcoming_sent_at(msg),
+            "quote": quote}
+
+
+async def _upcoming_apply(op: dict, msg: dict, ctx: dict, report: dict) -> None:
+    """One checked action from upcoming.decide, written."""
+    now = ctx["now"]
+    ev = _upcoming_evidence(msg, op.get("quote") or "", ctx["group_id"])
+    if op["op"] == "create":
+        key = upcoming.event_key(ctx["project_id"], op["kind"], op.get("agency"), op["date"])
+        twin = await db.upcoming_events.find_one(
+            {"project_id": ctx["project_id"], "key": key,
+             "status": {"$in": ["open", "dismissed"]}}, {"_id": 1})
+        if twin:
+            # The same event said again: one event, one more quote. A
+            # dismissed one stays dismissed (a repeat never brings it back);
+            # a cancelled one does not count, so "back on for Dec 4" is new.
+            await db.upcoming_events.update_one(
+                {"_id": twin["_id"]}, {"$push": {"also_seen": ev}, "$set": {"updated_at": now}})
+            report["deduped"] += 1
+            return
+        row = {
+            "company_id": ctx["company_id"],
+            "project_id": ctx["project_id"],
+            "user_id": None,
+            "source": "chat",
+            "kind": op["kind"],
+            "agency": op.get("agency"),
+            "title": op["title"],
+            "date": op["date"].isoformat(),
+            "time": op.get("time"),
+            "status": "open",
+            "key": key,
+            "quote": op["quote"],
+            "date_text": op.get("date_text"),
+            "evidence": ev,
+            "also_seen": [],
+            "detail": "",
+            "source_ref": ev["message_row_id"],
+            "extraction": {"model": upcoming.MODEL, "prompt_version": upcoming.PROMPT_VERSION},
+            "history": [upcoming.history_entry("created", now, to=op["date"],
+                                               quote=op["quote"], message_id=ev["message_id"])],
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.upcoming_events.insert_one(row)
+        report["created"] += 1
+    elif op["op"] == "reschedule":
+        cur = await db.upcoming_events.find_one(
+            {"_id": to_query_id(op["event_id"]), "project_id": ctx["project_id"]})
+        if not cur:
+            return
+        kind, agency = cur.get("kind") or "", cur.get("agency")
+        await db.upcoming_events.update_one({"_id": cur["_id"]}, {
+            "$set": {"date": op["date"].isoformat(), "time": op.get("time"),
+                     "key": upcoming.event_key(ctx["project_id"], kind, agency, op["date"]),
+                     "quote": op["quote"], "evidence": ev, "updated_at": now},
+            "$push": {"history": upcoming.history_entry(
+                "rescheduled", now, frm=cur.get("date"), to=op["date"],
+                quote=op["quote"], message_id=ev["message_id"])}})
+        report["rescheduled"] += 1
+    elif op["op"] == "cancel":
+        res = await db.upcoming_events.update_one(
+            {"_id": to_query_id(op["event_id"]), "project_id": ctx["project_id"],
+             "status": "open"},
+            {"$set": {"status": "cancelled", "updated_at": now},
+             "$push": {"history": upcoming.history_entry(
+                 "cancelled", now, quote=op["quote"], message_id=ev["message_id"])}})
+        report["cancelled"] += res.modified_count
+
+
+async def _upcoming_process(msg: dict, ctx: dict, report: dict, llm=None) -> bool:
+    """One group message: the cheap filter, one model call, the checks, the
+    writes. False when the model call failed (retried next run)."""
+    body = str(msg.get("body") or "")
+    if not upcoming.worth_a_call(body):
+        report["filtered_out"] += 1
+        return True
+    if report["calls"] >= UPCOMING_MAX_CALLS:
+        report["call_cap"] = True
+        return False
+    sent_at = _upcoming_sent_at(msg)
+    before = await db.whatsapp_messages.find(
+        {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
+         "company_id": _company_id_filter(ctx["company_id"]),
+         "sender": {"$ne": "bot"},
+         "created_at": {"$lt": msg.get("created_at") or ctx["now"]}}
+    ).sort([("created_at", -1)]).to_list(upcoming.CONTEXT_MESSAGES)
+    open_events = await _upcoming_open_chat(ctx["company_id"], ctx["project_id"],
+                                            _upcoming_today(sent_at))
+    report["calls"] += 1
+    out = await (llm or _attention_llm)(
+        upcoming.build_messages(msg, list(reversed(before)), open_events))
+    if not out:
+        report["model_failed"] += 1
+        return False
+    report["prompt_tokens"] += int(out.get("prompt_tokens") or 0)
+    report["completion_tokens"] += int(out.get("completion_tokens") or 0)
+    wrote_all = True
+    for ev in upcoming.parse_events(out.get("content")):
+        op = upcoming.decide(ev, {"body": body, "sent_at": sent_at}, open_events,
+                             now=ctx["now"])
+        if op["op"] == "skip":
+            report["skipped"][op["reason"]] = report["skipped"].get(op["reason"], 0) + 1
+            continue
+        try:
+            await _upcoming_apply(op, msg, ctx, report)
+        except Exception as e:
+            report["write_failed"] += 1
+            logger.warning(f"[upcoming] write failed: {type(e).__name__}")
+            wrote_all = False
+    # A failed write keeps the cursor on this message: retried next run, like
+    # a failed model call (a repeat of what did get written is deduped, and
+    # a move or a cancel is the same write again).
+    return wrote_all
+
+
+async def _upcoming_run_group(cur: dict, ctx: dict, report: dict, llm=None) -> int:
+    pos = cur.get("live") or {}
+    rows = await db.whatsapp_messages.find(
+        _attention_msg_filter(ctx["group_id"], ctx["project_id"], ctx["company_id"], pos)
+    ).sort([("created_at", 1), ("_id", 1)]).to_list(UPCOMING_BATCH)
+    done = 0
+    for msg in rows:
+        ok = await _upcoming_process(msg, ctx, report, llm=llm)
+        if not ok:
+            if report.get("call_cap"):
+                break
+            fails = cur.get("fail") or {}
+            count = fails.get("count", 0) + 1 if fails.get("id") == msg["_id"] else 1
+            if count < UPCOMING_MAX_FAILS:
+                cur["fail"] = {"id": msg["_id"], "count": count}
+                await db.upcoming_cursors.update_one(
+                    {"_id": cur["_id"]}, {"$set": {"fail": cur["fail"]}})
+                break
+            report["skipped_failing"] += 1
+        pos = {"at": msg.get("created_at"), "id": msg["_id"]}
+        cur["live"], cur["fail"] = pos, None
+        await db.upcoming_cursors.update_one(
+            {"_id": cur["_id"]}, {"$set": {"live": pos, "fail": None,
+                                           "updated_at": ctx["now"]}})
+        done += 1
+    return done
+
+
+async def _upcoming_chat_tick(now: Optional[datetime] = None, llm=None) -> dict:
+    """Linked project groups' new messages → chat events. Never posts."""
+    now = now or datetime.now(timezone.utc)
+    report = {"groups": 0, "new_groups": 0, "bot_off": 0, "messages": 0, "calls": 0,
+              "filtered_out": 0, "created": 0, "deduped": 0, "rescheduled": 0,
+              "cancelled": 0, "skipped": {}, "model_failed": 0, "write_failed": 0,
+              "skipped_failing": 0, "prompt_tokens": 0, "completion_tokens": 0,
+              "call_cap": False}
+    if _upcoming_disabled():
+        report["disabled"] = True
+        return report
+    if llm is None and not OPENAI_API_KEY:
+        report["no_model"] = True
+        return report
+    try:
+        rows = await db.whatsapp_groups.find({"active": True}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"[upcoming] groups read failed: {type(e).__name__}")
+        return report
+    for row in rows:
+        group_id = str(row.get("wa_group_id") or "")
+        if not group_id:
+            continue
+        binding = await _attention_binding(group_id, rows)
+        if not binding or str(binding["group"].get("_id")) != str(row.get("_id")):
+            continue
+        company_id, project_id = binding["company_id"], binding["project_id"]
+        cur_id = f"{group_id}|{project_id}"
+        start = {"at": now, "id": _ATTENTION_ZERO_ID}
+        try:
+            cur = await db.upcoming_cursors.find_one({"_id": cur_id})
+            if not _effective_bot_config(row.get("bot_config"))["bot_enabled"]:
+                # No AI processing; move past what is said meanwhile.
+                report["bot_off"] += 1
+                if cur:
+                    await db.upcoming_cursors.update_one(
+                        {"_id": cur_id}, {"$set": {"live": start, "updated_at": now}})
+                continue
+            if not cur:
+                # NO BACKFILL: the first sight of a group starts its cursor now.
+                cur = {"_id": cur_id, "group_id": group_id, "project_id": project_id,
+                       "company_id": company_id, "live": start, "fail": None,
+                       "created_at": now, "updated_at": now}
+                await db.upcoming_cursors.update_one(
+                    {"_id": cur_id}, {"$setOnInsert": cur}, upsert=True)
+                cur = await db.upcoming_cursors.find_one({"_id": cur_id}) or cur
+                report["new_groups"] += 1
+        except Exception as e:
+            logger.warning(f"[upcoming] cursor read failed: {type(e).__name__}")
+            continue
+        report["groups"] += 1
+        if report["call_cap"]:
+            continue
+        ctx = {"group_id": group_id, "project_id": project_id, "company_id": company_id,
+               "now": now}
+        try:
+            report["messages"] += await _upcoming_run_group(cur, ctx, report, llm=llm)
+        except Exception as e:
+            logger.warning(f"[upcoming] group failed: {type(e).__name__}")
+    logger.info(f"[upcoming] chat {report}")
+    return report
+
+
+# ── City records → events ──
+
+def _upcoming_city_events(dob_rows: list, dot_rows: list, today: _Date) -> list:
+    """The project's city events: ECB/OATH hearings and permit expirations.
+    Superseded DOB rows (one record, several status rows) count once: the
+    newest row of each record."""
+    latest: Dict[str, dict] = {}
+    for r in dob_rows:
+        k = str(r.get("raw_dob_id") or r.get("_id"))
+        prev = latest.get(k)
+        if prev is None or str(r.get("updated_at") or "") >= str(prev.get("updated_at") or ""):
+            latest[k] = r
+    out = []
+    for r in latest.values():
+        rid = str(r.get("raw_dob_id") or r.get("_id"))
+        if r.get("record_type") == "permit":
+            if "REVOKED" in str(r.get("permit_status") or "").upper():
+                continue
+            num = r.get("job_number") or rid
+            ev = upcoming.city_event("permit_expiration", "DOB", f"dob:{rid}",
+                                     r.get("expiration_date"), f"DOB permit expires · #{num}",
+                                     today, str(r.get("work_type") or ""))
+        elif r.get("record_type") == "violation":
+            if wa_alerts.is_closed(r):
+                continue                     # settled: no hearing to go to
+            num = r.get("violation_number") or rid
+            ev = upcoming.city_event("hearing", "DOB", f"dob:{rid}", r.get("hearing_date"),
+                                     f"ECB hearing · DOB violation #{num}", today,
+                                     str(r.get("description") or "")[:200])
+        else:
+            ev = None
+        if ev:
+            out.append(ev)
+    for r in dot_rows:
+        rid = str(r.get("raw_id") or r.get("_id"))
+        if r.get("record_type") == "dot_permit":
+            if not dot_sync.permit_is_active(r.get("status")):
+                continue
+            ev = upcoming.city_event("permit_expiration", "DOT", f"dot:{rid}",
+                                     r.get("expiration_date"),
+                                     f"DOT permit expires · #{r.get('number') or rid}", today,
+                                     str(r.get("description") or "")[:200])
+        elif r.get("record_type") == "dot_violation":
+            if wa_alerts.is_closed(r):
+                continue                     # PAID IN FULL, dismissed...: no hearing
+            ev = upcoming.city_event("hearing", "OATH", f"dot:{rid}", r.get("hearing_date"),
+                                     f"OATH hearing · DOT ticket #{r.get('number') or rid}",
+                                     today, str(r.get("description") or "")[:200])
+        else:
+            ev = None
+        if ev:
+            out.append(ev)
+    return out
+
+
+async def _upcoming_city_sync_project(project: dict, today: _Date, now: datetime,
+                                      report: dict) -> None:
+    pid, cid = str(project["_id"]), str(project.get("company_id") or "")
+    dob_rows = await db.dob_logs.find({
+        "project_id": pid,
+        "record_type": {"$in": ["permit", "violation"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(5000)
+    dot_rows = await db.dot_logs.find({
+        "project_id": pid,
+        "company_id": _company_id_filter(cid),
+    }).to_list(2000)
+    current = _upcoming_city_events(dob_rows, dot_rows, today)
+    keys = {ev["key"] for ev in current}
+    # A record that no longer qualifies (paid, dismissed, revoked, gone):
+    # its event closes, by the city. It reopens if the record qualifies again.
+    stale = await db.upcoming_events.find({
+        "company_id": _company_id_filter(cid),
+        "project_id": pid,
+        "source": "city",
+        "status": "open",
+        "date": {"$gte": today.isoformat()},
+    }).to_list(2000)
+    for old in stale:
+        if old.get("key") in keys:
+            continue
+        await db.upcoming_events.update_one({"_id": old["_id"], "status": "open"}, {
+            "$set": {"status": "cancelled", "closed_by": "city", "updated_at": now},
+            "$push": {"history": upcoming.history_entry(
+                "cancelled", now, by="city", note="no longer on the city record")}})
+        report["closed"] += 1
+    for ev in current:
+        cur = await db.upcoming_events.find_one({"project_id": pid, "key": ev["key"]})
+        if cur is None:
+            row = {
+                "company_id": cid,
+                "project_id": pid,
+                "user_id": None,
+                "source": "city",
+                "kind": ev["kind"],
+                "agency": ev["agency"],
+                "title": ev["title"],
+                "date": ev["date"],
+                "time": None,
+                "status": "open",
+                "key": ev["key"],
+                "quote": "",
+                "detail": ev["detail"],
+                "source_ref": ev["source_ref"],
+                "history": [upcoming.history_entry("created", now, to=ev["date"])],
+                "created_at": now,
+                "updated_at": now,
+            }
+            await db.upcoming_events.insert_one(row)
+            report["created"] += 1
+        else:
+            reopen = cur.get("status") == "cancelled" and cur.get("closed_by") == "city"
+            if not reopen and cur.get("date") == ev["date"] and cur.get("title") == ev["title"]:
+                continue
+            upd = {"$set": {"date": ev["date"], "title": ev["title"], "detail": ev["detail"],
+                            "updated_at": now}}
+            moved = cur.get("date") != ev["date"]
+            if reopen:
+                upd["$set"].update(status="open", closed_by=None)
+                upd["$push"] = {"history": upcoming.history_entry(
+                    "reopened", now, by="city", frm=cur.get("date") if moved else None,
+                    to=ev["date"] if moved else None)}
+            elif moved:
+                upd["$push"] = {"history": upcoming.history_entry(
+                    "rescheduled", now, frm=cur.get("date"), to=ev["date"], by="city")}
+            report["moved"] += int(moved)
+            await db.upcoming_events.update_one({"_id": cur["_id"]}, upd)
+
+
+async def _upcoming_city_tick(now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    report = {"projects": 0, "created": 0, "moved": 0, "closed": 0, "failed": 0}
+    if _upcoming_disabled():
+        report["disabled"] = True
+        return report
+    today = _upcoming_today(now)
+    try:
+        projects = await db.projects.find(
+            await unattended_project_filter({"is_deleted": {"$ne": True}}),
+            {"company_id": 1}).to_list(5000)
+    except Exception as e:
+        logger.warning(f"[upcoming] project read failed: {type(e).__name__}")
+        return report
+    for p in projects:
+        if not str(p.get("company_id") or "").strip():
+            continue
+        report["projects"] += 1
+        try:
+            await _upcoming_city_sync_project(p, today, now, report)
+        except Exception as e:
+            report["failed"] += 1
+            logger.warning(f"[upcoming] city sync failed: {type(e).__name__}")
+    logger.info(f"[upcoming] city {report}")
+    return report
+
+
+# ── Reading: a person's events ──
+
+def _upcoming_view(r: dict, names: Optional[Dict[str, str]] = None) -> dict:
+    ev = r.get("evidence") or {}
+    return {"id": str(r["_id"]), "project_id": r.get("project_id"),
+            "project_name": (names or {}).get(str(r.get("project_id")), ""),
+            "source": r.get("source"), "chip": upcoming.source_chip(r),
+            "kind": r.get("kind"), "agency": r.get("agency"), "title": r.get("title") or "",
+            "date": r.get("date"), "time": r.get("time"),
+            "day_label": upcoming.day_label(r.get("date")),
+            "time_label": upcoming.time_label(r.get("time")),
+            "status": r.get("status"), "quote": r.get("quote") or "",
+            "who": ev.get("sender_name") or "", "detail": r.get("detail") or "",
+            "history": [{k: (v.isoformat() if isinstance(v, datetime) else v)
+                         for k, v in h.items()} for h in (r.get("history") or [])][-10:],
+            "can_dismiss": r.get("status") == "open",
+            "can_edit": r.get("source") in ("chat", "dm") and r.get("status") == "open"}
+
+
+async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, end: _Date,
+                        include_reminders: bool = True) -> list:
+    """Open events on this person's jobs (an admin's every live company job,
+    a PM's assigned ones) from `start` to `end`, plus their own reminders,
+    date-sorted, each with its job's street label."""
+    projects = await _dm_assistant_projects(user, company_id, role)
+    names = {str(p["_id"]): wa_assistant.street_label(p) for p in projects}
+    rows = await db.upcoming_events.find({
+        "company_id": _company_id_filter(company_id),
+        "project_id": {"$in": list(names)},
+        "status": "open",
+        "date": {"$gte": start.isoformat(), "$lte": end.isoformat()},
+    }).to_list(2000) if names else []
+    if include_reminders:
+        rows += await db.upcoming_events.find({
+            "company_id": _company_id_filter(company_id),
+            "user_id": str(user.get("_id")),
+            "source": "dm",
+            "status": "open",
+            "date": {"$gte": start.isoformat(), "$lte": end.isoformat()},
+        }).to_list(500)
+    seen, out = set(), []
+    for r in rows:
+        if str(r["_id"]) in seen:
+            continue
+        seen.add(str(r["_id"]))
+        v = _upcoming_view(r, names)
+        out.append({**v, "quote": r.get("quote") or "", "detail": r.get("detail") or ""})
+    return sorted(out, key=upcoming.sort_key)
+
+
+async def _upcoming_brief_lines(user: dict, company_id: str, role: str,
+                                now: datetime) -> List[str]:
+    """The brief's "Upcoming this week". DOT OATH hearings and permit
+    expirations are already the brief's own lines (lib/wa_brief.py); they
+    are not said twice."""
+    if _upcoming_disabled():
+        return []
+    today = _upcoming_today(now)
+    rows = await _upcoming_for(user, company_id, role, today,
+                               today + timedelta(days=upcoming.BRIEF_DAYS))
+    rows = [r for r in rows if not (r["source"] == "city" and (
+        r["kind"] == "permit_expiration" or r["agency"] == "OATH"))]
+    return upcoming.brief_section(rows, today)
+
+
+# ── The day-before DM, and a reminder on its day ──
+
+async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
+    """From 5pm New York: one DM per opted-in admin/PM with tomorrow's
+    events on their jobs. From 8am: each personal reminder due today, to
+    the person who asked. Once each (the ledger claim in send_whatsapp_dm)."""
+    now = now or datetime.now(timezone.utc)
+    report = {"optins": 0, "day_before_sent": 0, "reminders_sent": 0, "refused": 0,
+              "pref_off": 0}
+    if _upcoming_disabled():
+        report["disabled"] = True
+        return report
+    local = wa_brief.local_now(now)
+    today = local.date()
+    if local.hour >= UPCOMING_DAY_BEFORE_HOUR:
+        tomorrow = today + timedelta(days=1)
+        try:
+            optins = await db[WA_OPTINS].find({"status": "active"}).to_list(5000)
+        except Exception as e:
+            logger.warning(f"[upcoming] opt-in read failed: {type(e).__name__}")
+            optins = []
+        for optin in optins:
+            report["optins"] += 1
+            uid = str(optin.get("user_id") or "")
+            try:
+                if not uid or await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
+                        uid, None, UPCOMING_DAY_BEFORE_KIND, tomorrow.isoformat())}, {"_id": 1}):
+                    continue
+                user = await db.users.find_one(
+                    {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+                if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
+                        optin.get("company_id") or user.get("company_id"),
+                        user.get("company_id")):
+                    continue
+                if not (await get_whatsapp_prefs(uid, None)).get("upcoming_reminders", True):
+                    report["pref_off"] += 1
+                    continue
+                cid = str(user.get("company_id"))
+                rows = await _upcoming_for(user, cid, wa_dm.norm_role(user.get("role")),
+                                           tomorrow, tomorrow, include_reminders=False)
+                text = upcoming.day_before_dm(rows, tomorrow)
+                if not text:
+                    continue
+                sent = await send_whatsapp_dm(uid, text, kind=UPCOMING_DAY_BEFORE_KIND,
+                                              window=tomorrow.isoformat())
+                report["day_before_sent" if sent else "refused"] += 1
+            except Exception as e:
+                logger.warning(f"[upcoming] day-before failed: {type(e).__name__}")
+    if local.hour >= UPCOMING_REMINDER_HOUR:
+        try:
+            due = await db.upcoming_events.find(
+                {"source": "dm", "status": "open", "date": today.isoformat()}).to_list(2000)
+        except Exception as e:
+            logger.warning(f"[upcoming] reminder read failed: {type(e).__name__}")
+            due = []
+        for r in due:
+            uid = str(r.get("user_id") or "")
+            if not uid or await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
+                    uid, None, UPCOMING_REMINDER_KIND, str(r["_id"]))}, {"_id": 1}):
+                continue
+            t = f" ({upcoming.time_label(r.get('time'))})" if r.get("time") else ""
+            sent = await send_whatsapp_dm(uid, f"Reminder{t}: {r.get('title')}",
+                                          kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]))
+            report["reminders_sent" if sent else "refused"] += 1
+    logger.info(f"[upcoming] notify {report}")
+    return report
+
+
+# ── "remind me …" in a DM ──
+
+async def _upcoming_dm_turn(ident: dict, dm_chat: str, text: str, now: datetime) -> bool:
+    """A reminder asked for, or the YES / NO to one. True when answered here."""
+    if _upcoming_disabled():
+        return False
+    pending = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if pending and (upcoming.is_yes(text) or upcoming.is_no(text)):
+        await _dm_state_clear(UPCOMING_REMIND_STATE, dm_chat)
+        if upcoming.is_no(text):
+            await send_whatsapp_message(dm_chat, "OK, not saved.")
+            return True
+        row = {
+            "company_id": ident["company_id"],
+            "project_id": None,
+            "user_id": ident["user_id"],
+            "source": "dm",
+            "kind": "reminder",
+            "agency": None,
+            "title": str(pending.get("what") or "Reminder")[:120],
+            "date": str(pending.get("date")),
+            "time": pending.get("time"),
+            "status": "open",
+            "key": f"dm:{ident['user_id']}:{now.timestamp()}",
+            "quote": str(pending.get("asked") or "")[:300],
+            "detail": "",
+            "source_ref": "",
+            "history": [upcoming.history_entry("created", now, to=str(pending.get("date")),
+                                               by="you")],
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.upcoming_events.insert_one(row)
+        await send_whatsapp_message(
+            dm_chat, f"Saved. I'll remind you the morning of {upcoming.day_label(row['date'])}.")
+        return True
+    if not upcoming.is_remind_request(text):
+        return False
+    r = upcoming.parse_reminder(text, now)
+    if "skip" in r:
+        await send_whatsapp_message(dm_chat, upcoming.SKIP_REPLY.get(
+            r["skip"], upcoming.SKIP_REPLY["no_date"]))
+        return True
+    await _dm_state_set(UPCOMING_REMIND_STATE, dm_chat, UPCOMING_REMIND_SECONDS,
+                        what=r["what"], date=r["date"].isoformat(), time=r["time"],
+                        asked=text[:300])
+    await send_whatsapp_message(dm_chat, upcoming.confirm_text(r))
+    return True
+
+
+async def _upcoming_chat_job() -> None:
+    try:
+        await _upcoming_chat_tick()
+    except Exception as e:
+        logger.error(f"[upcoming] chat tick failed: {type(e).__name__}: {e}")
+
+
+async def _upcoming_city_job() -> None:
+    try:
+        await _upcoming_city_tick()
+    except Exception as e:
+        logger.error(f"[upcoming] city tick failed: {type(e).__name__}: {e}")
+
+
+async def _upcoming_notify_job() -> None:
+    try:
+        await _upcoming_notify_tick()
+    except Exception as e:
+        logger.error(f"[upcoming] notify tick failed: {type(e).__name__}: {e}")
 
 
 async def _dm_jobs(ident: dict) -> list:
@@ -48901,6 +49557,29 @@ async def _memory_index_job() -> None:
         await _memory_index_tick()
     except Exception as e:
         logger.error(f"[memory] index run failed: {type(e).__name__}: {e}")
+
+
+async def ensure_upcoming_indexes() -> None:
+    """Upcoming: a job's open events by day, a person's reminders, a city
+    record's or a chat event's key, the chat cursors, the feed tokens."""
+    await _ensure_index_resilient(db.upcoming_events,
+                                  keys=[("company_id", 1), ("project_id", 1), ("status", 1),
+                                        ("date", 1)],
+                                  name="upcoming_by_project_status_date")
+    await _ensure_index_resilient(db.upcoming_events,
+                                  keys=[("project_id", 1), ("key", 1)],
+                                  name="upcoming_by_project_key")
+    await _ensure_index_resilient(db.upcoming_events,
+                                  keys=[("source", 1), ("status", 1), ("date", 1)],
+                                  name="upcoming_by_source_status_date")
+    await _ensure_index_resilient(db.upcoming_events,
+                                  keys=[("company_id", 1), ("user_id", 1), ("source", 1),
+                                        ("status", 1), ("date", 1)],
+                                  name="upcoming_by_user_reminders")
+    await _ensure_index_resilient(db.calendar_feeds, keys=[("token_hash", 1)],
+                                  name="calendar_feeds_by_token", unique=True)
+    await _ensure_index_resilient(db.calendar_feeds, keys=[("user_id", 1), ("revoked_at", 1)],
+                                  name="calendar_feeds_by_user")
 
 
 async def ensure_project_memory_indexes() -> None:
@@ -49443,6 +50122,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         # chat has no "once a day per person" audience to spare.
         await _react_to_message(dm_chat, message_id, wa_react.THANKS
                                 if social == "thanks" else wa_react.PRAISE)
+        return
+    # "remind me …", and the YES / NO to one (Upcoming): personal, so
+    # before the jobs.
+    if await _upcoming_dm_turn(ident, dm_chat, text, now):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
@@ -61213,17 +61896,18 @@ async def put_whatsapp_brief(body: dict, current_user=Depends(get_current_user))
     if not wa_dm.is_dm_eligible(current_user):
         raise HTTPException(status_code=403,
                             detail="The morning brief is for admins and PMs.")
-    keys = ("brief_time", "brief_weekend", "brief_saturday")
+    keys = ("brief_time", "brief_weekend", "brief_saturday", "upcoming_reminders")
     if (not isinstance(body, dict) or not body
             or any(k not in keys for k in body)
             or ("brief_time" in body and body["brief_time"] not in wa_brief.BRIEF_TIMES)
             or any(k in body and not isinstance(body[k], bool)
-                   for k in ("brief_weekend", "brief_saturday"))
+                   for k in ("brief_weekend", "brief_saturday", "upcoming_reminders"))
             or ("brief_weekend" in body and "brief_saturday" in body
                 and body["brief_weekend"] != body["brief_saturday"])):
         raise HTTPException(
             status_code=422,
-            detail="brief_time: off, 07:00, 08:00 or 09:00; brief_weekend: true or false.")
+            detail="brief_time: off, 07:00, 08:00 or 09:00; brief_weekend and "
+                   "upcoming_reminders: true or false.")
     body = dict(body)
     if "brief_saturday" in body:
         body["brief_weekend"] = body.pop("brief_saturday")
@@ -61625,6 +62309,195 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     rows = await _memory_search(company_id, str(project_id), q, dfrom, dto, limit=30)
     sources = await _memory_present(rows, company_id, str(project_id))
     return {"results": [_memory_source_view(s) for s in sources], "answer": None}
+
+
+# ── Project → Upcoming (lib/upcoming.py; the engine is above the DM assistant)
+
+class UpcomingEdit(BaseModel):
+    date: Optional[str] = None
+    time: Optional[str] = None
+    title: Optional[str] = None
+
+
+async def _upcoming_event_for(project_id: str, event_id: str, company_id: str) -> dict:
+    try:
+        row = await db.upcoming_events.find_one({
+            "_id": to_query_id(event_id),
+            "project_id": project_id,
+            "company_id": _company_id_filter(company_id),
+        })
+    except Exception:
+        row = None
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    return row
+
+
+@api_router.get("/projects/{project_id}/upcoming",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def list_project_upcoming(project_id: str, current_user=Depends(get_current_user)):
+    """The job's open events from today on, date-sorted: city records, chat
+    events (with the quote and who said it) and nothing personal."""
+    company_id = await _memory_project(project_id, current_user)
+    if _upcoming_disabled():
+        return {"events": [], "disabled": True}
+    today = _upcoming_today(datetime.now(timezone.utc))
+    rows = await db.upcoming_events.find({
+        "company_id": _company_id_filter(company_id),
+        "project_id": project_id,
+        "status": "open",
+        "date": {"$gte": today.isoformat()},
+    }).to_list(500)
+    return {"events": sorted([_upcoming_view(r) for r in rows], key=upcoming.sort_key)}
+
+
+@api_router.delete("/projects/{project_id}/upcoming/{event_id}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def dismiss_project_upcoming(project_id: str, event_id: str,
+                                   current_user=Depends(get_current_user)):
+    """Dismiss, one tap: off the list, the brief, the DMs and the feed. A
+    soft delete: the row is kept, with who dismissed it and when, so a later
+    sync or a repeat in the chat never brings it back."""
+    company_id = await _memory_project(project_id, current_user)
+    row = await _upcoming_event_for(project_id, event_id, company_id)
+    now = datetime.now(timezone.utc)
+    who = str(current_user.get("id") or current_user.get("_id") or "")
+    await db.upcoming_events.update_one({"_id": row["_id"], "status": "open"}, {
+        "$set": {"status": "dismissed", "dismissed_by": who, "dismissed_at": now,
+                 "updated_at": now},
+        "$push": {"history": upcoming.history_entry("dismissed", now, by=who)}})
+    return {"ok": True}
+
+
+@api_router.patch("/projects/{project_id}/upcoming/{event_id}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def edit_project_upcoming(project_id: str, event_id: str, body: UpcomingEdit,
+                                current_user=Depends(get_current_user)):
+    """Correct a chat event's day, time or title (a city record's date is
+    the city's: not editable). The old values go to its history."""
+    company_id = await _memory_project(project_id, current_user)
+    row = await _upcoming_event_for(project_id, event_id, company_id)
+    if row.get("source") not in ("chat", "dm") or row.get("status") != "open":
+        raise HTTPException(status_code=409, detail="This event can't be edited")
+    upd: Dict[str, Any] = {}
+    if body.date is not None:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", body.date):
+            raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+        try:
+            _Date.fromisoformat(body.date)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+        upd["date"] = body.date
+    if body.time is not None:
+        if body.time and not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", body.time):
+            raise HTTPException(status_code=422, detail="time must be HH:MM")
+        upd["time"] = body.time or None
+    if body.title is not None:
+        title = " ".join(body.title.split())[:120]
+        if not title:
+            raise HTTPException(status_code=422, detail="title can't be empty")
+        upd["title"] = title
+    if not upd:
+        raise HTTPException(status_code=422, detail="Nothing to change")
+    now = datetime.now(timezone.utc)
+    who = str(current_user.get("id") or current_user.get("_id") or "")
+    if "date" in upd and row.get("source") == "chat":
+        # The dedupe key follows the day: a later mention of the corrected
+        # day is this event, a mention of the old day is not.
+        upd["key"] = upcoming.event_key(project_id, row.get("kind") or "", row.get("agency"),
+                                        _Date.fromisoformat(upd["date"]))
+    was = {k: row.get(k) for k in upd if k != "key"}
+    await db.upcoming_events.update_one({"_id": row["_id"]}, {
+        "$set": {**upd, "edited_by": who, "updated_at": now},
+        "$push": {"history": upcoming.history_entry(
+            "edited", now, by=who, frm=was, to={k: v for k, v in upd.items() if k != "key"})}})
+    return _upcoming_view(await db.upcoming_events.find_one({"_id": row["_id"]}))
+
+
+# ── The calendar feed: a private ICS URL per person, revocable ──
+#
+# The token is shown once, when made; only its SHA-256 is stored. The feed
+# is whatever the person may see today (re-checked on every read: still a
+# live admin/PM of that company), so a PM taken off a job stops seeing it at
+# the next refresh. Unknown, revoked and refused all answer the same 404.
+
+def _calendar_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode()).hexdigest()
+
+
+def _calendar_url(token: str) -> str:
+    base = os.environ.get("PUBLIC_BASE_URL", "https://api.levelog.com").rstrip("/")
+    return f"{base}/api/public/calendar/{token}.ics"
+
+
+@api_router.get("/me/calendar-feed", dependencies=[Depends(require_approved)])
+async def get_calendar_feed(current_user=Depends(get_current_user)):
+    if not holds_rank(current_user, PROJECT_ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="Admin or PM access required")
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    row = await db.calendar_feeds.find_one({"user_id": uid, "revoked_at": None})
+    return {"active": bool(row),
+            "created_at": row["created_at"].isoformat() if row else None,
+            "last_read_at": row["last_read_at"].isoformat()
+            if row and isinstance(row.get("last_read_at"), datetime) else None}
+
+
+@api_router.post("/me/calendar-feed", dependencies=[Depends(require_approved)])
+async def make_calendar_feed(current_user=Depends(get_current_user)):
+    """A new private URL (any old one stops working). Shown once."""
+    if not holds_rank(current_user, PROJECT_ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="Admin or PM access required")
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    company_id = str(get_user_company_id(current_user) or "")
+    if not company_id:
+        raise HTTPException(status_code=403, detail="No company")
+    now = datetime.now(timezone.utc)
+    await db.calendar_feeds.update_many({"user_id": uid, "revoked_at": None},
+                                        {"$set": {"revoked_at": now}})
+    token = secrets.token_urlsafe(32)
+    row = {"user_id": uid, "company_id": company_id,
+           "token_hash": _calendar_token_hash(token), "created_at": now,
+           "revoked_at": None, "last_read_at": None}
+    await db.calendar_feeds.insert_one(row)
+    return {"url": _calendar_url(token), "created_at": now.isoformat()}
+
+
+@api_router.delete("/me/calendar-feed", dependencies=[Depends(require_approved)])
+async def revoke_calendar_feed(current_user=Depends(get_current_user)):
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    res = await db.calendar_feeds.update_many({"user_id": uid, "revoked_at": None},
+                                              {"$set": {"revoked_at": datetime.now(timezone.utc)}})
+    return {"revoked": res.modified_count}
+
+
+@app.get("/api/public/calendar/{token}.ics")
+async def public_calendar_feed(token: str):
+    gone = HTTPException(status_code=404, detail="Not found")
+    if _upcoming_disabled() or not re.match(r"^[A-Za-z0-9_-]{20,100}$", token or ""):
+        raise gone
+    feed = await db.calendar_feeds.find_one(
+        {"token_hash": _calendar_token_hash(token), "revoked_at": None})
+    if not feed:
+        raise gone
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(str(feed["user_id"])), "is_deleted": {"$ne": True}})
+    except Exception:
+        user = None
+    # The same rank test as making the link (holds_rank: admin, PM, or the
+    # platform operator), so a link that could be made can be read.
+    if (not user or not holds_rank(user, PROJECT_ADMIN_ROLES)
+            or not wa_security.same_company(user.get("company_id"), feed.get("company_id"))):
+        raise gone
+    role = wa_dm.norm_role(user.get("role"))
+    now = datetime.now(timezone.utc)
+    today = _upcoming_today(now)
+    rows = await _upcoming_for(user, str(feed["company_id"]), role, today,
+                               today + timedelta(days=upcoming.UNLINKED_HORIZON_DAYS))
+    await db.calendar_feeds.update_one({"_id": feed["_id"]}, {"$set": {"last_read_at": now}})
+    body = upcoming.ics_feed(rows, f"Levelog — {user.get('name') or 'Upcoming'}", now)
+    return Response(content=body, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "private, max-age=900"})
 
 
 @api_router.get("/projects/{project_id}/memory/context/{source_id}",
@@ -66917,6 +67790,36 @@ async def startup_event():
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
     )
+    # Upcoming (lib/upcoming.py): new group messages → dated events every
+    # 5 minutes; city hearings and permit expirations every 2 hours; the
+    # day-before DM (5pm) and reminders (8am) every 10 minutes, once each.
+    scheduler.add_job(
+        _upcoming_chat_job,
+        IntervalTrigger(minutes=5),
+        id='upcoming_chat',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+    )
+    scheduler.add_job(
+        _upcoming_city_job,
+        IntervalTrigger(hours=2),
+        id='upcoming_city',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
+    )
+    scheduler.add_job(
+        _upcoming_notify_job,
+        IntervalTrigger(minutes=10),
+        id='upcoming_notify',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
     # DOT sync: OATH summonses issued by DOT and DOT street permits, matched
     # to projects by BIN / BBL / exact address (lib/dot_sync.py). Every 2 h.
     scheduler.add_job(
@@ -66942,6 +67845,7 @@ async def startup_event():
     # index, for the reason ensure_dropbox_sync_indexes gives.
     await ensure_whatsapp_phase1_indexes()
     await ensure_project_memory_indexes()
+    await ensure_upcoming_indexes()
     # Separate await, so a failure in the WhatsApp migrations cannot skip it.
     await ensure_dropbox_sync_indexes()
     # Also separate, and it never belonged inside the WhatsApp runner at all —

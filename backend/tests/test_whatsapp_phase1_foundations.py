@@ -449,7 +449,7 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 34)
+        self.assertEqual(body.count("scheduler.add_job("), 37)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -854,7 +854,7 @@ class WhatsAppPreferences(unittest.TestCase):
     def test_defaults_are_all_on(self):
         self.assertEqual(nprefs.default_whatsapp_prefs(), {
             "enabled": True, "summary_frequency": "daily",
-            "reply_alerts": True, "reminders": True})
+            "reply_alerts": True, "reminders": True, "upcoming_reminders": True})
 
     def test_project_overrides_global_overrides_default(self):
         out = nprefs.effective_whatsapp_prefs(
@@ -862,7 +862,8 @@ class WhatsAppPreferences(unittest.TestCase):
             {"whatsapp": {"summary_frequency": "weekly", "reminders": True,
                           "enabled": "yes"}})
         self.assertEqual(out, {"enabled": True, "summary_frequency": "weekly",
-                               "reply_alerts": True, "reminders": False})
+                               "reply_alerts": True, "reminders": False,
+                               "upcoming_reminders": True})
 
     def test_the_patch_is_validated(self):
         clean, errs = nprefs.validate_whatsapp_prefs_patch(
