@@ -5,6 +5,7 @@
 // from), and a person's own "remind me" in a DM (never listed on a job).
 
 import { canSearch } from './projectMemory';
+import { dateEntryError, toStoredDate } from './dateEntry';
 
 /** Same people as Search: an admin, or a PM on their assigned jobs. */
 export function canSeeUpcoming(user) {
@@ -51,17 +52,15 @@ export function movedLine(e) {
   return last && last.frm ? `Moved from ${last.frm}` : '';
 }
 
-/** The edit form's checks, before anything is sent. */
+/** The edit form's checks, before anything is sent. The day is typed in the
+ *  shared DateInput (MM/DD/YYYY, src/utils/dateEntry.js) and sent as ISO. */
 export function cleanEdit({ date, time }) {
   const out = {};
-  const d = String(date || '').trim();
+  const err = dateEntryError(date);
+  if (err) return { error: err };
+  const iso = toStoredDate(date);
+  if (iso) out.date = iso;
   const t = String(time || '').trim();
-  if (d) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`))) {
-      return { error: 'Date as YYYY-MM-DD.' };
-    }
-    out.date = d;
-  }
   if (t && !/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return { error: 'Time as HH:MM (24h), or leave it empty.' };
   out.time = t;
   return { patch: out };

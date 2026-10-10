@@ -31,7 +31,8 @@ ok(M.movedLine({ history: [{ action: 'created' }, { action: 'rescheduled', frm: 
   === 'Moved from 2026-12-02', 'a moved event says so');
 ok(M.movedLine({ history: [] }) === '', 'not moved: nothing');
 ok(M.cleanEdit({ date: '2026-12-09', time: '07:30' }).patch.time === '07:30', 'a good edit');
-ok(M.cleanEdit({ date: '12/9', time: '' }).error, 'a bad date is refused here');
+ok(M.cleanEdit({ date: '12/09/2026', time: '' }).patch.date === '2026-12-09', 'typed MM/DD/YYYY is sent as ISO');
+ok(M.cleanEdit({ date: '13/40/2026', time: '' }).error, 'a bad date is refused here');
 ok(M.cleanEdit({ date: '2026-12-09', time: '7am' }).error, 'a bad time is refused here');
 ok(M.cleanEdit({ date: '', time: '' }).patch.time === '', 'clearing the time is allowed');
 

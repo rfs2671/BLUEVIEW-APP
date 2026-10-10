@@ -23,6 +23,7 @@ import {
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import DateInput from '../../../src/components/DateInput';
 
 // Project → Upcoming: hearings and permit expirations from the city's
 // records, and the dated events said in the job's WhatsApp group ("from
@@ -176,12 +177,13 @@ export default function ProjectUpcomingScreen() {
                   {!!e.detail && <Text style={[styles.chip, muted]}>{e.detail}</Text>}
                   {editing && editing.id === e.id && (
                     <View style={styles.editRow}>
-                      <TextInput
+                      <DateInput
                         value={editing.date}
-                        onChangeText={(v) => setEditing({ ...editing, date: v })}
-                        placeholder="YYYY-MM-DD"
+                        onChange={(v) => setEditing({ ...editing, date: v })}
+                        placeholder="MM/DD/YYYY"
                         placeholderTextColor={muted.color}
-                        style={[styles.input, text]}
+                        palette={{ error: colors.status.error, hint: colors.text.muted }}
+                        fieldStyle={[styles.input, text]}
                         accessibilityLabel="Date"
                       />
                       <TextInput
