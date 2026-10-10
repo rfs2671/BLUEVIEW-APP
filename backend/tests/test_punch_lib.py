@@ -172,5 +172,14 @@ class SendingAndClosing(unittest.TestCase):
                                             "• P-588-3 faucet (ready to check)"])
 
 
+
+class QuestionsLeaveTheAssistantAlone(unittest.TestCase):
+
+    def test_whats_open_needs_a_floor_or_punch(self):
+        self.assertEqual(p.parse_query("what's open on 6 at 588?")["floor"], "6")
+        self.assertIsNotNone(p.parse_query("what's open on the punch at 588?"))
+        self.assertIsNone(p.parse_query("what's open at 8 walworth"))
+
+
 if __name__ == "__main__":
     unittest.main()

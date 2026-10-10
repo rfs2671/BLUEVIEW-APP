@@ -303,16 +303,21 @@ async def run(sc: dict) -> dict:
                        f"{words}: ready to check, then reopened ({' → '.join(acts)})"))
         a = next(x for x in db.attention_items.rows if x.get("punch_id") == r["pid"])
         checks.append((a["status"] == "open", f"{words}: chase resumes (attention {a['status']})"))
-    photos = sum(1 for r in rows if r.get("photo_key")) + sum(len(r.get("extra_photos") or []) for r in rows)
+    # In-memory rows this run wrote (not a probe of a real collection).
+    photos = 0
+    for r in rows:
+        keys = [r.get("photo_key"), *(r.get("extra_photos") or [])]
+        photos += len([k for k in keys if k])
     return {"checks": checks, "transcript": transcript, "group_posts": group_out,
             "reacts": reacts, "uploads": uploads, "photos_on_items": photos,
             "rows": rows, "mode": sc.get("punch_sends") or "shadow"}
 
 
 def report(res: dict) -> int:
+    reacts, uploads, checks = res["reacts"], res["uploads"], res["checks"]
     print("\n".join(res["transcript"]))
     print()
-    print(f"👍 reactions: {len(res['reacts'])} · photos stored: {len(res['uploads'])} "
+    print(f"👍 reactions: {len(reacts)} · photos stored: {len(uploads)} "
           f"· photos on sent items: {res['photos_on_items']}")
     print()
     print("Punch items:")
@@ -321,10 +326,10 @@ def report(res: dict) -> int:
               f"fl {r.get('floor')!s:<4} {(r.get('assignee') or {}).get('name') or '':<12} "
               f"due {(r.get('due') or {}).get('due_at') or '-':<10} {'🎤 ' if r.get('voice') else ''}{r['text']}")
     print()
-    bad = [w for ok, w in res["checks"] if not ok]
-    for ok, w in res["checks"]:
+    bad = [w for ok, w in checks if not ok]
+    for ok, w in checks:
         print(f"  {'✓' if ok else '✗'} {w}")
-    print(f"\n{len(res['checks']) - len(bad)}/{len(res['checks'])} as expected")
+    print(f"\n{len(checks) - len(bad)}/{len(checks)} as expected")
     if res["mode"] == "shadow" and res["group_posts"]:
         print(f"POSTED IN SHADOW: {res['group_posts']}")
         return 3

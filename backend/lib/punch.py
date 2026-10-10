@@ -531,7 +531,9 @@ def parse_query(text: str) -> Optional[Dict[str, Any]]:
     if m:
         return {"q": "photo", "pid": m.group("pid")}
     m = _Q_OPEN.search(t)
-    if m and ("punch" in t.lower() or m.group("floor") or m.group("job")):
+    # A floor ("what's open on 6 at 588?") or the word punch makes it a punch
+    # question; a bare "what's open at 8 walworth" stays the assistant's.
+    if m and ("punch" in t.lower() or m.group("floor")):
         f = m.group("floor")
         return {"q": "open", "floor": (read_floor(f"floor {f}") or f.lower()) if f else None,
                 "job": (m.group("job") or "").strip() or None}
