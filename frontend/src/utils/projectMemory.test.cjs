@@ -26,6 +26,12 @@ ok(M.opensContext({ source: 'whatsapp', id: 'wa:1' }) && !M.opensContext({ sourc
 ok(M.answerState({ claims: [] }).text === M.NO_SOURCE, 'no claims: no source');
 ok(M.answerState({ mode: 'timeline', claims: [{ text: 'x' }] }).timeline, 'timeline');
 ok(M.answerState(null) === null, 'no answer asked');
+ok(M.answerState({ claims: [{ text: 'x' }], lead: 'No record that the dumpster was swapped.' }).lead
+   === 'No record that the dumpster was swapped.', 'lead carried');
+ok(M.answerState({ claims: [{ text: 'x' }] }).lead === '', 'no lead');
+ok(M.claimLine({ text: 'Pump planned (Roy Fishman, Sep 28) — not confirmed as done', planned: true,
+                 relayed_by: 'Roy Fishman' }, false)
+   === 'Pump planned (Roy Fishman, Sep 28) — not confirmed as done', 'a plan line has no relay note');
 ok(M.claimLine({ text: 'The owner wanted a casement', relayed_by: 'Wendy Cho' }, false)
   === 'The owner wanted a casement (relayed by Wendy Cho)', 'relayed decision says who relayed it');
 ok(M.claimLine({ text: 'Install planned', date: 'Oct 1' }, true) === 'Oct 1 — Install planned', 'timeline line');
@@ -39,6 +45,7 @@ ok(/memoryAPI\.search\(/.test(screen) && /memoryAPI\.context\(/.test(screen), 't
 ok(/chipText\(/.test(screen), 'every result shows its source chip');
 ok(/claimSources\(c\)/.test(screen) && /claimLine\(c, answer\.timeline\)/.test(screen),
   'an answer shows who relayed it and every source of a fact');
+ok(/answer.lead/.test(screen), 'the answer shows its "No record that …" lead');
 ok(!/sendWhatsApp|whatsappAPI\.send/.test(screen), 'the screen sends nothing to anyone');
 ok(/setResults\(null\);\s*\n\s*setAnswer\(null\);/.test(screen),
   'a new search clears the last results before asking');

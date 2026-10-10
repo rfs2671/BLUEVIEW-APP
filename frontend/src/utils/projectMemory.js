@@ -47,7 +47,10 @@ export function answerState(answer) {
   if (!answer) return null;
   const claims = Array.isArray(answer.claims) ? answer.claims : [];
   if (!claims.length) return { found: false, text: NO_SOURCE, claims: [] };
-  return { found: true, timeline: answer.mode === 'timeline', claims };
+  // lead: "No record that the dumpster was swapped." when the records only
+  // hold a plan for something the question asks was done.
+  return { found: true, timeline: answer.mode === 'timeline', claims,
+           lead: typeof answer.lead === 'string' ? answer.lead : '' };
 }
 
 /** A claim's head line: the timeline date, the words, and who relayed a
@@ -55,7 +58,8 @@ export function answerState(answer) {
 export function claimLine(c, timeline) {
   const x = c || {};
   const head = timeline && x.date ? `${x.date} — ${x.text || ''}` : (x.text || '');
-  return x.relayed_by ? `${head} (relayed by ${x.relayed_by})` : head;
+  // A plan line already says whose plan it is: "(Roy Fishman, Oct 2)".
+  return x.relayed_by && !x.planned ? `${head} (relayed by ${x.relayed_by})` : head;
 }
 
 /** Every source that shows a claim, each with its own words: one fact,

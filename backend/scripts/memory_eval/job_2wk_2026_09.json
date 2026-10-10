@@ -444,7 +444,9 @@
     ],
     "contains": [
      "sent"
-    ]
+    ],
+    "no_relay": true,
+    "scripted_text": "Patricia Lee sent the riser shop drawings to Kevin (relayed by Patricia Lee)"
    }
   },
   {
@@ -480,6 +482,10 @@
     "min_entries": 2,
     "contains": [
      "pump"
+    ],
+    "planned_contains": [
+     "pump",
+     "Sep 28"
     ]
    }
   },
@@ -506,13 +512,21 @@
      "m29"
     ],
     "contains": [
-     "planned",
-     "as of Oct 2"
+     "Dumpster swap planned for Tuesday 10/6",
+     "Oct 2",
+     "not confirmed as done"
     ],
     "forbid": [
      "\\b(was|were|got) swapped\\b"
     ],
-    "scripted_text": "The dumpster was swapped on Tuesday 10/6"
+    "scripted_text": "The dumpster was swapped on Tuesday 10/6",
+    "leads_with": "No record that the dumpster was swapped",
+    "planned": true,
+    "planned_contains": [
+     "Dumpster swap",
+     "Tuesday 10/6",
+     "Oct 2"
+    ]
    }
   },
   {

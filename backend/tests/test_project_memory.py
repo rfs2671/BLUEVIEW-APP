@@ -159,6 +159,25 @@ class Faithful(unittest.TestCase):
         self.assertEqual(c["text"], "Wendy Cho wanted it changed")
         self.assertNotIn("relayed_by", c)
 
+    def test_no_relayed_by_when_the_poster_is_the_one_who_did_it(self):
+        # The model's own "(relayed by …)" is never kept, and a claim about
+        # what the poster did has no relayer even when the quote names a
+        # decider elsewhere.
+        srcs = [_src("S1", "Riser shop drawings sent to Kevin, check your email", who="Patricia Lee"),
+                _src("S2", "Architect approved the sleeve layout, I sent the sleeve list to Ana",
+                     who="Patricia Lee")]
+        got = pm.checked_claims([
+            {"text": "Patricia sent the riser shop drawings to Kevin (relayed by Patricia Lee)",
+             "source": "S1", "quote": "Riser shop drawings sent to Kevin"},
+            {"text": "Patricia sent the sleeve list to Ana", "source": "S2",
+             "quote": "I sent the sleeve list to Ana"}], srcs)
+        self.assertEqual([c["text"] for c in got],
+                         ["Patricia sent the riser shop drawings to Kevin",
+                          "Patricia sent the sleeve list to Ana"])
+        self.assertTrue(all("relayed_by" not in c for c in got))
+        out = pm.format_answer(got, {"S1": srcs[0], "S2": srcs[1]})
+        self.assertNotIn("relayed by", out)
+
     def test_a_name_counts_only_when_it_is_a_person_in_the_records(self):
         self.assertIsNone(pm.relayed_decider("Drawings approved by the architect", "Kevin Shah",
                                              ["Kevin Shah", "Mike Rivera"]))
@@ -186,7 +205,7 @@ class Faithful(unittest.TestCase):
             {"text": "The drawings were approved", "source": "S1",
              "quote": "Drawings approved"}], srcs)
         self.assertEqual([c["text"] for c in got],
-                         ["Planned, as of Oct 1 — not confirmed as done",
+                         ["Installation planned for Monday (Kevin, Oct 1) — not confirmed as done",
                           "The drawings were approved"])
 
     def test_a_fact_and_its_negation_are_not_merged(self):
@@ -209,11 +228,47 @@ class Faithful(unittest.TestCase):
             {"text": "A pump was acquired from the rental yard", "source": "S2",
              "quote": "we're getting a pump from the rental yard"}], srcs)
         self.assertEqual([c["text"] for c in got],
-                         ["Planned, as of Oct 2 — not confirmed as done",
-                          "Planned, as of Sep 28 — not confirmed as done"])
+                         ["Dumpster swap planned for Tuesday 10/6 (Roy, Oct 2) — "
+                          "not confirmed as done",
+                          "Pump planned from the rental yard (Roy, Sep 28) — not confirmed as done"])
         self.assertTrue(all(c["planned"] for c in got))
 
-    def test_done_words_and_plain_plans_are_left_alone(self):
+    def test_a_plan_keeps_what_was_planned_whoever_the_model_made_the_subject(self):
+        quote = "Eddie we're getting a pump from the rental yard"
+        for claim in ("Roy got a pump from the rental yard",
+                      "Roy Fishman acquired a pump from the rental yard",
+                      "A pump was acquired from the rental yard"):
+            self.assertEqual(pm.plan_line(claim, quote, "Roy Fishman", "Sep 28"),
+                             "Pump planned from the rental yard (Roy Fishman, Sep 28) — "
+                             "not confirmed as done", claim)
+
+    def test_the_answer_leads_with_no_record_when_there_is_only_a_plan(self):
+        srcs = [_src("S1", "Dumpster swap is set for Tuesday 10/6", who="Roy Fishman", day="Oct 2")]
+        claims = pm.checked_claims([{"text": "The dumpster was swapped on Tuesday", "source": "S1",
+                                     "quote": "Dumpster swap is set for Tuesday 10/6"}], srcs)
+        lead = pm.lead_line("when was the dumpster swapped?", claims)
+        self.assertEqual(lead, "No record that the dumpster was swapped.")
+        out = pm.format_answer(claims, {"S1": srcs[0]}, lead=lead)
+        self.assertTrue(out.startswith("No record that the dumpster was swapped.\n• Dumpster swap "
+                                       "planned for Tuesday 10/6 (Roy Fishman, Oct 2)"), out)
+        # A question about the plan itself, or a claim that is not a plan: no lead.
+        self.assertEqual(pm.lead_line("when does the dumpster swap happen?", claims), "")
+        self.assertEqual(pm.lead_line("when was the dumpster swapped?",
+                                      [{**claims[0], "planned": False}]), "")
+        self.assertEqual(pm.lead_line("when was the dumpster swapped?", claims, timeline=True), "")
+
+    def test_no_record_lines(self):
+        for q, want in {
+            "when was the dumpster swapped?": "No record that the dumpster was swapped.",
+            "has the slab been poured?": "No record that the slab has been poured.",
+            "did Patricia send the riser drawings?": "No record that Patricia sent the riser drawings.",
+            "when did the pump arrive?": "No record that the pump arrived.",
+            "was it?": "No record that this happened.",
+            "what happened with the pump?": "",
+        }.items():
+            self.assertEqual(pm.no_record_line(q), want, q)
+
+    def test_done_words_are_left_alone_and_plain_plans_say_whose(self):
         srcs = [_src("S1", "Pump is here and running, pit should be dry by tomorrow", who="Eddie"),
                 _src("S2", "Storefront shop drawings approved with comments. Frame install is "
                            "set for October 12.", who="Kevin"),
@@ -226,7 +281,9 @@ class Faithful(unittest.TestCase):
              "quote": "Dumpster swap is set for Tuesday 10/6"}], srcs)
         self.assertEqual([c["text"] for c in got], ["The pump arrived",
                                                     "The drawings were approved with comments",
-                                                    "A dumpster swap is planned for Tuesday 10/6"])
+                                                    "A dumpster swap is planned for Tuesday 10/6 "
+                                                    "(Roy, Sep 24) — not confirmed as done"])
+        self.assertEqual([bool(c.get("planned")) for c in got], [False, False, True])
 
     def test_one_claim_per_fact_with_every_source(self):
         srcs = [_src("S1", "Underpinning pits 1–4 poured this morning, 12 yards", who="Dave"),

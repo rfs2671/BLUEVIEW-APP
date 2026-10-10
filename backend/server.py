@@ -49263,8 +49263,9 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
         claims.sort(key=lambda c: order[c["sid"]])
         for c in claims:
             c["date"] = c.get("date") or by_sid[c["sid"]]["day_label"]
-    result.update(text=project_memory.format_answer(claims, by_sid, timeline),
-                  claims=claims, dropped=tally.get("dropped", 0),
+    lead = project_memory.lead_line(query, claims, timeline)
+    result.update(text=project_memory.format_answer(claims, by_sid, timeline, lead=lead),
+                  lead=lead, claims=claims, dropped=tally.get("dropped", 0),
                   merged=tally.get("merged", 0), made_faithful=tally.get("made_faithful", 0))
     logger.info(f"[memory] answer mode={mode} sources={len(sources)} "
                 f"claims={len(claims)} dropped={result['dropped']} merged={result['merged']} "
@@ -61610,6 +61611,7 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
         by_sid = {s["sid"]: _memory_source_view(s) for s in got["sources"]}
         return {"results": [_memory_source_view(s) for s in got["sources"]],
                 "answer": {"text": got["text"], "mode": got["mode"],
+                           "lead": got.get("lead") or "",
                            "claims": [{"text": c["text"], "quote": c["quote"],
                                        "date": c.get("date") or "",
                                        "relayed_by": c.get("relayed_by"),
