@@ -270,6 +270,27 @@ class Coll:
                 return _Res(1)
         return _Res(0)
 
+    async def delete_many(self, query):
+        keep = [r for r in self.rows if not matches(r, query)]
+        n = len(self.rows) - len(keep)
+        self.rows[:] = keep
+        return _Res(n)
+
+    async def distinct(self, key, query=None):
+        out = []
+        for r in self.rows:
+            if matches(r, query):
+                v = _get(r, key)
+                if v not in out:
+                    out.append(v)
+        return out
+
+    async def drop_index(self, name):
+        self.indexes = [ix for ix in self.indexes if ix.get("name") != name]
+
+    async def index_information(self):
+        return {ix["name"]: dict(ix) for ix in self.indexes if ix.get("name")}
+
     async def create_index(self, keys, name=None, **opts):
         self.indexes.append({"keys": keys, "name": name, **opts})
         if opts.get("unique") and isinstance(keys, list) and len(keys) == 1:

@@ -449,7 +449,7 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 32)
+        self.assertEqual(body.count("scheduler.add_job("), 33)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -834,9 +834,11 @@ class RetentionIsInCode(unittest.TestCase):
         coll, ix = by_name["whatsapp_webhook_log_ttl_30d"]
         self.assertEqual((coll, ix["keys"], ix["expireAfterSeconds"]),
                          ("whatsapp_webhook_log", [("received_at", 1)], 30 * 86400))
-        coll, ix = by_name["whatsapp_messages_ttl_24m"]
-        self.assertEqual((coll, ix["keys"], ix["expireAfterSeconds"]),
-                         ("whatsapp_messages", [("created_at", 1)], 730 * 86400))
+        # whatsapp_messages: no TTL. Project-based retention runs nightly
+        # (lib/wa_retention.py, tests/test_wa_retention.py).
+        self.assertNotIn("whatsapp_messages_ttl_24m", by_name)
+        self.assertFalse([ix for ix in db.whatsapp_messages.indexes
+                          if "expireAfterSeconds" in ix])
         self.assertTrue(by_name["whatsapp_optins_phone_unique"][1]["unique"])
         for name in ("scheduler_leases_ttl", "whatsapp_dm_reply_windows_ttl",
                      "whatsapp_notification_ledger_ttl"):

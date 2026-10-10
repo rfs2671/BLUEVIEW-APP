@@ -75,6 +75,7 @@ from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
 from lib import wa_attention_state  # noqa: E402
 from lib import wa_chase  # noqa: E402
+from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -47420,6 +47421,128 @@ async def _whatsapp_chase_job() -> None:
         logger.error(f"[chase] tick failed: {type(e).__name__}: {e}")
 
 
+# ── RETENTION: WHATSAPP MESSAGES AND ATTENTION ITEMS ─────────────────────────
+#
+# The rule is lib/wa_retention.py: linked to a project, 7 years after its
+# job_completion_date (never without one; a legal hold keeps everything);
+# not linked, 24 months after created_at. Nightly at 2:45 AM New York.
+# COUNTS ONLY until RETENTION_PURGE_ENABLED is on; then at most
+# wa_retention.MAX_DELETES_PER_RUN rows a night. Fixture companies skipped.
+# Every run writes a ledger row (retention_ledger) and logs per company.
+
+async def _retention_buckets(coll: str, now: datetime, today: str) -> List[dict]:
+    """What has expired in one collection: [{company_id, project_id, why,
+    query}], one per company and project (or company, for unlinked)."""
+    out: List[dict] = []
+    cutoff = wa_retention.unlinked_cutoff(now)
+    pids = [p for p in await db[coll].distinct("project_id") if not wa_retention.is_unlinked(p)]
+    projects: Dict[str, dict] = {}
+    for i in range(0, len(pids), 500):
+        chunk = pids[i:i + 500]
+        ids = [to_query_id(str(p)) for p in chunk] + [str(p) for p in chunk]
+        for p in await db.projects.find(
+                {"_id": {"$in": ids}},
+                {"company_id": 1, "job_completion_date": 1, "legal_hold": 1}).to_list(None):
+            projects[str(p["_id"])] = p
+    for pid in pids:
+        proj = projects.get(str(pid))
+        if proj is None:
+            # The project is gone: the records are unlinked now.
+            query = {"project_id": pid, "created_at": {"$lt": cutoff}}
+            why = "project_gone"
+        elif wa_retention.project_expired(proj, today):
+            query = {"project_id": pid}
+            why = "project_retention"
+        else:
+            continue
+        for cid in await db[coll].distinct("company_id", query):
+            out.append({"company_id": cid, "project_id": pid, "why": why,
+                        "query": {**query, "company_id": cid}})
+    unlinked = {"project_id": {"$in": [None, ""]}, "created_at": {"$lt": cutoff}}
+    for cid in await db[coll].distinct("company_id", unlinked):
+        out.append({"company_id": cid, "project_id": None, "why": "unlinked",
+                    "query": {**unlinked, "company_id": cid}})
+    return out
+
+
+async def _retention_tick(now: Optional[datetime] = None,
+                          purge: Optional[bool] = None) -> dict:
+    """One retention run. Returns (and records) the counts."""
+    now = now or datetime.now(timezone.utc)
+    today = eastern_date(now)
+    purge = wa_retention.purge_enabled() if purge is None else purge
+    test_cos = await fixture_company_ids(db)
+    report: Dict[str, Any] = {"mode": "purge" if purge else "dry_run", "today": today,
+                              "companies": {}, "would_expire": 0, "deleted": 0,
+                              "capped": False, "skipped_test": 0, "errors": 0}
+    budget = wa_retention.MAX_DELETES_PER_RUN
+    for coll in wa_retention.COLLECTIONS:
+        try:
+            buckets = await _retention_buckets(coll, now, today)
+        except Exception as e:
+            logger.warning(f"[retention] {coll} read failed: {type(e).__name__}")
+            report["errors"] += 1
+            continue
+        for b in buckets:
+            cid = str(b["company_id"] or "")
+            if cid in test_cos:
+                report["skipped_test"] += 1
+                continue
+            try:
+                n = await db[coll].count_documents(b["query"])
+            except Exception:
+                report["errors"] += 1
+                continue
+            if not n:
+                continue
+            row = report["companies"].setdefault(cid or "none", {})
+            c = row.setdefault(coll, {"would_expire": 0, "deleted": 0, "by_reason": {}})
+            c["would_expire"] += n
+            c["by_reason"][b["why"]] = c["by_reason"].get(b["why"], 0) + n
+            report["would_expire"] += n
+            while purge and budget > 0:
+                ids = [r["_id"] for r in await db[coll].find(b["query"], {"_id": 1}).limit(
+                    min(wa_retention.BATCH, budget)).to_list(None)]
+                if not ids:
+                    break
+                try:
+                    res = await db[coll].delete_many({"_id": {"$in": ids}})
+                except Exception as e:
+                    logger.warning(f"[retention] {coll} delete failed: {type(e).__name__}")
+                    report["errors"] += 1
+                    break
+                gone = getattr(res, "deleted_count", 0) or 0
+                c["deleted"] += gone
+                report["deleted"] += gone
+                budget -= gone
+                if not gone:
+                    break
+            if purge and budget <= 0:
+                report["capped"] = True
+    for cid, colls in report["companies"].items():
+        for coll, c in colls.items():
+            logger.info(f"[retention] {report['mode']} company={cid} {coll} "
+                        f"would_expire={c['would_expire']} deleted={c['deleted']} "
+                        f"by_reason={c['by_reason']}")
+    logger.info(f"[retention] {report['mode']} total would_expire={report['would_expire']} "
+                f"deleted={report['deleted']} capped={report['capped']} "
+                f"skipped_test={report['skipped_test']}")
+    try:
+        ledger = {"_id": f"{today}|{report['mode']}|{now.strftime('%H%M%S')}",
+                  "run_at": now, **report}
+        await db[wa_retention.LEDGER].insert_one(ledger)
+    except Exception as e:
+        logger.warning(f"[retention] ledger write failed: {type(e).__name__}")
+    return report
+
+
+async def _retention_job() -> None:
+    try:
+        await _retention_tick()
+    except Exception as e:
+        logger.error(f"[retention] run failed: {type(e).__name__}: {e}")
+
+
 async def _waapi_contact_phone(jid: str) -> str:
     """Ask WaAPI who a @lid is. NOT VERIFIED: WaAPI's docs are not reachable
     from here, so this tries the whatsapp-web.js contact action by name, logs
@@ -51239,7 +51362,8 @@ async def ensure_document_page_indexes():
 
 # Retention, by operator decision 2026-10-07.
 WA_WEBHOOK_LOG_RETENTION_DAYS = 30
-WA_MESSAGES_RETENTION_DAYS = 730  # 24 months
+# whatsapp_messages: project-based, see lib/wa_retention.py (24 months only
+# for messages not linked to a project).
 
 
 async def ensure_whatsapp_phase1_indexes():
@@ -51247,12 +51371,12 @@ async def ensure_whatsapp_phase1_indexes():
 
     ── WHAT THE FIRST BOOT AFTER DEPLOY DOES TO DATA ─────────────────────
     #
-    # The two retention TTLs are DELETIONS. Mongo's TTL monitor runs about
-    # once a minute after the index exists:
+    # The retention TTL is a DELETION. Mongo's TTL monitor runs about once a
+    # minute after the index exists:
     #   whatsapp_webhook_log  rows whose received_at is older than 30 days
     #                         are removed, then every row at 30 days old.
-    #   whatsapp_messages     rows whose created_at is older than 24 months.
-    #                         The first message is 2026-04, so nothing yet.
+    # whatsapp_messages has no TTL any more (project-based retention, see
+    # lib/wa_retention.py); its old 24-month TTL is dropped below.
     # A row with no date field, or a non-date value there, is never expired.
     """
     # Literal key specs, one call each: scripts/find_unserved_sorts.py reads
@@ -51262,10 +51386,16 @@ async def ensure_whatsapp_phase1_indexes():
         db.whatsapp_webhook_log, keys=[("received_at", 1)],
         name="whatsapp_webhook_log_ttl_30d",
         expireAfterSeconds=60 * 60 * 24 * WA_WEBHOOK_LOG_RETENTION_DAYS)
-    await _ensure_index_resilient(
-        db.whatsapp_messages, keys=[("created_at", 1)],
-        name="whatsapp_messages_ttl_24m",
-        expireAfterSeconds=60 * 60 * 24 * WA_MESSAGES_RETENTION_DAYS)
+    # whatsapp_messages has NO TTL: retention is project-based now and runs
+    # nightly as _retention_job (lib/wa_retention.py), counting only until
+    # RETENTION_PURGE_ENABLED is on. The 24-month TTL it replaces is dropped
+    # here, so the TTL monitor deletes nothing on its own after this deploy.
+    try:
+        if "whatsapp_messages_ttl_24m" in (await db.whatsapp_messages.index_information()):
+            await db.whatsapp_messages.drop_index("whatsapp_messages_ttl_24m")
+            logger.info("[retention] dropped whatsapp_messages_ttl_24m (project-based retention)")
+    except Exception as e:
+        logger.warning(f"[retention] could not drop whatsapp_messages_ttl_24m: {type(e).__name__}")
     await _ensure_index_resilient(
         db["scheduler_leases"], keys=[("expires_at", 1)],
         name="scheduler_leases_ttl", expireAfterSeconds=0)
@@ -65864,6 +65994,16 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+    )
+    # Retention (lib/wa_retention.py): WhatsApp messages and attention items,
+    # nightly. Counts only until RETENTION_PURGE_ENABLED is on.
+    scheduler.add_job(
+        _retention_job,
+        CronTrigger(hour=2, minute=45, timezone="America/New_York"),
+        id='whatsapp_retention',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     # Morning brief: each opted-in Admin/PM at the time they picked (7/8/9 AM
     # New York, Mon–Fri, Saturday optional). Every 10 minutes; the ledger
