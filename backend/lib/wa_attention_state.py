@@ -140,6 +140,21 @@ def topic_terms(*texts: Optional[str]) -> Set[str]:
     return out
 
 
+# Words a commitment can carry without naming what it is about: "Sunday.
+# I'll keep u posted", "Sure I'll get it before 8am".
+_NOT_A_SUBJECT = {"keep", "posted", "post", "before", "after", "update", "updates",
+                  "back", "sure", "asap", "soon", "later", "morning", "afternoon",
+                  "tonight", "week", "today", "tmrw", "tomorrow", "handle", "check",
+                  "look", "try", "first", "thing", "eod"}
+
+
+def own_subject(quote: str) -> Set[str]:
+    """What a commitment names as its own subject ("the updated logistics
+    plan" -> {logistic, plan}); empty for "Np", "I'll take care of it",
+    "Sunday. I'll keep u posted"."""
+    return {t for t in topic_terms(quote) if t not in _NOT_A_SUBJECT}
+
+
 def due_phrase(body: str) -> Optional[str]:
     """The last date the message names, as written, when the code can read
     it (otherwise None)."""

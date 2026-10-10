@@ -260,8 +260,13 @@ class PermitThresholds(unittest.TestCase):
 
 class TheConfirmFlow(unittest.TestCase):
 
-    def _ask(self, c, now=NOON):
-        return _run(server._gc_propose_tick(now))
+    def _ask(self, c, now=None):
+        # The real clock by default: the reply is handled at the real time
+        # (_handle_gc_confirm_reply reads datetime.now), so a question asked
+        # at a fixed past moment expires under the test once that moment is
+        # more than the proposal's lifetime ago (this failed from Oct 10 2026,
+        # 72 h after the old fixed NOON).
+        return _run(server._gc_propose_tick(now or datetime.now(timezone.utc)))
 
     def test_the_main_admin_is_asked_once_with_the_picked_group(self):
         with _Ctx(db=_world()) as c:
@@ -339,7 +344,7 @@ class TheConfirmFlow(unittest.TestCase):
         db = _world(dob_logs=[_violation("1")])
         with _Ctx(db=db) as c:
             _start(ADMIN_PHONE)
-            self._ask(c)
+            self._ask(c, NOON)
             later = NOON + timedelta(hours=server.GC_PROPOSAL_TTL_HOURS + 1)
             self._ask(c, later)
             self.assertEqual(_settings()["gc_proposal"]["status"], "expired")

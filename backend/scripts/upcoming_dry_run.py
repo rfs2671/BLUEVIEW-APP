@@ -19,7 +19,7 @@ SCORE.
   expect.nothing_from  messages that must leave no event behind (vague, an
                      ambiguous day, past, a question, a weekday that is not
                      that date's).
-  expect.one_of      a title word that must name exactly one open event (a
+  expect.one_of      a title word or agency that must name exactly one open event (a
                      repeat of the same event is one event).
 
 EXIT CODES
@@ -141,6 +141,7 @@ async def run(sc: dict, scripted: bool = False) -> dict:
     if not scripted and not server.OPENAI_API_KEY:
         raise ScenarioError("no OPENAI_API_KEY: run with --scripted, or with the key set")
     report = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "skipped": {}}
+    trace: list = []
     for p in patches:
         p.start()
     try:
@@ -149,7 +150,7 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         for row in rows:
             db.whatsapp_messages.rows.append(row)
             rep = await server._upcoming_chat_tick(now=row["created_at"] + timedelta(minutes=1),
-                                                   llm=llm)
+                                                   llm=llm, trace=trace)
             for k in ("calls", "prompt_tokens", "completion_tokens"):
                 report[k] += rep.get(k, 0)
             for k, v in (rep.get("skipped") or {}).items():
@@ -159,6 +160,7 @@ async def run(sc: dict, scripted: bool = False) -> dict:
             p.stop()
     report["events"] = db.upcoming_events.rows
     report["sent"] = sent
+    report["trace"] = trace
     return report
 
 
@@ -212,17 +214,39 @@ def score(sc: dict, out: dict) -> dict:
                      "notes": [f"made {x.get('title')} on {x.get('date')}" for x in hit],
                      "got": []})
     for word in e.get("one_of") or []:
+        # By agency OR title: the model may title it "Gas service appointment"
+        # with agency National Grid.
         live = [x for x in events if x.get("status") == "open"
-                and word.lower() in (x.get("title") or "").lower()]
+                and (word.lower() in (x.get("title") or "").lower()
+                     or word.lower() == (x.get("agency") or "").lower())]
         rows.append({"case": f"one open '{word}' event",
                      "verdict": "PASS" if len(live) == 1 else "FAIL",
                      "notes": [] if len(live) == 1 else [f"{len(live)} open"], "got": []})
     count = {"HARD": 0, "PASS": 0, "FAIL": 0}
     for r in rows:
         count[r["verdict"]] += 1
+    # Per message: what the model said, the date words in and the day out,
+    # and what the code did (or why it skipped).
+    per_msg = []
+    for m in sc["messages"]:
+        ref = f"row_{m['id']}"
+        steps = [t for t in out.get("trace") or [] if t.get("row_id") == ref]
+        if not steps:
+            per_msg.append({"id": m["id"], "text": m["text"], "line": "no event from the model"})
+        for t in steps:
+            if t.get("action") is None:
+                per_msg.append({"id": m["id"], "text": m["text"], "line": t["reason"]})
+                continue
+            res = t.get("resolved") or {}
+            got = (res.get("date").isoformat() + (f" {res['time']}" if res.get("time") else "")
+                   if res.get("date") else (f"skip:{res['skip']}" if res.get("skip") else "-"))
+            what = t["op"] + (f" ({t['reason']})" if t.get("reason") else "")
+            per_msg.append({"id": m["id"], "text": m["text"], "line":
+                            f"{t['action']} {t.get('kind') or ''} · date {t.get('date_text')!r}"
+                            f" -> {got} · {what} · quote {t.get('quote')!r}"})
     return {"scenario": sc.get("name"), "rows": rows, "score": count,
             "sent": out["sent"], "calls": out["calls"], "skipped": out["skipped"],
-            "tokens": (out["prompt_tokens"], out["completion_tokens"])}
+            "tokens": (out["prompt_tokens"], out["completion_tokens"]), "per_message": per_msg}
 
 
 def exit_code(r: dict) -> int:
@@ -237,6 +261,9 @@ def show(r: dict) -> str:
             lines.append(f"           {g}")
         for n in row["notes"]:
             lines.append(f"           ! {n}")
+    lines += ["", "PER MESSAGE (model -> code)"]
+    for p in r.get("per_message") or []:
+        lines.append(f"  {p['id']:<4} {p['text'][:58]:<58}  {p['line']}")
     s, sent = r["score"], r["sent"]
     lines += ["", f"skips (code): {r['skipped']}",
               f"model calls {r['calls']} · tokens in/out {r['tokens'][0]}/{r['tokens'][1]}"

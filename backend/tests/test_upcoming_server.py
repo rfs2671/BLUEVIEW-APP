@@ -156,6 +156,23 @@ class TheChatWorker(unittest.TestCase):
         self.assertEqual(ev["history"][-1]["action"], "cancelled")
         self.assertEqual(sends.group, [])                  # never posts in a group
 
+    def test_an_echo_of_a_move_moves_nothing(self):
+        model = _Model({
+            "Con Ed coming": [CON_ED],
+            "moved to": [{"action": "reschedule", "event_id": "$OPEN", "kind": "utility",
+                          "date_text": "Oct 20", "quote": "Con Ed moved to Oct 20"}],
+            "Reminder": [{"action": "reschedule", "event_id": "$OPEN", "kind": "utility",
+                          "date_text": "Oct 20", "quote": "Con Ed Oct 20"}],
+        })
+        _msg(self.db, "Con Ed coming Oct 15 at 9am")
+        _msg(self.db, "Con Ed moved to Oct 20")
+        _msg(self.db, "Reminder Con Ed Oct 20 for the meter")
+        rep, _ = _chat_tick(self.db, model, T0 + timedelta(minutes=10))
+        (ev,) = _events(self.db, source="chat")
+        self.assertEqual(ev["date"], "2026-10-20")
+        self.assertEqual([h["action"] for h in ev["history"]], ["created", "rescheduled"])
+        self.assertEqual(rep["unchanged"], 1)
+
     def test_the_same_event_twice_is_one_event(self):
         model = _Model({"Con Ed": [CON_ED]})
         _msg(self.db, "Con Ed coming Oct 15 at 9am")

@@ -140,7 +140,8 @@ class TheChecks(unittest.TestCase):
         self.assertEqual((got["op"], got["event_id"]), ("cancel", "e1"))
 
     def test_a_cancel_must_name_an_open_event_and_say_so(self):
-        body = "Con Ed cancelled"
+        # A bad id, and no open event the words name.
+        body = "Elevator inspection cancelled"
         self.assertEqual(u.decide(_ev(action="cancel", event_id="nope", quote=body),
                                   {"body": body, "sent_at": MON}, self.open)["reason"],
                          "cancel_of_unknown_event")
@@ -174,6 +175,51 @@ class TheChecks(unittest.TestCase):
         k = u.event_key("p1", "utility", "Con Ed", date(2026, 12, 4))
         self.assertEqual(k, u.event_key("p1", "utility", "con ed", date(2026, 12, 4)))
         self.assertNotEqual(k, u.event_key("p1", "utility", "Con Ed", date(2026, 12, 9)))
+
+
+class LiveEvalOct10(unittest.TestCase):
+    """The shapes the first live run failed on."""
+
+    def test_the_quote_check_forgives_punctuation_and_spacing_not_words(self):
+        body = "FDNY standpipe inspection in 3 weeks"
+        self.assertEqual(u.match_quote("FDNY standpipe inspection in 3 weeks.", body), body)
+        self.assertEqual(u.match_quote("Elevator inspection next Wednesday at 10 am",
+                                       "Elevator inspection next Wednesday at 10am"),
+                         "Elevator inspection next Wednesday at 10am")
+        self.assertEqual(u.match_quote("“con ed coming dec 4”", "Con Ed coming Dec 4!"),
+                         "Con Ed coming Dec 4")
+        self.assertIsNone(u.match_quote("Con Ed coming Dec 5", "Con Ed coming Dec 4"))
+        self.assertIsNone(u.match_quote("FDNY inspection in 3 weeks", body))    # a word gone
+
+    def test_cancel_phrases(self):
+        open_ = [{"id": "p", "title": "3rd floor deck pour", "kind": "pour"}]
+        for body in ("3rd floor pour called off", "Pour scrapped", "Pour pushed indefinitely",
+                     "pour is not happening", "Pour is off until further notice",
+                     "pour won't happen this week"):
+            got = u.decide({"action": "cancel", "event_id": "p", "quote": body},
+                           {"body": body, "sent_at": MON}, open_)
+            self.assertEqual(got["op"], "cancel", body)
+            self.assertTrue(u.worth_a_call(body), body)
+
+    def test_a_cancel_or_move_without_an_id_finds_the_event_it_names(self):
+        open_ = [{"id": "p", "title": "3rd floor deck pour", "kind": "pour"},
+                 {"id": "c", "title": "Con Ed meter set", "kind": "utility"},
+                 {"id": "r", "title": "Rebar delivery", "kind": "delivery"}]
+        body = "Pump truck cancelled, the pour is off until the weather clears"
+        got = u.decide({"action": "cancel", "event_id": None,
+                        "quote": "the pour is off until the weather clears"},
+                       {"body": body, "sent_at": MON}, open_)
+        self.assertEqual((got["op"], got["event_id"]), ("cancel", "p"))
+        body = "Con Ed moved to Dec 9"
+        got = u.decide({"action": "reschedule", "event_id": "made-up", "kind": "utility",
+                        "date_text": "Dec 9", "quote": body}, {"body": body, "sent_at": MON}, open_)
+        self.assertEqual((got["op"], got["event_id"]), ("reschedule", "c"))
+        # Two events share the words: no guess.
+        two = open_ + [{"id": "p2", "title": "Elevator pit pour", "kind": "pour"}]
+        body = "pour cancelled"
+        self.assertEqual(u.decide({"action": "cancel", "event_id": None, "quote": body},
+                                  {"body": body, "sent_at": MON}, two)["reason"],
+                         "cancel_of_unknown_event")
 
 
 class CityRecords(unittest.TestCase):
@@ -274,7 +320,7 @@ class TheDryRun(unittest.TestCase):
         r = dry.score(sc, asyncio.run(dry.run(sc, scripted=True)))
         self.assertEqual(r["sent"], [])
         self.assertEqual([(x["case"], x["notes"]) for x in r["rows"] if x["verdict"] == "FAIL"], [])
-        self.assertEqual(r["score"], {"HARD": 9, "PASS": 10, "FAIL": 0})
+        self.assertEqual(r["score"], {"HARD": 10, "PASS": 10, "FAIL": 0})
         self.assertEqual(dry.exit_code(r), 0)
 
     def test_a_wrong_answer_fails_the_run(self):

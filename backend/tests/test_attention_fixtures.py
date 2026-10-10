@@ -984,6 +984,18 @@ class ShortAcks(unittest.TestCase):
         self.assertFalse(req["owner"]["possibly"])
         self.assertFalse(req.get("needs_review"))
 
+    def test_an_adjacent_answer_in_other_words_stays_linked(self):
+        # "Material delivery" / "rebar": the answer names its own subject in
+        # other words, but it came straight after the ask from someone else.
+        _, items = self._run([
+            self._ask(1, 0, "Can you arrange the material delivery?"),
+            {"n": 2, "from": "P", "at": 60, "body": "I'll get the rebar there Thursday",
+             "expect": {"kind": "item", "type": "commitment"}},
+        ])
+        it = items["I'll get the rebar there Thursday"]
+        self.assertEqual(it["parent_id"], str(items["Can you arrange the material delivery?"]["_id"]))
+        self.assertFalse(it["owner"].get("possibly"))
+
     def test_sarcasm_is_not_a_yes(self):
         for body in ("lol ok", "sure 😂", "haha ok", "Sure lmao", "ok 🙄"):
             self.assertIsNone(was.ack(body), body)

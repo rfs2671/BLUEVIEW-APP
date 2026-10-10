@@ -35,6 +35,8 @@ SCORE, PER QUESTION
   expect.planned     True: at least one claim must be told as a plan.
   expect.planned_contains  words every plan claim must keep (what was
                      planned, when, the message date) -- never a bare label.
+                     A date matches however it is written ("Tuesday 10/6",
+                     "10/6", "Oct 6", "October 6th"), here and in contains.
   expect.no_relay    True: no "(relayed by …)" (the poster did it).
   expect.mode        "timeline" for a full-story question;
   expect.min_entries how many dated entries it needs at least.
@@ -272,6 +274,42 @@ def _ref_of(sc: dict, src: dict) -> Optional[str]:
     return None
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+_MD = re.compile(r"\b(\d{1,2})/(\d{1,2})\b")
+_MON_D = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})"
+                    r"(?:st|nd|rd|th)?\b", re.IGNORECASE)
+
+
+def _days(text: str) -> set:
+    """The month/day pairs a text names, however written: "10/6", "Oct 6",
+    "October 6th", "Tuesday 10/6" are all (10, 6)."""
+    out = {(int(m.group(1)), int(m.group(2))) for m in _MD.finditer(text or "")}
+    out |= {(_MONTHS[m.group(1).lower()[:3]], int(m.group(2)))
+            for m in _MON_D.finditer(text or "")}
+    return out
+
+
+_WEEKDAY_WORD = re.compile(r"\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s*",
+                           re.IGNORECASE)
+
+
+def has_words(want: str, text: str) -> bool:
+    """`want` is in `text`; a date in `want` matches the same day written any
+    way ("Tuesday 10/6" is found in "planned for October 6"), and every other
+    word of `want` must still be there ("Dumpster swap planned for Tuesday
+    10/6" is not found in "Concrete pour was scheduled October 6")."""
+    low = (text or "").lower()
+    if want.lower() in low:
+        return True
+    days = _days(want)
+    if not days or not days <= _days(text):
+        return False
+    rest = _WEEKDAY_WORD.sub(" ", _MON_D.sub(" ", _MD.sub(" ", want)))
+    words = re.findall(r"[a-z0-9]+", rest.lower())
+    return all(re.search(r"\b" + re.escape(w), low) for w in words if w not in ("for", "on"))
+
+
 def score(sc: dict, q: dict, got: dict) -> dict:
     from lib import project_memory
     e = q.get("expect") or {}
@@ -314,7 +352,7 @@ def score(sc: dict, q: dict, got: dict) -> dict:
     for bad in e.get("forbid") or []:
         if re.search(bad, body, re.IGNORECASE):
             notes.append(f"says what it must not: /{bad}/")
-    missing = [w for w in e.get("contains") or [] if w.lower() not in low_text]
+    missing = [w for w in e.get("contains") or [] if not has_words(w, text)]
     if missing:
         notes.append(f"missing words: {missing}")
     if e.get("leads_with") and not low_text.startswith(e["leads_with"].lower()):
@@ -323,7 +361,7 @@ def score(sc: dict, q: dict, got: dict) -> dict:
     if e.get("planned") and not plans:
         notes.append("no claim told as a plan")
     for c in plans:
-        lost = [w for w in e.get("planned_contains") or [] if w.lower() not in c["text"].lower()]
+        lost = [w for w in e.get("planned_contains") or [] if not has_words(w, c["text"])]
         if lost:
             notes.append(f"plan claim lost {lost}: {c['text']!r}")
     if e.get("no_relay") and "relayed by" in low_text:

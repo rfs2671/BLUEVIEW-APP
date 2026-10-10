@@ -280,9 +280,10 @@ _DAYISH = re.compile(
 
 
 def worth_a_call(body: Any) -> bool:
-    """The cheap filter: an event word AND a day word (or a cancel word)."""
+    """The cheap filter: an event word AND a day word, or an event word and
+    any cancel phrase the checks accept ("Rebar delivery scrapped")."""
     b = str(body or "")
-    return bool(FILTER_RE.search(b) and _DAYISH.search(b))
+    return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _CANCEL_WORDS.search(b)))
 
 
 def _line(m: Dict[str, Any]) -> str:
@@ -344,7 +345,9 @@ def parse_events(content: Any) -> List[Dict[str, Any]]:
 
 _CANCEL_WORDS = re.compile(
     r"\b(cancel\w*|called off|call(?:ing)? (?:it )?off|is off|are off|not happening"
-    r"|not coming|postponed|scratch(?:ed)?|no longer)\b", re.IGNORECASE)
+    r"|not going to happen|won'?t happen|isn'?t happening|not coming|postponed"
+    r"|pushed indefinitely|on hold indefinitely|until further notice|scrap(?:ped)?"
+    r"|scratch(?:ed)?|nixed|no longer)\b", re.IGNORECASE)
 _AGENCIES = {"dob": "DOB", "dot": "DOT", "con ed": "Con Ed", "coned": "Con Ed",
              "con edison": "Con Ed", "fdny": "FDNY", "dep": "DEP", "national grid": "National Grid",
              "oath": "OATH", "ecb": "OATH"}
@@ -371,6 +374,65 @@ def event_key(project_id: str, kind: str, agency: Optional[str], day: date) -> s
     return "chat:" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+# The quote check, a little looser than verify_quote: case, curly quotes,
+# dashes, punctuation and spacing are forgiven ("…in 3 weeks." for "…in 3
+# weeks", "10 am" for "10am"); a changed or missing WORD still fails. What is
+# kept is the slice of the real message, never the model's copy.
+_LOOSE_DROP = set(".,!?;:'\"()[]{}*_`~")
+
+
+def _loose_with_map(text: str):
+    out, idx = [], []
+    for i, ch in enumerate(str(text or "").translate(_TYPO_MAP)):
+        if ch.isspace() or ch in _LOOSE_DROP:
+            continue
+        out.append(ch.lower())
+        idx.append(i)
+    return "".join(out), idx
+
+
+_TYPO_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-"})
+
+
+def match_quote(quote: str, body: str) -> Optional[str]:
+    """The slice of `body` the quote is, or None."""
+    exact = verify_quote(quote or "", body or "")
+    if exact:
+        return exact
+    q, _ = _loose_with_map(quote)
+    if len(q) < 6:
+        return None
+    b, idx = _loose_with_map(body)
+    at = b.find(q)
+    if at < 0:
+        return None
+    return str(body)[idx[at]:idx[at + len(q) - 1] + 1][:MAX_QUOTE_CHARS]
+
+
+def _words_of(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]{3,}", str(text or "").lower())
+            if w not in ("the", "and", "for", "with", "inspection", "event")}
+
+
+def match_open(quote: str, open_events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The one open event a move or a cancel without a usable event_id is
+    about, by the words it shares with the event's title and kind ("the pour
+    is off" -> the pour). None unless exactly one event shares the most."""
+    words = _words_of(quote)
+    scored = []
+    for e in open_events:
+        tw = _words_of(f"{e.get('title') or ''} {str(e.get('kind') or '').replace('_', ' ')}")
+        tw |= {w[:-1] for w in tw if w.endswith("s")}
+        n = len(words & tw) + len({w[:-1] for w in words if w.endswith("s")} & tw)
+        if n:
+            scored.append((n, e))
+    if not scored:
+        return None
+    best = max(n for n, _ in scored)
+    top = [e for n, e in scored if n == best]
+    return top[0] if len(top) == 1 else None
+
+
 def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[str, Any]],
            now: Optional[datetime] = None) -> Dict[str, Any]:
     """One model event -> one action, checked in code:
@@ -382,13 +444,14 @@ def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[s
     the date words must be inside the quote, and the date is read by
     resolve_when -- never the model's."""
     body = str(msg.get("body") or "")
-    quote = verify_quote(ev.get("quote") or "", body)
+    quote = match_quote(ev.get("quote") or "", body)
     if not quote:
         return {"op": "skip", "reason": "quote_not_in_message"}
     by_id = {str(e["id"]): e for e in open_events}
     action = ev.get("action")
     if action == "cancel":
-        target = by_id.get(str(ev.get("event_id") or ""))
+        # By its id; else the one open event the words name ("the pour is off").
+        target = by_id.get(str(ev.get("event_id") or "")) or match_open(quote, open_events)
         if not target:
             return {"op": "skip", "reason": "cancel_of_unknown_event"}
         if not _CANCEL_WORDS.search(quote):
@@ -396,7 +459,7 @@ def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[s
         return {"op": "cancel", "event_id": target["id"], "quote": quote}
 
     date_text = ev.get("date_text")
-    if not date_text or not verify_quote(date_text, quote):
+    if not date_text or not match_quote(date_text, quote):
         return {"op": "skip", "reason": "date_not_in_quote"}
     when = resolve_when(date_text, msg["sent_at"])
     if "skip" in when:
@@ -404,7 +467,7 @@ def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[s
     if now is not None and when["date"] < local_date(now):
         return {"op": "skip", "reason": "past"}
     if action == "reschedule":
-        target = by_id.get(str(ev.get("event_id") or ""))
+        target = by_id.get(str(ev.get("event_id") or "")) or match_open(quote, open_events)
         if target:
             return {"op": "reschedule", "event_id": target["id"], "date": when["date"],
                     "time": when["time"], "quote": quote, "date_text": date_text}
