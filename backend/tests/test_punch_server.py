@@ -194,6 +194,79 @@ class Closing(unittest.TestCase):
         self.assertEqual(att["status"], "done")
 
 
+class CodexRound1(unittest.TestCase):
+    """Who may move an item, ids per project, live sends that fail."""
+
+    def _sent(self):
+        return Closing._sent(self)
+
+    def test_another_subs_done_changes_nothing(self):
+        db = self._sent()
+        mike_row = next(r for r in db[punch.COLLECTION].rows if r["assignee"]["name"] == "Mike Rivera")
+        self.assertFalse(Closing._group(self, db, "17185550202", f"done {mike_row['pid']}"))  # Jose
+        self.assertFalse(Closing._group(self, db, "19995550000", f"done {mike_row['pid']}"))  # stranger
+        self.assertEqual(mike_row["status"], "open")
+
+    def test_a_company_user_who_is_not_admin_or_pm_cannot_close(self):
+        db = self._sent()
+        db.users.rows.append({"_id": "u_cp", "company_id": dry.COMPANY, "name": "Carl",
+                              "phone": "17185550999", "role": "cp", "account_status": "approved"})
+        row = db[punch.COLLECTION].rows[0]
+        self.assertFalse(Closing._group(self, db, "17185550999", f"{row['pid']} ok"))
+        self.assertEqual(row["status"], "open")
+
+    def test_a_dm_verdict_needs_admin_or_pm(self):
+        db = self._sent()
+        row = db[punch.COLLECTION].rows[0]
+        sc = _sc()
+        _db, proj = dry.world(sc)
+        ident = {**dry._ident(proj, sc), "role": "cp"}
+        sent = []
+
+        async def rec(chat, text, *a, **k):
+            sent.append(text)
+        with patch.object(server, "db", db), patch.object(server, "send_whatsapp_message", rec):
+            asyncio.run(server._punch_dm_turn(ident, "17185550100@c.us",
+                                              {"has_image": False, "message_id": "x"}, f"{row['pid']} ok"))
+        self.assertIn("Only an admin or PM", sent[0])
+        self.assertEqual(row["status"], "open")
+
+    def test_stored_ids_are_scoped_to_the_project(self):
+        db = self._sent()
+        for r in db[punch.COLLECTION].rows:
+            self.assertEqual(r["_id"], f"p588:{r['pid']}")
+
+    def test_a_failed_live_post_is_not_called_sent_and_can_be_resent(self):
+        sc = _upto(_sc(), "electrical Mon, everything else Fri")
+        sc["punch_sends"], sc["fail_posts_for"] = "live", ["Ana Ortiz"]
+        db, proj = dry.world(sc)
+        with patch.object(dry, "world", lambda _sc: (db, proj)):
+            res = _run(sc)
+        said = "\n".join(res["transcript"])
+        self.assertIn("Couldn't post the list for Ana Ortiz", said)
+        self.assertIn("Reply 'resend'", said)
+        self.assertNotIn("@Ana Ortiz", "\n".join(t for _n, _c, t in res["group_posts"]))
+        sess = db[punch.SESSIONS].rows[0]
+        self.assertEqual(sess["status"], "resend")
+        self.assertEqual(len(sess["undelivered"]), 3)          # Ana's three paint items
+        posts, dm = [], []
+
+        async def ok_now(chat, text, *a, **k):
+            (posts if str(chat) == dry.GROUP else dm).append(text)
+            return True
+
+        async def photo(group_id, key, caption):
+            return True
+        with patch.object(server, "db", db), patch.object(server, "send_whatsapp_message", ok_now), \
+                patch.object(server, "_punch_send_photo", photo):
+            asyncio.run(server._punch_dm_turn(dry._ident(proj, sc), "17185550100@c.us",
+                                              {"has_image": False, "message_id": "r"}, "resend"))
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0].startswith("@Ana Ortiz"))
+        self.assertIn("Sent 3 items to 1 person", dm[-1])
+        self.assertEqual((sess["status"], sess["undelivered"]), ("sent", []))
+
+
 class DraftReminder(unittest.TestCase):
 
     def test_one_reminder_after_24_hours(self):

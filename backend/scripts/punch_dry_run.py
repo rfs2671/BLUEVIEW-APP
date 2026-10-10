@@ -31,6 +31,7 @@ SCENARIO (scripts/dry_run_punch/*.json)
         contain `words` (as the walker would read it off the draft).
   group [{from: KEY|"walker", text}]   "{pid:words}" -> that item's P-id.
   dm_after [{text, contains: [..], not_contains: [..]}]   questions afterwards.
+  fail_posts_for [name]   (tests) WaAPI refuses that person's group list.
   expect {status, assignee, floor, due_weekday {words: 0-6}, pid_prefix,
           attention_items, closed_by {words: "walker"},
           ready_to_check_then_reopened [words]}
@@ -144,6 +145,9 @@ async def run(sc: dict) -> dict:
             elif str(chat) == walker_chat:
                 dm_out.append(str(text))
             else:
+                # A test can make WaAPI refuse one person's list.
+                if any(str(text).startswith(f"@{n}") for n in sc.get("fail_posts_for") or []):
+                    return None
                 group_out.append((name, chat, text))
             return True
         return _rec
