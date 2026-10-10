@@ -40,8 +40,9 @@ from lib import project_retention
 
 # The collections the rule covers. attention_items carry their history
 # inside the document; chase_shadow rows quote attention items, so they go
-# with them.
-COLLECTIONS = ("whatsapp_messages", "attention_items", "chase_shadow")
+# with them; upcoming_events quote group messages (city and personal ones go
+# by the same clock: a project's, or 24 months unlinked).
+COLLECTIONS = ("whatsapp_messages", "attention_items", "chase_shadow", "upcoming_events")
 LEDGER = "retention_ledger"
 
 RETENTION_YEARS = project_retention.RETENTION_YEARS

@@ -1,0 +1,372 @@
+{
+ "name": "job_oct_2026 — one week of a Brooklyn GC group",
+ "about": "Mon Oct 5 – Thu Oct 8 2026 (New York). Inspections (Con Ed, FDNY, DEP, National Grid), a pour, a crane pick, an ECB hearing; a reschedule of each kind, two cancels, a repeat, and the cases that must leave nothing: vague, an ambiguous day, past, a question, a weekday that is not that date's.",
+ "tz": "America/New_York",
+ "project": "120 Atlantic Ave",
+ "senders": {
+  "K": {
+   "name": "Kevin Shah",
+   "phone": "17185550101"
+  },
+  "D": {
+   "name": "Dave Russo",
+   "phone": "17185550102"
+  },
+  "R": {
+   "name": "Roy Fishman",
+   "phone": "17185550103"
+  },
+  "S": {
+   "name": "Sam Ortiz",
+   "phone": "17185550104"
+  },
+  "A": {
+   "name": "Ana Lima",
+   "phone": "17185550105"
+  },
+  "M": {
+   "name": "Mike Rivera",
+   "phone": "17185550106"
+  }
+ },
+ "messages": [
+  {
+   "id": "m1",
+   "from": "K",
+   "at": "2026-10-05 07:10",
+   "text": "Con Ed is coming Thursday 10/8 at 9am for the meter set, someone needs to be there to let them in"
+  },
+  {
+   "id": "m2",
+   "from": "D",
+   "at": "2026-10-05 07:30",
+   "text": "Concrete pour for the 3rd floor deck is Wednesday 7am, pump truck confirmed"
+  },
+  {
+   "id": "m3",
+   "from": "R",
+   "at": "2026-10-05 09:00",
+   "text": "DOB plumbing inspection should be sometime next week"
+  },
+  {
+   "id": "m4",
+   "from": "S",
+   "at": "2026-10-05 10:00",
+   "text": "Rebar delivery on the 12th"
+  },
+  {
+   "id": "m5",
+   "from": "D",
+   "at": "2026-10-05 11:00",
+   "text": "Poured the elevator pit slab yesterday, looks good"
+  },
+  {
+   "id": "m6",
+   "from": "K",
+   "at": "2026-10-06 08:00",
+   "text": "Con Ed moved to Dec 4, they had a conflict"
+  },
+  {
+   "id": "m7",
+   "from": "A",
+   "at": "2026-10-06 09:15",
+   "text": "Crane pick for the rooftop units is Saturday Oct 10, street closure permit is in"
+  },
+  {
+   "id": "m8",
+   "from": "D",
+   "at": "2026-10-06 12:00",
+   "text": "Pump truck cancelled, the pour is off until the weather clears"
+  },
+  {
+   "id": "m9",
+   "from": "R",
+   "at": "2026-10-06 13:00",
+   "text": "FDNY standpipe inspection in 3 weeks"
+  },
+  {
+   "id": "m10",
+   "from": "M",
+   "at": "2026-10-06 14:00",
+   "text": "National Grid gas service appointment next Tue between 8 and 12"
+  },
+  {
+   "id": "m11",
+   "from": "K",
+   "at": "2026-10-06 15:00",
+   "text": "When is the DEP inspection?"
+  },
+  {
+   "id": "m12",
+   "from": "S",
+   "at": "2026-10-07 07:00",
+   "text": "DEP sewer inspection is Friday"
+  },
+  {
+   "id": "m13",
+   "from": "K",
+   "at": "2026-10-07 08:00",
+   "text": "Mon 10/13 elevator inspector coming"
+  },
+  {
+   "id": "m14",
+   "from": "R",
+   "at": "2026-10-07 09:00",
+   "text": "ECB hearing for the scaffold violation is Nov 18 at 10:30am"
+  },
+  {
+   "id": "m15",
+   "from": "A",
+   "at": "2026-10-07 10:00",
+   "text": "Crane pick pushed to Sunday Oct 11, too windy Saturday"
+  },
+  {
+   "id": "m16",
+   "from": "D",
+   "at": "2026-10-07 11:00",
+   "text": "lol this weather"
+  },
+  {
+   "id": "m17",
+   "from": "K",
+   "at": "2026-10-08 07:00",
+   "text": "Reminder Con Ed Dec 4 for the meter set"
+  },
+  {
+   "id": "m18",
+   "from": "S",
+   "at": "2026-10-08 08:00",
+   "text": "DEP inspection is cancelled, they'll call to reschedule"
+  }
+ ],
+ "expect": {
+  "events": [
+   {
+    "from": "m1",
+    "what": "Con Ed meter set, moved to Dec 4",
+    "kind": [
+     "utility",
+     "inspection"
+    ],
+    "agency": "Con Ed",
+    "date": "2026-12-04",
+    "time": null,
+    "status": "open",
+    "moves": 1
+   },
+   {
+    "from": "m2",
+    "what": "3rd floor pour, called off",
+    "kind": "pour",
+    "date": "2026-10-07",
+    "time": "07:00",
+    "status": "cancelled"
+   },
+   {
+    "from": "m7",
+    "what": "crane pick, pushed a day",
+    "kind": "crane_pick",
+    "date": "2026-10-11",
+    "status": "open",
+    "moves": 1
+   },
+   {
+    "from": "m9",
+    "what": "FDNY standpipe, in 3 weeks",
+    "kind": "inspection",
+    "agency": "FDNY",
+    "date": "2026-10-27",
+    "status": "open"
+   },
+   {
+    "from": "m10",
+    "what": "National Grid gas, next Tue",
+    "kind": [
+     "utility",
+     "inspection"
+    ],
+    "agency": "National Grid",
+    "date": "2026-10-13",
+    "status": "open"
+   },
+   {
+    "from": "m12",
+    "what": "DEP sewer inspection, cancelled",
+    "kind": "inspection",
+    "agency": "DEP",
+    "date": "2026-10-09",
+    "status": "cancelled"
+   },
+   {
+    "from": "m14",
+    "what": "ECB hearing",
+    "kind": "hearing",
+    "date": "2026-11-18",
+    "time": "10:30",
+    "status": "open"
+   }
+  ],
+  "nothing_from": [
+   "m3",
+   "m4",
+   "m5",
+   "m11",
+   "m13",
+   "m16"
+  ],
+  "one_of": [
+   "Con Ed"
+  ]
+ },
+ "scripted": {
+  "m1": [
+   {
+    "action": "new",
+    "kind": "utility",
+    "agency": "Con Ed",
+    "title": "Con Ed meter set",
+    "date_text": "Thursday 10/8 at 9am",
+    "quote": "Con Ed is coming Thursday 10/8 at 9am for the meter set"
+   }
+  ],
+  "m2": [
+   {
+    "action": "new",
+    "kind": "pour",
+    "agency": null,
+    "title": "3rd floor deck pour",
+    "date_text": "Wednesday 7am",
+    "quote": "Concrete pour for the 3rd floor deck is Wednesday 7am"
+   }
+  ],
+  "m3": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "agency": "DOB",
+    "title": "DOB plumbing inspection",
+    "date_text": "sometime next week",
+    "quote": "DOB plumbing inspection should be sometime next week"
+   }
+  ],
+  "m4": [
+   {
+    "action": "new",
+    "kind": "delivery",
+    "title": "Rebar delivery",
+    "date_text": "the 12th",
+    "quote": "Rebar delivery on the 12th"
+   }
+  ],
+  "m5": [
+   {
+    "action": "new",
+    "kind": "pour",
+    "title": "Elevator pit slab",
+    "date_text": "yesterday",
+    "quote": "Poured the elevator pit slab yesterday"
+   }
+  ],
+  "m6": [
+   {
+    "action": "reschedule",
+    "event_id": "$OPEN:m1",
+    "kind": "utility",
+    "agency": "Con Ed",
+    "date_text": "Dec 4",
+    "quote": "Con Ed moved to Dec 4"
+   }
+  ],
+  "m7": [
+   {
+    "action": "new",
+    "kind": "crane_pick",
+    "title": "Rooftop units crane pick",
+    "date_text": "Saturday Oct 10",
+    "quote": "Crane pick for the rooftop units is Saturday Oct 10"
+   }
+  ],
+  "m8": [
+   {
+    "action": "cancel",
+    "event_id": "$OPEN:m2",
+    "quote": "the pour is off until the weather clears"
+   }
+  ],
+  "m9": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "agency": "FDNY",
+    "title": "FDNY standpipe inspection",
+    "date_text": "in 3 weeks",
+    "quote": "FDNY standpipe inspection in 3 weeks"
+   }
+  ],
+  "m10": [
+   {
+    "action": "new",
+    "kind": "utility",
+    "agency": "National Grid",
+    "title": "National Grid gas service",
+    "date_text": "next Tue between 8 and 12",
+    "quote": "National Grid gas service appointment next Tue between 8 and 12"
+   }
+  ],
+  "m12": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "agency": "DEP",
+    "title": "DEP sewer inspection",
+    "date_text": "Friday",
+    "quote": "DEP sewer inspection is Friday"
+   }
+  ],
+  "m13": [
+   {
+    "action": "new",
+    "kind": "inspection",
+    "title": "Elevator inspection",
+    "date_text": "Mon 10/13",
+    "quote": "Mon 10/13 elevator inspector coming"
+   }
+  ],
+  "m14": [
+   {
+    "action": "new",
+    "kind": "hearing",
+    "agency": "OATH",
+    "title": "ECB hearing, scaffold violation",
+    "date_text": "Nov 18 at 10:30am",
+    "quote": "ECB hearing for the scaffold violation is Nov 18 at 10:30am"
+   }
+  ],
+  "m15": [
+   {
+    "action": "reschedule",
+    "event_id": "$OPEN:m7",
+    "kind": "crane_pick",
+    "date_text": "Sunday Oct 11",
+    "quote": "Crane pick pushed to Sunday Oct 11"
+   }
+  ],
+  "m17": [
+   {
+    "action": "new",
+    "kind": "utility",
+    "agency": "Con Ed",
+    "title": "Con Ed meter set",
+    "date_text": "Dec 4",
+    "quote": "Con Ed Dec 4 for the meter set"
+   }
+  ],
+  "m18": [
+   {
+    "action": "cancel",
+    "event_id": "$OPEN:m12",
+    "quote": "DEP inspection is cancelled"
+   }
+  ]
+ }
+}

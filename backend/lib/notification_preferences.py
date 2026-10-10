@@ -1240,7 +1240,8 @@ def aggregate_preview_decisions(
 # record, enforced in server.send_whatsapp_message.
 
 WHATSAPP_SUMMARY_FREQUENCIES = ("off", "daily", "weekly", "biweekly", "monthly")
-_WHATSAPP_BOOL_FIELDS = ("enabled", "reply_alerts", "reminders")
+# upcoming_reminders: the 5pm "Tomorrow, …" DM (Upcoming). Default on.
+_WHATSAPP_BOOL_FIELDS = ("enabled", "reply_alerts", "reminders", "upcoming_reminders")
 
 
 def default_whatsapp_prefs() -> Dict[str, Any]:
@@ -1249,6 +1250,7 @@ def default_whatsapp_prefs() -> Dict[str, Any]:
         "summary_frequency": "daily",
         "reply_alerts": True,
         "reminders": True,
+        "upcoming_reminders": True,
     }
 
 

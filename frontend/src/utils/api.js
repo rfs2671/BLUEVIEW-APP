@@ -1811,6 +1811,32 @@ export const memoryAPI = {
 };
 
 /**
+ * Upcoming: Project → Upcoming (city records, events from the job's group
+ * chat, nothing personal) and the private calendar feed (one URL per person).
+ */
+export const upcomingAPI = {
+  list: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/upcoming`);
+    return response.data;
+  },
+  dismiss: async (projectId, eventId) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/upcoming/${encodeURIComponent(eventId)}/dismiss`);
+    return response.data;
+  },
+  // { date?: 'YYYY-MM-DD', time?: 'HH:MM' | '', title? }
+  edit: async (projectId, eventId, patch) => {
+    const response = await apiClient.patch(
+      `/api/projects/${projectId}/upcoming/${encodeURIComponent(eventId)}`, patch);
+    return response.data;
+  },
+  feedStatus: async () => (await apiClient.get('/api/me/calendar-feed')).data,
+  // A new private URL (the old one stops working). Shown once: { url }.
+  makeFeed: async () => (await apiClient.post('/api/me/calendar-feed')).data,
+  revokeFeed: async () => (await apiClient.delete('/api/me/calendar-feed')).data,
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {

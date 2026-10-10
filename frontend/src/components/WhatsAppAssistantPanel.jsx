@@ -220,6 +220,16 @@ export default function WhatsAppAssistantPanel() {
               trackColor={{ false: colors.glass.border, true: WHATSAPP_GREEN }}
             />
           </View>
+          <View style={s.briefRow}>
+            <Text style={s.line}>The evening before: what's on tomorrow</Text>
+            <Switch
+              value={me.brief.upcoming_reminders !== false}
+              disabled={busy === 'brief'}
+              onValueChange={(v) => saveBrief({ upcoming_reminders: v })}
+              accessibilityLabel="A message at 5pm with tomorrow's inspections, deliveries and hearings"
+              trackColor={{ false: colors.glass.border, true: WHATSAPP_GREEN }}
+            />
+          </View>
         </View>
       ) : null}
     </GlassCard>

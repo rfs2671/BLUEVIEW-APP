@@ -553,7 +553,7 @@ class TheSettings(unittest.TestCase):
         with _Ctx(db):
             out = _run(server.put_whatsapp_brief(
                 {"brief_time": "09:00", "brief_weekend": True}, current_user=admin))
-            on = {"brief_weekend": True, "brief_saturday": True}
+            on = {"brief_weekend": True, "brief_saturday": True, "upcoming_reminders": True}
             self.assertEqual(out, {"brief_time": "09:00", **on})
             out = _run(server.put_whatsapp_brief({"brief_time": "off"}, current_user=admin))
             self.assertEqual(out, {"brief_time": "off", **on})
@@ -564,7 +564,12 @@ class TheSettings(unittest.TestCase):
             stored = next(r for r in db.notification_preferences.rows
                           if r.get("user_id") == "u_admin")["whatsapp"]
             self.assertNotIn("brief_saturday", stored)
+            # Upcoming's day-before DM rides on the same row.
+            out = _run(server.put_whatsapp_brief({"upcoming_reminders": False},
+                                                 current_user=admin))
+            self.assertFalse(out["upcoming_reminders"])
             for bad in ({"brief_time": "10:00"}, {"brief_weekend": "yes"},
+                        {"upcoming_reminders": "no"},
                         {"brief_weekend": True, "brief_saturday": False},
                         {"other": 1}, {}):
                 with self.assertRaises(HTTPException) as e:
@@ -588,7 +593,7 @@ class TheSettings(unittest.TestCase):
             _optin(db, "u_admin", ADMIN_PHONE)
             self.assertEqual(_run(server.whatsapp_me(current_user=admin))["brief"],
                              {"brief_time": "07:00", "brief_weekend": False,
-                              "brief_saturday": False})
+                              "brief_saturday": False, "upcoming_reminders": True})
 
 
 class Wiring(unittest.TestCase):
