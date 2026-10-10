@@ -178,9 +178,12 @@ export function groupsView({ status, groups = null, canLink = false }) {
  * The card. `visible` is false when there is nothing for this person: not
  * an Admin, and the server says the assistant is not for them.
  */
-export function whatsappCardView({ me, status, isAdmin = false }) {
+export function whatsappCardView({ me, status, isAdmin = false, canFeed = false }) {
   const assistant = alertsView(me);
-  if (!assistant && !isAdmin) return { visible: false };
+  // `canFeed`: may use the private calendar feed (canSeeUpcoming), which now
+  // lives on the Personal assistant screen -- reachable even for an account
+  // the assistant itself is not for (the platform operator).
+  if (!assistant && !isAdmin && !canFeed) return { visible: false };
   const number = (me && me.bot_number) || (status && status.whatsapp_number) || '';
   const header = {
     chip: !status ? null
@@ -197,6 +200,6 @@ export function whatsappCardView({ me, status, isAdmin = false }) {
     groupsButton: { label: 'Project groups', path: '/whatsapp/groups' },
     assistantButton: assistant
       ? { label: 'Personal assistant', path: '/whatsapp/assistant', chip: assistant.chip }
-      : null,
+      : canFeed ? { label: 'Personal assistant', path: '/whatsapp/assistant', chip: null } : null,
   };
 }

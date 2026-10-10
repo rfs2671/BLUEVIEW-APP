@@ -39,12 +39,18 @@ ok(M.cleanEdit({ date: '', time: '' }).patch.time === '', 'clearing the time is 
 const screen = fs.readFileSync(path.join(__dirname, '../../app/projects/[id]/upcoming.jsx'), 'utf8');
 ok(/upcomingAPI\.list\(/.test(screen) && /upcomingAPI\.dismiss\(/.test(screen) && /upcomingAPI\.edit\(/.test(screen),
   'the screen lists, dismisses and edits');
-ok(/upcomingAPI\.makeFeed\(/.test(screen) && /upcomingAPI\.revokeFeed\(/.test(screen), 'and makes / revokes the feed');
+const card = fs.readFileSync(path.join(__dirname, '../components/whatsapp/CalendarFeedCard.jsx'), 'utf8');
+ok(/upcomingAPI\.feedStatus\(/.test(card) && /upcomingAPI\.makeFeed\(/.test(card)
+   && /upcomingAPI\.revokeFeed\(/.test(card), 'the calendar feed card reads, makes and revokes the feed');
+ok(!/makeFeed|revokeFeed/.test(screen), 'the feed is no longer on the Upcoming screen');
+const assistantPanel = fs.readFileSync(path.join(__dirname, '../components/WhatsAppAssistantPanel.jsx'), 'utf8');
+ok(/canSeeUpcoming\(user\) \? <CalendarFeedCard \/>/.test(assistantPanel),
+  'Integrations → WhatsApp → Personal assistant shows it to admins and PMs');
 ok(/evidenceLine\(/.test(screen) && /e\.chip/.test(screen), 'source chip and the words it came from');
 ok(!/sendWhatsApp|whatsappAPI\.send/.test(screen), 'the screen sends nothing to anyone');
 const project = fs.readFileSync(path.join(__dirname, '../../app/project/[id].jsx'), 'utf8');
-ok(/\/projects\/\$\{projectId\}\/upcoming/.test(project) && /canSeeUpcoming\(user\)/.test(project),
-  'the project screen opens it for admins and PMs');
+ok(!/\/projects\/\$\{projectId\}\/upcoming/.test(project) && !/title: 'Upcoming'/.test(project),
+  'no Upcoming tile on the project screen');
 const api = fs.readFileSync(path.join(__dirname, 'api.js'), 'utf8');
 ok(/\/upcoming`/.test(api) && /\/api\/me\/calendar-feed/.test(api), 'api paths');
 const panel = fs.readFileSync(path.join(__dirname, '../components/WhatsAppAssistantPanel.jsx'), 'utf8');

@@ -64,6 +64,7 @@ from lib.legal_render.formatters import (  # noqa: E402
 # each layer is and is not allowed to decide.
 from lib.report import model as report_model
 from lib.report import renderer as report_renderer
+from lib.report import summary as report_summary
 from lib.report import view as report_view
 # WhatsApp tenant boundary + webhook authentication. The rules are in the
 # module; server.py only supplies the database reads they need.
@@ -3286,8 +3287,11 @@ TRADE_VOCABULARY: List[str] = [
     "Drywall",
     "Roofing",
     "Waterproofing",
-    "Plumber",
-    # STAYS SEPARATE from Plumber, ruled: never the same crew in NYC.
+    # "Plumbing", NOT "Plumber", ruled 2026-10-10: every other entry names
+    # the trade, and a plumber is the licensed person. The old label is
+    # deprecated below, never re-spelled on a stored row.
+    "Plumbing",
+    # STAYS SEPARATE from Plumbing, ruled: never the same crew in NYC.
     "Water Main",
     "Electrical",
     "HVAC / Mechanical",
@@ -3315,6 +3319,8 @@ DEPRECATED_TRADES: Dict[str, str] = {
     "Electrician": "Electrical",
     # Ruled: always under Framing on these sites.
     "Carpentry": "Framing",
+    # Ruled 2026-10-10. See the note on "Plumbing" above.
+    "Plumber": "Plumbing",
 }
 
 # Match key -> canonical label, for BOTH lists. Populated beside _roster_key,
@@ -18442,7 +18448,11 @@ async def get_checkin_info(project_id: str, tag_id: str):
             t = str(row.get("trade") or "").strip()
             c = str(row.get("company") or "").strip()
             if t and c:
-                assignments.append({"trade": t, "company": c})
+                # `trade` STAYS RAW: it is what the pick submits and what the
+                # strict roster match compares. `trade_label` is only what
+                # the option reads.
+                assignments.append({"trade": t, "company": c,
+                                    "trade_label": _trade_label(t)})
 
         return {
             "project_id": project_id,
@@ -19833,6 +19843,27 @@ _TRADE_BY_KEY.update({_roster_key(_t): _t for _t in TRADE_VOCABULARY})
 _TRADE_BY_KEY.update({_roster_key(_t): _t for _t in DEPRECATED_TRADES})
 
 
+def _trade_label(trade) -> str:
+    """The canonical name a SCREEN prints for a stored trade string.
+
+    ONE LIST EVERYWHERE, ruled 2026-10-10: the report, the gate and the app's
+    crew chips print the vocabulary's current spelling. A deprecated label
+    reads as what superseded it ("Plumber" -> "Plumbing", "Framers" ->
+    "Framing"); a case variant reads as the vocabulary spells it; a custom
+    trade reads exactly as typed.
+
+    DISPLAY ONLY. The stored string is never touched -- that is the
+    immutability rule above -- and every MATCH (the gate's roster check, the
+    per-project pairing) keeps comparing the raw value under _roster_key. A
+    label is never sent back as a pick.
+    """
+    raw = " ".join(str(trade or "").split())
+    label = _TRADE_BY_KEY.get(_roster_key(raw))
+    if label is None:
+        return raw
+    return DEPRECATED_TRADES.get(label, label)
+
+
 def _assignment_is_inactive(row) -> bool:
     """True for a soft-deleted roster row.
 
@@ -21167,6 +21198,8 @@ async def lookup_worker(data: dict):
         "worker_id": str(worker["_id"]),
         "name": worker.get("name"),
         "trade": pair["trade"] if pair else None,
+        # What the returning screen prints; `trade` above is what it matches.
+        "trade_label": _trade_label(pair["trade"]) if pair else None,
         "company": pair["company"] if pair else None,
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
@@ -38005,23 +38038,6 @@ def _report_photo_url(logbook_id: str, activity_index: int, photo_index: int,
     return f"{url}?v={rendition}" if rendition else url
 
 
-def _report_headline(gate, activities) -> str:
-    """The factual headline. NOT MARKETING COPY, and not generated.
-
-    Named trades at the gate, or the plain fact that activity was documented.
-    "Steady progress" is a claim about a project; "Framers and plumber active"
-    is a reading of who badged in.
-    """
-    trades = [t.lower() for t in gate.trades]
-    if trades:
-        joined = (trades[0] if len(trades) == 1
-                  else ", ".join(trades[:-1]) + " and " + trades[-1])
-        return joined[0].upper() + joined[1:] + " active"
-    if activities:
-        return "Activity documented"
-    return "No activity documented"
-
-
 async def _oriented_on_site_count(project_id: str, checkins: list) -> int:
     """On-site workers with any orientation on file for this project.
 
@@ -38107,19 +38123,23 @@ async def generate_combined_report(
         "is_deleted": {"$ne": True},
     }).to_list(500)
 
+    # TRADES BY THEIR CANONICAL NAME, on the rail and in the summary alike --
+    # "Plumbing", never the stored "Plumber". Copies, so the rows the
+    # orientation count reads below are the stored ones.
     gate = report_model.GateDayState(
-        checkins, display_company=_display_sub_company)
+        [dict(c, trade=_trade_label(c.get("trade"))) for c in checkins],
+        display_company=_display_sub_company)
 
     daily = _filed_log(logbooks, "daily_jobsite") or {}
     daily_data = daily.get("data") or {}
-    activities = [
-        report_model.ActivityDisplayState(
-            row, index, gate,
-            display_company=_display_sub_company,
-            renderable=_logbook_photo_is_renderable)
-        for index, row in enumerate(daily_data.get("activities") or [])
-        if isinstance(row, dict)
-    ]
+    # THROUGH THE FOLD. A crew the log built from the gate before its men had
+    # a company is matched to that day's check-ins, which may since have been
+    # assigned one; see `fold_unnamed_rows`.
+    activities = report_model.resolve_activities(
+        [dict(r, trade=_trade_label(r.get("trade"))) if isinstance(r, dict)
+         else r for r in daily_data.get("activities") or []], gate,
+        display_company=_display_sub_company,
+        renderable=_logbook_photo_is_renderable)
 
     label = {t["key"]: (t.get("label") or t["key"])
              for t in LOGBOOK_TYPE_REGISTRY}
@@ -38242,13 +38262,17 @@ async def generate_combined_report(
                   f"{eastern_datetime(datetime.now(timezone.utc))}.",
         report_number=(f"Report #{issued}" if issued
                        else "Report number assigned when sent"),
-        headline=_report_headline(gate, activities),
-        # THE VERIFIED PARAGRAPH DOES NOT EXIST YET, so the defensible
-        # fallback is what ships. `lib.ai.sub_summary` verifies a SENTENCE
-        # about one subcontractor; an executive paragraph is a different
-        # surface with a different failure mode, and standing one up quietly
-        # would put unverified prose on a document a lender relies on.
-        summary_body=None,
+        # ASSEMBLED FROM THE FILINGS, NOT GENERATED. Every clause is a
+        # template over one filed field -- the crews off the daily log, the
+        # toolbox talk, the daily inspection, the superintendent's log -- and
+        # a document that was not filed contributes nothing. With no crew on
+        # the log the body is None and the counts-only fallback prints.
+        headline=report_summary.headline(model),
+        summary_body=report_summary.body(
+            model,
+            toolbox=(_filed_log(logbooks, "toolbox_talk") or {}).get("data"),
+            checklist=daily_data.get("checklist_items"),
+            superintendent=(cs_log or {}).get("data")),
         # THE SAME RESOLUTION, TAKEN APART. Page 1 sets the condition, the
         # temperature and the wind out separately; everything else reads the
         # composed line. Both come from `_weather_parts` and neither is parsed

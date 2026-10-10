@@ -236,15 +236,21 @@ class TheBuildingTotalIsCheckedAgainstTheSchedule(unittest.TestCase):
                       S.render_glyph_evidence(recs))
 
     def test_dh_1_is_refused_not_zero(self):
+        """REVISED 2026-10-10, ruling (a): nothing located + QTY printed -> the
+        QTY stands. This pinned "There is 1 DH-1." as refused while the gate,
+        through the schedule's own QTY cell, accepted it on production - the
+        model was told "state no count" beside a count the gate allowed. The
+        located count is still never zero."""
         _present()
         recs = _boyland()
-        for s in ("There are 0 DH-1.", "There is 1 DH-1.", "The bulkhead has 1 DH-1."):
+        self.assertTrue(_ok("There is 1 DH-1.", recs))
+        for s in ("There are 0 DH-1.", "There are 2 DH-1.",
+                  "The bulkhead has 1 DH-1."):         # a QTY is a building figure
             self.assertFalse(_ok(s, recs), s)
         text = S.render_glyph_evidence(recs)
-        self.assertIn(f"{DH} (DH-1): NOT COUNTED", text)
-        # production's schedule prints DH-1 QTY 1, and none is located: said
-        self.assertIn("The schedule's QTY prints DH-1 1 and none were located - THEY DISAGREE",
-                      text)
+        self.assertIn(f"{DH} (DH-1): the schedule prints QTY DH-1 1; its symbols were "
+                      f"not located.", text)
+        self.assertNotIn(f"{DH} (DH-1): NOT COUNTED", text)
 
 
 class TheScheduleQuantityIsReadAtQuestionTime(unittest.TestCase):
