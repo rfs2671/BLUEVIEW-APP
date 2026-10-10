@@ -505,11 +505,11 @@ def print_report(r: dict) -> None:
     if not r["changes"]:
         p("  (none)")
     p("\nCHASE (per day and slot)")
-    order = {"morning": 0, "midday": 1, "eod": 2, "admin_dm": 3}
+    order = {"morning": 0, "midday": 1, "eod": 2, "admin_dm": 3, "not_chased": 4}
     for e in sorted(r["chase"]["got"], key=lambda e: (e["day"], order.get(e["slot"], 9),
                                                       e["owner"] or "")):
         p(f"  {e['day']} {e['slot']:<9} {e['owner'] or '?':<4} lines {e['items']}  "
-          f"{(e['text'] or '').splitlines()[0][:60]}")
+          f"{((e['text'] or e['reason'] or '').splitlines() or [''])[0][:60]}")
     if not r["chase"]["got"]:
         p("  (nothing would be chased)")
     for e in r["chase"]["missing"]:

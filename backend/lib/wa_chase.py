@@ -9,9 +9,12 @@ WHAT IS CHASED (all of these):
 - an open or rescheduled commitment or request;
 - its owner confirmed: resolved, not "possibly theirs";
 - the owner is anyone we can @mention: a sub (mapped in Project → WhatsApp
-  → People to one of the project's subs) and GC staff alike (a Levelog user
-  of the company, PM, super or admin, or a person mapped to "GC team"). No
-  opt-in is needed: everyone is chased the same way, in the group;
+  → People to one of the project's subs), GC staff (a Levelog user of the
+  company, PM, super or admin, or a person mapped to "GC team") and a worker
+  who checked in at the project alike. No opt-in is needed: everyone is
+  chased the same way, in the group. An owner with no WhatsApp number to
+  @mention is listed once a day, every item of theirs that would have been
+  chased, "not chased: no WhatsApp number on file";
 - an explicit due date the code read from the words ("Friday", "10/12");
 - nothing about it flagged for an admin's review, and the item itself not
   marked Wrong (or dismissed) by an admin;
@@ -63,9 +66,14 @@ SLOT_LABELS = {MORNING: "morning", MIDDAY: "midday", EOD: "end of day",
 
 CHASE_TYPES = ("commitment", "request")
 CHASE_STATUSES = ("open", "rescheduled")
-# Who can be chased: a person mapped in People (a sub or "GC team") or a
-# company user. Everyone in the group, @mentioned.
-OWNER_KINDS = ("sender_map", "user")
+# Who can be chased: a person mapped in People (a sub or "GC team"), a
+# company user, or a worker who checked in at the project. Everyone in the
+# group, @mentioned.
+OWNER_KINDS = ("sender_map", "user", "worker")
+# Eligible but nobody to @mention: listed, not chased.
+NO_MENTION = "owner_no_mention"
+NOT_CHASED = "not_chased"
+NO_NUMBER = "no WhatsApp number on file"
 GC_KINDS = ("user",)
 QUOTE_MAX = 200
 VERDICTS = ("correct", "wrong")
@@ -139,13 +147,14 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "owner_possibly"
     if o.get("kind") not in OWNER_KINDS:
         return "owner_not_known"
-    if not o.get("jid"):
-        return "owner_no_mention"
     due = item.get("due") or {}
     if not due.get("due_text") or not due.get("due_at"):
         return "no_explicit_due"
     if str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
+    if not o.get("jid"):
+        # Last, so it means "would be chased today, but nobody to @mention".
+        return NO_MENTION
     return None
 
 
@@ -287,6 +296,8 @@ def precision(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         return {"correct": 0, "wrong": 0, "unreviewed": 0}
     total, by_slot = blank(), {}
     for r in rows:
+        if r.get("slot") == NOT_CHASED:
+            continue                    # a listing, not a nudge
         v = (r.get("review") or {}).get("verdict")
         k = v if v in VERDICTS else "unreviewed"
         total[k] += 1
