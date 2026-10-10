@@ -75,6 +75,7 @@ from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
 from lib import wa_attention_state  # noqa: E402
 from lib import wa_chase  # noqa: E402
+from lib import project_memory  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -48389,6 +48390,7 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
     turn's tool results (or the question), else the records are sent as
     they are."""
     trace = trace if trace is not None else []
+    _MEMORY_DM_ANSWERS.pop(str(dm_chat), None)
     reply = await _run_group_agent(
         project_id=str(project.get("_id")), group_id=dm_chat,
         company_id=ident["company_id"], sender=wa_dm.phone_digits(dm_chat),
@@ -48396,6 +48398,11 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         explicit_mention=True, reply_to=message_id or None,
         address_mode="loose", dm=True, tool_trace=trace,
         dm_history=wa_assistant.history_messages(history or []))
+    memory = _MEMORY_DM_ANSWERS.pop(str(dm_chat), None)
+    if memory and any(t.get("tool") == "search_project_history" for t in trace):
+        # The project-history answer is checked claim by claim against its
+        # sources; it goes out as it is, not reworded by the agent.
+        return memory
     if not reply:
         return reply
     allowed = " ".join([body, wa_assistant.street_label(project)]
@@ -48408,6 +48415,557 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
     if trace:
         return wa_assistant.RECORDS_PREFIX + str(trace[-1].get("result") or "")[:1500]
     return wa_assistant.NO_RECORDS_TEXT
+
+
+# ── PROJECT MEMORY: SEARCH THE PROJECT'S OWN RECORDS, CITED ──────────────────
+#
+# lib/project_memory.py holds the rules (evidence or silence). Here:
+#   indexing   _memory_index_tick, every MEMORY_INDEX_SECONDS: new linked-group
+#              messages and filed daily reports into `project_memory`, then
+#              embeddings (text-embedding-3-small) in batches, at most
+#              MEMORY_EMBED_PER_RUN a run. The same tick IS the backfill: it
+#              walks from the oldest row on a stored cursor, so it resumes
+#              where it stopped. One embeddings call per batch, nothing else.
+#              Rows whose source is gone (retention, deletion) are removed.
+#   retrieval  _memory_search: Atlas Search (words) + Atlas Vector Search
+#              (meaning), fused. Where Atlas Search is not available, the same
+#              two in code over the project's own rows.
+#   answering  _memory_answer: the model gets the retrieved records and must
+#              quote them; every quote is checked verbatim
+#              (project_memory.checked_claims). Nothing left: NO_SOURCE.
+# Company + project scoped everywhere; PMs only their assigned projects.
+# Never posts in a group: the DM tool and the app only. Kill switch:
+# PROJECT_MEMORY_DISABLED=1.
+
+from zoneinfo import ZoneInfo as _MemoryZone  # noqa: E402
+
+_MEMORY_NY = _MemoryZone("America/New_York")
+MEMORY_INDEX_SECONDS = 120
+MEMORY_SCAN_PER_RUN = 1000
+MEMORY_EMBED_PER_RUN = 600
+MEMORY_EMBED_BATCH = 100
+MEMORY_GC_PER_RUN = 500
+MEMORY_FALLBACK_ROWS = 3000
+MEMORY_EMBED_PAUSE = 0.5
+MEMORY_ATLAS_RETRY_SECONDS = 600
+# Atlas Search: None not tried yet, True working, False not available (tried
+# again after MEMORY_ATLAS_RETRY_SECONDS: an index may still be building).
+_MEMORY_ATLAS: Dict[str, Any] = {"ok": None, "retry_at": None}
+# The last answer the DM tool built, per chat: sent as it is (the agent does
+# not reword a checked answer).
+_MEMORY_DM_ANSWERS: Dict[str, str] = {}
+
+
+def _memory_disabled() -> bool:
+    return str(os.environ.get("PROJECT_MEMORY_DISABLED", "")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _memory_ny(dt: Any) -> Optional[datetime]:
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_MEMORY_NY)
+
+
+async def _memory_embed_many(texts: List[str]) -> Optional[List[list]]:
+    """One embeddings call for a batch. None on any failure (retried next
+    run)."""
+    if not OPENAI_API_KEY or not texts:
+        return None
+    try:
+        async with ServerHttpClient(timeout=60.0) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": project_memory.EMBED_MODEL,
+                      "input": [t[:8000] for t in texts]})
+            if resp.status_code != 200:
+                logger.warning(f"[memory] embeddings {resp.status_code}")
+                return None
+            data = sorted(resp.json().get("data") or [], key=lambda d: d.get("index", 0))
+            out = [d.get("embedding") for d in data]
+            return out if len(out) == len(texts) else None
+    except Exception as e:
+        logger.warning(f"[memory] embeddings failed: {type(e).__name__}")
+        return None
+
+
+async def _memory_embed_one(text: str) -> Optional[list]:
+    got = await _memory_embed_many([text])
+    return got[0] if got else None
+
+
+def _memory_wa_doc(row: dict, group_name: str) -> dict:
+    at = row.get("timestamp") if isinstance(row.get("timestamp"), datetime) else row.get("created_at")
+    ny = _memory_ny(at)
+    return {
+        "company_id": str(row.get("company_id") or ""),
+        "project_id": str(row.get("project_id") or ""),
+        "source": project_memory.SOURCE_WHATSAPP,
+        "source_id": str(row.get("_id")),
+        "message_id": str(row.get("message_id") or ""),
+        "group_id": str(row.get("group_id") or ""),
+        "group_name": group_name,
+        "sender": str(row.get("sender") or ""),
+        "sender_jid": str(row.get("sender_jid") or ""),
+        "sender_name": wa_sender_map.clean_push_name(row.get("sender_name")),
+        "at": at,
+        "day": ny.strftime("%Y-%m-%d") if ny else None,
+        "text": project_memory.clean(row.get("body"))[:project_memory.TEXT_MAX],
+    }
+
+
+def _memory_dr_docs(log: dict) -> List[dict]:
+    day = str(log.get("date") or "")
+    try:
+        at = datetime.strptime(day, "%Y-%m-%d").replace(
+            hour=17, tzinfo=_MEMORY_NY).astimezone(timezone.utc)
+    except ValueError:
+        at = log.get("created_at")
+    out = []
+    for n, e in enumerate(project_memory.daily_report_entries(log)):
+        out.append({
+            "order": n,
+            "_id": f"dr:{log['_id']}:{e['key']}",
+            "company_id": str(log.get("company_id") or ""),
+            "project_id": str(log.get("project_id") or ""),
+            "source": project_memory.SOURCE_DAILY,
+            "source_id": str(log["_id"]),
+            "entry": e["key"], "label": e["label"],
+            "author": log.get("cp_name") or log.get("created_by_name") or "",
+            "at": at, "day": day, "text": e["text"],
+        })
+    return out
+
+
+async def _memory_upsert(doc: dict, now: datetime) -> None:
+    """Insert, or update when the words changed (then embed again)."""
+    sid = doc.pop("_id")
+    old = await db.project_memory.find_one({"_id": sid}, {"text": 1})
+    if old is None:
+        row = {"_id": sid, "company_id": doc["company_id"], "project_id": doc["project_id"],
+               "source": doc["source"], "source_id": doc["source_id"],
+               "day": doc.get("day"), "at": doc.get("at"), "text": doc["text"],
+               "embedding": None, "embedded": False, "indexed_at": now}
+        row.update({k: v for k, v in doc.items() if k not in row})
+        await db.project_memory.insert_one(row)
+        return
+    sets = {**doc, "indexed_at": now}
+    if old.get("text") != doc.get("text"):
+        sets["embedding"] = None
+        sets["embedded"] = False
+    await db.project_memory.update_one({"_id": sid}, {"$set": sets})
+
+
+async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
+    """Index what is new, embed what is not embedded, drop what is gone."""
+    now = now or datetime.now(timezone.utc)
+    report = {"messages": 0, "reports": 0, "embedded": 0, "removed": 0,
+              "embed_failed": 0, "skipped_test": 0}
+    if _memory_disabled():
+        report["disabled"] = True
+        return report
+    state = await db[project_memory.STATE].find_one({"_id": "cursor"}) or {}
+    test_cos = await fixture_company_ids(db)
+    # 1. Linked-group messages, oldest first from the cursor (the backfill).
+    q: Dict[str, Any] = {"project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
+                         "sender": {"$ne": "bot"}}
+    if isinstance(state.get("wa_at"), datetime):
+        q["created_at"] = {"$gte": state["wa_at"]}
+    rows = await db.whatsapp_messages.find(q).sort([("created_at", 1)]).limit(
+        MEMORY_SCAN_PER_RUN).to_list(None)
+    names: Dict[str, str] = {}
+    wa_at = state.get("wa_at")
+    for r in rows:
+        if isinstance(r.get("created_at"), datetime):
+            wa_at = r["created_at"]
+        if str(r.get("company_id") or "") in test_cos:
+            report["skipped_test"] += 1
+            continue
+        if not project_memory.indexable_message(r):
+            continue
+        gid = str(r.get("group_id") or "")
+        if gid not in names:
+            g = await db.whatsapp_groups.find_one({"wa_group_id": gid}, {"group_name": 1}) or {}
+            names[gid] = g.get("group_name") or ""
+        doc = {"_id": f"wa:{r['_id']}", **_memory_wa_doc(r, names[gid])}
+        await _memory_upsert(doc, now)
+        report["messages"] += 1
+    # 2. Filed daily reports, by when they last changed.
+    dq: Dict[str, Any] = {"log_type": "daily_jobsite", "status": "submitted",
+                          "is_amendment": {"$ne": True}, "is_deleted": {"$ne": True}}
+    if isinstance(state.get("dr_at"), datetime):
+        dq["updated_at"] = {"$gte": state["dr_at"]}
+    logs = await db.logbooks.find(dq).sort([("updated_at", 1)]).limit(200).to_list(None)
+    dr_at = state.get("dr_at")
+    for log in logs:
+        if isinstance(log.get("updated_at"), datetime):
+            dr_at = log["updated_at"]
+        if str(log.get("company_id") or "") in test_cos:
+            report["skipped_test"] += 1
+            continue
+        docs = _memory_dr_docs(log)
+        keep = {d["_id"] for d in docs}
+        for d in docs:
+            await _memory_upsert(dict(d), now)
+        stale = [r["_id"] for r in await db.project_memory.find(
+            {"source": project_memory.SOURCE_DAILY, "source_id": str(log["_id"])},
+            {"_id": 1}).to_list(None) if r["_id"] not in keep]
+        if stale:
+            await db.project_memory.delete_many({"_id": {"$in": stale}})
+        report["reports"] += 1
+    # 3. Embeddings, in batches, bounded per run.
+    left = MEMORY_EMBED_PER_RUN
+    while left > 0:
+        todo = await db.project_memory.find(
+            {"embedded": False}, {"_id": 1, "text": 1}).limit(
+            min(MEMORY_EMBED_BATCH, left)).to_list(None)
+        if not todo:
+            break
+        vecs = await _memory_embed_many([t.get("text") or "" for t in todo])
+        if not vecs:
+            report["embed_failed"] += len(todo)
+            break
+        for t, v in zip(todo, vecs):
+            await db.project_memory.update_one(
+                {"_id": t["_id"]}, {"$set": {"embedding": v, "embedded": True,
+                                             "embedded_at": now}})
+        report["embedded"] += len(todo)
+        left -= len(todo)
+        await asyncio.sleep(MEMORY_EMBED_PAUSE)     # gentle on the embeddings API
+    # 4. Rows whose source is gone (retention, a deleted report), a window
+    #    at a time.
+    gq: Dict[str, Any] = {}
+    if state.get("gc_after"):
+        gq["_id"] = {"$gt": state["gc_after"]}
+    batch = await db.project_memory.find(
+        gq, {"_id": 1, "source": 1, "source_id": 1}).sort([("_id", 1)]).limit(
+        MEMORY_GC_PER_RUN).to_list(None)
+    gc_after = batch[-1]["_id"] if len(batch) == MEMORY_GC_PER_RUN else None
+    wa_ids = [b["source_id"] for b in batch if b.get("source") == project_memory.SOURCE_WHATSAPP]
+    dr_ids = sorted({b["source_id"] for b in batch if b.get("source") == project_memory.SOURCE_DAILY})
+    have_wa = {str(r["_id"]) for r in await db.whatsapp_messages.find(
+        {"_id": {"$in": [to_query_id(i) for i in wa_ids] + wa_ids}}, {"_id": 1}).to_list(None)}
+    have_dr = {str(r["_id"]) for r in await db.logbooks.find(
+        {"_id": {"$in": [to_query_id(i) for i in dr_ids] + dr_ids}, "status": "submitted",
+         "is_deleted": {"$ne": True}, "is_amendment": {"$ne": True}}, {"_id": 1}).to_list(None)}
+    gone = [b["_id"] for b in batch
+            if (b.get("source") == project_memory.SOURCE_WHATSAPP and b["source_id"] not in have_wa)
+            or (b.get("source") == project_memory.SOURCE_DAILY and b["source_id"] not in have_dr)]
+    if gone:
+        res = await db.project_memory.delete_many({"_id": {"$in": gone}})
+        report["removed"] = getattr(res, "deleted_count", 0) or 0
+    await db[project_memory.STATE].update_one(
+        {"_id": "cursor"},
+        {"$set": {"wa_at": wa_at, "dr_at": dr_at, "gc_after": gc_after, "ran_at": now}},
+        upsert=True)
+    if any(report[k] for k in ("messages", "reports", "embedded", "removed", "embed_failed")):
+        logger.info(f"[memory] index {report}")
+    return report
+
+
+async def _memory_index_job() -> None:
+    try:
+        await _memory_index_tick()
+    except Exception as e:
+        logger.error(f"[memory] index run failed: {type(e).__name__}: {e}")
+
+
+async def ensure_project_memory_indexes() -> None:
+    """Plain indexes always; the two Atlas Search indexes best effort (a
+    deployment without Atlas Search falls back to the in-code search)."""
+    coll = db.project_memory
+    await _ensure_index_resilient(db.project_memory,
+                                  keys=[("company_id", 1), ("project_id", 1), ("at", -1)],
+                                  name="project_memory_by_project")
+    # The indexer's two scans, oldest first from a cursor.
+    await _ensure_index_resilient(db.logbooks,
+                                  keys=[("log_type", 1), ("status", 1), ("updated_at", 1)],
+                                  name="logbooks_by_type_status_updated")
+    await _ensure_index_resilient(db.whatsapp_messages, keys=[("created_at", 1), ("_id", 1)],
+                                  name="whatsapp_messages_by_created")
+    await _ensure_index_resilient(db.project_memory, keys=[("embedded", 1)],
+                                  name="project_memory_by_embedded")
+    await _ensure_index_resilient(coll, keys=[("source", 1), ("source_id", 1)],
+                                  name="project_memory_by_source")
+    try:
+        await db.command({"createSearchIndexes": project_memory.COLLECTION, "indexes": [
+            {"name": project_memory.TEXT_INDEX, "definition": {"mappings": {
+                "dynamic": False, "fields": {
+                    "text": {"type": "string", "analyzer": "lucene.english"},
+                    "project_id": {"type": "token"}, "company_id": {"type": "token"},
+                    "at": {"type": "date"}}}}},
+            {"name": project_memory.VECTOR_INDEX, "type": "vectorSearch", "definition": {
+                "fields": [
+                    {"type": "vector", "path": "embedding",
+                     "numDimensions": project_memory.EMBED_DIMS, "similarity": "cosine"},
+                    {"type": "filter", "path": "project_id"},
+                    {"type": "filter", "path": "company_id"},
+                    {"type": "filter", "path": "at"}]}},
+        ]})
+        logger.info("[memory] Atlas Search indexes requested")
+    except Exception as e:
+        # Already there, or not an Atlas deployment.
+        logger.info(f"[memory] Atlas Search indexes not created: {type(e).__name__}")
+
+
+def _memory_span(base: dict) -> Dict[str, datetime]:
+    """The day range as instants (New York days), for Atlas's date filters."""
+    out: Dict[str, datetime] = {}
+    for op, day in (base.get("day") or {}).items():
+        try:
+            d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=_MEMORY_NY)
+        except ValueError:
+            continue
+        out[op] = (d if op == "$gte" else d + timedelta(days=1, microseconds=-1)
+                   ).astimezone(timezone.utc)
+    return out
+
+
+def _memory_filter(company_id: str, project_id: str, date_from: Optional[str],
+                   date_to: Optional[str]) -> Dict[str, Any]:
+    f: Dict[str, Any] = {"company_id": str(company_id), "project_id": str(project_id)}
+    day: Dict[str, str] = {}
+    if date_from:
+        day["$gte"] = date_from
+    if date_to:
+        day["$lte"] = date_to
+    if day:
+        f["day"] = day
+    return f
+
+
+async def _memory_atlas_ranked(base: dict, query: str, qv: Optional[list],
+                               limit: int) -> Optional[Tuple[List[str], List[str]]]:
+    """(by words, by meaning) id lists from Atlas, or None when Atlas Search
+    is not there (then the in-code search is used, and remembered)."""
+    if _MEMORY_ATLAS["ok"] is False:
+        retry = _MEMORY_ATLAS.get("retry_at")
+        if not (isinstance(retry, datetime) and datetime.now(timezone.utc) >= retry):
+            return None
+    coll = db.project_memory
+    try:
+        filt = [{"equals": {"path": "project_id", "value": base["project_id"]}},
+                {"equals": {"path": "company_id", "value": base["company_id"]}}]
+        span = _memory_span(base)
+        if span:
+            filt.append({"range": {"path": "at", **{k.lstrip("$"): v for k, v in span.items()}}})
+        words = await coll.aggregate([
+            {"$search": {"index": project_memory.TEXT_INDEX, "compound": {
+                "must": [{"text": {"query": query, "path": "text"}}], "filter": filt}}},
+            {"$limit": limit}, {"$project": {"_id": 1}}]).to_list(None)
+        meaning: List[dict] = []
+        if qv:
+            vfilter: Dict[str, Any] = {"project_id": base["project_id"],
+                                       "company_id": base["company_id"]}
+            if span:
+                vfilter["at"] = span
+            meaning = await coll.aggregate([
+                {"$vectorSearch": {"index": project_memory.VECTOR_INDEX, "path": "embedding",
+                                   "queryVector": qv, "numCandidates": limit * 10,
+                                   "limit": limit, "filter": vfilter}},
+                {"$project": {"_id": 1}}]).to_list(None)
+        _MEMORY_ATLAS["ok"] = True
+        return [w["_id"] for w in words], [m["_id"] for m in meaning]
+    except Exception as e:
+        if _MEMORY_ATLAS["ok"] is not False:
+            logger.info(f"[memory] Atlas Search unavailable ({type(e).__name__}); in-code search")
+        _MEMORY_ATLAS["ok"] = False
+        _MEMORY_ATLAS["retry_at"] = datetime.now(timezone.utc) + timedelta(
+            seconds=MEMORY_ATLAS_RETRY_SECONDS)
+        return None
+
+
+async def _memory_code_ranked(base: dict, query: str, qv: Optional[list],
+                              limit: int) -> Tuple[List[str], List[str]]:
+    """The same two searches in code, over this project's own rows."""
+    coll = db.project_memory
+    qt = project_memory.terms(query)
+    words: List[str] = []
+    if qt:
+        ors = [{"text": {"$regex": "(?i)" + re.escape(t[:-1] if len(t) > 4 else t)}}
+               for t in qt[:8]]
+        cands = await coll.find({**base, "$or": ors}, {"_id": 1, "text": 1}).limit(
+            400).to_list(None)
+        scored = sorted(((project_memory.lexical_score(qt, c.get("text") or ""), c["_id"])
+                         for c in cands), key=lambda x: (-x[0], x[1]))
+        words = [i for s, i in scored if s > 0][:limit]
+    meaning: List[str] = []
+    if qv:
+        # The project's newest rows with a vector; a date range is applied
+        # here, on the rows read.
+        rows = await db.project_memory.find(
+            {"company_id": base["company_id"], "project_id": base["project_id"],
+             "embedded": True},
+            {"_id": 1, "embedding": 1, "day": 1}).sort([("at", -1)]).limit(
+            MEMORY_FALLBACK_ROWS).to_list(None)
+        span = base.get("day") or {}
+        rows = [r for r in rows
+                if (not span.get("$gte") or str(r.get("day") or "") >= span["$gte"])
+                and (not span.get("$lte") or str(r.get("day") or "") <= span["$lte"])]
+        scored = sorted(((project_memory.cosine(qv, r.get("embedding")), r["_id"]) for r in rows),
+                        key=lambda x: (-x[0], x[1]))
+        meaning = [i for s, i in scored[:limit] if s > 0]
+    return words, meaning
+
+
+async def _memory_search(company_id: str, project_id: str, query: str,
+                         date_from: Optional[str] = None, date_to: Optional[str] = None,
+                         limit: int = 30) -> List[dict]:
+    """The project's records for a question, best first (no embeddings)."""
+    base = _memory_filter(company_id, project_id, date_from, date_to)
+    qv = await _memory_embed_one(query)
+    got = await _memory_atlas_ranked(base, query, qv, limit)
+    if got is None or not (got[0] or got[1]):
+        # No Atlas, or nothing from it (an index still building): in code.
+        got = await _memory_code_ranked(base, query, qv, limit)
+    ids = project_memory.rrf(*got)[:limit]
+    if not ids:
+        return []
+    rows = await db.project_memory.find(
+        {**base, "_id": {"$in": ids}}, {"embedding": 0}).to_list(None)
+    by_id = {r["_id"]: r for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+async def _memory_attention_sources(company_id: str, project_id: str,
+                                    query: str, limit: int = 8) -> List[dict]:
+    """For the full story: the tracked items on the subject and their
+    history (made, moved, handed over, done), each event with its words."""
+    qt = set(project_memory.terms(query))
+    if not qt:
+        return []
+    items = await db.attention_items.find(
+        {"company_id": str(company_id), "project_id": str(project_id),
+         "type": {"$in": ["commitment", "request", "issue", "question"]}}).to_list(500)
+    hits = []
+    for it in items:
+        words = set(project_memory.terms(" ".join(
+            [it.get("summary") or "", (it.get("evidence") or {}).get("quote") or "",
+             " ".join(it.get("topic") or [])])))
+        if qt & words:
+            hits.append(it)
+    hits.sort(key=lambda it: str((it.get("evidence") or {}).get("sent_at") or ""))
+    out = []
+    labels = {"created": "Tracked", "state": "Changed", "handover": "Handed over",
+              "part_done": "Part done", "flag": "Flagged", "follow_up": "Followed up"}
+    for it in hits[:limit]:
+        owner = (it.get("owner") or {}).get("name") or ""
+        for e in it.get("history") or []:
+            quote = project_memory.clean(e.get("quote"))
+            if not isinstance(e, dict) or not quote:
+                continue
+            what = labels.get(e.get("kind"), "Update")
+            if e.get("kind") == "state" and e.get("to"):
+                what = f"Now {e['to']}" + (f" (due {e['due_to']})" if e.get("due_to") else "")
+            if e.get("kind") == "created":
+                what = f"Tracked {it.get('type')}" + (f" (due {e['due_to']})" if e.get("due_to") else "")
+            at = e.get("at")
+            ny = _memory_ny(at)
+            out.append({"_id": f"att:{it['_id']}:{e.get('id')}",
+                        "source": project_memory.SOURCE_ATTENTION, "at": at,
+                        "day": ny.strftime("%Y-%m-%d") if ny else None,
+                        "label": f"{what}" + (f" · {owner}" if owner else ""),
+                        "text": f"{what}: {quote}", "group_name": ""})
+    return out
+
+
+async def _memory_present(rows: List[dict], company_id: str, project_id: str) -> List[dict]:
+    """Rows as sources: an id the model cites (S1..), who (their name in
+    People or the company, else their WhatsApp name), the group, when."""
+    cache: dict = {}
+    out = []
+    for i, r in enumerate(rows, 1):
+        ny = _memory_ny(r.get("at"))
+        src = {"sid": f"S{i}", "id": r["_id"], "source": r.get("source"),
+               "text": r.get("text") or "", "group": r.get("group_name") or "",
+               "at": r.get("at"), "when": project_memory.when(ny) if ny else "",
+               "day_label": f"{ny.strftime('%b')} {ny.day}" if ny else (r.get("day") or ""),
+               "label": r.get("label") or "", "who": "",
+               "group_id": r.get("group_id"), "source_id": r.get("source_id")}
+        if r.get("source") == project_memory.SOURCE_WHATSAPP:
+            jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
+            person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
+            src["who"] = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
+                          else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+        elif r.get("source") == project_memory.SOURCE_DAILY:
+            src["who"] = r.get("author") or ""
+        elif r.get("source") == project_memory.SOURCE_ATTENTION:
+            src["who"] = "Tracked item"
+            src["group"] = ""
+        out.append(src)
+    return out
+
+
+def _memory_when_key(r: dict) -> datetime:
+    """Oldest first; a row without a time sorts first."""
+    at = r.get("at")
+    if not isinstance(at, datetime):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+async def _memory_llm(messages: list) -> Optional[str]:
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=60.0) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": project_memory.ANSWER_MODEL, "temperature": 0,
+                      "max_tokens": 1200, "messages": messages,
+                      "response_format": {"type": "json_object"}})
+            if resp.status_code != 200:
+                logger.warning(f"[memory] answer model {resp.status_code}")
+                return None
+            return resp.json()["choices"][0]["message"].get("content")
+    except Exception as e:
+        logger.warning(f"[memory] answer model failed: {type(e).__name__}")
+        return None
+
+
+async def _memory_answer(company_id: str, project_id: str, query: str,
+                         date_from: Optional[str] = None, date_to: Optional[str] = None,
+                         full_story: Optional[bool] = None, llm=None) -> dict:
+    """{text, claims, sources, mode}: an answer of checked, cited claims, or
+    NO_SOURCE."""
+    timeline = project_memory.is_full_story(query) if full_story is None else bool(full_story)
+    mode = "timeline" if timeline else "answer"
+    rows = await _memory_search(company_id, project_id, query, date_from, date_to,
+                                limit=25 if timeline else project_memory.TOP_K)
+    if timeline:
+        rows += await _memory_attention_sources(company_id, project_id, query)
+        rows.sort(key=_memory_when_key)
+    sources = await _memory_present(rows, company_id, project_id)
+    result = {"text": project_memory.NO_SOURCE, "claims": [], "sources": sources,
+              "mode": mode, "dropped": 0}
+    if not sources:
+        logger.info(f"[memory] answer mode={mode} sources=0 claims=0")
+        return result
+    prompt = project_memory.TIMELINE_PROMPT if timeline else project_memory.ANSWER_PROMPT
+    content = await (llm or _memory_llm)([
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": f"Question: {query}\n\nRecords:\n\n"
+                                    f"{project_memory.source_block(sources)}"}])
+    raw = project_memory.parse_model(content).get("claims") or []
+    claims = project_memory.checked_claims(
+        raw, sources, limit=project_memory.STORY_MAX if timeline else 6)
+    by_sid = {s["sid"]: s for s in sources}
+    if timeline:
+        order = {s["sid"]: i for i, s in enumerate(sources)}
+        claims.sort(key=lambda c: order[c["sid"]])
+        for c in claims:
+            c["date"] = c.get("date") or by_sid[c["sid"]]["day_label"]
+    result.update(text=project_memory.format_answer(claims, by_sid, timeline),
+                  claims=claims, dropped=max(0, len(raw) - len(claims)))
+    logger.info(f"[memory] answer mode={mode} sources={len(sources)} "
+                f"claims={len(claims)} dropped={result['dropped']}")
+    return result
 
 
 # ── HEADCOUNT IN A DM: from the check-ins, never from memory ───────────────
@@ -56081,6 +56639,33 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_project_history",
+            "description": (
+                "Search this project's own history -- its WhatsApp group messages, "
+                "filed daily reports and tracked items -- and answer with citations. "
+                "Use for anything about what was said or done on the job in the past: "
+                "'who said to change the window?', 'when did we pour underpinning?', "
+                "'what happened with the storefront?', 'did Patricia send the risers?'. "
+                "The result is the complete, checked answer: send it as it is."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "The question, in the user's words."},
+                    "date_from": {"type": "string",
+                                  "description": "Optional earliest day, YYYY-MM-DD."},
+                    "date_to": {"type": "string",
+                                "description": "Optional latest day, YYYY-MM-DD."},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "project_info",
             "description": (
                 "Return basic information about the project linked to this group — "
@@ -57219,6 +57804,9 @@ async def _run_group_agent(
         # Read-only in a DM: nothing that files, renews or starts a flow.
         if dm and name in _DM_WRITE_TOOLS:
             continue
+        # Project history is answered in a DM only, never in a group.
+        if name == "search_project_history" and (not dm or _memory_disabled()):
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -57457,6 +58045,19 @@ async def _dispatch_agent_tool(
                         reason=f"tool:{name}")
         return wa_security.BOT_SCOPE_REFUSAL
     try:
+        if name == "search_project_history":
+            # DM only (the tool is never offered in a group). The checked,
+            # cited answer is kept for this chat and sent as it is.
+            if not group_id or str(group_id).endswith("@g.us"):
+                return "Project history is answered in a direct message only."
+            def _day(v):
+                v = str(v or "").strip()
+                return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else None
+            got = await _memory_answer(
+                str(company_id), str(project_id), str(args.get("query") or user_body or ""),
+                _day(args.get("date_from")), _day(args.get("date_to")))
+            _MEMORY_DM_ANSWERS[str(group_id)] = got["text"]
+            return got["text"]
         if name == "check_drawing_set":
             rows = await referenced_sheets_not_in_set(project_id)
             logger.info(f"check_drawing_set: {len(rows)} referenced sheet(s) "
@@ -60650,6 +61251,110 @@ async def _attention_admin_project(project_id: str, current_user) -> str:
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     return str(company_id)
+
+
+# ── PROJECT MEMORY IN THE APP: Project → Search ─────────────────────────────
+
+async def _memory_project(project_id: str, current_user) -> str:
+    """Admin, or a PM on one of their assigned projects (require_project_access
+    on the route): the company id, else 403/404."""
+    if not holds_rank(current_user, PROJECT_ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="Admin or PM access required")
+    # Also here, not only on the route: a PM reaches their assigned projects
+    # and nothing wider, however this is called.
+    await _assert_project_access(project_id, current_user)
+    company_id = get_user_company_id(current_user)
+    if not await _bot_project_scope(company_id, project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return str(company_id)
+
+
+def _memory_source_view(src: dict) -> dict:
+    """One result for the app: the chip (who · group · when) and the words."""
+    at = src.get("at")
+    return {"id": src.get("id"), "source": src.get("source"),
+            "who": src.get("who") or "", "group": src.get("group") or "",
+            "when": src.get("when") or src.get("day_label") or "",
+            "at": at.isoformat() if isinstance(at, datetime) else None,
+            "label": src.get("label") or "",
+            "text": (src.get("text") or "")[:400]}
+
+
+@api_router.get("/projects/{project_id}/memory/search",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def search_project_memory(project_id: str, q: str = "", date_from: str = "",
+                                date_to: str = "", answer: bool = False,
+                                current_user=Depends(get_current_user)):
+    """Project → Search. The project's WhatsApp messages and daily reports
+    for a query, best first. `answer=true` also returns the cited answer
+    (every quote checked against these results; else NO_SOURCE)."""
+    company_id = await _memory_project(project_id, current_user)
+    q = " ".join(str(q or "").split())[:300]
+    if len(q) < 2:
+        raise HTTPException(status_code=422, detail="Type what to search for")
+    day = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    dfrom = date_from if day.match(date_from or "") else None
+    dto = date_to if day.match(date_to or "") else None
+    if _memory_disabled():
+        return {"results": [], "answer": None, "disabled": True}
+    if answer:
+        got = await _memory_answer(company_id, str(project_id), q, dfrom, dto)
+        cited = {c["sid"] for c in got["claims"]}
+        return {"results": [_memory_source_view(s) for s in got["sources"]],
+                "answer": {"text": got["text"], "mode": got["mode"],
+                           "claims": [{"text": c["text"], "quote": c["quote"],
+                                       "date": c.get("date") or "",
+                                       "source": next(_memory_source_view(s) for s in got["sources"]
+                                                      if s["sid"] == c["sid"])}
+                                      for c in got["claims"]],
+                           "found": bool(cited)}}
+    rows = await _memory_search(company_id, str(project_id), q, dfrom, dto, limit=30)
+    sources = await _memory_present(rows, company_id, str(project_id))
+    return {"results": [_memory_source_view(s) for s in sources], "answer": None}
+
+
+@api_router.get("/projects/{project_id}/memory/context/{source_id}",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def project_memory_context(project_id: str, source_id: str,
+                                 current_user=Depends(get_current_user)):
+    """A result in its place: the message with the two before and the two
+    after it in the same group (5), or the whole daily report entry list."""
+    company_id = await _memory_project(project_id, current_user)
+    doc = await db.project_memory.find_one(
+        {"_id": str(source_id), "project_id": str(project_id), "company_id": company_id},
+        {"embedding": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if doc.get("source") == project_memory.SOURCE_DAILY:
+        rows = await db.project_memory.find(
+            {"source": project_memory.SOURCE_DAILY, "source_id": doc["source_id"],
+             "project_id": str(project_id), "company_id": company_id},
+            {"embedding": 0}).to_list(100)
+        rows.sort(key=lambda r: r.get("order", 0))
+        srcs = await _memory_present(rows, company_id, str(project_id))
+        return {"kind": "daily_report", "day": doc.get("day"),
+                "entries": [{**_memory_source_view(s), "hit": s["id"] == doc["_id"]}
+                            for s in srcs]}
+    hit = await db.whatsapp_messages.find_one(
+        {"_id": to_query_id(doc["source_id"]), "project_id": str(project_id)})
+    if not hit:
+        raise HTTPException(status_code=404, detail="That message is no longer kept")
+    base = {"group_id": hit.get("group_id"), "project_id": str(project_id),
+            "is_dm": {"$ne": True}}
+    before = await db.whatsapp_messages.find(
+        {**base, "created_at": {"$lt": hit.get("created_at")}}).sort(
+        [("created_at", -1)]).limit(2).to_list(None)
+    after = await db.whatsapp_messages.find(
+        {**base, "created_at": {"$gt": hit.get("created_at")}}).sort(
+        [("created_at", 1)]).limit(2).to_list(None)
+    msgs = list(reversed(before)) + [hit] + after
+    rows = [{"_id": f"wa:{m['_id']}", **_memory_wa_doc(m, doc.get("group_name") or "")}
+            for m in msgs]
+    srcs = await _memory_present(rows, company_id, str(project_id))
+    return {"kind": "whatsapp", "group": doc.get("group_name") or "",
+            "messages": [{**_memory_source_view(s), "hit": s["id"] == doc["_id"],
+                          "bot": str(m.get("sender") or "") == "bot"}
+                         for s, m in zip(srcs, msgs)]}
 
 
 @api_router.get("/projects/{project_id}/attention",
@@ -65865,6 +66570,17 @@ async def startup_event():
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
     )
+    # Project memory: index new linked-group messages and filed daily reports,
+    # embed in batches (also the resumable backfill). lib/project_memory.py.
+    scheduler.add_job(
+        _memory_index_job,
+        IntervalTrigger(seconds=MEMORY_INDEX_SECONDS),
+        id='project_memory_index',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
     # Morning brief: each opted-in Admin/PM at the time they picked (7/8/9 AM
     # New York, Mon–Fri, Saturday optional). Every 10 minutes; the ledger
     # makes it once a day per person.
@@ -65901,6 +66617,7 @@ async def startup_event():
     # Phase 1 indexes and retention TTLs. Its own await and its own try per
     # index, for the reason ensure_dropbox_sync_indexes gives.
     await ensure_whatsapp_phase1_indexes()
+    await ensure_project_memory_indexes()
     # Separate await, so a failure in the WhatsApp migrations cannot skip it.
     await ensure_dropbox_sync_indexes()
     # Also separate, and it never belonged inside the WhatsApp runner at all —

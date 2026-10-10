@@ -1792,6 +1792,25 @@ export const esraConsentAPI = {
 };
 
 /**
+ * Project memory: Project → Search (the project's WhatsApp messages and
+ * daily reports, every result with its source).
+ */
+export const memoryAPI = {
+  search: async (projectId, q, { answer = false, dateFrom, dateTo } = {}) => {
+    const params = { q, answer };
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+    const response = await apiClient.get(`/api/projects/${projectId}/memory/search`, { params });
+    return response.data;
+  },
+  context: async (projectId, sourceId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/memory/context/${encodeURIComponent(sourceId)}`);
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {
