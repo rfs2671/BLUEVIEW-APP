@@ -137,11 +137,14 @@ class TheFourShapes(unittest.TestCase):
     def test_unmapped_alone_says_LOCATION_not_ACTIVE_AREAS(self):
         """The heading is a claim. "No area recorded" under ACTIVE AREAS says
         the system knows there were none; a location WAS recorded here and the
-        table could not read it."""
+        table could not read it. AND THE UNREADABLE VALUE IS NOT PRINTED --
+        ruled 2026-10-10, after "Unmapped source value: ..." reached an
+        investor page."""
         r = lv.resolve(["J"])                             # 2026-08-17
         value, label, notes = r.rail()
         self.assertEqual((value, label), ("—", "Location"))
-        self.assertEqual(notes, ["Unmapped source value: J"])
+        self.assertEqual(notes, [])
+        self.assertEqual(r.unmapped, ["J"])
 
     def test_nothing_recorded_at_all(self):
         value, label, notes = lv.resolve([]).rail()

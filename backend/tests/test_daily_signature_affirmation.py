@@ -193,7 +193,24 @@ class TestToolboxIsExplicitlyExcluded(unittest.TestCase):
         report = _SRC[i:j]
         self.assertNotIn("signature_affirmed", report)
         self.assertNotIn("_preshift_signature_cell", report)
-        self.assertNotIn("toolbox", report)
+        # THE REPORT READS THE TOOLBOX TALK AGAIN, FOR ONE SENTENCE, and still
+        # embeds no roster. Since 2026-10-10 the executive summary says "The
+        # toolbox talk at 8:00 AM had 22 attendees." This asserted the word
+        # never appeared; it now asserts the leak it was standing in for: the
+        # one read hands the filed `data` to the summary, and the summary
+        # takes the meeting time and the attendee COUNT -- no name, no
+        # signature, no attendee field.
+        code = [l for l in report.splitlines() if "toolbox" in l
+                and not l.strip().startswith("#")]
+        self.assertEqual(
+            [l.strip() for l in code],
+            ['toolbox=(_filed_log(logbooks, "toolbox_talk") or {}).get("data"),'])
+        from lib.report import summary
+        import inspect
+        sentence = inspect.getsource(summary.toolbox_sentence)
+        self.assertEqual(re.findall(r'toolbox\.get\("(\w+)"\)', sentence),
+                         ["attendees", "meeting_time"])
+        self.assertIn("n = len(attendees)", sentence)
 
 
 class TestTheRecordIsAFactAboutToday(unittest.TestCase):

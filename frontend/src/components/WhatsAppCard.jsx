@@ -5,6 +5,8 @@ import { MessageCircle, UserPlus, ChevronRight } from 'lucide-react-native';
 import { GlassCard } from './GlassCard';
 import { whatsappAPI } from '../utils/api';
 import { whatsappCardView } from '../utils/whatsappConnect';
+import { canSeeUpcoming } from '../utils/upcoming';
+import { useAuth } from '../context/AuthContext';
 import { spacing, borderRadius } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
 import { useTheme } from '../context/ThemeContext';
@@ -52,7 +54,8 @@ export default function WhatsAppCard({ isAdmin = false }) {
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
-  const view = whatsappCardView({ me, status, isAdmin });
+  const { user } = useAuth();
+  const view = whatsappCardView({ me, status, isAdmin, canFeed: canSeeUpcoming(user) });
   if (!view.visible) return null;
   const { header, groupsButton, assistantButton } = view;
 

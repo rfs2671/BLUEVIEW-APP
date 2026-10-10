@@ -91,6 +91,10 @@ class RailCell:
     value: str
     label: str
     notes: Tuple[str, ...] = ()
+    #: A LIST, ONE ENTRY PER LINE, set as bullets beneath the label. The
+    #: trades at the gate were one " · "-joined note, which wrapped into a
+    #: cramped run on a 20%-wide cell and, on a dense page, was cut off.
+    items: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -114,7 +118,6 @@ class ActivityRowView:
     company: str
     where: str
     statement: str
-    chip: str
 
 
 #: THE RENDITION ORDER FOR THE INVESTOR PDF, MOST FAITHFUL FIRST.
@@ -184,7 +187,6 @@ class BandView:
     company: str
     subtitle: str
     statement: str
-    chip: str
     photos: Tuple[PhotoView, ...]
 
     @property
@@ -409,7 +411,7 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
     day = model.day_location()
     rail_value, rail_label, rail_notes = day.rail()
 
-    trade_notes: List[str] = [" · ".join(model.gate.trades)] if model.gate.trades else []
+    trade_notes: List[str] = []
     if model.gate.trades_pending:
         # SURFACED, NOT SILENTLY EXCLUDED. The placeholder is not counted as a
         # trade and the page says that a check-in carried one.
@@ -420,7 +422,7 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
         RailCell(str(model.gate.check_ins), "Gate check-ins",
                  () if model.gate.check_ins else ("No check-ins recorded",)),
         RailCell(str(len(model.gate.trades)), "Trades at gate",
-                 tuple(trade_notes)),
+                 tuple(trade_notes), items=tuple(model.gate.trades)),
         RailCell(rail_value, rail_label, tuple(rail_notes)),
         RailCell(model.safety.value, "Safety status",
                  ("Not reported",) if not model.safety.reported else ()),
@@ -428,9 +430,13 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
     )
 
     activities = tuple(
+        # "Area not recorded" ONLY WHEN NOTHING WAS. A location the table
+        # could not read was recorded, so the line is left empty rather than
+        # claiming otherwise -- and the unreadable string is not printed.
         ActivityRowView(company=a.company_display,
-                        where=a.where or "Area not recorded",
-                        statement=a.statement, chip=a.chip)
+                        where=a.where or ("" if a.location.located
+                                          else "Area not recorded"),
+                        statement=a.statement)
         for a in model.activities)
 
     extra = model.additional_gate
@@ -443,18 +449,18 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
 
     bands = []
     for i, a in enumerate(model.bands(), start=1):
-        bits = [p for p in (a.trade.title() if a.trade else "",
+        bits = [p for p in (m.proper_case(a.trade) if a.trade else "",
                             a.where) if p]
         bits.append(f"{len(a.photos)} photograph"
                     + ("" if len(a.photos) == 1 else "s"))
         bands.append(BandView(
             number=i, company=a.company_display, subtitle=" · ".join(bits),
-            statement=a.statement, chip=a.chip,
+            statement=a.statement,
             photos=tuple(
-                PhotoView(url=photo_url(logbook_id, a.activity_index, index,
+                PhotoView(url=photo_url(logbook_id, ai, pi,
                                         photo_rendition(photo)),
                           rendition=photo_rendition(photo))
-                for index, photo in a.photos)))
+                for ai, pi, photo in a.photos)))
 
     card_views = tuple(
         CardView(number=c["number"], title=c["title"], citation=c["citation"],

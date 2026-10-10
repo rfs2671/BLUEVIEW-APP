@@ -1624,6 +1624,44 @@ def _qty_check(fam: GlyphFamily, tags: Sequence[str], n: int) -> Tuple[str, Opti
     return ("agrees" if total == n else "disagrees"), total
 
 
+def _qty_in_clause(clause: str, book: GlyphBook) -> Tuple[set, set]:
+    """(QTY figures the clause may state, QTY figures it may not), for every
+    tag it names that has a readable QTY cell.
+
+    TWO RULINGS (operator, 2026-10-10), so the model is never told one thing
+    while the gate accepts another:
+      (a) NOTHING LOCATED, QTY PRINTED: the QTY stands. DH-1's schedule prints
+          QTY 1 and the pass locates none (its label reads "DH-1. DUCT
+          HEATER"): "There is 1 DH-1." binds, from the census's reading of
+          that cell even when the schedule record itself did not come back.
+      (b) BOTH EXIST AND DISAGREE: the QTY is withheld too. A complete located
+          building count that differs from the printed QTY binds neither
+          number - in the gate as well as the render. Withheld only where the
+          located count can be called complete: the family's census matched
+          and nothing that could carry the symbols was refused.
+    An unreadable cell (PTAC-2: "(readings disagree)") is neither: it adds
+    nothing and withholds nothing."""
+    add, drop = set(), set()
+    # A SCHEDULE'S QTY IS A BUILDING FIGURE: it is added only to a clause that
+    # names no floor and no unit. ("The bulkhead has 1 DH-1." is not what the
+    # schedule says.)
+    keys, floor_unknown = _clause_floors(clause, book)
+    units, unit_unknown = _clause_units(clause, book)
+    building = not (keys or floor_unknown or units or unit_unknown)
+    for fam in book.families.values():
+        for t in _named_tags(clause, fam.tags):
+            q = fam.qty.get(t) or ""
+            if not re.fullmatch(r"\d+", q):
+                continue
+            n_t = len(_resolved(fam, [t]))
+            if n_t == 0:
+                if building:
+                    add.add(q)
+            elif not fam.why and not _building_refused(book) and int(q) != n_t:
+                drop.add(q)
+    return add, drop
+
+
 def _building_count(book: GlyphBook, fam: GlyphFamily,
                     tags: Sequence[str]) -> Optional[int]:
     if fam.why or _building_refused(book):
@@ -1828,17 +1866,16 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
         fam = book.families[name]
         head = f"{name} ({', '.join(fam.tags)})"
         if fam.why:
-            line = f"{head}: NOT COUNTED - {fam.why}. State no count of these."
-            # A SCHEDULE THAT PRINTS A QUANTITY NOTHING WAS FOUND FOR IS A
-            # DISAGREEMENT TOO, and is said (operator ruling 2026-10-07).
-            # Measured: DH-1's schedule prints QTY 1; its label reads
-            # "DH-1. DUCT HEATER" and the pass locates none.
+            # NOTHING LOCATED, QTY PRINTED: THE QTY STANDS (ruling (a),
+            # 2026-10-10). The model is told the schedule's figure, which the
+            # gate accepts - never "state no count" beside a count it allows.
             printed = [f"{t} {fam.qty[t]}" for t in fam.tags
                        if re.fullmatch(r"\d+", fam.qty.get(t) or "") and int(fam.qty[t]) > 0]
             if printed and not any(_resolved(fam, [t]) for t in fam.tags):
-                line += (f" The schedule's QTY prints {', '.join(printed)} and none "
-                         f"were located - THEY DISAGREE.")
-            lines.append(line)
+                lines.append(f"{head}: the schedule prints QTY {', '.join(printed)}; "
+                             f"its symbols were not located.")
+            else:
+                lines.append(f"{head}: NOT COUNTED - {fam.why}. State no count of these.")
             continue
         lines.append(f"{head}:")
         floors = sorted({_row_floor(r) for r in fam.rows if _row_floor(r)} | refused_k)
@@ -1894,7 +1931,11 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
         for t in fam.tags:
             n_t = len(_resolved(fam, [t]))
             st, q = _qty_check(fam, [t], n_t)
-            if st == "disagrees":
+            if st == "disagrees" and n_t == 0:
+                # ruling (a): none located - the schedule's figure stands
+                parts.append(f"{t}: the schedule prints QTY {q}; its symbols were "
+                             f"not located")
+            elif st == "disagrees":
                 disagree = True
                 parts.append(f"{t}: located {n_t} but the schedule's QTY prints "
                              f"{q} - THEY DISAGREE; state neither as the total")
@@ -1953,6 +1994,12 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
             allowed |= by_ident[ident]
+        # THE SCHEDULE'S QTY AND THE LOCATED COUNT AGREE, OR NEITHER IS SAID
+        # (_qty_in_clause). Applied to the printed figures BEFORE the located
+        # ones are added below, so a floor figure that happens to equal a
+        # withheld QTY is still allowed at its own scope.
+        qty_add, qty_drop = _qty_in_clause(clause, book)
+        allowed = (allowed - qty_drop) | qty_add
         # A LOCATED SYMBOL'S COUNT IS ITS CARDINALITY, NOT A PRINTED DIGIT.
         # A schedule cell prints `21` and the record carries it. Eight
         # registered-glyph records carry no `8` anywhere — the eight IS how

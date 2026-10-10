@@ -197,6 +197,11 @@ body { margin: 0; color: %(INK)s; background: #fff;
           text-transform: uppercase; color: %(MUTED)s; padding-top: 10px; }
 .p1 .rs { font-size: 9px; color: %(MUTED)s; padding-top: 6px;
           line-height: 1.5; }
+/* A RAIL LIST WRAPS, IT IS NEVER CLIPPED: no nowrap, no ellipsis, and a long
+   trade name breaks onto a second line under its own bullet. */
+.p1 ul.ri { margin: 0; padding: 6px 0 0 0.12in; font-size: 9px;
+            color: %(MUTED)s; line-height: 1.45; }
+.p1 ul.ri li { padding: 0; overflow-wrap: anywhere; }
 
 /* ── EXECUTIVE SUMMARY AND THE WEATHER CARD ─────────────────────────── */
 .p1 table.ex2 { width: 100%%; border-collapse: collapse; }
@@ -243,10 +248,6 @@ body { margin: 0; color: %(INK)s; background: #fff;
              line-height: 1.15; letter-spacing: -0.01em; }
 .p1 .actwhere { font-size: 11px; color: %(MUTED)s; padding-top: 6px; }
 .p1 .actstate { font-size: 11.5px; color: %(INK)s; }
-.p1 .chip { display: inline-block; font-size: 7.5px; font-weight: 700;
-            letter-spacing: 0.10em; text-transform: uppercase;
-            color: %(MUTED)s; border: 1px solid %(HAIR)s;
-            background: %(PANEL)s; padding: 4px 8px; margin-top: 8px; }
 
 /* GATE WORKFORCE IS A CAPTION OF THE SECTION ABOVE IT, so it takes the
    section's label type and no rule of its own. */
@@ -368,6 +369,7 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.dense .rv { font-size: 24px; }
 .p1.dense .rl { font-size: 6.5px; padding-top: 6px; }
 .p1.dense .rs { font-size: 7.5px; padding-top: 3px; }
+.p1.dense ul.ri { font-size: 7.5px; padding-top: 3px; line-height: 1.35; }
 .p1.dense .exec { padding: 0.12in 0 0.02in; }
 .p1.dense .ehead { font-size: 16px; padding-top: 5px; }
 .p1.dense .ebody { font-size: 10.5px; padding-top: 8px; line-height: 1.5; }
@@ -387,7 +389,6 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.dense .actco { font-size: 13px; }
 .p1.dense .actwhere { font-size: 9.5px; padding-top: 3px; }
 .p1.dense .actstate { font-size: 10.5px; }
-.p1.dense .chip { padding: 2px 5px; margin-top: 4px; font-size: 6.5px; }
 .p1.dense table.gw { margin-top: 0.07in; }
 .p1.dense td.gwv { font-size: 10px; }
 .p1.dense .xg { font-size: 11px; }
@@ -408,6 +409,7 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.tight .rv { font-size: 27px; }
 .p1.tight .rl { padding-top: 8px; }
 .p1.tight .rs { font-size: 8px; padding-top: 4px; }
+.p1.tight ul.ri { font-size: 8px; padding-top: 4px; }
 .p1.tight .exec { padding: 0.14in 0 0.03in; }
 .p1.tight .ehead { font-size: 18px; padding-top: 7px; }
 .p1.tight .ebody { font-size: 11px; padding-top: 10px; line-height: 1.55; }
@@ -424,7 +426,6 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.tight .actco { font-size: 14px; }
 .p1.tight .actwhere { font-size: 10px; padding-top: 4px; }
 .p1.tight .actstate { font-size: 11px; }
-.p1.tight .chip { padding: 3px 6px; margin-top: 6px; font-size: 7px; }
 .p1.tight table.gw { margin-top: 0.10in; }
 .p1.tight .xg { font-size: 11.5px; }
 .p1.tight .xgn { font-size: 9px; padding-top: 5px; }
@@ -667,9 +668,12 @@ def render_rail(cells: Sequence[RailCell]) -> str:
     for i, cell in enumerate(cells):
         quiet = " q" if cell.value in ("—", "Sitewide") else ""
         notes = "".join(f'<div class="rs">{esc(n)}</div>' for n in cell.notes)
+        items = ("".join(f'<li>{esc(t)}</li>' for t in cell.items)
+                 if cell.items else "")
+        items = f'<ul class="ri">{items}</ul>' if items else ""
         out += (f'<td class="{"first" if i == 0 else ""}">'
                 f'<div class="rv{quiet}">{esc(cell.value)}</div>'
-                f'<div class="rl">{esc(cell.label)}</div>{notes}</td>')
+                f'<div class="rl">{esc(cell.label)}</div>{items}{notes}</td>')
     return f'<table class="rail"><tr>{out}</tr></table>'
 
 
@@ -753,18 +757,18 @@ def render_activity_block(a: ActivityRowView) -> str:
     """ONE ACTIVITY, AS A TYPOGRAPHIC BLOCK.
 
     Company and canonical location on the left; the resolved count statement
-    and the state chip on the right, both verbatim. The chip stays neutral
-    whichever state it names -- green is reserved for a FILED record and
-    agreement between two counts is not a filing.
+    on the right, verbatim. There is no state chip beneath it any more: the
+    statement prints both numbers, and a badge grading them ("Counts
+    aligned", "Count variance") was removed by ruling 2026-10-10.
     """
     return (
         '<div class="act"><table class="actg"><tr>'
         '<td class="actl">'
         f'<div class="actco">{esc(a.company)}</div>'
-        f'<div class="actwhere">{esc(a.where)}</div></td>'
+        + (f'<div class="actwhere">{esc(a.where)}</div>' if a.where else "")
+        + '</td>'
         '<td class="actr">'
-        f'<div class="actstate">{esc(a.statement)}</div>'
-        f'<div class="chip">{esc(a.chip)}</div></td>'
+        f'<div class="actstate">{esc(a.statement)}</div></td>'
         "</tr></table></div>")
 
 
@@ -808,6 +812,14 @@ def page_1_density(view: ReportView) -> str:
     if view.additional_gate is not None:
         weight += 1
     if view.attention is not None:
+        weight += 1
+    # THE SUMMARY AND THE RAIL GREW, 2026-10-10. The summary is a paragraph
+    # assembled from the day's filings rather than one counts sentence, and
+    # the trades print one per line rather than on one clipped line. Either,
+    # at its long end, is about a row's height.
+    if len(view.summary.body) > 420:
+        weight += 1
+    if max((len(c.items) for c in view.rail), default=0) > 3:
         weight += 1
     # THE BOUNDARIES MOVED WITH THE REDESIGN and are measured, not chosen:
     # the masthead and hero together are taller than the banner they replace,

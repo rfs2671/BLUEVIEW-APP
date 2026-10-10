@@ -201,7 +201,11 @@ class TestTheGateRosterIsIndexStable(unittest.TestCase):
         roster drifted apart unnoticed."""
         out = self._info([{"id": "r1", "company": "Vanguard", "trade": "Concrete"}])
         row = out["trade_assignments"][0]
-        self.assertEqual(set(row), {"trade", "company"})
+        # `trade_label` JOINED 2026-10-10: the canonical name the option
+        # prints ("Plumbing" for a row stored as "Plumber"). `trade` stays the
+        # raw value the pick submits and the roster match compares.
+        self.assertEqual(set(row), {"trade", "company", "trade_label"})
+        self.assertEqual(row["trade"], "Concrete")
 
 
 if __name__ == "__main__":
