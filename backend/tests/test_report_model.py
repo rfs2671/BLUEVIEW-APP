@@ -76,10 +76,12 @@ class TheFiveStates(unittest.TestCase):
             "a Reconciliation member is unreachable from `reconcile`: "
             f"{set(m.Reconciliation) - produced}")
 
-    def test_every_member_has_a_chip(self):
-        for state in m.Reconciliation:
-            self.assertIn(state, m.RECONCILIATION_CHIP, state)
-            self.assertTrue(m.RECONCILIATION_CHIP[state])
+    def test_no_member_has_a_chip(self):
+        """THE BADGES ARE GONE, ruled 2026-10-10. The statement prints both
+        numbers; "Counts aligned" / "Count variance" graded them."""
+        self.assertFalse(hasattr(m, "RECONCILIATION_CHIP"))
+        a = m.ActivityDisplayState(_activity(), 0, m.GateDayState([]))
+        self.assertFalse(hasattr(a, "chip"))
 
     def test_every_member_has_a_statement_and_none_is_empty(self):
         for (log, gate), state in self.CASES.items():
