@@ -617,7 +617,7 @@ class TheSettingsEndpoints(unittest.TestCase):
         self.assertEqual((out["violation_alerts"], out["permit_reminders"]),
                          (True, True))
         self.assertEqual(set(out), {"project_id", "gc_group", "gc_pending_question",
-                                    "groups", "send_window", "chase_weekends",
+                                    "groups", "send_window", "chase_weekends", "punch_sends",
                                     *server.wa_alerts.SWITCHES})
 
     def test_a_pm_cannot_read_or_change(self):

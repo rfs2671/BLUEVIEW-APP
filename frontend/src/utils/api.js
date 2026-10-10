@@ -1838,6 +1838,31 @@ export const upcomingAPI = {
 };
 
 /**
+ * Punch list: Project → Punch list (items from walkthroughs in WhatsApp).
+ */
+export const punchAPI = {
+  // filters: { floor?, trade?, status? }
+  list: async (projectId, filters = {}) => {
+    const params = {};
+    for (const k of ['floor', 'trade', 'status']) if (filters[k]) params[k] = filters[k];
+    const response = await apiClient.get(`/api/projects/${projectId}/punch`, { params });
+    return response.data;
+  },
+  // A short-lived photo link: { url }. which: 'item' | 'done'.
+  photo: async (projectId, pid, which = 'item') => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/punch/${encodeURIComponent(pid)}/photo`, { params: { which } });
+    return response.data;
+  },
+  // Admins: { status?, trade?, floor?, area? }
+  edit: async (projectId, pid, patch) => {
+    const response = await apiClient.patch(
+      `/api/projects/${projectId}/punch/${encodeURIComponent(pid)}`, patch);
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {

@@ -20,6 +20,7 @@ import {
   Users,
   Building2,
   ClipboardList,
+  ClipboardCheck,
   Settings,
   Wifi,
   ChevronRight,
@@ -61,6 +62,7 @@ import ProjectRetentionCard from '../../src/components/ProjectRetentionCard';
 import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import { canSeePunch } from '../../src/utils/punchList';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { canSearch } from '../../src/utils/projectMemory';
@@ -666,6 +668,8 @@ export default function ProjectDetailScreen() {
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
+    // Admins and PMs: punch items from walkthroughs in WhatsApp.
+    ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
     // Admins and PMs: search the project's WhatsApp messages and daily reports.
     ...(canSearch(user) ? [{ title: 'Search', icon: Search, path: `/projects/${projectId}/search`, color: '#6366f1' }] : []),
     // Admins and PMs: hearings, permit expirations and dated events from the group chat.
