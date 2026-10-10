@@ -974,13 +974,13 @@ ok(/\{activities\.map\(\(a, i\) => \{/.test(step1c) && !/activities\.slice\(/.te
   'every crew renders — none hidden behind a "+N more"');
 
 // The sentinel never reaches the screen.
-ok(/tradeLabel\(a\.trade\)/.test(step1c), 'the crew step renders the trade through the label rule');
+ok(/tradeLabel\(a\.trade, tradeVocab\)/.test(step1c), 'the crew step renders the trade through the label rule, canonically');
 ok(!/\{!!a\.trade &&/.test(code), 'and the raw trade render is gone everywhere');
 // ONE, NOT TWO. It was two — the roster step's dense row and the crew card's
 // meta line — and the row went. The COUNT is the assertion: a second surface
 // appearing without the label rule is how the "UNASSIGNED" sentinel reached a
 // filed record the first time, and an unbounded /tradeLabel/ would not see it.
-ok((code.match(/tradeLabel\(a\.trade\)/g) || []).length === 1,
+ok((code.match(/tradeLabel\(a\.trade\b/g) || []).length === 1,
   'the one surviving surface that shows a roster trade uses it — the crew card line');
 
 

@@ -48,7 +48,7 @@ import {
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
+import { logbooksAPI, projectsAPI, tradesAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { useT } from '../../src/i18n';
 import {
@@ -468,6 +468,10 @@ export default function DailyJobsiteLog() {
   // trade; '' is the unfiltered list, used for a crew whose trade is blank.
   const [chipsByTrade, setChipsByTrade] = useState({});
   const [chipsMetaByTrade, setChipsMetaByTrade] = useState({});
+  // THE TRADE VOCABULARY, for the crew card's trade name only: a roster row
+  // stored as "Plumber" prints "Plumbing", as on the report and at the gate.
+  // Null until it loads, and on any failure -- the stored name then prints.
+  const [tradeVocab, setTradeVocab] = useState(null);
   const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
   const [equipmentOpen, setEquipmentOpen] = useState(false);
 
@@ -510,6 +514,14 @@ export default function DailyJobsiteLog() {
   useEffect(() => { activitiesRef.current = activities; }, [activities]);
 
   useEffect(() => { fetchData(); }, [projectId, date]);
+
+  useEffect(() => {
+    let alive = true;
+    tradesAPI.getVocabulary()
+      .then((v) => { if (alive) setTradeVocab(v); })
+      .catch(() => { /* the stored trade name prints, as it always did */ });
+    return () => { alive = false; };
+  }, []);
 
   // A string, not a call: the pending-marker guarantee is pinned on the
   // literal `markPending(_key)` shape in logbookPhotoR2.test.cjs.
@@ -2224,7 +2236,7 @@ export default function DailyJobsiteLog() {
               )}
             </View>
             <Text style={s.crewMeta}>
-              {[tradeLabel(a.trade), plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
+              {[tradeLabel(a.trade, tradeVocab), plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
                 a.check_in_time ? formatCheckInTime(a.check_in_time) : null]
                 .filter(Boolean).join(' · ')}
             </Text>
