@@ -10,8 +10,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Clipboard from 'expo-clipboard';
-import { ArrowLeft, CalendarClock, X, Pencil, Link2 } from 'lucide-react-native';
+import { ArrowLeft, CalendarClock, X, Pencil } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
@@ -28,8 +27,8 @@ import DateInput from '../../../src/components/DateInput';
 // Project → Upcoming: hearings and permit expirations from the city's
 // records, and the dated events said in the job's WhatsApp group ("from
 // chat", with the words they came from; one tap to dismiss, or correct the
-// day). Below, the person's private calendar feed: subscribe to it once in
-// Google or Outlook. Nothing here posts anywhere.
+// day). Nothing here posts anywhere. The person's private calendar feed is
+// in Integrations → WhatsApp → Personal assistant (CalendarFeedCard).
 export default function ProjectUpcomingScreen() {
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
@@ -38,7 +37,6 @@ export default function ProjectUpcomingScreen() {
   const [events, setEvents] = useState(null);
   const [editing, setEditing] = useState(null);   // { id, date, time }
   const [busy, setBusy] = useState(null);
-  const [feed, setFeed] = useState(null);         // { active, url? }
 
   const load = useCallback(async () => {
     try {
@@ -47,11 +45,6 @@ export default function ProjectUpcomingScreen() {
     } catch (e) {
       setEvents([]);
       toast?.error?.('Upcoming', 'Could not load. Try again.');
-    }
-    try {
-      setFeed(await upcomingAPI.feedStatus());
-    } catch (e) {
-      setFeed(null);
     }
   }, [projectId]);
 
@@ -85,35 +78,6 @@ export default function ProjectUpcomingScreen() {
     } finally {
       setBusy(null);
     }
-  };
-
-  const makeFeed = async () => {
-    setBusy('feed');
-    try {
-      const made = await upcomingAPI.makeFeed();
-      setFeed({ active: true, url: made.url });
-    } catch (err) {
-      toast?.error?.('Calendar link', 'Could not make one. Try again.');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const revokeFeed = async () => {
-    setBusy('feed');
-    try {
-      await upcomingAPI.revokeFeed();
-      setFeed({ active: false });
-    } catch (err) {
-      toast?.error?.('Calendar link', 'Could not turn it off. Try again.');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const copy = async (url) => {
-    await Clipboard.setStringAsync(url);
-    toast?.success?.('Copied', 'Paste it into Google or Outlook: “Subscribe from URL”.');
   };
 
   const text = { color: colors.text.primary };
@@ -203,37 +167,6 @@ export default function ProjectUpcomingScreen() {
             </GlassCard>
           ))}
 
-          <GlassCard style={styles.card}>
-            <View style={styles.eventHead}>
-              <Link2 size={16} color={text.color} />
-              <Text style={[styles.section, text, styles.grow]}>Your calendar feed</Text>
-            </View>
-            <Text style={[styles.line, muted]}>
-              A private link with everything coming up on your jobs. Subscribe to it once in Google
-              Calendar or Outlook; it stays up to date. Anyone with the link can see it, so keep it
-              to yourself. Turning it off stops it at once.
-            </Text>
-            {feed && feed.url ? (
-              <>
-                <Text selectable style={[styles.url, text]}>{feed.url}</Text>
-                <Text style={[styles.chip, muted]}>Shown once. Copy it now.</Text>
-                <View style={styles.buttons}>
-                  <GlassButton title="Copy link" onPress={() => copy(feed.url)} />
-                  <GlassButton title="Turn off" onPress={revokeFeed} disabled={busy === 'feed'} />
-                </View>
-              </>
-            ) : feed && feed.active ? (
-              <View style={styles.buttons}>
-                <GlassButton title="New link" onPress={makeFeed} disabled={busy === 'feed'} />
-                <GlassButton title="Turn off" onPress={revokeFeed} disabled={busy === 'feed'} />
-              </View>
-            ) : (
-              <View style={styles.buttons}>
-                <GlassButton title="Get my calendar link" onPress={makeFeed}
-                             disabled={busy === 'feed'} />
-              </View>
-            )}
-          </GlassCard>
         </ScrollView>
       </SafeAreaView>
     </View>
@@ -256,7 +189,6 @@ const styles = StyleSheet.create({
   line: { fontSize: 15, lineHeight: 21 },
   quote: { fontStyle: 'italic', marginTop: 2 },
   chip: { fontSize: 12, marginTop: 2 },
-  url: { fontSize: 13, marginVertical: spacing.sm },
   editRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm,
              alignItems: 'center' },
   input: { minWidth: 110, paddingVertical: spacing.xs, paddingHorizontal: spacing.sm,
