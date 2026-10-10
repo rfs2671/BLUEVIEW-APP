@@ -430,13 +430,19 @@ def pick_person(name: str, people: List[Dict[str, Any]]) -> Optional[dict]:
     return next(iter(uniq.values())) if len(uniq) == 1 else None
 
 
+def due_date(words: str, sent_at):
+    """The day a due answer names (Spanish / Yiddish read as English)."""
+    from lib import wa_attention
+    return wa_attention.parse_due(multilang.normalize_when(words), sent_at)
+
+
 DUE_QUESTION = "Due Fri for all, or by trade? (e.g. \"Fri\", or \"electrical Mon, paint Fri\")"
 
 
 def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str]]:
     """"Fri" / "all Friday" -> every trade that day; "electrical Mon, paint
     Fri" -> per trade. Returns {trade: due words} or None. A day the date
-    readers cannot read is not accepted."""
+    readers cannot read is not accepted. Spanish / Yiddish days read too."""
     from lib import wa_attention
     from datetime import datetime, timezone
     probe = datetime(2026, 1, 5, tzinfo=timezone.utc)
@@ -448,11 +454,11 @@ def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str
             continue
         m = re.match(r"^\s*([a-z /áéíóúñ]+?)\s+(?:by\s+|para\s+el\s+|el\s+)?(.+)$", part, re.IGNORECASE)
         t = trade_word(m.group(1)) if m else None
-        if t and wa_attention.parse_due(m.group(2), probe):
+        if t and wa_attention.parse_due(multilang.normalize_when(m.group(2)), probe):
             out[t] = m.group(2).strip()
             continue
         words = re.sub(r"^\s*(?:all|todo|todos|everything)\s+", "", part, flags=re.IGNORECASE)
-        if wa_attention.parse_due(words, probe):
+        if wa_attention.parse_due(multilang.normalize_when(words), probe):
             for t2 in ts:
                 out.setdefault(t2, words)
     return out or None

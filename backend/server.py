@@ -71,6 +71,8 @@ from lib import wa_security  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import multilang  # noqa: E402
+from lib import punch  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
@@ -17439,6 +17441,8 @@ _PROJECT_OWNED_COLLECTIONS = [
     # Phase 1: proactive direct-message ledger rows carry the project they
     # were about.
     "whatsapp_notification_ledger",
+    # Punch list: the job's items and its walkthroughs.
+    "punch_items", "punch_sessions",
 ]
 
 
@@ -17727,6 +17731,22 @@ async def hard_delete_project(
     # ── R2: the page images, BY KEY, from the rows collected above. Against
     # this deployment this is the only half that removes anything.
     r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, page_keys)
+
+    # ── R2: the project's punch-list photos, by key from its items and
+    # walkthroughs (before they go), then the wa-photos/<project>/ sweep.
+    try:
+        _pkeys = []
+        for _r in await db[punch.COLLECTION].find({"project_id": str(project_id)}).to_list(None):
+            _pkeys += [_r.get("photo_key"), *(_r.get("extra_photos") or []),
+                       (_r.get("completion") or {}).get("photo_key")]
+        for _s in await db[punch.SESSIONS].find({"project_id": str(project_id)}).to_list(None):
+            _pkeys += [i.get("photo_key") for i in _s.get("items") or []]
+        r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, [k for k in _pkeys if k])
+    except Exception as e:
+        logger.warning(f"[hard_delete] punch photo delete skipped: {e!r}")
+    r2_deleted += await _r2_delete_prefix(
+        _r2_client, R2_BUCKET_NAME, f"wa-photos/{project_id}/",
+    )
 
     # ── R2: prefix sweeps for artefacts NO DB ROW NAMES. A supplement, not the
     # mechanism — every one of these returns 0 here regardless of what is in
@@ -45304,6 +45324,10 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
     out["send_window"] = (wa_gc.clean_send_window(stored.get("send_window"))
                           or wa_gc.default_send_window())
     out["chase_weekends"] = stored.get("chase_weekends") is True
+    # Punch sends: "shadow" (default: the walker sees what WOULD be posted,
+    # nothing is) or "live".
+    out["punch_sends"] = stored.get("punch_sends") if stored.get("punch_sends") in punch.SEND_MODES \
+        else punch.DEFAULT_SEND_MODE
     return out
 
 
@@ -46579,6 +46603,15 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
             sets["chase_quote"] = {"quote": quote, "message_id": this_id,
                                    "sent_at": sent_at, "source": "handover"}
             event = _attention_event("handover", frm, frm, msg, quote, ev_kind, **extra)
+        elif a["action"] in ("state", "possibly_done") and it.get("punch_id") \
+                and a["to"] == "done":
+            # A punch item is never closed by the sub: "done" is READY TO
+            # CHECK until the super says "P23 ok".
+            prow = await db[punch.COLLECTION].find_one({"_id": it["punch_id"]})
+            if prow and prow.get("status") == "open":
+                await _punch_set_status(prow, "ready_to_check", now, by=sender, quote=quote,
+                                        message_id=this_id)
+            continue
         elif a["action"] in ("state", "possibly_done"):
             sets["status"] = a["to"]
             event = _attention_event("state", frm, a["to"], msg, quote, ev_kind, **extra)
@@ -46742,6 +46775,16 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     group_id, project_id, company_id = ctx["group_id"], ctx["project_id"], ctx["company_id"]
     text = wa_attention_state.text_of(msg)
     msg = dict(msg, body=text)
+    if punch.parse_pid(text):
+        # A punch item named by its id: "done P23" (ready to check), "P23
+        # ok" / "P23 not done" (closed / reopened).
+        try:
+            if await _punch_group_message(msg, ctx):
+                report["punch"] = report.get("punch", 0) + 1
+                await _attention_count(ctx, ctx["now"], messages=1)
+                return True
+        except Exception as e:
+            logger.warning(f"[punch] group message failed: {type(e).__name__}")
     report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
     prev = await _attention_previous(msg, ctx)
     # An update to an earlier item ("Sent this morning", "Actually Monday",
@@ -59754,6 +59797,667 @@ async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime) -> Opt
     return hits[0] if len(hits) == 1 else None
 
 
+# ── WALKTHROUGH -> PUNCH LIST -> CHASE ──────────────────────────────────────
+#
+# The rules are lib/punch.py (pure). Here: the DM turn, the photos (kept in
+# R2 under the project: wa-photos/<project>/…), the people on the job, the
+# P-<job>-<seq> counter, the send (shadow by default: the walker sees what
+# WOULD be posted, nothing is), the attention items the chase engine reads,
+# and the closing words in the job's group.
+
+PUNCH_STATE_OPEN = ("capturing", "draft", "assign", "due")
+
+
+def _punch_photo_key(project_id: Any, session_id: Any, n: Any) -> str:
+    safe = lambda v: re.sub(r"[^A-Za-z0-9_.-]", "_", str(v or ""))[:80] or "x"
+    return f"wa-photos/{safe(project_id)}/{safe(session_id)}/{safe(n)}.jpg"
+
+
+def _wa_media_bytes(node: Any, depth: int = 0) -> Optional[bytes]:
+    """The base64 media in a WaAPI download-media answer (any nesting)."""
+    if depth > 8 or node is None:
+        return None
+    if isinstance(node, str):
+        if node.startswith("data:") and ";base64," in node:
+            try:
+                return base64.b64decode(node.split(",", 1)[1])
+            except Exception:
+                return None
+        if len(node) > 500 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", node):
+            try:
+                b = base64.b64decode(node, validate=False)
+                return b if len(b) > 200 else None
+            except Exception:
+                return None
+        return None
+    if isinstance(node, dict):
+        for v in node.values():
+            r = _wa_media_bytes(v, depth + 1)
+            if r:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _wa_media_bytes(v, depth + 1)
+            if r:
+                return r
+    return None
+
+
+def _wa_media_key(node: Any, depth: int = 0) -> Optional[str]:
+    if depth > 10 or node is None:
+        return None
+    if isinstance(node, dict):
+        v = node.get("mediaKey")
+        if isinstance(v, str) and len(v) >= 40:
+            return v
+        for val in node.values():
+            r = _wa_media_key(val, depth + 1)
+            if r:
+                return r
+    elif isinstance(node, list):
+        for val in node:
+            r = _wa_media_key(val, depth + 1)
+            if r:
+                return r
+    return None
+
+
+_IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG", b"RIFF", b"GIF8")
+
+
+async def download_image(parsed_msg: dict) -> Optional[bytes]:
+    """A WhatsApp photo's bytes, through WaAPI download-media (decrypted with
+    its mediaKey when WaAPI hands back the .enc blob). None on failure."""
+    message_id = parsed_msg.get("message_id_serialized") or parsed_msg.get("message_id") or ""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
+        return None
+    try:
+        async with ServerHttpClient(timeout=45) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}",
+                         "Content-Type": "application/json"},
+                json={"messageId": message_id})
+            if not (200 <= resp.status_code < 300):
+                logger.info(f"[punch] image download status={resp.status_code}")
+                return None
+            j = resp.json() if resp.content else {}
+    except Exception as e:
+        logger.warning(f"[punch] image download failed: {type(e).__name__}")
+        return None
+    raw = _wa_media_bytes(j)
+    if not raw:
+        return None
+    if raw.startswith(_IMAGE_MAGIC):
+        return raw
+    key = _wa_media_key(j)
+    if key:
+        try:
+            dec = _decrypt_whatsapp_media(raw, key, "image")
+            if dec and dec.startswith(_IMAGE_MAGIC):
+                return dec
+        except Exception:
+            return None
+    return None
+
+
+def _punch_caption(parsed: dict, body: str) -> str:
+    """A photo's caption. An image with no caption can arrive with its
+    base64 thumbnail as the body: that is not words."""
+    b = str(body or "").strip()
+    if parsed.get("has_image") and len(b) > 200 and " " not in b:
+        return ""
+    return b
+
+
+async def _punch_people(project: dict, company_id: str) -> List[dict]:
+    """Who works on this job and in which trade: People mapped to a sub of
+    the job (its trade from the job's trade list), and checked-in workers
+    (their trade as checked in). Each with a WhatsApp id to @mention."""
+    pid = str(project.get("_id") or project.get("id") or "")
+    trade_of_co: Dict[str, List[str]] = {}
+    for r in _active_assignments(project):
+        t = punch.trade_word(str(r.get("trade") or ""))
+        if t:
+            trade_of_co.setdefault(multilang.fold(r.get("company") or ""), []).append(t)
+    out: List[dict] = []
+    try:
+        maps = await db[wa_sender_map.COLLECTION].find({"company_id": str(company_id)}).to_list(2000)
+    except Exception:
+        maps = []
+    for m in maps:
+        co = m.get("sub_company") or ""
+        trades = trade_of_co.get(multilang.fold(co), [])
+        if trades and m.get("sender_jid"):
+            out.append({**wa_sender_map.owner_from_map(m), "company": co, "trades": trades,
+                        "jid": m.get("sender_jid")})
+    try:
+        rows = await db.checkins.find(
+            {"project_id": pid, "company_id": _company_id_filter(company_id),
+             "is_deleted": {"$ne": True}},
+            {"worker_id": 1, "worker_name": 1, "worker_phone": 1, "company": 1, "trade": 1,
+             "worker_company": 1, "worker_trade": 1}).to_list(5000)
+    except Exception:
+        rows = []
+    seen = set()
+    for r in rows:
+        digits = wa_dm.phone_digits(r.get("worker_phone") or "")
+        t = punch.trade_word(str(r.get("trade") or r.get("worker_trade") or ""))
+        if not digits or not t or digits in seen:
+            continue
+        seen.add(digits)
+        out.append({"kind": "worker", "id": str(r.get("worker_id") or digits),
+                    "name": r.get("worker_name") or "", "status": "resolved", "reason": None,
+                    "company": r.get("company") or r.get("worker_company") or "",
+                    "trades": [t], "jid": f"{digits}@c.us"})
+    return out
+
+
+async def _punch_next_seq(project_id: str) -> int:
+    """The next P-<job>-<seq> number for this job (atomic)."""
+    col = db[punch.COUNTERS]
+    try:
+        row = await col.find_one_and_update(
+            {"_id": str(project_id)}, {"$inc": {"seq": 1}},
+            return_document=_ReturnDocument.AFTER)
+        if row:
+            return int(row["seq"])
+        try:
+            await col.insert_one({"_id": str(project_id), "seq": 1})
+            return 1
+        except Exception:
+            row = await col.find_one_and_update(
+                {"_id": str(project_id)}, {"$inc": {"seq": 1}},
+                return_document=_ReturnDocument.AFTER)
+            return int(row["seq"])
+    except Exception as e:
+        logger.warning(f"[punch] counter failed: {type(e).__name__}")
+        raise
+
+
+async def _punch_job_people(sess: dict) -> List[dict]:
+    """The people on the walkthrough's job (its own company only)."""
+    company_id = sess["company_id"]
+    project = await db.projects.find_one(
+        {"_id": to_query_id(sess["project_id"]),
+         "company_id": _company_id_filter(company_id)}) or {}
+    return await _punch_people(project, company_id)
+
+
+async def _punch_session(user_id: str) -> Optional[dict]:
+    try:
+        return await db[punch.SESSIONS].find_one(
+            {"user_id": str(user_id), "status": {"$in": list(PUNCH_STATE_OPEN)}},
+            sort=[("updated_at", -1)])
+    except Exception:
+        return None
+
+
+async def _punch_save(sess: dict, **fields) -> None:
+    fields["updated_at"] = datetime.now(timezone.utc)
+    sess.update(fields)
+    await db[punch.SESSIONS].update_one({"_id": sess["_id"]}, {"$set": fields})
+
+
+def _punch_project_of(ident: dict, project_id: Any) -> Optional[dict]:
+    for p in ident.get("projects") or []:
+        if str(p.get("_id") or p.get("id")) == str(project_id):
+            return p
+    return None
+
+
+async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
+                         voice: Optional[dict] = None) -> bool:
+    """A walkthrough turn in the walker's DM, or False when this message is
+    not about one (the assistant answers it as before)."""
+    now = datetime.now(timezone.utc)
+    msg_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
+    text = _punch_caption(parsed, body)
+    sess = await _punch_session(ident["user_id"])
+
+    # Questions and verdicts work with or without a walkthrough.
+    if not parsed.get("has_image") and not voice:
+        q = punch.parse_query(text)
+        if q:
+            await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
+            return True
+        if punch.super_verdict(text):
+            reply = await _punch_verdict(ident, text, now)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+                return True
+
+    if not sess:
+        start = punch.start_request(text) if not parsed.get("has_image") else None
+        if not start and not parsed.get("has_image"):
+            return False
+        hint = (start or {}).get("job")
+        project, why = punch.match_project(hint, ident.get("projects") or [])
+        sess = {"_id": str(uuid.uuid4()), "user_id": str(ident["user_id"]),
+                "company_id": str(ident["company_id"]), "chat": dm_chat,
+                "project_id": str(project.get("_id") or project.get("id")) if project else None,
+                "job_name": wa_assistant.street_label(project) if project else "",
+                "job_code": punch.job_code(project) if project else "",
+                "status": "capturing", "items": [], "created_at": now, "updated_at": now,
+                "reminded_at": None}
+        await db[punch.SESSIONS].insert_one(dict(sess))
+        if start:
+            if project:
+                await send_whatsapp_message(dm_chat, (
+                    f"Walkthrough at {sess['job_name']} started. Send each photo with a caption "
+                    "or a voice note; 'done' when you're finished."))
+            else:
+                names = ", ".join(wa_assistant.street_label(p) for p in (ident.get("projects") or [])[:6])
+                await send_whatsapp_message(dm_chat, (
+                    f"Which job? Reply with its number or street ({names}). Photos you send "
+                    "meanwhile are kept."))
+            return True
+        # A first photo starts it (below).
+
+    if sess["status"] == "capturing":
+        return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
+    if sess["status"] == "draft":
+        return await _punch_draft_turn(sess, dm_chat, text, voice)
+    if sess["status"] == "assign":
+        return await _punch_assign_turn(ident, sess, dm_chat, text)
+    if sess["status"] == "due":
+        return await _punch_due_turn(ident, sess, dm_chat, text)
+    return False
+
+
+async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now) -> bool:
+    items = sess["items"]
+    low = text.strip().lower()
+    if not sess.get("project_id") and text and not parsed.get("has_image"):
+        project, _ = punch.match_project(text, ident.get("projects") or [])
+        if project:
+            await _punch_save(sess, project_id=str(project.get("_id") or project.get("id")),
+                              job_name=wa_assistant.street_label(project),
+                              job_code=punch.job_code(project))
+            await send_whatsapp_message(dm_chat, f"Walkthrough at {sess['job_name']}. Keep going; 'done' when finished.")
+            return True
+    if low in ("cancel walkthrough", "cancel", "stop walkthrough"):
+        await _punch_save(sess, status="cancelled")
+        await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
+        return True
+    if low in ("done", "listo", "fartik", "finished", "that's it", "thats it"):
+        if not sess.get("project_id"):
+            await send_whatsapp_message(dm_chat, "Which job is this walkthrough for? Reply with its number or street.")
+            return True
+        if not items:
+            await send_whatsapp_message(dm_chat, "No photos yet. Send each one with a caption or a voice note.")
+            return True
+        await _punch_save(sess, status="draft")
+        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], sess["items"]))
+        return True
+    words = (voice or {}).get("transcript") or text
+    if parsed.get("has_image"):
+        n = len(items) + 1
+        key = None
+        img = await download_image(parsed)
+        if img and sess.get("project_id"):
+            key = _punch_photo_key(sess["project_id"], sess["_id"], n)
+            try:
+                if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
+                    key = None
+            except Exception:
+                key = None
+        elif img:
+            key = _punch_photo_key("unassigned", sess["_id"], n)
+            try:
+                if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
+                    key = None
+            except Exception:
+                key = None
+        it = punch.new_item(n, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
+        it["photo_failed"] = img is None
+        items.append(it)
+        await _punch_save(sess, items=items)
+        await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+        return True
+    if voice or text:
+        last = items[-1] if items else None
+        if last and not last.get("text"):
+            # The words for the photo just sent (a caption typed or spoken after it).
+            fresh = punch.new_item(last["n"], words, photo_key=last.get("photo_key"),
+                                   message_id=last.get("message_id"), voice=voice, at=last.get("at"))
+            items[-1] = {**last, **{k: fresh[k] for k in ("text", "voice", "floor", "area", "trade")}}
+            await _punch_save(sess, items=items)
+            await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+            return True
+        if voice or low.startswith("add"):
+            # A spoken item with no photo, or "add: …".
+            w = re.sub(r"^\s*add\s*[:\-]?\s*", "", words, flags=re.IGNORECASE) if not voice else words
+            items.append(punch.new_item(len(items) + 1, w, photo_key=None, message_id=msg_id,
+                                        voice=voice, at=now))
+            await _punch_save(sess, items=items)
+            await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+            return True
+    return False      # chatter: the assistant answers it as before
+
+
+async def _punch_draft_turn(sess, dm_chat, text, voice) -> bool:
+    words = (voice or {}).get("transcript") or text
+    low = words.strip().lower()
+    items = sess["items"]
+    if low in ("cancel walkthrough", "cancel"):
+        await _punch_save(sess, status="cancelled")
+        await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
+        return True
+    if low in ("send", "enviar", "manda", "shik"):
+        live = [it for it in items if it.get("status", "draft") != "dropped"]
+        need = [it["n"] for it in punch.ordered(live) if it.get("trade") == punch.UNKNOWN]
+        if need:
+            await send_whatsapp_message(dm_chat, (
+                f"{len(need)} still need a trade ({', '.join(map(str, need))}). "
+                "Reply e.g. \"3 → paint\", then 'send'."))
+            return True
+        people = await _punch_job_people(sess)
+        trades = sorted({it["trade"] for it in live})
+        sugg = punch.suggest_assignees(trades, people)
+        await _punch_save(sess, status="assign",
+                          assign={t: (p and {k: p.get(k) for k in ("kind", "id", "name", "company", "jid")})
+                                  for t, p in sugg.items()})
+        await send_whatsapp_message(dm_chat, punch.assign_text(sugg))
+        return True
+    edits = punch.parse_edits(words)
+    if not edits:
+        return False
+    notes = []
+    for e in edits:
+        nxt = max([it["n"] for it in items] or [0]) + 1
+        ok, note = punch.apply_edit(items, e, next_n=nxt)
+        if not ok:
+            notes.append(note)
+    await _punch_save(sess, items=items)
+    reply = punch.draft_text(sess["job_name"], items)
+    if notes:
+        reply = "Couldn't: " + "; ".join(notes) + "\n\n" + reply
+    await send_whatsapp_message(dm_chat, reply)
+    return True
+
+
+async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
+    low = text.strip().lower()
+    assign = dict(sess.get("assign") or {})
+    if low in ("cancel walkthrough", "cancel"):
+        await _punch_save(sess, status="cancelled")
+        await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
+        return True
+    fixes = punch.parse_assign(text)
+    if fixes:
+        people = await _punch_job_people(sess)
+        miss = []
+        for t, name in fixes:
+            person = punch.pick_person(name, people)
+            if person:
+                assign[t] = {k: person.get(k) for k in ("kind", "id", "name", "company", "jid")}
+            else:
+                miss.append(name)
+        await _punch_save(sess, assign=assign)
+        if miss:
+            await send_whatsapp_message(dm_chat, (
+                f"I don't know {', '.join(miss)} on this job (they need to be in People or "
+                "checked in). " + punch.assign_text(assign)))
+            return True
+    elif low not in ("ok", "okay", "yes", "si", "sí", "yo", "dale", "👍"):
+        return False
+    missing = [t for t, p in assign.items() if not p]
+    if missing:
+        await send_whatsapp_message(dm_chat, punch.assign_text(assign))
+        return True
+    await _punch_save(sess, status="due")
+    await send_whatsapp_message(dm_chat, punch.DUE_QUESTION)
+    return True
+
+
+async def _punch_due_turn(ident, sess, dm_chat, text) -> bool:
+    trades = sorted((sess.get("assign") or {}).keys())
+    due = punch.parse_due_answer(text, trades)
+    if not due or any(t not in due for t in trades):
+        await send_whatsapp_message(dm_chat, punch.DUE_QUESTION)
+        return True
+    await _punch_save(sess, due=due)
+    reply = await _punch_send(ident, sess)
+    await send_whatsapp_message(dm_chat, reply)
+    return True
+
+
+async def _punch_send(ident: dict, sess: dict) -> str:
+    """Make the punch items (and their attention items: confirmed owner, due
+    date, chased by the chase engine), then post one message per assignee --
+    or, in shadow, tell the walker what WOULD be posted."""
+    now = datetime.now(timezone.utc)
+    settings = await _whatsapp_project_settings(sess["project_id"])
+    mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
+        else punch.DEFAULT_SEND_MODE
+    group_id = settings.get("gc_group_id")
+    if not group_id:
+        return ("This job has no WhatsApp group linked (Project → WhatsApp), so there is "
+                "nowhere to send the punch list. The draft is kept.")
+    walker_digits = wa_dm.phone_digits(sess.get("chat") or "")
+    by_person: Dict[str, dict] = {}
+    for it in punch.ordered([i for i in sess["items"] if i.get("status", "draft") != "dropped"]):
+        person = (sess.get("assign") or {}).get(it["trade"])
+        if not person:
+            continue
+        b = by_person.setdefault(f"{person['kind']}:{person['id']}",
+                                 {"person": person, "items": [], "due_words": sess["due"][it["trade"]]})
+        b["items"].append(it)
+    batches = []
+    for key, b in by_person.items():
+        person, rows = b["person"], []
+        for it in b["items"]:
+            seq = await _punch_next_seq(sess["project_id"])
+            pid = punch.punch_id(sess["job_code"] or "JOB", seq)
+            due_at = punch.due_date(b["due_words"], now)
+            row = {"_id": pid, "pid": pid, "seq": seq, "company_id": sess["company_id"],
+                   "project_id": sess["project_id"], "group_id": group_id,
+                   "text": it.get("text") or "", "voice": it.get("voice"),
+                   "photo_key": it.get("photo_key"), "extra_photos": it.get("extra_photos") or [],
+                   "floor": it.get("floor"), "area": it.get("area"), "trade": it.get("trade"),
+                   "assignee": person, "created_by": sess["user_id"], "walk_id": sess["_id"],
+                   "created_at": it.get("at") or now, "assigned_at": now,
+                   "due": {"due_text": b["due_words"], "due_at": due_at.isoformat() if due_at else None},
+                   "status": "open", "send_mode": mode,
+                   "history": [{"at": now, "action": "sent", "to": "open", "by": sess["user_id"],
+                                "mode": mode}],
+                   "completion": None, "closed_by": None, "closed_at": None}
+            ev_id = f"punch:{pid}"
+            att = {
+                "company_id": sess["company_id"], "project_id": sess["project_id"],
+                "group_id": group_id, "type": "request", "status": "open",
+                "summary": f"{pid}: {it.get('text') or ''}"[:200],
+                "owner": {k: person.get(k) for k in ("kind", "id", "name", "jid")}
+                         | {"status": "resolved", "reason": None, "source": "punch",
+                            "sub_company": person.get("company")},
+                "requester": None,
+                "due": {"due_text": b["due_words"], "due_at": due_at.isoformat() if due_at else None,
+                        "due_source": "parsed" if due_at else "none"},
+                "importance": "normal", "tags": ["punch"],
+                "evidence": {"message_id": ev_id, "message_key": ev_id, "quote": it.get("text") or pid,
+                             "verified": True, "sent_at": now, "sender": walker_digits,
+                             "sender_last4": walker_digits[-4:], "kind": "punch"},
+                "extraction": {"source": "punch", "prompt_version": wa_attention.PROMPT_VERSION},
+                "punch_id": pid, "topic": sorted(wa_attention_state.topic_terms(it.get("text") or "")),
+                "multi": False, "parent_id": None,
+                "history": [{"id": wa_attention_state.new_event_id(), "kind": "created", "from": None,
+                             "to": "open", "at": now, "message_id": ev_id, "quote": it.get("text") or pid,
+                             "evidence_kind": "punch", "verified": True}],
+                "parts_done": [], "review": None, "created_at": now, "updated_at": now}
+            res = await db.attention_items.insert_one(att)
+            row["attention_item_id"] = str(res.inserted_id)
+            await db[punch.COLLECTION].insert_one(row)
+            rows.append(row)
+        photos = sum(1 for r in rows if r.get("photo_key")) + sum(len(r["extra_photos"]) for r in rows)
+        batches.append({"name": person.get("name") or person.get("company") or "", "items": rows,
+                        "due_words": b["due_words"], "photos": photos, "jid": person.get("jid")})
+    await _punch_save(sess, status="sent", sent_at=now, send_mode=mode)
+    logger.info(f"[punch] sent walk={sess['_id']} mode={mode} items="
+                f"{sum(len(b['items']) for b in batches)} people={len(batches)}")
+    if mode != "live":
+        return punch.shadow_text(batches)
+    for b in batches:
+        await send_whatsapp_message(group_id, punch.group_text(b["name"], b["items"], b["due_words"]))
+        for r in b["items"]:
+            for key in [r.get("photo_key"), *r.get("extra_photos", [])]:
+                if key:
+                    await _punch_send_photo(group_id, key, r["pid"])
+    return f"Sent {sum(len(b['items']) for b in batches)} items to {len(batches)} " \
+           f"{'person' if len(batches) == 1 else 'people'} in the group."
+
+
+async def _punch_send_photo(group_id: str, key: str, caption: str) -> bool:
+    try:
+        tok = await _mint_temp_media_token(key, "image/jpeg", ttl_seconds=3600)
+        async with ServerHttpClient(timeout=45) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
+                json={"chatId": group_id, "mediaUrl": _public_temp_media_url(tok), "caption": caption})
+            return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"[punch] photo send failed: {type(e).__name__}")
+        return False
+
+
+async def _punch_find(project_ids: List[str], code: Optional[str], seq: int) -> Optional[dict]:
+    q: dict = {"project_id": {"$in": project_ids}, "seq": seq}
+    rows = await db[punch.COLLECTION].find(q).to_list(20)
+    if code:
+        rows = [r for r in rows if str(r.get("pid") or "").upper().startswith(f"P-{code.upper()}-")]
+    return rows[0] if len(rows) == 1 else None
+
+
+async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote: str,
+                            message_id: str = "", photo_key: Optional[str] = None) -> None:
+    sets = {"status": to}
+    if to == "ready_to_check":
+        sets["completion"] = {"quote": quote, "message_id": message_id, "photo_key": photo_key,
+                              "at": now, "by": by}
+    if to == "closed":
+        sets.update(closed_by=by, closed_at=now)
+    if to == "open":
+        sets.update(closed_by=None, closed_at=None)
+    await db[punch.COLLECTION].update_one({"_id": row["_id"]}, {
+        "$set": sets, "$push": {"history": {"at": now, "action": to, "by": by, "quote": quote,
+                                            "message_id": message_id}}})
+    # The chase follows: ready to check / closed stop it; reopened resumes it.
+    att = {"ready_to_check": "ready_to_check", "closed": "done", "open": "open"}[to]
+    if row.get("attention_item_id"):
+        await db.attention_items.update_one({"_id": to_query_id(row["attention_item_id"])}, {
+            "$set": {"status": att, "updated_at": now},
+            "$push": {"history": {"id": wa_attention_state.new_event_id(), "kind": "state",
+                                  "from": None, "to": att, "at": now, "message_id": message_id,
+                                  "quote": quote, "evidence_kind": "punch", "verified": True,
+                                  "by": "punch"}}})
+
+
+async def _punch_verdict(ident: dict, text: str, now: datetime) -> Optional[str]:
+    """"P23 ok" / "P23 not done" from an admin or PM."""
+    verdict = punch.super_verdict(text)
+    pid = punch.parse_pid(text)
+    if not verdict or not pid:
+        return None
+    pids = [str(p.get("_id") or p.get("id")) for p in ident.get("projects") or []]
+    row = await _punch_find(pids, pid[0], pid[1])
+    if not row:
+        return f"No punch item P{pid[1]} I can find on your jobs."
+    if verdict == "closed":
+        await _punch_set_status(row, "closed", now, by=str(ident["user_id"]), quote=text)
+        return f"{row['pid']} closed."
+    await _punch_set_status(row, "open", now, by=str(ident["user_id"]), quote=text)
+    return f"{row['pid']} reopened; it will be chased again."
+
+
+async def _punch_answer(ident: dict, q: dict) -> str:
+    projects = ident.get("projects") or []
+    if q["q"] == "open":
+        project, why = punch.match_project(q.get("job"), projects)
+        if not project:
+            return "Which job? Ask e.g. \"what's open on 6 at 588?\""
+        pid = str(project.get("_id") or project.get("id"))
+        rows = await db[punch.COLLECTION].find({"project_id": pid}).to_list(2000)
+        return punch.open_text(wa_assistant.street_label(project), rows, q.get("floor"))
+    parsed_pid = punch.parse_pid(q["pid"])
+    row = await _punch_find([str(p.get("_id") or p.get("id")) for p in projects],
+                            parsed_pid[0], parsed_pid[1]) if parsed_pid else None
+    if not row:
+        return f"No punch item {q['pid']} on your jobs."
+    if q["q"] == "who_closed":
+        if row.get("status") != "closed":
+            return f"{row['pid']} is not closed ({row.get('status', '').replace('_', ' ')})."
+        who = await db.users.find_one({"_id": to_query_id(row.get("closed_by"))}, {"name": 1}) or {}
+        at = row.get("closed_at")
+        when = at.astimezone(_MEMORY_NY).strftime("%b %-d, %-I:%M %p") if isinstance(at, datetime) else ""
+        return f"{row['pid']} was closed by {who.get('name') or 'an admin'}{' on ' + when if when else ''}."
+    # photo
+    key = row.get("photo_key")
+    if not key:
+        return f"{row['pid']} has no photo."
+    url = await asyncio.to_thread(_presign_r2_get, key, 900)
+    return f"{row['pid']} photo (link works 15 min): {url}" if url else f"{row['pid']}: the photo is not available."
+
+
+async def _punch_group_message(msg: dict, ctx: dict) -> bool:
+    """The closing words in the job's group: a sub's "done P23" (or "done"
+    replying to the punch message) -> ready to check; an admin or PM's
+    "P23 ok" / "P23 not done" -> closed / reopened. True when handled."""
+    text = str(msg.get("body") or "")
+    pid = punch.parse_pid(text)
+    if not pid:
+        return False
+    row = await _punch_find([str(ctx["project_id"])], pid[0], pid[1])
+    if not row:
+        return False
+    now = datetime.now(timezone.utc)
+    who = await _attention_sender(msg, ctx)
+    sender = str(msg.get("sender") or "")
+    verdict = punch.super_verdict(text)
+    staff = bool(who and who.get("status") == "resolved" and who.get("kind") == "user")
+    if verdict and staff:
+        await _punch_set_status(row, "closed" if verdict == "closed" else "open", now,
+                                by=str(who.get("id")), quote=text,
+                                message_id=str(msg.get("message_id") or ""))
+        return True
+    if punch.sub_done(text) and row.get("status") == "open":
+        await _punch_set_status(row, "ready_to_check", now, by=sender, quote=text,
+                                message_id=str(msg.get("message_id") or ""),
+                                photo_key=msg.get("photo_key"))
+        return True
+    return False
+
+
+async def _punch_remind_tick(now: Optional[datetime] = None) -> int:
+    """A draft not sent after 24 hours: one reminder to the walker."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=punch.DRAFT_REMIND_HOURS)
+    n = 0
+    try:
+        rows = await db[punch.SESSIONS].find(
+            {"status": {"$in": ["draft", "assign", "due"]}, "reminded_at": None,
+             "updated_at": {"$lt": cutoff}}).to_list(500)
+    except Exception:
+        return 0
+    for s in rows:
+        try:
+            await send_whatsapp_message(s["chat"], (
+                f"Your walkthrough draft at {s.get('job_name') or 'the job'} isn't sent yet. "
+                "Reply 'send' to finish it, or 'cancel walkthrough'."))
+            await db[punch.SESSIONS].update_one({"_id": s["_id"]}, {"$set": {"reminded_at": now}})
+            n += 1
+        except Exception as e:
+            logger.warning(f"[punch] reminder failed: {type(e).__name__}")
+    return n
+
+
+async def _punch_remind_job() -> None:
+    try:
+        await _punch_remind_tick()
+    except Exception as e:
+        logger.warning(f"[punch] remind job failed: {type(e).__name__}")
+
+
 async def _process_whatsapp_message(payload: dict):
     """Background task to process an inbound WhatsApp message."""
     try:
@@ -60427,6 +61131,7 @@ async def _process_whatsapp_message(payload: dict):
         # collection — re-delivery of the same WaAPI webhook does
         # NOT re-process or re-write.
         body = parsed["body"]
+        dm_voice = None
         voice_telemetry = None
         if parsed["has_audio"]:
             voice_message_id = parsed.get("message_id") or ""
@@ -60541,6 +61246,17 @@ async def _process_whatsapp_message(payload: dict):
                     return
 
                 body = vresult.english_transcript
+                dm_voice = {"transcript": vresult.original_transcript or body,
+                            "english": body, "lang": vresult.language_detected}
+
+        # A walkthrough (punch list) turn: photos, their words, the draft,
+        # edits, assigning, the due day, send; and punch questions / "P23 ok".
+        if parsed.get("has_image") or body:
+            try:
+                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice):
+                    return
+            except Exception as e:
+                logger.warning(f"[punch] dm turn failed: {type(e).__name__}")
 
         if not body:
             return
@@ -62219,6 +62935,7 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
         **{k: bool(settings[k]) for k in wa_alerts.SWITCHES},
         "send_window": settings["send_window"],
         "chase_weekends": bool(settings.get("chase_weekends")),
+        "punch_sends": settings.get("punch_sends") or punch.DEFAULT_SEND_MODE,
     }
 
 
@@ -62249,13 +62966,16 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     # The alert switches, and chase_weekends (sub chasing on Sat/Sun).
     switches = wa_alerts.SWITCHES + ("chase_weekends",)
     if (not isinstance(body, dict) or not body
-            or any(k not in switches + ("send_window",) for k in body)
-            or any(not isinstance(body[k], bool) for k in switches if k in body)):
+            or any(k not in switches + ("send_window", "punch_sends") for k in body)
+            or any(not isinstance(body[k], bool) for k in switches if k in body)
+            or ("punch_sends" in body and body["punch_sends"] not in punch.SEND_MODES)):
         raise HTTPException(
             status_code=422,
             detail="Send alert switches (" + ", ".join(switches) + ") as true "
-                   "or false, and/or send_window.")
+                   "or false, and/or send_window, and/or punch_sends (shadow or live).")
     fields = {k: body[k] for k in switches if k in body}
+    if "punch_sends" in body:
+        fields["punch_sends"] = body["punch_sends"]     # "shadow" | "live"
     if "send_window" in body:
         window = wa_gc.clean_send_window(body["send_window"])
         if window is None:
@@ -62267,6 +62987,96 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     await _set_whatsapp_project_fields(project_id, company_id, fields,
                                        actor=actor_id(current_user))
     return await _wa_settings_view(project_id, str(company_id))
+
+
+def _punch_view(r: dict) -> dict:
+    """A punch item for Project → Punch list. No phone number."""
+    def iso(v):
+        return v.isoformat() if isinstance(v, datetime) else v
+    a = r.get("assignee") or {}
+    comp = r.get("completion") or {}
+    return {"pid": r.get("pid"), "seq": r.get("seq"), "text": r.get("text") or "",
+            "voice": bool(r.get("voice")), "floor": r.get("floor"), "area": r.get("area"),
+            "trade": r.get("trade"), "status": r.get("status"),
+            "assignee": {"name": a.get("name") or "", "company": a.get("company") or ""},
+            "due": (r.get("due") or {}).get("due_text"), "due_at": (r.get("due") or {}).get("due_at"),
+            "has_photo": bool(r.get("photo_key")), "send_mode": r.get("send_mode"),
+            "created_at": iso(r.get("created_at")), "closed_at": iso(r.get("closed_at")),
+            "completion": ({"quote": comp.get("quote"), "at": iso(comp.get("at")),
+                            "has_photo": bool(comp.get("photo_key"))} if comp else None),
+            "history": [{"at": iso(h.get("at")), "action": h.get("action"), "quote": h.get("quote")}
+                        for h in (r.get("history") or [])][-20:]}
+
+
+@api_router.get("/projects/{project_id}/punch",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_punch(project_id: str, floor: str = "", trade: str = "", status: str = "",
+                            current_user=Depends(get_current_user)):
+    """Project → Punch list: the job's punch items, by floor / trade / status.
+    Admins, and PMs on their projects."""
+    company_id = await _memory_project(project_id, current_user)
+    q: dict = {"project_id": str(project_id), "company_id": str(company_id)}
+    if floor:
+        q["floor"] = floor
+    if trade:
+        q["trade"] = trade
+    if status:
+        q["status"] = status
+    rows = await db[punch.COLLECTION].find(q).sort([("seq", 1)]).to_list(2000)
+    allrows = await db[punch.COLLECTION].find(
+        {"project_id": str(project_id), "company_id": str(company_id)}).to_list(5000)
+    return {"items": [_punch_view(r) for r in rows],
+            "floors": sorted({r.get("floor") for r in allrows if r.get("floor")}),
+            "trades": sorted({r.get("trade") for r in allrows if r.get("trade")}),
+            "statuses": list(punch.STATUSES[1:4])}
+
+
+@api_router.get("/projects/{project_id}/punch/{pid}/photo",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_punch_photo(project_id: str, pid: str, which: str = "item",
+                                  current_user=Depends(get_current_user)):
+    """A short-lived link to an item's photo (or its completion photo)."""
+    company_id = await _memory_project(project_id, current_user)
+    r = await db[punch.COLLECTION].find_one(
+        {"_id": pid, "project_id": str(project_id), "company_id": str(company_id)})
+    if not r:
+        raise HTTPException(status_code=404, detail="Punch item not found")
+    key = ((r.get("completion") or {}).get("photo_key") if which == "done" else r.get("photo_key"))
+    if not key:
+        raise HTTPException(status_code=404, detail="No photo")
+    return {"url": await asyncio.to_thread(_presign_r2_get, key, 900)}
+
+
+_PUNCH_EDITABLE = ("trade", "floor", "area", "status")
+
+
+@api_router.patch("/projects/{project_id}/punch/{pid}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def patch_project_punch(project_id: str, pid: str, body: dict,
+                              current_user=Depends(get_current_user)):
+    """Admin only: fix an item's trade / floor / area, or set its status
+    (open / ready_to_check / closed; the chase follows)."""
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = await _memory_project(project_id, current_user)
+    r = await db[punch.COLLECTION].find_one(
+        {"_id": pid, "project_id": str(project_id), "company_id": str(company_id)})
+    if not r:
+        raise HTTPException(status_code=404, detail="Punch item not found")
+    if (not isinstance(body, dict) or not body or any(k not in _PUNCH_EDITABLE for k in body)
+            or ("status" in body and body["status"] not in ("open", "ready_to_check", "closed"))):
+        raise HTTPException(status_code=422, detail="Edit trade, floor, area or status "
+                                                    "(open, ready_to_check, closed).")
+    now = datetime.now(timezone.utc)
+    sets = {k: str(body[k])[:60] for k in ("trade", "floor", "area") if k in body}
+    if sets:
+        await db[punch.COLLECTION].update_one({"_id": pid}, {
+            "$set": sets, "$push": {"history": {"at": now, "action": "edited",
+                                                "by": actor_id(current_user), "quote": str(sets)}}})
+    if "status" in body and body["status"] != r.get("status"):
+        await _punch_set_status(r, body["status"], now, by=actor_id(current_user),
+                                quote="(set in the app)")
+    return _punch_view(await db[punch.COLLECTION].find_one({"_id": pid}))
 
 
 def _attention_item_view(it: dict, group_names: dict) -> dict:
@@ -67948,6 +68758,16 @@ async def startup_event():
         CronTrigger(day_of_week='mon', hour=13, minute=7),  # ~9 AM ET
         id='whatsapp_attention_weekly',
         replace_existing=True,
+    )
+    # Punch list: a walkthrough draft not sent after 24 hours, one reminder.
+    scheduler.add_job(
+        _punch_remind_job,
+        IntervalTrigger(minutes=30),
+        id='punch_draft_reminders',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=11),
     )
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL
