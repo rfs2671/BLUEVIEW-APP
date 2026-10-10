@@ -1,0 +1,85 @@
+{
+ "placeholder": true,
+ "name": "yiddish group: attention, state changes and Upcoming (TO BE FILLED)",
+ "about": "PLACEHOLDER: waiting for real Yiddish phrases from the crew (Hebrew script and transliterated, with code-switching into English). Fill every 'text' / 'transcript' marked TODO with a real message, set each 'expect', then delete \"placeholder\": true. Until then this scenario refuses to run (exit 2). Rules the lines should exercise: a request and a commitment with a Yiddish day (haynt / morgn / ibermorgn / zuntik…shabes, or היינט / מארגן / פרייטיק); a yes ('yo', 'gut', 'zicher'); a done ('fartik', 'geshikt'); a move with 'nekhstn <weekday>'; a voice note in Yiddish — ALWAYS flagged for review, never chased, never closes anything.",
+ "tz": "America/New_York",
+ "project": {
+  "name": "TODO project",
+  "address": "TODO",
+  "group_name": "TODO group"
+ },
+ "senders": {
+  "R": {
+   "name": "TODO admin",
+   "lid": "303000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "S": {
+   "name": "TODO sub",
+   "lid": "303000000000002",
+   "people": {
+    "person_name": "TODO sub",
+    "sub_company": "TODO Co"
+   }
+  }
+ },
+ "messages": [
+  {
+   "from": "R",
+   "at": "2026-10-14 07:00:00",
+   "mentions": [
+    "S"
+   ],
+   "text": "TODO: a request with a Yiddish day (e.g. morgn / מארגן)",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "S",
+    "due_text": "TODO"
+   }
+  },
+  {
+   "from": "S",
+   "at": "2026-10-14 07:05:00",
+   "reply_to": 1,
+   "text": "TODO: a short Yiddish yes (yo / gut / zicher)",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "S",
+    "due_text": "TODO"
+   }
+  },
+  {
+   "from": "S",
+   "at": "2026-10-14 09:00:00",
+   "transcript": "TODO: a Yiddish voice note saying it is done",
+   "lang": "yiddish",
+   "confidence": 0.9,
+   "expect": {
+    "kind": "review",
+    "of": [
+     1,
+     2
+    ]
+   },
+   "why": "Yiddish voice: never closes anything by itself"
+  },
+  {
+   "from": "S",
+   "at": "2026-10-14 10:00:00",
+   "text": "TODO: a typed Yiddish done (fartik / geshikt)",
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "done"
+   }
+  }
+ ],
+ "chase": {
+  "days": [],
+  "expect": []
+ }
+}

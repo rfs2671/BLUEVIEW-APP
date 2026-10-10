@@ -37,10 +37,13 @@ SCENARIO FILE (see scripts/dry_run/*.json)
   tz, project {name, address, chase_weekends, send_window},
   senders  {KEY: {name, lid, user: {role}?, people: {person_name, sub_company}?}}
   messages [{from, at: "YYYY-MM-DD HH:MM:SS" (local), text, reply_to: line?,
+             transcript: "..."?, lang: "es"|"yi"|"en"?, confidence: 0..1?
+               (a VOICE NOTE: the transcript is the message, stored with its
+               voice block as the webhook stores it),
              mentions: [KEY]?, reply_shape: "stanza" | "missing"?,
              quoted_text: "..."? (the quoted words as sent; default the line's),
              expect: {kind: item|none|state|merged|review|flag|follow_up|part_done|handover,
-                      type?, due_text?, owner?, owner_possibly?, of?, also?, to?,
+                      type?, due_text?, owner?, owner_possibly?, flagged?, of?, also?, to?,
                       into?}}]
   chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line]}]}
 """
@@ -97,6 +100,10 @@ def load_dict(sc: dict) -> dict:
         raise ScenarioError(sc.get("about") or "placeholder scenario: nothing to run yet")
     for i, m in enumerate(sc["messages"], 1):
         m["n"] = i
+        if m.get("transcript") is not None and not m.get("text"):
+            # A VOICE NOTE: its transcript is the message (as the webhook
+            # stores it), with the language and Whisper's confidence.
+            m["text"] = m["transcript"]
         if m["from"] not in sc["senders"]:
             raise ScenarioError(f"line {i}: unknown sender {m['from']!r}")
     return sc
@@ -291,9 +298,17 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         for t, _o, kind, arg in events:
             if kind == "msg":
                 parsed = server.parse_inbound_message(payload(sc, arg), vendor="waapi")
+                voice = None
+                if arg.get("transcript") is not None:
+                    from lib import wa_voice
+                    lang = wa_voice.lang_code(arg.get("lang"), arg["transcript"])
+                    voice = wa_voice.row_fields(
+                        arg["transcript"], arg.get("english") or arg["transcript"], lang,
+                        arg.get("confidence"), arg.get("duration_sec") or 8.0, None)["voice"]
+                    parsed["has_audio"] = True
                 rows_by_line[arg["n"]] = await server._store_group_message(
                     parsed, GROUP, PROJECT, COMPANY, parsed.get("body") or "", t,
-                    row_id=ObjectId())
+                    row_id=ObjectId(), voice=voice)
             elif kind == "attention":
                 await server._attention_tick(t, llm=llm, probe=False)
             else:
@@ -341,6 +356,7 @@ def got_per_line(sc: dict, out: dict) -> Dict[int, dict]:
                       "due_text": (it["history"][0] or {}).get("due_to"),
                       "owner": _owner_key(sc, who),
                       "owner_possibly": bool((it.get("owner") or {}).get("possibly")),
+                      "flagged": bool(it.get("needs_review")),
                       "status": it["status"], "id": str(it["_id"])}
             continue
         if reviews:
@@ -389,7 +405,7 @@ def score_line(want: dict, got: dict) -> tuple:
         soft = hard or frozenset({want.get("type"), got.get("type")}) in SOFT_TYPES
         if not hard:
             notes.append(f"type {want.get('type')} → got {got.get('type')}")
-        for k in ("due_text", "owner", "owner_possibly"):
+        for k in ("due_text", "owner", "owner_possibly", "flagged"):
             if k in want and want[k] != got.get(k):
                 notes.append(f"{k} {want[k]!r} → got {got.get(k)!r}")
                 hard = False

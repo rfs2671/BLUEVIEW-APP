@@ -1,0 +1,213 @@
+{
+ "name": "spanish group: attention, state changes and chase, Wed 2026-10-14",
+ "about": "A Spanish-speaking crew with code-switching (Spanish and English in one message) and two voice notes. Requests and commitments in Spanish; 'dale' is a yes; 'Ya las mandé' closes; 'En realidad … el viernes' moves a commitment; a confident Spanish voice note is read like text; a low-confidence voice note never changes anything by itself (one review entry). Thursday nothing is due; Friday Carlos is chased (his plan, moved to Friday).",
+ "tz": "America/New_York",
+ "project": {
+  "name": "120 Atlantic Ave",
+  "address": "120 Atlantic Ave, Brooklyn, NY",
+  "group_name": "120 Atlantic obra"
+ },
+ "senders": {
+  "R": {
+   "name": "Roy Fishman",
+   "lid": "302000000000001",
+   "user": {
+    "role": "admin"
+   }
+  },
+  "C": {
+   "name": "Carlos Méndez",
+   "lid": "302000000000002",
+   "people": {
+    "person_name": "Carlos Méndez",
+    "sub_company": "Méndez Concrete"
+   }
+  },
+  "L": {
+   "name": "Luis Ortega",
+   "lid": "302000000000003",
+   "people": {
+    "person_name": "Luis Ortega",
+    "sub_company": "Ortega Plumbing"
+   }
+  },
+  "M": {
+   "name": "María Gómez",
+   "lid": "302000000000004",
+   "people": {
+    "person_name": "María Gómez",
+    "sub_company": "Gómez Electric"
+   }
+  }
+ },
+ "messages": [
+  {
+   "from": "R",
+   "at": "2026-10-14 07:00:00",
+   "mentions": [
+    "C"
+   ],
+   "text": "@Carlos ¿puedes mandar el plan de colado para mañana?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "C",
+    "due_text": "para mañana"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-14 07:05:00",
+   "reply_to": 1,
+   "text": "Sí, lo mando mañana temprano",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "C",
+    "owner_possibly": false,
+    "due_text": "mañana temprano"
+   }
+  },
+  {
+   "from": "L",
+   "at": "2026-10-14 07:10:00",
+   "text": "Buenos días a todos",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "a greeting in Spanish: read (not dropped by the English filter), nothing in it"
+  },
+  {
+   "from": "M",
+   "at": "2026-10-14 07:15:00",
+   "transcript": "Necesito que alguien me confirme la entrega de los paneles para el viernes",
+   "lang": "spanish",
+   "confidence": 0.91,
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "due_text": "para el viernes",
+    "flagged": false
+   },
+   "why": "a confident Spanish voice note: read like typed text"
+  },
+  {
+   "from": "R",
+   "at": "2026-10-14 07:20:00",
+   "mentions": [
+    "L"
+   ],
+   "text": "@Luis can you send the riser photos hoy?",
+   "expect": {
+    "kind": "item",
+    "type": "request",
+    "owner": "L",
+    "due_text": "hoy"
+   },
+   "why": "code-switching: English with a Spanish day word"
+  },
+  {
+   "from": "L",
+   "at": "2026-10-14 07:25:00",
+   "reply_to": 5,
+   "text": "dale",
+   "expect": {
+    "kind": "item",
+    "type": "commitment",
+    "owner": "L",
+    "owner_possibly": false,
+    "due_text": "hoy"
+   },
+   "why": "'dale' is a yes"
+  },
+  {
+   "from": "L",
+   "at": "2026-10-14 07:40:00",
+   "text": "Ya las mandé",
+   "expect": {
+    "kind": "state",
+    "of": 6,
+    "also": [
+     5
+    ],
+    "to": "done"
+   },
+   "why": "'ya las mandé' = already sent them"
+  },
+  {
+   "from": "C",
+   "at": "2026-10-14 08:30:00",
+   "text": "En realidad, el plan de colado va el viernes",
+   "expect": {
+    "kind": "state",
+    "of": 2,
+    "to": "rescheduled",
+    "due_text": "el viernes"
+   }
+  },
+  {
+   "from": "C",
+   "at": "2026-10-14 09:00:00",
+   "transcript": "ya mandé el plan de colado",
+   "lang": "spanish",
+   "confidence": 0.31,
+   "expect": {
+    "kind": "review",
+    "of": [
+     1,
+     2
+    ]
+   },
+   "why": "a low-confidence voice note would close Carlos's plan (and the ask it answers): held as one entry for an admin; nothing changes, so Friday he is still chased"
+  },
+  {
+   "from": "R",
+   "at": "2026-10-14 09:30:00",
+   "text": "jaja ok",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "laughing is not a yes"
+  }
+ ],
+ "chase": {
+  "days": [
+   "2026-10-15",
+   "2026-10-16"
+  ],
+  "expect": [
+   {
+    "day": "2026-10-16",
+    "slot": "morning",
+    "owner": "C",
+    "items": [
+     2
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "midday",
+    "owner": "C",
+    "items": [
+     2
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "eod",
+    "owner": "C",
+    "items": [
+     2
+    ]
+   },
+   {
+    "day": "2026-10-16",
+    "slot": "admin_dm",
+    "owner": "C",
+    "items": [
+     2
+    ]
+   }
+  ]
+ }
+}

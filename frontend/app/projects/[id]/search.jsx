@@ -22,6 +22,7 @@ import {
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import SourceSheet from '../../../src/components/whatsapp/SourceSheet';
 
 // Project → Search: the project's WhatsApp messages and filed daily reports.
 // Every result carries its source (who · group · when); tap one to see it
@@ -38,6 +39,7 @@ export default function ProjectSearchScreen() {
   const [results, setResults] = useState(null);
   const [answer, setAnswer] = useState(null);
   const [context, setContext] = useState(null);
+  const [sourceRow, setSourceRow] = useState(null);   // a voice note: play / original
 
   const run = async (withAnswer) => {
     const { query, error } = cleanQuery(q);
@@ -171,12 +173,21 @@ export default function ProjectSearchScreen() {
                     <Text style={[styles.chip, muted]}>{chipText(r)}</Text>
                   </View>
                   <Text style={[styles.line, text]}>{preview(r.text)}</Text>
+                  {r.voice && r.message_row_id ? (
+                    <Pressable onPress={() => setSourceRow(r.message_row_id)} hitSlop={8}
+                      accessibilityRole="button" accessibilityLabel="Play the voice note">
+                      <Text style={[styles.chip, muted]}>🎤 Play · original words</Text>
+                    </Pressable>
+                  ) : null}
                 </Pressable>
               ))}
             </GlassCard>
           )}
         </ScrollView>
       </SafeAreaView>
+      {sourceRow ? (
+        <SourceSheet projectId={projectId} rowId={sourceRow} onClose={() => setSourceRow(null)} />
+      ) : null}
     </View>
   );
 }

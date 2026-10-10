@@ -27,7 +27,7 @@ export function chipText(r) {
     ? ['Daily report', x.label, x.when]
     : x.source === 'attention'
       ? ['Tracked item', x.label, x.when]
-      : [x.who || 'Someone', x.group, x.when];
+      : [x.who || 'Someone', x.group, x.voice && x.when ? `🎤 ${x.when}` : x.when];
   return parts.filter(Boolean).join(' · ');
 }
 

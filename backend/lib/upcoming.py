@@ -44,6 +44,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from lib import multilang
 from lib.wa_attention import verify_quote
 
 try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
@@ -52,7 +53,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "upc-v1.1"
+PROMPT_VERSION = "upc-v1.2"
 MODEL = "gpt-4o-mini"
 
 KINDS = ("inspection", "delivery", "crane_pick", "pour", "utility", "hearing")
@@ -151,7 +152,10 @@ def resolve_when(date_text: Optional[str], sent_at: datetime) -> Dict[str, Any]:
     """{"date": date, "time": "HH:MM"|None} for words that name one day, else
     {"skip": "vague"|"ambiguous"|"past"|"no_date"}. Read in New York time,
     counted from when the message was sent."""
-    t = " ".join(str(date_text or "").lower().replace("’", "'").split())
+    # Spanish and Yiddish day words read as their English ones ("el
+    # próximo martes" is "next tuesday"), so every rule below applies to
+    # them unchanged.
+    t = multilang.normalize_when(date_text)
     if not t:
         return {"skip": "no_date"}
     today = local_date(sent_at)
@@ -266,6 +270,12 @@ Rules:
 - A reschedule or cancel must name an event from OPEN EVENTS by its event_id. If none fits, use "new" for a move with a day, and skip a cancel.
 - At most 3 events. None is a fine answer.
 
+Languages: a message may be in English, Spanish or Yiddish (in Hebrew letters, or written in English letters), or switch between them in one message. Read all three.
+- "summary" and "title" are ALWAYS in English.
+- "quote" stays EXACTLY as written, in its own language and script. Never translate a quote.
+- "date_text" stays as written too ("el próximo martes", "mañana 7am", "morgn", "מארגן", "en 3 semanas"): never translate or compute it. "en 3 semanas" / "in 3 vokhn" ARE a day, like "in 3 weeks".
+- A voice note arrives as its transcript: read it like typed text.
+
 Return JSON: {"events": [{"action": "new", "event_id": null, "kind": "inspection", "agency": "Con Ed", "title": "...", "date_text": "...", "quote": "..."}]}"""
 
 FILTER_RE = re.compile(
@@ -284,7 +294,13 @@ def worth_a_call(body: Any) -> bool:
     """The cheap filter: an event word AND a day word, or an event word and
     any cancel phrase the checks accept ("Rebar delivery scrapped")."""
     b = str(body or "")
-    return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _CANCEL_WORDS.search(b)))
+    if multilang.non_english(b):
+        return True     # the filter words are English: Spanish / Yiddish go to the model
+    # Day words read after Spanish / Yiddish dates are put in English: a
+    # terse "FDNY 4 de diciembre" reads as English but its date does not.
+    day = multilang.normalize_when(b)
+    return bool(FILTER_RE.search(b) and (_DAYISH.search(b) or _DAYISH.search(day)
+                                         or _CANCEL_WORDS.search(b)))
 
 
 def _line(m: Dict[str, Any]) -> str:
@@ -442,13 +458,16 @@ def match_open(quote: str, open_events: Sequence[Dict[str, Any]]) -> Optional[Di
 # None, or two or more that fit: nothing. A question is never a cancel.
 CODE_CANCEL_WORDS = re.compile(
     r"\b(?:is|are|was|were|it'?s|'s)\s+off\b|\bcalled off\b|\boff until\b"
-    r"|\bcancell?ed\b|\bscrapped\b|\bnot happening\b", re.IGNORECASE)
+    r"|\bcancell?ed\b|\bscrapped\b|\bnot happening\b"
+    # Spanish ("se canceló", "suspendido", "ya no va") and Yiddish.
+    r"|\bse cancel[oó]\b|\bcancelad[oa]s?\b|\bsuspendid[oa]s?\b|\bya no va\b|\bno va\b"
+    r"|\babgeshtelt\b|\bopgeshtelt\b|\bbatlt\b|אפגעשטעלט", re.IGNORECASE)
 _SUBJECT = {
-    "pour": r"pours?|pouring",
-    "delivery": r"deliver(?:y|ies)",
-    "inspection": r"inspections?",
-    "crane_pick": r"crane(?:\s+picks?)?",
-    "hearing": r"hearings?",
+    "pour": r"pours?|pouring|colados?|vaciados?|hormigonado|el concreto",
+    "delivery": r"deliver(?:y|ies)|entregas?",
+    "inspection": r"inspections?|inspecci[oó]n(?:es)?|inspector",
+    "crane_pick": r"crane(?:\s+picks?)?|gr[uú]as?",
+    "hearing": r"hearings?|audiencias?",
 }
 _AGENCY_WORDS: Dict[str, List[str]] = {}
 for _k, _v in _AGENCIES.items():
@@ -459,8 +478,10 @@ _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
 # pour both cancelled" names two events, so nothing.
 _CLAUSE = re.compile(r"[,;:]|\s[-\u2013\u2014]\s|\b(?:but|however|though|although|while|whereas)\b",
                      re.IGNORECASE)
-# "not cancelled", "hasn't been cancelled", "never got called off": no cancel.
-_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't)\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
+# "not cancelled", "hasn't been cancelled", "never got called off", "no se
+# canceló", "nisht abgeshtelt": no cancel.
+_NEGATED = re.compile(r"(?:\bnot|\bnever|\bno longer|n't|\bno|\bnunca|\bnisht|\bnit|נישט)"
+                      r"\s+(?:\w+\s+){0,2}$", re.IGNORECASE)
 _NEVER = re.compile(r"(?!x)x")
 
 
