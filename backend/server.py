@@ -3285,8 +3285,11 @@ TRADE_VOCABULARY: List[str] = [
     "Drywall",
     "Roofing",
     "Waterproofing",
-    "Plumber",
-    # STAYS SEPARATE from Plumber, ruled: never the same crew in NYC.
+    # "Plumbing", NOT "Plumber", ruled 2026-10-10: every other entry names
+    # the trade, and a plumber is the licensed person. The old label is
+    # deprecated below, never re-spelled on a stored row.
+    "Plumbing",
+    # STAYS SEPARATE from Plumbing, ruled: never the same crew in NYC.
     "Water Main",
     "Electrical",
     "HVAC / Mechanical",
@@ -3314,6 +3317,8 @@ DEPRECATED_TRADES: Dict[str, str] = {
     "Electrician": "Electrical",
     # Ruled: always under Framing on these sites.
     "Carpentry": "Framing",
+    # Ruled 2026-10-10. See the note on "Plumbing" above.
+    "Plumber": "Plumbing",
 }
 
 # Match key -> canonical label, for BOTH lists. Populated beside _roster_key,
@@ -18423,7 +18428,11 @@ async def get_checkin_info(project_id: str, tag_id: str):
             t = str(row.get("trade") or "").strip()
             c = str(row.get("company") or "").strip()
             if t and c:
-                assignments.append({"trade": t, "company": c})
+                # `trade` STAYS RAW: it is what the pick submits and what the
+                # strict roster match compares. `trade_label` is only what
+                # the option reads.
+                assignments.append({"trade": t, "company": c,
+                                    "trade_label": _trade_label(t)})
 
         return {
             "project_id": project_id,
@@ -19814,6 +19823,27 @@ _TRADE_BY_KEY.update({_roster_key(_t): _t for _t in TRADE_VOCABULARY})
 _TRADE_BY_KEY.update({_roster_key(_t): _t for _t in DEPRECATED_TRADES})
 
 
+def _trade_label(trade) -> str:
+    """The canonical name a SCREEN prints for a stored trade string.
+
+    ONE LIST EVERYWHERE, ruled 2026-10-10: the report, the gate and the app's
+    crew chips print the vocabulary's current spelling. A deprecated label
+    reads as what superseded it ("Plumber" -> "Plumbing", "Framers" ->
+    "Framing"); a case variant reads as the vocabulary spells it; a custom
+    trade reads exactly as typed.
+
+    DISPLAY ONLY. The stored string is never touched -- that is the
+    immutability rule above -- and every MATCH (the gate's roster check, the
+    per-project pairing) keeps comparing the raw value under _roster_key. A
+    label is never sent back as a pick.
+    """
+    raw = " ".join(str(trade or "").split())
+    label = _TRADE_BY_KEY.get(_roster_key(raw))
+    if label is None:
+        return raw
+    return DEPRECATED_TRADES.get(label, label)
+
+
 def _assignment_is_inactive(row) -> bool:
     """True for a soft-deleted roster row.
 
@@ -21148,6 +21178,8 @@ async def lookup_worker(data: dict):
         "worker_id": str(worker["_id"]),
         "name": worker.get("name"),
         "trade": pair["trade"] if pair else None,
+        # What the returning screen prints; `trade` above is what it matches.
+        "trade_label": _trade_label(pair["trade"]) if pair else None,
         "company": pair["company"] if pair else None,
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
@@ -38071,8 +38103,12 @@ async def generate_combined_report(
         "is_deleted": {"$ne": True},
     }).to_list(500)
 
+    # TRADES BY THEIR CANONICAL NAME, on the rail and in the summary alike --
+    # "Plumbing", never the stored "Plumber". Copies, so the rows the
+    # orientation count reads below are the stored ones.
     gate = report_model.GateDayState(
-        checkins, display_company=_display_sub_company)
+        [dict(c, trade=_trade_label(c.get("trade"))) for c in checkins],
+        display_company=_display_sub_company)
 
     daily = _filed_log(logbooks, "daily_jobsite") or {}
     daily_data = daily.get("data") or {}
@@ -38080,7 +38116,8 @@ async def generate_combined_report(
     # a company is matched to that day's check-ins, which may since have been
     # assigned one; see `fold_unnamed_rows`.
     activities = report_model.resolve_activities(
-        daily_data.get("activities") or [], gate,
+        [dict(r, trade=_trade_label(r.get("trade"))) if isinstance(r, dict)
+         else r for r in daily_data.get("activities") or []], gate,
         display_company=_display_sub_company,
         renderable=_logbook_photo_is_renderable)
 
