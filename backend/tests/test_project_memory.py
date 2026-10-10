@@ -166,6 +166,40 @@ class Faithful(unittest.TestCase):
                                             ["Kevin Shah", "Mike Rivera"]), "Mike")
         self.assertIsNone(pm.relayed_decider("Mike approved the panel layout", "Kevin Shah", []))
 
+    def test_a_claim_that_already_names_the_relayer_is_kept_whole(self):
+        srcs = [_src("S1", "Owner wants the 3B bedroom window changed to a casement")]
+        (c,) = pm.checked_claims([{"text": "The owner wanted the 3B window changed "
+                                           "(relayed by Wendy Cho)",
+                                   "source": "S1", "quote": "Owner wants the 3B bedroom window"}],
+                                 srcs)
+        self.assertEqual(c["text"], "The owner wanted the 3B window changed")
+        out = pm.format_answer([c], {"S1": srcs[0]})
+        self.assertEqual(out.count("relayed by"), 1)
+        self.assertIn("(relayed by Wendy Cho, Sep 24)", out)
+
+    def test_a_plan_next_to_a_done_thing_is_still_a_plan(self):
+        srcs = [_src("S1", "Drawings approved. Installation is set for Monday.", who="Kevin",
+                     day="Oct 1")]
+        got = pm.checked_claims([
+            {"text": "Installation was completed Monday", "source": "S1",
+             "quote": "Installation is set for Monday"},
+            {"text": "The drawings were approved", "source": "S1",
+             "quote": "Drawings approved"}], srcs)
+        self.assertEqual([c["text"] for c in got],
+                         ["Planned, as of Oct 1 — not confirmed as done",
+                          "The drawings were approved"])
+
+    def test_a_fact_and_its_negation_are_not_merged(self):
+        srcs = [_src("S1", "Storefront drawings were approved", who="Kevin"),
+                _src("S2", "Storefront drawings were not approved", who="Mike")]
+        got = pm.checked_claims([
+            {"text": "The storefront drawings were approved", "source": "S1",
+             "quote": "Storefront drawings were approved"},
+            {"text": "The storefront drawings were not approved", "source": "S2",
+             "quote": "Storefront drawings were not approved"}], srcs)
+        self.assertEqual(len(got), 2)
+        self.assertEqual([c["also"] for c in got], [[], []])
+
     def test_a_plan_is_never_told_as_done(self):
         srcs = [_src("S1", "Dumpster swap is set for Tuesday 10/6", who="Roy", day="Oct 2"),
                 _src("S2", "Eddie we're getting a pump from the rental yard", who="Roy", day="Sep 28")]

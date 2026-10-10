@@ -272,6 +272,24 @@ def is_intent(quote: str) -> bool:
     return bool(_INTENT.search(quote or "")) and not _DONE_WORDS.search(quote or "")
 
 
+_CLAUSE = re.compile(r"(?<=[.;!?])\s+|\n+|\s+but\s+", re.IGNORECASE)
+
+
+def planned_for(quote: str, claim_text: str) -> bool:
+    """The part of the quote the claim is about states only a plan.
+    "Drawings approved. Installation is set for Monday." -- a claim about the
+    installation is judged on the installation clause, not on "approved"."""
+    parts = [p for p in _CLAUSE.split(quote or "") if p and p.strip()]
+    if len(parts) < 2:
+        return is_intent(quote)
+    want = set(terms(claim_text))
+    scored = [(len(want & set(terms(p))), p) for p in parts]
+    best = max(n for n, _ in scored)
+    if best == 0:
+        return is_intent(quote)
+    return any(is_intent(p) for n, p in scored if n == best)
+
+
 def claims_done(text: str) -> bool:
     return bool(_PAST_CLAIM.search(text or ""))
 
@@ -280,10 +298,20 @@ def _words(text: str) -> set:
     return set(terms(text))
 
 
+_NEGATION = re.compile(r"\b(?:not|no|never|none|nobody|nothing|cannot|without)\b|\w+n['’]t\b",
+                       re.IGNORECASE)
+
+
+def _negated(text: str) -> bool:
+    return bool(_NEGATION.search(text or ""))
+
+
 def same_fact(a: Dict[str, Any], b: Dict[str, Any], timeline: bool = False) -> bool:
     """Two claims that say the same thing (one fact, several sources)."""
     if timeline and (a.get("date") or "") != (b.get("date") or ""):
         return False
+    if _negated(a["text"]) != _negated(b["text"]):
+        return False                 # "approved" and "not approved" are two facts
     wa, wb = _words(a["text"]), _words(b["text"])
     if not wa or not wb:
         return norm(a["text"]) == norm(b["text"])
@@ -357,6 +385,10 @@ def checked_claims(raw: Any, sources: Sequence[Dict[str, Any]],
     return out
 
 
+_RELAY_NOTE = re.compile(r"\s*[(\[]\s*(?:relayed|passed on|forwarded)\s+(?:by|from|via)\b[^)\]]*[)\]]",
+                         re.IGNORECASE)
+
+
 def _make_faithful(claim: Dict[str, Any], src: Dict[str, Any],
                    people: Iterable[str] = ()) -> None:
     quote, text = claim["quote"], claim["text"]
@@ -365,6 +397,10 @@ def _make_faithful(claim: Dict[str, Any], src: Dict[str, Any],
                if src.get("source") == SOURCE_WHATSAPP else None)
     if decider and poster:
         claim["decider"], claim["relayed_by"] = decider, poster
+        # Who relayed it is said once, by format_answer: drop the model's own
+        # "(relayed by Wendy Cho)" so the poster's name in it is neither
+        # rewritten into the decider nor repeated.
+        text = _RELAY_NOTE.sub("", text).rstrip()
         cap = decider[0].upper() + decider[1:]
         for name in sorted({poster, poster.split(" ")[0]}, key=len, reverse=True):
             if len(name) >= 2 and re.search(r"\b" + re.escape(name) + r"\b", text):
@@ -372,7 +408,7 @@ def _make_faithful(claim: Dict[str, Any], src: Dict[str, Any],
                 # separately ("relayed by Wendy Cho, Sep 24").
                 text = re.sub(r"\b" + re.escape(name) + r"\b", cap, text, count=1)
                 break
-    if is_intent(quote) and claims_done(text):
+    if planned_for(quote, text) and claims_done(text):
         day = src.get("day_label") or ""
         text = f"Planned{', as of ' + day if day else ''} — not confirmed as done"
         claim["planned"] = True
