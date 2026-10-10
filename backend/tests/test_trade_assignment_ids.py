@@ -390,7 +390,10 @@ class InactiveHiddenTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(
             resp.json()["trade_assignments"],
-            [{"trade": "Carpenter", "company": "Acme Co"}],
+            # trade_label: the canonical display name (2026-10-10). A custom
+            # trade reads exactly as stored.
+            [{"trade": "Carpenter", "company": "Acme Co",
+              "trade_label": "Carpenter"}],
         )
 
     def test_register_and_checkin_rejects_an_inactive_pair(self):
