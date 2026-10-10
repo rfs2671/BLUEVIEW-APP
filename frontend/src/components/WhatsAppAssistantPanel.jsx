@@ -160,10 +160,15 @@ export default function WhatsAppAssistantPanel() {
     );
   }
   if (!alerts) {
+    // The assistant is not for this account, but the calendar feed may be
+    // (the platform operator): it still gets its card.
     return (
-      <GlassCard style={s.card}>
-        <Text style={s.line}>Levelog Assistant is for admins and project managers.</Text>
-      </GlassCard>
+      <>
+        <GlassCard style={s.card}>
+          <Text style={s.line}>Levelog Assistant is for admins and project managers.</Text>
+        </GlassCard>
+        {canSeeUpcoming(user) ? <CalendarFeedCard /> : null}
+      </>
     );
   }
 
