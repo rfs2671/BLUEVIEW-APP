@@ -1,0 +1,281 @@
+{
+ "name": "walkthrough at 588 Thomas: 12 photos -> draft -> edits -> assign -> send -> close",
+ "about": "Roy (admin) walks 588 Thomas and DMs 12 photos: typed English and Spanish captions, voice notes in Spanish and English, one photo whose words come as a voice note after it, two items whose trade the words don't name. He fixes the draft (two trades, a merge, a drop, an add, a move), reassigns doors and picks the painter (two paint companies on the job), answers the one due question, and sends. Sends are SHADOW (the default): he sees what would be posted, nothing is. Then in the group Mike says 'done' on his outlet (ready to check) and Roy says it's ok (closed); Jose says 'done' on the faucet and Roy says it's not done (reopened, chased again).",
+ "tz": "America/New_York",
+ "now": "2026-10-13 09:00:00",
+ "project": {
+  "_id": "p588",
+  "name": "588 Thomas St",
+  "address": "588 Thomas St, Brooklyn, NY",
+  "trade_assignments": [
+   {
+    "id": "t1",
+    "company": "Bright Electric",
+    "trade": "Electrical"
+   },
+   {
+    "id": "t2",
+    "company": "Quality Plumbing",
+    "trade": "Plumbing"
+   },
+   {
+    "id": "t3",
+    "company": "Pro Paint",
+    "trade": "Painting"
+   },
+   {
+    "id": "t4",
+    "company": "B Paint",
+    "trade": "Painting"
+   },
+   {
+    "id": "t5",
+    "company": "Door Pros",
+    "trade": "Doors"
+   },
+   {
+    "id": "t6",
+    "company": "Arkon Drywall",
+    "trade": "Drywall"
+   }
+  ]
+ },
+ "walker": {
+  "name": "Roy Fishman",
+  "phone": "17185550100",
+  "role": "admin"
+ },
+ "people": [
+  {
+   "key": "M",
+   "name": "Mike Rivera",
+   "company": "Bright Electric",
+   "phone": "17185550201"
+  },
+  {
+   "key": "J",
+   "name": "Jose Zarate",
+   "company": "Quality Plumbing",
+   "phone": "17185550202"
+  },
+  {
+   "key": "A",
+   "name": "Ana Ortiz",
+   "company": "Pro Paint",
+   "phone": "17185550203"
+  },
+  {
+   "key": "B",
+   "name": "Bo Kim",
+   "company": "B Paint",
+   "phone": "17185550204"
+  },
+  {
+   "key": "D",
+   "name": "Dave Kim",
+   "company": "Door Pros",
+   "phone": "17185550205"
+  },
+  {
+   "key": "L",
+   "name": "Luis Ortega",
+   "company": "Arkon Drywall",
+   "phone": "17185550206"
+  }
+ ],
+ "dm": [
+  {
+   "text": "starting walkthrough at 588"
+  },
+  {
+   "photo": true,
+   "text": "6th floor apt 6B outlet cover missing"
+  },
+  {
+   "photo": true,
+   "text": "Floor 6 kitchen faucet leaking"
+  },
+  {
+   "photo": true,
+   "voice": {
+    "transcript": "piso 6 falta pintura en el pasillo",
+    "lang": "spanish"
+   }
+  },
+  {
+   "photo": true,
+   "text": "door closer broken 5th floor"
+  },
+  {
+   "photo": true,
+   "text": "stain on ceiling 5th fl"
+  },
+  {
+   "photo": true,
+   "text": "5th floor bathroom no light"
+  },
+  {
+   "photo": true,
+   "text": "floor 5 drywall crack by the stair"
+  },
+  {
+   "photo": true,
+   "voice": {
+    "transcript": "lobby door hinge squeaks",
+    "lang": "english"
+   }
+  },
+  {
+   "photo": true,
+   "text": "piso 4 el lavamanos gotea"
+  },
+  {
+   "photo": true,
+   "text": "4th floor apt 4A missing cover plate"
+  },
+  {
+   "photo": true,
+   "text": "floor 4 hallway paint touch up"
+  },
+  {
+   "photo": true,
+   "text": ""
+  },
+  {
+   "voice": {
+    "transcript": "falta un enchufe en la cocina piso 4",
+    "lang": "spanish"
+   }
+  },
+  {
+   "text": "done",
+   "expect": {
+    "draft_items": 12,
+    "need_trade": 2
+   }
+  },
+  {
+   "text": "{n:stain on ceiling} → paint"
+  },
+  {
+   "text": "{n:missing cover plate} → electrical"
+  },
+  {
+   "text": "merge {n:bathroom no light} and {n:outlet cover}"
+  },
+  {
+   "text": "drop {n:lobby door hinge}"
+  },
+  {
+   "text": "add: exit sign out floor 3"
+  },
+  {
+   "text": "{n:exit sign} → electrical"
+  },
+  {
+   "text": "move {n:door closer} to floor 6"
+  },
+  {
+   "text": "send",
+   "expect": {
+    "draft_items": 11,
+    "need_trade": 0,
+    "unassigned": [
+     "paint"
+    ]
+   }
+  },
+  {
+   "text": "paint → Ana; doors → Luis"
+  },
+  {
+   "text": "electrical Mon, everything else Fri"
+  },
+  {
+   "expect": {
+    "sent": "shadow",
+    "items": 11,
+    "group_posts": 0
+   }
+  }
+ ],
+ "group": [
+  {
+   "from": "M",
+   "text": "done {pid:outlet cover}"
+  },
+  {
+   "from": "walker",
+   "text": "{pid:outlet cover} ok"
+  },
+  {
+   "from": "J",
+   "text": "{pid:faucet} done"
+  },
+  {
+   "from": "walker",
+   "text": "{pid:faucet} not done"
+  }
+ ],
+ "expect": {
+  "status": {
+   "outlet cover": "closed",
+   "faucet": "open",
+   "stain on ceiling": "open",
+   "lavamanos": "open",
+   "pintura": "open"
+  },
+  "assignee": {
+   "outlet cover": "Mike Rivera",
+   "faucet": "Jose Zarate",
+   "pintura": "Ana Ortiz",
+   "door closer": "Luis Ortega",
+   "drywall crack": "Luis Ortega",
+   "lavamanos": "Jose Zarate",
+   "enchufe": "Mike Rivera"
+  },
+  "floor": {
+   "door closer": "6",
+   "exit sign": "3"
+  },
+  "pid_prefix": "P-588-",
+  "attention_items": 11,
+  "closed_by": {
+   "outlet cover": "walker"
+  },
+  "ready_to_check_then_reopened": [
+   "faucet"
+  ],
+  "due_weekday": {
+   "outlet cover": 0,
+   "faucet": 4,
+   "pintura": 4
+  }
+ },
+ "dm_after": [
+  {
+   "text": "what's open on 6 at 588?",
+   "contains": [
+    "{pid:faucet}",
+    "{pid:door closer}",
+    "{pid:pintura}"
+   ],
+   "not_contains": [
+    "{pid:outlet cover}",
+    "{pid:lavamanos}"
+   ]
+  },
+  {
+   "text": "who closed {pid:outlet cover}?",
+   "contains": [
+    "closed by Roy Fishman"
+   ]
+  },
+  {
+   "text": "show {pid:faucet} photo",
+   "contains": [
+    "https://r2.invalid/wa-photos/p588/"
+   ]
+  }
+ ]
+}

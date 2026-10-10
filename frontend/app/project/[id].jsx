@@ -20,6 +20,7 @@ import {
   Users,
   Building2,
   ClipboardList,
+  ClipboardCheck,
   Settings,
   Wifi,
   ChevronRight,
@@ -59,6 +60,7 @@ import ProjectRetentionCard from '../../src/components/ProjectRetentionCard';
 import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import { canSeePunch } from '../../src/utils/punchList';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
@@ -662,6 +664,8 @@ export default function ProjectDetailScreen() {
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
+    // Admins and PMs: punch items from walkthroughs in WhatsApp.
+    ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +

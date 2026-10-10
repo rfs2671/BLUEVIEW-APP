@@ -6,6 +6,7 @@
  *   Permit expiry reminders → GC group      on / off
  *   Send alerts: Anytime / Work hours (7 AM–7 PM) / Custom hours
  *   Chase on weekends                       on / off (default off)
+ *   Punch sends: Shadow / Live              (default shadow)
  *
  * Copy and state for each case: src/utils/whatsappSettings.js.
  */
@@ -22,6 +23,7 @@ import { TimePickerRow } from './GroupConfigPanel';
 import {
   assistantView, SEND_WINDOW_OPTIONS, sendWindowLine, cleanSendWindow,
 } from '../../utils/whatsappSettings';
+import { PUNCH_SENDS_OPTIONS, punchSendsMode } from '../../utils/punchList';
 
 // Every half hour, midnight to 11:30 PM, for custom hours.
 const ALL_DAY = Array.from({ length: 48 }, (_, i) =>
@@ -208,6 +210,26 @@ export default function LevelogAssistantCard({ projectId }) {
                 thumbColor={colors.white}
               />
             </View>
+
+            {/* Punch list sends: shadow (the walker sees what would be posted) or live */}
+            <Text style={s.sub}>Punch sends</Text>
+            {PUNCH_SENDS_OPTIONS.map((o) => (
+              <Pressable
+                key={o.mode}
+                onPress={() => patch('punch_sends', { punch_sends: o.mode })}
+                disabled={!!busy || punchSendsMode(data) === o.mode}
+                style={s.choice}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: punchSendsMode(data) === o.mode }}
+              >
+                <View style={{ flex: 1, marginRight: spacing.sm }}>
+                  <Text style={s.value}>{o.label}</Text>
+                  <Text style={s.muted}>{o.line}</Text>
+                </View>
+                {busy === 'punch_sends' ? <ActivityIndicator size="small" color={colors.text.muted} />
+                  : punchSendsMode(data) === o.mode ? <Check size={18} color={colors.primary} /> : null}
+              </Pressable>
+            ))}
           </>
         )}
       </GlassCard>
