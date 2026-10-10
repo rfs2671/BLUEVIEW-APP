@@ -62314,12 +62314,13 @@ async def list_project_upcoming(project_id: str, current_user=Depends(get_curren
     return {"events": sorted([_upcoming_view(r) for r in rows], key=upcoming.sort_key)}
 
 
-@api_router.post("/projects/{project_id}/upcoming/{event_id}/dismiss",
-                  dependencies=[Depends(require_approved), Depends(require_project_access)])
+@api_router.delete("/projects/{project_id}/upcoming/{event_id}",
+                   dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def dismiss_project_upcoming(project_id: str, event_id: str,
                                    current_user=Depends(get_current_user)):
-    """One tap: off the list, the brief, the DMs and the feed. Kept, with
-    who dismissed it, so a later sync never brings it back."""
+    """Dismiss, one tap: off the list, the brief, the DMs and the feed. A
+    soft delete: the row is kept, with who dismissed it and when, so a later
+    sync or a repeat in the chat never brings it back."""
     company_id = await _memory_project(project_id, current_user)
     row = await _upcoming_event_for(project_id, event_id, company_id)
     now = datetime.now(timezone.utc)

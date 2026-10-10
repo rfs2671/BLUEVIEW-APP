@@ -1819,9 +1819,10 @@ export const upcomingAPI = {
     const response = await apiClient.get(`/api/projects/${projectId}/upcoming`);
     return response.data;
   },
+  // Dismiss (a soft delete: kept server-side with who and when).
   dismiss: async (projectId, eventId) => {
-    const response = await apiClient.post(
-      `/api/projects/${projectId}/upcoming/${encodeURIComponent(eventId)}/dismiss`);
+    const response = await apiClient.delete(
+      `/api/projects/${projectId}/upcoming/${encodeURIComponent(eventId)}`);
     return response.data;
   },
   // { date?: 'YYYY-MM-DD', time?: 'HH:MM' | '', title? }
