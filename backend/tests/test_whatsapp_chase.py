@@ -27,7 +27,7 @@ from fastapi import HTTPException  # noqa: E402
 import server  # noqa: E402
 from lib import wa_chase  # noqa: E402
 from tests.test_whatsapp_attention import (  # noqa: E402
-    ADMIN, ADMIN_B, CO_A, G_A, MIKE, PM, _run, _world,
+    ADMIN, ADMIN_B, CO_A, G_A, LID_PM, MIKE, PM, _run, _world,
 )
 
 DAY = "2026-10-08"                      # Thursday
@@ -140,23 +140,6 @@ class WhatIsChased(_Base):
         self.chase(_et(8, 35))
         self.assertTrue(self.rows()[0]["text"].startswith("@Jose morning"))
 
-    def test_gc_staff_are_never_chased(self):
-        """Subs only: a company user, or someone mapped in People to "GC
-        team", is never nudged in a group (and so never reaches the admin
-        DM)."""
-        for label, owner in {
-                "a company user": {"kind": "user", "id": "u_kev", "sub_company": None},
-                "mapped GC team": {"kind": "sender_map", "id": "sm9", "sub_company": "GC team"},
-                "mapped gc  TEAM": {"kind": "sender_map", "id": "sm9", "sub_company": " gc  TEAM "},
-        }.items():
-            self.db.attention_items.rows = []
-            self.db[wa_chase.COLLECTION].rows = []
-            it = _item(self.db, owner=owner)
-            self.assertEqual(wa_chase.skip_reason(it, date.fromisoformat(DAY)), "gc_staff", label)
-            for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
-                self.chase(_et(h, m))
-            self.assertEqual(self.rows(), [], label)
-
     def test_skipped(self):
         cases = {
             "possibly": dict(owner={"possibly": True}),
@@ -187,6 +170,131 @@ class WhatIsChased(_Base):
         _item(self.db, status="rescheduled")
         self.chase(_et(8, 35))
         self.assertEqual(len(self.rows()), 1)
+
+
+SLOTS_ALL = ((8, 35), (12, 35), (15, 5), (16, 5))
+PAT_USER = {"kind": "user", "id": "u_pm", "name": "Pat PM", "sub_company": None,
+            "jid": None, "source": "sender"}
+
+
+class GcStaffPrivately(_Base):
+    """GC staff (a company user, or someone mapped "GC team") are chased by
+    private DM, never in the group; only once opted in (START); a DM reply
+    or a message in the group stops it; the 4:00 DM goes to the admins
+    except the owner."""
+
+    def gc_item(self, **over):
+        args = {"quote": "waiting for engineer response, later today",
+                "owner": dict(PAT_USER), "evidence": {"sender": PAT}}
+        args.update(over)
+        it = _item(self.db, **args)
+        it["evidence"]["quote"] = args["quote"]
+        return it
+
+    def test_a_company_user_is_chased_by_dm_not_in_the_group(self):
+        self.gc_item()
+        self.chase(_et(8, 35))
+        (r,) = self.rows()
+        self.assertEqual((r["kind"], r["channel"], r["dm_user_id"], r["mention_jid"]),
+                         ("dm", "dm", "u_pm", None))
+        self.assertEqual(r["text"], "Following up: you said “waiting for engineer response, "
+                                    "later today” in Main St Project – any update?")
+        self.assertEqual(r["to"], ["Pat PM"])
+
+    def test_people_mapped_gc_team_by_the_chat_they_opted_in_from(self):
+        _item(self.db, owner={"kind": "sender_map", "id": "sm9", "name": "Pat",
+                              "sub_company": "GC team", "jid": f"{LID_PM}@lid"})
+        self.chase(_et(8, 35))
+        (r,) = self.rows()
+        self.assertEqual((r["channel"], r["dm_user_id"]), ("dm", "u_pm"))
+
+    def test_not_opted_in_is_listed_not_chased(self):
+        _item(self.db, owner={"kind": "user", "id": "u_mike", "name": "Mike Rivera",
+                              "sub_company": None})
+        reports = [self.chase(_et(h, m)) for h, m in SLOTS_ALL]
+        (r,) = self.rows()
+        self.assertEqual((r["kind"], r["channel"], r["not_chased"]),
+                         ("not_chased", "dm", "not opted in"))
+        self.assertEqual(r["text"], "")
+        self.assertEqual(reports[0]["not_opted_in"], 1)
+        view = server._chase_view(r)
+        self.assertEqual((view["channel"], view["not_chased"]), ("dm", "not opted in"))
+
+    def test_one_dm_per_person_per_slot_across_groups(self):
+        self.gc_item()
+        self.gc_item(group_id=G_2, quote="door schedule by noon today")
+        self.chase(_et(8, 35))
+        (r,) = self.rows()
+        self.assertEqual(r["text"], "Following up on these, due today:\n"
+                                    "• you said “waiting for engineer response, later today” "
+                                    "in Main St Project\n"
+                                    "• you said “door schedule by noon today” in Main St Electric\n"
+                                    "Any update?")
+        self.assertEqual(r["project_ids"], ["proj_a"])
+
+    def test_a_dm_reply_stops_it(self):
+        self.gc_item()
+        self.chase(_et(8, 35))
+        self.db.whatsapp_messages.rows.append({
+            "_id": "dm1", "group_id": f"{PAT}@c.us", "is_dm": True, "company_id": CO_A,
+            "user_id": "u_pm", "sender": PAT, "body": "sent it", "created_at": _et(9, 10)})
+        for h, m in SLOTS_ALL[1:]:
+            self.chase(_et(h, m))
+        self.assertEqual([r["slot"] for r in self.rows()], ["morning"])
+
+    def test_a_message_in_the_group_stops_it(self):
+        self.gc_item()
+        self.chase(_et(8, 35))
+        self.say("on it, engineer called back", _et(10, 0), sender=PAT)
+        for h, m in SLOTS_ALL[1:]:
+            self.chase(_et(h, m))
+        self.assertEqual([r["slot"] for r in self.rows()], ["morning"])
+
+    def test_the_4pm_dm_goes_to_the_admins_except_the_owner(self):
+        self.gc_item()
+        for h, m in SLOTS_ALL:
+            self.chase(_et(h, m))
+        (adm,) = self.rows("admin_dm")
+        self.assertEqual((adm["to_user_ids"], adm["channel"]), (["u_ana"], "dm"))
+        self.assertIn("Nudged by DM at 8:35, 12:35 and 3:05.", adm["text"])
+
+    def test_an_owner_who_is_the_only_admin_gets_no_escalation(self):
+        self.db[server.WA_OPTINS].rows.append({
+            "_id": "o_ana", "user_id": "u_ana", "company_id": CO_A, "phone": "17185550999",
+            "status": "active"})
+        _item(self.db, owner={"kind": "user", "id": "u_ana", "name": "Ana Admin",
+                              "sub_company": None})
+        reports = [self.chase(_et(h, m)) for h, m in SLOTS_ALL]
+        self.assertEqual([r["slot"] for r in self.rows()], ["morning", "midday", "eod"])
+        self.assertEqual(reports[-1]["admin_self"], 1)
+        # A second admin: the 4:00 DM goes to them, never to Ana herself.
+        self.db.users.rows.append({"_id": "u_roy", "company_id": CO_A, "name": "Roy",
+                                   "role": "admin"})
+        self.db[wa_chase.COLLECTION].rows = []
+        for h, m in SLOTS_ALL:
+            self.chase(_et(h, m))
+        (adm,) = self.rows("admin_dm")
+        self.assertEqual(adm["to_user_ids"], ["u_roy"])
+
+    def test_same_rules_flagged_possibly_no_due(self):
+        for over in (dict(needs_review=True), dict(owner={**PAT_USER, "possibly": True}),
+                     dict(due={"due_text": "", "due_at": None})):
+            self.db.attention_items.rows = []
+            self.db[wa_chase.COLLECTION].rows = []
+            self.gc_item(**over)
+            self.chase(_et(8, 35))
+            self.assertEqual(self.rows(), [], over)
+
+    def test_the_list_says_group_or_dm(self):
+        self.gc_item()
+        _item(self.db, quote="Panels today")
+        self.chase(_et(8, 35))
+        with patch.object(server, "db", self.db):
+            out = _run(server.get_project_chase("proj_a", current_user=ADMIN))
+        self.assertEqual(sorted(e["channel"] for e in out["entries"]), ["dm", "group"])
+        blob = json.dumps(out)
+        self.assertNotIn(PAT, blob)                     # never a phone
+        self.assertNotIn("dm_user_id", blob)
 
 
 class TheGroup(_Base):

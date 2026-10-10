@@ -47258,8 +47258,10 @@ async def _whatsapp_attention_weekly_job() -> None:
 # ── SUB CHASING v1 (SHADOW MODE) ───────────────────────────────────────────
 #
 # Who would be nudged about what is due today, and in which words. Rules and
-# templates: lib/wa_chase.py. SENDS NOTHING: no group message, no @mention, no
-# DM. Each nudge it WOULD send is a row in `chase_shadow` that an admin marks
+# templates: lib/wa_chase.py. A sub in the group; GC staff (company users and
+# People mapped "GC team") privately by DM, once opted in (START); the 4:00
+# escalation to the company admins except the owner. SENDS NOTHING: no group
+# message, no @mention, no DM. Each nudge it WOULD send is a row in `chase_shadow` that an admin marks
 # Correct / Wrong (Project → WhatsApp → Would chase). Kill switch:
 # WA_CHASE_DISABLED=1.
 
@@ -47296,13 +47298,82 @@ async def _chase_admins(company_id: str) -> List[dict]:
             for u in users if is_company_admin(u)]
 
 
+async def _chase_dm_target(item: dict) -> Optional[dict]:
+    """GC staff are chased privately: whom the DM would go to, by their
+    active opt-in (START). {user_id, name} or None (not opted in). A company
+    user by their user id; a person mapped "GC team" by the chat they write
+    from (a privacy id opts in under its own digits)."""
+    o = item.get("owner") or {}
+    try:
+        if o.get("kind") == "user" and o.get("id"):
+            optin = await db[WA_OPTINS].find_one(
+                {"user_id": str(o["id"]), "status": "active"})
+        else:
+            optin = await _active_optin_for_phone(wa_chase.digits(o.get("jid")))
+        if not optin or not optin.get("user_id"):
+            return None
+        user = await db.users.find_one(
+            {"_id": to_query_id(str(optin["user_id"])), "is_deleted": {"$ne": True}},
+            {"name": 1, "company_id": 1})
+    except Exception:
+        return None
+    if not user or not wa_security.same_company(user.get("company_id"), item.get("company_id")):
+        return None
+    return {"user_id": str(user["_id"]), "name": user.get("name") or o.get("name") or ""}
+
+
+async def _chase_dm_reply_at(user_id: str, after: datetime) -> Optional[datetime]:
+    """Their latest DM to the assistant after `after`, if any."""
+    try:
+        rows = await db.whatsapp_messages.find(
+            {"is_dm": True, "user_id": str(user_id), "created_at": {"$gt": after}}
+        ).sort([("created_at", -1)]).to_list(1)
+    except Exception:
+        return None
+    return _attention_sent_at(rows[0]) if rows else None
+
+
+async def _chase_not_opted_in(item: dict, day, now: datetime, okey: str) -> None:
+    """GC staff who would be chased but have not opted in: one Would chase
+    entry a day, "not chased: not opted in", nothing else."""
+    rid = wa_chase.row_id(day, wa_chase.DM, okey, "not_opted_in")
+    try:
+        g = await db.whatsapp_groups.find_one(
+            {"wa_group_id": str(item.get("group_id")), "project_id": str(item.get("project_id"))},
+            {"group_name": 1}) or {}
+        owner = item.get("owner") or {}
+        row = {
+            "_id": rid, "day": day.isoformat(), "slot": "not_chased", "at": now,
+            "company_id": str(item.get("company_id")),
+            "project_id": str(item.get("project_id")), "group_id": str(item.get("group_id")),
+            "project_ids": [str(item.get("project_id"))],
+            "group_name": g.get("group_name") or "", "channel": wa_chase.DM,
+            "owner_key": okey, "owner_name": owner.get("name") or "",
+            "owner_kind": owner.get("kind"), "kind": "not_chased",
+            "not_chased": wa_chase.NOT_OPTED_IN,
+            "item_ids": [str(item.get("_id"))],
+            "items": [{"id": str(item.get("_id")), "type": item.get("type"),
+                       "summary": item.get("summary") or "", "quote": wa_chase.quote(item),
+                       "due_text": (item.get("due") or {}).get("due_text"),
+                       "message_id": wa_chase.quoted(item).get("message_id")}],
+            "text": "", "reason": f"not chased: {wa_chase.NOT_OPTED_IN} (GC staff are "
+                                  "chased by private DM after they send START)",
+            "review": None, "created_at": now, "shadow": True,
+        }
+        await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": row},
+                                                 upsert=True)
+    except Exception as e:
+        logger.warning(f"[chase] not-opted-in row failed: {type(e).__name__}")
+
+
 async def _chase_tick(now: Optional[datetime] = None) -> dict:
     """Every 5 minutes. Shadow mode: records what would be sent, sends
     nothing."""
     now = now or datetime.now(timezone.utc)
-    report = {"items": 0, "eligible": 0, "would_chase": 0, "admin_dm": 0,
-              "stopped": 0, "outside_hours": 0, "after_slot": 0,
-              "already": 0, "group_off": 0, "weekend_off": 0, "skipped": {}}
+    report = {"items": 0, "eligible": 0, "would_chase": 0, "would_dm": 0, "admin_dm": 0,
+              "stopped": 0, "outside_hours": 0, "after_slot": 0, "not_opted_in": 0,
+              "admin_self": 0, "already": 0, "group_off": 0, "weekend_off": 0,
+              "skipped": {}}
     if wa_chase.disabled():
         report["disabled"] = True
         return report
@@ -47322,6 +47393,8 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     batches: Dict[tuple, dict] = {}
     settings_cache: Dict[str, dict] = {}
     group_ok: Dict[str, bool] = {}
+    dm_targets: Dict[str, Optional[dict]] = {}
+    group_names: Dict[tuple, str] = {}
     # A request that a confirmed commitment answers is chased through that
     # commitment (its words, its date -- moved or not), never as well. A
     # tentative answer (flagged, owner only possibly, possibly done) does not
@@ -47375,6 +47448,18 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         if not wa_gc.in_send_window(now, settings_cache[pid].get("send_window")):
             report["outside_hours"] += 1
             continue
+        okey = wa_chase.owner_key(it)
+        ch = wa_chase.channel(it.get("owner") or {})
+        target = None
+        if ch == wa_chase.DM:
+            # GC staff: privately, and only once they have opted in.
+            if okey not in dm_targets:
+                dm_targets[okey] = await _chase_dm_target(it)
+            target = dm_targets[okey]
+            if not target:
+                report["not_opted_in"] += 1
+                await _chase_not_opted_in(it, day, now, okey)
+                continue
         iid = str(it.get("_id"))
         try:
             nudges = await db[wa_chase.COLLECTION].find(
@@ -47388,41 +47473,55 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         last = max((n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)),
                    default=None)
         spoke = await _chase_owner_spoke_at(gid, it, last) if last else None
-        stop = wa_chase.stop_reason(it, group_nudges, spoke)
+        dm_reply = (await _chase_dm_reply_at(target["user_id"], last)
+                    if last and target else None)
+        stop = wa_chase.stop_reason(it, group_nudges, spoke, dm_reply)
         if stop:
             report["stopped"] += 1
             continue
         if slot == wa_chase.ADMIN and not any(
                 n.get("slot") == wa_chase.EOD for n in group_nudges):
             continue                            # only after the end of day nudge
-        key = (pid, gid, wa_chase.owner_key(it))
+        # A sub: one nudge per group. GC staff: one DM per person, every
+        # job's items together.
+        key = (pid, gid, okey) if ch == wa_chase.GROUP else ("*", wa_chase.DM, okey)
         b = batches.setdefault(key, {"items": [], "nudged": {}, "last": None,
-                                     "company_id": str(it.get("company_id"))})
+                                     "company_id": str(it.get("company_id")),
+                                     "channel": ch, "target": target, "groups": []})
+        if (pid, gid) not in group_names:
+            g = await db.whatsapp_groups.find_one(
+                {"wa_group_id": gid, "project_id": pid}, {"group_name": 1}) or {}
+            group_names[(pid, gid)] = g.get("group_name") or ""
         b["items"].append(it)
+        b["groups"].append((pid, gid))
         # One time per earlier nudge, though a batched nudge lists every item.
         b["nudged"].update({n["_id"]: n["at"] for n in group_nudges
                             if isinstance(n.get("at"), datetime)})
         if last and (b["last"] is None or last > b["last"]):
             b["last"] = last
     for (pid, gid, okey), b in batches.items():
+        dm = b["channel"] == wa_chase.DM
         rid = wa_chase.row_id(day, gid, okey, slot)
         try:
             if await db[wa_chase.COLLECTION].find_one({"_id": rid}, {"_id": 1}):
-                report["already"] += 1          # one nudge per owner per group per slot
+                report["already"] += 1          # one nudge per owner per group/DM per slot
                 continue
             first = b["items"][0]
             owner = first.get("owner") or {}
-            g = await db.whatsapp_groups.find_one(
-                {"wa_group_id": gid, "project_id": pid}, {"group_name": 1}) or {}
+            first_pid, first_gid = b["groups"][0]
             row = {
                 "_id": rid, "day": day.isoformat(), "slot": slot, "at": now,
                 "slot_at": slot_time, "company_id": b["company_id"],
-                "project_id": pid, "group_id": gid,
-                "group_name": g.get("group_name") or "",
+                "project_id": first_pid, "group_id": first_gid,
+                # Every job the nudge is about (a DM can cover several).
+                "project_ids": sorted({p for p, _g in b["groups"]}),
+                "group_name": group_names.get((first_pid, first_gid), ""),
+                "channel": b["channel"],
                 "owner_key": okey, "owner_name": owner.get("name") or "",
                 "owner_kind": owner.get("kind"),
-                # Server only: whom the @mention would tag.
-                "mention_jid": owner.get("jid"),
+                # Server only: whom the @mention would tag / the DM would reach.
+                "mention_jid": None if dm else owner.get("jid"),
+                "dm_user_id": (b["target"] or {}).get("user_id") if dm else None,
                 "item_ids": [str(i.get("_id")) for i in b["items"]],
                 "items": [{"id": str(i.get("_id")), "type": i.get("type"),
                            "summary": i.get("summary") or "",
@@ -47434,13 +47533,27 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 "review": None, "created_at": now, "shadow": True,
             }
             if slot == wa_chase.ADMIN:
-                admins = await _chase_admins(b["company_id"])
+                # Every company admin except the owner; an owner who is the
+                # only admin: no escalation.
+                own_uid = ((b["target"] or {}).get("user_id") if dm
+                           else (owner.get("id") if owner.get("kind") == "user" else None))
+                admins = wa_chase.escalate_to(await _chase_admins(b["company_id"]), own_uid)
+                if not admins:
+                    report["admin_self"] += 1
+                    continue
                 row.update(kind="admin_dm",
                            to=[a["name"] for a in admins],
                            to_user_ids=[a["id"] for a in admins],
-                           text=wa_chase.admin_text(row["owner_name"], row["group_name"],
-                                                    b["items"], list(b["nudged"].values())))
+                           text=wa_chase.admin_text(
+                               row["owner_name"], "" if dm else row["group_name"],
+                               b["items"], list(b["nudged"].values()), b["channel"]))
                 report["admin_dm"] += 1
+            elif dm:
+                row.update(kind="dm", to=[(b["target"] or {}).get("name") or row["owner_name"]],
+                           text=wa_chase.dm_text(
+                               [{"item": i, "group_name": group_names.get(g, "")}
+                                for i, g in zip(b["items"], b["groups"])], slot))
+                report["would_dm"] += 1
             else:
                 row.update(kind="group",
                            reply_to=wa_chase.quoted(first).get("message_id"),
@@ -62691,6 +62804,9 @@ def _chase_view(r: dict) -> dict:
         "day": r.get("day"),
         "at": at.isoformat() if isinstance(at, datetime) else None,
         "group_name": r.get("group_name") or "",
+        # Group (a sub, @mentioned there) or DM (GC staff, privately).
+        "channel": r.get("channel") or ("dm" if r.get("kind") == "admin_dm" else "group"),
+        "not_chased": r.get("not_chased") or "",
         "owner": r.get("owner_name") or "",
         "to": r.get("to") or [],
         "items": [{"id": i.get("id"), "type": i.get("type"), "quote": i.get("quote"),
@@ -62709,7 +62825,9 @@ async def get_project_chase(project_id: str, current_user=Depends(get_current_us
     this project (nothing was sent), newest first, with precision from the
     Correct / Wrong given so far."""
     company_id = await _attention_admin_project(project_id, current_user)
-    q = {"project_id": str(project_id), "company_id": str(company_id)}
+    # A DM to GC staff can cover several jobs: listed under each of them.
+    q = {"company_id": str(company_id),
+         "$or": [{"project_id": str(project_id)}, {"project_ids": str(project_id)}]}
     rows = await db[wa_chase.COLLECTION].find(q).sort([("at", -1)]).to_list(200)
     stats = await db[wa_chase.COLLECTION].find(
         q, {"slot": 1, "review.verdict": 1}).to_list(10000)
@@ -62730,8 +62848,8 @@ async def review_project_chase(project_id: str, entry_id: str, body: dict,
         raise HTTPException(status_code=422, detail="verdict: correct or wrong")
     now = datetime.now(timezone.utc)
     r = await db[wa_chase.COLLECTION].find_one_and_update(
-        {"_id": str(entry_id), "project_id": str(project_id),
-         "company_id": str(company_id)},
+        {"_id": str(entry_id), "company_id": str(company_id),
+         "$or": [{"project_id": str(project_id)}, {"project_ids": str(project_id)}]},
         {"$set": {"review": {"verdict": verdict, "by": actor_id(current_user),
                              "at": now}}},
         return_document=_canary_return_after())

@@ -4,9 +4,10 @@
  * (whatsappChase.test.cjs).
  *
  * SHADOW MODE. Sub chasing sends nothing yet: each entry is a nudge it WOULD
- * have sent (in the item's group, @mentioning the owner, quoting the original
- * message; or, after the end of day nudge, a private DM to the company
- * admin). An admin marks each one Correct / Wrong so precision is known
+ * have sent: a sub in the item's group (@mentioning them, quoting the
+ * original message); GC staff privately by DM, once they have opted in
+ * (otherwise "Not chased: not opted in"); after the end of day nudge, a
+ * private DM to the company admin. An admin marks each one Correct / Wrong so precision is known
  * before anything is ever sent.
  * (GET /api/projects/{id}/whatsapp/chase, POST …/whatsapp/chase/{entry}/review)
  */
@@ -27,7 +28,22 @@ export const SLOT_LABELS = {
   midday: 'Midday',
   eod: 'End of day',
   admin_dm: 'DM to admin',
+  not_chased: 'Not chased',
 };
+
+/** Where the nudge would go: "Group" (a sub, in the group) or "DM" (GC
+ *  staff privately, or the admin). */
+export function channelTag(e) {
+  if (!e) return '';
+  return e.channel === 'dm' || e.kind === 'admin_dm' ? 'DM' : 'Group';
+}
+
+/** The nudge's words, or why there are none ("Not chased: not opted in"). */
+export function bodyText(e) {
+  if (!e) return '';
+  if (e.not_chased) return `Not chased: ${e.not_chased}`;
+  return e.text || '';
+}
 
 /** "8:35 AM", in New York time: the slots are New York times, so the
  *  screen shows them that way on any device. */
