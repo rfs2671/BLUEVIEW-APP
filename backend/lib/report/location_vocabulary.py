@@ -14,14 +14,27 @@ the conducting party actually typed.
 
 ── THE THREE RUNTIME PROTECTIONS ─────────────────────────────────────────────
 
-AN UNKNOWN STRING IS PRESERVED VERBATIM AND SURFACED. `resolve` returns it in
-`unmapped` so the page can print it. It is never dropped and never attached to
-a neighbouring token: normalisation is not allowed to silently improve bad
-source data.
+AN UNKNOWN STRING IS PRESERVED, AND NEVER PRINTED. `resolve` returns it in
+`unmapped`, where coverage counts it. It is never attached to a neighbouring
+token: normalisation is not allowed to silently improve bad source data. It is
+also not printed on the page any more -- ruled 2026-10-10, after the tile read
+"Unmapped source value: 3rd Floor, 4th Floor, ..." on an investor document. An
+area the table cannot read is left off; it is not announced.
 
 AN AMBIGUOUS STRING IS NEVER NORMALISED AUTOMATICALLY. This table holds exact
 keys only. There is no fuzzy match, no stemming, no edit distance and no
 model -- a string it has not seen cannot be guessed at.
+
+ONE SHAPE IS RECOGNISED, AND IT IS THE APP'S OWN. The daily log's location
+chips are generated, not typed: `buildingLevelChips` in
+frontend/src/utils/dailyJobsiteModel.js emits "Sub-cellar", "Cellar",
+"<ordinal> Floor", "Mezzanine" and "Roof", and saves the CP's picks as ONE
+comma-joined string ("3rd Floor, 4th Floor"). This table was built from older
+hand-typed text and knew none of them, so every chip-built row resolved to
+nothing. `_chip_tokens` reads exactly that closed set -- "<n>st|nd|rd|th
+Floor" and the four named levels -- and a comma-joined value is split into its
+parts only after the whole string has missed (one hand-typed key, "Foundation,
+Ex. 2&4", carries a comma of its own).
 
 COVERAGE IS MEASURED AND RETURNED. A table that silently stops matching most of
 the corpus looks exactly like a table that is working, and the only difference
@@ -48,6 +61,7 @@ where work occurred rather than how many strings were typed.
 
 from __future__ import annotations
 
+import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 #: The scope token. DELIBERATELY NOT IN `DISPLAY_ORDER`.
@@ -69,11 +83,16 @@ SCOPE = "SITE"
 #: ran bottom-upward and produced "UG / L1" where a reader scanning a section
 #: drawing expects "L1 / UG".
 #:
-#: NOTHING MAPS TO `ROOF` YET. It is here so the first roof string that arrives
-#: has a place to go, rather than the order being edited under pressure on the
-#: day it appears.
+#: THE LEVELS RUN TO `MAX_LEVEL`, not to five. The app offers a chip for every
+#: storey the project declares, and 588 Thomas files a 4th Floor; a closed set
+#: that stopped at L5 would quietly drop the 6th floor of the next building.
+#: The mezzanine sits between the 2nd and the 1st, and the cellars below
+#: ground, which is where a section drawing puts them.
+MAX_LEVEL = 99
+LEVELS: Tuple[str, ...] = tuple(f"L{n}" for n in range(MAX_LEVEL, 0, -1))
 DISPLAY_ORDER: Tuple[str, ...] = (
-    "ROOF", "L5", "L4", "L3", "L2", "L1", "G", "B", "UG", "FDN", "EX", "SW",
+    ("ROOF",) + LEVELS[:-1] + ("MEZZ", "L1", "G", "CELLAR", "SUBCELLAR",
+                               "B", "UG", "FDN", "EX", "SW")
 )
 
 #: (rail, prose). Short for the five-second rail, long for the activity rows
@@ -82,11 +101,10 @@ DISPLAY_ORDER: Tuple[str, ...] = (
 #: token to cover that one case would bloat the one element built for scanning.
 LABELS: Dict[str, Tuple[str, str]] = {
     "ROOF": ("Roof", "Roof"),
-    "L5": ("L5", "Level 5"),
-    "L4": ("L4", "Level 4"),
-    "L3": ("L3", "Level 3"),
-    "L2": ("L2", "Level 2"),
-    "L1": ("L1", "Level 1"),
+    **{f"L{n}": (f"L{n}", f"Level {n}") for n in range(1, MAX_LEVEL + 1)},
+    "MEZZ": ("Mezzanine", "Mezzanine"),
+    "CELLAR": ("Cellar", "Cellar"),
+    "SUBCELLAR": ("Sub-cellar", "Sub-cellar"),
     "G": ("G", "Ground"),
     "B": ("B", "Basement"),
     "UG": ("UG", "Underground"),
@@ -136,6 +154,52 @@ def _key(value) -> str:
     return " ".join(str(value or "").split()).lower()
 
 
+#: The four named chips `buildingLevelChips` emits, keyed as `_key` spells them.
+_NAMED_CHIPS: Dict[str, str] = {
+    "roof": "ROOF",
+    "mezzanine": "MEZZ",
+    "cellar": "CELLAR",
+    "sub-cellar": "SUBCELLAR",
+}
+
+_ORDINAL_FLOOR = re.compile(r"^(\d{1,2})(st|nd|rd|th) floor$")
+
+
+def _chip_tokens(key: str) -> Optional[Tuple[str, ...]]:
+    """The token for one chip label the app generates, or None.
+
+    THE SUFFIX MUST BE THE RIGHT ONE. "2th Floor" is not a label the app can
+    produce, so it is not one this reads; a typed string that merely looks
+    like a chip goes through the table like any other.
+    """
+    if key in _NAMED_CHIPS:
+        return (_NAMED_CHIPS[key],)
+    hit = _ORDINAL_FLOOR.match(key)
+    if not hit:
+        return None
+    n = int(hit.group(1))
+    if not 1 <= n <= MAX_LEVEL or hit.group(2) != ordinal_suffix(n):
+        return None
+    return (f"L{n}",)
+
+
+def ordinal_suffix(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def ordinal(n: int) -> str:
+    return f"{n}{ordinal_suffix(n)}"
+
+
+def level_number(token: str) -> Optional[int]:
+    """3 for "L3"; None for every token that is not a numbered storey."""
+    if token.startswith("L") and token[1:].isdigit():
+        return int(token[1:])
+    return None
+
+
 class Resolution:
     """What the page may say about where the work was.
 
@@ -168,26 +232,21 @@ class Resolution:
 
         NAMED AREAS carry the count and the tokens. SCOPE ALONE reads Sitewide
         and says no specific area was recorded. NOTHING MAPPED reads LOCATION
-        rather than ACTIVE AREAS and names the value it failed on -- "no area
-        recorded" under ACTIVE AREAS claims the system knows there were none,
-        when in fact a location WAS recorded and this table could not read it.
+        rather than ACTIVE AREAS and says nothing beneath -- "no area
+        recorded" would claim the system knows there were none, when in fact
+        a location WAS recorded and this table could not read it. What it
+        could not read is not printed either (see the module docstring).
         """
-        notes: List[str] = []
         if self.areas:
-            if self.sitewide:
-                notes.append("Sitewide activity also recorded")
-            if self.unmapped:
-                notes.append("Unmapped: " + ", ".join(self.unmapped))
+            notes = (["Sitewide activity also recorded"] if self.sitewide
+                     else [])
             return (str(len(self.areas)), "Active areas",
                     [" / ".join(LABELS[t][0] for t in self.areas)] + notes)
         if self.sitewide:
-            if self.unmapped:
-                notes.append("Unmapped: " + ", ".join(self.unmapped))
             return ("Sitewide", "Recorded activity",
-                    ["No specific area recorded"] + notes)
+                    ["No specific area recorded"])
         if self.unmapped:
-            return ("—", "Location",
-                    ["Unmapped source value: " + ", ".join(self.unmapped)])
+            return ("—", "Location", [])
         return ("—", "Location", ["No location recorded"])
 
     def prose(self) -> str:
@@ -213,6 +272,10 @@ def resolve(raw_values: Iterable,
     for k, v in (overrides or {}).items():
         table[_key(k)] = tuple(v)
 
+    def lookup(key: str) -> Optional[Tuple[str, ...]]:
+        hit = table.get(key)
+        return hit if hit is not None else _chip_tokens(key)
+
     tokens, unmapped, located, mapped = set(), [], 0, 0
     sitewide = False
     for value in raw_values:
@@ -220,7 +283,17 @@ def resolve(raw_values: Iterable,
         if not key:
             continue
         located += 1
-        hit = table.get(key)
+        # THE WHOLE STRING FIRST, then its comma-separated parts. A part that
+        # reads is kept even when a sibling does not, because "3rd Floor,
+        # Stair 2" says where the work was as surely as "3rd Floor" does.
+        hit = lookup(key)
+        if hit is None:
+            parts = [" ".join(s.split()) for s in str(value).split(",")]
+            parts = [p for p in parts if p]
+            found = [lookup(_key(p)) for p in parts] if len(parts) > 1 else []
+            if any(f is not None for f in found):
+                hit = tuple(t for f in found if f is not None for t in f)
+                unmapped.extend(p for p, f in zip(parts, found) if f is None)
         if hit is None:
             unmapped.append(" ".join(str(value).split()))
             continue
