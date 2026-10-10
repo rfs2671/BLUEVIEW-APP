@@ -242,6 +242,35 @@ class Faithful(unittest.TestCase):
                              "Pump planned from the rental yard (Roy Fishman, Sep 28) — "
                              "not confirmed as done", claim)
 
+    def test_a_relayed_plan_names_whose_plan_it_is(self):
+        srcs = [_src("S1", "Owner says installation is set for Monday", who="Wendy Cho", day="Oct 1")]
+        for claim in ("Installation was completed Monday", "Installation is planned for Monday"):
+            (c,) = pm.checked_claims([{"text": claim, "source": "S1",
+                                       "quote": "Owner says installation is set for Monday"}], srcs)
+            self.assertTrue(c["text"].endswith(
+                "planned for Monday (the owner, relayed by Wendy Cho, Oct 1) — not confirmed as done"),
+                c["text"])
+            self.assertEqual(pm.format_answer([c], {"S1": srcs[0]}).count("relayed by"), 1)
+        (c,) = pm.checked_claims([{"text": "Installation was completed Monday", "source": "S1",
+                                   "quote": "Owner says installation is set for Monday"}], srcs)
+        self.assertEqual(c["text"], "Installation planned for Monday (the owner, relayed by "
+                                    "Wendy Cho, Oct 1) — not confirmed as done")
+
+    def test_per_and_according_to_name_the_decider(self):
+        people = ["Wendy Cho", "Mike Rivera"]
+        self.assertEqual(pm.relayed_decider("Per Mike, change the window", "Wendy Cho", people),
+                         "Mike")
+        self.assertEqual(pm.relayed_decider("According to the architect the sill drops 2in",
+                                            "Wendy Cho", people), "the architect")
+        self.assertIsNone(pm.relayed_decider("Cut sheets per spec", "Wendy Cho", people))
+        srcs = [_src("S1", "Per Mike, change the 3B window to a casement"),
+                _src("S2", "Panel schedule attached", who="Mike Rivera")]
+        (c,) = pm.checked_claims([{"text": "Mike wanted the 3B window changed to a casement",
+                                   "source": "S1", "quote": "Per Mike, change the 3B window"}],
+                                 srcs)
+        self.assertEqual(c["relayed_by"], "Wendy Cho")
+        self.assertIn("(relayed by Wendy Cho, Sep 24)", pm.format_answer([c], {"S1": srcs[0]}))
+
     def test_the_answer_leads_with_no_record_when_there_is_only_a_plan(self):
         srcs = [_src("S1", "Dumpster swap is set for Tuesday 10/6", who="Roy Fishman", day="Oct 2")]
         claims = pm.checked_claims([{"text": "The dumpster was swapped on Tuesday", "source": "S1",
@@ -263,6 +292,8 @@ class Faithful(unittest.TestCase):
             "has the slab been poured?": "No record that the slab has been poured.",
             "did Patricia send the riser drawings?": "No record that Patricia sent the riser drawings.",
             "when did the pump arrive?": "No record that the pump arrived.",
+            "did the install pass inspection?": "No record that the install passed inspection.",
+            "did the close out begin?": "No record that the close out began.",
             "was it?": "No record that this happened.",
             "what happened with the pump?": "",
         }.items():

@@ -221,6 +221,11 @@ _DECIDE = (r"wants|wanted|asked(?: for)?|asks(?: for)?|approved|approves|request
 _RELAYED = re.compile(
     r"\b(?:the\s+)?(?:(?i:(" + _ROLES + r"))|([A-Z][a-z]+(?: [A-Z][a-z]+)?))(?:'s?)?\s+"
     r"(?i:(?:has |have |just |already )?(" + _DECIDE + r"))\b")
+# "Per Mike, change the window" / "according to the owner, …": the decider
+# comes after the words, with no decision verb.
+_PER = re.compile(
+    r"\b(?i:per|according to|on behalf of)\s+(?:the\s+)?(?:(?i:(" + _ROLES + r"))\b"
+    r"|([A-Z][a-z]+(?: [A-Z][a-z]+)?))")
 _NOT_DECIDERS = {"I", "We", "You", "He", "She", "They", "It", "This", "That", "Got",
                  "Ok", "Okay", "Yes", "No", "Please", "Just", "Also"}
 
@@ -236,7 +241,9 @@ def relayed_decider(quote: str, poster: str = "",
     approved" is not a person approving anything."""
     first = (poster or "").strip().split(" ")[0].lower()
     known = {p.strip().split(" ")[0].lower() for p in (people or []) if p and p.strip()}
-    for m in _RELAYED.finditer(quote or ""):
+    found = sorted(list(_RELAYED.finditer(quote or "")) + list(_PER.finditer(quote or "")),
+                   key=lambda x: x.start())
+    for m in found:
         role, name = m.group(1), m.group(2)
         if role:
             r = role.lower()
@@ -415,13 +422,18 @@ def _make_faithful(claim: Dict[str, Any], src: Dict[str, Any],
             claim["decider"], claim["relayed_by"] = decider, poster
     if planned_for(quote, text):
         day = src.get("day_label") or ""
+        # Whose plan: the decider the words name, relayed by the poster
+        # ("the owner, relayed by Wendy Cho"); else the poster.
+        whose = f"{decider}, relayed by {poster}" if decider and poster else poster
+        if decider and poster:
+            claim["decider"], claim["relayed_by"] = decider, poster
         if claims_done(text):
-            text = plan_line(text, plan_clause(quote, text), poster, day)
+            text = plan_line(text, plan_clause(quote, text), whose, day)
             claim["planned"] = True
         elif _SAYS_PLANNED.search(text):
             # Already told as a plan: say whose plan and as of when.
             if "not confirmed" not in text.lower():
-                who_day = ", ".join(x for x in (poster, day) if x)
+                who_day = ", ".join(x for x in (whose, day) if x)
                 text = text.rstrip(" .") + (f" ({who_day})" if who_day else "") + (
                     " — not confirmed as done")
             claim["planned"] = True
@@ -444,6 +456,10 @@ _GOT = re.compile(
     r"(?:(?:a|an|the|their|our|his|her)\s+)?(?P<thing>.+?)\s*\.?$", re.IGNORECASE)
 _PASSIVE = re.compile(r"\b(?:was|were|been|is|are|be)\s+(?:got|acquired|obtained|received"
                       r"|picked up|brought|rented)\b", re.IGNORECASE)
+_RELAY_LEAD = re.compile(
+    r"^\s*(?:(?:per|according to|on behalf of)\s+(?:the\s+)?[\w' ]+?,\s*"
+    r"|(?:the\s+)?(?:(?i:" + _ROLES + r")|[A-Z][a-z]+(?: [A-Z][a-z]+)?)(?:'s?)?\s+"
+    r"(?i:(?:" + _DECIDE + r"))\s+(?:that\s+)?)", re.IGNORECASE)
 _SET_FOR = re.compile(
     r"^\s*(?P<what>[^,;]+?)\s+(?:is|are|was|were)\s+(?:set|scheduled|planned|booked|slated)"
     r"\s+for\b", re.IGNORECASE)
@@ -466,7 +482,10 @@ def plan_line(claim_text: str, clause: str, who: str = "", day: str = "") -> str
     confirmed as done"."""
     m = _WHEN.search(clause or "")
     when_ = m.group(1) if m else ""
-    sf = _SET_FOR.match(clause or "")
+    # "Owner says installation is set for Monday" / "Per Mike, …": the
+    # plan is what follows the relay lead-in.
+    clause = _RELAY_LEAD.sub("", clause or "", count=1)
+    sf = _SET_FOR.match(clause)
     if sf:
         what = sf.group("what").strip() + " planned"
     elif _GOT.match(claim_text or "") and not _PASSIVE.search(claim_text):
@@ -502,6 +521,8 @@ _DID_VERBS = ("send", "pour", "install", "deliver", "swap", "arrive", "start", "
               "happen", "get", "come", "approve", "inspect", "sign", "submit", "order",
               "replace", "remove", "fix", "repair", "complete", "pass", "fail", "pay",
               "drop", "pick", "test", "move", "change", "close", "open", "begin", "do")
+_DETERMINERS = {"the", "a", "an", "this", "that", "these", "those", "our", "their", "his",
+                "her", "its", "my", "your", "every", "each", "any", "some", "no"}
 _DONE_Q = re.compile(r"^(?:(?:when|what day|what time)\s+)?(was|were|did|has|have)\s+(.+)$",
                      re.IGNORECASE)
 
@@ -537,7 +558,9 @@ def no_record_line(question: str) -> str:
                 return f"No record that {' '.join(words[:i])} {aux} {' '.join(words[i:])}."
     if aux == "did":
         for i, w in enumerate(words[1:], start=1):
-            if w.lower() in _DID_VERBS:
+            # "did the install pass inspection": "install" after "the" is a
+            # noun; the predicate is "pass".
+            if w.lower() in _DID_VERBS and words[i - 1].lower() not in _DETERMINERS:
                 rest = " ".join([*words[:i], _past(w), *words[i + 1:]])
                 return f"No record that {rest}."
     return "No record that this happened."
