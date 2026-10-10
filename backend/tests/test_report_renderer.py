@@ -338,7 +338,8 @@ class AmberMeansOwedAndAbsent(unittest.TestCase):
             acts=[_activity(company="Quality Plumbing", workers="7",
                             where="Underground")],
             filed_all=True))
-        self.assertIn("Count variance", html)
+        self.assertIn("7 on daily log", html)
+        self.assertNotIn("Count variance", html)
         for cls in self.AMBER_CLASSES:
             self.assertNotIn(cls, html, cls)
 

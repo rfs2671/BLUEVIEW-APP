@@ -58,6 +58,17 @@ def is_placeholder(value) -> bool:
     return _clean(value).upper() == PLACEHOLDER
 
 
+def proper_case(value) -> str:
+    """"Plumber" for "plumber"; "HVAC / Mechanical" left alone.
+
+    ONLY AN ALL-LOWERCASE WORD IS TOUCHED. A word carrying any capital was
+    spelled that way by somebody -- "HVAC", "BreezCo" -- and re-casing it
+    would be the report correcting a name it does not own.
+    """
+    return " ".join(w[:1].upper() + w[1:] if w.islower() else w
+                    for w in _clean(value).split(" "))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  THE FIVE WORKFORCE RECONCILIATION STATES
 # ══════════════════════════════════════════════════════════════════════════
@@ -92,15 +103,12 @@ class Reconciliation(Enum):
     NEITHER = "neither"
 
 
-#: The chip beneath a row. Two states share a chip because the chip names what
-#: the reader is looking at, not which branch produced it.
-RECONCILIATION_CHIP: Dict[Reconciliation, str] = {
-    Reconciliation.ALIGNED: "Counts aligned",
-    Reconciliation.VARIANCE: "Count variance",
-    Reconciliation.LOG_ONLY: "Documented activity",
-    Reconciliation.GATE_ONLY: "Count not recorded",
-    Reconciliation.NEITHER: "Documented activity",
-}
+#: THERE IS NO CHIP ANY MORE. Each row carried a badge naming its state --
+#: "Counts aligned", "Count variance", "Count not recorded" -- beneath the
+#: statement that already prints both numbers. Removed by ruling 2026-10-10:
+#: the numbers are the record, and a badge grading them was the report
+#: commenting on the record. The state survives because it is what chooses
+#: the statement's wording.
 
 
 def reconcile(log_count: Optional[int], gate_count: int) -> Reconciliation:
@@ -230,9 +238,17 @@ class GateDayState:
         # excluded from the count and REPORTED SEPARATELY rather than dropped:
         # silently improving the number is the thing this report does not do,
         # and the man is still counted among the check-ins either way.
+        #
+        # PROPER CASE, AND ONE ENTRY PER TRADE. The rail lists them now, one
+        # per line, so "plumber" and "Plumber" from two check-ins would print
+        # as two trades; they are one, spelled as the roster spells it.
         every = [_clean(r.get("trade")) for r in self.rows
                  if _clean(r.get("trade"))]
-        self.trades = sorted({t for t in every if not is_placeholder(t)})
+        named: Dict[str, str] = {}
+        for t in every:
+            if not is_placeholder(t):
+                named.setdefault(t.casefold(), proper_case(t))
+        self.trades = sorted(named.values(), key=str.casefold)
         self.trades_pending = len([t for t in every if is_placeholder(t)])
 
         # DISTINCT PEOPLE STILL ON SITE, which is a different number from
@@ -256,37 +272,57 @@ class ActivityDisplayState:
 
     __slots__ = ("company", "company_display", "trade", "location",
                  "log_count", "gate_count", "reconciliation", "statement",
-                 "chip", "photos", "activity_index", "description",
-                 "named")
+                 "photos", "activity_index", "description", "named",
+                 "folded_indices")
 
     def __init__(self, activity: dict, index: int, gate: GateDayState,
-                 display_company=None, overrides=None, renderable=None):
+                 display_company=None, overrides=None, renderable=None,
+                 folded: Sequence[Tuple[int, dict]] = (),
+                 company: Optional[str] = None):
         display = display_company or (lambda s: s)
         keep = renderable or (lambda p: True)
+        # THE ROW, AND ANY GATE-BUILT ROWS FOLDED INTO IT -- see
+        # `fold_unnamed_rows`. With nothing folded every line below reads the
+        # one row exactly as it always did.
+        members: List[Tuple[int, dict]] = [(index, activity)] + list(folded)
 
         self.activity_index = index
-        self.company = _clean(activity.get("company"))
+        self.folded_indices = [i for i, _ in folded]
+        self.company = _clean(company if company is not None
+                              else activity.get("company"))
         self.named = bool(self.company)
-        # AN EMPTY HEADING IS NOT AN OPTION. 11 of 112 activity rows on
-        # production carry no company; one of those carries a description and
-        # photographs. The row prints, and says which field is missing.
+        # NEVER PRINTED NOW: `ReportDisplayModel` drops a row that is still
+        # unnamed after the fold. The label stays so the object is never
+        # half-built.
         self.company_display = (display(self.company) if self.company
                                 else UNNAMED_CONTRACTOR)
-        self.description = _clean(activity.get("work_description"))
-        self.trade = _clean(activity.get("trade"))
-        self.location = lv.resolve([activity.get("work_locations")],
+        descriptions: List[str] = []
+        for _, row in members:
+            d = _clean(row.get("work_description"))
+            if d and d not in descriptions:
+                descriptions.append(d)
+        self.description = "; ".join(descriptions)
+        self.trade = next((_clean(r.get("trade")) for _, r in members
+                           if _clean(r.get("trade"))), "")
+        self.location = lv.resolve([r.get("work_locations") for _, r in members],
                                    overrides=overrides)
-        self.log_count = log_headcount(activity)
+        # A FOLDED ROW'S MEN ARE THIS COMPANY'S MEN. The count is the sum of
+        # what was recorded, and None only when nothing was -- a recorded "1"
+        # beside a blank is still one man on the log.
+        counts = [c for c in (log_headcount(r) for _, r in members)
+                  if c is not None]
+        self.log_count = sum(counts) if counts else None
         self.gate_count = gate.count_for(self.company_display)
         self.reconciliation = reconcile(self.log_count, self.gate_count)
         self.statement = reconciliation_statement(
             self.reconciliation, self.log_count, self.gate_count)
-        self.chip = RECONCILIATION_CHIP[self.reconciliation]
-        # (stored index, photo). THE STORED INDEX, because the photo endpoint
-        # reads data.activities[ai].photos[pi] -- an index into the filtered
-        # list serves a different photograph than the one laid out.
-        self.photos: List[Tuple[int, dict]] = [
-            (i, p) for i, p in enumerate(activity.get("photos") or [])
+        # (stored activity index, stored photo index, photo). BOTH STORED,
+        # because the photo endpoint reads data.activities[ai].photos[pi] -- an
+        # index into a filtered list serves a different photograph than the
+        # one laid out, and a folded row's photographs live under ITS index.
+        self.photos: List[Tuple[int, int, dict]] = [
+            (ai, pi, p) for ai, row in members
+            for pi, p in enumerate(row.get("photos") or [])
             if isinstance(p, dict) and keep(p)]
 
     @property
@@ -313,9 +349,106 @@ class ActivityDisplayState:
 
     @property
     def where(self) -> str:
-        """The long form for a row, or the recorded string when unknown."""
-        return self.location.prose() or (self.location.unmapped[0]
-                                         if self.location.unmapped else "")
+        """The long form for a row, or nothing.
+
+        THE RECORDED STRING IS NO LONGER THE FALLBACK. It printed whatever the
+        table could not read -- on 2026-10-05 "3rd Floor, 4th Floor" verbatim
+        under a heading that otherwise speaks in canonical areas. Unreadable
+        is omitted, by ruling.
+        """
+        return self.location.prose()
+
+
+def _company_key(value) -> str:
+    return _clean(value).casefold()
+
+
+def _checkin_company(row: dict) -> str:
+    """The sub a check-in row names, or "" -- never the placeholder."""
+    for field in ("worker_company", "company"):
+        c = _clean(row.get(field))
+        if c and not is_placeholder(c):
+            return c
+    return ""
+
+
+def fold_unnamed_rows(rows: Sequence[Any], checkins: Sequence[dict]
+                      ) -> List[Tuple[int, dict, List[Tuple[int, dict]],
+                                      Optional[str]]]:
+    """Each activity row, with the day's company-less gate rows folded in.
+
+    THE DEFECT, 588 Thomas, 2026-10-05. Three new BreezCo hires badged in with
+    no company or trade. The CP's daily log built its crews from the gate at
+    13:12, so each became a one-man row with no company; at 13:18 the CP
+    assigned all three to BreezCo on their check-ins, and the filed log never
+    learned it. The report printed three "Contractor not recorded" rows and
+    BreezCo at 1 when it had 4.
+
+    SO A ROW WITH NO COMPANY IS LOOKED UP IN THAT DAY'S CHECK-INS, by the
+    worker ids the gate put on it (and the names, for a row that carries only
+    names). When every man on it resolves to ONE company, the row folds into
+    the first row the log has for that company, or -- when the log has none --
+    becomes that company's row. A row whose men resolve to two companies, or
+    to none, stays unnamed, and `ReportDisplayModel` drops it (ruled: no
+    render, no count).
+
+    THE FILED LOG IS NOT CHANGED. This is the report reading the gate's later
+    answer; the upstream fix -- the log picking up the assignment itself -- is
+    a separate change.
+
+    Returns (stored index, row, folded [(stored index, row)], company or None)
+    in log order. `company` is set only on a row that became a company's row.
+    """
+    by_id: Dict[str, str] = {}
+    by_name: Dict[str, str] = {}
+    for c in checkins or []:
+        company = _checkin_company(c)
+        if not company:
+            continue
+        if str(c.get("worker_id") or "").strip():
+            by_id[str(c["worker_id"]).strip()] = company
+        name = _clean(c.get("worker_name")).casefold()
+        if name:
+            by_name[name] = company
+
+    indexed = [(i, r) for i, r in enumerate(rows or []) if isinstance(r, dict)]
+    out: List[list] = []
+    first_named: Dict[str, int] = {}
+    for i, row in indexed:
+        if _clean(row.get("company")):
+            first_named.setdefault(_company_key(row.get("company")), len(out))
+            out.append([i, row, [], None])
+
+    for i, row in indexed:
+        if _clean(row.get("company")):
+            continue
+        ids = [str(w).strip() for w in (row.get("worker_ids") or [])
+               if str(w or "").strip()]
+        names = [_clean(n).casefold() for n in (row.get("worker_names") or [])
+                 if _clean(n)]
+        found = ([by_id.get(w, "") for w in ids] if ids
+                 else [by_name.get(n, "") for n in names])
+        companies = {_company_key(c): c for c in found if c}
+        if found and all(found) and len(companies) == 1:
+            key, company = next(iter(companies.items()))
+            if key in first_named:
+                out[first_named[key]][2].append((i, row))
+                continue
+            first_named[key] = len(out)
+            out.append([i, row, [], company])
+            continue
+        out.append([i, row, [], None])
+
+    out.sort(key=lambda g: g[0])
+    return [tuple(g) for g in out]
+
+
+def resolve_activities(rows: Sequence[Any], gate: GateDayState,
+                       **kwargs) -> List[ActivityDisplayState]:
+    """The activity rows the report lays out, after the fold."""
+    return [ActivityDisplayState(row, index, gate, folded=folded,
+                                 company=company, **kwargs)
+            for index, row, folded, company in fold_unnamed_rows(rows, gate.rows)]
 
 
 class SafetyState:
@@ -433,7 +566,7 @@ class ReportDisplayModel:
 
     __slots__ = ("project", "date", "gate", "activities", "safety",
                  "required_logs", "weather", "additional_gate",
-                 "seed_rows_dropped")
+                 "seed_rows_dropped", "unnamed_rows_dropped")
 
     def __init__(self, project: dict, date: str, gate: GateDayState,
                  activities: Sequence[ActivityDisplayState],
@@ -447,8 +580,13 @@ class ReportDisplayModel:
         # that "the log had four rows and the report shows three" has an
         # answer other than a shrug.
         every = list(activities)
-        self.activities = [a for a in every if a.substantive]
-        self.seed_rows_dropped = len(every) - len(self.activities)
+        substantive = [a for a in every if a.substantive]
+        self.seed_rows_dropped = len(every) - len(substantive)
+        # AND A ROW STILL WITHOUT A COMPANY AFTER THE FOLD IS DROPPED TOO --
+        # no render, no count, ruled 2026-10-10. Counted separately, so the
+        # two reasons a log row is missing from the page stay distinguishable.
+        self.activities = [a for a in substantive if a.named]
+        self.unnamed_rows_dropped = len(substantive) - len(self.activities)
         self.safety = safety
         self.required_logs = required_logs
         self.weather = [w for w in weather if w]
