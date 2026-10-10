@@ -1942,6 +1942,21 @@ async def check_auth_rate_limit(request: Request):
 
 # ==================== AUDIT LOGGING ====================
 
+def _resend_sending_only(resp) -> bool:
+    """Resend's 401 for a key restricted to sending:
+    {"statusCode": 401, "name": "restricted_api_key", "message": "This API
+    key is restricted to only send emails"}."""
+    try:
+        body = resp.json() or {}
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    name = str(body.get("name") or "").strip().lower()
+    msg = str(body.get("message") or "").lower()
+    return name == "restricted_api_key" or "restricted to only send" in msg
+
+
 async def _verify_resend_domain_at_startup() -> None:
     """Probe Resend's /domains endpoint and assert levelog.com is verified.
 
@@ -1966,6 +1981,17 @@ async def _verify_resend_domain_at_startup() -> None:
                 "https://api.resend.com/domains",
                 headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
             )
+        if resp.status_code == 401 and _resend_sending_only(resp):
+            # A SENDING-ONLY KEY. Resend restricts these to POST /emails and
+            # answers everything else 401 restricted_api_key -- the right key
+            # for this app, which only sends. Nothing is wrong; the domain
+            # just cannot be checked from here.
+            logger.info(
+                "Resend health check: sending-only API key (GET /domains is "
+                "restricted for it); domain status not checked. Sending is "
+                "unaffected."
+            )
+            return
         if resp.status_code != 200:
             logger.warning(
                 f"Resend health check: GET /domains returned "
