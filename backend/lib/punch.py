@@ -457,7 +457,8 @@ def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str
         if t and wa_attention.parse_due(multilang.normalize_when(m.group(2)), probe):
             out[t] = m.group(2).strip()
             continue
-        words = re.sub(r"^\s*(?:all|todo|todos|everything)\s+", "", part, flags=re.IGNORECASE)
+        words = re.sub(r"^\s*(?:(?:all|everything|everyone)(?:\s+else)?|(?:the\s+)?rest|all\s+others"
+                       r"|todo|todos|lo\s+dem[aá]s|el\s+resto)\s+", "", part, flags=re.IGNORECASE)
         if wa_attention.parse_due(multilang.normalize_when(words), probe):
             for t2 in ts:
                 out.setdefault(t2, words)

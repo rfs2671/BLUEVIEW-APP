@@ -46604,7 +46604,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
                                    "sent_at": sent_at, "source": "handover"}
             event = _attention_event("handover", frm, frm, msg, quote, ev_kind, **extra)
         elif a["action"] in ("state", "possibly_done") and it.get("punch_id") \
-                and a["to"] == "done":
+                and a["to"] in ("done", "possibly_done"):
             # A punch item is never closed by the sub: "done" is READY TO
             # CHECK until the super says "P23 ok".
             prow = await db[punch.COLLECTION].find_one({"_id": it["punch_id"]})
@@ -60087,8 +60087,10 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         if not items:
             await send_whatsapp_message(dm_chat, "No photos yet. Send each one with a caption or a voice note.")
             return True
-        await _punch_save(sess, status="draft")
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], sess["items"]))
+        # The numbers the walker reads are the ones the edits use: kept.
+        punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
+        await _punch_save(sess, status="draft", items=items)
+        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
         return True
     words = (voice or {}).get("transcript") or text
     if parsed.get("has_image"):
@@ -60169,6 +60171,10 @@ async def _punch_draft_turn(sess, dm_chat, text, voice) -> bool:
         ok, note = punch.apply_edit(items, e, next_n=nxt)
         if not ok:
             notes.append(note)
+    # Every edit in one message reads the numbers of the draft the walker
+    # had in front of them ("drop 6\n7 → paint": the 7 shown); then the
+    # list is renumbered and the new numbers kept for the next reply.
+    punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
     await _punch_save(sess, items=items)
     reply = punch.draft_text(sess["job_name"], items)
     if notes:
@@ -60343,7 +60349,9 @@ async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote
         "$set": sets, "$push": {"history": {"at": now, "action": to, "by": by, "quote": quote,
                                             "message_id": message_id}}})
     # The chase follows: ready to check / closed stop it; reopened resumes it.
-    att = {"ready_to_check": "ready_to_check", "closed": "done", "open": "open"}[to]
+    # (Ready to check reads as "possibly done" on the attention item: a
+    # status the review screen and the chase already know, and not chased.)
+    att = {"ready_to_check": "possibly_done", "closed": "done", "open": "open"}[to]
     if row.get("attention_item_id"):
         await db.attention_items.update_one({"_id": to_query_id(row["attention_item_id"])}, {
             "$set": {"status": att, "updated_at": now},
@@ -61247,7 +61255,8 @@ async def _process_whatsapp_message(payload: dict):
 
                 body = vresult.english_transcript
                 dm_voice = {"transcript": vresult.original_transcript or body,
-                            "english": body, "lang": vresult.language_detected}
+                            "english": body, "lang": vresult.language_detected,
+                            "confidence": getattr(vresult, "confidence", None)}
 
         # A walkthrough (punch list) turn: photos, their words, the draft,
         # edits, assigning, the due day, send; and punch questions / "P23 ok".
