@@ -786,11 +786,18 @@ class TestServerIntegrationPins(unittest.TestCase):
         slice_ = self.text[start:end]
         self.assertEqual(slice_.count("_upload_to_r2"), 1)
         self.assertIn("wa_voice.audio_key(project_id, group_id, voice_message_id)", slice_)
-        # Uploaded only after a successful transcription: a rejected note
-        # has no message row, so nothing could ever find (or delete) it.
-        self.assertLess(slice_.index("vresult = await _process_voice"),
-                        slice_.index("_upload_to_r2"))
-        self.assertIn("if vresult.ok:", slice_[:slice_.index("_upload_to_r2")])
+        # A transcribed note's audio is uploaded after the transcription; a
+        # note that failed leaves first, through _voice_not_processed, which
+        # keeps its audio WITH a message row (voice.audio_key) -- so the
+        # project's delete finds and sweeps it either way.
+        up = slice_.index("_upload_to_r2")
+        self.assertLess(slice_.index("await _vi.process_voice_note"), up)
+        self.assertIn("if fail:", slice_[:up])
+        helper = self.text[self.text.find("async def _voice_not_processed"):]
+        helper = helper[:helper.find("async def download_audio")]
+        self.assertIn("wa_voice.audio_key(project_id, group_id, mid)", helper)
+        self.assertIn('"audio_key": audio_key', helper)
+        self.assertIn("whatsapp_messages.insert_one(row)", helper)
         from lib import wa_voice
         self.assertTrue(wa_voice.audio_key("p1", "1203@g.us", "3EB0X").startswith("wa-audio/p1/"))
 

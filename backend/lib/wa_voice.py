@@ -25,6 +25,21 @@ as they read typed text. What this module decides:
 
 The daily cap (VOICE_DAILY_CAP per company, New York day) is enforced in
 server.py with one counter row per company per day.
+
+A NOTE THAT CANNOT BE READ IS NEVER ANSWERED IN THE GROUP (Oct 11, live: a
+3-second note in 588 got "Voice note couldn't be processed, please retype as
+text" posted to the whole group). In a group the bot stays silent: a failed
+download or transcription is retried once after RETRY_SECONDS; if that fails
+too -- or the note is under MIN_SECONDS, or no words were heard -- the note
+is kept (its audio when there is any) and an admin finds it in Attention as
+"Voice note not processed" with the reason. Only a DM may ask the sender to
+retype.
+
+  playable(b)          the bytes are audio a transcriber can read (Ogg/Opus,
+                       MP3, WAV, M4A, WebM) -- not WhatsApp's encrypted .enc
+                       blob, which is what a raw media URL returns.
+  media_key(raw)       the note's mediaKey from the webhook, to decrypt one.
+  not_processed(kind)  why, in words, for the review item.
 """
 
 from __future__ import annotations
@@ -132,3 +147,91 @@ def mark(quote: str, row: Dict[str, Any]) -> str:
 
 def log_line(**kw: Any) -> str:
     return "[voice] " + json.dumps(kw, default=str, sort_keys=True)
+
+
+# ── A NOTE THAT CANNOT BE READ ───────────────────────────────────────────────
+
+#: Under this long, a note is not transcribed (nothing to read; it bills).
+MIN_SECONDS = 2.0
+#: A failed download or transcription is tried once more after this long.
+RETRY_SECONDS = _env_int("VOICE_RETRY_SECONDS", 60)
+#: Failures worth a second try (the network, WaAPI, OpenAI); a short or
+#: silent note is what it is.
+RETRYABLE = ("download_failed", "not_audio", "whisper_failed")
+REVIEW_TYPE = "voice_review"
+
+_REASONS = {
+    "download_failed": "the audio could not be downloaded from WhatsApp",
+    "not_audio": "WhatsApp sent the audio still encrypted (not playable)",
+    "whisper_failed": "transcription failed",
+    "too_short": "shorter than 2 seconds",
+    "low_confidence": "no words were heard",
+    "empty": "no words were heard",
+    "audio_too_long": "longer than the voice note limit",
+}
+
+
+def not_processed(kind: Optional[str]) -> str:
+    """Why a note was not processed, for the review item."""
+    return _REASONS.get(str(kind or ""), "it could not be read")
+
+
+def playable(b: Optional[bytes]) -> Optional[str]:
+    """The container of real audio bytes ("ogg", "mp3", "wav", "m4a",
+    "webm"), or None (empty, or WhatsApp's AES-encrypted .enc blob)."""
+    if not b or len(b) < 12:
+        return None
+    if b.startswith(b"OggS"):
+        return "ogg"
+    if b.startswith(b"ID3") or b[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "mp3"
+    if b.startswith(b"RIFF") and b[8:12] == b"WAVE":
+        return "wav"
+    if b[4:8] == b"ftyp":
+        return "m4a"
+    if b.startswith(b"\x1a\x45\xdf\xa3"):
+        return "webm"
+    return None
+
+
+def media_key(raw: Any, depth: int = 0) -> Optional[str]:
+    """The note's mediaKey (base64, 32 bytes decoded) from the webhook
+    payload, wherever WaAPI nests it (message._data.mediaKey, media…)."""
+    if depth > 8 or raw is None:
+        return None
+    if isinstance(raw, dict):
+        v = raw.get("mediaKey")
+        if isinstance(v, str) and len(v) >= 40:
+            return v
+        for x in raw.values():
+            got = media_key(x, depth + 1)
+            if got:
+                return got
+    elif isinstance(raw, list):
+        for x in raw:
+            got = media_key(x, depth + 1)
+            if got:
+                return got
+    return None
+
+
+def seconds(raw: Any, depth: int = 0) -> Optional[float]:
+    """The note's length as the webhook states it (`duration` / `seconds`),
+    before anything is downloaded; None when it does not say."""
+    if depth > 8 or not isinstance(raw, (dict, list)):
+        return None
+    items = raw.values() if isinstance(raw, dict) else raw
+    if isinstance(raw, dict):
+        for k in ("duration", "seconds"):
+            v = raw.get(k)
+            try:
+                if v not in (None, "") and float(v) >= 0:
+                    return float(v)
+            except (TypeError, ValueError):
+                pass
+    for x in items:
+        got = seconds(x, depth + 1)
+        if got is not None:
+            return got
+    return None
+

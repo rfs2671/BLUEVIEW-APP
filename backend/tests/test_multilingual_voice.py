@@ -211,7 +211,7 @@ class TheGroupWebhook(unittest.TestCase):
             return None
 
         async def audio(parsed):
-            return b"\x00" * 4000
+            return b"OggS" + b"\x00" * 3996        # real Ogg, as WaAPI decodes it
 
         async def ingest(audio_bytes, **kw):
             return result
