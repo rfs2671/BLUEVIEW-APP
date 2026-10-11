@@ -50503,7 +50503,7 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
                  "created_at": {"$gte": start}}).sort("created_at", 1).to_list(60)
             lines.append(f"  group messages in the last 24 h: {len(msgs)}")
             for m in (msgs[-12:] if detail else []):
-                b = str(m.get("body") or "").strip().replace("\n", " ")
+                b = wa_voice.fact_text(m).replace("\n", " ")
                 if b:
                     lines.append(f"    - {b[:140]}")
     except Exception:
@@ -50751,8 +50751,13 @@ def _memory_wa_doc(row: dict, group_name: str) -> dict:
         "sender_name": wa_sender_map.clean_push_name(row.get("sender_name")),
         "at": at,
         "day": ny.strftime("%Y-%m-%d") if ny else None,
-        "text": project_memory.clean(row.get("body"))[:project_memory.TEXT_MAX],
-        # A voice note: its text is the transcript as said.
+        # A voice note: its text is the transcript as said -- or, for one that
+        # may not be what was said, only Whisper's English of the audio.
+        "text": project_memory.clean(
+            (row.get("voice") or {}).get("english_direct")
+            if wa_voice.unreliable_note(row.get("voice")) else row.get("body")
+        )[:project_memory.TEXT_MAX],
+        "unreliable": wa_voice.unreliable_note(row.get("voice")),
         "kind": "voice" if row.get("voice") else "text",
         "voice": bool(row.get("voice")),
         "lang": (row.get("voice") or {}).get("lang"),
@@ -51289,7 +51294,8 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
                "day_label": f"{ny.strftime('%b')} {ny.day}" if ny else (r.get("day") or ""),
                "label": r.get("label") or "", "who": "",
                "group_id": r.get("group_id"), "source_id": r.get("source_id"),
-               "voice": bool(r.get("voice")), "forwarded": bool(r.get("forwarded"))}
+               "voice": bool(r.get("voice")), "forwarded": bool(r.get("forwarded")),
+               "unreliable": bool(r.get("unreliable"))}
         if r.get("source") == project_memory.SOURCE_WHATSAPP:
             jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
@@ -52726,7 +52732,8 @@ _VOICE_RETRY_PENDING: set = set()
 
 async def _voice_failed(payload: dict, parsed: dict, group_id: str, project_id: Any,
                         company_id: Any, sender: str, now: datetime, kind: str,
-                        audio: Optional[bytes], attempt: int, vresult: Any = None) -> None:
+                        audio: Optional[bytes], attempt: int, vresult: Any = None,
+                        extra_voice: Optional[dict] = None) -> None:
     """A group voice note that could not be read: retried once after
     wa_voice.RETRY_SECONDS when the failure may pass (download, transcription),
     else (or after the retry) kept as "Voice note not processed". Never a word
@@ -52743,13 +52750,14 @@ async def _voice_failed(payload: dict, parsed: dict, group_id: str, project_id: 
         asyncio.create_task(_later())
         return
     await _voice_not_processed(parsed, group_id, project_id, company_id, sender, now, kind,
-                               audio, vresult=vresult)
+                               audio, vresult=vresult, extra_voice=extra_voice)
 
 
 async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, company_id: Any,
                                sender: str, now: datetime, kind: str,
                                audio: Optional[bytes], vresult: Any = None,
-                               seconds: Optional[float] = None) -> None:
+                               seconds: Optional[float] = None,
+                               extra_voice: Optional[dict] = None) -> None:
     """Keep the note (its audio when there is any) and put it in Attention as
     "Voice note not processed" with the reason. Nothing is posted anywhere."""
     mid = parsed.get("message_id") or ""
@@ -52784,7 +52792,7 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
             "forwarded": bool(parsed.get("forwarded")),
             "voice": {"transcript": said, "lang": None, "confidence": None,
                       "duration_sec": dur, "audio_key": audio_key, "review": True,
-                      "failed": kind},
+                      "failed": kind, **(extra_voice or {})},
         }
         kept = await db.whatsapp_messages.find_one(
             {"message_id": mid, "group_id": group_id, "skipped": row["skipped"]}) if mid else None
@@ -52793,11 +52801,16 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
         else:
             res = await db.whatsapp_messages.insert_one(row)
             row["_id"] = res.inserted_id
-        quote = f"{wa_voice.QUOTE_MARK} Voice note" + (f": “{said[:120]}”" if said else "")
+        # Never the words of a transcript that is not what was said.
+        quote = (f"{wa_voice.QUOTE_MARK} Voice note — {wa_voice.UNRELIABLE_TEXT}"
+                 if kind == "unreliable" else
+                 f"{wa_voice.QUOTE_MARK} Voice note" + (f": “{said[:120]}”" if said else ""))
         await db.attention_items.insert_one({
             "company_id": str(company_id), "project_id": str(project_id),
             "group_id": group_id, "type": wa_voice.REVIEW_TYPE, "status": "open",
-            "summary": f"Voice note not processed — {wa_voice.not_processed(kind)}",
+            "summary": f"Voice note not processed — {wa_voice.not_processed(kind)}" + (
+                f" ({'; '.join((extra_voice or {}).get('unreliable') or [])})"
+                if (extra_voice or {}).get("unreliable") else ""),
             "voice_failure": kind,
             "owner": {"kind": "none", "id": None, "status": "unresolved", "jid": None},
             "requester": None, "due": {"due_text": None, "due_at": None, "due_source": "none"},
@@ -60357,7 +60370,7 @@ async def _run_group_agent(
         )
         for m in recent[-6:]:  # keep context small (was 8) to reduce pattern-lock
             role = "assistant" if m.get("sender") == "bot" else "user"
-            msg_body = (m.get("body") or "").strip()
+            msg_body = wa_voice.fact_text(m) if role == "user" else (m.get("body") or "").strip()
             if not msg_body:
                 continue
             if role == "assistant":
@@ -62396,14 +62409,15 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     return
 
                 from lib import voice_ingest as _vi
+                sender_lang = await _sender_whisper_language(
+                    msg_company_id, await _sender_language_jids(
+                        msg_company_id, str(parsed.get("sender") or "")))
                 try:
                     vresult = await _vi.process_voice_note(
                         audio_bytes,
                         openai_api_key=OPENAI_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
-                        language=await _sender_whisper_language(
-                            msg_company_id, await _sender_language_jids(
-                                msg_company_id, str(parsed.get("sender") or ""))),
+                        language=sender_lang,
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -62430,15 +62444,35 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 # translations endpoint): its card shows what was said and
                 # that, one line each. A failure leaves the card the
                 # translated transcript.
+                # The same for Hebrew or German (what Whisper calls Yiddish it
+                # does not know), a sender set to Yiddish on People, and a
+                # transcript Whisper's own scores or words say is not what
+                # was said: the reviewer gets the audio's own English.
                 english_direct = None
-                if wa_voice.lang_code(vresult.language_detected,
-                                      vresult.original_transcript) == "yi":
+                heard_lang = wa_voice.lang_code(vresult.language_detected,
+                                                vresult.original_transcript)
+                unreliable = list(getattr(vresult, "unreliable", None) or [])
+                direct = wa_voice.needs_direct_translation(heard_lang, sender_lang)
+                if direct or unreliable:
                     try:
                         english_direct = await _vi.translate_whisper(
                             audio_bytes, openai_api_key=OPENAI_API_KEY) or None
                     except Exception as _e:
-                        logger.warning(f"[voice] Yiddish direct translation failed: "
+                        logger.warning(f"[voice] direct translation failed: "
                                        f"{type(_e).__name__}")
+                if unreliable:
+                    # NOT WHAT WAS SAID (588, Oct 11, 2:57 PM: a Yiddish
+                    # blessing stored as "People speaking in their native
+                    # language."). Kept with its audio and the direct English,
+                    # in Attention for review; never extracted, chased, indexed
+                    # as words, or quoted as what was said.
+                    await _voice_failed(
+                        payload, parsed, group_id, project_id, msg_company_id, sender, now,
+                        "unreliable", audio_bytes, voice_attempt, vresult=vresult,
+                        extra_voice={"unreliable": unreliable, "english_direct": english_direct,
+                                     "heard_lang": heard_lang,
+                                     "quality": getattr(vresult, "quality", None) or {}})
+                    return
                 # THE AUDIO IS KEPT (R2, under the project, so the project's
                 # delete sweeps it): the review screens play it next to the
                 # transcript.
@@ -62487,6 +62521,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     vresult.duration_sec, voice_audio_key)["voice"]
                 if english_direct:
                     voice_block["english_direct"] = english_direct
+                voice_block["quality"] = getattr(vresult, "quality", None) or {}
+                if direct and not voice_block.get("review"):
+                    # Heard as Hebrew or German, or a sender set to Yiddish:
+                    # the words are for a person to check first.
+                    voice_block["review"] = True
+                    voice_block["review_reason"] = (
+                        "sender_yiddish" if sender_lang == "yi" and heard_lang != "yi"
+                        else f"heard_{heard_lang}")
                 stored_body = voice_block["transcript"]
                 body = vresult.english_transcript or body
                 parsed["body"] = body
@@ -63018,6 +63060,24 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         await send_whatsapp_message(
                             parsed["from"], vresult.user_reply,
                         )
+                    return
+                if getattr(vresult, "unreliable", None):
+                    # Whisper's scores or words say this is not what was said:
+                    # nothing is answered from it (Oct 11).
+                    try:
+                        # The usable transcript is cleared and the reply kept, so
+                        # a redelivered webhook replays the reply, never the
+                        # rejected words (Codex review on #752).
+                        await db.whatsapp_voice_events.update_one(
+                            {"message_id": voice_message_id, "where": "dm"},
+                            {"$set": {"error_kind": "unreliable",
+                                      "unreliable": list(vresult.unreliable),
+                                      "rejected_transcript": vresult.english_transcript,
+                                      "english_transcript": "",
+                                      "user_reply": wa_voice.DM_UNRELIABLE_REPLY}})
+                    except Exception:
+                        pass
+                    await send_whatsapp_message(parsed["from"], wa_voice.DM_UNRELIABLE_REPLY)
                     return
 
                 body = vresult.english_transcript
@@ -65052,6 +65112,7 @@ def _memory_source_view(src: dict, admin: bool = False) -> dict:
             "text": (src.get("text") or "")[:400],
             "voice": bool(src.get("voice")),
             "forwarded": bool(src.get("forwarded")),
+            "unreliable": bool(src.get("unreliable")),
             "message_row_id": (src.get("source_id")
                                if src.get("source") == project_memory.SOURCE_WHATSAPP else None)}
 

@@ -33,7 +33,7 @@ export function whenLabel(iso) {
 export function headLine(n) {
   const x = n || {};
   const parts = [
-    `${x.who || 'Someone'}${x.forwarded ? ' (forwarded)' : ''}`,
+    x.forwarded ? `forwarded by ${x.who || 'someone'}` : (x.who || 'Someone'),
     x.where === 'dm' ? 'DM' : x.place,
     langLabel(x.lang),
     typeof x.confidence === 'number' ? `${Math.round(x.confidence * 100)}%` : '',

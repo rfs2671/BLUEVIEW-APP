@@ -30,8 +30,11 @@ export function chipText(r) {
       // The sender's number after the name: full for a company admin, the
       // last 4 for anyone else (the server sends what this viewer may see).
       // Forwarded (WhatsApp's label): the poster passed on someone else's words.
-      : [`${x.who || 'Someone'}${x.forwarded ? ' (forwarded)' : ''}`, x.phone, x.group,
-        x.voice && x.when ? `🎤 ${x.when}` : x.when];
+      // A voice note that may not be what was said: its text is Whisper's
+      // English of the audio, never a quote.
+      : [x.forwarded ? `forwarded by ${x.who || 'someone'}` : (x.who || 'Someone'), x.phone,
+        x.group, x.voice && x.when ? `🎤 ${x.when}` : x.when,
+        x.unreliable ? 'not reliably transcribed — play it · English translation' : ''];
   return parts.filter(Boolean).join(' · ');
 }
 

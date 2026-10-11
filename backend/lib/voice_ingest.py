@@ -134,6 +134,9 @@ class WhisperResult:
     cost_usd: float
     raw_segments: int = 0
     confidence: Optional[float] = None
+    # Per segment: start, end, avg_logprob, no_speech_prob,
+    # compression_ratio (verbose_json) -- the hallucination checks read them.
+    segments: list = field(default_factory=list)
 
 
 @dataclass
@@ -169,6 +172,11 @@ class VoiceIngestResult:
     # and how long the note ran. None when Whisper never answered.
     confidence: Optional[float] = None
     duration_sec: Optional[float] = None
+    # Whisper's own scores (wa_voice.quality_signals) and, when they or the
+    # words say the transcript is not speech Whisper could read, why
+    # (wa_voice.unreliable_reasons). A non-empty list: never a message.
+    quality: Dict[str, Any] = field(default_factory=dict)
+    unreliable: list = field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -438,6 +446,9 @@ async def transcribe_whisper(
                 cost_usd=cost,
                 raw_segments=len(segments),
                 confidence=confidence,
+                segments=[{k: s.get(k) for k in ("start", "end", "avg_logprob",
+                                                  "no_speech_prob", "compression_ratio")}
+                          for s in segments if isinstance(s, dict)],
             )
         except Exception as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -711,6 +722,14 @@ async def process_voice_note(
     telemetry["whisper_no_speech_prob"] = wr.no_speech_prob
     telemetry["whisper_segments"] = wr.raw_segments
     telemetry["whisper_confidence"] = wr.confidence
+    # Whisper's scores, and whether they (or the words) say this is not
+    # speech it could read: "People speaking in their native language" for a
+    # Yiddish blessing (588, Oct 11, 2:57 PM).
+    from lib import wa_voice as _wv
+    quality = _wv.quality_signals(getattr(wr, "segments", None) or [])
+    unreliable = _wv.unreliable_reasons(wr.transcript, quality)
+    telemetry["whisper_quality"] = quality
+    telemetry["unreliable"] = unreliable
 
     # ── The prompt read back, not speech ───────────────────────────
     # (588, Oct 11, 2:51 PM.) A failed transcription: never a message.
@@ -788,6 +807,8 @@ async def process_voice_note(
             confidence=wr.confidence,
             duration_sec=wr.duration_sec,
             telemetry=telemetry,
+            quality=quality,
+            unreliable=unreliable,
         )
 
     telemetry["translate_skipped"] = False
@@ -810,4 +831,6 @@ async def process_voice_note(
         confidence=wr.confidence,
         duration_sec=wr.duration_sec,
         telemetry=telemetry,
+        quality=quality,
+        unreliable=unreliable,
     )
