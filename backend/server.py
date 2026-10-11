@@ -52291,6 +52291,57 @@ async def _contact_companies_ambiguous(phone: str) -> bool:
     return len(companies) > 1
 
 
+#: (company, project) -> (built_at, prompt): the job's terms change rarely;
+#: a busy group's notes do not each read the roster.
+_VOICE_PROMPTS: Dict[tuple, tuple] = {}
+VOICE_PROMPT_TTL_SECONDS = 600
+
+
+async def _voice_prompt(company_id: Any, project_id: Any) -> Optional[str]:
+    """Whisper's prompt for a note of this job: the construction glossary,
+    then the job (name, address), its subs, and its people (names set in
+    People, then the WhatsApp names of its groups' recent senders). The
+    glossary alone when the job is unknown (a DM). None when turned off
+    (VOICE_WHISPER_PROMPT=0). Never raises."""
+    from lib import voice_glossary
+    if os.environ.get("VOICE_WHISPER_PROMPT", "1") == "0":
+        return None
+    key = (str(company_id or ""), str(project_id or ""))
+    hit = _VOICE_PROMPTS.get(key)
+    now = datetime.now(timezone.utc)
+    if hit and (now - hit[0]).total_seconds() < VOICE_PROMPT_TTL_SECONDS:
+        return hit[1]
+    job: List[str] = []
+    subs: List[str] = []
+    people: List[str] = []
+    try:
+        if project_id:
+            p = await db.projects.find_one(
+                {"_id": to_query_id(str(project_id))},
+                {"name": 1, "address": 1, "trade_assignments": 1}) or {}
+            job = [p.get("address") or "", p.get("name") or ""]
+            subs = [c for c in wa_sender_map.company_choices(p) if c != wa_sender_map.GC_TEAM]
+            groups = [g.get("wa_group_id") for g in await db.whatsapp_groups.find(
+                {"project_id": str(project_id), "active": True},
+                {"wa_group_id": 1}).to_list(20) if g.get("wa_group_id")]
+            recent = await db.whatsapp_messages.find(
+                {"group_id": {"$in": groups}, "sender": {"$ne": "bot"}},
+                {"sender_jid": 1, "sender_name": 1}).sort([("created_at", -1)]).limit(
+                300).to_list(None) if groups else []
+            jids = list(dict.fromkeys(r.get("sender_jid") for r in recent if r.get("sender_jid")))
+            named = {m.get("sender_jid"): m.get("person_name") for m in await db[
+                wa_sender_map.COLLECTION].find(
+                {"company_id": str(company_id), "sender_jid": {"$in": jids}},
+                {"sender_jid": 1, "person_name": 1}).to_list(500)} if jids else {}
+            people = [named[j] for j in jids if named.get(j)]
+            people += [wa_sender_map.clean_push_name(r.get("sender_name")) for r in recent]
+    except Exception as e:
+        logger.warning(f"[voice] prompt terms read failed: {type(e).__name__}")
+    prompt = voice_glossary.build_prompt(job=job, subs=subs, people=people)
+    _VOICE_PROMPTS[key] = (now, prompt)
+    return prompt
+
+
 def _playable_audio(audio: Optional[bytes], parsed: dict) -> tuple:
     """(bytes, None) when the downloaded bytes are audio a transcriber can
     read; else (None, "download_failed" | "not_audio"). WhatsApp's media URL
@@ -62123,6 +62174,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     vresult = await _vi.process_voice_note(
                         audio_bytes,
                         openai_api_key=OPENAI_API_KEY,
+                        prompt=await _voice_prompt(msg_company_id, project_id),
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -62646,6 +62698,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 vresult = await _process_voice(
                     audio_bytes,
                     openai_api_key=OPENAI_API_KEY,
+                    # A DM names no job yet: the glossary only.
+                    prompt=await _voice_prompt(None, None),
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -64536,7 +64590,8 @@ async def patch_project_punch(project_id: str, pid: str, body: dict,
     return _punch_view(await db[punch.COLLECTION].find_one({"_id": r["_id"]}))
 
 
-def _attention_item_view(it: dict, group_names: dict) -> dict:
+def _attention_item_view(it: dict, group_names: dict,
+                         audio_rows: Optional[set] = None) -> dict:
     """What the review screen shows. The phone digits stay on the server: a
     person is a name when resolved, else the words used and the last 4."""
     owner = it.get("owner") or {}
@@ -64578,6 +64633,9 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         # plays the audio) and whether it was a voice note (🎤).
         "message_row_id": ev.get("message_row_id"),
         "voice": ev.get("kind") == "voice",
+        # Its audio is kept (R2): the card shows ▶ Play. None: not looked up.
+        "audio": (None if audio_rows is None
+                  else str(ev.get("message_row_id") or "") in audio_rows),
         "review_reason": it.get("review_reason") or next(
             (h.get("note") for h in (it.get("history") or [])
              if isinstance(h, dict) and h.get("by") == "voice"), None),
@@ -65024,8 +65082,17 @@ async def get_project_attention(project_id: str, status: str = "open",
          "company_id": _company_id_filter(company_id)},
         {"wa_group_id": 1, "group_name": 1}).to_list(200)
     names = {g.get("wa_group_id"): g.get("group_name") for g in groups}
+    # Which voice items' notes have their audio kept: one read for the list.
+    voice_rows = [str((it.get("evidence") or {}).get("message_row_id") or "")
+                  for it in items if (it.get("evidence") or {}).get("kind") == "voice"]
+    voice_rows = [r for r in voice_rows if r]
+    audio_rows = {str(m["_id"]) for m in await db.whatsapp_messages.find(
+        {"_id": {"$in": [to_query_id(r) for r in voice_rows]},
+         "company_id": _company_id_filter(company_id),
+         "voice.audio_key": {"$nin": [None, ""]}}, {"_id": 1}).to_list(len(voice_rows) + 5)
+    } if voice_rows else set()
     return {
-        "items": [_attention_item_view(it, names) for it in items],
+        "items": [_attention_item_view(it, names, audio_rows) for it in items],
         "precision": wa_attention.precision(stats_rows),
         "state_precision": wa_attention_state.state_precision(stats_rows),
         "total": len(stats_rows),

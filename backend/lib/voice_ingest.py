@@ -358,6 +358,7 @@ async def transcribe_whisper(
     http_client: Any = None,
     audio_filename: Optional[str] = None,
     audio_mime: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> WhisperResult:
     """Call OpenAI Whisper in verbose_json mode so we get
     no_speech_prob per segment. Auto-detects language. Retries
@@ -396,6 +397,10 @@ async def transcribe_whisper(
         "response_format": (None, "verbose_json"),
         "temperature": (None, "0"),
     }
+    if prompt:
+        # The construction glossary and the job's names (lib/voice_glossary):
+        # read by Whisper as text that came before the audio.
+        files["prompt"] = (None, prompt)
 
     last_exc: Optional[Exception] = None
     for attempt in range(WHISPER_MAX_RETRIES + 1):
@@ -570,6 +575,7 @@ async def process_voice_note(
     sentry_capture: Optional[Callable[..., None]] = None,
     whisper_fn: Optional[Callable[..., Any]] = None,
     translate_fn: Optional[Callable[..., Any]] = None,
+    prompt: Optional[str] = None,
 ) -> VoiceIngestResult:
     """Full pipeline: Whisper → freshness check → translate.
 
@@ -620,6 +626,7 @@ async def process_voice_note(
             audio_bytes,
             openai_api_key=openai_api_key,
             http_client=http_client,
+            **({"prompt": prompt} if prompt else {}),
         )
     except Exception as e:
         msg = f"voice_ingest_whisper_failed: {type(e).__name__}: {e}"
@@ -637,6 +644,7 @@ async def process_voice_note(
         )
 
     telemetry["whisper_duration_sec"] = wr.duration_sec
+    telemetry["whisper_prompt"] = bool(prompt)
     telemetry["whisper_cost_usd"] = wr.cost_usd
     telemetry["whisper_no_speech_prob"] = wr.no_speech_prob
     telemetry["whisper_segments"] = wr.raw_segments

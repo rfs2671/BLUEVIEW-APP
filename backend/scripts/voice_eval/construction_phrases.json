@@ -1,0 +1,21 @@
+{
+  "about": "Ten construction phrases for the Whisper glossary eval (scripts/voice_wer_eval.py), plus a language guard. Record each as <id>.ogg/.m4a/.mp3 in one folder (a WhatsApp voice note, exported, is the real thing), or let --tts read them aloud. 01 is the live miss from 588, Oct 11.",
+  "job": {"job": ["588 Atlantic Ave"], "subs": ["Rivera Electric", "Kings Plumbing", "Apex Steel"],
+          "people": ["Meilich Friedman", "Carlos Ruiz", "Dave"]},
+  "phrases": [
+    {"id": "01", "text": "I'll send the window shop drawings tomorrow"},
+    {"id": "02", "text": "The rebar inspection is Thursday morning, DOB is coming at eight"},
+    {"id": "03", "text": "We need to core drill the sleeves for the sprinkler risers on three"},
+    {"id": "04", "text": "Sheetrock is done on four, fire stopping starts Monday"},
+    {"id": "05", "text": "Can Rivera Electric send the submittal for the panel by Friday"},
+    {"id": "06", "text": "The pour is pushed to Tuesday, formwork isn't ready"},
+    {"id": "07", "text": "Scaffolding comes down after the facade inspection"},
+    {"id": "08", "text": "Meilich, the calcs for the steel are still missing"},
+    {"id": "09", "text": "Punch list walk with the architect before the TCO"},
+    {"id": "10", "text": "Make sure everyone has their SST card at the hoist"}
+  ],
+  "language_guard": [
+    {"id": "es1", "lang": "spanish", "text": "Mañana llega la varilla para el tercer piso"},
+    {"id": "es2", "lang": "spanish", "text": "El colado se pasa al jueves, la cimbra no está lista"}
+  ]
+}

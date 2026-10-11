@@ -138,10 +138,25 @@ export function linkLine(e) {
   return l ? `Linked: ${l}` : null;
 }
 
-/** Changes get Correct / Wrong; recording the item and a follow-up do not. */
-export function reviewable(e) {
-  return !!e && e.kind !== 'created' && e.kind !== 'follow_up' && !!e.id;
+/** Changes get Correct / Wrong; recording the item and a follow-up do not.
+ *  Nor does the flag an unsure voice note puts on the item it made: that is
+ *  the item's own Correct / Wrong, shown once, under the item (the line
+ *  stays, as text). A held change from a voice note on ANOTHER item keeps
+ *  its own: it judges that change, not the item. */
+export function reviewable(e, item) {
+  if (!e || e.kind === 'created' || e.kind === 'follow_up' || !e.id) return false;
+  if (e.kind === 'flag' && e.by === 'voice' && item
+      && e.message_row_id && e.message_row_id === item.message_row_id) return false;
+  return true;
 }
+
+/** ▶ Play on a voice item whose audio is kept. */
+export function canPlay(item) {
+  return !!item && !!item.voice && !!item.message_row_id && item.audio !== false;
+}
+
+export const PLAY_LABEL = '▶ Play';
+export const NO_AUDIO_TEXT = 'No audio was kept for this voice note.';
 
 const CHANGE_LABELS = {
   rescheduled: 'Rescheduled', done: 'Done', cancelled: 'Cancelled',
