@@ -477,6 +477,49 @@ async def transcribe_whisper(
 # ──────────────────────────────────────────────────────────────────
 
 
+async def translate_whisper(
+    audio_bytes: bytes,
+    *,
+    openai_api_key: str,
+    http_client: Any = None,
+) -> str:
+    """Whisper's translations endpoint: the audio straight to English text
+    (whisper-1; no transcript in between). Used for Yiddish notes, whose
+    card shows what was said and this. Retries once; raises on failure."""
+    if not openai_api_key:
+        raise RuntimeError("openai_api_key required for Whisper")
+    if not audio_bytes:
+        raise RuntimeError("empty audio_bytes")
+    url = "https://api.openai.com/v1/audio/translations"
+    headers = {"Authorization": f"Bearer {openai_api_key}"}
+    name, mime = audio_name(audio_bytes)
+    files = {"file": (name, audio_bytes, mime), "model": (None, "whisper-1"),
+             "response_format": (None, "json"), "temperature": (None, "0")}
+    attempt = 0
+    while True:
+        try:
+            if http_client is None:
+                async with ServerHttpClient(timeout=OPENAI_TIMEOUT_SEC) as c:
+                    resp = await c.post(url, headers=headers, files=files)
+                    resp.raise_for_status()
+                    payload = resp.json()
+            else:
+                resp = await http_client.post(url, headers=headers, files=files,
+                                              timeout=OPENAI_TIMEOUT_SEC)
+                resp.raise_for_status()
+                payload = resp.json()
+            return (payload.get("text") or "").strip()
+        except Exception as e:
+            if attempt < WHISPER_MAX_RETRIES:
+                logger.warning(f"[voice_ingest] Whisper translation attempt {attempt+1} "
+                               f"failed: {e!r}; retrying in {WHISPER_BACKOFF_SEC}s")
+                await asyncio.sleep(WHISPER_BACKOFF_SEC)
+                attempt += 1
+                continue
+            raise
+
+
+
 async def translate_to_english(
     text: str,
     *,

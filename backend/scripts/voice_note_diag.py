@@ -9,8 +9,9 @@ project's groups within --minutes of it (default 5) is printed with:
     on/off, confidence, rejected reason);
   - whether it says "levelog" (the bot's name: a mention in a group);
   - whether it is an echo of the Whisper prompt (lib/voice_glossary.prompt_echo);
-  - whether it is shaped like a question (the once-a-day "say levelog" hint
-    fires on an unaddressed question);
+  - (the once-a-day "say levelog" hint that answered an unaddressed
+    question is gone from groups since Oct 11; a voice note never wakes the
+    bot unless it is a reply to the bot);
   - what the bot posted in the group in the 3 minutes after it.
 Then the Whisper prompt this job builds today, and whether it names the bot.
 
@@ -53,14 +54,11 @@ def _when(text: str) -> datetime:
 
 
 def verdicts(transcript: str, english: str, prompt: str) -> dict:
-    """The three questions about one transcript."""
-    import server
+    """Two questions about one transcript."""
     from lib import voice_glossary
-    words = english or transcript
     return {"says_levelog": voice_glossary.names_the_bot(transcript)
             or voice_glossary.names_the_bot(english),
-            "prompt_echo": voice_glossary.prompt_echo(transcript, prompt),
-            "question_shaped": server._looks_like_a_question(words)}
+            "prompt_echo": voice_glossary.prompt_echo(transcript, prompt)}
 
 
 async def main_async(a) -> int:
@@ -99,7 +97,7 @@ async def main_async(a) -> int:
               f"hint={tel.get('whisper_language_hint')} rejected={tel.get('rejected_reason')} "
               f"error={ev.get('error_kind')}")
         print(f"   says 'levelog': {v['says_levelog']}   prompt echo: {v['prompt_echo']}   "
-              f"question-shaped: {v['question_shaped']}")
+              f"quoted: {_safe(r.get('quoted_body'), 60)!r}")
         bot = await db.whatsapp_messages.find(
             {"group_id": r.get("group_id"), "sender": "bot",
              "created_at": {"$gte": ca, "$lte": ca + AFTER}},

@@ -133,5 +133,17 @@ console.log('\nscreen wiring');
   ok(A.reviewable(ownFlag), 'without the item (old callers) nothing changes');
 }
 
+console.log('a Yiddish voice note: what was said, and the direct English');
+{
+  const lines = A.yiddishLines({ yiddish: { original: 'מאָרגן גיסן מיר', english: 'Tomorrow we pour' } });
+  ok(lines.length === 2 && lines[0].label === 'Said' && lines[1].label === 'English'
+     && lines[1].text === 'Tomorrow we pour', 'two lines, said then English');
+  ok(A.yiddishLines({ yiddish: { original: 'מאָרגן', english: '' } }).length === 1,
+     'no English yet: the original alone');
+  ok(A.yiddishLines({ quote: 'pour friday' }) === null, 'any other item: null');
+  const card = read('src/components/whatsapp/AttentionCard.jsx');
+  ok(/yiddishLines\(it\)/.test(card), 'the card renders them');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

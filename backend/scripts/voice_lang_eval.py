@@ -3,16 +3,17 @@ for whisper-1 and gpt-4o-transcribe, without and with the glossary prompt
 (and the People language hint). Calls OpenAI; writes nothing to the database.
 
 THE FOLDER (one subfolder per language; each clip beside a .txt of the exact
-words said, in the language's own spelling — Yiddish in Hebrew letters):
+words said, in the language's own spelling — Yiddish in Hebrew letters — and,
+for the translation row, a .en.txt of what it means in English):
 
     clips/
       es/01.ogg  es/01.txt   es/02.opus es/02.txt   …
-      yi/01.ogg  yi/01.txt   …
+      yi/01.ogg  yi/01.txt   yi/01.en.txt   …
       en/…                                  (optional)
 
   .ogg .opus .m4a .mp3 .wav .webm all work (a WhatsApp voice note exported
   as is). Or a clips/manifest.json instead of the .txt files:
-      [{"file": "es/01.ogg", "lang": "es", "text": "Mañana llega la varilla"}]
+      [{"file": "yi/01.ogg", "lang": "yi", "text": "…", "en": "Tomorrow we pour"}]
 
     OPENAI_API_KEY=… python scripts/voice_lang_eval.py clips/
     OPENAI_API_KEY=… python scripts/voice_lang_eval.py clips/ --hint both --json out.json
@@ -20,6 +21,11 @@ words said, in the language's own spelling — Yiddish in Hebrew letters):
 THE MATRIX, per clip: model (whisper-1, gpt-4o-transcribe) × glossary prompt
 (off, on) × language hint (--hint off | on | both; default both). whisper-1
 goes through the production call (lib/voice_ingest.transcribe_whisper).
+Plus one more row, "whisper-1 translate": Whisper's translations endpoint,
+audio straight to English (lib/voice_ingest.translate_whisper, what a
+Yiddish card's English line shows), scored against the clip's .en.txt; a
+clip without one is skipped for that row. --verbose prints, for each Yiddish
+clip, both lines as the card shows them: what was said and the English.
 
 PER LANGUAGE, per configuration: WER and CER (lib/voice_metrics: points and
 ligatures normalized for Yiddish, accents kept for Spanish), how many clips
@@ -47,6 +53,7 @@ sys.path.insert(0, str(HERE.parent))
 
 EXTS = (".ogg", ".opus", ".m4a", ".mp3", ".wav", ".webm")
 MODELS = ("whisper-1", "gpt-4o-transcribe")
+TRANSLATE = "whisper-1 translate"
 LANG_NAMES = {"en": "english", "es": "spanish", "yi": "yiddish"}
 
 
@@ -56,6 +63,7 @@ class Clip:
     path: Path
     lang: str
     text: str
+    en: Optional[str] = None          # the English reference (.en.txt)
 
 
 @dataclass
@@ -79,7 +87,8 @@ def load_clips(root: Path) -> List[Clip]:
     without its text is reported and skipped."""
     man = root / "manifest.json"
     if man.exists():
-        return [Clip(id=r["file"], path=root / r["file"], lang=r["lang"].lower(), text=r["text"])
+        return [Clip(id=r["file"], path=root / r["file"], lang=r["lang"].lower(), text=r["text"],
+                     en=r.get("en"))
                 for r in json.loads(man.read_text(encoding="utf-8"))]
     out = []
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -88,8 +97,10 @@ def load_clips(root: Path) -> List[Clip]:
             if not txt.exists():
                 print(f"  skipped {d.name}/{f.name}: no {txt.name}")
                 continue
+            en = f.with_suffix(".en.txt")
             out.append(Clip(id=f"{d.name}/{f.name}", path=f, lang=d.name.lower(),
-                            text=txt.read_text(encoding="utf-8").strip()))
+                            text=txt.read_text(encoding="utf-8").strip(),
+                            en=en.read_text(encoding="utf-8").strip() if en.exists() else None))
     return out
 
 
@@ -97,6 +108,9 @@ async def transcribe(model: str, audio: bytes, key: str, prompt: Optional[str],
                      language: Optional[str]) -> Dict[str, Any]:
     """{text, language} from one model."""
     from lib import voice_ingest
+    if model == TRANSLATE:
+        return {"text": await voice_ingest.translate_whisper(audio, openai_api_key=key),
+                "language": "english"}
     if model == "whisper-1":
         r = await voice_ingest.transcribe_whisper(audio, openai_api_key=key, prompt=prompt,
                                                   language=language)
@@ -120,10 +134,13 @@ async def transcribe(model: str, audio: bytes, key: str, prompt: Optional[str],
 def configs(hint: str) -> List[Dict[str, Any]]:
     hints = {"off": [False], "on": [True], "both": [False, True]}[hint]
     return [{"model": m, "prompt": p, "hint": h}
-            for m in MODELS for p in (False, True) for h in hints]
+            for m in MODELS for p in (False, True) for h in hints] + [
+        {"model": TRANSLATE, "prompt": False, "hint": False}]
 
 
 def label(model: str, prompt: bool, hint: bool) -> str:
+    if model == TRANSLATE:
+        return f"{model:<18} -> English vs .en.txt"
     return (f"{model:<18} prompt {'on ' if prompt else 'off'}  "
             f"hint {'on ' if hint else 'off'}")
 
@@ -140,16 +157,32 @@ def score(rows: List[Result]) -> Dict[str, Any]:
             "failed": len(rows) - len(ok), "n": len(ok)}
 
 
-def wrong_language(lang: str, got: Dict[str, Any]) -> bool:
+def wrong_language(lang: str, got: Dict[str, Any], translated: bool = False) -> bool:
     """whisper-1 said another language, or a Yiddish note came back in Latin
-    letters."""
+    letters. For a translation: anything but Latin-letter English."""
     from lib import voice_metrics
+    if translated:
+        return voice_metrics.script_of(got.get("text") or "") == "hebrew"
     said = (got.get("language") or "").lower()
     if said and lang in LANG_NAMES and not said.startswith(LANG_NAMES[lang][:3]):
         return True
     if lang == "yi" and voice_metrics.script_of(got.get("text") or "") == "latin":
         return True
     return False
+
+
+def card_lines(clip: Clip, results: List[Result]) -> List[str]:
+    """What a Yiddish card shows for this clip, as the production path would
+    make it: what was said (whisper-1, glossary prompt on, Yiddish hint when
+    run, else off) and Whisper's direct English."""
+    def pick(model, prompt, hint):
+        return next((r for r in results if r.clip == clip.id and r.model == model
+                     and r.prompt == prompt and r.hint == hint and r.error is None), None)
+    said = pick("whisper-1", True, True) or pick("whisper-1", True, False) \
+        or pick("whisper-1", False, False)
+    eng = pick(TRANSLATE, False, False)
+    return [f"Said: {said.hyp if said else '—'}",
+            f"English: {eng.hyp if eng else '— (no .en.txt, not run)'}"]
 
 
 async def main_async(a) -> int:
@@ -170,8 +203,12 @@ async def main_async(a) -> int:
     cfgs = configs(a.hint)
     langs = sorted({c.lang for c in clips})
     per_lang = {l: [c for c in clips if c.lang == l] for l in langs}
+    jobs = [(c, cfg) for c in clips for cfg in cfgs if cfg["model"] != TRANSLATE or c.en]
+    no_en = [c.id for c in clips if not c.en]
     print(f"{len(clips)} clips ({', '.join(f'{l}: {len(v)}' for l, v in per_lang.items())}) "
-          f"× {len(cfgs)} configurations = {len(clips) * len(cfgs)} calls")
+          f"× {len(cfgs)} configurations = {len(jobs)} calls")
+    if no_en:
+        print(f"no .en.txt (skipped for '{TRANSLATE}'): {', '.join(no_en)}")
     print(f"prompt (~{voice_glossary.estimate_tokens(prompt)} tokens est.): {prompt}\n")
 
     sem = asyncio.Semaphore(a.concurrency)
@@ -180,20 +217,22 @@ async def main_async(a) -> int:
     async def one(clip: Clip, cfg: Dict[str, Any]) -> None:
         audio = clip.path.read_bytes()
         hint = clip.lang if cfg["hint"] and clip.lang in LANG_NAMES else None
-        r = Result(clip=clip.id, lang=clip.lang, ref=clip.text, **cfg)
+        translated = cfg["model"] == TRANSLATE
+        ref = clip.en if translated else clip.text
+        r = Result(clip=clip.id, lang=clip.lang, ref=ref, **cfg)
         async with sem:
             try:
                 got = await transcribe(cfg["model"], audio, key,
                                        prompt if cfg["prompt"] else None, hint)
                 r.hyp, r.detected = got["text"], got.get("language")
-                r.wer = voice_metrics.wer(clip.text, r.hyp)
-                r.cer = voice_metrics.cer(clip.text, r.hyp)
-                r.wrong_lang = wrong_language(clip.lang, got)
+                r.wer = voice_metrics.wer(ref, r.hyp)
+                r.cer = voice_metrics.cer(ref, r.hyp)
+                r.wrong_lang = wrong_language(clip.lang, got, translated)
             except Exception as e:
                 r.error = f"{type(e).__name__}: {str(e)[:160]}"
         results.append(r)
 
-    await asyncio.gather(*(one(c, cfg) for c in clips for cfg in cfgs))
+    await asyncio.gather(*(one(c, cfg) for c, cfg in jobs))
 
     for lang in langs:
         print(f"\n== {LANG_NAMES.get(lang, lang).upper()} ({lang}) — {len(per_lang[lang])} clips")
@@ -207,6 +246,10 @@ async def main_async(a) -> int:
         if a.verbose:
             for clip in per_lang[lang]:
                 print(f"\n   {clip.id}: {clip.text}")
+                if lang == "yi":
+                    print("     the card:")
+                    for line in card_lines(clip, results):
+                        print(f"       {line}")
                 for r in [r for r in results if r.clip == clip.id]:
                     print(f"     {label(r.model, r.prompt, r.hint):<42} "
                           f"{('ERR ' + r.error) if r.error else r.hyp}")

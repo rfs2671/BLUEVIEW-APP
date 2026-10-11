@@ -166,6 +166,15 @@ class ATranscriptNeverWakesTheBot(_Group):
         (row,) = [r for r in self.db.whatsapp_messages.rows if r.get("sender") != "bot"]
         self.assertEqual(row["body"], SAID)                    # kept for Attention
 
+    def test_the_live_2_51_pm_question_gets_no_bot_message(self):
+        """588, Oct 11 2:51 PM, as transcribed: a question to a person."""
+        self.run_note([_ok(text="Is there any inspection coming up for electricity?",
+                           seconds=4.0)])
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.group_posts(), [])
+        self.assertFalse([r for r in self.db.whatsapp_conversation_state.rows
+                          if r.get("kind") == "nudge"])
+
     def test_a_question_shaped_transcript_gets_no_hint(self):
         self.run_note([_ok(text="Who is doing the core drill on 3?", seconds=4.0)])
         self.assertEqual(self.group_posts(), [])
@@ -212,9 +221,54 @@ class StrictToo(ATranscriptNeverWakesTheBot):
     mode = "strict"
 
 
-class TypedTextIsUnchanged(unittest.TestCase):
-    """The addressing test itself: a typed message still wakes the bot by
-    name, trigger and session; a voice note only by a reply to the bot."""
+def _typed(body, msg_id="3A5F0C1E9C01", reply_to_bot=False):
+    p = _payload(msg_id=msg_id)
+    m = p["data"]["message"]
+    m.update({"type": "chat", "body": body, "hasMedia": False})
+    m["_data"] = {"type": "chat", "body": body, "notifyName": "Roy"}
+    if reply_to_bot:
+        m["hasQuotedMsg"] = True
+        m["_data"]["quotedMsg"] = {"type": "chat", "fromMe": True,
+                                   "body": "Checklist for today: 1. Sleeves 2. Fire stopping"}
+        m["_data"]["quotedStanzaID"] = "BOTMSG02"
+    return p
+
+
+class TypedInTheGroup(_Group):
+    """Typed text: the bot answers its name or a reply to it, nothing else."""
+
+    def test_a_typed_question_between_people_gets_nothing(self):
+        self.run_note([], payload=_typed("Is there any inspection coming up for electricity?"))
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.group_posts(), [])
+
+    def test_a_follow_up_in_a_session_gets_nothing(self):
+        self.run_note([], payload=_typed("and the roof?"), session=True)
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.group_posts(), [])
+
+    def test_the_wake_word_reaches_the_agent(self):
+        self.run_note([], payload=_typed("levelog any inspection coming up for electricity?"))
+        (call,) = self.agent_calls
+        self.assertTrue(call["explicit_mention"])
+        self.assertEqual(len(self.group_posts()), 1)
+
+    def test_a_typed_reply_to_the_bot_reaches_the_agent(self):
+        self.run_note([], payload=_typed("what about the roof", reply_to_bot=True))
+        self.assertEqual(len(self.agent_calls), 1)
+
+    def test_done_n_without_the_wake_word_or_a_reply_says_nothing(self):
+        self.run_note([], payload=_typed("done 2"))
+        self.assertEqual(self.group_posts(), [])
+
+
+class TypedInAStrictGroup(TypedInTheGroup):
+    mode = "strict"
+
+
+class TheRule(unittest.TestCase):
+    """The addressing test itself: typed text wakes the bot by its name or a
+    reply to it; a voice note only by a reply to it."""
 
     def addressed(self, body, *, voice=False, mode="loose", quoted_from_bot=False,
                   session=False):
@@ -231,8 +285,13 @@ class TypedTextIsUnchanged(unittest.TestCase):
 
     def test_typed(self):
         self.assertTrue(self.addressed("levelog who is on site", mode="strict"))
-        self.assertTrue(self.addressed("and the roof?", mode="strict", session=True))
         self.assertTrue(self.addressed("Done 2", mode="strict", quoted_from_bot=True))
+        # Oct 11 ruling: a question between people, or a follow-up riding a
+        # session, is not for the bot -- in either mode.
+        for mode in ("strict", "loose"):
+            self.assertFalse(self.addressed("Is there any inspection coming up for electricity?",
+                                            mode=mode))
+            self.assertFalse(self.addressed("and the roof?", mode=mode, session=True))
 
     def test_spoken(self):
         for mode in ("strict", "loose"):

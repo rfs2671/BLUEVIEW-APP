@@ -45230,8 +45230,8 @@ UNAVAILABLE_NOTICE_COOLDOWN_SECONDS = 60 * 60 * 24
 async def _announce_group_unavailable(wa_group_id: str) -> None:
     """Say, at most once a day, that this group cannot be served. No data.
 
-    The cooldown is a stored row, not memory, for the reason _nudge_once gives:
-    two containers and a restart must not each announce it again."""
+    The cooldown is a stored row, not memory: two containers and a restart
+    must not each announce it again."""
     if not wa_group_id:
         return
     try:
@@ -53778,27 +53778,6 @@ async def _create_material_request(project_id: str, company_id: str, group_id: s
     return doc
 
 
-async def _send_material_confirmation(group_id: str, request_doc: dict):
-    """Send formatted confirmation to WhatsApp group."""
-    items = request_doc.get("items", [])
-    trade = request_doc.get("requested_by_trade", "general").title()
-    needed_by = request_doc.get("needed_by_date")
-
-    lines = [f"\U0001f4cb *Material Request Logged* ({trade})"]
-    if needed_by:
-        lines.append(f"\U0001f4c5 Needed by: {needed_by}")
-    lines.append("")
-    for i, item in enumerate(items, 1):
-        qty = f"{item['quantity_requested']} {item.get('unit') or 'units'}" if item.get('quantity_requested') else "TBD"
-        specs = f" \u2014 {item['specs']}" if item.get('specs') else ""
-        lines.append(f"{i}. {item['name']}: {qty}{specs}")
-    lines.append("")
-    lines.append("_Reply with delivery info when materials arrive._")
-
-    message = "\n".join(lines)
-    await send_whatsapp_message(group_id, message)
-
-
 async def _handle_project_info(project_id: str, *,
                                company_id: Optional[str] = None) -> str:
     """Return a short, human-readable summary of the project bound to this group."""
@@ -58659,14 +58638,6 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
 
 # ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
 
-_BOT_ADDRESS_SOFT_TRIGGERS = [
-    "who", "show", "how many", "how much", "what", "where", "find", "pull", "open",
-    "dob", "violation", "punch", "open items", "material", "delivery",
-    "create checklist", "make checklist", "new checklist", "add checklist",
-    "assign", "done ",
-]
-
-
 def _jid_digits(jid: str) -> str:
     """Return just the digits from a WhatsApp JID like '15165494475@c.us' or
     '153906327875707@lid'. Empty string for unknown/empty input."""
@@ -58866,75 +58837,6 @@ async def _is_in_bot_session(group_id: str, sender: str) -> bool:
         return False
 
 
-# ── THE ONE-TIME NUDGE ─────────────────────────────────────────────────────
-#
-# Kept next to the session helpers because it uses the same collection and the
-# same TTL mechanism, and because both exist for the same reason: the bot has
-# to behave like something that is listening even when it decides not to speak.
-
-NUDGE_COOLDOWN_SECONDS = 60 * 60 * 24  # once a day per group
-
-NUDGE_TEXT = (
-    "I'm here — say \"levelog\" or reply to one of my messages and I'll answer."
-)
-
-_QUESTION_WORDS = (
-    "who", "what", "when", "where", "why", "how", "which",
-    "can ", "could ", "do ", "does ", "did ", "is ", "are ", "any ",
-)
-
-
-def _looks_like_a_question(body: str) -> bool:
-    """Shaped like a question, cheaply and without a model.
-
-    A question mark is the strong signal. The word list is for the people who
-    do not type one, which on a phone is most of them — and it is anchored to
-    the START of the message, because "what" in the middle of a sentence is
-    usually a statement ("that's what I said")."""
-    if not body:
-        return False
-    text = body.strip()
-    if len(text) < 4:
-        return False
-    if text.endswith("?"):
-        return True
-    low = text.lower()
-    return any(low.startswith(w) for w in _QUESTION_WORDS)
-
-
-async def _nudge_once(group_id: str) -> None:
-    """Tell a group how to reach the bot, at most once a day.
-
-    Never raises: a nudge that fails is a missed hint, and turning that into
-    an exception would take down the message-processing path behind it."""
-    if not group_id:
-        return
-    try:
-        now = datetime.now(timezone.utc)
-        existing = await db.whatsapp_conversation_state.find_one({
-            "kind": "nudge", "group_id": group_id,
-        })
-        if existing:
-            exp = existing.get("expires_at")
-            if exp is not None:
-                exp = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
-                if exp > now:
-                    return
-        await db.whatsapp_conversation_state.update_one(
-            {"kind": "nudge", "group_id": group_id},
-            {"$set": {
-                "kind":       "nudge",
-                "group_id":   group_id,
-                "expires_at": now + timedelta(seconds=NUDGE_COOLDOWN_SECONDS),
-                "updated_at": now,
-            }},
-            upsert=True,
-        )
-        await send_whatsapp_message(group_id, NUDGE_TEXT)
-    except Exception as e:
-        logger.debug(f"nudge skipped for {group_id}: {e}")
-
-
 async def _is_bot_addressed(
     body: str,
     bot_phone_digits: str,
@@ -58948,140 +58850,47 @@ async def _is_bot_addressed(
     quoted_mentioned_jids: Optional[list] = None,
     quoted_from_bot: bool = False,
 ) -> bool:
-    """Decide whether this message should route through the agent.
+    """Whether a GROUP message is for the bot. THE RULE (Oct 11 ruling, after
+    588 at 2:51 PM, where a voice note "Is there any inspection coming up for
+    electricity?" got the bot's hint posted in the group):
 
-    Modes:
-      Both modes:
-        - the name "levelog" as a whole word anywhere in the message, the
-          handle, or a native @mention matching the bot's phone or LID
-        - a reply to a message that mentioned the bot
-        - a reply to one of the BOT'S OWN messages
-        - any message from a sender with a live session (180s, and it rolls
-          forward on every exchange, not only on an explicit mention)
+      the bot speaks in a group ONLY when
+        (a) TYPED text names it: the wake word "levelog" as a word, the
+            handle, or a native @mention of its number / LID; or
+        (b) the message is a WhatsApp reply to one of the bot's own messages.
 
-      loose (the default for new groups) adds:
-        - any message containing a soft-trigger word
-
-    A VOICE NOTE (is_voice) wakes the bot only as a reply to one of the
-    bot's own messages. Its transcript is never read for the name, a
-    trigger word or a session (588, Oct 11, 2:51 PM: a 4-second note was
-    answered in the group). Bot wake is typed text or a reply to the bot.
-
-    Loose is the default because strict was measured losing about a third of
-    the real questions put to it. What keeps loose from being noisy is the
-    agent's NOREPLY hatch: a message that trips a trigger without being for
-    the bot is answered with silence, so the cost is a model call rather than
-    an interruption.
+    Never for a voice note's words (a voice note counts only by (b)), never
+    for a question between people, never for a trigger word, a session
+    window, or a reply to someone else's message that named the bot. The
+    address mode (strict / loose) no longer widens this; it is kept in the
+    config and ignored here.
     """
-    # ── WHY THIS WAS REBUILT ───────────────────────────────────────────────
-    #
-    # Measured against the only real traffic this bot has ever had: eleven of
-    # thirty-four unaddressed group messages were questions the bot could have
-    # answered and never saw. "Who's on site?", "Permit status?", "Done 2".
-    # Not one of them was malformed. They were people talking normally to
-    # something they believed was listening.
-    #
-    # Three separate rules were each dropping a share of them, and all three
-    # are fixed below rather than traded off against each other:
-    #
-    #   1. The soft-trigger list was unreachable outside loose mode, and loose
-    #      was not the default.
-    #   2. A reply to one of the bot's own messages did not count, because the
-    #      only thing known about a quoted message was its text.
-    #   3. The session window ran from the last EXPLICIT mention rather than
-    #      the last exchange, so a live conversation died at 180 seconds.
-    #
-    # The decision is now computed once and the session is marked once, at the
-    # bottom, for every route in. That ordering is the fix for (3): it used to
-    # be marked only on the two explicit branches, so riding the window never
-    # renewed it.
     reason = ""
-
-    if is_voice:
-        # Whisper's words are not the sender's typing: only the reply link
-        # (WhatsApp's, not the transcript's) can address the bot.
-        if quoted_from_bot:
-            reason = "reply_to_bot"
-
-    # Explicit mention — the name, the handle, or a native @mention JID.
-    elif _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
+    if quoted_from_bot:
+        # WhatsApp's reply link, not anything in the words: holds for a
+        # voice note too.
+        reason = "reply_to_bot"
+    elif not is_voice and _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
         reason = "mention"
 
-    # The message being replied to mentioned the bot.
-    elif _has_explicit_bot_mention(quoted_body, bot_phone_digits, quoted_mentioned_jids):
-        reason = "quoted_mention"
-
-    # ── REPLYING TO THE BOT IS ADDRESSING THE BOT ──────────────────────────
-    #
-    # This is what the docstring above has always promised and the code never
-    # did. It holds in BOTH modes, because it is not a heuristic: tapping
-    # reply on a message is the most explicit thing a person can do short of
-    # typing the name, and on this number the only other writer is the bot.
-    elif quoted_from_bot:
-        reason = "reply_to_bot"
-
-    # An open conversation. Checked before the soft triggers so a follow-up
-    # inside the window routes on the window rather than on a chance word,
-    # and checked in BOTH modes — loose used to return before reaching it.
-    elif group_id and sender and await _is_in_bot_session(group_id, sender):
-        reason = "session"
-
-    elif mode == "loose":
-        # Any soft-trigger word. The NOREPLY escape hatch is what makes this
-        # safe to leave on: a message that trips a trigger but is not for the
-        # bot reaches the agent, which answers NOREPLY and says nothing.
-        # Loose mode costs model calls, not interruptions.
-        if body:
-            low = body.strip().lower()
-            for t in _BOT_ADDRESS_SOFT_TRIGGERS:
-                if t in low:
-                    reason = f"trigger:{t.strip()}"
-                    break
-
     if not reason:
-        # ── A REFUSAL LEFT NO TRACE, WHICH IS WHY THE MISSES WERE INVISIBLE ─
-        #
-        # The success path below has logged `addressed via <reason>` since it
-        # was written. The refusal path logged nothing, so "why did the bot
-        # ignore that?" — asked twice now about real messages — could not be
-        # answered from production at all.
-        #
-        # The reason is NAMED rather than "not addressed", because the four
-        # causes want four different fixes: a message nobody tagged is a
-        # product decision, a session that expired is a TTL question, and a
-        # session that was never written is the duplicate-key fault that ate
-        # the first miss.
-        why = "voice" if is_voice else "no_mention"
-        if group_id and sender and not is_voice:
-            try:
-                row = await db.whatsapp_conversation_state.find_one(
-                    {"kind": "bot_session", "group_id": group_id, "sender": sender})
-                if row is None:
-                    why = "session_missing"
-                else:
-                    why = "session_expired"
-            except Exception:
-                why = "session_unreadable"
-        if mode != "loose":
-            why += "+strict"
-        logger.info(
-            f"NOT addressed ({why}) group={_log_chat(group_id)[-10:]} "
-            f"sender={sender[-4:] if sender else '?'} mode={mode} "
-            f"body={(body or '')[:60]!r}"
-        )
+        # Named, so "why did the bot ignore that?" has an answer in the log.
+        why = "voice" if is_voice else "no_wake_word"
+        try:
+            logger.info(
+                f"NOT addressed ({why}) group={_log_chat(group_id)[-10:]} "
+                f"sender={sender[-4:] if sender else '?'} "
+                f"body={(body or '')[:60]!r}"
+            )
+        except Exception:
+            pass
         return False
 
-    # ── ONE MARK, EVERY ROUTE IN, WHICH IS THE POINT ───────────────────────
-    #
-    # Marking here rather than on the explicit branches is what makes the
-    # window roll forward. A person who tags the bot, gets an answer, and asks
-    # two follow-ups now has a live window three exchanges later; before, the
-    # clock started on the tag and ran out mid-conversation.
     if group_id and sender:
         await _mark_bot_session(group_id, sender)
     logger.info(
         f"addressed via {reason} group={group_id[-10:] if group_id else '?'} "
-        f"sender={sender[-4:] if sender else '?'} mode={mode}"
+        f"sender={sender[-4:] if sender else '?'}"
     )
     return True
 
@@ -62470,6 +62279,19 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                                         sender, now, fail, audio_bytes, voice_attempt,
                                         vresult=vresult)
                     return
+                # A YIDDISH NOTE ALSO GOES STRAIGHT TO ENGLISH (Whisper's
+                # translations endpoint): its card shows what was said and
+                # that, one line each. A failure leaves the card the
+                # translated transcript.
+                english_direct = None
+                if wa_voice.lang_code(vresult.language_detected,
+                                      vresult.original_transcript) == "yi":
+                    try:
+                        english_direct = await _vi.translate_whisper(
+                            audio_bytes, openai_api_key=OPENAI_API_KEY) or None
+                    except Exception as _e:
+                        logger.warning(f"[voice] Yiddish direct translation failed: "
+                                       f"{type(_e).__name__}")
                 # THE AUDIO IS KEPT (R2, under the project, so the project's
                 # delete sweeps it): the review screens play it next to the
                 # transcript.
@@ -62515,6 +62337,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     vresult.original_transcript or vresult.english_transcript,
                     vresult.english_transcript, voice_lang, vresult.confidence,
                     vresult.duration_sec, voice_audio_key)["voice"]
+                if english_direct:
+                    voice_block["english_direct"] = english_direct
                 stored_body = voice_block["transcript"]
                 body = vresult.english_transcript or body
                 parsed["body"] = body
@@ -62548,6 +62372,60 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # them; nothing here answers them.
             spoken = voice_block is not None
 
+            # ── IS THIS FOR THE BOT? (decided once, before anything answers) ──
+            # Run the tool-use agent only if the bot was addressed. This covers
+            # voice notes, @mentions of the bot number, '@levelog' prefix, and
+            # soft intent trigger phrases. The agent can call tools for
+            # who_on_site, dob_status, open_items, material_status, query_plan,
+            # list_workers, and start_checklist.
+            bot_phone_digits = re.sub(
+                r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "")
+            )
+            address_mode = (features.get("address_mode") or "strict").lower()
+            quoted_body = parsed.get("quoted_body") or ""
+            mentioned_jids = parsed.get("mentioned_jids") or []
+            # Did the user explicitly @-mention the bot (native WhatsApp
+            # @mention, literal @levelog text, or a quoted reply to either)?
+            # If yes we lift the NOREPLY escape hatch for the agent — an
+            # explicitly addressed message MUST get some reply.
+            explicit_mention = not spoken and (
+                _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
+                or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
+            )
+            # The quotable id of the message being answered. Every reply the
+            # bot sends below carries it, so an answer that arrives eight
+            # messages later still points at its own question.
+            reply_to = parsed.get("message_id_serialized") or ""
+
+            # Is the message this one replies to one of OURS? fromMe is the
+            # strong signal; the author JID is the fallback, matched against
+            # the same identifier set an @mention is matched against so an
+            # auto-learned LID counts.
+            quoted_from_bot = bool(parsed.get("quoted_from_me"))
+            if not quoted_from_bot:
+                qa = parsed.get("quoted_author") or ""
+                if qa:
+                    quoted_from_bot = _digits_match_bot(
+                        _jid_digits(str(qa)), _bot_identifier_digits(),
+                    )
+
+            is_addressed = await _is_bot_addressed(
+                body,
+                bot_phone_digits,
+                spoken,
+                group_id=group_id,
+                sender=sender,
+                mode=address_mode,
+                quoted_body=quoted_body,
+                mentioned_jids=mentioned_jids,
+                quoted_from_bot=quoted_from_bot,
+            )
+
+            # THE BOT SPEAKS IN A GROUP ONLY WHEN ADDRESSED (Oct 11 ruling):
+            # typed text with the wake word, or a reply to one of its own
+            # messages. The checklist flows below answer only then; nothing
+            # else here posts.
+
             # ── Sprint 6: interactive checklist assignment flow ──
             # If this group has an active draft checklist awaiting assignment,
             # try to parse the reply BEFORE running any other handlers.
@@ -62578,7 +62456,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     {"kind": "checklist", "group_id": group_id})
                 convo_state = None
             if convo_state and convo_state.get("awaiting") == "checklist_assignment" \
-                    and not spoken:
+                    and is_addressed and not spoken:
                 reply = await _handle_checklist_assignment_reply(
                     convo_state, body or "", group_id, sender
                 )
@@ -62595,7 +62473,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
 
             # ── "done N" — mark checklist item complete ──
             # Must come before on-demand @levelog detection so short msgs match.
-            if body and not spoken:
+            if body and not spoken and is_addressed:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
                 if done_match:
                     try:
@@ -62716,54 +62594,6 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         logger.error(f"on-demand checklist failed: {e}", exc_info=True)
                     return
 
-            # ── Sprint 4: Agentic intent router ──
-            # Run the tool-use agent only if the bot was addressed. This covers
-            # voice notes, @mentions of the bot number, '@levelog' prefix, and
-            # soft intent trigger phrases. The agent can call tools for
-            # who_on_site, dob_status, open_items, material_status, query_plan,
-            # list_workers, and start_checklist.
-            bot_phone_digits = re.sub(
-                r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "")
-            )
-            address_mode = (features.get("address_mode") or "strict").lower()
-            quoted_body = parsed.get("quoted_body") or ""
-            mentioned_jids = parsed.get("mentioned_jids") or []
-            # Did the user explicitly @-mention the bot (native WhatsApp
-            # @mention, literal @levelog text, or a quoted reply to either)?
-            # If yes we lift the NOREPLY escape hatch for the agent — an
-            # explicitly addressed message MUST get some reply.
-            explicit_mention = not spoken and (
-                _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
-                or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
-            )
-            # The quotable id of the message being answered. Every reply the
-            # bot sends below carries it, so an answer that arrives eight
-            # messages later still points at its own question.
-            reply_to = parsed.get("message_id_serialized") or ""
-
-            # Is the message this one replies to one of OURS? fromMe is the
-            # strong signal; the author JID is the fallback, matched against
-            # the same identifier set an @mention is matched against so an
-            # auto-learned LID counts.
-            quoted_from_bot = bool(parsed.get("quoted_from_me"))
-            if not quoted_from_bot:
-                qa = parsed.get("quoted_author") or ""
-                if qa:
-                    quoted_from_bot = _digits_match_bot(
-                        _jid_digits(str(qa)), _bot_identifier_digits(),
-                    )
-
-            is_addressed = await _is_bot_addressed(
-                body,
-                bot_phone_digits,
-                spoken,
-                group_id=group_id,
-                sender=sender,
-                mode=address_mode,
-                quoted_body=quoted_body,
-                mentioned_jids=mentioned_jids,
-                quoted_from_bot=quoted_from_bot,
-            )
             if is_addressed:
                 # Only a thank-you or a compliment: a reaction, no text.
                 social = wa_react.social_reaction(body)
@@ -62805,28 +62635,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     await _react_to_message(group_id, reply_to, "")
                 return
 
-            # ── A QUESTION NOBODY ANSWERED IS WORSE THAN A WRONG ANSWER ────
+            # NOT ADDRESSED: SILENCE. The once-a-day "I'm here, say levelog"
+            # hint is gone from groups (588, Oct 11, 2:51 PM: it answered a
+            # voice note asking a person about an inspection).
             #
-            # Silence is the failure mode this integration teaches. A person
-            # asks something the bot could answer, the addressing test says no,
-            # and nothing happens — so they learn the bot is broken and stop
-            # asking. That is exactly how the only real group went quiet:
-            # eleven questions in, nothing out, and then no more questions.
-            #
-            # SAYING IT ONCE IS THE ENTIRE DESIGN. A bot that answers every
-            # unaddressed question with a correction is worse than one that
-            # says nothing, so this fires at most once per group per day and
-            # is keyed in the same TTL collection everything else uses. One
-            # person seeing it is enough; they tell the others.
-            #
-            # And only for something SHAPED like a question. A statement that
-            # happens not to address the bot is not a failed interaction.
-            if spoken:
-                return
-            if bot_enabled and _looks_like_a_question(body):
-                await _nudge_once(group_id)
-
-            # Material request detection gated on the features flag
+            # Material request detection gated on the features flag. The
+            # request is recorded; no confirmation is posted (that would be
+            # the bot speaking unaddressed).
             if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
                 if detection:
@@ -62835,7 +62650,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         parsed["message_id"], sender, detection
                     )
                     if req_doc and req_doc.get("_id"):
-                        await _send_material_confirmation(group_id, req_doc)
+                        logger.info(f"material request recorded silently: {req_doc.get('_id')}")
             return
 
         # --- DIRECT message ---
@@ -64880,7 +64695,8 @@ async def patch_project_punch(project_id: str, pid: str, body: dict,
 
 
 def _attention_item_view(it: dict, group_names: dict,
-                         audio_rows: Optional[set] = None) -> dict:
+                         audio_rows: Optional[set] = None,
+                         yiddish: Optional[dict] = None) -> dict:
     """What the review screen shows. The phone digits stay on the server: a
     person is a name when resolved, else the words used and the last 4."""
     owner = it.get("owner") or {}
@@ -64925,6 +64741,8 @@ def _attention_item_view(it: dict, group_names: dict,
         # Its audio is kept (R2): the card shows ▶ Play. None: not looked up.
         "audio": (None if audio_rows is None
                   else str(ev.get("message_row_id") or "") in audio_rows),
+        # {original, english} for a Yiddish voice note, else None.
+        "yiddish": (yiddish or {}).get(str(ev.get("message_row_id") or "")),
         "review_reason": it.get("review_reason") or next(
             (h.get("note") for h in (it.get("history") or [])
              if isinstance(h, dict) and h.get("by") == "voice"), None),
@@ -65376,13 +65194,19 @@ async def get_project_attention(project_id: str, status: str = "open",
     voice_rows = [str((it.get("evidence") or {}).get("message_row_id") or "")
                   for it in items if (it.get("evidence") or {}).get("kind") == "voice"]
     voice_rows = [r for r in voice_rows if r]
-    audio_rows = {str(m["_id"]) for m in await db.whatsapp_messages.find(
+    notes = await db.whatsapp_messages.find(
         {"_id": {"$in": [to_query_id(r) for r in voice_rows]},
-         "company_id": _company_id_filter(company_id),
-         "voice.audio_key": {"$nin": [None, ""]}}, {"_id": 1}).to_list(len(voice_rows) + 5)
-    } if voice_rows else set()
+         "company_id": _company_id_filter(company_id)},
+        {"voice.audio_key": 1, "voice.lang": 1, "voice.transcript": 1,
+         "voice.english": 1, "voice.english_direct": 1}).to_list(len(voice_rows) + 5) \
+        if voice_rows else []
+    audio_rows = {str(m["_id"]) for m in notes if (m.get("voice") or {}).get("audio_key")}
+    # A Yiddish note: the card shows what was said AND Whisper's direct
+    # English translation, one line each.
+    yiddish = {str(m["_id"]): wa_voice.yiddish_lines(m.get("voice")) for m in notes
+               if wa_voice.yiddish_lines(m.get("voice"))}
     return {
-        "items": [_attention_item_view(it, names, audio_rows) for it in items],
+        "items": [_attention_item_view(it, names, audio_rows, yiddish) for it in items],
         "precision": wa_attention.precision(stats_rows),
         "state_precision": wa_attention_state.state_precision(stats_rows),
         "total": len(stats_rows),

@@ -130,6 +130,23 @@ def row_fields(transcript: str, english: str, lang: str, confidence: Optional[fl
     }}
 
 
+def yiddish_lines(voice: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """{original, english} for a Yiddish note: the words as said, and
+    Whisper's direct English translation (audio -> English), else the
+    translated transcript. None for any other note, or with nothing to show."""
+    v = voice or {}
+    if v.get("lang") != "yi":
+        return None
+    original = str(v.get("transcript") or "").strip()
+    english = str(v.get("english_direct") or "").strip() or (
+        str(v.get("english") or "").strip() if v.get("english") != v.get("transcript") else "")
+    if not original:
+        return None
+    return {"original": original, "english": english,
+            "english_source": "whisper_translation" if v.get("english_direct") else
+            ("translated_transcript" if english else None)}
+
+
 def is_voice(row: Dict[str, Any]) -> bool:
     return bool((row or {}).get("voice"))
 
