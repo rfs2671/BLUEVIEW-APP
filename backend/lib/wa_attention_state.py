@@ -760,17 +760,18 @@ def follow_up_of(question_terms: Set[str], asker: str, items: List[dict]) -> Opt
     return hit[0]["id"] if len(hit) == 1 else None
 
 
+# A need stated, not asked: "Can someone confirm the core drill
+# locations?" stays a question (the labelled state script says so).
 _ASK_OF_SOMEONE = re.compile(
-    r"^\W*(?:necesito|necesitamos|ocupo)\s+que\b|\balguien\s+(?:me|nos|puede|pueda|podr[ií]a)\b"
-    r"|\bfavor de\b|\bi need (?:someone|somebody|you|u)\s+to\b"
-    r"|\b(?:can|could) (?:someone|somebody|anyone)\b|\b(?:someone|somebody) (?:please|needs to)\b",
+    r"^\W*(?:necesito|necesitamos|ocupo)\s+que\b|\bfavor de\b"
+    r"|\bi need (?:someone|somebody|you|u)\s+to\b|\b(?:someone|somebody) (?:please|needs to)\b",
     re.IGNORECASE)
 
 
 def asks_for_action(body: Any) -> bool:
-    """"Necesito que alguien me confirme …", "I need someone to …", "Can
-    someone …": an ask of someone, so a request even when the model called
-    it a question."""
+    """"Necesito que alguien me confirme …", "I need someone to …": a need
+    stated of someone, so a request even when the model called it a
+    question."""
     return bool(_ASK_OF_SOMEONE.search(str(body or "")))
 
 

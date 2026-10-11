@@ -369,10 +369,13 @@ class FollowUpsShareTheSubject(unittest.TestCase):
     def test_an_ask_of_someone_is_a_request(self):
         from lib import wa_attention_state as st
         for body in ("Necesito que alguien me confirme la entrega de los paneles para el viernes",
-                     "Alguien me puede mandar las fotos?", "I need someone to check the hoist",
-                     "Can someone confirm the panel delivery?"):
+                     "I need someone to check the hoist", "Someone please send the riser photos"):
             self.assertTrue(st.asks_for_action(body), body)
-        for body in ("B the risers came in?", "¿Ya llegó la varilla?", "Is the pour still on?"):
+        # Asked, not stated: questions (the state script labels "Can someone
+        # confirm the core drill locations?" a question).
+        for body in ("B the risers came in?", "¿Ya llegó la varilla?", "Is the pour still on?",
+                     "Can someone confirm the core drill locations?",
+                     "¿Alguien me puede mandar las fotos?"):
             self.assertFalse(st.asks_for_action(body), body)
 
 
