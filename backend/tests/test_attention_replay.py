@@ -61,6 +61,22 @@ def _scene():
     return db
 
 
+def _naive(db):
+    """Every stored datetime as motor returns it: naive, UTC."""
+    def strip(v):
+        if isinstance(v, datetime) and v.tzinfo is not None:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    for name in ("whatsapp_messages", "attention_items", "whatsapp_groups"):
+        rows = db[name].rows
+        rows[:] = [strip(r) for r in rows]
+    return db
+
+
 class TheReplay(unittest.TestCase):
 
     def test_an_old_open_item_is_closed_by_the_reply_after_it(self):
@@ -135,13 +151,86 @@ class TheReplay(unittest.TestCase):
         self.assertIn("history", c["changed"])
 
 
+class TestCleanup(unittest.TestCase):
+    """--dismiss-open-before: one-time test cleanup of what is still open."""
+
+    def _scene(self):
+        db = _naive(_scene())                 # it_door (Oct 8), it_stair (Oct 9), both open
+        door = next(i for i in db.attention_items.rows if i["_id"] == "it_door")
+        stair = next(i for i in db.attention_items.rows if i["_id"] == "it_stair")
+        door["created_at"] = OCT8.replace(tzinfo=None)
+        stair["created_at"] = (OCT9 + timedelta(hours=2)).replace(tzinfo=None)
+        done = dict(door, _id="it_done", status="done", history=list(door["history"]))
+        late = dict(door, _id="it_late", status="open", type="request",
+                    created_at=datetime(2026, 10, 12, 14, 0), history=list(door["history"]))
+        db.attention_items.rows += [done, late]
+        return db
+
+    def _run(self, db, *args):
+        buf = io.StringIO()
+        with patch.object(server, "db", db), redirect_stdout(buf):
+            code = asyncio.run(replay.main_async(replay.argparse.Namespace(
+                project="proj_a", since=None, dismiss_open_before="2026-10-11",
+                apply="--apply" in args)))
+        return code, buf.getvalue()
+
+    def test_dry_run_counts_and_writes_nothing(self):
+        db = self._scene()
+        code, out = self._run(db)
+        self.assertEqual(code, 0)
+        self.assertIn("DRY RUN", out)
+        self.assertIn("created before 2026-10-11: 2 would be dismissed", out)
+        self.assertIn("by status: open 2", out)
+        self.assertIn("by type: commitment 2", out)
+        self.assertEqual({i["_id"]: i["status"] for i in db.attention_items.rows},
+                         {"it_door": "open", "it_stair": "open", "it_done": "done",
+                          "it_late": "open"})
+
+    def test_apply_dismisses_only_what_is_open_and_older(self):
+        db = self._scene()
+        code, out = self._run(db, "--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("2 dismissed", out)
+        rows = {i["_id"]: i for i in db.attention_items.rows}
+        self.assertEqual({k: v["status"] for k, v in rows.items()},
+                         {"it_door": "dismissed", "it_stair": "dismissed", "it_done": "done",
+                          "it_late": "open"})
+        door = rows["it_door"]
+        self.assertEqual((door["review"]["verdict"], door["review"]["reason"],
+                          door["dismissed_reason"], door["excluded_from_metrics"]),
+                         ("dismissed", "test cleanup", "test cleanup", True))
+        last = door["history"][-1]
+        self.assertEqual((last["kind"], last["from"], last["to"], last["note"]),
+                         ("state", "open", "dismissed", "test cleanup"))
+        # Again: nothing left to dismiss.
+        code, out = self._run(db, "--apply")
+        self.assertIn(": 0 dismissed", out)
+
+    def test_left_out_of_precision_and_chase(self):
+        from lib import wa_attention, wa_attention_state, wa_chase
+        db = self._scene()
+        self._run(db, "--apply")
+        rows = {i["_id"]: i for i in db.attention_items.rows}
+        self.assertNotIn("commitment", wa_attention.precision([rows["it_door"], rows["it_stair"]]))
+        self.assertEqual(wa_attention_state.state_precision([rows["it_door"]]), {})
+        self.assertEqual(wa_chase.skip_reason(rows["it_door"], OCT9.date()), "status")
+        # An admin's own Dismiss still shows in the dismissed column.
+        admin = dict(rows["it_late"], review={"verdict": "dismissed"})
+        self.assertEqual(wa_attention.precision([admin])["request"]["dismissed"], 1)
+
+    def test_needs_a_date(self):
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            replay.main(["--project", "proj_a"])
+
+
 class TheScript(unittest.TestCase):
 
     def _run(self, db, *args):
         buf = io.StringIO()
         with patch.object(server, "db", db), redirect_stdout(buf):
             code = asyncio.run(replay.main_async(replay.argparse.Namespace(
-                project="proj_a", since="2026-10-08", apply="--apply" in args)))
+                project="proj_a", since="2026-10-08", dismiss_open_before=None,
+                apply="--apply" in args)))
         return code, buf.getvalue()
 
     def test_dry_run_reports_and_writes_nothing(self):
@@ -153,6 +242,16 @@ class TheScript(unittest.TestCase):
         self.assertIn("Just sent, check ur email", out)
         self.assertEqual({i["_id"]: i["status"] for i in db.attention_items.rows},
                          {"it_door": "open", "it_stair": "open"})
+
+    def test_production_rows_are_replayed(self):
+        # Live, 588 since Oct 9: "replayed: 0" over ~60 messages. Motor hands
+        # back NAIVE datetimes (UTC); the dry run's in-memory copy compared
+        # them with the aware --since and matched nothing.
+        db = _naive(_scene())
+        code, out = self._run(db)
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"replayed: [1-9]")
+        self.assertIn("open → done", out)
 
     def test_apply_writes(self):
         db = _scene()

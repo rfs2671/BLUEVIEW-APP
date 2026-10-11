@@ -47633,6 +47633,8 @@ async def _attention_replay_state(project_id: str, since: datetime,
              "company_id": _company_id_filter(cid), "sender": {"$ne": "bot"},
              "created_at": {"$gte": since}}).sort(
             [("created_at", 1), ("_id", 1)]).to_list(5000)
+        report["groups"] += 1
+        report["rows"] += len(rows)
         for burst in wa_attention_state.bursts(rows):
             msg = wa_attention_state.merge(burst)
             text = wa_attention_state.text_of(msg)
@@ -47684,7 +47686,54 @@ async def _attention_replay_state(project_id: str, since: datetime,
     logger.info(f"[attention] replay project={project_id} messages={report['messages']} "
                 f"changed={len(changed)} open_with_done_after={len(hints)}")
     return {"items": changed, "open_with_done_after": hints,
-            "messages": report["messages"], "report": dict(report)}
+            "messages": report["messages"], "groups": report["groups"],
+            "rows": report["rows"], "report": dict(report)}
+
+
+#: What the one-time test cleanup writes on what it dismisses.
+ATTENTION_TEST_CLEANUP = "test cleanup"
+#: Not done, cancelled or dismissed: still on someone's list.
+_ATTENTION_STILL_OPEN = ("open", "rescheduled", "possibly_done", "possibly_resolved")
+
+
+async def _attention_dismiss_open_before(project_id: str, before: datetime,
+                                         now: Optional[datetime] = None) -> dict:
+    """ONE-TIME TEST CLEANUP: every attention item of the project still open
+    (open, rescheduled, possibly done / resolved) and created before `before`
+    is dismissed, reason "test cleanup": off the open list, never chased
+    (wa_chase skips a dismissed status and verdict), and left out of
+    precision and state precision altogether (`excluded_from_metrics`).
+    Returns the counts: {total, by_status, by_type}."""
+    now = now or datetime.now(timezone.utc)
+    rows = await db.attention_items.find(
+        {"project_id": str(project_id),
+         "status": {"$in": list(_ATTENTION_STILL_OPEN)},
+         "created_at": {"$lt": before}},
+        {"status": 1, "type": 1}).to_list(10000)
+    by_status: Dict[str, int] = {}
+    by_type: Dict[str, int] = {}
+    for it in rows:
+        was = str(it.get("status") or "")
+        res = await db.attention_items.update_one(
+            # Still open at the moment of writing (the worker may have just
+            # closed it): only then.
+            {"_id": it["_id"], "status": was},
+            {"$set": {"status": "dismissed", "excluded_from_metrics": True,
+                      "dismissed_reason": ATTENTION_TEST_CLEANUP,
+                      "review": {"verdict": "dismissed", "by": "operator",
+                                 "reason": ATTENTION_TEST_CLEANUP, "at": now},
+                      "updated_at": now},
+             "$push": {"history": {"id": wa_attention_state.new_event_id(),
+                                   "kind": "state", "from": was, "to": "dismissed",
+                                   "at": now, "by": "operator",
+                                   "note": ATTENTION_TEST_CLEANUP, "review": None}}})
+        if getattr(res, "modified_count", 1):
+            by_status[was] = by_status.get(was, 0) + 1
+            typ = str(it.get("type") or "other")
+            by_type[typ] = by_type.get(typ, 0) + 1
+    total = sum(by_status.values())
+    logger.info(f"[attention] test cleanup project={project_id} dismissed={total}")
+    return {"total": total, "by_status": by_status, "by_type": by_type}
 
 
 async def _attention_weekly_metrics(now: Optional[datetime] = None) -> List[dict]:
@@ -64718,7 +64767,8 @@ async def get_project_attention(project_id: str, status: str = "open",
     stats_rows = await db.attention_items.find(
         {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id)},
-        {"type": 1, "review.verdict": 1, "history": 1}).to_list(10000)
+        {"type": 1, "review.verdict": 1, "history": 1,
+         "excluded_from_metrics": 1}).to_list(10000)
     groups = await db.whatsapp_groups.find(
         {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id)},
