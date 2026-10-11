@@ -6,6 +6,15 @@ are closed, moved or cancelled as today's engine reads them.
     railway run python scripts/attention_replay.py --project 588 --since 2026-10-09
     railway run python scripts/attention_replay.py --project 588 --since 2026-10-09 --apply
 
+TEST CLEANUP: --dismiss-open-before dismisses every attention item of the
+project still open and created before the date (reason "test cleanup"): off
+the open list, never chased, left out of precision. Counts are printed.
+
+    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10
+    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10 --apply
+
+Both together: the replay first, then the cleanup of what is still open.
+
 Without --apply it is a DRY RUN: the project's messages, items and people are
 copied into an in-memory database (tests/_fake_mongo.FakeDb), the replay runs
 there, and every change it WOULD make is printed. Nothing is written.
@@ -90,13 +99,19 @@ async def _copy(real, project, since):
     return db
 
 
+def _ny_day(day: str) -> datetime:
+    """Midnight New York of YYYY-MM-DD, in UTC."""
+    tz = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
+    return datetime.fromisoformat(day).replace(tzinfo=tz).astimezone(timezone.utc)
+
+
 async def main_async(a) -> int:
     import server
-    tz = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
-    since = datetime.fromisoformat(a.since).replace(tzinfo=tz).astimezone(timezone.utc)
+    since = _ny_day(a.since) if a.since else None
+    before = _ny_day(a.dismiss_open_before) if getattr(a, "dismiss_open_before", None) else None
     real = server.db
     project = await _find_project(real, a.project)
-    db = real if a.apply else await _copy(real, project, since)
+    db = real if a.apply else await _copy(real, project, since or before)
 
     def refuse(name):
         async def _r(*x, **k):
@@ -106,8 +121,12 @@ async def main_async(a) -> int:
         patch.object(server, n, refuse(n)) for n in SEND_PATHS if hasattr(server, n)]
     for p in patches:
         p.start()
+    out, cleaned = None, None
     try:
-        out = await server._attention_replay_state(str(project["_id"]), since)
+        if since:
+            out = await server._attention_replay_state(str(project["_id"]), since)
+        if before:
+            cleaned = await server._attention_dismiss_open_before(str(project["_id"]), before)
     except Sent as e:
         print(f"STOPPED: something tried to send ({e}). Nothing more was done.")
         return 3
@@ -115,7 +134,25 @@ async def main_async(a) -> int:
         for p in patches:
             p.stop()
     mode = "APPLIED" if a.apply else "DRY RUN (nothing written)"
-    print(f"{mode}: {project.get('name')} · messages since {a.since} replayed: {out['messages']}")
+    if out is not None:
+        _print_replay(a, mode, project, out)
+    if cleaned is not None:
+        verb = "dismissed" if a.apply else "would be dismissed"
+        print(f"{mode}: {project.get('name')} · test cleanup, still open and created before "
+              f"{a.dismiss_open_before}: {cleaned['total']} {verb} (reason "
+              f"\"{server.ATTENTION_TEST_CLEANUP}\"; off the open list, not chased, "
+              f"not in precision)")
+        for label, counts in (("by status", cleaned["by_status"]), ("by type", cleaned["by_type"])):
+            if counts:
+                print(f"  {label}: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+        if not a.apply and cleaned["total"]:
+            print("\nRe-run with --apply to dismiss them.")
+    return 0
+
+
+def _print_replay(a, mode, project, out) -> None:
+    print(f"{mode}: {project.get('name')} · messages since {a.since} replayed: {out['messages']} "
+          f"(linked groups: {out.get('groups', 0)}, stored messages: {out.get('rows', 0)})")
     if not out["items"]:
         print("No item would change." if not a.apply else "No item changed.")
     for c in out["items"]:
@@ -133,15 +170,19 @@ async def main_async(a) -> int:
             print(f"             later: “{h['said'][:90]}” ({h['at']})")
     if not a.apply and out["items"]:
         print("\nRe-run with --apply to make these changes.")
-    return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Re-run the attention state engine (one-time cleanup).")
     ap.add_argument("--project", required=True, help="project id, or text in its name/address (e.g. 588)")
-    ap.add_argument("--since", required=True, help="YYYY-MM-DD, New York")
+    ap.add_argument("--since", help="replay messages from YYYY-MM-DD, New York")
+    ap.add_argument("--dismiss-open-before", metavar="YYYY-MM-DD",
+                    help="test cleanup: dismiss items still open and created before this day "
+                         "(New York)")
     ap.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     a = ap.parse_args(argv)
+    if not (a.since or a.dismiss_open_before):
+        ap.error("give --since, --dismiss-open-before, or both")
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

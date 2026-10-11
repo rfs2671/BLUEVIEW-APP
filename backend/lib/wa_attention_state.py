@@ -710,6 +710,8 @@ def state_precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
     wrong), or None before any verdict."""
     out: Dict[str, Dict[str, Any]] = {}
     for it in items:
+        if it.get("excluded_from_metrics"):
+            continue                    # test cleanup: never counted
         for e in it.get("history") or []:
             if not isinstance(e, dict) or e.get("kind") in ("created", "follow_up"):
                 continue

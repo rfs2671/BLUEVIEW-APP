@@ -11,10 +11,21 @@ from __future__ import annotations
 
 import copy
 import itertools
+from datetime import datetime, timezone
 
 from pymongo.errors import DuplicateKeyError
 
 _ids = itertools.count(1)
+
+
+def _same_clock(v):
+    """Mongo stores every datetime as UTC and compares them so; motor hands
+    them back NAIVE (tz_aware=False, the server's client). A naive value is
+    UTC here too, so a naive row compares with an aware bound as Mongo would
+    (a copy of production rows filtered by an aware date matched nothing)."""
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=timezone.utc)
+    return v
 
 
 def _cmp(val, cond):
@@ -41,6 +52,7 @@ def _cmp(val, cond):
             elif op in ("$gt", "$gte", "$lt", "$lte"):
                 if val is _MISSING or val is None:
                     return False
+                val, arg = _same_clock(val), _same_clock(arg)
                 try:
                     ok = {"$gt": val > arg, "$gte": val >= arg,
                           "$lt": val < arg, "$lte": val <= arg}[op]

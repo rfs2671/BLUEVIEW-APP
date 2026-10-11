@@ -561,6 +561,8 @@ def precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     Dismissed is "not worth tracking", not "wrong", so it is not counted."""
     out: Dict[str, Dict[str, Any]] = {}
     for it in items:
+        if it.get("excluded_from_metrics"):
+            continue                    # test cleanup: never counted
         typ = it.get("type") or "other"
         row = out.setdefault(
             typ, {"correct": 0, "wrong": 0, "dismissed": 0, "unreviewed": 0})
