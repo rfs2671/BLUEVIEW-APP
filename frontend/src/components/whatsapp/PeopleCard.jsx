@@ -151,8 +151,8 @@ export default function PeopleCard({ projectId }) {
             <TextInput
               value={phone}
               onChangeText={setPhone}
-              placeholder={editing && editing.assigned && editing.assigned.phone_last4
-                ? `On file: …${editing.assigned.phone_last4} (type to replace)` : '+1 718 555 0100'}
+              placeholder={editing && editing.assigned && editing.assigned.phone
+                ? `On file: ${editing.assigned.phone} (type to replace)` : '+1 718 555 0100'}
               placeholderTextColor={colors.text.subtle}
               keyboardType="phone-pad"
               style={s.input}

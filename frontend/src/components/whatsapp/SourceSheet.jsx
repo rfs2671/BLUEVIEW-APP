@@ -16,7 +16,7 @@ import { whatsappAPI } from '../../utils/api';
 import { spacing } from '../../styles/theme';
 import { withAlpha } from '../../styles/semanticColors';
 import {
-  englishLine, headLine, reviewNote, voiceLine,
+  englishLine, headLine, reviewNote, voiceLine, evidenceLine,
 } from '../../utils/sourceMessage';
 
 export default function SourceSheet({ projectId, rowId, reason, onClose }) {
@@ -52,6 +52,11 @@ export default function SourceSheet({ projectId, rowId, reason, onClose }) {
             ) : (
               <>
                 {headLine(src) ? <Text style={s.muted}>{headLine(src)}</Text> : null}
+                {evidenceLine(src) ? (
+                  <Text selectable style={s.muted} accessibilityLabel="Evidence line">
+                    {`Evidence: ${evidenceLine(src)}`}
+                  </Text>
+                ) : null}
                 <Text style={s.words}>{src.text}</Text>
                 {v ? <Text style={s.muted}>{voiceLine(v)}</Text> : null}
                 {english ? <Text style={s.muted}>{english}</Text> : null}

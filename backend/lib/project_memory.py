@@ -586,9 +586,11 @@ def when(at: Any) -> str:
     return f"{at.strftime('%b')} {at.day}, {h}:{at.strftime('%M %p')}"
 
 
-def cite(src: Dict[str, Any]) -> str:
+def cite(src: Dict[str, Any], phone: str = "") -> str:
     """"Mike Rivera · Main St Electric · Oct 3, 7:42 AM" / "Daily report · Oct 3";
-    a voice note's time is "🎤 Oct 3, 7:42 AM"."""
+    a voice note's time is "🎤 Oct 3, 7:42 AM". `phone` is the sender's number
+    as the reader may see it ("+1 718-755-9520" for an admin, "…9520"), after
+    the name; never given for what the model reads."""
     if src.get("source") == SOURCE_DAILY:
         parts = ["Daily report", src.get("label") or "", src.get("day_label") or ""]
     else:
@@ -596,14 +598,17 @@ def cite(src: Dict[str, Any]) -> str:
         # A voice note: "🎤 Sep 24, 8:30 AM", its quote the transcript.
         if src.get("voice") and when:
             when = f"🎤 {when}"
-        parts = [src.get("who") or "Someone", src.get("group") or "", when]
+        parts = [src.get("who") or "Someone", phone, src.get("group") or "", when]
     return " · ".join(p for p in parts if p)
 
 
 def format_answer(claims: Sequence[Dict[str, Any]], by_sid: Dict[str, Dict[str, Any]],
-                  timeline: bool = False, lead: str = "") -> str:
+                  timeline: bool = False, lead: str = "",
+                  phones: Optional[Dict[str, str]] = None) -> str:
     """The reply: `lead` ("No record that …") first when given, then each
-    claim, its source and its exact words. NO_SOURCE when nothing survived."""
+    claim, its source and its exact words. NO_SOURCE when nothing survived.
+    `phones`: sid -> the sender's number as this reader may see it."""
+    phones = phones or {}
     if not claims:
         return NO_SOURCE
     lines = [lead] if lead else []
@@ -613,9 +618,9 @@ def format_answer(claims: Sequence[Dict[str, Any]], by_sid: Dict[str, Dict[str, 
         if c.get("relayed_by") and not c.get("planned"):
             head += f" (relayed by {c['relayed_by']}" + (
                 f", {src.get('day_label')})" if src.get("day_label") else ")")
-        rows = [f"• {head}", f"   {cite(src)}: “{c['quote']}”"]
+        rows = [f"• {head}", f"   {cite(src, phones.get(c['sid'], ''))}: “{c['quote']}”"]
         for a in c.get("also") or []:
-            rows.append(f"   {cite(by_sid[a['sid']])}: “{a['quote']}”")
+            rows.append(f"   {cite(by_sid[a['sid']], phones.get(a['sid'], ''))}: “{a['quote']}”")
         lines.append("\n".join(rows))
     return "\n".join(lines)
 

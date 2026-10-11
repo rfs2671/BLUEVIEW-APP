@@ -12873,6 +12873,10 @@ async def hard_delete_company(
     )
 
     await db.users.delete_many({"company_id": company_id})
+    # The company's WhatsApp senders and the numbers kept for them (evidence
+    # belongs to the company: it goes with it).
+    await db[wa_sender_map.COLLECTION].delete_many({"company_id": str(company_id)})
+    await db[wa_mention.LOOKUP_COLLECTION].delete_many({"company_id": str(company_id)})
     result = await db.companies.delete_one({"_id": to_query_id(company_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -17810,6 +17814,15 @@ async def hard_delete_project(
                 report[coll] = n
         except Exception as e:
             logger.error(f"[hard_delete] {coll} delete failed: {e!r}")
+
+    # The project's messages are gone: a sender with none left anywhere in
+    # the company loses the number kept for them (evidence follows delete).
+    try:
+        gc = await _sender_phone_gc(True, company_id=str(project.get("company_id") or ""))
+        if gc["removed"]:
+            report["sender_phones"] = gc["removed"]
+    except Exception as e:
+        logger.error(f"[hard_delete] sender phone cleanup failed: {e!r}")
 
     # ── LANDMINE 1: workers are NOT project-scoped — one worker spans many
     # projects. Their check-ins are already gone above; here we only detach
@@ -47394,6 +47407,46 @@ CHASE_TICK_MINUTES = 5
 # A person with no number keeps the plain "@Name" and is logged
 # "[mention] unresolved": the post still names them, it just won't notify.
 
+async def _known_sender_phone(company_id: str, jid: str, now: datetime) -> dict:
+    """{sender_phone, sender_phone_source, sender_phone_at} for a group
+    sender from what we hold: a phone id itself, the People mapping's number,
+    or a past get-lid answer. All None when not known (yet)."""
+    number = wa_mention.phone(jid)
+    if number:
+        return wa_mention.stamp(number, "jid", now)
+    if not (company_id and wa_sender_map.is_lid(jid)):
+        return wa_mention.stamp(None, None, None)
+    try:
+        m = await db[wa_sender_map.COLLECTION].find_one(
+            {"company_id": company_id, "sender_jid": jid}, {"phone": 1, "set_at": 1})
+        if m and wa_mention.phone(m.get("phone")):
+            return wa_mention.stamp(wa_mention.phone(m["phone"]), "people", m.get("set_at") or now)
+        c = await db[wa_mention.LOOKUP_COLLECTION].find_one({"_id": f"{company_id}|{jid}"})
+        if c and c.get("phone"):
+            return wa_mention.stamp(c["phone"], "lid_lookup", c.get("resolved_at") or c.get("checked_at"))
+    except Exception as e:
+        logger.warning(f"[mention] known phone read failed: {type(e).__name__}")
+    return wa_mention.stamp(None, None, None)
+
+
+async def _stamp_sender_phone(company_id: str, jid: str, number: str, source: str,
+                              at: datetime) -> None:
+    """A number newly resolved for a sender: kept on every earlier message of
+    theirs in this company that has none yet, and on their People record.
+    Never overwrites a number a message already carries (evidence)."""
+    try:
+        await db.whatsapp_messages.update_many(
+            {"company_id": _company_id_filter(company_id), "sender_jid": jid,
+             "sender_phone": None},
+            {"$set": wa_mention.stamp(number, source, at)})
+        await db[wa_sender_map.COLLECTION].update_many(
+            {"company_id": str(company_id), "sender_jid": jid},
+            {"$set": {"resolved_phone": number, "resolved_phone_source": source,
+                      "resolved_phone_at": at}})
+    except Exception as e:
+        logger.warning(f"[mention] phone stamp failed: {type(e).__name__}")
+
+
 async def _waapi_lid_phones(lids: List[str]) -> Optional[Dict[str, Optional[str]]]:
     """One WaAPI get-lid call (at most wa_mention.LOOKUP_CHUNK ids):
     {lid: phone or None}, or None when WaAPI could not be asked or did not
@@ -47444,12 +47497,18 @@ async def _lid_phones_cached(company_id: str, lids: List[str],
             continue
         for lid, number in got.items():
             out[lid] = number
+            # The lid and what came back -- never the number -- in the log.
+            logger.info(f"[mention] get-lid {lid}: {'resolved' if number else 'no number'}")
+            fields = {"company_id": str(company_id), "lid": lid, "phone": number,
+                      "checked_at": now}
+            if number and number != stale.get(lid):
+                fields["resolved_at"] = now
             try:
-                await col.update_one({"_id": f"{company_id}|{lid}"}, {"$set": {
-                    "company_id": str(company_id), "lid": lid, "phone": number,
-                    "checked_at": now}}, upsert=True)
+                await col.update_one({"_id": f"{company_id}|{lid}"}, {"$set": fields}, upsert=True)
             except Exception as e:
                 logger.warning(f"[mention] lid cache write failed: {type(e).__name__}")
+            if number:
+                await _stamp_sender_phone(company_id, lid, number, "lid_lookup", now)
     return out
 
 
@@ -47495,7 +47554,7 @@ async def _mention_targets(people: List[dict], company_id: str,
             t = wa_mention.target(p.get("name") or "", found[jid], "lid_lookup")
         if t is None:
             logger.info(f"[mention] unresolved kind={p.get('kind') or 'none'} "
-                        f"id={'lid' if wa_sender_map.is_lid(jid) else ('none' if not jid else 'other')}")
+                        f"id={jid if wa_sender_map.is_lid(jid) else ('none' if not jid else 'other')}: no number")
             t = wa_mention.target(p.get("name") or "", None)
         out.append(t)
     return out
@@ -47905,6 +47964,52 @@ async def _retention_drop_legacy_ttl() -> bool:
         return False
 
 
+async def _sender_phone_gc(purge: bool, company_id: Optional[str] = None,
+                           skip: Optional[set] = None) -> dict:
+    """A WhatsApp number kept for a sender (the per-company get-lid record,
+    and the People record's resolved number) whose sender has no message
+    left in that company: removed (counted only, unless `purge`). The number
+    on each message row goes with the row itself (retention, legal hold,
+    project delete)."""
+    out = {"orphaned": 0, "removed": 0}
+    q = {"company_id": str(company_id)} if company_id else {}
+    try:
+        recs = await db[wa_mention.LOOKUP_COLLECTION].find(q, {"company_id": 1, "lid": 1}).to_list(50000)
+        maps = await db[wa_sender_map.COLLECTION].find(
+            {**q, "resolved_phone": {"$ne": None}}, {"company_id": 1, "sender_jid": 1}).to_list(50000)
+    except Exception as e:
+        logger.warning(f"[retention] sender phone read failed: {type(e).__name__}")
+        return out
+    for coll, rows, jid_key in ((wa_mention.LOOKUP_COLLECTION, recs, "lid"),
+                                (wa_sender_map.COLLECTION, maps, "sender_jid")):
+        for r in rows:
+            cid, jid = str(r.get("company_id") or ""), r.get(jid_key)
+            if not jid or cid in (skip or set()):
+                continue
+            try:
+                if await db.whatsapp_messages.find_one(
+                        {"company_id": _company_id_filter(cid), "sender_jid": jid}, {"_id": 1}):
+                    continue
+            except Exception:
+                continue
+            out["orphaned"] += 1
+            if not purge:
+                continue
+            try:
+                if coll == wa_mention.LOOKUP_COLLECTION:
+                    await db[coll].delete_one({"_id": r["_id"]})
+                else:
+                    # The person's mapping (name, company, any number an
+                    # admin typed) stays; only the looked-up number goes.
+                    await db[coll].update_one({"_id": r["_id"]}, {"$set": {
+                        "resolved_phone": None, "resolved_phone_source": None,
+                        "resolved_phone_at": None}})
+                out["removed"] += 1
+            except Exception as e:
+                logger.warning(f"[retention] sender phone delete failed: {type(e).__name__}")
+    return out
+
+
 async def _retention_tick(now: Optional[datetime] = None,
                           purge: Optional[bool] = None) -> dict:
     """One retention run. Returns (and records) the counts."""
@@ -47977,6 +48082,9 @@ async def _retention_tick(now: Optional[datetime] = None,
                     break
             if purge and budget <= 0:
                 report["capped"] = True
+    # A sender's number goes when their last message goes (and not before:
+    # a message under legal hold keeps it). Same switch as the messages.
+    report["sender_phones"] = await _sender_phone_gc(purge, skip=test_cos)
     for cid, colls in report["companies"].items():
         for coll, c in colls.items():
             logger.info(f"[retention] {report['mode']} company={cid} {coll} "
@@ -49697,6 +49805,12 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         address_mode="loose", dm=True, tool_trace=trace,
         dm_history=wa_assistant.history_messages(history or []))
     memory = _MEMORY_DM_ANSWERS.pop(mkey, None)
+    if isinstance(memory, dict):
+        # Who said it, by number (evidence): in full to a company admin, the
+        # last 4 to anyone else.
+        admin = holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
+                           COMPANY_ADMIN_ROLES)
+        memory = memory.get("full" if admin else "last4") or memory.get("none")
     if memory and any(t.get("tool") == "search_project_history" for t in trace):
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
@@ -49751,7 +49865,7 @@ MEMORY_ATLAS_RETRY_SECONDS = 600
 _MEMORY_ATLAS: Dict[str, Any] = {"ok": None, "retry_at": None}
 # The last answer the DM tool built, per chat: sent as it is (the agent does
 # not reword a checked answer).
-_MEMORY_DM_ANSWERS: Dict[str, str] = {}
+_MEMORY_DM_ANSWERS: Dict[str, Any] = {}
 
 
 def _memory_dm_key(chat: Any, message_id: Any) -> str:
@@ -50291,6 +50405,21 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
     People or the company, else their WhatsApp name), the group, when."""
     cache: dict = {}
     out = []
+    # The sender's number, from the message itself (evidence; server only:
+    # shown by role when the answer is written, never to the model).
+    wa_ids = [r.get("source_id") for r in rows
+              if r.get("source") == project_memory.SOURCE_WHATSAPP and r.get("source_id")]
+    phone_of: Dict[str, str] = {}
+    if wa_ids:
+        try:
+            for m in await db.whatsapp_messages.find(
+                    {"_id": {"$in": [to_query_id(str(x)) for x in wa_ids]},
+                     "company_id": _company_id_filter(company_id)},
+                    {"sender_phone": 1}).to_list(len(wa_ids) + 5):
+                if m.get("sender_phone"):
+                    phone_of[str(m["_id"])] = m["sender_phone"]
+        except Exception as e:
+            logger.warning(f"[memory] phone read failed: {type(e).__name__}")
     for i, r in enumerate(rows, 1):
         ny = _memory_ny(r.get("at"))
         src = {"sid": f"S{i}", "id": r["_id"], "source": r.get("source"),
@@ -50305,6 +50434,7 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
             src["who"] = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
                           else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+            src["phone"] = phone_of.get(str(r.get("source_id") or ""))
         elif r.get("source") == project_memory.SOURCE_DAILY:
             src["who"] = r.get("author") or ""
         elif r.get("source") == project_memory.SOURCE_ATTENTION:
@@ -50345,9 +50475,12 @@ async def _memory_llm(messages: list) -> Optional[str]:
 
 async def _memory_answer(company_id: str, project_id: str, query: str,
                          date_from: Optional[str] = None, date_to: Optional[str] = None,
-                         full_story: Optional[bool] = None, llm=None) -> dict:
+                         full_story: Optional[bool] = None, llm=None,
+                         phone_view: str = "none") -> dict:
     """{text, claims, sources, mode}: an answer of checked, cited claims, or
-    NO_SOURCE."""
+    NO_SOURCE. `phone_view`: how senders' numbers appear in `text` -- "none"
+    (groups, the model), "last4" (PMs and others), "full" (company admins).
+    `texts` holds all three, for a caller that learns the reader later."""
     timeline = project_memory.is_full_story(query) if full_story is None else bool(full_story)
     mode = "timeline" if timeline else "answer"
     rows = await _memory_search(company_id, project_id, query, date_from, date_to,
@@ -50379,7 +50512,13 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
         for c in claims:
             c["date"] = c.get("date") or by_sid[c["sid"]]["day_label"]
     lead = project_memory.lead_line(query, claims, timeline)
-    result.update(text=project_memory.format_answer(claims, by_sid, timeline, lead=lead),
+    texts = {}
+    for view in ("none", "last4", "full"):
+        phones = ({sid: wa_mention.shown(s.get("phone"), view == "full")
+                   for sid, s in by_sid.items() if s.get("phone")} if view != "none" else {})
+        texts[view] = project_memory.format_answer(claims, by_sid, timeline, lead=lead,
+                                                   phones=phones)
+    result.update(text=texts.get(phone_view, texts["none"]), texts=texts,
                   lead=lead, claims=claims, dropped=tally.get("dropped", 0),
                   merged=tally.get("merged", 0), made_faithful=tally.get("made_faithful", 0))
     logger.info(f"[memory] answer mode={mode} sources={len(sources)} "
@@ -50824,6 +50963,18 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         await _react_to_message(dm_chat, message_id, "")
 
 
+def _log_chat(chat_id: Any) -> str:
+    """A chat as server logs may show it: a group id as it is, a person's
+    chat (a phone) as "dm…<last 4>". A phone is evidence, never logged."""
+    c = str(chat_id or "")
+    if not c:
+        return "?"
+    if wa_dm.is_group_chat(c):
+        return c
+    d = wa_dm.phone_digits(c)
+    return f"dm…{d[-4:]}" if d else "dm"
+
+
 async def send_whatsapp_message(
     chat_id: str, message: str, reply_to: Optional[str] = None,
     *, dm_meta: Optional[dict] = None, mentions: Optional[List[str]] = None,
@@ -50897,11 +51048,11 @@ async def send_whatsapp_message(
     if ledger_id is not None:
         await _ledger_finish(ledger_id, ok, err)
     if not ok:
-        logger.error(f"WhatsApp send failed to {chat_id}: {err}")
+        logger.error(f"WhatsApp send failed to {_log_chat(chat_id)}: {err}")
         return None
     if payload.get("mentions") and not wa_mention.sent_ok(resp_json):
         # A mention send is only a send when WaAPI says data.status "success".
-        logger.error(f"[mention] send not confirmed to {chat_id}: "
+        logger.error(f"[mention] send not confirmed to {_log_chat(chat_id)}: "
                      f"{str((resp_json or {}).get('data', {}).get('status') if isinstance(resp_json, dict) else resp_json)[:60]}")
         return None
 
@@ -57828,7 +57979,7 @@ async def _is_bot_addressed(
         if mode != "loose":
             why += "+strict"
         logger.info(
-            f"NOT addressed ({why}) group={group_id[-10:] if group_id else '?'} "
+            f"NOT addressed ({why}) group={_log_chat(group_id)[-10:]} "
             f"sender={sender[-4:] if sender else '?'} mode={mode} "
             f"body={(body or '')[:60]!r}"
         )
@@ -59232,7 +59383,7 @@ async def _run_group_agent(
         if context_block:
             system_prompt = f"{system_prompt}\n\n{context_block}"
     except Exception as e:
-        logger.warning(f"agent context block failed for {group_id}: {e}")
+        logger.warning(f"agent context block failed for {_log_chat(group_id)}: {e}")
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -59325,7 +59476,7 @@ async def _run_group_agent(
                 # said nothing" failures show up in Railway logs.
                 tc_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
                 logger.info(
-                    f"agent turn={_turn} group={group_id[-10:] if group_id else '?'} "
+                    f"agent turn={_turn} group={_log_chat(group_id)[-10:]} "
                     f"sender={sender[-4:]} explicit={explicit_mention} "
                     f"tools={tc_names} content={(content or '')[:120]!r}"
                 )
@@ -59460,7 +59611,7 @@ async def _run_group_agent(
                 # The overrun path sends text too, so it passes the same gate.
                 return await _gated(last_content.strip())
             logger.warning(
-                f"agent: max turns hit for group={group_id} sender={sender} body={body[:80]!r}"
+                f"agent: max turns hit for group={_log_chat(group_id)} sender=…{str(sender or '')[-4:]} body={body[:80]!r}"
             )
             return None
     except Exception as e:
@@ -59499,7 +59650,9 @@ async def _dispatch_agent_tool(
             got = await _memory_answer(
                 str(company_id), str(project_id), str(args.get("query") or user_body or ""),
                 _day(args.get("date_from")), _day(args.get("date_to")))
-            _MEMORY_DM_ANSWERS[_memory_dm_key(group_id, reply_to)] = got["text"]
+            # All three renderings: the DM job knows the reader's role.
+            _MEMORY_DM_ANSWERS[_memory_dm_key(group_id, reply_to)] = got.get("texts") or {
+                "none": got["text"]}
             return got["text"]
         if name == "check_drawing_set":
             rows = await referenced_sheets_not_in_set(project_id)
@@ -60105,6 +60258,10 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
         # English for the assistant ride along (lib/wa_voice.py).
         row["voice"] = voice
         row["transcribed"] = True
+    # WHO SENT IT, BY NUMBER, KEPT FOR GOOD (evidence): the number known for
+    # this sender now, with how and when it was resolved. Nothing asked of
+    # WaAPI here; an @lid resolved later is stamped back (_stamp_sender_phone).
+    row.update(await _known_sender_phone(str(msg_company_id or ""), row["sender_jid"], now))
     if not row["quoted_message_id"] and row["quoted_body"].strip():
         # WaAPI can send a reply's quoted words without the quoted message's
         # id (2026-10-09, 3:40 and 3:42 PM). The one message in this group in
@@ -63710,7 +63867,8 @@ async def get_whatsapp_source_message(project_id: str, row_id: str,
     its words as said (a voice note's transcript, with its language,
     Whisper's confidence and the English), who and when, and for a voice
     note a short-lived link to play the audio. Admins, and PMs on their
-    projects. No phone number."""
+    projects. The sender's number is evidence: full for company admins,
+    the last 4 for PMs, with when it was resolved."""
     company_id = await _memory_project(project_id, current_user)
     try:
         row = await db.whatsapp_messages.find_one(
@@ -63725,8 +63883,27 @@ async def get_whatsapp_source_message(project_id: str, row_id: str,
     audio_url = ""
     if v.get("audio_key"):
         audio_url = await asyncio.to_thread(_presign_r2_get, v["audio_key"], 900)
+    admin = is_company_admin(current_user)
+    who = ""
+    try:
+        m = await db[wa_sender_map.COLLECTION].find_one(
+            {"company_id": str(company_id), "sender_jid": row.get("sender_jid") or ""},
+            {"person_name": 1})
+        who = (m or {}).get("person_name") or ""
+    except Exception:
+        pass
+    # Never a number dressed up as a display name.
+    who = who or wa_sender_map.safe_push_name(row.get("sender_name")) or ""
+    number = row.get("sender_phone")
+    p_at = row.get("sender_phone_at")
+    when = ((at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(_MEMORY_NY)
+            .strftime("%b %-d, %-I:%M:%S %p") if isinstance(at, datetime) else "")
     return {"id": str(row["_id"]), "text": row.get("body") or "",
-            "who": wa_sender_map.clean_push_name(row.get("sender_name")) or "",
+            "who": who,
+            "phone": wa_mention.shown(number, admin) or None,
+            "phone_resolved_at": p_at.isoformat() if isinstance(p_at, datetime) else None,
+            # "Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM" (admins).
+            "evidence": wa_mention.evidence_line(who or "Unknown sender", number, when, admin),
             "at": at.isoformat() if isinstance(at, datetime) else None,
             "voice": ({"lang": v.get("lang"), "confidence": v.get("confidence"),
                        "duration_sec": v.get("duration_sec"), "english": v.get("english"),
@@ -63748,11 +63925,13 @@ async def _memory_project(project_id: str, current_user) -> str:
     return str(company_id)
 
 
-def _memory_source_view(src: dict) -> dict:
-    """One result for the app: the chip (who · group · when) and the words."""
+def _memory_source_view(src: dict, admin: bool = False) -> dict:
+    """One result for the app: the chip (who · group · when) and the words.
+    The sender's number: full for a company admin, the last 4 otherwise."""
     at = src.get("at")
     return {"id": src.get("id"), "source": src.get("source"),
             "who": src.get("who") or "", "group": src.get("group") or "",
+            "phone": wa_mention.shown(src.get("phone"), admin) or None,
             "when": src.get("when") or src.get("day_label") or "",
             "at": at.isoformat() if isinstance(at, datetime) else None,
             "label": src.get("label") or "",
@@ -63779,11 +63958,13 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
     dto = date_to if day.match(date_to or "") else None
     if _memory_disabled():
         return {"results": [], "answer": None, "disabled": True}
+    admin = is_company_admin(current_user)
     if answer:
-        got = await _memory_answer(company_id, str(project_id), q, dfrom, dto)
+        got = await _memory_answer(company_id, str(project_id), q, dfrom, dto,
+                                   phone_view="full" if admin else "last4")
         cited = {c["sid"] for c in got["claims"]}
-        by_sid = {s["sid"]: _memory_source_view(s) for s in got["sources"]}
-        return {"results": [_memory_source_view(s) for s in got["sources"]],
+        by_sid = {s["sid"]: _memory_source_view(s, admin) for s in got["sources"]}
+        return {"results": [_memory_source_view(s, admin) for s in got["sources"]],
                 "answer": {"text": got["text"], "mode": got["mode"],
                            "lead": got.get("lead") or "",
                            "claims": [{"text": c["text"], "quote": c["quote"],
@@ -63798,7 +63979,7 @@ async def search_project_memory(project_id: str, q: str = "", date_from: str = "
                            "found": bool(cited)}}
     rows = await _memory_search(company_id, str(project_id), q, dfrom, dto, limit=30)
     sources = await _memory_present(rows, company_id, str(project_id))
-    return {"results": [_memory_source_view(s) for s in sources], "answer": None}
+    return {"results": [_memory_source_view(s, admin) for s in sources], "answer": None}
 
 
 # ── Project → Upcoming (lib/upcoming.py; the engine is above the DM assistant)
@@ -63997,6 +64178,7 @@ async def project_memory_context(project_id: str, source_id: str,
     """A result in its place: the message with the two before and the two
     after it in the same group (5), or the whole daily report entry list."""
     company_id = await _memory_project(project_id, current_user)
+    admin = is_company_admin(current_user)
     doc = await db.project_memory.find_one(
         {"_id": str(source_id), "project_id": str(project_id), "company_id": company_id},
         {"embedding": 0})
@@ -64010,7 +64192,7 @@ async def project_memory_context(project_id: str, source_id: str,
         rows.sort(key=lambda r: r.get("order", 0))
         srcs = await _memory_present(rows, company_id, str(project_id))
         return {"kind": "daily_report", "day": doc.get("day"),
-                "entries": [{**_memory_source_view(s), "hit": s["id"] == doc["_id"]}
+                "entries": [{**_memory_source_view(s, admin), "hit": s["id"] == doc["_id"]}
                             for s in srcs]}
     hit = await db.whatsapp_messages.find_one(
         {"_id": to_query_id(doc["source_id"]), "project_id": str(project_id)})
@@ -64029,7 +64211,7 @@ async def project_memory_context(project_id: str, source_id: str,
             for m in msgs]
     srcs = await _memory_present(rows, company_id, str(project_id))
     return {"kind": "whatsapp", "group": doc.get("group_name") or "",
-            "messages": [{**_memory_source_view(s), "hit": s["id"] == doc["_id"],
+            "messages": [{**_memory_source_view(s, admin), "hit": s["id"] == doc["_id"],
                           "bot": str(m.get("sender") or "") == "bot"}
                          for s, m in zip(srcs, msgs)]}
 
@@ -64254,9 +64436,16 @@ async def _people_senders(company_id: str, project_id: str,
         {"group_id": {"$in": list(names)}, "sender": {"$ne": "bot"},
          "company_id": _company_id_filter(company_id)},
         {"sender": 1, "sender_jid": 1, "sender_name": 1, "group_id": 1,
-         "created_at": 1, "timestamp": 1, "from_me": 1},
+         "created_at": 1, "timestamp": 1, "from_me": 1,
+         "sender_phone": 1, "sender_phone_at": 1},
     ).sort([("created_at", -1)]).to_list(20000)
     summary = wa_sender_map.summarize(rows, names)
+    # The number each sender's messages carry (newest first wins).
+    phones: Dict[str, tuple] = {}
+    for r in rows:
+        j = r.get("sender_jid") or ""
+        if r.get("sender_phone") and j not in phones:
+            phones[j] = (r["sender_phone"], r.get("sender_phone_at"))
     maps = await db[wa_sender_map.COLLECTION].find(
         {"company_id": str(company_id)}).to_list(5000)
     by_jid = {m.get("sender_jid"): m for m in maps}
@@ -64268,13 +64457,19 @@ async def _people_senders(company_id: str, project_id: str,
             if res.get("status") == "resolved":
                 continue          # a known user or worker: not unknown
         s["mapping"] = by_jid.get(jid)
+        s["sender_phone"], s["sender_phone_at"] = phones.get(jid, (None, None))
         out[jid] = s
     return out
 
 
-def _people_row(company_id: str, s: dict) -> dict:
+def _people_row(company_id: str, s: dict, admin: bool = False) -> dict:
+    """One sender for the People screen. Their number (evidence) is shown
+    in full to company admins, as its last 4 to PMs."""
     m = s.get("mapping") or None
     at = s.get("last_message_at")
+    number = (m or {}).get("phone") or (m or {}).get("resolved_phone") or s.get("sender_phone")
+    n_at = ((m or {}).get("resolved_phone_at") if not (m or {}).get("phone")
+            else (m or {}).get("set_at")) or s.get("sender_phone_at")
     return {
         "key": wa_sender_map.sender_key(company_id, s["jid"]),
         "label": wa_sender_map.label(s.get("push_name"), s["jid"]),
@@ -64284,11 +64479,15 @@ def _people_row(company_id: str, s: dict) -> dict:
         "last_message_at": at.isoformat() if isinstance(at, datetime) else None,
         "assigned": ({"person_name": m.get("person_name"),
                       "sub_company": m.get("sub_company"),
-                      # The number the admin gave, as its last 4 only.
-                      "phone_last4": (str(m.get("phone"))[-4:] if m.get("phone") else None),
+                      # The number the admin or PM gave, as this viewer may see it.
+                      "phone": wa_mention.shown(m.get("phone"), admin) or None,
                       "set_at": (m.get("set_at").isoformat()
                                  if isinstance(m.get("set_at"), datetime) else None)}
                      if m else None),
+        # The sender's number however it was found (People, the id itself,
+        # WaAPI's get-lid), when, and how: full for admins, else last 4.
+        "phone": wa_mention.shown(number, admin) or None,
+        "phone_at": n_at.isoformat() if isinstance(n_at, datetime) else None,
     }
 
 
@@ -64339,7 +64538,8 @@ async def get_whatsapp_people(project_id: str,
         raise HTTPException(status_code=404, detail="Project not found")
     senders = await _people_senders(company_id, str(project_id),
                                     is_company_admin(current_user))
-    rows = [_people_row(company_id, s) for s in senders.values()]
+    admin = is_company_admin(current_user)
+    rows = [_people_row(company_id, s, admin) for s in senders.values()]
     # Not yet assigned first; newest message first within each.
     unassigned = [r for r in rows if not r["assigned"]]
     assigned = [r for r in rows if r["assigned"]]
@@ -64389,8 +64589,12 @@ async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
                     str((row or {}).get("_id") or ""),
                     {"project_id": str(project_id), "key": key, **clean,
                      "open_items_updated": updated})
+    if number:
+        # Kept for good on this sender's earlier messages (evidence).
+        await _stamp_sender_phone(company_id, s["jid"], number, "people", now)
     s["mapping"] = row
-    return {**_people_row(company_id, s), "open_items_updated": updated}
+    return {**_people_row(company_id, s, is_company_admin(current_user)),
+            "open_items_updated": updated}
 
 
 @api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
@@ -64418,7 +64622,8 @@ async def clear_whatsapp_person(project_id: str, key: str,
                              "sub_company": row.get("sub_company")},
                      "open_items_updated": updated})
     s["mapping"] = None
-    return {**_people_row(company_id, s), "open_items_updated": updated}
+    return {**_people_row(company_id, s, is_company_admin(current_user)),
+            "open_items_updated": updated}
 
 
 @api_router.post(

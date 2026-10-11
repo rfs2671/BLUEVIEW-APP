@@ -21,13 +21,15 @@ export function emptyText(state) {
   return state === 'none' ? 'Everyone writing in your groups is matched to a person.' : '';
 }
 
-/** "Not assigned" or "Carlos Baez · Bright Electric" (· "WhatsApp …0144"
- *  when a number is on file: group posts can @mention them for real). */
+/** "Not assigned" or "Carlos Baez · Bright Electric" (· their WhatsApp
+ *  number when one is known: in full for a company admin, "…0144" for
+ *  anyone else -- the server decides which it sends). */
 export function assignmentLine(row) {
   const a = row && row.assigned;
   if (!a) return 'Not assigned';
   const base = a.sub_company ? `${a.person_name} · ${a.sub_company}` : a.person_name;
-  return a.phone_last4 ? `${base} · WhatsApp …${a.phone_last4}` : base;
+  const number = a.phone || row.phone;
+  return number ? `${base} · ${number}` : base;
 }
 
 /** A WhatsApp number as the server stores it ("(718) 555-0144" ->

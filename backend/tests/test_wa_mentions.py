@@ -337,7 +337,7 @@ class PeoplePhone(unittest.TestCase):
         _msg(db, "morning all", sender=SLID, jid=f"{SLID}@lid", sender_name="Chris")
         return _people(db)["senders"][0]["key"]
 
-    def test_an_optional_phone_is_kept_normalised_and_shown_as_last4(self):
+    def test_an_optional_phone_is_kept_and_shown_by_role(self):
         db = _sm_db()
         key = self._key(db)
         from tests.test_whatsapp_sender_map import _call
@@ -345,25 +345,35 @@ class PeoplePhone(unittest.TestCase):
                        server.SenderMapBody(person_name="Chris", sub_company="Bright Electric",
                                             phone="(718) 555-0144"),
                        project=PROJ_A, current_user=_admin())
-        self.assertEqual(out["assigned"]["phone_last4"], "0144")
+        # An admin sees the full number; a PM the last 4.
+        self.assertEqual(out["assigned"]["phone"], "+1 718-555-0144")
+        self.assertEqual(out["phone"], "+1 718-555-0144")
         row = db.whatsapp_sender_map.rows[0]
         self.assertEqual(row["phone"], "17185550144")
+        from tests.test_whatsapp_attention import PM
+        pm_rows = _people(db, user=PM)["senders"]
+        self.assertEqual((pm_rows[0]["assigned"]["phone"], pm_rows[0]["phone"]), ("…0144", "…0144"))
+        # Kept for good on the sender's earlier messages, with how and when.
+        msgs = [m for m in db.whatsapp_messages.rows if m.get("sender_jid", "").endswith("@lid")]
+        self.assertTrue(msgs and all(m["sender_phone"] == "17185550144"
+                                     and m["sender_phone_source"] == "people"
+                                     and m["sender_phone_at"] for m in msgs))
         # Saved again without a phone (the form never re-sends it): kept.
         out, _ = _assign(db, key, "Chris B", "Bright Electric")
-        self.assertEqual(out["assigned"]["phone_last4"], "0144")
+        self.assertEqual(out["assigned"]["phone"], "+1 718-555-0144")
         # An explicit "" clears it.
         out, _ = _call(db, server.set_whatsapp_person, PROJ_A["_id"], key,
                        server.SenderMapBody(person_name="Chris B", sub_company="Bright Electric",
                                             phone=""),
                        project=PROJ_A, current_user=_admin())
-        self.assertIsNone(out["assigned"]["phone_last4"])
+        self.assertIsNone(out["assigned"]["phone"])
 
     def test_no_phone_is_fine_and_a_bad_one_is_refused(self):
         db = _sm_db()
         from tests.test_whatsapp_sender_map import _call
         key = self._key(db)
         out, _ = _assign(db, key, "Chris", "Bright Electric")
-        self.assertIsNone(out["assigned"]["phone_last4"])
+        self.assertIsNone(out["assigned"]["phone"])
         with self.assertRaises(HTTPException) as e:
             _call(db, server.set_whatsapp_person, PROJ_A["_id"], key,
                   server.SenderMapBody(person_name="Chris", sub_company="Bright Electric",
@@ -407,6 +417,191 @@ class TheDryRuns(unittest.TestCase):
         for r in rows:
             self.assertIsNone(m.check(r["send_text"], r["mentions"]), r["_id"])
             self.assertIn(r["mention"]["resolved"], (True, False))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# A PHONE NUMBER IS EVIDENCE: kept for good, shown by role, never logged
+# ══════════════════════════════════════════════════════════════════════════
+
+class EvidenceDisplay(unittest.TestCase):
+
+    def test_admins_full_others_last4(self):
+        self.assertEqual(m.pretty("17187559520"), "+1 718-755-9520")
+        self.assertEqual(m.shown("17187559520", True), "+1 718-755-9520")
+        self.assertEqual(m.shown("17187559520", False), "…9520")
+        self.assertEqual(m.shown(None, True), "")
+        self.assertEqual(m.evidence_line("Mark Rivera", "17187559520", "Oct 10, 11:11:11 AM", True),
+                         "Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM")
+        self.assertEqual(m.evidence_line("Mark Rivera", "17187559520", "Oct 10, 11:11:11 AM", False),
+                         "Mark Rivera · …9520 · Oct 10, 11:11:11 AM")
+
+    def test_no_phone_in_server_logs_for_chats(self):
+        self.assertEqual(server._log_chat("17185550100@c.us"), "dm…0100")
+        self.assertEqual(server._log_chat("120363000000000001@g.us"), "120363000000000001@g.us")
+
+
+class EvidenceKept(unittest.TestCase):
+
+    def setUp(self):
+        self.db = FakeDb(whatsapp_messages=[], whatsapp_groups=[], whatsapp_sender_map=[])
+
+    def store(self, jid, now=NOW):
+        parsed = {"sender": jid, "push_name": "", "has_audio": False, "message_id": f"m{len(self.db.whatsapp_messages.rows)}",
+                  "message_id_serialized": "", "timestamp": None, "mentioned_jids": [],
+                  "quoted_message_id": "", "quoted_author": "", "quoted_body": "", "from_me": False}
+        with patch.object(server, "db", self.db):
+            return _run(server._store_group_message(parsed, GROUP, "proj_a", CO_A, "hello", now))
+
+    def test_a_phone_sender_is_stamped_at_once(self):
+        row = self.store("17185550100@c.us")
+        self.assertEqual((row["sender_phone"], row["sender_phone_source"], row["sender_phone_at"]),
+                         ("17185550100", "jid", NOW))
+
+    def test_an_unknown_lid_waits_then_every_message_is_stamped_when_resolved(self):
+        early = self.store(LID)
+        self.assertIsNone(early["sender_phone"])
+        w = _Waapi(lookup={LID: "17187559520"})
+        later = NOW + timedelta(hours=2)
+        with self.assertLogs(server.logger, "INFO") as logs:
+            _with(_ctx(self.db, w), server._mention_targets(
+                [{"kind": "sender_map", "id": "x", "name": "Mark", "jid": LID}], CO_A, later))
+        stamped = self.db.whatsapp_messages.rows[0]
+        self.assertEqual((stamped["sender_phone"], stamped["sender_phone_source"], stamped["sender_phone_at"]),
+                         ("17187559520", "lid_lookup", later))
+        rec = self.db[m.LOOKUP_COLLECTION].rows[0]
+        self.assertEqual((rec["phone"], rec["resolved_at"]), ("17187559520", later))
+        # Logged: the lid and "resolved" -- never the number.
+        joined = "\n".join(logs.output)
+        self.assertIn(f"[mention] get-lid {LID}: resolved", joined)
+        self.assertNotIn("7559520", joined)
+        # A new message from them is stamped at once, from the record.
+        nxt = self.store(LID, NOW + timedelta(hours=3))
+        self.assertEqual((nxt["sender_phone"], nxt["sender_phone_source"]), ("17187559520", "lid_lookup"))
+
+    def test_a_number_a_message_carries_is_never_overwritten(self):
+        self.store(LID)
+        self.db.whatsapp_messages.rows[0].update(m.stamp("17180000000", "people", NOW))
+        with patch.object(server, "db", self.db):
+            _run(server._stamp_sender_phone(CO_A, LID, "17187559520", "lid_lookup", NOW))
+        self.assertEqual(self.db.whatsapp_messages.rows[0]["sender_phone"], "17180000000")
+
+
+class EvidenceSourceSheet(unittest.TestCase):
+
+    def _db(self):
+        from bson import ObjectId
+        oid = ObjectId()
+        db = FakeDb(whatsapp_messages=[{
+            "_id": oid, "project_id": "proj_a", "company_id": CO_A, "group_id": GROUP,
+            "body": "rebar Thursday", "sender_jid": LID, "sender_name": "7187559520",
+            "timestamp": datetime(2026, 10, 10, 15, 11, 11, tzinfo=timezone.utc),
+            **m.stamp("17187559520", "lid_lookup", NOW)}],
+            whatsapp_sender_map=[{"_id": "s1", "company_id": CO_A, "sender_jid": LID,
+                                  "person_name": "Mark Rivera"}])
+        return db, str(oid)
+
+    def _get(self, user):
+        db, rid = self._db()
+
+        async def scope(pid, u):
+            return CO_A
+        with patch.object(server, "db", db), patch.object(server, "_memory_project", scope):
+            return _run(server.get_whatsapp_source_message("proj_a", rid, current_user=user))
+
+    def test_admin_sees_the_full_number_and_the_evidence_line(self):
+        from tests.test_whatsapp_attention import ADMIN
+        out = self._get(ADMIN)
+        self.assertEqual(out["who"], "Mark Rivera")
+        self.assertEqual(out["phone"], "+1 718-755-9520")
+        self.assertEqual(out["evidence"], "Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM")
+        self.assertEqual(out["phone_resolved_at"], NOW.isoformat())
+
+    def test_a_pm_sees_the_last_4(self):
+        from tests.test_whatsapp_attention import PM
+        out = self._get(PM)
+        self.assertEqual(out["phone"], "…9520")
+        self.assertEqual(out["evidence"], "Mark Rivera · …9520 · Oct 10, 11:11:11 AM")
+        self.assertNotIn("7559520", str(out))
+
+    def test_a_display_name_that_is_a_number_is_never_shown(self):
+        from tests.test_whatsapp_attention import PM
+        db, rid = self._db()
+        db.whatsapp_sender_map.rows.clear()
+
+        async def scope(pid, u):
+            return CO_A
+        with patch.object(server, "db", db), patch.object(server, "_memory_project", scope):
+            out = _run(server.get_whatsapp_source_message("proj_a", rid, current_user=PM))
+        self.assertEqual(out["who"], "")
+        self.assertNotIn("7187559520", str(out))
+
+
+class EvidenceInAnswers(unittest.TestCase):
+
+    def test_three_renderings_and_the_model_never_sees_a_number(self):
+        from lib import project_memory as pm
+        src = {"sid": "S1", "source": pm.SOURCE_WHATSAPP, "who": "Mark Rivera", "group": "MEP",
+               "when": "Oct 10, 11:11 AM", "phone": "17187559520", "text": "rebar Thursday"}
+        claims = [{"sid": "S1", "text": "Rebar Thursday.", "quote": "rebar Thursday"}]
+        self.assertNotIn("9520", pm.source_block([src]))
+        none = pm.format_answer(claims, {"S1": src})
+        last4 = pm.format_answer(claims, {"S1": src}, phones={"S1": m.shown("17187559520", False)})
+        full = pm.format_answer(claims, {"S1": src}, phones={"S1": m.shown("17187559520", True)})
+        self.assertIn("Mark Rivera · MEP", none)
+        self.assertNotIn("9520", none)
+        self.assertIn("Mark Rivera · …9520 · MEP", last4)
+        self.assertIn("Mark Rivera · +1 718-755-9520 · MEP", full)
+
+    def test_the_dm_gets_the_rendering_for_the_readers_role(self):
+        texts = {"none": "N", "last4": "L", "full": "F"}
+
+        async def agent(**k):
+            server._MEMORY_DM_ANSWERS[server._memory_dm_key(k["group_id"], k["reply_to"])] = dict(texts)
+            k["tool_trace"].append({"tool": "search_project_history", "result": "x"})
+            return "agent words"
+        for role, want in (("admin", "F"), ("pm", "L"), ("cp", "L")):
+            ident = {"user": {"_id": "u", "role": role}, "role": role, "company_id": CO_A}
+            with patch.object(server, "_run_group_agent", agent):
+                got = _run(server._dm_answer_job(ident, {"_id": "proj_a"}, "17185550100@c.us",
+                                                 "what about rebar?", "mid1"))
+            self.assertEqual(got, want, role)
+
+
+class EvidenceLifecycle(unittest.TestCase):
+
+    def _db(self):
+        return FakeDb(
+            whatsapp_messages=[{"_id": "w1", "company_id": CO_A, "sender_jid": "1@lid"}],
+            whatsapp_lid_phone=[{"_id": f"{CO_A}|1@lid", "company_id": CO_A, "lid": "1@lid",
+                                 "phone": "17185550001"},
+                                {"_id": f"{CO_A}|2@lid", "company_id": CO_A, "lid": "2@lid",
+                                 "phone": "17185550002"}],
+            whatsapp_sender_map=[{"_id": "s2", "company_id": CO_A, "sender_jid": "2@lid",
+                                  "person_name": "Gone", "resolved_phone": "17185550002",
+                                  "resolved_phone_at": NOW}])
+
+    def test_a_number_goes_when_the_senders_last_message_goes(self):
+        db = self._db()
+        with patch.object(server, "db", db):
+            dry = _run(server._sender_phone_gc(False))
+            self.assertEqual(dry, {"orphaned": 2, "removed": 0})
+            self.assertEqual(len(db.whatsapp_lid_phone.rows), 2)        # counted only
+            done = _run(server._sender_phone_gc(True))
+        self.assertEqual(done["removed"], 2)
+        # 1@lid still has a message (e.g. under legal hold): kept.
+        self.assertEqual([r["lid"] for r in db.whatsapp_lid_phone.rows], ["1@lid"])
+        # The mapping stays (a person's name); only the looked-up number goes.
+        sm = db.whatsapp_sender_map.rows[0]
+        self.assertEqual((sm["person_name"], sm["resolved_phone"]), ("Gone", None))
+
+    def test_retention_runs_it_and_delete_paths_remove_it(self):
+        import inspect
+        src = inspect.getsource(server._retention_tick)
+        self.assertIn("_sender_phone_gc(purge", src)
+        self.assertIn("_sender_phone_gc(True", inspect.getsource(server.hard_delete_project))
+        comp = inspect.getsource(server.hard_delete_company)
+        self.assertIn("wa_sender_map.COLLECTION].delete_many", comp)
+        self.assertIn("wa_mention.LOOKUP_COLLECTION].delete_many", comp)
 
 
 def _admin():

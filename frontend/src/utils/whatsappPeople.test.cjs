@@ -63,8 +63,12 @@ ok(P.assignRequest({ name: 'Chris', company: 'GC team', phone: '718 555 0144' },
   === '17185550144', 'the number sent as digits');
 ok(!('phone' in P.assignRequest({ name: 'Chris', company: 'GC team', phone: '' }, cos).body),
   'no number typed: none sent (the one on file is kept)');
-ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone_last4: '0144' } })
-  === 'Chris · GC team · WhatsApp …0144', 'a number on file shows as its last 4');
+ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone: '+1 718-555-0144' } })
+  === 'Chris · GC team · +1 718-555-0144', 'an admin sees the full number');
+ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone: '…0144' } })
+  === 'Chris · GC team · …0144', 'a PM the last 4');
+ok(P.assignmentLine({ phone: '…0333', assigned: { person_name: 'Chris', sub_company: 'GC team', phone: null } })
+  === 'Chris · GC team · …0333', 'a number found by lookup shows too');
 ok(/@mention/.test(P.PHONE_NOTE) && /won’t notify/.test(P.PHONE_NOTE), 'says what the number is for');
 const card = read('src/components/whatsapp/PeopleCard.jsx');
 ok(/keyboardType="phone-pad"/.test(card) && /PHONE_NOTE/.test(card), 'the form asks for it');
