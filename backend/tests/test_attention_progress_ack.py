@@ -124,6 +124,22 @@ class OnTheItemItRepliesTo(unittest.TestCase):
         self.assertFalse([h for i in _items(db) for h in i["history"]
                           if h["kind"] == was.PROGRESS])
 
+    def test_progress_under_a_question_does_not_answer_it(self):
+        db = _world()
+        _first_sight(db)
+        q = _msg(db, "who has the gang box key for the 3rd floor?", sender=OTHER)
+        _tick(db, _Model({"gang box key": [{"type": "question",
+                                            "quote": "who has the gang box key for the 3rd floor?",
+                                            "summary": "Who has the gang box key",
+                                            "owner_text": None, "due_text": None,
+                                            "importance": "normal", "tags": []}]}),
+              T0 + timedelta(hours=1))
+        _msg(db, "Working on it", sender=MIKE, quoted_message_id=q["message_id"])
+        _tick(db, _Model(MISREAD), T0 + timedelta(hours=2))
+        (it,) = _items(db)
+        self.assertEqual(it["status"], "open")              # not "possibly answered"
+        self.assertEqual([h["kind"] for h in it["history"]].count(was.PROGRESS), 1)
+
     def test_a_closed_item_is_not_written_to(self):
         db = _world()
         ask, item = _open_item(db)

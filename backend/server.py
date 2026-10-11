@@ -47216,7 +47216,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 return True
         except Exception as e:
             logger.warning(f"[punch] group message failed: {type(e).__name__}")
-    report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
+    if not (msg.get("quoted_message_id") and wa_attention_state.progress_ack(text)):
+        # "Working on it" under a question does not answer it: progress
+        # (below), not "possibly answered".
+        report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
     prev = await _attention_previous(msg, ctx)
     # An update to an earlier item ("Sent this morning", "Actually Monday",
     # "Never mind the load calcs", a file from the owner). What it updated is
