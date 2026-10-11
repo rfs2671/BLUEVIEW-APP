@@ -30840,12 +30840,12 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         _bad_order = _submit_presence_order_detail(data.log_type, data.data)
         if _bad_order:
             raise HTTPException(status_code=400, detail=_bad_order)
-        # THE HAND ON THE RECORD IS THIS ACCOUNT'S. A drawing saved on another
-        # account's profile is refused -- see the helper for the 588 defect.
-        if await _signature_saved_by_another_account(
-                data.cp_signature, current_user.get("id")):
-            raise HTTPException(status_code=400, detail={
-                "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
+        # ANOTHER ACCOUNT'S SAVED DRAWING ON THIS MARK IS RECORDED, NOT
+        # REFUSED -- ruled 2026-10-10, see the helper.
+        await _note_signature_of_another_account(
+            data.cp_signature, current_user.get("id"),
+            log_type=data.log_type, project_id=data.project_id,
+            log_date=data.date)
 
         # AN ATTESTABLE ITEM MUST BE ANSWERED ONE WAY OR THE OTHER.
         #
@@ -31430,9 +31430,10 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         # one, otherwise the account the stored mark was signed under.
         _signer = (current_user.get("id") if data.cp_signature is not None
                    else (_cur.get("signed_by") or _cur.get("created_by")))
-        if await _signature_saved_by_another_account(_eff_sig, _signer):
-            raise HTTPException(status_code=400, detail={
-                "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
+        await _note_signature_of_another_account(
+            _eff_sig, _signer, log_type=_cur.get("log_type"),
+            project_id=_cur.get("project_id"), log_date=_cur.get("date"),
+            logbook_id=logbook_id)
         # THE SAME REFUSAL ON THE PATH THE CP ACTUALLY WALKS. Save Draft then
         # Submit arrives here as a PUT, so a gate on create alone would let the
         # wrong man file by taking the ordinary two-step route -- the identical
@@ -32443,13 +32444,13 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         existing.get("log_type"), existing.get("data"))
     if _bad_order:
         raise HTTPException(status_code=400, detail=_bad_order)
-    # AGAINST THE RECORD'S SIGNER, NOT THE FINALIZER. An admin locking a CP's
-    # log is not signing it, and the CP's own saved drawing is his to use.
-    if await _signature_saved_by_another_account(
-            existing.get("cp_signature"),
-            existing.get("signed_by") or existing.get("created_by")):
-        raise HTTPException(status_code=400, detail={
-            "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
+    # AGAINST THE RECORD'S SIGNER, NOT THE FINALIZER, and recorded only.
+    await _note_signature_of_another_account(
+        existing.get("cp_signature"),
+        existing.get("signed_by") or existing.get("created_by"),
+        log_type=existing.get("log_type"),
+        project_id=existing.get("project_id"),
+        log_date=existing.get("date"), logbook_id=logbook_id)
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {
@@ -35261,9 +35262,10 @@ async def _signature_saved_by_another_account(sig, user_id) -> Optional[dict]:
     under one device-wide key that survived logout. Shawn (a CP) and Michael
     (the superintendent) shared a phone, and from 2026-09-22 thirty of
     Michael's filed logs carried Shawn's drawing -- seven under Michael's
-    name. The device now keys that cache per account; this is the server half,
-    so an app too old to have that fix still cannot file, or save to a
-    profile, a drawing that is another account's saved signature.
+    name. The device now keys that cache per account. This is the server
+    half: a profile save carrying another account's drawing is refused, and a
+    FILING carrying one is RECORDED, never refused -- see
+    _note_signature_of_another_account for why.
 
     A PROFILE SIGNATURE ONLY. Two people do not draw identical strokes; one
     saved drawing reaching a second account is the cache, not a coincidence.
@@ -35294,6 +35296,37 @@ async def _signature_saved_by_another_account(sig, user_id) -> Optional[dict]:
             and _signature_drawing_key(other.get("cp_signature")) == key):
         return other
     return None
+
+
+async def _note_signature_of_another_account(sig, signer, *, log_type,
+                                             project_id, log_date,
+                                             logbook_id=None):
+    """Record -- never refuse -- a filing whose mark is another account's
+    saved signature.
+
+    RULED 2026-10-10: NOTHING MAY BE BLOCKED IN THE FIELD. The operator ruled
+    the thirty 588 Thomas logs that carried Shawn's drawing under Michael's
+    account were signed properly, and that none of them is to be changed. A
+    filing-time refusal would have refused exactly those thirty, so it would
+    refuse filings the operator calls legitimate. The device fix stops the
+    carry-over; this leaves a findable row if an older app ever does it again,
+    and the filing goes through untouched.
+
+    A FAILURE HERE IS LOGGED AND SWALLOWED, for the same reason: recording is
+    not a precondition of filing.
+    """
+    try:
+        other = await _signature_saved_by_another_account(sig, signer)
+        if not other:
+            return
+        await audit_log(
+            "signature_matches_another_account", str(signer or ""),
+            "logbook", str(logbook_id or ""),
+            {"other_account": str(other.get("_id") or ""),
+             "log_type": log_type, "project_id": str(project_id or ""),
+             "date": str(log_date or "")})
+    except Exception as e:
+        logger.warning("signature cross-account note could not be written: %r", e)
 
 
 def _is_affirmed_signature(sig) -> bool:

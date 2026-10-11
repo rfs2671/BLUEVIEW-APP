@@ -12,10 +12,11 @@ cpProfileCache.js). This is the server half, for an app too old to have it:
   - PUT /cp/profile refuses a drawing saved on another account (409
     SIGNATURE_BELONGS_TO_ANOTHER_ACCOUNT), and audits every real change to
     the name, the drawing (by fingerprint) and the title.
-  - Filing -- create, the PUT that submits, finalize -- refuses a mark whose
-    drawing is another account's saved signature
-    (SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT), judged against the record's
-    SIGNER: an admin finalizing a CP's log is not signing it.
+  - Filing -- create, the PUT that submits, finalize -- is NEVER refused for
+    it. Ruled 2026-10-10: the operator ruled the thirty logs signed properly
+    and that nothing may be blocked in the field; a filing-time refusal would
+    have refused exactly those thirty. A match is RECORDED as an audit row
+    (signature_matches_another_account), judged against the record's SIGNER.
   - Nothing already filed is touched.
 """
 
@@ -124,41 +125,53 @@ class ALookupThatCannotRunDoesNotRefuse(unittest.TestCase):
                 server._signature_saved_by_another_account(SHAWN_MARK, "u1")))
 
 
-class FilingIsRefused(unittest.TestCase):
+class FilingIsRecordedNeverRefused(unittest.TestCase):
+    """Ruled 2026-10-10: nothing may be blocked in the field."""
 
-    def test_create_refuses_shawns_drawing_under_michaels_account(self):
+    def setUp(self):
+        self.audits = []
+
+        async def _audit(*a, **k):
+            self.audits.append(a)
+        self._patch = patch.object(server, "audit_log", side_effect=_audit)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def _notes(self):
+        return [a for a in self.audits
+                if a and a[0] == "signature_matches_another_account"]
+
+    def _code(self, resp):
+        detail = resp.json().get("detail") if resp.content else None
+        return detail.get("code") if isinstance(detail, dict) else None
+
+    def test_create_with_shawns_drawing_files_and_is_recorded(self):
         db = _with_users(_db_for_create(), [SHAWN_USER])
         resp = _post(db, {"project_id": "proj1", "log_type": "toolbox_talk",
                           "date": "2026-10-05", "status": "submitted",
                           "cp_signature": SHAWN_MARK, "cp_name": "Carl CP",
                           "data": {"meeting_time": "08:00 AM",
                                    "attendees": [{"name": "A"}]}})
-        self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["detail"]["code"],
-                         "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT")
-        self.assertEqual(db.logbooks.inserted, [])
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(db.logbooks.inserted), 1, "the filing went through")
+        notes = self._notes()
+        self.assertEqual(len(notes), 1, self.audits)
+        _, actor, rtype, _rid, details = notes[0]
+        self.assertEqual((actor, rtype), ("u1", "logbook"))
+        self.assertEqual(details["other_account"], "shawn")
+        self.assertEqual(details["log_type"], "toolbox_talk")
 
-    def test_his_own_drawing_files(self):
+    def test_his_own_drawing_files_with_no_note(self):
         db = _with_users(_db_for_create(), [SHAWN_USER])
         resp = _post(db, {"project_id": "proj1", "log_type": "toolbox_talk",
                           "date": "2026-10-05", "status": "submitted",
                           "cp_signature": MICHAEL_MARK, "cp_name": "Carl CP",
                           "data": {"meeting_time": "08:00 AM",
                                    "attendees": [{"name": "A"}]}})
-        self.assertNotEqual(
-            (resp.json().get("detail") or {}).get("code")
-            if isinstance(resp.json().get("detail"), dict) else None,
-            "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT", resp.text)
-
-    def test_a_draft_is_not_judged(self):
-        db = _with_users(_db_for_create(), [SHAWN_USER])
-        resp = _post(db, {"project_id": "proj1", "log_type": "toolbox_talk",
-                          "date": "2026-10-05", "status": "draft",
-                          "cp_signature": SHAWN_MARK, "cp_name": "Carl CP",
-                          "data": {"meeting_time": "08:00 AM"}})
-        detail = resp.json().get("detail")
-        self.assertFalse(isinstance(detail, dict) and detail.get("code")
-                         == "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT", resp.text)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(self._notes(), [])
 
     def _stored(self, mark, signer="u1"):
         return {"_id": "lb1", "project_id": "proj1", "log_type": "toolbox_talk",
@@ -167,13 +180,12 @@ class FilingIsRefused(unittest.TestCase):
                 "created_by": signer,
                 "data": {"meeting_time": "08:00 AM", "attendees": [{"name": "A"}]}}
 
-    def test_the_put_that_submits_is_refused(self):
+    def test_the_put_that_submits_files_and_is_recorded(self):
         db = _with_users(_db_for_update(self._stored(SHAWN_MARK)), [SHAWN_USER])
         resp = _put(db, {"status": "submitted"})
-        self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["detail"]["code"],
-                         "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT")
-        self.assertEqual(db.logbooks.updated, [])
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertNotEqual(db.logbooks.updated, [], "the submit was written")
+        self.assertEqual(len(self._notes()), 1, self.audits)
 
     def _finalize(self, db, role="cp"):
         async def _fake_user():
@@ -185,29 +197,48 @@ class FilingIsRefused(unittest.TestCase):
         finally:
             server.app.dependency_overrides.clear()
 
-    def test_finalize_is_refused_and_does_not_lock(self):
+    def test_finalize_locks_and_is_recorded(self):
         db = _FakeDb()
         db.projects.set_find_one(lambda q: {"_id": "proj1", "name": "588"})
         db.logbooks.set_find_one(lambda q: self._stored(SHAWN_MARK))
         _with_users(db, [SHAWN_USER])
         resp = self._finalize(db)
-        self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["detail"]["code"],
-                         "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT")
-        self.assertEqual(
-            [u for u in db.logbooks.updated if "is_locked" in str(u)], [])
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue([u for u in db.logbooks.updated if "is_locked" in str(u)],
+                        "the finalize locked the log")
+        self.assertEqual(len(self._notes()), 1, self.audits)
 
-    def test_an_admin_finalizing_shawns_own_log_is_not_refused(self):
-        """The signer is Shawn; his saved drawing is his to use. The admin
-        locking it is not signing it."""
+    def test_an_admin_finalizing_shawns_own_log_writes_no_note(self):
         db = _FakeDb()
         db.projects.set_find_one(lambda q: {"_id": "proj1", "name": "588"})
         db.logbooks.set_find_one(lambda q: self._stored(SHAWN_MARK, signer="shawn"))
         _with_users(db, [SHAWN_USER])
         resp = self._finalize(db, role="admin")
-        detail = resp.json().get("detail")
-        self.assertFalse(isinstance(detail, dict) and detail.get("code")
-                         == "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT", resp.text)
+        self.assertNotEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(self._notes(), [])
+
+    def test_a_failing_note_does_not_stop_the_filing(self):
+        async def _boom(*a, **k):
+            # ONLY THE NOTE FAILS. The route's own create audit is not this
+            # test's subject.
+            if a and a[0] == "signature_matches_another_account":
+                raise RuntimeError("audit store down")
+        self._patch.stop()
+        self._patch = patch.object(server, "audit_log", side_effect=_boom)
+        self._patch.start()
+        db = _with_users(_db_for_create(), [SHAWN_USER])
+        resp = _post(db, {"project_id": "proj1", "log_type": "toolbox_talk",
+                          "date": "2026-10-05", "status": "submitted",
+                          "cp_signature": SHAWN_MARK, "cp_name": "Carl CP",
+                          "data": {"meeting_time": "08:00 AM",
+                                   "attendees": [{"name": "A"}]}})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(db.logbooks.inserted), 1)
+
+    def test_no_filing_path_can_raise_for_it(self):
+        """The refusal code is gone from the server, so no path can send it."""
+        src = open(server.__file__, encoding="utf-8").read()
+        self.assertNotIn('"code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"', src)
 
 
 class TheProfileSave(unittest.TestCase):
