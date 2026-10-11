@@ -262,6 +262,58 @@ class TypedInTheGroup(_Group):
         self.assertEqual(self.group_posts(), [])
 
 
+class MaterialRequestsAndTheChecklistCommand(_Group):
+    """Approved Oct 11: a material request is recorded silently with a ✅ on
+    the message; "!checklist" is a command, addressed by itself."""
+
+    def _with_material(self, payload, results=()):
+        reactions = []
+
+        async def detect(body, pid, cid):
+            return {"items": [{"name": "rebar #5", "quantity_requested": 40, "unit": "pcs"}]}
+
+        async def create(*a, **k):
+            return {"_id": "mr1"}
+
+        async def react(chat, mid, emoji):
+            reactions.append((mid, emoji))
+            return True
+        self.db_features = {"material_detection": True}
+        with patch.object(server, "_detect_material_request", detect), \
+                patch.object(server, "_create_material_request", create), \
+                patch.object(server, "_react_to_message", react):
+            self.run_note(list(results), payload=payload)
+        return reactions
+
+    def _db(self):
+        db = super()._db()
+        db.whatsapp_groups.rows[0]["bot_config"]["features"].update(
+            getattr(self, "db_features", {}))
+        return db
+
+    def test_typed_request_is_recorded_with_a_check_and_no_text(self):
+        reactions = self._with_material(_typed("Need 40 pcs of #5 rebar on 3 by Tuesday"))
+        self.assertEqual([e for _, e in reactions], ["✅"])
+        self.assertEqual(self.group_posts(), [])
+
+    def test_a_spoken_request_too(self):
+        reactions = self._with_material(
+            _payload(seconds="4"), [_ok(text="Need 40 pcs of #5 rebar on 3 by Tuesday", seconds=4.0)])
+        self.assertEqual([e for _, e in reactions], ["✅"])
+        self.assertEqual(self.group_posts(), [])
+
+    def test_bang_checklist_is_addressed(self):
+        async def mark(g, s):
+            return None
+        with patch.object(server, "_mark_bot_session", mark):
+            self.assertTrue(asyncio.run(server._is_bot_addressed(
+                "!checklist", "15165494475", False, group_id="1203@g.us", sender="1",
+                mode="strict")))
+            self.assertFalse(asyncio.run(server._is_bot_addressed(
+                "!checklist", "15165494475", True, group_id="1203@g.us", sender="1",
+                mode="strict")))
+
+
 class TypedInAStrictGroup(TypedInTheGroup):
     mode = "strict"
 

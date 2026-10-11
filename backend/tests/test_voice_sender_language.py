@@ -206,9 +206,10 @@ class TheHarness(unittest.TestCase):
 
     def test_the_matrix_and_the_score(self):
         from scripts import voice_lang_eval as ev
-        self.assertEqual(len(ev.configs("both")), 8)
+        # 2 models x prompt off/on x hint off/on, + whisper-1 translate.
+        self.assertEqual(len(ev.configs("both")), 9)
         self.assertEqual({c["model"] for c in ev.configs("off")},
-                         {"whisper-1", "gpt-4o-transcribe"})
+                         {"whisper-1", "gpt-4o-transcribe", ev.TRANSLATE})
         rows = [ev.Result(clip="a", lang="es", model="whisper-1", prompt=False, hint=False,
                           ref="uno dos tres cuatro", wer=0.5, cer=0.2),
                 ev.Result(clip="b", lang="es", model="whisper-1", prompt=False, hint=False,

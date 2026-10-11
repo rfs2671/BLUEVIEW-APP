@@ -58920,6 +58920,7 @@ async def _is_bot_addressed(
         (a) TYPED text names it: the wake word "levelog" as a word, the
             handle, or a native @mention of its number / LID; or
         (b) the message is a WhatsApp reply to one of the bot's own messages.
+      The typed command "!checklist" counts as (a).
 
     Never for a voice note's words (a voice note counts only by (b)), never
     for a question between people, never for a trigger word, a session
@@ -58934,6 +58935,9 @@ async def _is_bot_addressed(
         reason = "reply_to_bot"
     elif not is_voice and _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
         reason = "mention"
+    elif not is_voice and "!checklist" in (body or "").lower():
+        # The typed checklist command is addressed to the bot by itself.
+        reason = "command"
 
     if not reason:
         # Named, so "why did the bot ignore that?" has an answer in the log.
@@ -62649,8 +62653,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     return
 
             # ── On-demand @levelog checklist / !checklist trigger ──
-            # Answers only when addressed ("@levelog checklist" is; a bare
-            # "!checklist" now needs a reply to the bot or the wake word).
+            # Answers only when addressed (both forms are).
             if body and not spoken and is_addressed:
                 ondemand = False
                 lower = body.strip().lower()
@@ -62760,8 +62763,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # voice note asking a person about an inspection).
             #
             # Material request detection gated on the features flag. The
-            # request is recorded; no confirmation is posted (that would be
-            # the bot speaking unaddressed).
+            # request is recorded and gets a ✅ reaction; no text (that would
+            # be the bot speaking unaddressed).
             if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
                 if detection:
@@ -62770,7 +62773,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         parsed["message_id"], sender, detection
                     )
                     if req_doc and req_doc.get("_id"):
-                        logger.info(f"material request recorded silently: {req_doc.get('_id')}")
+                        # Recorded: ✅ on the request message, no text.
+                        await _react_to_message(group_id, parsed.get("message_id_serialized"),
+                                                wa_react.COMPLETE)
             return
 
         # --- DIRECT message ---
