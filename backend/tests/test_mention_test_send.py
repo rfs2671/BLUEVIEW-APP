@@ -128,6 +128,21 @@ class Sending(unittest.TestCase):
         self.assertIn("would not notify", e.exception.detail)
         self.assertEqual(sends.calls, [])
 
+    def test_the_number_their_message_carries_is_used(self):
+        # Listed as having a number because a message carries one: the send
+        # finds it too (no People phone, no lookup answer).
+        db, sends = _db(), _Sends()
+        db.whatsapp_messages.rows[1]["sender_phone"] = "17185550123"
+        people = _run(server.owner_mention_test_people(GROUP, operator=OPERATOR), db, sends)["people"]
+        self.assertTrue({p["name"]: p["has_number"] for p in people}["Nobody"])
+        self.assertNotIn("0123", json.dumps(people))
+        key = wa_sender_map.sender_key(CO, "99999999999999@lid")
+        out = _run(server.owner_send_mention_test(
+            server.MentionTestBody(group_key=GROUP, person_key=key), operator=OPERATOR), db, sends)
+        self.assertTrue(out["sent"])
+        (call,) = sends.calls
+        self.assertEqual(call["mentions"], ["17185550123@c.us"])
+
     def test_a_failed_send_says_so(self):
         db, sends = _db(), _Sends(ok=False)
         key = wa_sender_map.sender_key(CO, "84894491394148@lid")

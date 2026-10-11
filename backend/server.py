@@ -47852,6 +47852,10 @@ async def _mention_test_people(g: dict) -> List[dict]:
         out.append({"key": wa_sender_map.sender_key(company_id, jid),
                     "name": person["name"] or wa_sender_map.label(r.get("sender_name") or "", jid),
                     "person": person,
+                    # The number their own message already carries (kept as
+                    # evidence): the send uses it too, so "has a number" here
+                    # is what the send will find.
+                    "stored_phone": r.get("sender_phone") or None,
                     "has_number": bool(local or r.get("sender_phone"))})
     return out
 
@@ -47900,6 +47904,8 @@ async def owner_send_mention_test(body: MentionTestBody, operator=Depends(requir
     if not person:
         raise HTTPException(status_code=404, detail="That person has not written in this group")
     tgt = await _mention_target(person["person"], str(g["company_id"]))
+    if not tgt["resolved"] and person.get("stored_phone"):
+        tgt = wa_mention.target(person["name"], person["stored_phone"], "message")
     if not tgt["resolved"]:
         raise HTTPException(status_code=409, detail=(
             f"No WhatsApp number for {person['name']}: a mention would not notify. "

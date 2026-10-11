@@ -127,5 +127,9 @@ ok(O.mentionResult({ sent: false, detail: 'WaAPI did not confirm' }) === 'WaAPI 
 const MT = require('fs').readFileSync(require('path').join(__dirname, '../../app/owner/mention-test.jsx'), 'utf8');
 ok(/ownerAPI\.sendMentionTest\(group\.key, person\.key\)/.test(MT) && /isPlatformOperator\(user\)/.test(MT),
   'the screen sends the picked group and person, operator only');
+ok(/if \(pickedRef\.current !== g\.key\) return;/.test(MT),
+  'a slower people answer for a group no longer picked is dropped');
+ok(/peopleState !== 'ok' \? \(\s*<OfflineNotice/.test(MT),
+  'a failed people load shows the failure, not "nobody has written"');
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

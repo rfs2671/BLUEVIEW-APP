@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -36,6 +36,10 @@ export default function OwnerMentionTestScreen() {
   const [state, setState] = useState('loading');
   const [group, setGroup] = useState(null);
   const [people, setPeople] = useState(null);
+  const [peopleState, setPeopleState] = useState('loading');
+  // The group whose people are being loaded: a slower answer for a group
+  // no longer selected is dropped.
+  const pickedRef = useRef(null);
   const [person, setPerson] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState('');
@@ -54,11 +58,15 @@ export default function OwnerMentionTestScreen() {
   useEffect(() => { load(); }, [load]);
 
   const pickGroup = async (g) => {
+    pickedRef.current = g.key;
     setGroup(g);
     setPerson(null);
     setPeople(null);
+    setPeopleState('loading');
     setResult('');
     const res = await settleFetch(() => ownerAPI.mentionTestPeople(g.key));
+    if (pickedRef.current !== g.key) return;
+    setPeopleState(res.status);
     setPeople(res.status === 'ok' ? (res.data?.people || []) : []);
   };
 
@@ -121,6 +129,8 @@ export default function OwnerMentionTestScreen() {
               <Text style={s.label}>Who to mention</Text>
               {people === null ? (
                 <ActivityIndicator size="small" color={colors.text.secondary} />
+              ) : peopleState !== 'ok' ? (
+                <OfflineNotice mode={peopleState} detail="Who has written in this group could not be loaded." />
               ) : people.length === 0 ? (
                 <Text style={s.line}>Nobody has written in this group yet.</Text>
               ) : people.map((p) => (
