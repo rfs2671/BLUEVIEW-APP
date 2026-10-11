@@ -447,6 +447,16 @@ class StopConditions(_Base):
         self.chase(_et(12, 35))
         self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped")])
 
+    def test_a_late_webhook_sent_before_the_nudge_answers_nothing(self):
+        # Codex, #744: received after the 8:35 nudge, but SENT at 8:20.
+        it = _item(self.db, topic=["stair", "rfi"])
+        self.chase(_et(8, 35))
+        self.say("the stair RFI goes out after lunch", _et(8, 50),
+                 quoted=it["evidence"]["message_id"])
+        self.db.whatsapp_messages.rows[-1]["timestamp"] = _et(8, 20)
+        self.chase(_et(12, 35))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "group")])
+
     def test_writing_about_it_skips_one_slot(self):
         self._day_with(("the RFI for the stairs goes out after lunch", 11, 30))
         self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped"),

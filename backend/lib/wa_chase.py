@@ -249,16 +249,21 @@ def item_message_ids(item: Dict[str, Any]) -> set:
 
 
 def owner_response(item: Dict[str, Any], msg: Dict[str, Any],
-                   nudges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+                   nudges: List[Dict[str, Any]],
+                   after: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
     """What one message of the owner's says about the item, by rule 2:
     {rule: reply|subject|ack, said, at, word?}; None for anything else (it
     has no effect on the chase -- rule 3).
 
     `msg`: {body, quoted_message_id, at}. `nudges`: today's group nudges
-    for the item (a sent one may carry its WhatsApp `message_id`)."""
+    for the item (a sent one may carry its WhatsApp `message_id`). `after`:
+    the last nudge or skip -- a message SENT before it (a webhook that came
+    in late) answers nothing since."""
     body = str(msg.get("body") or "").strip()
     at = _at(msg.get("at"))
     if not body or not at:
+        return None
+    if after is not None and _at(after) and at <= _at(after):
         return None
     said = " ".join(body.split())[:60]
     quoted = was.short_id(msg.get("quoted_message_id"))

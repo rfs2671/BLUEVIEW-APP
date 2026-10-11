@@ -48331,7 +48331,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             skipped_slot = last_skip.get("slot") if last_skip else None
             resp = None
             for m in await _chase_owner_messages(gid, it, since, now):
-                resp = wa_chase.owner_response(it, m, group_nudges)
+                resp = wa_chase.owner_response(it, m, group_nudges, after=since)
                 if resp:
                     break
                 chatter = m["at"]
