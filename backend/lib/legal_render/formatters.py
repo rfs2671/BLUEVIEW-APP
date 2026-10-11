@@ -22,6 +22,8 @@ import re
 from datetime import datetime, timezone  # noqa: F401
 from typing import Any, Callable, Dict
 
+from lib import datefmt
+
 #: What a field renders when the record has nothing there. NOT the same as a
 #: section being empty -- that is declared per section and handled by the
 #: engine. This is one cell with no value in a record that otherwise exists.
@@ -134,7 +136,7 @@ def time_of_day(v: Any) -> str:
         return NOT_RECORDED
     if "T" in s and len(s) >= 16:
         try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%-I:%M %p")
+            return datefmt.strftime(datetime.fromisoformat(s.replace("Z", "+00:00")), "%-I:%M %p")
         except (ValueError, TypeError):
             try:
                 return datetime.fromisoformat(s[:19]).strftime("%I:%M %p").lstrip("0")

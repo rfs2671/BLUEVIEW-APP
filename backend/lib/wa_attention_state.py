@@ -723,15 +723,56 @@ def state_precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
     return out
 
 
+# Spanish and Yiddish words topic_terms keeps that say nothing about WHAT a
+# message is about ("para", "que", "alguien", "necesito"; "ana" is what is
+# left of "mañana"). A follow-up must share a subject, not one of these
+# (live eval, Oct 11: "Necesito que alguien me confirme la entrega de los
+# paneles para el viernes" followed up the colado plan on "para").
+_NOT_A_SUBJECT_ML = set("""
+que para los las del por con una uno unos unas este esta esto ese esa eso
+como cuando donde alguien algo nadie necesito necesita necesitamos puedes
+puede pueden podemos favor confirme confirmar confirma confirmen mandar mando
+manda mandas mande enviar envia envie hay ser son era van vamos tiene tienen
+tengo hoy ana manana pasado temprano tarde noche lunes marte miercole jueve
+vierne sabado domingo todavia aun bien bueno gracias
+dos der mit far nit nisht ikh mir zey vos ven haynt morgn
+""".split())
+
+
+def subject_terms(terms: Iterable[str]) -> Set[str]:
+    """The terms that name a subject: no day words, no "send", no Spanish
+    or Yiddish function words."""
+    return {t for t in terms
+            if t not in _NOT_A_SUBJECT and t not in _NOT_A_SUBJECT_ML
+            and ml.fold(t) not in _NOT_A_SUBJECT_ML}
+
+
 def follow_up_of(question_terms: Set[str], asker: str, items: List[dict]) -> Optional[str]:
     """A question about something already promised ("B the risers came
     in?") is a follow-up on that commitment, not a new item: the id of the
-    one open commitment it is about, else None."""
-    if not question_terms:
+    one open commitment it is about, else None. It must share the
+    commitment's SUBJECT ("the risers"), not a function word."""
+    asked = subject_terms(question_terms)
+    if not asked:
         return None
     hit = [c for c in items if c.get("status") in LIVE and c.get("type") == "commitment"
-           and c.get("owner") != asker and question_terms & set(c.get("topic") or ())]
+           and c.get("owner") != asker and asked & subject_terms(c.get("topic") or ())]
     return hit[0]["id"] if len(hit) == 1 else None
+
+
+# A need stated, not asked: "Can someone confirm the core drill
+# locations?" stays a question (the labelled state script says so).
+_ASK_OF_SOMEONE = re.compile(
+    r"^\W*(?:necesito|necesitamos|ocupo)\s+que\b|\bfavor de\b"
+    r"|\bi need (?:someone|somebody|you|u)\s+to\b|\b(?:someone|somebody) (?:please|needs to)\b",
+    re.IGNORECASE)
+
+
+def asks_for_action(body: Any) -> bool:
+    """"Necesito que alguien me confirme …", "I need someone to …": a need
+    stated of someone, so a request even when the model called it a
+    question."""
+    return bool(_ASK_OF_SOMEONE.search(str(body or "")))
 
 
 _UPDATE_START = re.compile(

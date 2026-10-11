@@ -464,9 +464,11 @@ CODE_CANCEL_WORDS = re.compile(
     r"|\babgeshtelt\b|\bopgeshtelt\b|\bbatlt\b|אפגעשטעלט", re.IGNORECASE)
 _SUBJECT = {
     "pour": r"pours?|pouring|colados?|vaciados?|hormigonado|el concreto",
-    "delivery": r"deliver(?:y|ies)|entregas?",
+    # What arrives is a delivery too: "la varilla llega el jueves".
+    "delivery": r"deliver(?:y|ies)|entregas?|varillas?|bloques|rebar",
     "inspection": r"inspections?|inspecci[oó]n(?:es)?|inspector",
     "crane_pick": r"crane(?:\s+picks?)?|gr[uú]as?",
+    "utility": r"utilit(?:y|ies)|medidor(?:es)?|meter",
     "hearing": r"hearings?|audiencias?",
 }
 _AGENCY_WORDS: Dict[str, List[str]] = {}
@@ -536,6 +538,43 @@ def code_cancel(body: Any, open_events: Sequence[Dict[str, Any]]) -> Optional[Di
     return {"op": "cancel", "event_id": e["id"], "quote": quote[:MAX_QUOTE_CHARS]}
 
 
+def kinds_named(text: str) -> set:
+    """The event kinds the words name ("El colado del tercer piso" -> {"pour"})."""
+    return {k for k in _SUBJECT if _kind_rx({"kind": k}).search(str(text or ""))}
+
+
+def agencies_named(text: str) -> set:
+    return {a for a in _AGENCY_WORDS if _agency_rx({"agency": a}).search(str(text or ""))}
+
+
+def subject_mismatch(quote: str, target: Dict[str, Any]) -> Optional[str]:
+    """Why a move or a cancel of `target` cannot be what the quote says, or
+    None. The quote names a kind and not the target's ("El colado ... es
+    mañana" is no move of the DOB inspection), or names an agency and not
+    the target's. A quote that names neither ("moved to Tuesday") can be
+    about anything: no mismatch."""
+    kinds = kinds_named(quote)
+    if kinds and target.get("kind") not in kinds:
+        return "kind_mismatch"
+    agencies, own = agencies_named(quote), agency_of(target.get("agency"))
+    if agencies and own and own not in agencies:
+        return "agency_mismatch"
+    return None
+
+
+def _as_new(ev: Dict[str, Any], quote: str) -> Dict[str, Any]:
+    """A misread move as the event the quote names: its kind from the words
+    when they name exactly one (else the model's, if the words name it), the
+    agency only when the quote names it, the title rebuilt."""
+    kinds, agencies = kinds_named(quote), agencies_named(quote)
+    kind = ev.get("kind") if ev.get("kind") in kinds else (
+        next(iter(kinds)) if len(kinds) == 1 else None)
+    agency = agency_of(ev.get("agency"))
+    agency = agency if agency in agencies else (
+        next(iter(agencies)) if len(agencies) == 1 else None)
+    return {**ev, "kind": kind, "agency": agency, "title": None}
+
+
 def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[str, Any]],
            now: Optional[datetime] = None) -> Dict[str, Any]:
     """One model event -> one action, checked in code:
@@ -557,6 +596,10 @@ def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[s
         target = by_id.get(str(ev.get("event_id") or "")) or match_open(quote, open_events)
         if not target:
             return {"op": "skip", "reason": "cancel_of_unknown_event"}
+        if subject_mismatch(quote, target):
+            # "El colado se canceló" is no cancel of the inspection. The
+            # code-side cancel still reads it against what is open.
+            return {"op": "skip", "reason": "cancel_subject_mismatch"}
         if not _CANCEL_WORDS.search(quote):
             return {"op": "skip", "reason": "no_cancel_words"}
         return {"op": "cancel", "event_id": target["id"], "quote": quote}
@@ -571,6 +614,11 @@ def decide(ev: Dict[str, Any], msg: Dict[str, Any], open_events: Sequence[Dict[s
         return {"op": "skip", "reason": "past"}
     if action == "reschedule":
         target = by_id.get(str(ev.get("event_id") or "")) or match_open(quote, open_events)
+        if target and subject_mismatch(quote, target):
+            # Another event's words: a new event, not this one moved. The
+            # model's kind / agency / title were the target's, so the words
+            # decide them.
+            target, ev = None, _as_new(ev, quote)
         if target:
             return {"op": "reschedule", "event_id": target["id"], "date": when["date"],
                     "time": when["time"], "quote": quote, "date_text": date_text}

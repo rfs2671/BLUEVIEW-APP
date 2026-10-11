@@ -376,6 +376,70 @@ class RemindMe(unittest.TestCase):
                                             "Reply YES to save it, or NO.")
 
 
+class LiveEvalOct11Spanish(unittest.TestCase):
+    """Live eval, job_es_2026_10: the model read "El colado del tercer piso
+    es mañana a las 7am" (a new pour) as a move of the DOB inspection, and
+    "El colado se canceló" as its cancel. A move or a cancel must be about
+    the target's subject; these call decide() with the model's misreads."""
+
+    FRI = datetime(2026, 10, 9, 13, 0, tzinfo=timezone.utc)      # 9:00 New York
+    INSP = {"id": "e1", "kind": "inspection", "agency": "DOB",
+            "title": "DOB plumbing inspection", "date": "2026-10-13"}
+
+    def _decide(self, body, **kw):
+        return u.decide(_ev(**kw), {"body": body, "sent_at": self.FRI}, [self.INSP])
+
+    def test_a_pour_is_no_move_of_the_inspection(self):
+        body = "El colado del tercer piso es mañana a las 7am"
+        got = self._decide(body, action="reschedule", event_id="e1", kind="inspection",
+                           agency="DOB", title="DOB plumbing inspection",
+                           date_text="mañana a las 7am", quote=body)
+        self.assertEqual((got["op"], got["kind"], got["agency"], got["date"], got["time"]),
+                         ("create", "pour", None, date(2026, 10, 10), "07:00"))
+        self.assertEqual(got["title"], "Concrete pour")
+
+    def test_a_pour_cancel_is_no_cancel_of_the_inspection(self):
+        body = "El colado se canceló por la lluvia"
+        got = self._decide(body, action="cancel", event_id="e1", date_text=None,
+                           quote="El colado se canceló")
+        self.assertEqual(got, {"op": "skip", "reason": "cancel_subject_mismatch"})
+        # The code-side cancel reads it against what is open: the pour.
+        pour = {"id": "p1", "kind": "pour", "title": "Concrete pour", "date": "2026-10-10"}
+        self.assertEqual(u.code_cancel(body, [self.INSP, pour])["event_id"], "p1")
+        self.assertEqual(u.code_cancel(body, [self.INSP])["op"], "skip")
+
+    def test_the_same_subject_still_moves_and_cancels(self):
+        body = "La inspección del DOB se movió al jueves a las 9am"
+        got = self._decide(body, action="reschedule", event_id="e1", kind="inspection",
+                           date_text="jueves a las 9am", quote=body)
+        self.assertEqual((got["op"], got["event_id"], got["date"]),
+                         ("reschedule", "e1", date(2026, 10, 15)))
+        body = "La inspección se canceló"
+        got = self._decide(body, action="cancel", event_id="e1", date_text=None, quote=body)
+        self.assertEqual((got["op"], got["event_id"]), ("cancel", "e1"))
+        # Words that name no subject can be about anything.
+        body = "Se movió al jueves"
+        got = self._decide(body, action="reschedule", event_id="e1",
+                           date_text="jueves", quote=body)
+        self.assertEqual(got["op"], "reschedule")
+
+    def test_a_named_agency_must_be_the_targets(self):
+        body = "FDNY inspection moved to Thursday"
+        got = self._decide(body, action="reschedule", event_id="e1", kind="inspection",
+                           agency="DOB", date_text="Thursday", quote=body)
+        self.assertEqual((got["op"], got["kind"], got["agency"]), ("create", "inspection", "FDNY"))
+        body = "FDNY inspection cancelled"
+        got = self._decide(body, action="cancel", event_id="e1", quote=body)
+        self.assertEqual(got["reason"], "cancel_subject_mismatch")
+
+    def test_spanish_subject_words(self):
+        for text, kind in (("el colado", "pour"), ("la varilla llega", "delivery"),
+                           ("los bloques", "delivery"), ("la grúa", "crane_pick"),
+                           ("la inspección", "inspection"), ("la entrega", "delivery"),
+                           ("el medidor", "utility")):
+            self.assertEqual(u.kinds_named(text), {kind}, text)
+
+
 class TheDryRun(unittest.TestCase):
     """scripts/upcoming_dry_run.py, scripted: the real worker and checks, the
     scenario's own model answers. The live run (gpt-4o-mini) is the same

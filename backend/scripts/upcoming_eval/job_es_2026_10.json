@@ -1,6 +1,6 @@
 {
  "name": "job_es_2026_10 — a Spanish-speaking crew's week (Upcoming)",
- "about": "Fri Oct 9 – Sat Oct 10 2026 (New York). Spanish day words read by the same resolver as English: 'el próximo martes' said on a Friday is the coming Tuesday; 'mañana a las 7am'; 'pasado mañana'; 'en 3 semanas'; 'pronto' is vague. 'El colado se canceló' cancels the pour by code (the model returned nothing for it). A confident Spanish voice note is read like text; a low-confidence one creates its event flagged for review and its move is held.",
+ "about": "Fri Oct 9 – Sat Oct 10 2026 (New York). Spanish day words read by the same resolver as English: 'el próximo martes' said on a Friday is the coming Tuesday; 'mañana a las 7am'; 'pasado mañana'; 'en 3 semanas'; 'pronto' is vague. 'El colado se canceló' cancels the pour by code (the model returned nothing for it). A confident Spanish voice note is read like text; a low-confidence one creates its event flagged for review and its move is held. Scripted e2/e3 replay the live misread of Oct 11: the model called the new pour a move of the DOB inspection and 'se canceló' its cancel. A move or cancel must name the target's subject, so e2 becomes a new pour and the e3 cancel is skipped; the code-side cancel then cancels the pour.",
  "tz": "America/New_York",
  "project": "120 Atlantic Ave",
  "senders": {
@@ -91,7 +91,7 @@
    },
    {
     "from": "e2",
-    "what": "3rd floor pour, then 'se canceló' (code cancel)",
+    "what": "3rd floor pour (model said: move of the inspection), then 'se canceló' (code cancel)",
     "kind": "pour",
     "date": "2026-10-10",
     "time": "07:00",
@@ -139,14 +139,24 @@
   ],
   "e2": [
    {
-    "action": "new",
-    "kind": "pour",
-    "title": "3rd floor pour",
+    "action": "reschedule",
+    "event_id": "$OPEN:e1",
+    "kind": "inspection",
+    "agency": "DOB",
+    "title": "DOB plumbing inspection",
     "date_text": "mañana a las 7am",
     "quote": "El colado del tercer piso es mañana a las 7am"
    }
   ],
-  "e3": [],
+  "e3": [
+   {
+    "action": "cancel",
+    "event_id": "$OPEN:e1",
+    "kind": "inspection",
+    "agency": "DOB",
+    "quote": "El colado se canceló"
+   }
+  ],
   "e4": [
    {
     "action": "new",
