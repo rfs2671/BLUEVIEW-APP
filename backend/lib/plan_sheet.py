@@ -213,38 +213,60 @@ def edge_regions(lab):
     return {int(L) for L in np.unique(np.concatenate(
         [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))} - {0}
 
-def best_translation(A, B, coarse_pt=4.0, span_pt=360.0, radius_in=1.0):
-    """Exhaustive (dx, dy) by match count. Coarse pass, then 1pt refine."""
+def _seed(A, B):
+    """The offset between bounding-box centres, which is within a few feet
+    even when the annotation differs: the centre of every search window."""
+    return (B.min(0) + B.max(0)) / 2 - (A.min(0) + A.max(0)) / 2
+
+
+def _match_counts(tree, A, offsets, r):
+    """For each (dx, dy) in `offsets`: how many of A land within r of a
+    corner of the tree's sheet. One batched query per call."""
+    offsets = np.asarray(offsets, dtype=float).reshape(-1, 2)
+    pts = (A[None, :, :] + offsets[:, None, :]).reshape(-1, 2)
+    d, _ = tree.query(pts, distance_upper_bound=r, workers=-1)
+    return np.isfinite(d).reshape(len(offsets), len(A)).sum(1)
+
+
+def best_translation(A, B, coarse_pt=None, span_pt=360.0, radius_in=1.0):
+    """Exhaustive (dx, dy) by match count. Coarse pass, then 1pt refine.
+
+    THE COARSE STEP IS NEVER WIDER THAN THE MATCH RADIUS (ruling
+    2026-10-10). Every peak measured on 588 Boyland is NARROW: 2pt off the
+    true offset, the count falls to 4-16% of its height. A 4pt grid samples
+    a peak up to 2.8pt off its top, so a sheet's true alignment lost to a
+    coincidental one whenever its peak was not tall enough to win from
+    there: A-105.01/M-105.00 (the roof) registered 21.8in off with 108
+    anchors against the true 239, and A-103.00/S-104.00 30in off with 95
+    against 204 - both reported usable. At a step of one match radius every
+    offset is within the radius of a sample, so the sample nearest the true
+    offset catches the anchors the true offset catches. `coarse_pt` is
+    accepted only so a test can run the old step."""
     tree = cKDTree(B)
     r = _pts(radius_in)
-
-    def count(dx, dy):
-        d, _ = tree.query(A + np.array([dx, dy]), distance_upper_bound=r)
-        return int(np.isfinite(d).sum())
-
-    # seed the search on the offset between bounding-box centres, which is
-    # within a few feet even when the annotation differs
-    seed = (B.min(0) + B.max(0)) / 2 - (A.min(0) + A.max(0)) / 2
+    step = r if coarse_pt is None else coarse_pt
+    seed = _seed(A, B)
+    steps = int(span_pt / step)
+    grid = np.arange(-steps, steps + 1) * step
     best, bxy = -1, (seed[0], seed[1])
-    steps = int(span_pt / coarse_pt)
-    for i in range(-steps, steps + 1):
-        for j in range(-steps, steps + 1):
-            dx, dy = seed[0] + i * coarse_pt, seed[1] + j * coarse_pt
-            c = count(dx, dy)
-            if c > best:
-                best, bxy = c, (dx, dy)
+    for gx in grid:
+        offs = np.stack([np.full(len(grid), seed[0] + gx), seed[1] + grid], 1)
+        c = _match_counts(tree, A, offs, r)
+        k = int(np.argmax(c))
+        if c[k] > best:
+            best, bxy = int(c[k]), (float(offs[k, 0]), float(offs[k, 1]))
     # THE REFINE STEP IS THE RESIDUAL FLOOR. A 0.75pt grid is 0.5 real
     # inches, so a coarse refine makes the reported RMS a measurement of the
     # SEARCH rather than of the drawings. Two passes: 0.75pt to place it,
     # then 0.05pt (0.033in) so the grid is an order of magnitude finer than
     # anything being reported.
-    for step, rng_ in ((0.75, 7), (0.05, 16)):
-        for i in range(-rng_, rng_ + 1):
-            for j in range(-rng_, rng_ + 1):
-                dx, dy = bxy[0] + i * step, bxy[1] + j * step
-                c = count(dx, dy)
-                if c > best:
-                    best, bxy = c, (dx, dy)
+    for fine, rng_ in ((0.75, 7), (0.05, 16)):
+        g = np.arange(-rng_, rng_ + 1) * fine
+        offs = np.array([(bxy[0] + i, bxy[1] + j) for i in g for j in g])
+        c = _match_counts(tree, A, offs, r)
+        k = int(np.argmax(c))
+        if c[k] > best:
+            best, bxy = int(c[k]), (float(offs[k, 0]), float(offs[k, 1]))
     # ── COUNT DOES NOT LOCALISE THE TRANSLATION. ────────────────────────
     #
     # Maximising matches is FLAT inside the capture radius: a translation
@@ -308,14 +330,117 @@ def plan_unit_tags(corners_arr, words, unit_tags: Sequence[str]
     return out
 
 
+def offset_census(A, B, span_pt=360.0, radius_in=1.0, chunk=64):
+    """(count, (dx, dy)): the best offset on a 1pt lattice over the same
+    window best_translation searches, found ANOTHER WAY - each corner of A
+    votes once for every lattice offset that would put it within the match
+    radius of some corner of B. A cell's votes are exactly the anchors that
+    offset matches; no sample is skipped, so no peak can be stepped over.
+
+    It is the independent second reading the registration is checked
+    against: a search that lands on a coincidental peak disagrees with it."""
+    A, B = np.asarray(A, dtype=float), np.asarray(B, dtype=float)
+    r = _pts(radius_in)
+    seed = _seed(A, B)
+    S = int(span_pt)
+    n = 2 * S + 1
+    # a lattice cell within r of d lies between floor(d) - floor(r) and
+    # floor(d) + floor(1 + r), per axis
+    k = np.arange(-int(math.floor(r)), int(math.floor(1 + r)) + 1)
+    offs = np.array([(i, j) for i in k for j in k])
+    votes = np.zeros(n * n, dtype=np.int64)
+    for s in range(0, len(A), chunk):
+        a = A[s:s + chunk]
+        d = B[None, :, :] - a[:, None, :] - seed
+        who = np.broadcast_to(np.arange(len(a))[:, None], d.shape[:2])
+        near = (np.abs(d) <= S + r + 1).all(-1)
+        d, who = d[near], who[near]
+        cells = np.floor(d).astype(np.int64)[:, None, :] + offs[None, :, :]
+        ok = (np.hypot(*(cells - d[:, None, :]).transpose(2, 0, 1)) <= r) \
+            & (np.abs(cells) <= S).all(-1)
+        cell = (cells[..., 0] + S) * n + (cells[..., 1] + S)
+        # one vote per corner per cell, however many of B it is near there
+        key = np.unique(np.broadcast_to(who[:, None], ok.shape)[ok] * (n * n)
+                        + cell[ok])
+        votes += np.bincount(key % (n * n), minlength=n * n)
+    top = int(np.argmax(votes))
+    i, j = divmod(top, n)
+    return int(votes[top]), (float(seed[0] + i - S), float(seed[1] + j - S))
+
+
+def plan_extent(sheet: dict):
+    """(lo, hi) of the architectural sheet's WALL layer (plan_space_layers
+    roles), or None when it has none.
+
+    ANCHOR SPREAD IS MEASURED AGAINST THE PLAN, NOT THE VIEWPORT (ruling
+    2026-10-10). The viewport's corners include the notes and the tables:
+    against them every correct Boyland registration spanned 0.39 in y and
+    plan_registration.MIN_ANCHOR_SPREAD_FRAC refused them all. Against the
+    wall layer the correct pairs span 1.00 x 1.00 (the roof 1.00 x 0.68:
+    A-105.01 draws the bulkhead plan beside the roof). Long segments were
+    tried as a fallback and span 0.39 again - tables and dimension lines
+    are long too - so a sheet with no wall layer has NO plan extent, and
+    its spread is not measured (register records that; see there)."""
+    from lib.plan_space_layers import role_of     # it imports this module
+    walls = [s for s, layer in sheet.get("att") or () if role_of(layer) == "wall"]
+    if not walls:
+        return None
+    a = np.asarray(walls, dtype=float).reshape(-1, 2)
+    return a.min(0), a.max(0)
+
+
 def register(arch: dict, mech: dict) -> dict:
     """Translation arch->mech by corner matching, and whether room membership
-    may be decided on it (plan_registration tolerances, never changed here)."""
-    (dx, dy), _a, _b, dist = best_translation(
-        arch["corners"], mech["corners"], radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
-    res = (np.array([inches(x) for x in dist]) if len(dist)
-           else np.array([np.inf]))
+    may be decided on it (plan_registration tolerances, never changed here).
+
+    A REGISTRATION IS THE BEST PEAK OR IT IS REFUSED (ruling 2026-10-10).
+    Residuals cannot tell: they are taken over the anchors matched within
+    ANCHOR_MATCH_RADIUS_IN, so for ANY offset the worst is under an inch, and
+    the roof's wrong peak had the LOWER rms (0.03in vs 0.80in at the true
+    one). So every registration records the anchors its offset holds and
+    the best peak offset_census finds, and placement is refused when the
+    offset holds under HALF the best - a comparison between two readings,
+    not a constant fitted to the pairs measured. Count and spread
+    (registration_verdict, against plan_extent) must hold too; spread is a
+    condition, not the discriminator - it did not separate either failure.
+
+    A SHEET WITH NO WALL LAYER HAS NO PLAN TO MEASURE SPREAD AGAINST, so
+    spread is recorded as not measured and the other conditions still
+    decide. Refusing instead would close the geometric pipeline, which
+    exists for exactly those sheets and is ruled REPORTED, NOT GATED
+    (operator 2026-10-06; test_a_unit_is_answered_or_refused_never_wrong)."""
+    A = np.asarray(arch["corners"], dtype=float)
+    B = np.asarray(mech["corners"], dtype=float)
+    (dx, dy), matched, _b, dist = best_translation(
+        A, B, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
+    best_n, best_xy = offset_census(A, B, radius_in=reg.ANCHOR_MATCH_RADIUS_IN)
+    n = int(len(dist))
+    res = (np.array([inches(x) for x in dist]) if n else np.array([np.inf]))
     rms, mx = float(math.sqrt((res ** 2).mean())), float(res.max())
-    usable = reg.usable_for("room_membership", rms, max_residual_in=mx)
-    return {"dx": float(dx), "dy": float(dy), "anchors": int(len(dist)),
-            "rms_in": rms, "max_in": mx, "usable": bool(usable)}
+    refused = []
+    if 2 * n < best_n:
+        refused.append(f"the offset holds {n} anchors, under half the "
+                       f"{best_n} of the best peak at ({best_xy[0]:.1f}, "
+                       f"{best_xy[1]:.1f})")
+    extent, spread = plan_extent(arch), None
+    if extent is not None:
+        lo, hi = extent
+        if n:
+            got = (np.minimum(matched.max(0), hi) - np.maximum(matched.min(0), lo))
+            spread = np.clip(got / np.maximum(hi - lo, 1e-9), 0.0, 1.0)
+        else:
+            spread = np.zeros(2)
+    # no wall layer: spread unmeasured, so the verdict judges count and
+    # residuals only (a full span stands in for the missing measurement)
+    sx, sy = (1.0, 1.0) if spread is None else (float(spread[0]), float(spread[1]))
+    verdict, why = reg.registration_verdict(n, sx, sy, rms, mx)
+    if verdict != "registered":
+        refused.extend(why)
+    if not reg.usable_for("room_membership", rms, max_residual_in=mx):
+        refused.append(f"RMS {rms:.2f}in over the room-membership tolerance")
+    return {"dx": float(dx), "dy": float(dy), "anchors": n,
+            "rms_in": rms, "max_in": mx, "usable": not refused,
+            "best_peak_anchors": best_n,
+            "best_peak": [float(best_xy[0]), float(best_xy[1])],
+            "spread": None if spread is None else [float(v) for v in spread],
+            "refused": "; ".join(refused) or None}
