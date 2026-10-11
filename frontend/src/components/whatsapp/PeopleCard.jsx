@@ -25,7 +25,7 @@ import { spacing, borderRadius } from '../../styles/theme';
 import { semantic, withAlpha } from '../../styles/semanticColors';
 import {
   PEOPLE_TITLE, PEOPLE_NOTE, emptyText, assignmentLine, detailLine,
-  assignRequest, savedText, safeLabel, safeName,
+  assignRequest, savedText, safeLabel, safeName, PHONE_NOTE,
 } from '../../utils/whatsappPeople';
 
 export default function PeopleCard({ projectId }) {
@@ -37,6 +37,8 @@ export default function PeopleCard({ projectId }) {
   const [editing, setEditing] = useState(null);  // the row being assigned
   const [name, setName] = useState('');
   const [company, setCompany] = useState(null);
+  const [phone, setPhone] = useState('');
+  const [removePhone, setRemovePhone] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -54,6 +56,8 @@ export default function PeopleCard({ projectId }) {
     setEditing(row);
     setName(row.assigned ? row.assigned.person_name : safeName(row.push_name));
     setCompany(row.assigned ? row.assigned.sub_company : null);
+    setPhone('');           // the number on file is never sent back: retype to change it
+    setRemovePhone(false);
   };
 
   const fail = (e) => toast.error('Not saved', isOfflineError(e)
@@ -62,12 +66,13 @@ export default function PeopleCard({ projectId }) {
       ? e.response.data.detail : 'That could not be saved. Try again.'));
 
   const save = async () => {
-    const req = assignRequest({ name, company }, (data && data.companies) || []);
+    const req = assignRequest({ name, company, phone, removePhone }, (data && data.companies) || []);
     if (req.error) { toast.error('Almost', req.error); return; }
     setSaving(true);
     try {
       const res = await whatsappAPI.setWhatsAppPerson(
-        projectId, editing.key, req.body.personName, req.body.subCompany);
+        projectId, editing.key, req.body.personName, req.body.subCompany,
+        'phone' in req.body ? req.body.phone : null);
       toast.success(req.body.personName, savedText(res));
       setEditing(null);
       await load();
@@ -145,6 +150,27 @@ export default function PeopleCard({ projectId }) {
               style={s.input}
               maxLength={80}
             />
+            <Text style={s.label}>WhatsApp number</Text>
+            <TextInput
+              value={phone}
+              onChangeText={setPhone}
+              placeholder={editing && editing.assigned && editing.assigned.phone
+                ? `On file: ${editing.assigned.phone} (type to replace)` : '+1 718 555 0100'}
+              placeholderTextColor={colors.text.subtle}
+              keyboardType="phone-pad"
+              style={s.input}
+              maxLength={24}
+              accessibilityLabel="WhatsApp number, optional"
+            />
+            <Text style={s.muted}>{PHONE_NOTE}</Text>
+            {editing && editing.assigned && editing.assigned.phone ? (
+              <Pressable onPress={() => { setRemovePhone((v) => !v); setPhone(''); }}
+                accessibilityRole="checkbox" accessibilityState={{ checked: removePhone }}
+                style={({ pressed }) => [s.choice, removePhone && s.choiceOn, pressed && s.pressed]}>
+                <Text style={s.choiceText}>Remove the number on file</Text>
+                {removePhone ? <Check size={16} color={semantic.verified} /> : null}
+              </Pressable>
+            ) : null}
             <Text style={s.label}>Company on this job</Text>
             <ScrollView style={s.choices}>
               {companies.map((c) => (

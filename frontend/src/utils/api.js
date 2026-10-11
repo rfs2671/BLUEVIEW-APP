@@ -1969,10 +1969,13 @@ export const whatsappAPI = {
     return r.data;
   },
 
-  setWhatsAppPerson: async (projectId, key, personName, subCompany) => {
+  // phone: optional WhatsApp number (digits) for real @mentions.
+  // undefined / null: the number on file is kept; '': it is removed.
+  setWhatsAppPerson: async (projectId, key, personName, subCompany, phone = null) => {
+    const body = { person_name: personName, sub_company: subCompany };
+    if (phone !== null && phone !== undefined) body.phone = phone;
     const r = await apiClient.put(
-      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`,
-      { person_name: personName, sub_company: subCompany });
+      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`, body);
     return r.data;
   },
 

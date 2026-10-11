@@ -35,7 +35,8 @@ EXIT CODES
 
 SCENARIO FILE (see scripts/dry_run/*.json)
   tz, project {name, address, chase_weekends, send_window},
-  senders  {KEY: {name, lid, user: {role}?, people: {person_name, sub_company}?}}
+  senders  {KEY: {name, lid, user: {role}?, people: {person_name, sub_company}?,
+            lid_phone?: what WaAPI's lid -> phone lookup answers (real @mentions)}}
   messages [{from, at: "YYYY-MM-DD HH:MM:SS" (local), text, reply_to: line?,
              transcript: "..."?, lang: "es"|"yi"|"en"?, confidence: 0..1?
                (a VOICE NOTE: the transcript is the message, stored with its
@@ -261,6 +262,13 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         return _rec
     patches = [patch.object(server, "db", db)] + [
         patch.object(server, n, recorder(n)) for n in SEND_PATHS if hasattr(server, n)]
+    # WaAPI's get-lid lookup (for real @mentions), answered from the
+    # scenario: a sender's "lid_phone", else no number.
+    lid_phones = {str(v.get("lid")): v.get("lid_phone") for v in sc["senders"].values()}
+
+    async def fake_get_lid(lids):
+        return {l: lid_phones.get(str(l).split("@")[0]) for l in lids}
+    patches.append(patch.object(server, "_waapi_lid_phones", fake_get_lid))
     llm = Scripted(sc) if scripted else None
     if not scripted and not server.OPENAI_API_KEY:
         raise ScenarioError("no OPENAI_API_KEY: run under `railway run`, or pass --scripted")
@@ -447,7 +455,10 @@ def chase_check(sc: dict, out: dict) -> dict:
         got.append({"day": r["day"], "slot": r["slot"], "owner": owner,
                     "items": sorted(line_of.get(items[i]["evidence"]["message_id"])
                                     for i in r["item_ids"] if i in items),
-                    "text": r.get("text"), "reason": r.get("reason")})
+                    "text": r.get("text"), "reason": r.get("reason"),
+                    # A group nudge: does its @mention notify (a number found)?
+                    "mention": ((r.get("mention") or {}).get("source") or "none")
+                    if r.get("kind") == "group" else None})
     want = (sc.get("chase") or {}).get("expect") or []
 
     def key(e):
@@ -524,8 +535,11 @@ def print_report(r: dict) -> None:
     order = {"morning": 0, "midday": 1, "eod": 2, "admin_dm": 3, "not_chased": 4}
     for e in sorted(r["chase"]["got"], key=lambda e: (e["day"], order.get(e["slot"], 9),
                                                       e["owner"] or "")):
+        tag = ("" if e.get("mention") is None else
+               "  [@ won't notify: no number]" if e["mention"] == "none"
+               else f"  [@ {e['mention']}]")
         p(f"  {e['day']} {e['slot']:<9} {e['owner'] or '?':<4} lines {e['items']}  "
-          f"{((e['text'] or e['reason'] or '').splitlines() or [''])[0][:60]}")
+          f"{((e['text'] or e['reason'] or '').splitlines() or [''])[0][:60]}{tag}")
     if not r["chase"]["got"]:
         p("  (nothing would be chased)")
     for e in r["chase"]["missing"]:

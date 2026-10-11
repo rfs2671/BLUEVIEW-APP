@@ -42,5 +42,13 @@ ok(/setSourceRow\(r\.message_row_id\)/.test(read('app/projects/[id]/search.jsx')
 const api = fs.readFileSync(path.join(__dirname, 'api.js'), 'utf8');
 ok(api.includes('/whatsapp/messages/${encodeURIComponent(rowId)}/source'), 'api path');
 
+// A phone number is evidence: the server sends it by role; the sheet shows it.
+ok(S.headLine({ who: 'Mark', phone: '…9520', at: '2026-10-10T15:11:11Z' }) === 'Mark · …9520 · Oct 10, 11:11 AM',
+  'who, their number as sent, when');
+ok(S.evidenceLine({ evidence: 'Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM' })
+  === 'Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM', 'the evidence line as written');
+ok(S.evidenceLine({}) === null, 'none: nothing');
+ok(/evidenceLine\(src\)/.test(require('fs').readFileSync(require('path').join(__dirname,
+  '../components/whatsapp/SourceSheet.jsx'), 'utf8')), 'the sheet shows it, selectable');
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

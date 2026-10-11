@@ -21,12 +21,30 @@ export function emptyText(state) {
   return state === 'none' ? 'Everyone writing in your groups is matched to a person.' : '';
 }
 
-/** "Not assigned" or "Carlos Baez · Bright Electric". */
+/** "Not assigned" or "Carlos Baez · Bright Electric" (· their WhatsApp
+ *  number when one is known: in full for a company admin, "…0144" for
+ *  anyone else -- the server decides which it sends). */
 export function assignmentLine(row) {
   const a = row && row.assigned;
   if (!a) return 'Not assigned';
-  return a.sub_company ? `${a.person_name} · ${a.sub_company}` : a.person_name;
+  const base = a.sub_company ? `${a.person_name} · ${a.sub_company}` : a.person_name;
+  const number = a.phone || row.phone;
+  return number ? `${base} · ${number}` : base;
 }
+
+/** A WhatsApp number as the server stores it ("(718) 555-0144" ->
+ *  "17185550144"), '' for none, or null when it is not a number. */
+export function cleanPhone(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  let d = s.replace(/\D/g, '');
+  if (d.length === 10) d = `1${d}`;
+  return d.length >= 7 && d.length <= 15 ? d : null;
+}
+
+export const PHONE_NOTE =
+  'Optional. Their WhatsApp number lets group messages @mention them so their phone '
+  + 'notifies. Without it the message still names them, but won’t notify.';
 
 function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
@@ -55,13 +73,22 @@ export function detailLine(row, now) {
 }
 
 /** The form: what to send, or why not yet. */
-export function assignRequest({ name, company }, companies) {
+export function assignRequest({ name, company, phone, removePhone = false }, companies) {
   const n = String(name || '').trim().replace(/\s+/g, ' ');
   if (!n) return { error: 'Enter the person’s name.' };
   if (n.length > 80) return { error: 'Keep the name under 80 characters.' };
   const list = companies || [];
   if (!company || !list.includes(company)) return { error: 'Pick their company.' };
-  return { body: { personName: n, subCompany: company } };
+  if (removePhone) {
+    // Remove the number on file: sent as '' (left out, it is kept).
+    return { body: { personName: n, subCompany: company, phone: '' } };
+  }
+  const p = cleanPhone(phone);
+  if (p === null) {
+    return { error: 'Enter their WhatsApp number with the country code, or a 10-digit US number.' };
+  }
+  return { body: p ? { personName: n, subCompany: company, phone: p }
+    : { personName: n, subCompany: company } };
 }
 
 /** What the toast says after a save. */

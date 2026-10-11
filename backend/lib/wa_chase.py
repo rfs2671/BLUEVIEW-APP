@@ -234,11 +234,14 @@ _OPENERS = {
 }
 
 
-def group_text(owner_name: str, items: List[Dict[str, Any]], slot: str) -> str:
-    """The group message: @owner, a fixed line, the item quote(s)."""
+def group_text(owner_name: str, items: List[Dict[str, Any]], slot: str,
+               handle: Optional[str] = None) -> str:
+    """The group message: @owner, a fixed line, the item quote(s). `handle`
+    is the owner's token from lib/wa_mention ("@15551234567" for a real
+    mention); without it, "@Name"."""
     one, many = _OPENERS[slot]
-    who = owner_name.strip() or "there"
-    lines = [f"@{who} {one if len(items) == 1 else many}"]
+    who = handle or "@" + (owner_name.strip() or "there")
+    lines = [f"{who} {one if len(items) == 1 else many}"]
     lines += [f"“{quote(it)}”" for it in items]
     return "\n".join(lines)
 

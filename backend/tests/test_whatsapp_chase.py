@@ -124,7 +124,13 @@ class WhatIsChased(_Base):
         self.assertEqual(r["text"], "@Mike Rivera morning — this is due today:\n"
                                     "“I'll send the stair RFI today”")
         self.assertEqual(r["mention_jid"], f"{MIKE}@c.us")
-        self.assertEqual(r["reply_to"], it["evidence"]["message_id"])   # quotes it
+        # A real @mention: WaAPI gets the number, the screen the name.
+        self.assertEqual(r["send_text"].split(" ")[0], f"@{MIKE}")
+        self.assertEqual(r["mentions"], [f"{MIKE}@c.us"])
+        self.assertEqual(r["mention"], {"resolved": True, "source": "jid"})
+        # It quotes the message it chases (WaAPI's serialized id, when the
+        # message is stored; the short id is kept beside it).
+        self.assertEqual(r["reply_to_message_id"], it["evidence"]["message_id"])
         self.assertEqual(r["reason"], "Due today (today); owner confirmed; "
                                       "no update since it was said at 7:00.")
 

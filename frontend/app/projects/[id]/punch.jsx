@@ -18,7 +18,7 @@ import { punchAPI } from '../../../src/utils/api';
 import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import {
   statusLabel, floorLabel, filterChips, whereLine, whoLine, itemWords, historyLine,
-  emptyText, ADMIN_STATUSES,
+  emptyText, ADMIN_STATUSES, mentionLine,
 } from '../../../src/utils/punchList';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -152,6 +152,7 @@ export default function ProjectPunchScreen() {
                 <Text style={[styles.line, text]}>{itemWords(it)}</Text>
                 <Text style={[styles.small, muted]}>{whereLine(it)}</Text>
                 <Text style={[styles.small, muted]}>{whoLine(it)}</Text>
+                {mentionLine(it) ? <Text style={[styles.small, muted]}>{mentionLine(it)}</Text> : null}
               </Pressable>
 
               {open === it.pid && (

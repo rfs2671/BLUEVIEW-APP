@@ -27,7 +27,9 @@ export function chipText(r) {
     ? ['Daily report', x.label, x.when]
     : x.source === 'attention'
       ? ['Tracked item', x.label, x.when]
-      : [x.who || 'Someone', x.group, x.voice && x.when ? `🎤 ${x.when}` : x.when];
+      // The sender's number after the name: full for a company admin, the
+      // last 4 for anyone else (the server sends what this viewer may see).
+      : [x.who || 'Someone', x.phone, x.group, x.voice && x.when ? `🎤 ${x.when}` : x.when];
   return parts.filter(Boolean).join(' · ');
 }
 

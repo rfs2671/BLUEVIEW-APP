@@ -75,6 +75,12 @@ export function bodyText(e) {
   return e.text || '';
 }
 
+/** "@Mike won't notify (no number)": a group nudge whose @mention would not
+ *  reach the owner's phone. null when it would (or before mentions). */
+export function mentionLine(e) {
+  return e && e.mention_note ? `@${e.owner || 'owner'}: ${e.mention_note}` : null;
+}
+
 export function reasonLine(e) {
   return e && e.reason ? `Why: ${e.reason}` : null;
 }

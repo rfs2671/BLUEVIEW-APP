@@ -53,5 +53,10 @@ ok(/canSeePunch\(user\) \? \[\{ title: 'Punch list'/.test(project) && /\/project
 const card = fs.readFileSync(path.join(root, 'src/components/whatsapp/LevelogAssistantCard.jsx'), 'utf8');
 ok(/patch\('punch_sends', \{ punch_sends: o\.mode \}\)/.test(card), 'Punch sends shadow / live in Levelog Assistant');
 
+ok(M.mentionLine({ assignee: { name: 'Luis Ortega' }, mention_note: "mention won't notify (no number)" })
+  === "Luis Ortega: mention won't notify (no number)", 'punch: no number flagged');
+ok(M.mentionLine({ assignee: { name: 'Ana' } }) === null, 'punch: a real mention says nothing');
+ok(/mentionLine\(it\)/.test(screen), 'the punch screen shows it');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

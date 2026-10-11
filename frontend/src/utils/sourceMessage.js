@@ -53,11 +53,19 @@ export function englishLine(v, text) {
   return a && a !== b ? `In English: “${v.english}”` : null;
 }
 
-/** "Carlos · Oct 14, 7:15 AM", New York time. */
+/** The evidence line the server writes: "Mark Rivera · +1 718-755-9520 ·
+ *  Oct 10, 11:11:11 AM" for a company admin, the number's last 4 for anyone
+ *  else. null when there is none. */
+export function evidenceLine(src) {
+  return src && src.evidence ? src.evidence : null;
+}
+
+/** "Carlos · …0144 · Oct 14, 7:15 AM", New York time. */
 export function headLine(src) {
   if (!src) return '';
   const parts = [];
   if (src.who) parts.push(src.who);
+  if (src.phone) parts.push(src.phone);
   if (src.at) {
     try {
       parts.push(new Intl.DateTimeFormat('en-US', {

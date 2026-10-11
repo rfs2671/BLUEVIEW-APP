@@ -55,5 +55,7 @@ const project = fs.readFileSync(path.join(__dirname, '../../app/project/[id].jsx
 ok(!/\/projects\/\$\{projectId\}\/search/.test(project) && !/title: 'Search'/.test(project),
   'no Search tile on the project screen (search is in the WhatsApp DM assistant)');
 
+ok(M.chipText({ source: 'whatsapp', who: 'Mike Rivera', phone: '+1 718-555-0101', group: 'MEP', when: 'Oct 3, 7:42 AM' })
+  === 'Mike Rivera · +1 718-555-0101 · MEP · Oct 3, 7:42 AM', 'the number after the name, as sent');
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
