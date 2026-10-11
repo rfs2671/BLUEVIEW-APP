@@ -291,3 +291,45 @@ class NeverInTheGroup(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhisperIsToldWhatTheFileIs(unittest.TestCase):
+    """The upload is named for its container (Whisper reads the format from
+    the name), and OpenAI's refusal reason is kept in the error."""
+
+    class _Http:
+        def __init__(self, status=200, body=None):
+            self.sent, self.status, self.body = [], status, body
+
+        async def post(self, url, headers=None, files=None, timeout=None):
+            import httpx
+            self.sent.append(files["file"][:1] + files["file"][2:])
+            req = httpx.Request("POST", url)
+            if self.status != 200:
+                return httpx.Response(self.status, request=req, text=self.body)
+            return httpx.Response(200, request=req, json={
+                "text": "pour friday", "language": "english", "duration": 3.1,
+                "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.01}]})
+
+    def _send(self, audio, http):
+        import asyncio
+        with patch.object(voice_ingest, "WHISPER_BACKOFF_SEC", 0):
+            return asyncio.run(voice_ingest.transcribe_whisper(
+                audio, openai_api_key="k", http_client=http))
+
+    def test_each_container_gets_its_name(self):
+        cases = {b"OggS" + b"\0" * 40: ("voice.ogg", "audio/ogg"),
+                 b"ID3\x04" + b"\0" * 40: ("voice.mp3", "audio/mpeg"),
+                 b"\0\0\0\x20ftypM4A " + b"\0" * 40: ("voice.m4a", "audio/mp4")}
+        for audio, want in cases.items():
+            http = self._Http()
+            self.assertEqual(self._send(audio, http).transcript, "pour friday")
+            self.assertEqual(http.sent[0], want)
+
+    def test_openais_reason_is_kept(self):
+        http = self._Http(400, '{"error":{"message":"Invalid file format."}}')
+        with self.assertRaises(Exception) as cm:
+            self._send(b"\xfd\xff\xc9\x18" + b"\0" * 60, http)
+        msg = str(cm.exception)
+        self.assertIn("Invalid file format", msg)
+        self.assertIn("first8=fdffc918", msg)
