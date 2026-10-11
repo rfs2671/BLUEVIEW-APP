@@ -58,5 +58,6 @@ ok(M.mentionLine({ assignee: { name: 'Luis Ortega' }, mention_note: "mention won
 ok(M.mentionLine({ assignee: { name: 'Ana' } }) === null, 'punch: a real mention says nothing');
 ok(/mentionLine\(it\)/.test(screen), 'the punch screen shows it');
 
+ok(/timeZone: 'America\/New_York'/.test(screen), 'the punch screen shows New York time');
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

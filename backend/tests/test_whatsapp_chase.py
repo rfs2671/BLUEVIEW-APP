@@ -131,7 +131,7 @@ class WhatIsChased(_Base):
         # It quotes the message it chases (WaAPI's serialized id, when the
         # message is stored; the short id is kept beside it).
         self.assertEqual(r["reply_to_message_id"], it["evidence"]["message_id"])
-        self.assertEqual(r["reason"], "Due today (today); owner confirmed; "
+        self.assertEqual(r["reason"], "Due today (Thu Oct 8 · said 'today'); owner confirmed; "
                                       "no update since it was said at 7:00.")
 
     def test_a_request_with_a_confirmed_owner(self):
@@ -445,7 +445,7 @@ class Batching(_Base):
                                     "“I'll send the stair RFI today”\n"
                                     "“Shop drawings by Thursday”")
         self.assertEqual(len(r["item_ids"]), 2)
-        self.assertEqual(r["reason"], "Due today (by Thursday, today); owner confirmed; no update.")
+        self.assertEqual(r["reason"], "Due today (Thu Oct 8 · said 'by Thursday', 'today'); owner confirmed; no update.")
 
     def test_other_owners_and_other_groups_are_separate(self):
         _item(self.db)
@@ -748,6 +748,23 @@ class TheRules(unittest.TestCase):
         q = wa_chase.quote({"evidence": {"quote": "x " * 300}})
         self.assertLessEqual(len(q), wa_chase.QUOTE_MAX)
         self.assertTrue(q.endswith("…"))
+
+
+class TimesAreUtcMarked(unittest.TestCase):
+    """Mongo returns naive UTC datetimes; the app must get them marked UTC,
+    or a browser reads 19:12 as local time (the 588 Would chase list showed
+    7:12 PM for a 3:12 PM nudge)."""
+
+    def test_naive_times_go_out_with_an_offset(self):
+        from datetime import datetime as _dt
+        naive = _dt(2026, 10, 10, 19, 12)
+        self.assertEqual(server._iso_utc(naive), "2026-10-10T19:12:00+00:00")
+        v = server._chase_view({"_id": "x", "kind": "group", "slot": "eod", "day": "2026-10-10",
+                                "at": naive, "items": []})
+        self.assertTrue(v["at"].endswith("+00:00"))
+        p = server._punch_view({"pid": "P-1", "created_at": naive, "history": [{"at": naive}]})
+        self.assertTrue(p["created_at"].endswith("+00:00"))
+        self.assertTrue(p["history"][0]["at"].endswith("+00:00"))
 
 
 if __name__ == "__main__":

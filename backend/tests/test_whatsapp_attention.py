@@ -60,6 +60,10 @@ def _run(coro):
 
 
 def _world(bot_off_group=True, **extra):
+    # A fresh world restarts the message clock: _msg's default time is
+    # T0 + _seq minutes, and a counter carried over from earlier tests (other
+    # files import _msg) pushed messages past the tick that should read them.
+    _seq[0] = 0
     groups = [
         {"_id": "g1", "wa_group_id": G_A, "group_name": "Main St Project",
          "project_id": "proj_a", "company_id": CO_A, "active": True},

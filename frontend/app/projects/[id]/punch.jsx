@@ -26,8 +26,9 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 
 const when = (iso) => {
   const d = new Date(iso);
+  // New York, whatever the device's zone (the server sends UTC-marked times).
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 };
 
 // Project → Punch list: the items from walkthroughs on this job (each one a

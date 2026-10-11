@@ -20,8 +20,9 @@ const read = (p) => fs.readFileSync(path.join(__dirname, '..', '..', p), 'utf8')
 const O = loadEsm('src/utils/ownerPortal.js');
 
 console.log('\nnav');
-ok(O.OWNER_NAV.map((n) => n.label).join('|') === 'Companies|Deleted items|Pending deletion',
-  'own nav: Companies · Deleted items · Pending deletion');
+ok(O.OWNER_NAV.map((n) => n.label).join('|') === 'Companies|Deleted items|Pending deletion|Test mention',
+  'own nav: Companies · Deleted items · Pending deletion · Test mention');
+ok(O.ownerNavActive('/owner/mention-test') === 'mention', 'the test mention screen');
 ok(O.ownerNavActive('/owner') === 'companies', '/owner is Companies');
 ok(O.ownerNavActive('/owner/company/abc') === 'companies', 'a company page is under Companies');
 ok(O.ownerNavActive('/owner/deleted') === 'deleted', '/owner/deleted is Deleted items');
@@ -115,5 +116,20 @@ const SETTINGS = read('app/settings.jsx');
 ok(/isPlatformOperator\(user\) \?[\s\S]{0,400}router\.push\('\/owner'\)/.test(SETTINGS),
   'Settings links to the owner portal for the operator only');
 
+console.log('\ntest mention');
+ok(/real WhatsApp mention/.test(O.MENTION_TEST_NOTE) && /sent for real/.test(O.MENTION_TEST_NOTE),
+  'says it posts for real, with a real mention');
+ok(O.mentionPersonLine({ name: 'Patricia', has_number: true }) === 'Patricia', 'a person with a number');
+ok(O.mentionPersonLine({ name: 'Nobody', has_number: false }) === 'Nobody · no number on file yet',
+  'a person without one says so');
+ok(O.mentionResult({ sent: true, text: '@Patricia test' }) === 'Posted: @Patricia test', 'posted');
+ok(O.mentionResult({ sent: false, detail: 'WaAPI did not confirm' }) === 'WaAPI did not confirm', 'not sent');
+const MT = require('fs').readFileSync(require('path').join(__dirname, '../../app/owner/mention-test.jsx'), 'utf8');
+ok(/ownerAPI\.sendMentionTest\(group\.key, person\.key\)/.test(MT) && /isPlatformOperator\(user\)/.test(MT),
+  'the screen sends the picked group and person, operator only');
+ok(/if \(pickedRef\.current !== g\.key\) return;/.test(MT),
+  'a slower people answer for a group no longer picked is dropped');
+ok(/peopleState !== 'ok' \? \(\s*<OfflineNotice/.test(MT),
+  'a failed people load shows the failure, not "nobody has written"');
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
