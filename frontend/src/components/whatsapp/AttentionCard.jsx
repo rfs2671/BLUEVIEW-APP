@@ -25,7 +25,7 @@ import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
   statusLine, precisionLines, emptyText, LISTS, STATE_VERDICTS, eventLine, linkLine,
-  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT,
+  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT,
 } from '../../utils/whatsappAttention';
 
 export default function AttentionCard({ projectId }) {
@@ -134,8 +134,15 @@ export default function AttentionCard({ projectId }) {
                 <Pressable disabled={!it.message_row_id}
                   onPress={() => setSource({ rowId: it.message_row_id, reason: it.review_reason })}
                   accessibilityRole="button" accessibilityLabel="Show the original message">
-                  <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>
+                  {yiddishLines(it) ? yiddishLines(it).map((l) => (
+                    <Text key={l.key} style={s.quote}>
+                      <Text style={s.muted}>{`${l.label}: `}</Text>
+                      {l.key === 'said' ? quoteText(l.text, true) : l.text}
+                    </Text>
+                  )) : <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>}
                 </Pressable>
+                {it.forwarded
+                  ? <Text style={s.muted}>{FORWARDED_TEXT}</Text> : null}
                 {reviewNote(null, it.review_reason)
                   ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
                 {canPlay(it) ? (

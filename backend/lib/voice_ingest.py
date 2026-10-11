@@ -477,6 +477,49 @@ async def transcribe_whisper(
 # ──────────────────────────────────────────────────────────────────
 
 
+async def translate_whisper(
+    audio_bytes: bytes,
+    *,
+    openai_api_key: str,
+    http_client: Any = None,
+) -> str:
+    """Whisper's translations endpoint: the audio straight to English text
+    (whisper-1; no transcript in between). Used for Yiddish notes, whose
+    card shows what was said and this. Retries once; raises on failure."""
+    if not openai_api_key:
+        raise RuntimeError("openai_api_key required for Whisper")
+    if not audio_bytes:
+        raise RuntimeError("empty audio_bytes")
+    url = "https://api.openai.com/v1/audio/translations"
+    headers = {"Authorization": f"Bearer {openai_api_key}"}
+    name, mime = audio_name(audio_bytes)
+    files = {"file": (name, audio_bytes, mime), "model": (None, "whisper-1"),
+             "response_format": (None, "json"), "temperature": (None, "0")}
+    attempt = 0
+    while True:
+        try:
+            if http_client is None:
+                async with ServerHttpClient(timeout=OPENAI_TIMEOUT_SEC) as c:
+                    resp = await c.post(url, headers=headers, files=files)
+                    resp.raise_for_status()
+                    payload = resp.json()
+            else:
+                resp = await http_client.post(url, headers=headers, files=files,
+                                              timeout=OPENAI_TIMEOUT_SEC)
+                resp.raise_for_status()
+                payload = resp.json()
+            return (payload.get("text") or "").strip()
+        except Exception as e:
+            if attempt < WHISPER_MAX_RETRIES:
+                logger.warning(f"[voice_ingest] Whisper translation attempt {attempt+1} "
+                               f"failed: {e!r}; retrying in {WHISPER_BACKOFF_SEC}s")
+                await asyncio.sleep(WHISPER_BACKOFF_SEC)
+                attempt += 1
+                continue
+            raise
+
+
+
 async def translate_to_english(
     text: str,
     *,
@@ -668,6 +711,25 @@ async def process_voice_note(
     telemetry["whisper_no_speech_prob"] = wr.no_speech_prob
     telemetry["whisper_segments"] = wr.raw_segments
     telemetry["whisper_confidence"] = wr.confidence
+
+    # ── The prompt read back, not speech ───────────────────────────
+    # (588, Oct 11, 2:51 PM.) A failed transcription: never a message.
+    if prompt:
+        from lib import voice_glossary
+        if voice_glossary.prompt_echo(wr.transcript, prompt):
+            logger.info("[voice_ingest] prompt echo: transcript repeats the Whisper prompt")
+            telemetry["rejected_reason"] = "prompt_echo"
+            return VoiceIngestResult(
+                ok=False,
+                original_transcript=wr.transcript,
+                language_detected=wr.language,
+                no_speech_prob=wr.no_speech_prob,
+                confidence=wr.confidence,
+                duration_sec=wr.duration_sec,
+                user_reply=USER_REPLY_PROCESSING_FAILED,
+                error_kind="prompt_echo",
+                telemetry=telemetry,
+            )
 
     # ── Short-circuit ─────────────────────────────────────────────
     short_circuit, reason = should_short_circuit(wr.transcript, wr.no_speech_prob)

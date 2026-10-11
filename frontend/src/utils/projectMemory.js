@@ -29,7 +29,9 @@ export function chipText(r) {
       ? ['Tracked item', x.label, x.when]
       // The sender's number after the name: full for a company admin, the
       // last 4 for anyone else (the server sends what this viewer may see).
-      : [x.who || 'Someone', x.phone, x.group, x.voice && x.when ? `🎤 ${x.when}` : x.when];
+      // Forwarded (WhatsApp's label): the poster passed on someone else's words.
+      : [`${x.who || 'Someone'}${x.forwarded ? ' (forwarded)' : ''}`, x.phone, x.group,
+        x.voice && x.when ? `🎤 ${x.when}` : x.when];
   return parts.filter(Boolean).join(' · ');
 }
 

@@ -28,6 +28,7 @@ assertions are about.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 import sys
@@ -136,91 +137,55 @@ class ReplyingToTheBotIsAddressingIt(_AddressingCase):
         self.assertFalse(self.addressed("Done 2", mode="strict",
                                         quoted_from_bot=False))
 
-    def test_a_quoted_message_that_mentions_the_bot_still_counts(self):
-        """The pre-existing route, unbroken by the new one."""
-        self.assertTrue(self.addressed("and the roof?", mode="strict",
-                                       quoted_body="@levelog who is on site"))
+    def test_a_quoted_message_that_mentions_the_bot_no_longer_counts(self):
+        """Oct 11 ruling: only typed text with the wake word, or a reply to
+        the BOT's own message. Replying to a person who named the bot is a
+        reply to that person."""
+        self.assertFalse(self.addressed("and the roof?", mode="strict",
+                                        quoted_body="@levelog who is on site"))
 
 
-class TheWindowRollsForward(_AddressingCase):
-    """It used to be marked only on the two explicit branches, so riding the
-    window never renewed it: the 180 seconds ran from the tag, not from the
-    conversation, and a live exchange died mid-sentence."""
+class OnlyTheWakeWordOrAReplyToTheBot(_AddressingCase):
+    """THE RULE (Oct 11 ruling, after 588 at 2:51 PM): in a group the bot
+    speaks only when typed text names it, or the message is a WhatsApp reply
+    to one of its own messages. The loose-mode trigger words, the session
+    window and a voice note's words no longer route a message to it; the
+    measured "lost questions" below are, by that ruling, people talking to
+    each other."""
 
-    def test_every_route_in_marks_the_session(self):
+    LOST = ["Who's on site?", "Active permits", "Permit status?",
+            "Who's on sote", "lunch at 12?"]
+
+    def test_the_two_ways_in(self):
         cases = {
             "mention":      dict(body="levelog who is on site", mode="strict"),
             "reply_to_bot": dict(body="Done 2", quoted_from_bot=True, mode="strict"),
-            "trigger":      dict(body="who is on site", mode="loose"),
-            "voice":        dict(body="", voice=True, mode="loose"),
+            "voice_reply":  dict(body="", voice=True, quoted_from_bot=True, mode="loose"),
         }
         for name, kw in cases.items():
             with self.subTest(route=name):
-                self.sessions = _Sessions()
-                server._mark_bot_session = self.sessions.mark
-                server._is_in_bot_session = self.sessions.is_in
                 self.assertTrue(self.addressed(**kw))
-                self.assertEqual(len(self.sessions.marks), 1,
-                                 f"{name} did not renew the window")
 
-    def test_riding_the_window_renews_it(self):
-        """The regression itself. A follow-up that routes ON the session must
-        push the session out, or the conversation has a hard three-minute
-        ceiling no matter how active it is."""
+    def test_questions_between_people_are_not_for_the_bot(self):
+        for mode in ("strict", "loose"):
+            for body in self.LOST:
+                with self.subTest(mode=mode, body=body):
+                    self.assertFalse(self.addressed(body, mode=mode))
+
+    def test_a_session_does_not_carry_a_follow_up(self):
         self.sessions.live = True
-        self.assertTrue(self.addressed("and the roof?", mode="strict"))
-        self.assertEqual(self.sessions.marks, [("1203@g.us", "17185551212")])
-
-    def test_a_message_that_is_not_addressed_marks_nothing(self):
-        self.assertFalse(self.addressed("bring the truck around back",
-                                        mode="strict"))
-        self.assertEqual(self.sessions.marks, [])
-
-
-class LooseHonoursTheSessionToo(_AddressingCase):
-    """Loose mode used to `return False` before ever reaching the session
-    check, so a follow-up with no trigger word was dropped in the mode that
-    was supposed to be the forgiving one."""
-
-    def test_a_follow_up_with_no_trigger_word_rides_the_session(self):
-        self.sessions.live = True
-        self.assertTrue(self.addressed("and the roof", mode="loose"))
-
-    def test_the_same_message_without_a_session_is_not_addressed(self):
-        self.sessions.live = False
+        self.assertFalse(self.addressed("and the roof?", mode="strict"))
         self.assertFalse(self.addressed("and the roof", mode="loose"))
 
-
-class TheEeventualQuestions(_AddressingCase):
-    """The eleven, run through the new rules. This is the test that would have
-    caught the problem, written against the messages that exposed it."""
-
-    LOST = [
-        "Who's on site?",
-        "Active permits",
-        "Permit status?",
-        "Who's on sote",
-        "lunch at 12?",
-    ]
-
-    def test_the_real_questions_now_reach_the_agent(self):
-        for body in self.LOST:
-            with self.subTest(body=body):
-                self.assertTrue(self.addressed(body, mode="loose"),
-                                f"still dropped: {body!r}")
+    def test_a_voice_note_naming_the_bot_is_not_for_it(self):
+        self.assertFalse(self.addressed("levelog who is on site", voice=True,
+                                        mode="strict"))
 
     def test_the_checklist_replies_reach_it_as_replies(self):
         for body in ("Done 2", "Done 3"):
             with self.subTest(body=body):
-                self.assertTrue(
-                    self.addressed(body, mode="loose", quoted_from_bot=True))
-
-    def test_loose_is_not_a_promise_to_answer(self):
-        """"lunch at 12?" routes to the AGENT under loose. It does not follow
-        that the bot speaks: NOREPLY is what keeps loose from being noisy, and
-        that clause is in the prompt rather than in this function."""
-        self.assertIn("NOREPLY", server._AGENT_NOREPLY_CLAUSE)
-        self.assertIn("not for", server._AGENT_NOREPLY_CLAUSE.lower())
+                self.assertTrue(self.addressed(body, mode="loose", quoted_from_bot=True))
+                self.assertFalse(self.addressed(body, mode="loose"))
 
 
 class TheParserLearnsWhoWroteTheQuotedMessage(unittest.TestCase):
@@ -263,33 +228,16 @@ class TheParserLearnsWhoWroteTheQuotedMessage(unittest.TestCase):
         self.assertFalse(p["quoted_from_me"])
 
 
-class SilenceIsTheFailureThisTeaches(unittest.TestCase):
-    """A question nobody answered is worse than a wrong answer: the person
-    learns the bot is broken and stops asking. That is how the measured group
-    went quiet."""
+class TheHintIsGone(unittest.TestCase):
+    """The once-a-day "I'm here — say 'levelog' or reply to one of my
+    messages" hint answered a voice note between people (588, Oct 11). It
+    no longer exists in groups."""
 
-    def test_a_question_mark_is_a_question(self):
-        for body in ("Who's on site?", "lunch at 12?", "permits?"):
-            with self.subTest(body=body):
-                self.assertTrue(server._looks_like_a_question(body))
-
-    def test_a_question_word_at_the_start_counts_without_one(self):
-        """Most people do not type the mark on a phone."""
-        for body in ("who is on site", "any permits expiring", "how many guys"):
-            with self.subTest(body=body):
-                self.assertTrue(server._looks_like_a_question(body))
-
-    def test_a_statement_is_not_a_question(self):
-        for body in ("bring the truck around back", "that's what I said",
-                     "ok", "Done 2", ""):
-            with self.subTest(body=body):
-                self.assertFalse(server._looks_like_a_question(body))
-
-    def test_the_question_word_is_anchored_to_the_start(self):
-        """"what" in the middle of a sentence is usually a statement, and a
-        nudge fired at one is the bot correcting a conversation it was not
-        part of."""
-        self.assertFalse(server._looks_like_a_question("that is what we did"))
+    def test_no_hint_in_the_group_path(self):
+        src = inspect.getsource(server)
+        self.assertNotIn("reply to one of my messages and I'll answer", src)
+        self.assertFalse(hasattr(server, "_nudge_once"))
+        self.assertFalse(hasattr(server, "_looks_like_a_question"))
 
 
 class OneNumberManySpellings(unittest.TestCase):

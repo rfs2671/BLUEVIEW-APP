@@ -57,5 +57,8 @@ ok(!/\/projects\/\$\{projectId\}\/search/.test(project) && !/title: 'Search'/.te
 
 ok(M.chipText({ source: 'whatsapp', who: 'Mike Rivera', phone: '+1 718-555-0101', group: 'MEP', when: 'Oct 3, 7:42 AM' })
   === 'Mike Rivera · +1 718-555-0101 · MEP · Oct 3, 7:42 AM', 'the number after the name, as sent');
+ok(M.chipText({ source: 'whatsapp', who: 'Meilich', group: '588 Site', when: 'Oct 11, 2:57 PM',
+                voice: true, forwarded: true })
+  === 'Meilich (forwarded) · 588 Site · 🎤 Oct 11, 2:57 PM', 'a forwarded voice note says so');
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -306,7 +306,7 @@ class Reactions(unittest.TestCase):
             self.assertEqual(wa_react.social_reaction(body), want, body)
 
     def _process(self, db, body, *, react_ok=True, agent_reply="answer",
-                 agent_delay=0.0, msg_id="M1"):
+                 agent_delay=0.0, msg_id="M1", reply_to_bot=False):
         sent, reactions, agent_calls = [], [], []
 
         async def send(chat, text, reply_to=None, **kw):
@@ -332,7 +332,12 @@ class Reactions(unittest.TestCase):
                 patch.object(server, "_detect_material_request", no_detect), \
                 patch.object(wa_react, "WORKING_AFTER_SECONDS", 0.05), \
                 patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": BOT_NUMBER}):
-            _run(server._process_whatsapp_message(_payload(body, msg_id=msg_id)))
+            p = _payload(body, msg_id=msg_id)
+            if reply_to_bot:
+                # Tapped reply on the bot's checklist.
+                p["data"]["message"]["_data"] = {"quotedMsg": {
+                    "type": "chat", "fromMe": True, "body": "Checklist: 1. Clean up 2. Order rebar"}}
+            _run(server._process_whatsapp_message(p))
         return sent, reactions, agent_calls
 
     def _db(self, **extra):
@@ -353,15 +358,26 @@ class Reactions(unittest.TestCase):
         self.assertTrue(db.whatsapp_checklists.rows[0]["items"][1]["completed"])
 
     def test_a_failed_reaction_falls_back_to_the_text_never_both(self):
-        sent, reactions, _ = self._process(self._checklist_db(), "done 2", react_ok=False)
+        """As a reply to the bot's checklist: the bot may speak."""
+        sent, reactions, _ = self._process(self._checklist_db(), "done 2", react_ok=False,
+                                           reply_to_bot=True)
         self.assertEqual(len(reactions), 1)
         self.assertEqual(len(sent), 1)
         self.assertIn("marked complete", sent[0])
 
+    def test_unaddressed_a_failed_reaction_says_nothing(self):
+        """Oct 11 ruling: no wake word and no reply to the bot -- no text."""
+        db = self._checklist_db()
+        sent, reactions, _ = self._process(db, "done 2", react_ok=False)
+        self.assertEqual((len(reactions), sent), (1, []))
+        self.assertTrue(db.whatsapp_checklists.rows[0]["items"][1]["completed"])
+
     def test_missing_info_is_text_not_a_reaction(self):
-        sent, reactions, _ = self._process(self._checklist_db(), "done 9")
+        sent, reactions, _ = self._process(self._checklist_db(), "done 9", reply_to_bot=True)
         self.assertEqual(reactions, [])
         self.assertIn("not found", sent[0])
+        sent, reactions, _ = self._process(self._checklist_db(), "done 9")
+        self.assertEqual((reactions, sent), ([], []))
 
     def test_thanks_gets_a_prayer_and_no_text_or_agent(self):
         sent, reactions, agent = self._process(self._db(), "thanks levelog")

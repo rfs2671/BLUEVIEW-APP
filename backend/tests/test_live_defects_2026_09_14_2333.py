@@ -179,13 +179,11 @@ class EveryRefusalIsNamed(unittest.TestCase):
         code = _code_only(server._is_bot_addressed)
         self.assertIn("NOT addressed", code)
 
-    def test_the_four_causes_are_told_apart(self):
-        """They want different fixes: nobody tagged it is a product decision,
-        an expired session is a TTL question, and a session that was never
-        written is the duplicate-key fault that ate the first miss."""
+    def test_the_causes_are_told_apart(self):
+        """Oct 11 ruling: no wake word, or a voice note that is not a reply
+        to the bot. Sessions no longer route anything."""
         code = _code_only(server._is_bot_addressed)
-        for why in ("no_mention", "session_missing", "session_expired",
-                    "strict"):
+        for why in ("no_wake_word", "voice"):
             with self.subTest(why=why):
                 self.assertIn(why, code)
 

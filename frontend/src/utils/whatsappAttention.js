@@ -153,12 +153,27 @@ export function reviewable(e, item) {
   return true;
 }
 
+/**
+ * A Yiddish voice note: two lines, what was said and Whisper's direct
+ * English translation. null for any other item (the quote shows as before).
+ */
+export function yiddishLines(item) {
+  const y = item && item.yiddish;
+  if (!y || !y.original) return null;
+  const lines = [{ key: 'said', label: 'Said', text: y.original }];
+  if (y.english) lines.push({ key: 'english', label: 'English', text: y.english });
+  return lines;
+}
+
 /** ▶ Play on a voice item whose audio is kept. */
 export function canPlay(item) {
   return !!item && !!item.voice && !!item.message_row_id && item.audio !== false;
 }
 
 export const PLAY_LABEL = '▶ Play';
+/** A forwarded message: the words are not the sender's own. */
+export const FORWARDED_TEXT = 'Forwarded — someone else\'s words, passed on.';
+
 export const NO_AUDIO_TEXT = 'No audio was kept for this voice note.';
 
 const CHANGE_LABELS = {
