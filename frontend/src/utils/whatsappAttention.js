@@ -111,6 +111,7 @@ export function eventLine(e) {
   if (!e) return '';
   if (e.kind === 'created') return e.due_to ? `Recorded · due ${e.due_to}` : 'Recorded';
   if (e.kind === 'follow_up') return 'Followed up (no change)';
+  if (e.kind === 'progress') return 'In progress (no change)';
   if (e.kind === 'part_done') return `One part done (…${e.sender_last4 || '????'})`;
   if (e.kind === 'flag') return FLAGS[e.note] || 'Flagged for review. Not applied.';
   if (e.kind === 'handover') {
@@ -138,9 +139,10 @@ export function linkLine(e) {
   return l ? `Linked: ${l}` : null;
 }
 
-/** Changes get Correct / Wrong; recording the item and a follow-up do not. */
+/** Changes get Correct / Wrong; recording the item, a follow-up and a
+ *  progress line ("Working on it") do not: they change nothing. */
 export function reviewable(e) {
-  return !!e && e.kind !== 'created' && e.kind !== 'follow_up' && !!e.id;
+  return !!e && e.kind !== 'created' && e.kind !== 'follow_up' && e.kind !== 'progress' && !!e.id;
 }
 
 const CHANGE_LABELS = {

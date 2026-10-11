@@ -275,6 +275,23 @@
     "kind": "none",
     "why": "info; unknown person"
    }
+  },
+  {
+   "n": 26,
+   "from": "C",
+   "body": "Working on it",
+   "reply_to": 6,
+   "expect": {
+    "kind": "progress",
+    "of": 6,
+    "why": "588, Oct 11 live: progress on the item it replies to, never a new item"
+   },
+   "model": [
+    {
+     "type": "commitment",
+     "quote": "Working on it"
+    }
+   ]
   }
  ],
  "final": {

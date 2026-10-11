@@ -206,7 +206,8 @@ def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]]) -> Optional[
         return None
     first = times[0]
     for e in item.get("history") or []:
-        if not isinstance(e, dict) or e.get("kind") in (None, "created"):
+        # Progress ("working on it") is rule 2, not a change: it skips a slot.
+        if not isinstance(e, dict) or e.get("kind") in (None, "created", was.PROGRESS):
             continue
         at = _at(e.get("at"))
         if at and at > first:
@@ -222,21 +223,15 @@ SKIPPED = "skipped"
 # "On it", "working on it", "later" (and the Spanish / Yiddish for them):
 # a short message that is only that. Plain yeses ("ok", "dale", "yo") are
 # wa_attention_state.ack's.
-_CHASE_ACK = re.compile(
-    r"^\W*(?:(?:i'?m |im |i am )?(?:on it|working on it|on my way|omw|getting to it|will do"
-    r"|later|in a bit|soon|shortly|asap|in progress)"
-    r"|ya voy|voy|en eso|estoy en eso|trabajando en (?:eso|ello)|ahorita|al rato|mas tarde|luego"
-    r"|en camino|ahi voy"
-    r"|shpeter|bald|ikh arbet (?:oyf|af) dem|ikh bin (?:oyf|af) dem|bin dran|shoyn bald"
-    r"|שפעטער|באלד)"
-    r"(?:[\s,.!]+(?:boss|bro|jefe|man|thanks|thx|gracias|today|hoy|haynt))*\W*$")
+# The progress phrases are wa_attention_state's (one list for both: a reply
+# the attention engine records as progress is the same ack here).
 
 
 def _ack_said(body: str) -> bool:
     text = str(body or "").strip()
     if not text or len(text) > 40 or "?" in text:
         return False
-    return bool(was.ack(text) or _CHASE_ACK.match(ml.fold(text)))
+    return bool(was.ack(text) or was.progress_ack(text, accept=True))
 
 
 def item_message_ids(item: Dict[str, Any]) -> set:

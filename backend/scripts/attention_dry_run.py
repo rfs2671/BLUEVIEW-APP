@@ -238,7 +238,10 @@ class Scripted:
         self.calls += 1
         prompt = messages[-1]["content"]
         target = prompt.split(">>> ", 1)[1].split(": ", 1)[1].strip()
-        for text, items in self.by_text.items():
+        # An exact line first: "Working on it" must not take the answer of
+        # an earlier "on it" that it merely ends with.
+        exact = [(t, i) for t, i in self.by_text.items() if t.strip() == target]
+        for text, items in exact or self.by_text.items():
             if text.strip() == target or target.endswith(text.strip()):
                 out = [{"summary": text[:60], "owner_text": None, "due_text": None,
                         "importance": "normal", "tags": [], **i} for i in items]

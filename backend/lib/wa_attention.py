@@ -39,7 +39,7 @@ try:  # zoneinfo is stdlib; tzdata may be absent on a slim image
 except Exception:  # pragma: no cover
     _ET = None
 
-PROMPT_VERSION = "att-v1.3"
+PROMPT_VERSION = "att-v1.4"   # v1.4: a progress reply ("Working on it") is not an item
 MODEL = "gpt-4o-mini"
 
 TYPES = ("question", "request", "commitment", "issue", "decision")
@@ -158,6 +158,7 @@ Rules:
 - If a question or request this message may answer is shown and the message takes it on ("I'll take care of it", "Lift is mine", "Np" + a day), that is a commitment on THAT topic.
 - "I'll try to ... sometime" is too vague to be a commitment. Skip it.
 - A question chasing something already promised ("the risers came in?") is NOT a new item.
+- A reply that only says work is under way ("Working on it", "On it", "on my way", "almost done", "estoy en eso", "ikh arbet oyf dem") is NOT a new item, not even a commitment: it is progress on the item it replies to.
 - importance: "high" ONLY when the message itself says it is urgent (urgent, ASAP, emergency, immediately, stop work). Never infer it from the topic or from a word like "fire" or "inspection". Otherwise "normal".
 - Greetings, thanks, jokes, sarcasm, rhetorical questions, photos with no ask, and plain status updates are NOT items.
 - At most 3 items. None is a fine answer.

@@ -540,6 +540,23 @@
     "kind": "none"
    },
    "why": "Chase rule 3: Mike asks about something else after his midday nudge: still chased at end of day and escalated."
+  },
+  {
+   "from": "E",
+   "at": "2026-10-16 12:50:00",
+   "reply_to": 10,
+   "text": "Working on it",
+   "model": [
+    {
+     "type": "commitment",
+     "quote": "Working on it"
+    }
+   ],
+   "expect": {
+    "kind": "progress",
+    "of": 10
+   },
+   "why": "Live, 588 Oct 11: a progress reply came back from the model as a NEW commitment. It is progress on the item it replies to: a line on its timeline, never an item (the model's answer here is that live misread)."
   }
  ],
  "chase": {
