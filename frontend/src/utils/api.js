@@ -1957,6 +1957,17 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Voice log, admins: { notes, total, facets: {senders, langs} } -- every
+  // voice note of the job (its groups', and DM notes answered about it).
+  // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed').
+  getVoiceLog: async (projectId, filters = {}) => {
+    const params = {};
+    ['sender', 'lang', 'status'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
+    const response = await apiClient.get(`/api/projects/${projectId}/whatsapp/voice-log`,
+      { params });
+    return response.data;
+  },
+
   // Would chase (beta), admins: { entries, precision, total, shadow_mode,
   // disabled } -- the nudges sub chasing would have sent. Nothing was sent.
   getChase: async (projectId) => {

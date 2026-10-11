@@ -51800,6 +51800,15 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # (ident, project_id, question, path[, tool trace])
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
                              tool_data=log[4] if len(log) > 4 else None)
+        if heard and message_id and log[1]:
+            # A voice question answered about a job: the Voice log lists it
+            # under that job.
+            try:
+                await db.whatsapp_voice_events.update_one(
+                    {"message_id_serialized": message_id, "where": "dm"},
+                    {"$set": {"project_id": str(log[1])}})
+            except Exception as e:
+                logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
     if reply:
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
@@ -62423,6 +62432,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     await db.whatsapp_voice_events.insert_one({
                         "message_id": voice_message_id,
                         "company_id": msg_company_id,
+                        "where":      "group",
                         "group_id":   group_id,
                         "sender":     sender,
                         "english_transcript":  vresult.english_transcript,
@@ -62892,7 +62902,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     try:
                         await db.whatsapp_voice_events.insert_one({
                             "message_id": voice_message_id,
-                            "company_id": None,
+                            "company_id": str(ident.get("company_id") or "") or None,
+                            "where":      "dm",
+                            "message_id_serialized": parsed.get("message_id_serialized") or "",
+                            "user_id":    str((ident.get("user") or {}).get("_id") or "") or None,
                             "sender":     sender,
                             "english_transcript": "",
                             "original_transcript": "",
@@ -62947,7 +62960,17 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 try:
                     await db.whatsapp_voice_events.insert_one({
                         "message_id":         voice_message_id,
-                        "company_id":         None,  # filled below if extraction runs
+                        # The Voice log lists a DM note under its company and,
+                        # once answered, the job it was about (project_id).
+                        "company_id":         str(ident.get("company_id") or "") or None,
+                        "where":              "dm",
+                        "message_id_serialized": parsed.get("message_id_serialized") or "",
+                        "user_id":            str((ident.get("user") or {}).get("_id") or "") or None,
+                        "lang":               wa_voice.lang_code(vresult.language_detected,
+                                                                 vresult.original_transcript)
+                        if vresult.ok else None,
+                        "confidence":         vresult.confidence,
+                        "duration_sec":       vresult.duration_sec,
                         "sender":             sender,
                         "english_transcript": vresult.english_transcript,
                         "original_transcript": vresult.original_transcript,
@@ -65281,6 +65304,82 @@ async def project_memory_context(project_id: str, source_id: str,
             "messages": [{**_memory_source_view(s, admin), "hit": s["id"] == doc["_id"],
                           "bot": str(m.get("sender") or "") == "bot"}
                          for s, m in zip(srcs, msgs)]}
+
+
+@api_router.get("/projects/{project_id}/whatsapp/voice-log",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "",
+                                status: str = "", current_user=Depends(get_current_user)):
+    """Admin only: every voice note of this job, newest first -- its groups'
+    notes, and DM voice notes answered about this job. Per note: when, who
+    (a name; never a number), where (group / DM), language, confidence, what
+    was said and its English, its status (transcribed / flagged / not
+    processed and why), forwarded, whether its audio is kept, and what it
+    PRODUCED: an Attention item, an Upcoming event, or nothing.
+    Filters: sender (words of the name), lang (en/es/yi/…), status."""
+    company_id = await _attention_admin_project(project_id, current_user)
+    if status and status not in wa_voice.LOG_STATUSES:
+        raise HTTPException(status_code=422,
+                            detail="status: " + ", ".join(wa_voice.LOG_STATUSES))
+    groups = await db.whatsapp_groups.find(
+        {"project_id": str(project_id), "company_id": _company_id_filter(company_id)},
+        {"wa_group_id": 1, "group_name": 1}).to_list(50)
+    gnames = {g.get("wa_group_id"): wa_groups.display_name(g.get("group_name"))
+              for g in groups if g.get("wa_group_id")}
+    rows = await db.whatsapp_messages.find(
+        {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
+         "has_audio": True, "sender": {"$ne": "bot"}}).sort(
+        [("timestamp", -1)]).limit(300).to_list(300)
+    rows = [r for r in rows if r.get("voice") or r.get("skipped")]
+    ids = [str(r["_id"]) for r in rows]
+    produced: Dict[str, List[dict]] = {}
+    if ids:
+        for it in await db.attention_items.find(
+                {"project_id": str(project_id), "company_id": str(company_id),
+                 "evidence.message_row_id": {"$in": ids}},
+                {"type": 1, "summary": 1, "status": 1, "evidence.message_row_id": 1}
+        ).to_list(1000):
+            produced.setdefault(str((it.get("evidence") or {}).get("message_row_id")), []).append(
+                {"kind": "item", "id": str(it["_id"]), "type": it.get("type"),
+                 "label": it.get("summary") or "", "status": it.get("status")})
+        for ev in await db.upcoming_events.find(
+                {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
+                 "source_ref": {"$in": ids}},
+                {"title": 1, "date": 1, "status": 1, "source_ref": 1}).to_list(1000):
+            produced.setdefault(str(ev.get("source_ref")), []).append(
+                {"kind": "event", "id": str(ev["_id"]), "label": ev.get("title") or "",
+                 "date": ev.get("date"), "status": ev.get("status")})
+    cache: Dict[str, Any] = {}
+    out = []
+    for r in rows:
+        jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
+        person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
+        who = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
+               else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+        at = r.get("timestamp") if isinstance(r.get("timestamp"), datetime) else r.get("created_at")
+        out.append(wa_voice.log_row(r, who=who, where="group",
+                                    place=gnames.get(r.get("group_id")) or "",
+                                    at=_iso_utc(at), produced=produced.get(str(r["_id"]), [])))
+    dms = await db.whatsapp_voice_events.find(
+        {"company_id": str(company_id), "project_id": str(project_id), "where": "dm"}).sort(
+        [("received_at", -1)]).limit(100).to_list(100)
+    users = {}
+    uids = [d.get("user_id") for d in dms if d.get("user_id")]
+    if uids:
+        users = {str(u["_id"]): u.get("name") or u.get("full_name") or ""
+                 for u in await db.users.find(
+                     {"_id": {"$in": [to_query_id(u) for u in uids]},
+                      "company_id": _company_id_filter(company_id)},
+                     {"name": 1, "full_name": 1}).to_list(len(uids) + 5)}
+    for d in dms:
+        out.append(wa_voice.log_row_dm(d, who=users.get(str(d.get("user_id") or "")) or
+                                       f"…{str(d.get('sender') or '')[-4:]}",
+                                       at=_iso_utc(d.get("received_at"))))
+    out.sort(key=lambda x: x.get("at") or "", reverse=True)
+    facets = {"senders": sorted({x["who"] for x in out if x.get("who")}),
+              "langs": sorted({x["lang"] for x in out if x.get("lang")})}
+    shown = [x for x in out if wa_voice.log_keep(x, sender=sender, lang=lang, status=status)]
+    return {"notes": shown, "total": len(out), "facets": facets}
 
 
 @api_router.get("/projects/{project_id}/attention",
@@ -69211,6 +69310,9 @@ async def startup_event():
     await db.whatsapp_groups.create_index("project_id")
     await db.whatsapp_messages.create_index([("project_id", 1), ("timestamp", -1)])
     await db.whatsapp_messages.create_index([("group_id", 1), ("created_at", -1)])
+    # The Voice log's DM notes: a company's, about one job, newest first.
+    await db.whatsapp_voice_events.create_index(
+        [("company_id", 1), ("project_id", 1), ("received_at", -1)])
     # Attention engine (shadow mode): the cursor walk, the dedupe probe, the
     # reply-to-evidence match and the review list.
     await db.whatsapp_messages.create_index(
