@@ -48,7 +48,8 @@ class ThePrompt(unittest.TestCase):
             job=["588 Atlantic Ave", "Levelog test job"],
             subs=["Rivera Electric", "LeveLog Assistant"],
             people=["Meilich", "levelog", "Levelog Bot", "Dave"])
-        self.assertNotIn("levelog", p.lower())
+        self.assertFalse(voice_glossary.names_the_bot(p), p)
+        self.assertEqual(p.count("Job: 588 Atlantic Ave."), 1)       # the bot's job name dropped
         for kept in ("588 Atlantic Ave", "Rivera Electric", "Meilich", "Dave"):
             self.assertIn(kept, p)
 
