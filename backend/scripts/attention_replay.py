@@ -119,7 +119,9 @@ async def main_async(a) -> int:
     if not out["items"]:
         print("No item would change." if not a.apply else "No item changed.")
     for c in out["items"]:
-        print(f"  {c['type']:<10} {c['from']} → {c['to']}  “{c['summary'][:70]}”")
+        what = (f"{c['from']} → {c['to']}" if c['from'] != c['to']
+                else f"{c['to']}, {' + '.join(c.get('events') or c.get('changed') or [])}")
+        print(f"  {c['type']:<10} {what}  “{c['summary'][:70]}”")
         if c["because"]:
             print(f"             because: “{c['because'][:90]}” ({c['at']})")
     hints = out.get("open_with_done_after") or []

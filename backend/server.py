@@ -46649,7 +46649,7 @@ async def _attention_live_items(ctx: dict, sent_at: datetime) -> List[dict]:
         # nothing later exists yet).
         window["$lt"] = sent_at
     try:
-        return await db.attention_items.find(
+        rows = await db.attention_items.find(
             {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
              "company_id": ctx["company_id"],
              "status": {"$in": list(wa_attention_state.LIVE)},
@@ -46657,6 +46657,24 @@ async def _attention_live_items(ctx: dict, sent_at: datetime) -> List[dict]:
     except Exception as e:
         logger.warning(f"[attention] live items read failed: {type(e).__name__}")
         return []
+    if ctx.get("replay"):
+        # Its state now is not its state then: an item already changed at or
+        # after this message (an Oct 10 move applied, an Oct 9 "done"
+        # missed) is left alone -- replaying the older message would undo
+        # the newer change.
+        rows = [r for r in rows if not _attention_changed_since(r, sent_at)]
+    return rows
+
+
+def _attention_changed_since(item: dict, at: datetime) -> bool:
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    for e in item.get("history") or []:
+        when = e.get("at") if isinstance(e, dict) else None
+        if not isinstance(when, datetime) or e.get("kind") in ("created", "follow_up"):
+            continue
+        if (when if when.tzinfo else when.replace(tzinfo=timezone.utc)) >= at:
+            return True
+    return False
 
 
 async def _attention_previous(msg: dict, ctx: dict) -> Optional[dict]:
@@ -47585,8 +47603,19 @@ async def _attention_replay_state(project_id: str, since: datetime,
     now = now or datetime.now(timezone.utc)
     groups = await db.whatsapp_groups.find(
         {"project_id": str(project_id), "active": True}).to_list(50)
-    before = {str(i["_id"]): i.get("status") for i in await db.attention_items.find(
-        {"project_id": str(project_id)}, {"status": 1}).to_list(10000)}
+    # Everything the engine can change, not only the status: a handover
+    # (owner), a part done or a flag (history), a second move (due).
+    snap = {"status": 1, "due": 1, "owner": 1, "chase_quote": 1, "history": 1}
+
+    def state_of(i: dict) -> dict:
+        o = i.get("owner") or {}
+        return {"status": i.get("status"), "due": i.get("due") or {},
+                "owner": [o.get(k) for k in ("kind", "id", "jid", "name", "status")],
+                "chase_quote": (i.get("chase_quote") or {}).get("quote"),
+                "history": len(i.get("history") or [])}
+
+    before = {str(i["_id"]): state_of(i) for i in await db.attention_items.find(
+        {"project_id": str(project_id)}, snap).to_list(10000)}
     from collections import defaultdict
     report: Dict[str, Any] = defaultdict(int)    # the worker's counters, all from 0
     for g in groups:
@@ -47610,15 +47639,21 @@ async def _attention_replay_state(project_id: str, since: datetime,
             await _attention_state_update(msg, text, prev, ctx, report)
     after = await db.attention_items.find(
         {"project_id": str(project_id)},
-        {"status": 1, "summary": 1, "type": 1, "history": 1}).to_list(10000)
+        {**snap, "summary": 1, "type": 1}).to_list(10000)
     changed = []
     for i in after:
-        if before.get(str(i["_id"])) == i.get("status"):
+        was, now_ = before.get(str(i["_id"])) or {}, state_of(i)
+        fields = [k for k in now_ if was.get(k) != now_[k]]
+        if not fields:
             continue
-        last = (i.get("history") or [{}])[-1]
+        added = (i.get("history") or [])[int(was.get("history") or 0):] or \
+            (i.get("history") or [{}])[-1:]
+        last = added[-1] if added else {}
         changed.append({"id": str(i["_id"]), "summary": i.get("summary") or "",
-                        "type": i.get("type"), "from": before.get(str(i["_id"])),
-                        "to": i.get("status"), "because": last.get("quote") or "",
+                        "type": i.get("type"), "from": was.get("status"),
+                        "to": i.get("status"), "changed": fields,
+                        "events": [e.get("kind") for e in added if isinstance(e, dict)],
+                        "because": last.get("quote") or "",
                         "at": _iso_utc(last.get("at"))})
     # Still open, but its owner said done / sent later in the same group in
     # words that do not name it (no reply, no shared subject): not closed --

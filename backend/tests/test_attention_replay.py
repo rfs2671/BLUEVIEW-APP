@@ -103,6 +103,38 @@ class TheReplay(unittest.TestCase):
         self.assertEqual((h["id"], h["said"]), ("it_door", "Just sent, check ur email"))
 
 
+    def test_an_item_changed_after_the_message_is_left_alone(self):
+        # The Oct 9 "Just sent" was missed, but an Oct 10 move was applied:
+        # replaying Oct 9 must not overwrite the newer state.
+        db = _scene()
+        door = next(i for i in db.attention_items.rows if i["_id"] == "it_door")
+        oct10 = OCT9 + timedelta(days=1)
+        door.update(status="rescheduled", due={"due_text": "Monday", "due_at": "2026-10-12"})
+        door["history"].append({"id": "e1", "kind": "state", "from": "open",
+                                "to": "rescheduled", "at": oct10, "quote": "Actually Monday"})
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        self.assertEqual(door["status"], "rescheduled")
+        self.assertEqual(len(door["history"]), 2)
+        self.assertEqual(out["items"], [])
+
+    def test_a_change_that_keeps_the_status_is_reported(self):
+        # An already-moved item moved again: still "rescheduled", a new date.
+        db = _world()
+        m1 = _msg(db, "I'll send the door hardware submittal tomorrow", at=OCT8, sender=MIKE)
+        _item(db, "it_door", "I'll send the door hardware submittal tomorrow", OCT8, m1["message_id"])
+        door = db.attention_items.rows[0]
+        door["status"] = "rescheduled"
+        _msg(db, "Actually give me till Tuesday", at=OCT9, sender=MIKE,
+             quoted_message_id=m1["message_id"], quoted_author=f"{MIKE}@c.us")
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        (c,) = out["items"]
+        self.assertEqual((c["from"], c["to"]), ("rescheduled", "rescheduled"))
+        self.assertIn("due", c["changed"])
+        self.assertIn("history", c["changed"])
+
+
 class TheScript(unittest.TestCase):
 
     def _run(self, db, *args):

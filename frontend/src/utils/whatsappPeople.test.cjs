@@ -29,6 +29,10 @@ ok(P.assignmentLine(row) === 'Not assigned', 'unassigned says so');
 ok(P.assignmentLine({ assigned: { person_name: 'Carlos Baez', sub_company: 'Bright Electric' } })
   === 'Carlos Baez · Bright Electric', 'assigned: name · company');
 ok(P.detailLine(row, NOW) === 'Main St Project · 12 messages · last Oct 8', 'group, count, last');
+// New York's day, whatever the phone's zone: 00:30 New York on Oct 9 is
+// 04:30Z (and Oct 8 on a phone in California).
+ok(P.detailLine({ ...row, last_message_at: '2026-10-09T04:30:00+00:00' }, NOW)
+  .endsWith('last Oct 9'), 'last message day is New York\'s');
 ok(P.detailLine({ groups: ['a', 'b'], message_count: 1 }, NOW) === '2 groups · 1 message',
   'several groups counted, singular message');
 
