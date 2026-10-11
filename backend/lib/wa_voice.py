@@ -395,10 +395,11 @@ _META = re.compile(
 
 def quality_signals(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Whisper's verbose_json scores for a note: avg_logprob (weighted by
-    segment length), the highest no_speech_prob and compression_ratio, and
-    the segment count. Missing scores stay None."""
+    segment length) and the lowest segment's, the highest no_speech_prob and
+    compression_ratio, and the segment count. Missing scores stay None. Each
+    threshold applies to every segment."""
     num = den = 0.0
-    ns, cr = [], []
+    ns, cr, lp = [], [], []
     for seg in segments or []:
         if not isinstance(seg, dict):
             continue
@@ -406,11 +407,15 @@ def quality_signals(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
             w = max(float(seg.get("end") or 0) - float(seg.get("start") or 0), 0.01)
             num += float(seg["avg_logprob"]) * w
             den += w
+            lp.append(float(seg["avg_logprob"]))
         if isinstance(seg.get("no_speech_prob"), (int, float)):
             ns.append(float(seg["no_speech_prob"]))
         if isinstance(seg.get("compression_ratio"), (int, float)):
             cr.append(float(seg["compression_ratio"]))
     return {"avg_logprob": round(num / den, 3) if den else None,
+            # The worst segment: one unsure segment is not hidden by a long
+            # sure one (Codex review on #752).
+            "min_avg_logprob": round(min(lp), 3) if lp else None,
             "no_speech_prob": round(max(ns), 3) if ns else None,
             "compression_ratio": round(max(cr), 3) if cr else None,
             "segments": len(segments or [])}
@@ -426,8 +431,11 @@ def unreliable_reasons(transcript: str, q: Optional[Dict[str, Any]]) -> List[str
     """Why this transcript is not what was said ([] when it can be used)."""
     q = q or {}
     out = []
-    if isinstance(q.get("avg_logprob"), (int, float)) and q["avg_logprob"] < AVG_LOGPROB_MIN:
-        out.append(f"avg_logprob {q['avg_logprob']} < {AVG_LOGPROB_MIN}")
+    lp = q.get("min_avg_logprob")
+    if not isinstance(lp, (int, float)):
+        lp = q.get("avg_logprob")
+    if isinstance(lp, (int, float)) and lp < AVG_LOGPROB_MIN:
+        out.append(f"avg_logprob {lp} < {AVG_LOGPROB_MIN}")
     if isinstance(q.get("no_speech_prob"), (int, float)) and q["no_speech_prob"] > NO_SPEECH_MAX:
         out.append(f"no_speech_prob {q['no_speech_prob']} > {NO_SPEECH_MAX}")
     if isinstance(q.get("compression_ratio"), (int, float)) \

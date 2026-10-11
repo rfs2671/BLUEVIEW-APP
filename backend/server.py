@@ -63082,10 +63082,16 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     # Whisper's scores or words say this is not what was said:
                     # nothing is answered from it (Oct 11).
                     try:
+                        # The usable transcript is cleared and the reply kept, so
+                        # a redelivered webhook replays the reply, never the
+                        # rejected words (Codex review on #752).
                         await db.whatsapp_voice_events.update_one(
                             {"message_id": voice_message_id, "where": "dm"},
                             {"$set": {"error_kind": "unreliable",
-                                      "unreliable": list(vresult.unreliable)}})
+                                      "unreliable": list(vresult.unreliable),
+                                      "rejected_transcript": vresult.english_transcript,
+                                      "english_transcript": "",
+                                      "user_reply": wa_voice.DM_UNRELIABLE_REPLY}})
                     except Exception:
                         pass
                     await send_whatsapp_message(parsed["from"], wa_voice.DM_UNRELIABLE_REPLY)
