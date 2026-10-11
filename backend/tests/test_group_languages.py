@@ -262,18 +262,24 @@ class SettingA588(unittest.TestCase):
         db = FakeDb(projects=[{"_id": "proj_a", "name": "588 Bedford", "company_id": CO_A}],
                     whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1"),
                                      _group_row(CO_A, "proj_b", _id="g2")])
-        with patch.object(server, "db", db):
-            _run(s.main_async(s.argparse.Namespace(project="proj_a", group="", **dict(argv))))
+        with patch("builtins.print"):
+            s.main(["--project", "proj_a", *argv], db=db)
         return db
 
-    def test_dry_run_writes_nothing_and_apply_writes(self):
-        db = self._run_script(("langs", "en,yi"), ("apply", False))
+    def test_dry_run_writes_nothing_and_i_know_writes_and_audits(self):
+        db = self._run_script("--langs", "en,yi")
         self.assertEqual(db.whatsapp_groups.rows[0]["bot_config"]["languages"], [])
-        db = self._run_script(("langs", "yi,en"), ("apply", True))
+        self.assertEqual(db.audit_logs.rows, [])
+        db = self._run_script("--langs", "yi,en", "--i-know", "--reason", "588 is EN+YI",
+                              "--session", "s1")
         self.assertEqual(db.whatsapp_groups.rows[0]["bot_config"]["languages"], ["en", "yi"])
         self.assertEqual(db.whatsapp_groups.rows[1]["bot_config"]["languages"], [])   # not 588
+        self.assertTrue(db.audit_logs.rows)
+        self.assertIn("588 is EN+YI", str(db.audit_logs.rows))
         with self.assertRaises(SystemExit):
-            self._run_script(("langs", "en,fr"), ("apply", True))
+            self._run_script("--langs", "en,fr", "--i-know", "--reason", "x", "--session", "s1")
+        with self.assertRaises(SystemExit):
+            self._run_script("--langs", "en,yi", "--apply")        # the old flag: refused
 
 
 def _yid_item(i, group="g1", minutes=0, verdict=None, lang="yi"):

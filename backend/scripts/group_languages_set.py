@@ -1,8 +1,10 @@
 """Set a job's WhatsApp groups' "Languages spoken" (bot_config.languages).
-DRY RUN unless --apply.
+DRY RUN unless --i-know (with --reason and --session: the write leaves an
+audit row, scripts/prod_guard.py).
 
     railway run python scripts/group_languages_set.py --project 588 --langs en,yi
-    railway run python scripts/group_languages_set.py --project 588 --langs en,yi --apply
+    railway run python scripts/group_languages_set.py --project 588 --langs en,yi \
+        --i-know --reason "588 speaks English and Yiddish" --session <id>
 
 The same setting as Group settings -> Languages spoken in the app, for every
 group of the job (or the ones whose name contains --group). 588 is EN+YI
@@ -20,6 +22,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+from prod_guard import add_guard_args, audited, check_guard, refuse_legacy_flag  # noqa: E402
+
+NAME = "group_languages_set"
 
 
 def parse_langs(value: str):
@@ -30,10 +36,13 @@ def parse_langs(value: str):
     return langs
 
 
-async def main_async(a) -> int:
-    import server
+async def main_async(a, db=None) -> int:
     from scripts.wa_provenance import _find_project
-    db = server.db
+    if db is None:
+        import server
+        db = server.db
+    a.apply = check_guard(a)
+    db = audited(db, a, NAME)                 # the write leaves an audit row
     langs = parse_langs(a.langs)
     p = await _find_project(db, a.project)
     q = {"project_id": str(p["_id"])}
@@ -50,18 +59,19 @@ async def main_async(a) -> int:
         if a.apply and before != langs:
             await db.whatsapp_groups.update_one({"_id": g["_id"]},
                                                 {"$set": {"bot_config.languages": langs}})
-    print("applied" if a.apply else "nothing written; --apply to write")
+    print("applied" if a.apply else "nothing written; --i-know to write")
     return 0
 
 
-def main(argv=None) -> int:
+def main(argv=None, db=None) -> int:
+    refuse_legacy_flag(argv)
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--project", required=True, help="project id, or part of its name/address")
     ap.add_argument("--langs", required=True, help="comma list of en, es, yi (e.g. en,yi)")
     ap.add_argument("--group", default="", help="only groups whose name contains this")
-    ap.add_argument("--apply", action="store_true", help="write the setting")
-    return asyncio.run(main_async(ap.parse_args(argv)))
+    add_guard_args(ap)
+    return asyncio.run(main_async(ap.parse_args(argv), db))
 
 
 if __name__ == "__main__":
