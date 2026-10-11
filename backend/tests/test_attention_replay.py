@@ -151,6 +151,107 @@ class TheReplay(unittest.TestCase):
         self.assertIn("history", c["changed"])
 
 
+class Live588DryRun(unittest.TestCase):
+    """The 588 replay dry run, Oct 11: two engine bugs, these exact lines."""
+
+    def test_a_cancel_must_name_the_items_subject(self):
+        # "Never mind the load calcs" came right after the core drill question
+        # and cancelled it: the message just before is not its subject.
+        db = _world()
+        m1 = _msg(db, "Need confirmation on core drill locations.", at=OCT8, sender=MIKE)
+        db.attention_items.rows.append({
+            "_id": "it_core", "company_id": CO_A, "project_id": "proj_a", "group_id": G_A,
+            "type": "question", "status": "open",
+            "summary": "Confirm core drill locations",
+            "owner": {"kind": "none", "status": "unresolved"},
+            "evidence": {"message_id": m1["message_id"], "sender": MIKE, "sent_at": OCT8,
+                         "quote": "Need confirmation on core drill locations."},
+            "topic": ["confirmation", "core", "drill", "location"],
+            "history": [{"id": "e0", "kind": "created", "at": OCT8}],
+            "extraction": {"source": "live", "prompt_version": "att-v1.2"}})
+        _msg(db, "Never mind the load calcs, owner changed scope",
+             at=OCT8 + timedelta(minutes=3), sender=MIKE)
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        self.assertEqual(db.attention_items.rows[0]["status"], "open")
+        self.assertEqual(out["items"], [])
+
+    def test_the_cancel_rule_itself(self):
+        from lib import wa_attention_state as st
+        core = {"id": "c", "type": "question", "status": "open", "requester": MIKE,
+                "key": "K1", "topic": st.topic_terms("Need confirmation on core drill locations.")}
+        upd = {"kind": "cancel", "sender": MIKE, "previous_key": "K1", "reply_key": ""}
+
+        def run(text, **kw):
+            own = st.topic_terms(text)
+            return st.decide({**upd, "terms": own, "own_terms": own, **kw}, [core])
+        self.assertEqual(run("Never mind the load calcs, owner changed scope"), [])
+        self.assertEqual(run("Never mind the load calcs", reply_key="K1"), [])
+        # A bare "never mind" right after it, or one naming it: cancelled.
+        self.assertEqual(run("Never mind")[0]["to"], "cancelled")
+        self.assertEqual(run("Never mind the core drill locations")[0]["to"], "cancelled")
+        # Codex, #742: every phrase the classifier reads as a cancel is the
+        # cancel, not a subject -- bare, these call off the ask just before.
+        for bare in ("Hold off", "Hold off on that", "Olvídalo", "Farges es",
+                     "Scope changed", "Nvm"):
+            self.assertEqual(st.classify(bare), {"kind": "cancel"}, bare)
+            self.assertEqual(st.cancel_subject(bare), set(), bare)
+            got = st.decide({**upd, "terms": st.topic_terms(bare),
+                             "own_terms": st.topic_terms(bare), "body": bare}, [core])
+            self.assertEqual(got[0]["to"], "cancelled", bare)
+        body = "Never mind the load calcs, owner changed scope"
+        self.assertEqual(st.decide({**upd, "terms": st.topic_terms(body),
+                                    "own_terms": st.topic_terms(body), "body": body}, [core]), [])
+
+    def test_a_reply_by_its_quoted_words_closes_the_door_hardware(self):
+        # "Just sent, check ur email" was a reply to the door hardware ask, but
+        # WaAPI sent only the quoted words: quoted_body, no quoted_message_id
+        # (stored before the webhook matched them).
+        db = _world()
+        m1 = _msg(db, "I'll send the door hardware submittal tomorrow", at=OCT8, sender=MIKE)
+        _item(db, "it_door", "I'll send the door hardware submittal tomorrow", OCT8,
+              m1["message_id"])
+        _msg(db, "cool", at=OCT8 + timedelta(hours=1), sender="17185550999")
+        _msg(db, "Just sent, check ur email", at=OCT9, sender=MIKE,
+             quoted_body="I'll send the door hardware submittal tomorrow")
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        self.assertEqual(db.attention_items.rows[0]["status"], "done")
+        (c,) = out["items"]
+        self.assertEqual((c["id"], c["to"], c["because"]),
+                         ("it_door", "done", "Just sent, check ur email"))
+
+
+class QuotedWordsOrder(unittest.TestCase):
+    """Codex, #742: receipt order is not send order."""
+
+    def _replay(self, quoted_at, reply_at, quoted_ts, reply_ts):
+        db = _world()
+        m1 = _msg(db, "I'll send the door hardware submittal tomorrow", at=quoted_at,
+                  sender=MIKE, timestamp=quoted_ts)
+        _item(db, "it_door", "I'll send the door hardware submittal tomorrow", quoted_ts,
+              m1["message_id"])
+        _msg(db, "Just sent, check ur email", at=reply_at, sender=MIKE, timestamp=reply_ts,
+             quoted_body="I'll send the door hardware submittal tomorrow")
+        with patch.object(server, "db", db):
+            asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        return db.attention_items.rows[0]["status"]
+
+    def test_stored_in_the_same_millisecond(self):
+        t = OCT9
+        self.assertEqual(self._replay(t, t, t - timedelta(minutes=5), t), "done")
+
+    def test_webhooks_out_of_order(self):
+        # The quoted message's webhook landed 2 minutes after the reply's.
+        self.assertEqual(self._replay(OCT9 + timedelta(minutes=2), OCT9,
+                                      OCT9 - timedelta(minutes=5), OCT9), "done")
+
+    def test_a_later_message_with_those_words_is_not_what_it_quotes(self):
+        # Sent AFTER the reply (WhatsApp time), within the slack: no link.
+        self.assertEqual(self._replay(OCT9 + timedelta(minutes=2), OCT9,
+                                      OCT9 + timedelta(minutes=1), OCT9), "open")
+
+
 class TestCleanup(unittest.TestCase):
     """--dismiss-open-before: one-time test cleanup of what is still open."""
 

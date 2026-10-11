@@ -485,6 +485,15 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                               upd)
             if len(got["items"]) == 1:
                 got = {**got, "by": "gc_staff"}
+        named = cancel_subject(upd["body"]) if "body" in upd else \
+            {t for t in subject_terms(upd.get("own_terms") or ()) if t not in _CANCEL_NOT_SUBJECT}
+        if named:
+            # A cancel that names what it calls off calls off only that: "Never
+            # mind the load calcs" right after the core drill question is not
+            # about core drills (588, Oct 11: it was cancelled by "previous").
+            # Whatever the link, no shared subject word: no change.
+            got = {**got, "items": [c for c in got["items"]
+                                    if named & subject_terms(c.get("topic") or ())]}
         if len(got["items"]) == 1 and got["link"] != "only_open":
             target = got["items"][0]
             by = got.get("by") or "requester"
@@ -739,6 +748,40 @@ tengo hoy ana manana pasado temprano tarde noche lunes marte miercole jueve
 vierne sabado domingo todavia aun bien bueno gracias
 dos der mit far nit nisht ikh mir zey vos ven haynt morgn
 """.split())
+
+
+# The words of calling something off, not of what is called off: a bare
+# "Never mind" / "Nvm, cancel that" names nothing.
+_CANCEL_NOT_SUBJECT = {"never", "mind", "nvm", "cancel", "cancelled", "canceled",
+                       "cancelling", "canceling", "scratch", "forget", "ignore", "longer",
+                       "anymore", "olvidalo", "olvida", "importa", "cancela", "cancelado",
+                       "cancelada", "farges", "abgeshtelt"}
+
+
+def _fold_in_place(text: str) -> str:
+    """ml.fold one character at a time, the same length as `text`, so a
+    span matched on the folded text is the same span of the original."""
+    out = []
+    for ch in str(text or ""):
+        f = ml.fold(ch)
+        out.append(f[0] if len(f) == 1 else (f[:1] or " ") if f else " ")
+    return "".join(out)
+
+
+def cancel_subject(body: Any) -> Set[str]:
+    """What a cancel names as its own subject: its words once every phrase
+    the cancel classifier accepts is taken out ("Never mind the load calcs,
+    owner changed scope" -> load, calc, owner, ...; "Never mind", "Hold
+    off", "Olvídalo", "Farges es" -> nothing)."""
+    text = str(body or "")
+    folded = _fold_in_place(text)
+    spans = [m.span() for rx, t in ((_CANCEL, text), (_FORGET, text), (_ML_CANCEL, folded))
+             for m in rx.finditer(t)]
+    chars = list(text)
+    for a, b in spans:
+        chars[a:b] = " " * (b - a)
+    rest = "".join(chars)
+    return {t for t in subject_terms(topic_terms(rest)) if t not in _CANCEL_NOT_SUBJECT}
 
 
 def subject_terms(terms: Iterable[str]) -> Set[str]:

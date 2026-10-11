@@ -46805,7 +46805,7 @@ async def _attention_state_update(msg: dict, text: str, prev: Optional[dict],
            "by_other": bool(cls and cls.get("by_other")),
            "doer": wa_attention_state.doer(text) if cls and cls.get("by_other") else None,
            "reply_key": wa_attention_state.short_id(msg.get("quoted_message_id")),
-           "previous_key": prev_key, "terms": terms, "own_terms": own,
+           "previous_key": prev_key, "terms": terms, "own_terms": own, "body": text,
            "due_text": (cls or {}).get("due_text")}
     cands = [_attention_candidate(r) for r in rows]
     new_owner = None
@@ -47635,6 +47635,18 @@ async def _attention_replay_state(project_id: str, since: datetime,
             [("created_at", 1), ("_id", 1)]).to_list(5000)
         report["groups"] += 1
         report["rows"] += len(rows)
+        for i, r in enumerate(rows):
+            # A reply stored with only the quoted words (before the webhook
+            # matched them, Oct 9): linked as the webhook links one now.
+            if not r.get("quoted_message_id") and str(r.get("quoted_body") or "").strip() \
+                    and isinstance(r.get("created_at"), datetime):
+                hit = await _quoted_by_body(gid, r["quoted_body"], r["created_at"], reply=r)
+                if hit:
+                    rows[i] = dict(r, quoted_message_id=str(hit.get("message_id") or ""),
+                                   quoted_author=r.get("quoted_author") or str(
+                                       hit.get("sender_jid") or ""),
+                                   quoted_link="body_match")
+                    report["linked_by_quoted_words"] += 1
         for burst in wa_attention_state.bursts(rows):
             msg = wa_attention_state.merge(burst)
             text = wa_attention_state.text_of(msg)
@@ -60801,27 +60813,45 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
 
 
 QUOTED_BODY_DAYS = 7
+#: A stored reply and what it quotes can arrive out of order (or in the same
+#: millisecond): the replay looks this far past the reply's receipt.
+QUOTED_BODY_SLACK_MIN = 10
 
 
-async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime) -> Optional[dict]:
-    """The one earlier message of this group (last 7 days) whose words are
-    `quoted_body` (trimmed, curly quotes straight). None for no match or
-    more than one."""
+async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime,
+                          reply: Optional[dict] = None) -> Optional[dict]:
+    """The one earlier message of this group (the 7 days before `now`) whose
+    words are `quoted_body` (trimmed, curly quotes straight). None for no
+    match or more than one.
+
+    `reply`: a STORED reply the replay links (its row). Receipt order is not
+    send order -- the same millisecond, or webhooks delivered out of order
+    -- so the window runs a few minutes past its receipt, the reply itself
+    is left out, and "earlier" is WhatsApp's own send time when both have
+    one."""
     want = wa_attention_state.norm_quote(quoted_body)
     if not want:
         return None
+    upto = now + timedelta(minutes=QUOTED_BODY_SLACK_MIN) if reply else now
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": group_id,
-             "created_at": {"$gte": now - timedelta(days=QUOTED_BODY_DAYS)}},
-            {"message_id": 1, "sender_jid": 1, "body": 1}).sort(
+             "created_at": {"$gte": now - timedelta(days=QUOTED_BODY_DAYS), "$lte": upto}},
+            {"message_id": 1, "sender_jid": 1, "body": 1, "timestamp": 1}).sort(
             [("created_at", -1)]).to_list(5000)
     except Exception as e:
         logger.warning(f"[wa] quoted-body lookup failed: {type(e).__name__}")
         return None
+    def sent_at(row: Optional[dict]) -> Optional[datetime]:
+        ts = (row or {}).get("timestamp")
+        return _as_utc(ts) if isinstance(ts, datetime) else None
+    sent = sent_at(reply) if reply else None
     hits = [r for r in rows if r.get("message_id")
-            and wa_attention_state.norm_quote(str(r.get("body") or "")[:500]) == want]
+            and not (reply and r.get("_id") == reply.get("_id"))
+            and wa_attention_state.norm_quote(str(r.get("body") or "")[:500]) == want
+            and not (sent and sent_at(r) and sent_at(r) > sent)]
     return hits[0] if len(hits) == 1 else None
+
 
 
 # ── WALKTHROUGH -> PUNCH LIST -> CHASE ──────────────────────────────────────
