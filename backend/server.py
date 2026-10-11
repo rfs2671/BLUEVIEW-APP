@@ -52499,14 +52499,16 @@ async def _voice_lang_move(company_id: Any, old_phone: Any, new_phone: Any) -> N
         row = await coll.find_one({"company_id": str(company_id), "sender_jid": old_j})
         if not row:
             return
-        await coll.delete_one({"company_id": str(company_id), "sender_jid": old_j})
         if new_j:
+            # The new key first: a failure part-way keeps the setting (under
+            # the old number) rather than losing it.
             await coll.update_one(
                 {"company_id": str(company_id), "sender_jid": new_j},
                 {"$set": {"language": row.get("language"), "set_by": row.get("set_by"),
                           "set_at": row.get("set_at")},
                  "$setOnInsert": {"company_id": str(company_id), "sender_jid": new_j}},
                 upsert=True)
+        await coll.delete_one({"company_id": str(company_id), "sender_jid": old_j})
     except Exception as e:
         logger.warning(f"[voice] language move failed: {type(e).__name__}")
 

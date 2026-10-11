@@ -289,6 +289,19 @@ class ForUsers(unittest.TestCase):
         self.assertEqual(_lang_rows(db), [(P1_CO, "17185550199@c.us", "yi")])
 
 
+    def test_a_failed_write_keeps_the_old_setting(self):
+        db = _phase1_db()
+        coll = db[wa_voice.SENDER_LANG_COLLECTION]
+
+        async def down(*a, **k):
+            raise RuntimeError("transient")
+        with patch.object(server, "db", db):
+            _run(server._voice_lang_set(P1_CO, f"{PM_PHONE}@c.us", "yi", "u_admin", {}))
+            with patch.object(coll, "update_one", down):
+                _run(server._voice_lang_move(P1_CO, "+" + PM_PHONE, "(718) 555-0199"))
+        self.assertEqual(_lang_rows(db), [(P1_CO, f"{PM_PHONE}@c.us", "yi")])
+
+
 class ForWorkers(unittest.TestCase):
 
     def _db(self):
