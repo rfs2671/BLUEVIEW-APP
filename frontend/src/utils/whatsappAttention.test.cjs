@@ -151,5 +151,18 @@ console.log('forwarded');
   ok(/it\.forwarded/.test(read('src/components/whatsapp/AttentionCard.jsx')), 'the card shows it');
 }
 
+console.log('Yiddish notes, one row per group per day');
+{
+  const b = { key: 'k', label: '5 Yiddish voice notes to review', group_name: '588 – Site', day: '2026-10-11' };
+  ok(A.batchTitle(b) === '5 Yiddish voice notes to review · 588 – Site · Sun Oct 11', A.batchTitle(b));
+  const l = A.batchNoteLines({ sent_at: '2026-10-11T18:57:00+00:00', sender_last4: '1234',
+                               forwarded: true, english: 'Mazel tov on the new house' });
+  ok(l.head === '2:57 PM · forwarded by …1234', l.head);
+  ok(l.english === 'English: Mazel tov on the new house', 'its English');
+  ok(/play it/.test(A.batchNoteLines({}).english), 'no English: play it');
+  const card = read('src/components/whatsapp/AttentionCard.jsx');
+  ok(/voice_batches/.test(card) && /batchNoteLines/.test(card), 'the card renders batches');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -165,6 +165,38 @@ export function yiddishLines(item) {
   return lines;
 }
 
+/** A group's Yiddish voice notes to review, one row: "5 Yiddish voice notes
+ *  to review · 588 – Site · Sun Oct 11". */
+export function batchTitle(b) {
+  const x = b || {};
+  let day = '';
+  if (x.day) {
+    const d = new Date(`${x.day}T12:00:00Z`);
+    if (!Number.isNaN(d.getTime())) {
+      day = d.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' })
+        .replace(/,/g, '');
+    }
+  }
+  return [x.label, x.group_name, day].filter(Boolean).join(' · ');
+}
+
+/** One note in a batch: "2:57 PM · …1234", then its English or a note. */
+export function batchNoteLines(it) {
+  const x = it || {};
+  let when = '';
+  if (x.sent_at) {
+    const d = new Date(x.sent_at);
+    if (!Number.isNaN(d.getTime())) {
+      when = d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+    }
+  }
+  const who = x.sender_last4 ? `…${x.sender_last4}` : '';
+  return {
+    head: [when, x.forwarded ? `forwarded by ${who || 'someone'}` : who].filter(Boolean).join(' · '),
+    english: x.english ? `English: ${x.english}` : 'No English translation yet — play it.',
+  };
+}
+
 /** ▶ Play on a voice item whose audio is kept. */
 export function canPlay(item) {
   return !!item && !!item.voice && !!item.message_row_id && item.audio !== false;

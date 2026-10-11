@@ -135,5 +135,17 @@ ok(/<Redirect href=\{`\/projects\/\$\{id\}\/whatsapp-groups`\}/.test(read('app/p
    'the old settings route lands on the tab');
 ok(!/summar(y|ies) to|reply alert|coming soon|Blueview/i.test(card), 'no placeholders in Levelog Assistant');
 
+console.log('Languages spoken');
+ok(W.GROUP_LANGUAGES.map((l) => l.code).join() === 'en,es,yi', 'English, Español, Yiddish');
+ok(W.toggleLanguage([], 'yi').join() === 'yi', 'pick one');
+ok(W.toggleLanguage(['yi'], 'en').join() === 'en,yi', 'fixed order');
+ok(W.toggleLanguage(['en', 'yi'], 'yi').join() === 'en', 'unpick');
+ok(W.toggleLanguage(null, 'es').join() === 'es', 'from nothing');
+{
+  const panel = require('fs').readFileSync(
+    path.join(__dirname, '..', 'components', 'whatsapp', 'GroupConfigPanel.jsx'), 'utf8');
+  ok(/Languages spoken/.test(panel) && /toggleLanguage/.test(panel), 'the panel has the chips');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

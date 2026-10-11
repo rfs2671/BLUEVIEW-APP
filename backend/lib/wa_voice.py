@@ -301,6 +301,47 @@ def log_keep(row: Dict[str, Any], *, sender: str = "", lang: str = "",
     return True
 
 
+#: At this many Yiddish voice notes to review in one group on one day, they
+#: are one Attention row ("5 Yiddish voice notes to review").
+YIDDISH_BATCH_MIN = 3
+
+
+def _ny_day(iso: Any) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return ""
+    return d.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+
+def yiddish_batches(views: List[Dict[str, Any]], min_count: int = YIDDISH_BATCH_MIN):
+    """(batches, the rest): open Yiddish voice items for review, grouped by
+    group and New York day when there are min_count or more; each batch
+    {key, group_name, day, count, label, items}, newest day first."""
+    def yid(v):
+        return (v.get("voice") and v.get("needs_review") and v.get("lang") == "yi"
+                and v.get("status") not in ("done", "cancelled")
+                and not v.get("verdict"))           # still to review
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for v in views:
+        if yid(v):
+            groups.setdefault((v.get("group_name") or "", _ny_day(v.get("sent_at"))), []).append(v)
+    batches, batched = [], set()
+    for (gname, day), vs in groups.items():
+        if len(vs) < min_count:
+            continue
+        vs = sorted(vs, key=lambda v: v.get("sent_at") or "")
+        batched |= {id(v) for v in vs}
+        batches.append({"key": f"{gname}|{day}", "group_name": gname, "day": day,
+                        "count": len(vs),
+                        "label": f"{len(vs)} Yiddish voice notes to review",
+                        "items": vs})
+    batches.sort(key=lambda b: (b["day"], b["group_name"]), reverse=True)
+    return batches, [v for v in views if id(v) not in batched]
+
+
 def is_voice(row: Dict[str, Any]) -> bool:
     return bool((row or {}).get("voice"))
 
@@ -400,6 +441,30 @@ def unreliable_reasons(transcript: str, q: Optional[Dict[str, Any]]) -> List[str
 #: Heard in these, or the sender is set to Yiddish: Whisper's direct
 #: audio -> English translation too, and a review flag.
 TRANSLATE_LANGS = ("yi", "he", "de")
+
+
+#: What a group's "Languages spoken" may list.
+GROUP_LANGS = ("en", "es", "yi")
+
+
+def group_languages(value: Any) -> Optional[List[str]]:
+    """A group's languages as stored: a list of en/es/yi, deduped, in that
+    order. None when the value is not such a list."""
+    if not isinstance(value, (list, tuple)) or any(
+            str(v) not in GROUP_LANGS for v in value):
+        return None
+    return [l for l in GROUP_LANGS if l in {str(v) for v in value}]
+
+
+def group_hint(langs: Optional[List[str]]) -> Optional[str]:
+    """Whisper's language hint from the group: its one language, else none."""
+    return whisper_language(langs[0]) if langs and len(langs) == 1 else None
+
+
+def heard_outside(lang: Optional[str], langs: Optional[List[str]]) -> bool:
+    """Heard in a language the group does not speak (only when it lists
+    any). Hebrew is Yiddish here (lang_code)."""
+    return bool(langs) and bool(lang) and lang not in langs
 
 
 def needs_direct_translation(lang: Optional[str], sender_hint: Optional[str]) -> bool:

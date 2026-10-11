@@ -185,6 +185,23 @@ export function withBotSetting(cfg, setting, on) {
 }
 
 /** What PUT /config gets: only keys the bot reads. */
+/** "Languages spoken" in a group's voice notes. None picked: any. */
+export const GROUP_LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Español' },
+  { code: 'yi', label: 'Yiddish' },
+];
+export const LANGUAGES_HINT =
+  'Voice notes in another language are flagged for review, with an English translation. '
+  + 'With one language picked, it is also the transcription hint.';
+
+/** The list with `code` added or taken out, in a fixed order. */
+export function toggleLanguage(langs, code) {
+  const set = new Set(Array.isArray(langs) ? langs : []);
+  if (set.has(code)) set.delete(code); else set.add(code);
+  return GROUP_LANGUAGES.map((l) => l.code).filter((c) => set.has(c));
+}
+
 export function configForSave(cfg) {
   const out = { ...(cfg || {}) };
   delete out.cross_project_summary;

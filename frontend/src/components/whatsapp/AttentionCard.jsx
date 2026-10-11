@@ -25,7 +25,7 @@ import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
   statusLine, precisionLines, emptyText, LISTS, STATE_VERDICTS, eventLine, linkLine,
-  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT,
+  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT, batchTitle, batchNoteLines,
 } from '../../utils/whatsappAttention';
 
 export default function AttentionCard({ projectId }) {
@@ -37,6 +37,7 @@ export default function AttentionCard({ projectId }) {
   const [busy, setBusy] = useState(null);
   const [list, setList] = useState('open');
   const [source, setSource] = useState(null);   // { rowId, reason } — the sheet
+  const [openBatch, setOpenBatch] = useState(null);   // a Yiddish batch, expanded
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +91,7 @@ export default function AttentionCard({ projectId }) {
   };
 
   const items = (data && data.items) || [];
+  const batches = (data && data.voice_batches) || [];
   const lines = precisionLines(data && data.precision)
     .concat(statePrecisionLines(data && data.state_precision));
   return (
@@ -123,7 +125,39 @@ export default function AttentionCard({ projectId }) {
                 {lines.map((l) => <Text key={l} style={s.statLine}>{l}</Text>)}
               </View>
             ) : null}
-            {items.length === 0 ? (
+            {/* MANY YIDDISH NOTES: one row per group per day, expandable. */}
+            {batches.map((b) => (
+              <View key={b.key} style={s.item}>
+                <Pressable onPress={() => setOpenBatch(openBatch === b.key ? null : b.key)}
+                  accessibilityRole="button" accessibilityState={{ expanded: openBatch === b.key }}>
+                  <Text style={s.quote}>{`${openBatch === b.key ? '▾' : '▸'} ${batchTitle(b)}`}</Text>
+                </Pressable>
+                {openBatch === b.key ? b.items.map((it) => (
+                  <View key={it.id} style={s.event}>
+                    <Text style={s.eventLine}>{batchNoteLines(it).head}</Text>
+                    <Text style={s.muted}>{batchNoteLines(it).english}</Text>
+                    <View style={s.buttons}>
+                      {canPlay(it) ? (busy === `play:${it.id}`
+                        ? <ActivityIndicator size="small" color={colors.text.muted} />
+                        : (
+                          <Pressable onPress={() => play(it)} disabled={!!busy} style={s.button}
+                            accessibilityRole="button" accessibilityLabel="Play the voice note">
+                            <Text style={s.buttonText}>{PLAY_LABEL}</Text>
+                          </Pressable>
+                        )) : null}
+                      {busy === it.id ? <ActivityIndicator size="small" color={colors.text.muted} />
+                        : VERDICTS.map((v) => (
+                          <Pressable key={v.verdict} onPress={() => review(it.id, v.verdict)}
+                            disabled={!!busy} style={s.button} accessibilityRole="button">
+                            <Text style={s.buttonText}>{v.label}</Text>
+                          </Pressable>
+                        ))}
+                    </View>
+                  </View>
+                )) : null}
+              </View>
+            ))}
+            {items.length === 0 && batches.length === 0 ? (
               <Text style={[s.muted, { marginTop: spacing.sm }]}>{emptyText(data && data.total)}</Text>
             ) : items.map((it) => (
               <View key={it.id} style={s.item}>
