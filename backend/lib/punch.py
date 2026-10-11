@@ -80,6 +80,126 @@ def match_project(hint: Optional[str], projects: List[Dict[str, Any]]) -> Tuple[
     return None, "none" if not hits else "several"
 
 
+#: A walkthrough still capturing ends after this long with nothing from the
+#: walker (a draft waits for "send", with its own reminder).
+CAPTURE_IDLE_HOURS = 2
+#: A job picked in this DM this recently is the walkthrough's job.
+JOB_PICK_MINUTES = 30
+#: Typed during a walk, words go on the photo sent this recently; older,
+#: the walker is asked which photo.
+NOTE_LAST_MINUTES = 10
+WHICH_PHOTO = "Add to which photo? Reply to it, or send its number (e.g. #2)."
+WHERE_HELP = ("e.g. \"4th floor Apt 4F\", \"4F\", or a named area: lobby, roof, cellar, "
+              "boiler room, meter room, elevator machine room, stairwell A, corridor + floor. "
+              "Or 'drop' to leave it out.")
+DONE_WORDS = ("done", "listo", "fartik", "finished", "that's it", "thats it")
+CANCEL_WORDS = ("cancel walkthrough", "cancel", "stop walkthrough")
+
+
+def job_question(projects: List[Dict[str, Any]], label=None) -> str:
+    """Asked once, at the first photo, when the job is not known."""
+    label = label or (lambda p: str(p.get("name") or p.get("address") or ""))
+    opts = "\n".join(f"{i}. {label(p)}" for i, p in enumerate(projects[:8], 1))
+    return (f"Which job is this walkthrough for?\n{opts}\n"
+            "Reply with the number or street. Keep sending photos meanwhile.")
+
+
+def pick_job(text: str, projects: List[Dict[str, Any]], *,
+             numbered: bool = False) -> Optional[dict]:
+    """The job a reply names: "588", "588... Same walkthrough", "Thomas",
+    or (numbered) the option's number. None when it names none or several."""
+    t = str(text or "").strip()
+    if numbered:
+        m = re.fullmatch(r"#?\s*(\d)\s*[.)]?", t)
+        if m and 1 <= int(m.group(1)) <= min(len(projects), 8):
+            return projects[int(m.group(1)) - 1]
+    p, _ = match_project(t, projects) if t else (None, "")
+    if p:
+        return p
+    hits = []
+    for tok in re.findall(r"[A-Za-z0-9]+", t):
+        if len(tok) < 3 and not tok.isdigit():
+            continue
+        q, _ = match_project(tok, projects)
+        if q and q not in hits:
+            hits.append(q)
+    return hits[0] if len(hits) == 1 else None
+
+
+def short_message_id(mid: Any) -> str:
+    """WhatsApp's own id of a message ("3EB0…"), from WaAPI's serialized
+    "false_1718…@c.us_3EB0…" or as is."""
+    m = str(mid or "").strip()
+    return m.rsplit("_", 1)[-1] if "_" in m else m
+
+
+def item_for_reply(items: List[dict], quoted_id: Any, quoted_body: Any = "") -> Optional[dict]:
+    """The item whose photo (or words) a reply quotes: by the message id,
+    else by the quoted caption when exactly one item has those words."""
+    live = [it for it in items if it.get("status", "draft") != "dropped"]
+    q = short_message_id(quoted_id)
+    if q:
+        for it in live:
+            ids = [it.get("message_id")] + list(it.get("merged") or [])
+            if any(short_message_id(x) == q for x in ids if x):
+                return it
+    body = " ".join(str(quoted_body or "").split()).lower()
+    if body:
+        hits = [it for it in live if " ".join(str(it.get("text") or "").split()).lower() == body]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+_TARGET = re.compile(r"^\s*#\s*(\d{1,3})\s*[:\-.,]?\s*(.*)$|^\s*(\d{1,3})\s*[:\-]\s*(.+)$", re.DOTALL)
+
+
+def target_ref(text: str) -> Optional[Tuple[int, str]]:
+    """"#2 4th floor Apt 4F" / "2: lobby" -> (2, the rest)."""
+    m = _TARGET.match(str(text or ""))
+    if not m:
+        return None
+    n = m.group(1) or m.group(3)
+    rest = (m.group(2) if m.group(1) else m.group(4)) or ""
+    return int(n), rest.strip()
+
+
+def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
+    """Words said ABOUT an item (a reply to its photo, "#2 …", a note):
+    its location and trade when they name them; its caption when it has
+    none; else a note on it. Returns what changed: location|trade|caption|note."""
+    w = str(words or "").strip()
+    if not w:
+        return ""
+    loc = read_location(w)
+    changed = []
+    if merge_location(it, loc):
+        changed.append("location")
+    tr = read_trade(w)
+    if tr and (it.get("trade") or UNKNOWN) == UNKNOWN:
+        it["trade"] = tr
+        changed.append("trade")
+    rest = w
+    if loc.get("floor") or loc.get("area"):
+        # Only a location ("2nd floor Apt 2D"): nothing else to keep.
+        rest = re.sub(r"(?i)\b(?:the\s+)?(?:\d{1,3}(?:st|nd|rd|th)?\s*(?:floor|fl\.?)|"
+                      r"(?:floor|fl\.?|piso|apt\.?|apto|apartment|unit)\s*#?\s*\w+|\d{1,2}[a-z])\b",
+                      " ", rest)
+        rest = re.sub(r"[\s,.;:-]+", " ", rest).strip()
+        if read_location(rest)["area"] == loc.get("area"):
+            rest = re.sub(r"(?i)\b" + re.escape(str(loc.get("area") or "")) + r"\b", " ", rest).strip()
+    if not it.get("text"):
+        it["text"] = w
+        if (it.get("trade") or UNKNOWN) == UNKNOWN:
+            it["trade"] = read_trade(w) or UNKNOWN
+        changed.append("caption")
+    elif len(rest) > 3 if "location" in changed else bool(rest):
+        # Words beyond the location ("2D, and the hinge is loose"): kept.
+        it.setdefault("notes", []).append({"text": w, "at": note_at})
+        changed.append("note")
+    return "+".join(changed)
+
+
 def job_code(project: Dict[str, Any]) -> str:
     """The job's short code for ids: its own code, else the street number of
     its name or address ("588 Thomas St" -> "588"), else 4 id characters."""
@@ -199,6 +319,176 @@ def read_area(text: str) -> Optional[str]:
         room, room)
 
 
+# ── WHERE AN ITEM IS (required) ──────────────────────────────────────────────
+#
+# Every punch item needs a location before the draft (588, Oct 11: "Missing
+# screw by table" with none). A location is
+#   - a floor and a unit: "4th floor Apt 4F", "4F", "fl 4 unit F",
+#     "piso 4 apto F" (a unit whose number starts with its floor -- "4F",
+#     "12C" -- carries the floor);
+#   - a named common area that needs no floor: lobby, elevator machine room,
+#     meter room, boiler room, roof, bulkhead, cellar, basement, compactor
+#     room, stairwell A/B, mail room, gym, laundry room, bike room, trash
+#     room, parking, courtyard, facade, sidewalk;
+#   - a corridor / hallway / stairs / landing WITH its floor.
+# A room inside an apartment (kitchen, bathroom) or a floor alone is not one.
+
+#: Named areas that need no floor, as said (EN / ES / YI) -> the label.
+_COMMON = [
+    ("elevator machine room", r"elevator\s+(?:machine\s+)?room|machine\s+room|elevator\s+motor\s+room"
+                              r"|cuarto\s+de\s+m[aá]quinas"),
+    ("meter room", r"(?:water\s+)?meter\s+room|water\s+main(?:\s+room)?|cuarto\s+de\s+medidores"),
+    ("boiler room", r"boiler(?:\s+room)?|cuarto\s+de\s+(?:la\s+)?calderas?|caldera|kesel\s+tsimer"),
+    ("compactor room", r"compactor(?:\s+room)?"),
+    ("mail room", r"mail\s*room|cuarto\s+de\s+correo|buzones"),
+    ("laundry room", r"laundry(?:\s+room)?|lavander[ií]a"),
+    ("bike room", r"bike\s+room|bicycle\s+room"),
+    ("trash room", r"trash\s+room|garbage\s+room|refuse\s+room|cuarto\s+de\s+basura"),
+    ("gym", r"gym|gimnasio|fitness\s+(?:room|center)"),
+    ("parking", r"parking(?:\s+(?:lot|garage|level))?|garage|estacionamiento"),
+    ("courtyard", r"court\s*yard|back\s*yard|rear\s+yard|patio"),
+    ("facade", r"fa[cç]ade|exterior|outside\s+wall|fachada"),
+    ("sidewalk", r"sidewalk|acera|banqueta"),
+    ("bulkhead", r"bulkhead"),
+    ("roof", r"roof(?:top)?|azotea|techo|dach"),
+    ("cellar", r"cellar|s[oó]tano|keller|keler"),
+    ("basement", r"basement"),
+    ("lobby", r"lobby|vest[ií]bulo|loby|entrance\s+hall|entrada"),
+]
+_COMMON_RX = [(label, re.compile(r"(?<!\w)(?:" + rx + r")(?!\w)", re.IGNORECASE)) for label, rx in _COMMON]
+#: A named stairwell ("stairwell A", "stair B", "escalera A"): no floor needed.
+_STAIRWELL = re.compile(r"(?<!\w)(?:stair\s*(?:well|case|way)?|stairs|escalera)\s+([ab])(?!\w)", re.IGNORECASE)
+#: These need their floor.
+_NEEDS_FLOOR = [
+    ("corridor", r"corridor|korridor"),
+    ("hallway", r"hallway|hall|pasillo"),
+    ("stairs landing", r"(?:stairs?\s+)?landing|descanso"),
+    ("stairs", r"stair\s*(?:well|case|way)?|stairs|escaleras?|trep"),
+]
+_NEEDS_FLOOR_RX = [(label, re.compile(r"(?<!\w)(?:" + rx + r")(?!\w)", re.IGNORECASE))
+                   for label, rx in _NEEDS_FLOOR]
+COMMON_AREAS = tuple(label for label, _ in _COMMON) + ("stairwell A", "stairwell B")
+NEEDS_FLOOR = tuple(label for label, _ in _NEEDS_FLOOR)
+
+_LOC_FLOOR = re.compile(
+    r"(?<!\w)(?:(?:floor|fl\.?|level|lvl|piso|planta|shtok|shtock)\s*#?\s*(?P<a>\d{1,3})"
+    r"|(?P<b>\d{1,3})\s*(?:st|nd|rd|th|er|ter|te)?\s*(?:floor|fl\.?|shtok|shtock|piso))(?!\w)",
+    re.IGNORECASE)
+_LOC_UNIT = re.compile(
+    r"(?<!\w)(?:apartamento|apartment|apto|apt|unit|departamento|depto|dira)(?:\.\s*|\s+|#\s*)#?\s*"
+    r"(?P<u>\d{1,3}\s?[a-z]?|[a-z]{1,2}\d{0,3})(?!\w)", re.IGNORECASE)
+#: A bare unit: "2D", "4F", "12C" (its floor is its number). Not "2nd", "4x4".
+_BARE_UNIT = re.compile(r"(?<![\w#/.-])(?P<f>\d{1,2})\s?(?P<l>[a-z])(?![\w/])", re.IGNORECASE)
+
+
+def read_location(text: str) -> Dict[str, Optional[str]]:
+    """{"floor": "4" | "cellar" | None, "area": "Apt 4F" | "lobby" |
+    "corridor" | None} from words in English, Spanish or Yiddish."""
+    t = str(text or "")
+    floor = area = None
+    m = _LOC_FLOOR.search(t)
+    if m:
+        floor = (m.group("a") or m.group("b")).lstrip("0") or "0"
+    u = _LOC_UNIT.search(t)
+    if u:
+        unit = re.sub(r"\s+", "", u.group("u")).upper()
+        if not floor:
+            fm = re.match(r"(\d{1,2})[A-Z]$", unit)
+            floor = fm.group(1) if fm else None
+        if floor and re.fullmatch(r"[A-Z]", unit):
+            unit = f"{floor}{unit}"                     # "fl 4 unit F" -> Apt 4F
+        area = f"Apt {unit}"
+    if not area:
+        b = _BARE_UNIT.search(re.sub(r"(?<!\w)(?:floor|fl\.?|piso)\s*\d+", " ", t, flags=re.I))
+        if b and not re.match(r"(?:st|nd|rd|th)\b", t[b.end("l") - 1:b.end("l") + 1].lower()):
+            unit_floor = b.group("f").lstrip("0") or "0"
+            if not floor or floor == unit_floor:
+                floor, area = unit_floor, f"Apt {unit_floor}{b.group('l').upper()}"
+    if not area:
+        sw = _STAIRWELL.search(t)
+        if sw:
+            area = f"stairwell {sw.group(1).upper()}"
+    if not area:
+        for label, rx in _COMMON_RX:
+            if rx.search(t):
+                area = label
+                break
+    if not area:
+        for label, rx in _NEEDS_FLOOR_RX:
+            if rx.search(t):
+                area = label
+                break
+    if not area:
+        room = read_area(t)          # a room in an apartment: kept, not enough
+        if room and not room.startswith("Apt "):
+            area = room
+    return {"floor": floor, "area": area}
+
+
+def location_state(floor: Optional[str], area: Optional[str]) -> str:
+    """"ok", "needs_floor" (a corridor with no floor), or "missing"."""
+    f = None if floor in (None, "", UNKNOWN) else str(floor)
+    a = None if area in (None, "", UNKNOWN) else str(area)
+    if a and a.startswith("Apt "):
+        return "ok" if f else "needs_floor"
+    if a and a in COMMON_AREAS:
+        return "ok"
+    if f and f in ("cellar", "basement", "roof", "bulkhead", "lobby"):
+        return "ok"                              # an old item's named floor
+    if a and a in NEEDS_FLOOR:
+        return "ok" if f and f.isdigit() else "needs_floor"
+    return "missing"
+
+
+def merge_location(it: dict, loc: Dict[str, Optional[str]]) -> bool:
+    """Set what `loc` names on the item (in place). True when it named any."""
+    named = False
+    if loc.get("floor"):
+        it["floor"], named = loc["floor"], True
+    if loc.get("area"):
+        it["area"], named = loc["area"], True
+    common = it.get("area") in COMMON_AREAS
+    if common and not loc.get("floor") and loc.get("area"):
+        it["floor"] = UNKNOWN if it.get("area") not in ("cellar", "basement", "roof",
+                                                         "bulkhead", "lobby") else it["area"]
+    return named
+
+
+def location_ok(it: dict) -> bool:
+    return location_state(it.get("floor"), it.get("area")) == "ok"
+
+
+def location_label(it: dict) -> str:
+    """"Floor 4 · Apt 4F", "Lobby", "Floor 3 · corridor" (or "")."""
+    f, a = it.get("floor") or UNKNOWN, it.get("area") or UNKNOWN
+    parts = []
+    if f != UNKNOWN and f != a:
+        parts.append(floor_label(f))
+    if a != UNKNOWN:
+        parts.append(a if parts else a[:1].upper() + a[1:])
+    return " · ".join(parts)
+
+
+def where_question(it: dict) -> str:
+    """The one question for an item with no (complete) location."""
+    words = (it.get("text") or "").strip() or "(no words)"
+    if len(words) > 60:
+        words = words[:57].rstrip() + "…"
+    n = it.get("n")
+    if location_state(it.get("floor"), it.get("area")) == "needs_floor":
+        return f"Which floor is #{n} '{words}' ({it.get('area')}) on?"
+    f = it.get("floor") or UNKNOWN
+    if f != UNKNOWN and str(f).isdigit():
+        return f"Where on floor {f} is #{n} '{words}'? (the unit, or a named area)"
+    return f"Where is #{n} '{words}'? (floor + unit, or a named area)"
+
+
+def missing_location(items: List[dict]) -> List[dict]:
+    """The live items with no complete location, in the order they came in."""
+    return sorted((it for it in items if it.get("status", "draft") != "dropped"
+                   and not location_ok(it)), key=lambda it: it.get("captured") or 0)
+
+
 def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
              voice: Optional[dict] = None, at: Any = None) -> Dict[str, Any]:
     """One captured item: the photo, its words EXACTLY as written or said,
@@ -211,11 +501,21 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
         "message_id": message_id,
         "voice": voice or None,
         "captured": n,                  # the order it came in; `n` follows the draft
-        "floor": read_floor(w) or UNKNOWN,
-        "area": read_area(w) or UNKNOWN,
+        "floor": _loc(w)["floor"] or UNKNOWN,
+        "area": _loc(w)["area"] or UNKNOWN,
         "trade": read_trade(w) or UNKNOWN,
         "at": at,
     }
+
+
+def _loc(words: str) -> Dict[str, Optional[str]]:
+    loc = read_location(words)
+    if not loc["floor"]:
+        # A named floor ("lobby", "roof", "cellar") read the old way.
+        f = read_floor(words)
+        if f and not f.isdigit():
+            loc["floor"] = f
+    return loc
 
 
 # ── THE DRAFT ────────────────────────────────────────────────────────────────
@@ -350,7 +650,9 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
     """Apply one edit to the draft's items (in place). (done, note)."""
     by_n = {it["n"]: it for it in items if it.get("status", "draft") != "dropped"}
     if e["op"] == "add":
-        items.append({**new_item(next_n, e["text"], photo_key=None, message_id=""), "added": True})
+        cap = max([it.get("captured") or 0 for it in items] or [0]) + 1
+        items.append({**new_item(next_n, e["text"], photo_key=None, message_id=""),
+                      "captured": cap, "added": True})
         return True, f"added {next_n}"
     if e["op"] == "merge":
         a, b = by_n.get(e["a"]), by_n.get(e["b"])

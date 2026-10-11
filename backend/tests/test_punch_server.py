@@ -77,12 +77,13 @@ class ShippedScenarios(unittest.TestCase):
 class TheDraftStaysWithTheWalker(unittest.TestCase):
 
     def test_capture_is_one_thumbs_up_per_item_and_no_words(self):
-        res = _run(_upto(_sc(), "done"))
+        res = _run(_upto(_sc(), "4C"))           # the last location answer
         self.assertEqual(res["reacts"], ["👍"] * 13)       # 12 photos + the voice after one
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
-        # Only the start and the draft were said.
+        # Only the start, one location question per photo with none, and the draft.
         said = [l for l in res["transcript"] if l.startswith("  ") and l.strip()]
+        self.assertEqual(sum("Where " in l for l in said), 6)
         self.assertTrue(any("(draft)" in l for l in said))
 
     def test_nothing_is_made_or_posted_before_send(self):
@@ -91,7 +92,7 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         self.assertEqual(res["group_posts"], [])
 
     def test_the_draft_is_marked_and_grouped(self):
-        res = _run(_upto(_sc(), "done"))
+        res = _run(_upto(_sc(), "4C"))
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
         self.assertIn("2 need a trade", text)
