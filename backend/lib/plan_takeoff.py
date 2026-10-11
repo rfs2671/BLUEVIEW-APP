@@ -393,7 +393,8 @@ def run_takeoff(arch_page, mech_page, closed_set: Sequence[str],
             continue
         back = (pos[0] - dx, pos[1] - dy)
         unit, how = units.unit_of_normal(*back) if units else (
-            None, unplaced_reason or "refused: registration not usable")
+            None, unplaced_reason or "refused: registration not usable"
+            + (f" ({reg_['refused']})" if reg_.get("refused") else ""))
         recs.append({"tag": tag, "unit": unit, "glyph_status": ptal.RESOLVED,
                      "placement": (REFUSED if not unit else
                                    PLACED_NON_UNIT if unit.startswith("non-unit:")

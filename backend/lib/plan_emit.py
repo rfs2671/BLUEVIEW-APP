@@ -43,7 +43,10 @@ SOURCE = "plan_takeoff"
 #: 3 (2026-10-07): a refusal row carries payload.role (mechanical /
 #: architectural), and a sheet the pass cannot place is counted at sheet
 #: scope (payload.arch None, units method "sheet_scope").
-EMIT_VERSION = 3
+#: 4 (2026-10-10): payload.registration records the offset, the anchors it
+#: holds, the best peak the census found, the anchors' spread over the plan
+#: and why it was refused - a registration is the best peak or refused.
+EMIT_VERSION = 4
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -114,7 +117,9 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
         "method": result.get("method"),
         "fallback_reason": result.get("fallback_reason"),
         "registration": {k: (result.get("registration") or {}).get(k)
-                         for k in ("rms_in", "max_in", "anchors", "usable")},
+                         for k in ("dx", "dy", "anchors", "rms_in", "max_in",
+                                   "usable", "best_peak_anchors", "best_peak",
+                                   "spread", "refused")},
         "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
                                             "multi_level") if k in units},
         "widest_door_in": widest_door.get("inches"),
