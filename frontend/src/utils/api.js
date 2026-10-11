@@ -1059,6 +1059,14 @@ export const ownerAPI = {
     return response.data;
   },
 
+  // ── Owner portal: one test @mention in a linked WhatsApp group (a live
+  // check that mentions notify). Platform operator only.
+  mentionTestGroups: async () => (await apiClient.get('/api/owner/whatsapp/mention-test')).data,
+  mentionTestPeople: async (groupKey) => (await apiClient.get(
+    `/api/owner/whatsapp/mention-test/${encodeURIComponent(groupKey)}/people`)).data,
+  sendMentionTest: async (groupKey, personKey) => (await apiClient.post(
+    '/api/owner/whatsapp/mention-test', { group_key: groupKey, person_key: personKey })).data,
+
   // ── Owner portal: company users and Deleted items. Platform operator
   // only; every route answers 404 to anyone else.
   companyUsers: async (companyId) => {

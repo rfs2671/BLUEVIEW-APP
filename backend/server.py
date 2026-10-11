@@ -47796,6 +47796,133 @@ async def _group_post(group_id: str, text: str, targets: List[dict],
         display_text=wa_mention.display(text, targets))
 
 
+# ── OPERATOR: SEND ONE TEST MENTION ─────────────────────────────────────────
+#
+# A one-time live check of real @mentions: the platform operator picks a
+# linked group and someone who has written in it, and the bot posts
+# "@<name> test" there with a real mention (lib/wa_mention), through the same
+# path chase and punch use. Nothing is posted when no number can be found for
+# them: a mention that will not notify proves nothing. Audit-logged.
+
+class MentionTestBody(BaseModel):
+    group_key: str      # the group's WhatsApp id
+    person_key: str     # from the people listing (opaque)
+
+
+async def _mention_test_group(group_key: str) -> dict:
+    g = await db.whatsapp_groups.find_one({"wa_group_id": str(group_key), "active": True})
+    if not g or not g.get("company_id") or not g.get("project_id"):
+        raise HTTPException(status_code=404, detail="Linked group not found")
+    return g
+
+
+async def _mention_test_people(g: dict) -> List[dict]:
+    """Who has written in this group, newest first: {key, name, person,
+    has_number}. `person` ({kind, id, name, jid}) stays on the server."""
+    company_id, gid = str(g["company_id"]), g["wa_group_id"]
+    rows = await db.whatsapp_messages.find(
+        {"group_id": gid, "company_id": _company_id_filter(company_id),
+         "sender": {"$ne": "bot"}, "from_me": {"$ne": True}},
+        {"sender": 1, "sender_jid": 1, "sender_name": 1, "sender_phone": 1},
+    ).sort([("created_at", -1)]).to_list(3000)
+    seen: Dict[str, dict] = {}
+    for r in rows:
+        jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
+        if jid and jid not in seen:
+            seen[jid] = r
+        if len(seen) >= 40:
+            break
+    maps = {m.get("sender_jid"): m for m in await db[wa_sender_map.COLLECTION].find(
+        {"company_id": company_id, "sender_jid": {"$in": list(seen)}}).to_list(100)}
+    cache: dict = {}
+    out = []
+    for jid, r in seen.items():
+        m = maps.get(jid)
+        who = await _attention_resolve(jid, company_id, str(g["project_id"]), cache)
+        if m:
+            person = {"kind": "sender_map", "id": str(m.get("_id")), "name": m.get("person_name") or "",
+                      "jid": jid}
+        elif who.get("status") == "resolved":
+            person = {"kind": who.get("kind"), "id": who.get("id"), "name": who.get("name") or "",
+                      "jid": jid}
+        else:
+            person = {"kind": "none", "id": None,
+                      "name": wa_sender_map.safe_push_name(r.get("sender_name")) or "", "jid": jid}
+        local, _ = await _mention_local(person, company_id)
+        out.append({"key": wa_sender_map.sender_key(company_id, jid),
+                    "name": person["name"] or wa_sender_map.label(r.get("sender_name") or "", jid),
+                    "person": person,
+                    # The number their own message already carries (kept as
+                    # evidence): the send uses it too, so "has a number" here
+                    # is what the send will find.
+                    "stored_phone": r.get("sender_phone") or None,
+                    "has_number": bool(local or r.get("sender_phone"))})
+    return out
+
+
+@api_router.get("/owner/whatsapp/mention-test", tags=["Owner"],
+                dependencies=[Depends(require_operator_404)])
+async def owner_mention_test_groups(operator=Depends(require_operator_404)):
+    """Operator: the linked groups a test mention can go to."""
+    groups = await db.whatsapp_groups.find({"active": True}).to_list(500)
+    pids = list({str(g.get("project_id")) for g in groups if g.get("project_id")})
+    cids = list({str(g.get("company_id")) for g in groups if g.get("company_id")})
+    projects = {str(p["_id"]): p for p in await db.projects.find(
+        {"_id": {"$in": [to_query_id(x) for x in pids]}}, {"name": 1, "address": 1}).to_list(500)}
+    companies = {str(c["_id"]): c for c in await db.companies.find(
+        {"_id": {"$in": [to_query_id(x) for x in cids]}}, {"name": 1}).to_list(500)}
+    out = []
+    for g in groups:
+        if not (g.get("project_id") and g.get("company_id") and g.get("wa_group_id")):
+            continue
+        p = projects.get(str(g["project_id"])) or {}
+        out.append({"key": g["wa_group_id"],
+                    "name": wa_groups.display_name(g.get("group_name")) or "WhatsApp group",
+                    "project": wa_assistant.street_label(p) if p else "",
+                    "company": (companies.get(str(g["company_id"])) or {}).get("name") or "",
+                    "bot_on": _effective_bot_config(g.get("bot_config"))["bot_enabled"]})
+    out.sort(key=lambda x: (x["company"], x["project"], x["name"]))
+    return {"groups": out}
+
+
+@api_router.get("/owner/whatsapp/mention-test/{group_key}/people", tags=["Owner"],
+                dependencies=[Depends(require_operator_404)])
+async def owner_mention_test_people(group_key: str, operator=Depends(require_operator_404)):
+    """Operator: who has written in that group, and whether a number is
+    already known for them (a lookup may still find one when sending)."""
+    g = await _mention_test_group(group_key)
+    return {"people": [{k: p[k] for k in ("key", "name", "has_number")}
+                       for p in await _mention_test_people(g)]}
+
+
+@api_router.post("/owner/whatsapp/mention-test", tags=["Owner"],
+                 dependencies=[Depends(require_operator_404)])
+async def owner_send_mention_test(body: MentionTestBody, operator=Depends(require_operator_404)):
+    """Operator: post "@<name> test" in the group with a real @mention."""
+    g = await _mention_test_group(body.group_key)
+    person = next((p for p in await _mention_test_people(g) if p["key"] == body.person_key), None)
+    if not person:
+        raise HTTPException(status_code=404, detail="That person has not written in this group")
+    tgt = await _mention_target(person["person"], str(g["company_id"]))
+    if not tgt["resolved"] and person.get("stored_phone"):
+        tgt = wa_mention.target(person["name"], person["stored_phone"], "message")
+    if not tgt["resolved"]:
+        raise HTTPException(status_code=409, detail=(
+            f"No WhatsApp number for {person['name']}: a mention would not notify. "
+            "Add their number in People (or check the WhatsApp lookup), then try again."))
+    text = f"{tgt['handle']} test"
+    resp = await _group_post(g["wa_group_id"], text, [tgt])
+    sent = resp is not None
+    shown = wa_mention.display(text, [tgt])
+    await audit_log("whatsapp_mention_test", actor_id(operator), "whatsapp_group",
+                    str(g.get("_id") or ""),
+                    {"group": wa_groups.display_name(g.get("group_name")), "person": person["name"],
+                     "source": tgt["source"], "sent": sent})
+    logger.info(f"[mention] test {'sent' if sent else 'NOT sent'} source={tgt['source']}")
+    return {"sent": sent, "text": shown, "source": tgt["source"],
+            "detail": None if sent else "WaAPI did not confirm the send (see the server log)."}
+
+
 async def _serialized_message_id(group_id: str, message_id: Any) -> Optional[str]:
     """WaAPI's replyToMessageId for a stored group message (the short id is
     what items keep; WaAPI wants {fromMe}_{chatId}_{messageId})."""

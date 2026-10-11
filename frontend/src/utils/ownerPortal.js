@@ -13,12 +13,14 @@ export const OWNER_NAV = [
   { key: 'companies', label: 'Companies', path: '/owner' },
   { key: 'deleted', label: 'Deleted items', path: '/owner/deleted' },
   { key: 'pending', label: 'Pending deletion', path: '/owner/pending-deletion' },
+  { key: 'mention', label: 'Test mention', path: '/owner/mention-test' },
 ];
 
 export function ownerNavActive(pathname) {
   const p = String(pathname || '');
   if (p.startsWith('/owner/deleted')) return 'deleted';
   if (p.startsWith('/owner/pending-deletion')) return 'pending';
+  if (p.startsWith('/owner/mention-test')) return 'mention';
   if (p === '/owner' || p.startsWith('/owner/company')) return 'companies';
   return null;
 }
@@ -174,4 +176,21 @@ export function serverMessage(error, fallback) {
   if (d && typeof d === 'object' && d.message) return d.message;
   if (typeof d === 'string' && d) return d;
   return fallback || 'Something went wrong. Try again.';
+}
+
+// ── Test mention ─────────────────────────────────────────────────────────
+export const MENTION_TEST_NOTE =
+  'Posts "@<name> test" in the group you pick, with a real WhatsApp mention, '
+  + 'so you can check their phone notifies. One message, sent for real.';
+
+/** "Patricia" / "Nobody · no number on file yet". */
+export function mentionPersonLine(p) {
+  if (!p) return '';
+  return p.has_number ? p.name : `${p.name} · no number on file yet`;
+}
+
+/** What to say after a send. */
+export function mentionResult(res) {
+  if (!res) return '';
+  return res.sent ? `Posted: ${res.text}` : (res.detail || 'Not sent.');
 }
