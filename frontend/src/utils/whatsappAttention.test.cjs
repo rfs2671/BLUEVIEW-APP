@@ -78,6 +78,9 @@ ok(A.eventLine({ kind: 'state', to: 'cancelled', by: 'gc_staff' }) === 'Cancelle
 ok(A.linkLine({ link: 'reply' }) === 'Linked: a reply to it' && A.linkLine({}) === null, 'link');
 ok(A.reviewable({ id: 'x', kind: 'state' }) && !A.reviewable({ id: 'x', kind: 'created' })
    && !A.reviewable({ id: 'x', kind: 'follow_up' }), 'changes are reviewable, the record is not');
+// "Working on it" under an item: a line on its timeline, no verdict asked.
+ok(A.eventLine({ kind: 'progress' }) === 'In progress (no change)', 'progress reads as no change');
+ok(!A.reviewable({ id: 'x', kind: 'progress' }), 'progress has no Correct / Wrong');
 ok(A.STATE_VERDICTS.map((v) => v.label).join('|') === 'Correct|Wrong', 'two buttons per change');
 ok(A.LISTS.map((l) => l.status).join('|') === 'open|closed', 'open and closed lists');
 {

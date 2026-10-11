@@ -302,10 +302,13 @@ class AnAskAndItsAnswer(_Base):
 
     def test_both_due_today_one_entry(self):
         ask = _item(self.db, type="request", quote="@Mike send the RFI today")
-        _item(self.db, quote="on it", parent_id=ask["_id"])
+        ans = _item(self.db, quote="on it", parent_id=ask["_id"])
         self.chase(_et(8, 35))
         (r,) = self.rows()
-        self.assertEqual([i["quote"] for i in r["items"]], ["on it"])
+        # The commitment is chased -- with the ASK's words, never "on it"
+        # (a nudge never quotes only an ack; 588, Oct 11).
+        self.assertEqual([i["id"] for i in r["items"]], [str(ans["_id"])])
+        self.assertEqual([i["quote"] for i in r["items"]], ["@Mike send the RFI today"])
 
     def test_the_answer_moved_the_ask_is_not_chased_on_its_old_date(self):
         ask = _item(self.db, type="request", quote="@Mike send the RFI today")

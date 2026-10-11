@@ -338,6 +338,58 @@ def ack(body: str) -> Optional[Dict[str, Any]]:
     return {"due_text": due}
 
 
+# ── "WORKING ON IT": PROGRESS ON AN OPEN ITEM, NOT A NEW ONE ─────────────────
+#
+# Live, 588 (Oct 11): "Working on it", a reply to an open item, came back from
+# the model as a NEW commitment. A reply (or a quoted-body link) to an open
+# item that only says work is under way is recorded on THAT item's timeline
+# ("progress", no change of state), never as an item of its own -- read by
+# code before the model, and the model's own reading of it is dropped after.
+# It changes nothing: not the status, not the due date, and it does not stop
+# a chase (wa_chase rule 2: it skips one slot).
+
+PROGRESS = "progress"
+#: History kinds that record something said about an item without changing
+#: it: not a state change (chase rule 1, the replay guard), not a change to
+#: mark Correct / Wrong (state precision).
+NO_CHANGE_KINDS = ("created", "follow_up", PROGRESS)
+
+_TAIL = r"(?:[\s,.!]+(?:boss|bro|jefe|man|thanks|thx|gracias|today|hoy|haynt|👍|🙏|💪))*\W*$"
+#: Only progress: work is under way. Never takes anything on.
+PROGRESS_ONLY = re.compile(
+    r"^\W*(?:(?:i'?m |im |i am |we'?re |we are |still )?"
+    r"(?:working on it|working on that|on my way|omw|in progress|almost done|almost there"
+    r"|nearly done|doing it now|handling it|taking care of it|looking into it|getting to it"
+    r"|later|in a bit|soon|shortly|asap)"
+    r"|en eso|estoy en eso|trabajando en (?:eso|ello)|ahorita|al rato|mas tarde|luego"
+    r"|en camino|casi (?:listo|termino|terminamos)|en proceso|ya casi"
+    r"|shpeter|bald|ikh arbet (?:oyf|af) dem|bin dran|shoyn bald"
+    r"|שפעטער|באלד|כ'ארבעט אויף דעם|איך ארבעט אויף דעם)" + _TAIL)
+#: Taking something on ("Will do" under "can you…?" is the commitment that
+#: ask needs, wa_attention_state.ack); progress only on what is ALREADY
+#: promised.
+ACCEPT = re.compile(
+    r"^\W*(?:(?:i'?m |im |i am )?(?:on it|on that|will do)"
+    r"|ya voy|voy|ahi voy|ikh bin (?:oyf|af) dem)" + _TAIL)
+
+
+def progress_ack(body: str, parent_type: Optional[str] = None,
+                 accept: bool = False) -> bool:
+    """The whole message only says work on something is under way. "Working
+    on it", "almost done", "estoy en eso", "ikh arbet oyf dem": always.
+    "On it", "will do", "ya voy": only under an item that is already a
+    commitment (`parent_type`), or anywhere with `accept` (the chase, where
+    any of them answers a nudge). Not a plain yes ("ok", "np": ack()), not
+    a date, not a question."""
+    text = str(body or "").strip()
+    if not text or len(text) > 60 or "?" in text:
+        return False
+    folded = ml.fold(text)
+    if PROGRESS_ONLY.match(folded):
+        return True
+    return bool(ACCEPT.match(folded)) and (accept or parent_type == "commitment")
+
+
 ACK_PREVIOUS_SECONDS = 10 * 60
 _SARCASM = {"lol", "lmao", "lmfao", "rofl", "haha", "hahaha", "hehe", "😂", "🤣", "🙄", "😅",
             "jaja", "jajaja", "jajajaja", "jeje", "jejeje"}
@@ -722,7 +774,7 @@ def state_precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
         if it.get("excluded_from_metrics"):
             continue                    # test cleanup: never counted
         for e in it.get("history") or []:
-            if not isinstance(e, dict) or e.get("kind") in ("created", "follow_up"):
+            if not isinstance(e, dict) or e.get("kind") in NO_CHANGE_KINDS:
                 continue
             name = e.get("to") if e.get("kind") == "state" else e.get("kind")
             row = out.setdefault(str(name), {"correct": 0, "wrong": 0, "unreviewed": 0})

@@ -111,6 +111,7 @@ export function eventLine(e) {
   if (!e) return '';
   if (e.kind === 'created') return e.due_to ? `Recorded · due ${e.due_to}` : 'Recorded';
   if (e.kind === 'follow_up') return 'Followed up (no change)';
+  if (e.kind === 'progress') return 'In progress (no change)';
   if (e.kind === 'part_done') return `One part done (…${e.sender_last4 || '????'})`;
   if (e.kind === 'flag') return FLAGS[e.note] || 'Flagged for review. Not applied.';
   if (e.kind === 'handover') {
@@ -138,13 +139,15 @@ export function linkLine(e) {
   return l ? `Linked: ${l}` : null;
 }
 
-/** Changes get Correct / Wrong; recording the item and a follow-up do not.
- *  Nor does the flag an unsure voice note puts on the item it made: that is
- *  the item's own Correct / Wrong, shown once, under the item (the line
- *  stays, as text). A held change from a voice note on ANOTHER item keeps
- *  its own: it judges that change, not the item. */
+/** Changes get Correct / Wrong; recording the item, a follow-up and a
+ *  progress line ("Working on it") do not: they change nothing. Nor does
+ *  the flag an unsure voice note puts on the item it made: that is the
+ *  item's own Correct / Wrong, shown once, under the item (the line stays,
+ *  as text). A held change from a voice note on ANOTHER item keeps its own:
+ *  it judges that change, not the item. */
 export function reviewable(e, item) {
-  if (!e || e.kind === 'created' || e.kind === 'follow_up' || !e.id) return false;
+  if (!e || e.kind === 'created' || e.kind === 'follow_up' || e.kind === 'progress'
+      || !e.id) return false;
   if (e.kind === 'flag' && e.by === 'voice' && item
       && e.message_row_id && e.message_row_id === item.message_row_id) return false;
   return true;

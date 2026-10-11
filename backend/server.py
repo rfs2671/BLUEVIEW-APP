@@ -46742,7 +46742,7 @@ def _attention_changed_since(item: dict, at: datetime) -> bool:
     at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
     for e in item.get("history") or []:
         when = e.get("at") if isinstance(e, dict) else None
-        if not isinstance(when, datetime) or e.get("kind") in ("created", "follow_up"):
+        if not isinstance(when, datetime) or e.get("kind") in wa_attention_state.NO_CHANGE_KINDS:
             continue
         if (when if when.tzinfo else when.replace(tzinfo=timezone.utc)) >= at:
             return True
@@ -47153,6 +47153,51 @@ async def _attention_answer_followups(link: Optional[dict], typ: str, owner: dic
                                      "sender_last4": sender[-4:], "at": sent_at}}})
 
 
+async def _attention_progress_parent(msg: dict, ctx: dict) -> Optional[dict]:
+    """The open item a reply is about: the one whose message it quotes (or,
+    after a handover, the taker's), else the one a chase nudge it quotes was
+    about. None when it quotes nothing, or nothing open."""
+    qkey = wa_attention_state.short_id(msg.get("quoted_message_id"))
+    if not qkey:
+        return None
+    live = await _attention_live_items(ctx, _attention_sent_at(msg))
+    hits = [r for r in live if qkey in wa_chase.item_message_ids(r)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        return None
+    # A reply to a chase nudge ("Working on it" under "@Dave the sleeves?").
+    try:
+        nudges = await db[wa_chase.COLLECTION].find(
+            {"group_id": ctx["group_id"], "message_id": {"$nin": [None, ""]}},
+            {"message_id": 1, "item_ids": 1}).sort([("at", -1)]).limit(200).to_list(None)
+    except Exception as e:
+        logger.warning(f"[attention] nudge read failed: {type(e).__name__}")
+        return None
+    ids = {i for n in nudges
+           if wa_attention_state.short_id(n.get("message_id")) == qkey
+           for i in (n.get("item_ids") or [])}
+    by_id = {str(r["_id"]): r for r in live}
+    found = [by_id[i] for i in ids if i in by_id]
+    return found[0] if len(found) == 1 else None
+
+
+async def _attention_record_progress(item: dict, msg: dict, quote: str, ctx: dict,
+                                     report: dict, link: str) -> None:
+    """"Working on it" under an open item: a line on ITS timeline. Changes
+    nothing else (status, due, chase)."""
+    sender = str(msg.get("sender") or "")
+    owner_jid = str((item.get("owner") or {}).get("jid") or "")
+    by = "owner" if owner_jid and wa_dm.phone_digits(owner_jid) == sender else "other"
+    ev_kind = "voice" if wa_voice.is_voice(msg) else "text"
+    await db.attention_items.update_one(
+        {"_id": item["_id"]},
+        {"$push": {"history": _attention_event(
+            wa_attention_state.PROGRESS, None, None, msg, quote, ev_kind, by=by, link=link)},
+         "$set": {"updated_at": datetime.now(timezone.utc)}})
+    report["progress"] = report.get("progress", 0) + 1
+
+
 async def _attention_process(msg: dict, ctx: dict, report: dict,
                              llm=None) -> bool:
     """One stored message (or a burst of one sender's, merged) through the
@@ -47171,7 +47216,10 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                 return True
         except Exception as e:
             logger.warning(f"[punch] group message failed: {type(e).__name__}")
-    report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
+    if not (msg.get("quoted_message_id") and wa_attention_state.progress_ack(text)):
+        # "Working on it" under a question does not answer it: progress
+        # (below), not "possibly answered".
+        report["marked_resolved"] += await _attention_mark_replies(msg, group_id, project_id)
     prev = await _attention_previous(msg, ctx)
     # An update to an earlier item ("Sent this morning", "Actually Monday",
     # "Never mind the load calcs", a file from the owner). What it updated is
@@ -47179,6 +47227,16 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     updated = await _attention_state_update(msg, text, prev, ctx, report)
     if updated is None:
         return False
+    if not updated["ids"] and wa_attention_state.progress_ack(text, accept=True):
+        # "Working on it" replying to an open item (or to its chase nudge):
+        # progress on THAT item, never a new one. Read by code, before the
+        # model. "Will do" / "on it" only under a commitment: under a request
+        # they are the commitment it needs. Unlinked, it goes on as before.
+        parent_item = await _attention_progress_parent(msg, ctx)
+        if parent_item and wa_attention_state.progress_ack(text, parent_item.get("type")):
+            await _attention_record_progress(parent_item, msg, text, ctx, report, "reply")
+            await _attention_count(ctx, ctx["now"], messages=1)
+            return True
     sender = str(msg.get("sender") or "")
     # A short yes ("Np", "will do", "Np / Tomorrow", "👍 tmrw") is read by
     # code, not the model: a commitment to the ask put to this sender, or
@@ -47285,6 +47343,18 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
             # A schedule or info update is not an issue (pass-1 review).
             report["dropped_not_issue"] += 1
             continue
+        if it["type"] in ("commitment", "request", "question") and msg.get("quoted_message_id") \
+                and wa_attention_state.progress_ack(quote, accept=True):
+            # THE CODE-SIDE GUARD: whatever the model made of "Working on it"
+            # in a reply, it is progress on what it replies to, not an item.
+            parent_item = await _attention_progress_parent(msg, ctx)
+            if wa_attention_state.progress_ack(
+                    quote, (parent_item or {}).get("type") or ("" if parent_item else None)):
+                if parent_item:
+                    await _attention_record_progress(parent_item, msg, quote, ctx, report,
+                                                     "reply")
+                report["dropped_progress"] = report.get("dropped_progress", 0) + 1
+                continue
         terms = wa_attention_state.topic_terms(quote, it["summary"])
         if it["type"] == "commitment" and updated.get("handover") == "confident":
             report["restated_update"] += 1    # the handed-over item itself
@@ -47599,7 +47669,7 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
               "filtered_out": 0, "dropped_unverified": 0,
               "dropped_not_issue": 0, "model_failed": 0,
               "state_updates": 0, "follow_ups": 0, "held": 0,
-              "restated_update": 0, "acks": 0, "ack_unaddressed": 0,
+              "restated_update": 0, "acks": 0, "ack_unaddressed": 0, "progress": 0,
               "max_lag_seconds": 0,
               "skipped_failing": 0, "write_failed": 0, "marked_resolved": 0,
               "owner_resolved": 0,
@@ -48325,9 +48395,24 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         except Exception as e:
             logger.warning(f"[chase] answers read failed: {type(e).__name__}")
             return report
+    # The asks commitments answer: a yes ("on it") is chased with the ask's
+    # words, and an ack with no ask behind it is not chased (wa_chase.ack_only).
+    parent_ids = list({str(it["parent_id"]) for it in items if it.get("parent_id")})
+    parents: Dict[str, dict] = {}
+    if parent_ids:
+        try:
+            parents = {str(p["_id"]): p for p in await db.attention_items.find(
+                {"_id": {"$in": [to_query_id(i) for i in parent_ids]}},
+                {"type": 1, "evidence": 1}).to_list(len(parent_ids) + 5)}
+        except Exception as e:
+            logger.warning(f"[chase] parents read failed: {type(e).__name__}")
     for it in items:
         report["items"] += 1
-        why = wa_chase.skip_reason(it, day)
+        parent = parents.get(str(it.get("parent_id") or ""))
+        why = wa_chase.skip_reason(it, day, parent)
+        ask_q = wa_chase.ask_quote(it, parent)
+        if ask_q and not why:
+            it = dict(it, chase_quote=ask_q)
         if why in (None, wa_chase.NO_MENTION) and str(it.get("_id")) in answered:
             why = "answered_by_commitment"
         # Would be chased, but no WhatsApp number to @mention: listed below,
@@ -51070,7 +51155,8 @@ async def _memory_attention_sources(company_id: str, project_id: str,
     hits.sort(key=lambda it: str((it.get("evidence") or {}).get("sent_at") or ""))
     out = []
     labels = {"created": "Tracked", "state": "Changed", "handover": "Handed over",
-              "part_done": "Part done", "flag": "Flagged", "follow_up": "Followed up"}
+              "part_done": "Part done", "flag": "Flagged", "follow_up": "Followed up",
+              "progress": "In progress"}
     for it in hits[:limit]:
         owner = (it.get("owner") or {}).get("name") or ""
         for e in it.get("history") or []:
