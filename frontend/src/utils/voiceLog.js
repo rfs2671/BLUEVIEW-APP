@@ -73,6 +73,15 @@ export function producedRoute(projectId, p) {
     : `/projects/${projectId}/whatsapp-groups`;
 }
 
-export function emptyText(total) {
-  return total ? 'No voice note matches these filters.' : 'No voice notes yet.';
+export function emptyText(filtered) {
+  return filtered ? 'No voice note matches these filters.' : 'No voice notes yet.';
+}
+
+export const LOAD_MORE = 'Load more';
+
+/** A page appended to what is shown (a note is never listed twice). */
+export function appendPage(notes, page) {
+  const seen = new Set((notes || []).map((n) => `${n.where}-${n.id}`));
+  return (notes || []).concat(((page && page.notes) || [])
+    .filter((n) => !seen.has(`${n.where}-${n.id}`)));
 }

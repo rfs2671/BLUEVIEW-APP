@@ -47,7 +47,11 @@ const screen = read('app/projects/[id]/voice-log.jsx');
 ok(/getVoiceLog/.test(screen) && /producedLines/.test(screen) && /PLAY_LABEL/.test(screen),
    'lists, produced, play');
 ok(/voice-log/.test(read('app/projects/[id]/whatsapp-groups.jsx')), 'linked from the WhatsApp tab');
-ok(V.emptyText(0) === 'No voice notes yet.' && /filters/.test(V.emptyText(3)), 'empty texts');
+ok(V.emptyText(false) === 'No voice notes yet.' && /filters/.test(V.emptyText(true)), 'empty texts');
+const merged = V.appendPage([{ id: 'a', where: 'group' }], { notes: [
+  { id: 'a', where: 'group' }, { id: 'a', where: 'dm' }, { id: 'b', where: 'group' }] });
+ok(merged.map((n) => `${n.where}-${n.id}`).join() === 'group-a,dm-a,group-b', 'a page appends, no repeats');
+ok(/next_before/.test(screen) && /LOAD_MORE/.test(screen), 'Load more on the screen');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -200,6 +200,7 @@ def voice_note_lines(row: Dict[str, Any], who: str, group: str, ny: Any) -> str:
 # ── THE VOICE LOG (admin): one row per voice note ───────────────────────────
 
 LOG_STATUSES = ("transcribed", "flagged", "not_processed")
+BOT_OFF_REASON = "not transcribed: the bot was off for this group"
 
 
 def log_status(voice: Optional[Dict[str, Any]], skipped: Any = None,
@@ -226,7 +227,9 @@ def log_row(row: Dict[str, Any], *, who: str, where: str, place: str, at: Any,
             "who": who, "lang": v.get("lang"), "confidence": v.get("confidence"),
             "duration_sec": v.get("duration_sec"), "transcript": said,
             "english": english if english and english != said else "",
-            **log_status(v, row.get("skipped")),
+            **(log_status(v, row.get("skipped")) if (v or row.get("skipped")) else
+               # Stored while the bot was off for the group: never transcribed.
+               {"status": "not_processed", "reason": BOT_OFF_REASON}),
             "forwarded": bool(row.get("forwarded")),
             "audio": bool(v.get("audio_key")), "message_row_id": str(row.get("_id")),
             "produced": produced}

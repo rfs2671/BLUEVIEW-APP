@@ -1957,12 +1957,14 @@ export const whatsappAPI = {
     return response.data;
   },
 
-  // Voice log, admins: { notes, total, facets: {senders, langs} } -- every
+  // Voice log, admins: { notes, next_before, scanned, facets: {senders, langs} } -- every
   // voice note of the job (its groups', and DM notes answered about it).
   // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed').
-  getVoiceLog: async (projectId, filters = {}) => {
+  // `before`: the next_before of the previous page ("Load more").
+  getVoiceLog: async (projectId, filters = {}, before = null) => {
     const params = {};
     ['sender', 'lang', 'status'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
+    if (before) params.before = before;
     const response = await apiClient.get(`/api/projects/${projectId}/whatsapp/voice-log`,
       { params });
     return response.data;

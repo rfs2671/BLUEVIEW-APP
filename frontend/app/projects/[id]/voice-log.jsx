@@ -20,7 +20,7 @@ import { quoteText } from '../../../src/utils/sourceMessage';
 import { PLAY_LABEL, NO_AUDIO_TEXT } from '../../../src/utils/whatsappAttention';
 import {
   VOICE_LOG_TITLE, VOICE_LOG_NOTE, STATUS_LABELS, STATUS_FILTERS, langLabel, whenLabel,
-  headLine, statusLine, producedLines, producedRoute, emptyText,
+  headLine, statusLine, producedLines, producedRoute, emptyText, LOAD_MORE, appendPage,
 } from '../../../src/utils/voiceLog';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -41,14 +41,30 @@ export default function VoiceLogScreen() {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(null);
 
+  const filters = { sender: sender.trim(), lang, status };
   const load = useCallback(async () => {
     try {
-      setData(await whatsappAPI.getVoiceLog(projectId, { sender: sender.trim(), lang, status }));
+      setData(await whatsappAPI.getVoiceLog(projectId, filters));
     } catch (e) {
-      setData({ notes: [], total: 0, facets: {}, error: true });
+      setData({ notes: [], facets: {}, error: true });
       toast?.error?.(VOICE_LOG_TITLE, 'Could not load. Try again.');
     }
   }, [projectId, sender, lang, status]);
+
+  // The next page: filters keep running past what was read.
+  const loadMore = async () => {
+    if (!data || !data.next_before) return;
+    setBusy('more');
+    try {
+      const page = await whatsappAPI.getVoiceLog(projectId, filters, data.next_before);
+      setData({ ...page, notes: appendPage(data.notes, page),
+                facets: (data && data.facets) || page.facets });
+    } catch (e) {
+      toast?.error?.(VOICE_LOG_TITLE, 'Could not load more. Try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   useEffect(() => { load(); }, [lang, status]);   // the name filters on Search
 
@@ -120,7 +136,9 @@ export default function VoiceLogScreen() {
           {data === null && <ActivityIndicator style={styles.spinner} />}
           {data !== null && notes.length === 0 && (
             <GlassCard style={styles.card}>
-              <Text style={[styles.line, muted]}>{emptyText(data.total)}</Text>
+              <Text style={[styles.line, muted]}>
+                {data.next_before ? 'Nothing yet in what was read.' : emptyText(!!(sender.trim() || lang || status))}
+              </Text>
             </GlassCard>
           )}
 
@@ -149,6 +167,12 @@ export default function VoiceLogScreen() {
               ) : null}
             </GlassCard>
           ))}
+
+          {data && data.next_before ? (
+            busy === 'more'
+              ? <ActivityIndicator style={styles.spinner} />
+              : chip(LOAD_MORE, false, loadMore, 'more')
+          ) : null}
         </ScrollView>
       </SafeAreaView>
     </View>

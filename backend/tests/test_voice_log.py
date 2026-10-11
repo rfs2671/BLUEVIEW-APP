@@ -53,7 +53,7 @@ def _full_world():
         "date": "2026-10-12", "status": "open", "source_ref": "v1"})
     db.whatsapp_voice_events.rows.extend([
         {"_id": "d1", "where": "dm", "company_id": CO_A, "project_id": PID,
-         "user_id": "u_pm", "sender": "15550009999",
+         "user_id": "u_roy", "sender": "15550009999",
          "original_transcript": "What was said on the last voicenote on 588 group",
          "english_transcript": "What was said on the last voicenote on 588 group",
          "language_detected": "english", "lang": "en", "confidence": 0.95,
@@ -63,25 +63,26 @@ def _full_world():
          "original_transcript": "x", "received_at": AT},
         {"_id": "d3", "where": "dm", "company_id": "co_b", "project_id": PID,
          "original_transcript": "y", "received_at": AT}])
-    db.users.rows.append({"_id": "u_pm", "company_id": CO_A, "name": "Roy"})
+    db.users.rows.append({"_id": "u_roy", "company_id": CO_A, "name": "Roy"})
     return db
 
 
 class TheLog(unittest.TestCase):
 
-    def _get(self, user=ADMIN, **filters):
+    def _get(self, user=ADMIN, db=None, **filters):
         async def scope(company_id, project_id):
             return {"_id": PID, "company_id": CO_A}
-        db = _full_world()
+        db = db or _full_world()
         with _Ctx(db), patch.object(server, "_bot_project_scope", scope):
             return _run(server.get_project_voice_log(
                 PID, filters.get("sender", ""), filters.get("lang", ""),
-                filters.get("status", ""), current_user=user))
+                filters.get("status", ""), filters.get("before", ""),
+                filters.get("limit", server.VOICE_LOG_PAGE), current_user=user))
 
     def test_every_note_newest_first_with_dm(self):
         out = self._get()
         self.assertEqual([n["id"] for n in out["notes"]], ["d1", "v3", "v2", "v4", "v1"])
-        self.assertEqual(out["total"], 5)
+        self.assertEqual((out["scanned"], out["next_before"]), (5, None))   # read to the end
         dm = out["notes"][0]
         self.assertEqual((dm["where"], dm["place"], dm["who"], dm["status"], dm["audio"]),
                          ("dm", "DM", "Roy", "transcribed", False))
@@ -117,7 +118,7 @@ class TheLog(unittest.TestCase):
         self.assertEqual([n["id"] for n in self._get(lang="yi")["notes"]], ["v3"])
         self.assertEqual([n["id"] for n in self._get(status="not_processed")["notes"]], ["v4"])
         out = self._get(status="flagged")
-        self.assertEqual(([n["id"] for n in out["notes"]], out["total"]), (["v3"], 5))
+        self.assertEqual(([n["id"] for n in out["notes"]], out["scanned"]), (["v3"], 5))
         self.assertEqual(out["facets"]["langs"], ["en", "yi"])
         with self.assertRaises(HTTPException) as e:
             self._get(status="bogus")
@@ -127,6 +128,52 @@ class TheLog(unittest.TestCase):
         with self.assertRaises(HTTPException) as e:
             self._get(user=PM)
         self.assertEqual(e.exception.status_code, 403)
+
+
+class CodexReviewOn751(TheLog):
+    """Filters run while reading, past the first page; next_before continues."""
+
+    def _busy_world(self):
+        db = _full_world()
+        # 250 newer notes from Dave, all after Meilich's: one filtered read
+        # must reach past them.
+        for i in range(250):
+            db.whatsapp_messages.rows.append(dict(
+                _note(1000 + i, f"Dave {i}", -(i + 2), sender="15550004444", name="Dave"),
+                timestamp=AT + timedelta(minutes=i + 2), created_at=AT + timedelta(minutes=i + 2)))
+        return db
+
+    def test_a_filter_finds_an_old_note_past_the_newest_pages(self):
+        out = self._get(db=self._busy_world(), sender="meilich")
+        self.assertEqual([n["id"] for n in out["notes"]], ["v2", "v4", "v1"])
+        self.assertIsNone(out["next_before"])
+
+    def test_pages_continue_without_gaps_or_repeats(self):
+        db = self._busy_world()
+        seen, before = [], ""
+        for _ in range(10):
+            out = self._get(db=db, limit=80, before=before)
+            seen += [f"{n['where']}-{n['id']}" for n in out["notes"]]
+            before = out["next_before"]
+            if not before:
+                break
+        self.assertEqual(len(seen), 255)
+        self.assertEqual(len(set(seen)), 255)
+
+    def test_a_note_stored_while_the_bot_was_off_is_listed(self):
+        db = _full_world()
+        off = dict(_note(8, "", 2), voice=None)
+        off.pop("transcribed", None)
+        off["body"] = ""
+        db.whatsapp_messages.rows.append(off)
+        by = {n["id"]: n for n in self._get(db=db)["notes"]}
+        self.assertEqual((by["v8"]["status"], by["v8"]["reason"]),
+                         ("not_processed", wa_voice.BOT_OFF_REASON))
+
+    def test_a_bad_cursor(self):
+        with self.assertRaises(HTTPException) as e:
+            self._get(before="yesterday")
+        self.assertEqual(e.exception.status_code, 422)
 
 
 class ADmVoiceNoteIsStamped(unittest.TestCase):
@@ -151,6 +198,24 @@ class ADmVoiceNoteIsStamped(unittest.TestCase):
                                         answer(), heard="what was the last voice note",
                                         log=({}, PID, "q", "job_agent")))
         self.assertEqual(db.whatsapp_voice_events.rows[0]["project_id"], PID)
+
+    def test_a_headcount_answer_stamps_its_job_too(self):
+        db = _world()
+        db.whatsapp_voice_events.rows.append(
+            {"_id": "d1", "where": "dm", "company_id": CO_A, "message_id_serialized": "HC1"})
+
+        async def answer():
+            return "6 workers on site at 588."
+
+        async def noop(*a, **k):
+            return None
+        with _Ctx(db), patch.object(server, "send_whatsapp_message", noop):
+            _run(server._dm_send_answer("c", "HC1", answer(), heard="how many workers at 588",
+                                        project_id=PID))
+        self.assertEqual(db.whatsapp_voice_events.rows[0]["project_id"], PID)
+        import inspect
+        src = inspect.getsource(server._dm_assistant_reply)
+        self.assertEqual(src.count("_dm_answer_headcount("), src.count("project_id=str("))
 
     def test_a_typed_question_stamps_nothing(self):
         db = _world()
