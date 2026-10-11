@@ -1,20 +1,17 @@
-"""READ-ONLY probe: what WaAPI's "get contact LID and phone" returns for one
-WhatsApp id. Sends nothing to anyone; writes nothing anywhere.
+"""READ-ONLY probe: what WaAPI's get-lid returns for one or more WhatsApp
+ids. Sends nothing to anyone; writes nothing anywhere.
 
 macOS / Linux (from backend/):
-    railway run python scripts/waapi_lid_probe.py 84894491394148@lid
+    railway run python scripts/waapi_lid_probe.py 84894491394148@lid [more ids …]
 
 Windows (PowerShell, from backend\\):
     railway run python scripts\\waapi_lid_probe.py 84894491394148@lid
 
-Options:
-    --action NAME   the WaAPI client action (default: $WAAPI_LID_ACTION or
-                    get-contact-lid-and-phone)
-    --key NAME      the body field holding the id (default: contactId)
-
-Prints the HTTP status, the raw JSON, and the phone the server's parser
-(lib/wa_mention.phone_from_lookup) reads from it -- the number shown in full
-here because you asked for it on your own terminal; the app never shows it.
+POST …/client/action/get-lid  {"contactIds": [ids…]}   (works both ways:
+a @lid gives its phone, a @c.us its lid). Prints the HTTP status, the raw
+JSON, and what the server's parser (lib/wa_mention.phones_from_lookup)
+reads from it -- numbers shown in full here because you asked on your own
+terminal; the app never shows them.
 """
 
 from __future__ import annotations
@@ -30,14 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import wa_mention  # noqa: E402
 
-DEFAULT_ACTION = os.environ.get("WAAPI_LID_ACTION", "get-contact-lid-and-phone")
-
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("contact", help="e.g. 84894491394148@lid")
-    ap.add_argument("--action", default=DEFAULT_ACTION)
-    ap.add_argument("--key", default="contactId")
+    ap.add_argument("ids", nargs="+", help="e.g. 84894491394148@lid")
     a = ap.parse_args(argv)
     base = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
     inst, tok = os.environ.get("WAAPI_INSTANCE_ID"), os.environ.get("WAAPI_TOKEN")
@@ -45,22 +38,29 @@ def main(argv=None) -> int:
         print("No WAAPI_INSTANCE_ID / WAAPI_TOKEN: run under `railway run`.")
         return 2
     from lib.server_http import ServerHttpClient
-    url = f"{base}/instances/{inst}/client/action/{a.action}"
+    url = f"{base}/instances/{inst}/client/action/{wa_mention.LID_ACTION}"
+    body = wa_mention.lookup_body(a.ids[:wa_mention.LOOKUP_CHUNK])
 
     async def call():
         async with ServerHttpClient(timeout=30) as c:
             return await c.post(url, headers={"Authorization": f"Bearer {tok}",
                                               "Content-Type": "application/json"},
-                                json={a.key: a.contact})
+                                json=body)
     r = asyncio.run(call())
-    print(f"POST …/client/action/{a.action}  {{{a.key}: {a.contact}}}  -> HTTP {r.status_code}")
+    print(f"POST …/client/action/{wa_mention.LID_ACTION}  {json.dumps(body)}  -> HTTP {r.status_code}")
     try:
-        body = r.json()
-        print(json.dumps(body, indent=2, ensure_ascii=False))
+        answer = r.json()
+        print(json.dumps(answer, indent=2, ensure_ascii=False))
     except Exception:
-        body = None
+        answer = None
         print(r.text[:2000])
-    print(f"\nphone read by the server's parser: {wa_mention.phone_from_lookup(body) or '(none)'}")
+    parsed = wa_mention.phones_from_lookup(answer, body["contactIds"])
+    print("\nwhat the server reads:")
+    if parsed is None:
+        print("  (not a success: nothing learned, nothing cached)")
+    else:
+        for lid, number in parsed.items():
+            print(f"  {lid} -> {number or 'no number (cached as such for a week)'}")
     return 0 if r.status_code < 400 else 1
 
 

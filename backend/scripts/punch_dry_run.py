@@ -182,11 +182,11 @@ async def run(sc: dict) -> dict:
     patches += [patch.object(server, n, recorder(n)) for n in SEND_PATHS if hasattr(server, n)]
     lookups: List[str] = []
 
-    async def fake_lid_phone(lid):
-        # WaAPI's lid -> phone lookup, answered from the scenario.
-        lookups.append(lid)
-        return True, (sc.get("lid_phones") or {}).get(lid.split("@")[0])
-    patches.append(patch.object(server, "_waapi_lid_phone", fake_lid_phone))
+    async def fake_get_lid(lids):
+        # WaAPI's get-lid (one call per batch), answered from the scenario.
+        lookups.append(list(lids))
+        return {l: (sc.get("lid_phones") or {}).get(l.split("@")[0]) for l in lids}
+    patches.append(patch.object(server, "_waapi_lid_phones", fake_get_lid))
     ident = _ident(proj, sc)
     checks: List[tuple] = []          # (ok, what)
     transcript: List[str] = []
@@ -349,7 +349,7 @@ async def run(sc: dict) -> dict:
         keys = [r.get("photo_key"), *(r.get("extra_photos") or [])]
         photos += len([k for k in keys if k])
     return {"checks": checks, "transcript": transcript, "group_posts": group_out,
-            "mention_posts": mention_posts,
+            "mention_posts": mention_posts, "lookups": lookups,
             "reacts": reacts, "uploads": uploads, "photos_on_items": photos,
             "rows": rows, "mode": sc.get("punch_sends") or "shadow"}
 

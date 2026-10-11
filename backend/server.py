@@ -1001,8 +1001,6 @@ RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 WAAPI_BASE_URL = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
 WAAPI_INSTANCE_ID = os.environ.get("WAAPI_INSTANCE_ID", "")
 WAAPI_TOKEN = os.environ.get("WAAPI_TOKEN", "")
-# WaAPI's "get contact LID and phone" action (scripts/waapi_lid_probe.py).
-WAAPI_LID_ACTION = os.environ.get("WAAPI_LID_ACTION", "get-contact-lid-and-phone")
 WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -47390,56 +47388,74 @@ CHASE_TICK_MINUTES = 5
 #
 # The rules are lib/wa_mention.py. Here: where a person's number comes from,
 # in this order -- a Levelog user's phone, the People mapping's phone, the
-# WhatsApp id itself when it is a phone (@c.us), else WaAPI's lid -> phone
-# lookup, cached per company (whatsapp_lid_phone) and asked again weekly.
+# WhatsApp id itself when it is a phone (@c.us), else WaAPI's get-lid lookup
+# (every unresolved @lid of a run together, 50 per call), cached per company
+# (whatsapp_lid_phone) and asked again weekly.
 # A person with no number keeps the plain "@Name" and is logged
 # "[mention] unresolved": the post still names them, it just won't notify.
 
-async def _waapi_lid_phone(lid: str) -> Tuple[bool, Optional[str]]:
-    """(asked, phone) from WaAPI for one @lid. asked=False when WaAPI could
-    not be asked (no credentials, an error): nothing is cached then."""
-    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and lid):
-        return False, None
-    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{WAAPI_LID_ACTION}"
+async def _waapi_lid_phones(lids: List[str]) -> Optional[Dict[str, Optional[str]]]:
+    """One WaAPI get-lid call (at most wa_mention.LOOKUP_CHUNK ids):
+    {lid: phone or None}, or None when WaAPI could not be asked or did not
+    answer "success" (then nothing is cached)."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and lids):
+        return None
+    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{wa_mention.LID_ACTION}"
     code, body, exc = await _waapi_post_raw(
-        url, {"contactId": lid},
+        url, wa_mention.lookup_body(lids),
         {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
     if exc is not None or code is None or code >= 400:
-        logger.info(f"[mention] lid lookup failed: {type(exc).__name__ if exc else code}")
-        return False, None
-    return True, wa_mention.phone(wa_mention.phone_from_lookup(body))
+        logger.info(f"[mention] get-lid failed: {type(exc).__name__ if exc else code}")
+        return None
+    out = wa_mention.phones_from_lookup(body, lids)
+    if out is None:
+        logger.info("[mention] get-lid did not succeed")
+    return out
 
 
-async def _lid_phone_cached(company_id: str, lid: str,
-                            now: Optional[datetime] = None) -> Optional[str]:
+async def _lid_phones_cached(company_id: str, lids: List[str],
+                             now: Optional[datetime] = None) -> Dict[str, Optional[str]]:
+    """{lid: phone or None} for this company's ids: from the weekly cache,
+    and one get-lid call per 50 ids missing or stale. A lid WaAPI answers
+    without a number is cached as "no number" for the week too."""
     now = now or datetime.now(timezone.utc)
-    key = f"{company_id}|{lid}"
     col = db[wa_mention.LOOKUP_COLLECTION]
-    try:
-        row = await col.find_one({"_id": key})
-    except Exception:
-        row = None
-    at = (row or {}).get("checked_at")
-    if isinstance(at, datetime) and at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
-    if row and isinstance(at, datetime) and now - at < timedelta(days=wa_mention.LOOKUP_TTL_DAYS):
-        return row.get("phone")
-    asked, number = await _waapi_lid_phone(lid)
-    if not asked:
-        return (row or {}).get("phone")      # a stale answer beats none
-    try:
-        await col.update_one({"_id": key}, {"$set": {
-            "company_id": str(company_id), "lid": lid, "phone": number,
-            "checked_at": now}}, upsert=True)
-    except Exception as e:
-        logger.warning(f"[mention] lid cache write failed: {type(e).__name__}")
-    return number
+    want = list(dict.fromkeys(l for l in lids if l))
+    out: Dict[str, Optional[str]] = {}
+    stale: Dict[str, Optional[str]] = {}
+    ask: List[str] = []
+    for lid in want:
+        try:
+            row = await col.find_one({"_id": f"{company_id}|{lid}"})
+        except Exception:
+            row = None
+        at = (row or {}).get("checked_at")
+        if isinstance(at, datetime) and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if row and isinstance(at, datetime) and now - at < timedelta(days=wa_mention.LOOKUP_TTL_DAYS):
+            out[lid] = row.get("phone")
+        else:
+            stale[lid] = (row or {}).get("phone")
+            ask.append(lid)
+    for chunk in wa_mention.chunks(ask):
+        got = await _waapi_lid_phones(chunk)
+        if got is None:
+            out.update({l: stale.get(l) for l in chunk})     # a stale answer beats none
+            continue
+        for lid, number in got.items():
+            out[lid] = number
+            try:
+                await col.update_one({"_id": f"{company_id}|{lid}"}, {"$set": {
+                    "company_id": str(company_id), "lid": lid, "phone": number,
+                    "checked_at": now}}, upsert=True)
+            except Exception as e:
+                logger.warning(f"[mention] lid cache write failed: {type(e).__name__}")
+    return out
 
 
-async def _mention_target(person: dict, company_id: str,
-                          now: Optional[datetime] = None) -> dict:
-    """{name, phone, source, handle, resolved} for one person a group post
-    names: an attention owner, a punch assignee ({kind, id, name, jid})."""
+async def _mention_local(person: dict, company_id: str) -> Tuple[Optional[dict], str]:
+    """The number from what we hold: (target, "") when found, else (None,
+    jid) -- the jid left to ask WaAPI about when it is an @lid."""
     name = person.get("name") or ""
     kind, pid = str(person.get("kind") or ""), str(person.get("id") or "")
     jid = str(person.get("jid") or "")
@@ -47449,26 +47465,45 @@ async def _mention_target(person: dict, company_id: str,
             u = await db.users.find_one({"_id": to_query_id(pid), "company_id": cid,
                                          "is_deleted": {"$ne": True}}, {"phone": 1})
             if u and wa_mention.phone(u.get("phone")):
-                return wa_mention.target(name, u.get("phone"), "user")
+                return wa_mention.target(name, u.get("phone"), "user"), ""
         if kind == "sender_map" or jid:
             q = ({"_id": to_query_id(pid)} if kind == "sender_map" and pid
                  else {"sender_jid": jid})
             m = await db[wa_sender_map.COLLECTION].find_one(
                 {**q, "company_id": str(company_id)}, {"phone": 1, "sender_jid": 1})
             if m and wa_mention.phone(m.get("phone")):
-                return wa_mention.target(name, m.get("phone"), "people")
+                return wa_mention.target(name, m.get("phone"), "people"), ""
             jid = jid or str((m or {}).get("sender_jid") or "")
     except Exception as e:
         logger.warning(f"[mention] lookup failed: {type(e).__name__}")
     if wa_mention.phone(jid):
-        return wa_mention.target(name, jid, "jid")
-    if wa_sender_map.is_lid(jid):
-        number = await _lid_phone_cached(str(company_id), jid, now)
-        if number:
-            return wa_mention.target(name, number, "lid_lookup")
-    logger.info(f"[mention] unresolved kind={kind or 'none'} "
-                f"id={'lid' if wa_sender_map.is_lid(jid) else ('none' if not jid else 'other')}")
-    return wa_mention.target(name, None)
+        return wa_mention.target(name, jid, "jid"), ""
+    return None, jid
+
+
+async def _mention_targets(people: List[dict], company_id: str,
+                           now: Optional[datetime] = None) -> List[dict]:
+    """{name, phone, source, handle, resolved} for each person (attention
+    owners, punch assignees: {kind, id, name, jid}), in order. Every @lid
+    still without a number is asked of WaAPI together, 50 per call."""
+    local = [await _mention_local(p, company_id) for p in people]
+    lids = [jid for t, jid in local if t is None and wa_sender_map.is_lid(jid)]
+    found = await _lid_phones_cached(str(company_id), lids, now) if lids else {}
+    out = []
+    for p, (t, jid) in zip(people, local):
+        if t is None and found.get(jid):
+            t = wa_mention.target(p.get("name") or "", found[jid], "lid_lookup")
+        if t is None:
+            logger.info(f"[mention] unresolved kind={p.get('kind') or 'none'} "
+                        f"id={'lid' if wa_sender_map.is_lid(jid) else ('none' if not jid else 'other')}")
+            t = wa_mention.target(p.get("name") or "", None)
+        out.append(t)
+    return out
+
+
+async def _mention_target(person: dict, company_id: str,
+                          now: Optional[datetime] = None) -> dict:
+    return (await _mention_targets([person], company_id, now))[0]
 
 
 async def _group_post(group_id: str, text: str, targets: List[dict],
@@ -47679,6 +47714,23 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                             if isinstance(n.get("at"), datetime)})
         if last and (b["last"] is None or last > b["last"]):
             b["last"] = last
+    # Real @mentions: every new group nudge's owner, per company, resolved
+    # together (one WaAPI get-lid call per 50 unresolved @lids).
+    targets: Dict[tuple, dict] = {}
+    if slot != wa_chase.ADMIN:
+        todo: Dict[str, List[tuple]] = {}
+        for key, b in batches.items():
+            try:
+                if await db[wa_chase.COLLECTION].find_one(
+                        {"_id": wa_chase.row_id(day, key[1], key[2], slot)}, {"_id": 1}):
+                    continue
+            except Exception:
+                continue
+            todo.setdefault(b["company_id"], []).append(key)
+        for cid, keys in todo.items():
+            got = await _mention_targets(
+                [batches[k]["items"][0].get("owner") or {} for k in keys], cid, now)
+            targets.update(zip(keys, got))
     for (pid, gid, okey), b in batches.items():
         rid = wa_chase.row_id(day, gid, okey, slot)
         try:
@@ -47727,7 +47779,8 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 # The post as it would go out: a real @mention when the
                 # owner's number is known (lib/wa_mention), replying to the
                 # message the nudge quotes (WaAPI wants its serialized id).
-                tgt = await _mention_target(owner, b["company_id"], now)
+                tgt = targets.get((pid, gid, okey)) or await _mention_target(
+                    owner, b["company_id"], now)
                 send_text = wa_chase.group_text(row["owner_name"], b["items"], slot,
                                                 handle=tgt["handle"])
                 quoted_id = wa_chase.quoted(first).get("message_id")
@@ -60556,6 +60609,11 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                                  {"person": person, "items": [], "due_words": sess["due"][it["trade"]]})
         b["items"].append(it)
     batches = []
+    # Real @mentions: every assignee resolved together (one get-lid call
+    # per 50 unresolved @lids).
+    named = {k: {**b["person"], "name": b["person"].get("name") or b["person"].get("company") or ""}
+             for k, b in by_person.items()}
+    tgts = dict(zip(named, await _mention_targets(list(named.values()), sess["company_id"], now)))
     for key, b in by_person.items():
         person, rows = b["person"], []
         for it in b["items"]:
@@ -60604,8 +60662,7 @@ async def _punch_send(ident: dict, sess: dict) -> str:
             await db[punch.COLLECTION].insert_one(row)
             rows.append(row)
         photos = sum(1 for r in rows if r.get("photo_key")) + sum(len(r["extra_photos"]) for r in rows)
-        tgt = await _mention_target({**person, "name": person.get("name") or person.get("company") or ""},
-                                    sess["company_id"], now)
+        tgt = tgts[key]
         for r in rows:
             r["mention"] = {"resolved": tgt["resolved"], "source": tgt["source"]}
             await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {"mention": r["mention"]}})
@@ -60671,8 +60728,10 @@ async def _punch_resend(sess: dict) -> str:
     if not group_id:
         await _punch_save(sess, status="sent", undelivered=[])
         return "Nothing left to resend."
-    for b in by_person.values():
-        b["target"] = await _mention_target({**b["person"], "name": b["name"]}, sess["company_id"])
+    bs = list(by_person.values())
+    for b, t in zip(bs, await _mention_targets([{**b["person"], "name": b["name"]} for b in bs],
+                                               sess["company_id"])):
+        b["target"] = t
     return await _punch_post(sess, group_id, list(by_person.values()))
 
 

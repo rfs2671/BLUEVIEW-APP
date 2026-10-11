@@ -262,13 +262,13 @@ async def run(sc: dict, scripted: bool = False) -> dict:
         return _rec
     patches = [patch.object(server, "db", db)] + [
         patch.object(server, n, recorder(n)) for n in SEND_PATHS if hasattr(server, n)]
-    # WaAPI's lid -> phone lookup (for real @mentions), answered from the
+    # WaAPI's get-lid lookup (for real @mentions), answered from the
     # scenario: a sender's "lid_phone", else no number.
     lid_phones = {str(v.get("lid")): v.get("lid_phone") for v in sc["senders"].values()}
 
-    async def fake_lid_phone(lid):
-        return True, lid_phones.get(str(lid).split("@")[0])
-    patches.append(patch.object(server, "_waapi_lid_phone", fake_lid_phone))
+    async def fake_get_lid(lids):
+        return {l: lid_phones.get(str(l).split("@")[0]) for l in lids}
+    patches.append(patch.object(server, "_waapi_lid_phones", fake_get_lid))
     llm = Scripted(sc) if scripted else None
     if not scripted and not server.OPENAI_API_KEY:
         raise ScenarioError("no OPENAI_API_KEY: run under `railway run`, or pass --scripted")

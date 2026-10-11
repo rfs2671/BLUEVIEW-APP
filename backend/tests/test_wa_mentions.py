@@ -102,27 +102,42 @@ class TheRules(unittest.TestCase):
         self.assertFalse(m.sent_ok({}))
         self.assertFalse(m.sent_ok(None))
 
-    def test_the_lookup_answer_is_read_defensively(self):
-        self.assertEqual(m.phone_from_lookup(
-            {"data": {"data": {"lid": LID, "pn": "17185550100@c.us"}}}), "17185550100")
-        self.assertEqual(m.phone_from_lookup(
-            {"data": {"status": "success", "phone": "+17185550100"}}), "17185550100")
-        self.assertIsNone(m.phone_from_lookup({"data": {"lid": LID}}))
-        self.assertIsNone(m.phone_from_lookup({"data": {"status": "error"}}))
+    def test_the_get_lid_answer(self):
+        self.assertEqual(m.LID_ACTION, "get-lid")
+        self.assertEqual(m.lookup_body([LID, "1@lid"]), {"contactIds": [LID, "1@lid"]})
+        ok = {"data": {"status": "success", "data": {"count": 2, "contacts": [
+            {"lid": LID, "pn": "17185550100@c.us"}, {"lid": "1@lid"}]}}}
+        self.assertEqual(m.phones_from_lookup(ok, [LID, "1@lid", "2@lid"]),
+                         {LID: "17185550100", "1@lid": None, "2@lid": None})
+        # Not a success: nothing learned (None), not "no number".
+        self.assertIsNone(m.phones_from_lookup({"data": {"status": "error"}}, [LID]))
+        self.assertIsNone(m.phones_from_lookup(None, [LID]))
+        # No guessing: a number anywhere else in the answer is not read.
+        odd = {"data": {"status": "success", "phone": "17185550100",
+                        "data": {"contacts": [{"lid": LID, "phone": "17185550100@c.us"}]}}}
+        self.assertEqual(m.phones_from_lookup(odd, [LID]), {LID: None})
+
+    def test_chunks_of_50(self):
+        self.assertEqual([len(c) for c in m.chunks([str(i) for i in range(120)])], [50, 50, 20])
 
 
 class _Waapi:
     """Stands in for _waapi_post_raw: records each call; answers send-message
     with `send` and the lid lookup with `lookup`."""
 
-    def __init__(self, send=None, lookup=None, code=200):
-        self.calls, self.send, self.lookup, self.code = [], send, lookup, code
+    def __init__(self, send=None, lookup=None, code=200, status="success"):
+        self.calls, self.send, self.code, self.status = [], send, code, status
+        self.lookup = lookup or {}          # {lid: phone}: what WaAPI knows
 
     async def __call__(self, url, payload, headers):
         self.calls.append((url.rsplit("/", 1)[-1], dict(payload)))
         if url.endswith("send-message"):
             return 200, self.send if self.send is not None else {"data": {"status": "success"}}, None
-        return self.code, self.lookup, None
+        ids = payload.get("contactIds") or []
+        contacts = [{"lid": l, **({"pn": f"{self.lookup[l]}@c.us"} if self.lookup.get(l) else {})}
+                    for l in ids]
+        return self.code, {"data": {"status": self.status,
+                                    "data": {"contacts": contacts, "count": len(contacts)}}}, None
 
 
 def _ctx(db, waapi):
@@ -222,12 +237,11 @@ class WhoseNumber(unittest.TestCase):
         self.assertEqual((t["phone"], t["source"]), ("17185550222", "jid"))
 
     def test_then_the_lid_lookup_cached_per_company_for_a_week(self):
-        w = _Waapi(lookup={"data": {"data": {"lid": LID, "pn": "17185550333@c.us"}}})
+        w = _Waapi(lookup={LID: "17185550333"})
         person = {"kind": "sender_map", "id": "m2", "name": "Chris", "jid": LID}
         t = self.target(person, w)
         self.assertEqual((t["phone"], t["source"]), ("17185550333", "lid_lookup"))
-        self.assertEqual(w.calls[0][0], server.WAAPI_LID_ACTION)
-        self.assertEqual(w.calls[0][1], {"contactId": LID})
+        self.assertEqual(w.calls[0], ("get-lid", {"contactIds": [LID]}))
         # Cached: no second call within the week (and not another company's).
         self.target(person, w, now=NOW + timedelta(days=6))
         self.assertEqual(len(w.calls), 1)
@@ -238,25 +252,42 @@ class WhoseNumber(unittest.TestCase):
         self.assertEqual(len(w.calls), 2)
 
     def test_another_companys_mapping_is_never_used(self):
-        w = _Waapi(lookup={"data": {}})
+        w = _Waapi()
         t = self.target({"kind": "sender_map", "id": "m2", "name": "Chris", "jid": LID}, w)
         self.assertFalse(t["resolved"])           # not CO_B's 17185550999
 
     def test_unresolved_keeps_the_name_and_logs(self):
-        w = _Waapi(lookup={"data": {"status": "success"}})
+        w = _Waapi()                               # success, but no pn for it
         with self.assertLogs(server.logger, "INFO") as logs:
             t = self.target({"kind": "user", "id": "u2", "name": "No Phone", "jid": "555@lid"}, w)
         self.assertEqual((t["handle"], t["resolved"]), ("@No Phone", False))
         self.assertTrue(any("[mention] unresolved" in l for l in logs.output))
-        # "No phone" is remembered for the week too.
+        # "No number" is remembered for the week too.
         self.target({"kind": "user", "id": "u2", "name": "No Phone", "jid": "555@lid"}, w)
         self.assertEqual(len(w.calls), 1)
+        self.assertIsNone(self.db[m.LOOKUP_COLLECTION].rows[0]["phone"])
 
     def test_a_failed_lookup_is_not_cached(self):
-        w = _Waapi(code=500)
-        t = self.target({"kind": "sender_map", "id": "m2", "name": "Chris", "jid": LID}, w)
-        self.assertFalse(t["resolved"])
-        self.assertEqual(self.db[m.LOOKUP_COLLECTION].rows, [])
+        for w in (_Waapi(code=500), _Waapi(status="error", lookup={LID: "17185550333"})):
+            t = self.target({"kind": "sender_map", "id": "m2", "name": "Chris", "jid": LID}, w)
+            self.assertFalse(t["resolved"])
+            self.assertEqual(self.db[m.LOOKUP_COLLECTION].rows, [])
+
+    def test_many_lids_are_asked_together_50_per_call(self):
+        lids = [f"{9000 + i}@lid" for i in range(120)]
+        w = _Waapi(lookup={lids[0]: "17185550001", lids[119]: "17185550119"})
+        people = [{"kind": "worker", "id": str(i), "name": f"P{i}", "jid": l}
+                  for i, l in enumerate(lids)]
+        people.append({"kind": "user", "id": "u1", "name": "Roy"})   # has a phone: never asked
+        got = _with(_ctx(self.db, w), server._mention_targets(people, CO_A, NOW))
+        self.assertEqual([len(c[1]["contactIds"]) for c in w.calls], [50, 50, 20])
+        self.assertEqual((got[0]["phone"], got[119]["phone"], got[50]["resolved"]),
+                         ("17185550001", "17185550119", False))
+        self.assertEqual(got[-1]["source"], "user")
+        self.assertEqual(len(self.db[m.LOOKUP_COLLECTION].rows), 120)
+        # Again within the week: all from the cache, no call.
+        _with(_ctx(self.db, w), server._mention_targets(people, CO_A, NOW + timedelta(days=1)))
+        self.assertEqual(len(w.calls), 3)
 
 
 class TheChase(_Base):

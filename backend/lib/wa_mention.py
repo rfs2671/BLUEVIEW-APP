@@ -13,8 +13,8 @@ in the text. `check()` refuses a mismatch either way: a number in mentions
 with no token in the text, or a token whose number is not in mentions.
 
 Where the phone comes from is server.py's job (a Levelog user's phone, the
-People mapping's phone, else WaAPI's lid -> phone lookup, cached per company
-and refreshed weekly). An unresolved person keeps the plain "@Name": the post
+People mapping's phone, else WaAPI's get-lid lookup -- batched, 50 ids a
+call -- cached per company and refreshed weekly). An unresolved person keeps the plain "@Name": the post
 still names them; it just won't notify, and the screens say so.
 
 Nothing here touches the network or the database.
@@ -27,7 +27,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 #: The jid WaAPI accepts in `mentions`.
 MENTION_JID = re.compile(r"^[0-9]{7,}@c\.us$")
-#: How long a lid -> phone answer (or "no phone") is trusted.
+#: WaAPI's lid <-> phone action: POST …/client/action/get-lid with
+#: {"contactIds": [...]}, many ids per call.
+LID_ACTION = "get-lid"
+#: Ids per get-lid call.
+LOOKUP_CHUNK = 50
+#: How long a lid -> phone answer (or "no number") is trusted.
 LOOKUP_TTL_DAYS = 7
 LOOKUP_COLLECTION = "whatsapp_lid_phone"
 #: What the screens say beside a mention that will not notify.
@@ -121,33 +126,31 @@ def sent_ok(resp: Any) -> bool:
     return isinstance(data, dict) and str(data.get("status") or "").lower() == "success"
 
 
-def phone_from_lookup(resp: Any) -> Optional[str]:
-    """The phone in WaAPI's "get contact LID and phone" answer, or None.
+def lookup_body(lids: Iterable[str]) -> Dict[str, Any]:
+    """WaAPI get-lid's body: {"contactIds": ["<num>@lid", …]}."""
+    return {"contactIds": list(lids)}
 
-    The answer's exact shape is read defensively: the first "<digits>@c.us"
-    anywhere in it, else a field named like a phone ("pn", "phone",
-    "phoneNumber", "number") holding 7+ digits. A @lid is never a phone."""
-    found: List[str] = []
 
-    def walk(node: Any, key: str = "", depth: int = 0) -> None:
-        if depth > 8 or found:
-            return
-        if isinstance(node, dict):
-            for k, v in node.items():
-                walk(v, str(k), depth + 1)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v, key, depth + 1)
-        elif isinstance(node, str):
-            s = node.strip()
-            if re.fullmatch(r"\d{7,15}@(c\.us|s\.whatsapp\.net)", s):
-                found.append(s.split("@")[0])
-            elif key.lower() in ("pn", "phone", "phonenumber", "number", "user") \
-                    and re.fullmatch(r"\+?\d{7,15}", s):
-                found.append(s.lstrip("+"))
-        elif isinstance(node, int) and key.lower() in ("pn", "phone", "phonenumber", "number"):
-            if 7 <= len(str(node)) <= 15:
-                found.append(str(node))
+def chunks(items: List[str], size: int = LOOKUP_CHUNK) -> List[List[str]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
-    walk(resp)
-    return found[0] if found else None
+
+def phones_from_lookup(resp: Any, asked: Iterable[str]) -> Optional[Dict[str, Optional[str]]]:
+    """WaAPI get-lid's answer -> {lid: phone or None} for every id asked, or
+    None when the call did not succeed (data.status != "success": nothing
+    learned, nothing to cache).
+
+    The answer is data.data.contacts = [{"lid": "…@lid", "pn": "<digits>@c.us"}].
+    An asked lid with no contact, or a contact with no pn, has no number."""
+    if not sent_ok(resp):
+        return None
+    inner = (resp.get("data") or {}).get("data") or {}
+    contacts = inner.get("contacts") if isinstance(inner, dict) else None
+    out: Dict[str, Optional[str]] = {str(l): None for l in asked}
+    for c in contacts if isinstance(contacts, list) else []:
+        if not isinstance(c, dict):
+            continue
+        lid = str(c.get("lid") or "")
+        if lid in out:
+            out[lid] = phone(c.get("pn")) if c.get("pn") else None
+    return out
