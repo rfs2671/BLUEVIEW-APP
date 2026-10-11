@@ -25,7 +25,7 @@ import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
   statusLine, precisionLines, emptyText, LISTS, STATE_VERDICTS, eventLine, linkLine,
-  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT,
+  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT, batchTitle, batchNoteLines, attentionRows,
 } from '../../utils/whatsappAttention';
 
 export default function AttentionCard({ projectId }) {
@@ -37,6 +37,7 @@ export default function AttentionCard({ projectId }) {
   const [busy, setBusy] = useState(null);
   const [list, setList] = useState('open');
   const [source, setSource] = useState(null);   // { rowId, reason } — the sheet
+  const [openBatch, setOpenBatch] = useState(null);   // a Yiddish batch, expanded
 
   const load = useCallback(async () => {
     try {
@@ -90,8 +91,133 @@ export default function AttentionCard({ projectId }) {
   };
 
   const items = (data && data.items) || [];
+  const batches = (data && data.voice_batches) || [];
   const lines = precisionLines(data && data.precision)
     .concat(statePrecisionLines(data && data.state_precision));
+  const renderBatch = (b) => (
+    <View key={b.key} style={s.item}>
+      <Pressable onPress={() => setOpenBatch(openBatch === b.key ? null : b.key)}
+        accessibilityRole="button" accessibilityState={{ expanded: openBatch === b.key }}>
+        <Text style={s.quote}>{`${openBatch === b.key ? '▾' : '▸'} ${batchTitle(b)}`}</Text>
+      </Pressable>
+      {openBatch === b.key ? b.items.map((it) => (
+        <View key={it.id} style={s.event}>
+          <Text style={s.eventLine}>{batchNoteLines(it).head}</Text>
+          <Text style={s.muted}>{batchNoteLines(it).english}</Text>
+          <View style={s.buttons}>
+            {canPlay(it) ? (busy === `play:${it.id}`
+              ? <ActivityIndicator size="small" color={colors.text.muted} />
+              : (
+                <Pressable onPress={() => play(it)} disabled={!!busy} style={s.button}
+                  accessibilityRole="button" accessibilityLabel="Play the voice note">
+                  <Text style={s.buttonText}>{PLAY_LABEL}</Text>
+                </Pressable>
+              )) : null}
+            {busy === it.id ? <ActivityIndicator size="small" color={colors.text.muted} />
+              : VERDICTS.map((v) => (
+                <Pressable key={v.verdict} onPress={() => review(it.id, v.verdict)}
+                  disabled={!!busy} style={s.button} accessibilityRole="button">
+                  <Text style={s.buttonText}>{v.label}</Text>
+                </Pressable>
+              ))}
+          </View>
+        </View>
+      )) : null}
+    </View>
+  );
+
+  const renderItem = (it) => (
+    <View key={it.id} style={s.item}>
+      <Text style={s.type}>
+        {typeLabel(it.type)}{it.importance === 'high' ? ' · High' : ''}
+        {it.group_name ? ` · ${it.group_name}` : ''}
+      </Text>
+      <Pressable disabled={!it.message_row_id}
+        onPress={() => setSource({ rowId: it.message_row_id, reason: it.review_reason })}
+        accessibilityRole="button" accessibilityLabel="Show the original message">
+        {yiddishLines(it) ? yiddishLines(it).map((l) => (
+          <Text key={l.key} style={s.quote}>
+            <Text style={s.muted}>{`${l.label}: `}</Text>
+            {l.key === 'said' ? quoteText(l.text, true) : l.text}
+          </Text>
+        )) : <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>}
+      </Pressable>
+      {it.forwarded
+        ? <Text style={s.muted}>{FORWARDED_TEXT}</Text> : null}
+      {reviewNote(null, it.review_reason)
+        ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
+      {canPlay(it) ? (
+        <View style={s.buttons}>
+          {busy === `play:${it.id}`
+            ? <ActivityIndicator size="small" color={colors.text.muted} />
+            : (
+              <Pressable onPress={() => play(it)} disabled={!!busy} style={s.button}
+                accessibilityRole="button" accessibilityLabel="Play the voice note">
+                <Text style={s.buttonText}>{PLAY_LABEL}</Text>
+              </Pressable>
+            )}
+        </View>
+      ) : null}
+      {it.summary ? <Text style={s.muted}>{it.summary}</Text> : null}
+      {[ownerLine(it), dueLine(it), statusLine(it)].filter(Boolean).map((l) => (
+        <Text key={l} style={s.muted}>{l}</Text>
+      ))}
+      {(it.history || []).length > 1 ? (
+        <View style={s.timeline}>
+          {it.history.map((e) => (
+            <View key={e.id || e.kind} style={s.event}>
+              <Text style={s.eventLine}>{eventLine(e)}</Text>
+              {e.kind !== 'created' && e.quote ? (
+                <Pressable disabled={!e.message_row_id}
+                  onPress={() => setSource({ rowId: e.message_row_id })}
+                  accessibilityRole="button" accessibilityLabel="Show the original message">
+                  <Text style={s.eventQuote}>
+                    {quoteText(e.quote, e.evidence_kind === 'voice')}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {e.kind !== 'created' && linkLine(e) ? (
+                <Text style={s.muted}>{linkLine(e)}</Text>
+              ) : null}
+              {reviewable(e, it) ? (
+                <View style={s.buttons}>
+                  {busy === e.id
+                    ? <ActivityIndicator size="small" color={colors.text.muted} />
+                    : STATE_VERDICTS.map((v) => (
+                      <Pressable
+                        key={v.verdict}
+                        onPress={() => reviewChange(it.id, e.id, v.verdict)}
+                        disabled={!!busy}
+                        style={[s.button, e.verdict === v.verdict && s.buttonActive]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${v.label}: ${eventLine(e)}`}
+                      >
+                        <Text style={s.buttonText}>{v.label}</Text>
+                      </Pressable>
+                    ))}
+                </View>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <View style={s.buttons}>
+        {busy === it.id ? <ActivityIndicator size="small" color={colors.text.muted} />
+          : VERDICTS.map((v) => (
+            <Pressable
+              key={v.verdict}
+              onPress={() => review(it.id, v.verdict)}
+              disabled={!!busy}
+              style={[s.button, it.verdict === v.verdict && s.buttonActive]}
+              accessibilityRole="button"
+            >
+              <Text style={s.buttonText}>{v.label}</Text>
+            </Pressable>
+          ))}
+      </View>
+    </View>
+  );
+
   return (
     <>
       <Text style={s.heading}>{ATTENTION_TITLE}</Text>
@@ -123,99 +249,11 @@ export default function AttentionCard({ projectId }) {
                 {lines.map((l) => <Text key={l} style={s.statLine}>{l}</Text>)}
               </View>
             ) : null}
-            {items.length === 0 ? (
+            {/* MANY YIDDISH NOTES: one row per group per day, expandable, among the items by recency. */}
+            {items.length === 0 && batches.length === 0 ? (
               <Text style={[s.muted, { marginTop: spacing.sm }]}>{emptyText(data && data.total)}</Text>
-            ) : items.map((it) => (
-              <View key={it.id} style={s.item}>
-                <Text style={s.type}>
-                  {typeLabel(it.type)}{it.importance === 'high' ? ' · High' : ''}
-                  {it.group_name ? ` · ${it.group_name}` : ''}
-                </Text>
-                <Pressable disabled={!it.message_row_id}
-                  onPress={() => setSource({ rowId: it.message_row_id, reason: it.review_reason })}
-                  accessibilityRole="button" accessibilityLabel="Show the original message">
-                  {yiddishLines(it) ? yiddishLines(it).map((l) => (
-                    <Text key={l.key} style={s.quote}>
-                      <Text style={s.muted}>{`${l.label}: `}</Text>
-                      {l.key === 'said' ? quoteText(l.text, true) : l.text}
-                    </Text>
-                  )) : <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>}
-                </Pressable>
-                {it.forwarded
-                  ? <Text style={s.muted}>{FORWARDED_TEXT}</Text> : null}
-                {reviewNote(null, it.review_reason)
-                  ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
-                {canPlay(it) ? (
-                  <View style={s.buttons}>
-                    {busy === `play:${it.id}`
-                      ? <ActivityIndicator size="small" color={colors.text.muted} />
-                      : (
-                        <Pressable onPress={() => play(it)} disabled={!!busy} style={s.button}
-                          accessibilityRole="button" accessibilityLabel="Play the voice note">
-                          <Text style={s.buttonText}>{PLAY_LABEL}</Text>
-                        </Pressable>
-                      )}
-                  </View>
-                ) : null}
-                {it.summary ? <Text style={s.muted}>{it.summary}</Text> : null}
-                {[ownerLine(it), dueLine(it), statusLine(it)].filter(Boolean).map((l) => (
-                  <Text key={l} style={s.muted}>{l}</Text>
-                ))}
-                {(it.history || []).length > 1 ? (
-                  <View style={s.timeline}>
-                    {it.history.map((e) => (
-                      <View key={e.id || e.kind} style={s.event}>
-                        <Text style={s.eventLine}>{eventLine(e)}</Text>
-                        {e.kind !== 'created' && e.quote ? (
-                          <Pressable disabled={!e.message_row_id}
-                            onPress={() => setSource({ rowId: e.message_row_id })}
-                            accessibilityRole="button" accessibilityLabel="Show the original message">
-                            <Text style={s.eventQuote}>
-                              {quoteText(e.quote, e.evidence_kind === 'voice')}
-                            </Text>
-                          </Pressable>
-                        ) : null}
-                        {e.kind !== 'created' && linkLine(e) ? (
-                          <Text style={s.muted}>{linkLine(e)}</Text>
-                        ) : null}
-                        {reviewable(e, it) ? (
-                          <View style={s.buttons}>
-                            {busy === e.id
-                              ? <ActivityIndicator size="small" color={colors.text.muted} />
-                              : STATE_VERDICTS.map((v) => (
-                                <Pressable
-                                  key={v.verdict}
-                                  onPress={() => reviewChange(it.id, e.id, v.verdict)}
-                                  disabled={!!busy}
-                                  style={[s.button, e.verdict === v.verdict && s.buttonActive]}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`${v.label}: ${eventLine(e)}`}
-                                >
-                                  <Text style={s.buttonText}>{v.label}</Text>
-                                </Pressable>
-                              ))}
-                          </View>
-                        ) : null}
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
-                <View style={s.buttons}>
-                  {busy === it.id ? <ActivityIndicator size="small" color={colors.text.muted} />
-                    : VERDICTS.map((v) => (
-                      <Pressable
-                        key={v.verdict}
-                        onPress={() => review(it.id, v.verdict)}
-                        disabled={!!busy}
-                        style={[s.button, it.verdict === v.verdict && s.buttonActive]}
-                        accessibilityRole="button"
-                      >
-                        <Text style={s.buttonText}>{v.label}</Text>
-                      </Pressable>
-                    ))}
-                </View>
-              </View>
-            ))}
+            ) : attentionRows(items, batches).map((r) => (r.kind === 'batch'
+              ? renderBatch(r.batch) : renderItem(r.item)))}
           </>
         )}
       </GlassCard>
