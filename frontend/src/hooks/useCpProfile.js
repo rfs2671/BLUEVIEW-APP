@@ -10,14 +10,18 @@
  * On mount: loads from AsyncStorage first → signature appears immediately.
  * Then fetches from backend in background to stay in sync.
  * autoSave() writes to BOTH.
+ *
+ * PER ACCOUNT, since 2026-10-10. The cache was one device-wide key that
+ * survived logout, and autoSave wrote it to whoever signed in next: Shawn's
+ * signature reached thirty of Michael's filed logs. The cache is now keyed by
+ * user id (utils/cpProfileCache), and a save is refused unless the account
+ * signed in now is the one the values were loaded for.
  */
 
 import { useState, useEffect, useRef } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { cpProfileAPI } from '../utils/api';
+import { cpProfileAPI, getStoredUser } from '../utils/api';
+import { readCpProfile, writeCpProfile } from '../utils/cpProfileCache';
 import { toCredential } from '../utils/signatureAffirmed';
-
-const CP_PROFILE_CACHE_KEY = 'blueview_cp_profile';
 
 /**
  * The profile signature is a REUSABLE CREDENTIAL, never a per-document
@@ -46,27 +50,30 @@ export function useCpProfile() {
 
   const nameRef = useRef('');
   const sigRef = useRef(null);
+  // WHOSE VALUES THESE ARE. Set from the signed-in account when the profile
+  // loads, and asked again before every save: a value loaded for one account
+  // is never written to another. See utils/cpProfileCache for the defect.
+  const ownerRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadProfile = async () => {
-      // ── Step 1: Load from local cache (instant, works offline) ──
-      try {
-        const cached = await AsyncStorage.getItem(CP_PROFILE_CACHE_KEY);
-        if (cached && !cancelled) {
-          const parsed = JSON.parse(cached);
-          if (parsed?.cp_name) {
-            setCpName(parsed.cp_name);
-            nameRef.current = parsed.cp_name;
-          }
-          if (parsed?.cp_signature) {
-            setCpSignature(parsed.cp_signature);
-            sigRef.current = parsed.cp_signature;
-          }
+      const owner = (await getStoredUser())?.id || null;
+      if (cancelled) return;
+      ownerRef.current = owner;
+
+      // ── Step 1: THIS ACCOUNT'S saved profile (instant, works offline) ──
+      const cached = await readCpProfile(owner);
+      if (cached && !cancelled) {
+        if (cached.cp_name) {
+          setCpName(cached.cp_name);
+          nameRef.current = cached.cp_name;
         }
-      } catch (e) {
-        // Cache miss is fine
+        if (cached.cp_signature) {
+          setCpSignature(cached.cp_signature);
+          sigRef.current = cached.cp_signature;
+        }
       }
 
       // ── Step 2: Fetch from backend (background, updates cache) ──
@@ -83,19 +90,14 @@ export function useCpProfile() {
           sigRef.current = profile.cp_signature;
         }
 
-        // Update local cache with fresh backend data
-        try {
-          await AsyncStorage.setItem(CP_PROFILE_CACHE_KEY, JSON.stringify({
-            cp_name: profile?.cp_name || '',
-            cp_signature: profile?.cp_signature || null,
-          }));
-        } catch (cacheError) {
-          // Non-blocking
-        }
+        await writeCpProfile(owner, {
+          cp_name: profile?.cp_name || '',
+          cp_signature: profile?.cp_signature || null,
+        });
 
         setProfileLoaded(true);
       } catch (apiError) {
-        // 404 for brand-new CP, or offline → we already have cache
+        // 404 for brand-new CP, or offline → we already have this account's cache
         if (!cancelled) {
           setProfileLoaded(true);
         }
@@ -108,27 +110,26 @@ export function useCpProfile() {
 
   /**
    * Call after any successful log save/submit.
-   * Persists to BOTH local cache AND backend.
+   * Persists to BOTH local cache AND backend -- for the account it was loaded
+   * for, and only while that account is still the one signed in.
    */
   const autoSave = async (name, signature) => {
     if (!name?.trim() || !signature) return;
+    // NOT THIS ACCOUNT'S, NOT SAVED. An unknown owner, or an account that
+    // changed since the profile loaded, means these values cannot be shown
+    // to belong to whoever is signed in now.
+    const current = (await getStoredUser())?.id || null;
+    if (!ownerRef.current || current !== ownerRef.current) return;
     // Persist the credential WITHOUT any per-document affirmation stamp.
     const credential = stripAffirmation(signature);
     const nameChanged = name !== nameRef.current;
     const sigChanged = credential !== sigRef.current;
     if (!nameChanged && !sigChanged) return;
 
-    // Always update local cache first (instant, works offline)
+    // Always update this account's cache first (instant, works offline)
     nameRef.current = name;
     sigRef.current = credential;
-    try {
-      await AsyncStorage.setItem(CP_PROFILE_CACHE_KEY, JSON.stringify({
-        cp_name: name,
-        cp_signature: credential,
-      }));
-    } catch (e) {
-      // Non-blocking
-    }
+    await writeCpProfile(current, { cp_name: name, cp_signature: credential });
 
     // Then sync to backend (may fail if offline — that's OK)
     try {

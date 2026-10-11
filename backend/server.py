@@ -29697,6 +29697,18 @@ async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_cu
     user_id = current_user.get("id")
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
+    # ANOTHER ACCOUNT'S SAVED SIGNATURE IS NOT THIS ACCOUNT'S. See
+    # _signature_saved_by_another_account: this is how Shawn's drawing reached
+    # Michael's profile and then thirty of his filed logs.
+    if data.cp_signature is not None and await _signature_saved_by_another_account(
+            data.cp_signature, user_id):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SIGNATURE_BELONGS_TO_ANOTHER_ACCOUNT"},
+        )
+    before = await db.users.find_one(
+        {"_id": to_query_id(user_id)},
+        {"cp_name": 1, "cp_signature.paths": 1, "cp_title": 1}) or {}
     if data.cp_name is not None:
         # THE AMPLIFIER, AND THE REASON A PER-DOCUMENT CHECK IS NOT ENOUGH.
         # This value is re-seeded into every later editor on the device, so one
@@ -29713,6 +29725,27 @@ async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_cu
     if data.cp_title is not None:
         update["cp_title"] = data.cp_title
     await db.users.update_one({"_id": to_query_id(user_id)}, {"$set": update})
+    # AUDITED, ruled 2026-10-10. The name and signature on this profile are
+    # stamped onto every log the account files, and nothing recorded a change
+    # to them -- which is why "when did Michael's profile start saying shawn"
+    # had to be reconstructed from the logs. The drawing is recorded by
+    # fingerprint, never as an image.
+    changes = {}
+    if "cp_name" in update and update["cp_name"] != before.get("cp_name"):
+        changes["cp_name"] = {"old": before.get("cp_name"), "new": update["cp_name"]}
+    if "cp_signature" in update:
+        old_key = _signature_drawing_key(before.get("cp_signature"))
+        new_key = _signature_drawing_key(update["cp_signature"])
+        if old_key != new_key:
+            changes["cp_signature"] = {"old": old_key, "new": new_key}
+    if "cp_title" in update and update["cp_title"] != before.get("cp_title"):
+        changes["cp_title"] = {"old": before.get("cp_title"), "new": update["cp_title"]}
+    if changes:
+        try:
+            await audit_log("cp_profile_update", str(user_id), "user",
+                            str(user_id), changes)
+        except Exception as e:
+            logger.warning(f"audit_log (cp_profile_update) failed: {e!r}")
     return {"message": "CP profile updated"}
 
 # ==================== LOGBOOK ENDPOINTS ====================
@@ -30807,6 +30840,12 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         _bad_order = _submit_presence_order_detail(data.log_type, data.data)
         if _bad_order:
             raise HTTPException(status_code=400, detail=_bad_order)
+        # THE HAND ON THE RECORD IS THIS ACCOUNT'S. A drawing saved on another
+        # account's profile is refused -- see the helper for the 588 defect.
+        if await _signature_saved_by_another_account(
+                data.cp_signature, current_user.get("id")):
+            raise HTTPException(status_code=400, detail={
+                "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
 
         # AN ATTESTABLE ITEM MUST BE ANSWERED ONE WAY OR THE OTHER.
         #
@@ -31387,6 +31426,13 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             _cur.get("log_type"), _eff_data)
         if _bad_order:
             raise HTTPException(status_code=400, detail=_bad_order)
+        # THE SIGNER IS WHOEVER CARRIED THE MARK: this request when it brings
+        # one, otherwise the account the stored mark was signed under.
+        _signer = (current_user.get("id") if data.cp_signature is not None
+                   else (_cur.get("signed_by") or _cur.get("created_by")))
+        if await _signature_saved_by_another_account(_eff_sig, _signer):
+            raise HTTPException(status_code=400, detail={
+                "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
         # THE SAME REFUSAL ON THE PATH THE CP ACTUALLY WALKS. Save Draft then
         # Submit arrives here as a PUT, so a gate on create alone would let the
         # wrong man file by taking the ordinary two-step route -- the identical
@@ -32397,6 +32443,13 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         existing.get("log_type"), existing.get("data"))
     if _bad_order:
         raise HTTPException(status_code=400, detail=_bad_order)
+    # AGAINST THE RECORD'S SIGNER, NOT THE FINALIZER. An admin locking a CP's
+    # log is not signing it, and the CP's own saved drawing is his to use.
+    if await _signature_saved_by_another_account(
+            existing.get("cp_signature"),
+            existing.get("signed_by") or existing.get("created_by")):
+        raise HTTPException(status_code=400, detail={
+            "code": "SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT"})
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {
@@ -35185,6 +35238,51 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # ==================== COMBINED REPORT GENERATOR ====================
+def _signature_drawing_key(sig) -> Optional[str]:
+    """A fingerprint of the DRAWING itself -- the strokes, nothing else.
+
+    The stamps around a mark (who, when, affirmed) change per document; the
+    strokes are the hand. Two marks with the same strokes are the same saved
+    signature, which is exactly what crossed accounts on 588 Thomas.
+    """
+    if not isinstance(sig, dict):
+        return None
+    paths = sig.get("paths")
+    if not paths:
+        return None
+    return hashlib.sha1(
+        json.dumps(paths, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _signature_saved_by_another_account(sig, user_id) -> Optional[dict]:
+    """The other account whose SAVED profile signature is this drawing, or None.
+
+    THE DEFECT, found 2026-10-10. The app cached the signer's name and drawing
+    under one device-wide key that survived logout. Shawn (a CP) and Michael
+    (the superintendent) shared a phone, and from 2026-09-22 thirty of
+    Michael's filed logs carried Shawn's drawing -- seven under Michael's
+    name. The device now keys that cache per account; this is the server half,
+    so an app too old to have that fix still cannot file, or save to a
+    profile, a drawing that is another account's saved signature.
+
+    A PROFILE SIGNATURE ONLY. Two people do not draw identical strokes; one
+    saved drawing reaching a second account is the cache, not a coincidence.
+    """
+    key = _signature_drawing_key(sig)
+    if not key:
+        return None
+    others = await db.users.find(
+        {"_id": {"$ne": to_query_id(user_id)},
+         "cp_signature.paths": {"$exists": True},
+         "is_deleted": {"$ne": True}},
+        {"cp_signature.paths": 1, "name": 1, "full_name": 1},
+    ).to_list(10000)
+    for other in others:
+        if _signature_drawing_key(other.get("cp_signature")) == key:
+            return other
+    return None
+
+
 def _is_affirmed_signature(sig) -> bool:
     """AFFIRMED FOR *THIS* DOCUMENT — the one predicate, so nothing can ask a
     weaker question of the same object and get a different answer.

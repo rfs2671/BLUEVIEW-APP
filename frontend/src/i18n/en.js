@@ -252,6 +252,11 @@ export default {
       'Your departure time is earlier than your arrival time. Correct the '
       + 'times on step 1, or tick "I left after midnight" if you did, then '
       + 'submit again.',
+    // 2026-10-10. Another person's saved signature reached this phone; the
+    // remedy is his own hand, so the copy says to clear the pad and re-sign.
+    code_SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT:
+      'This signature is saved on another person’s account. Clear the '
+      + 'signature and sign again yourself, then submit.',
     // The PRE-FLIGHT's title. "Could not finalize" is the right words for a
     // refusal that came back from the server; this one is the device stopping
     // him before the round trip — including offline, where there is no round

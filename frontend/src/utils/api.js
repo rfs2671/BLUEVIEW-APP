@@ -1,5 +1,6 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { clearAllCpProfiles } from './cpProfileCache';
 import Constants from 'expo-constants';
 import {
   refreshedTokenFrom, unauthorizedVerdict, KEEP, VERIFY, REJECTED,
@@ -157,9 +158,14 @@ export const removeStoredUser = async () => {
 };
 
 // Clear all auth data
+//
+// AND EVERY SAVED SIGNER PROFILE ON THE DEVICE. A signature left behind on a
+// shared phone is how Shawn's drawing reached Michael's filed logs; see
+// utils/cpProfileCache.
 export const clearAuth = async () => {
   await removeToken();
   await removeStoredUser();
+  await clearAllCpProfiles();
 };
 
 // Request interceptor to attach JWT

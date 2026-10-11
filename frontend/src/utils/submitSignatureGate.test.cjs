@@ -270,9 +270,13 @@ const SUBMIT_CODES = [...new Set(
 // EIGHT since SUBMIT_DEPARTURE_BEFORE_ARRIVAL, ruled 2026-10-10: the
 // superintendent's log may not have him leave before he arrived unless he
 // ticked "departed next day". Five filed logs on 588 Thomas read backwards.
+// NINE since SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT, 2026-10-10: a drawing saved on
+// another account's profile is not this signer's hand. Shawn's drawing
+// reached thirty of Michael's filed logs through a device-wide cache.
 const EXPECTED_SUBMIT_CODES = [
   'SUBMIT_DEPARTURE_BEFORE_ARRIVAL',
   'SUBMIT_EMPTY_LOG',
+  'SUBMIT_SIGNATURE_OF_ANOTHER_ACCOUNT',
   'SUBMIT_INVALID_CP_NAME',
   'SUBMIT_INVALID_DATE',
   'SUBMIT_MISSING_CP_SIGNATURE',
