@@ -50569,6 +50569,11 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # transcribed and stored. The notes themselves go out instead.
         logger.info("[wa-assistant] reply denied voice access; sending the notes")
         return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
+    if reply and wa_assistant.quoted_context(body) and wa_assistant.denies_quoted_access(reply):
+        # NEVER "I can't access the message you replied to" (588, Oct 11
+        # 6:22 PM): what it replied to is in the question.
+        logger.info("[wa-assistant] reply denied the replied-to message; saying what it was")
+        return wa_assistant.quoted_fallback(body)
     if not reply:
         return reply
     allowed = " ".join([body, wa_assistant.street_label(project)]
@@ -51558,6 +51563,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     quoted = quoted or {}
     qbody = str(quoted.get("body") or "").strip()
     qbot = bool(quoted.get("from_bot"))
+    qtype = str(quoted.get("type") or "").strip()
+    if not qbody and wa_assistant.media_word(qtype):
+        # A photo with no caption is still something replied to.
+        qbody = wa_assistant.NO_CAPTION
     now = datetime.now(timezone.utc)
     history = await _dm_history(dm_chat, now)
     await _dm_store_inbound(ident, dm_chat, text, message_id)
@@ -51628,7 +51637,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if job is not None:
         pass
     elif qbody:
-        question = wa_assistant.with_quoted(text, qbody, qbot)
+        question = wa_assistant.with_quoted(text, qbody, qbot, qtype)
         core = question if (not qbot and wa_assistant.is_nudge(text)) else text
     elif wa_assistant.is_nudge(text):
         last = wa_assistant.last_question(history, jobs)
@@ -52180,7 +52189,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                 node = node.get(k)
             if isinstance(node, dict):
                 quoted_node = node
-                quoted_body = (node.get("body") or node.get("conversation") or "").strip()
+                quoted_body = wa_assistant.quoted_words(node)
                 quoted_type = (node.get("type") or "").strip()
                 if quoted_body or quoted_type:
                     break
@@ -52190,7 +52199,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                 q = inner_ctx.get("quotedMessage") or inner_ctx
                 if isinstance(q, dict):
                     quoted_node = q
-                    quoted_body = (q.get("body") or q.get("conversation") or "").strip()
+                    quoted_body = wa_assistant.quoted_words(q)
                     quoted_type = (q.get("type") or "").strip()
         # quotedStanzaID / quotedParticipant / stanzaId — WaAPI surfaces one of
         # these as the id of the quoted message. Check both the outer msg
@@ -61388,7 +61397,7 @@ async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime,
 # WOULD be posted, nothing is), the attention items the chase engine reads,
 # and the closing words in the job's group.
 
-PUNCH_STATE_OPEN = ("capturing", "draft", "assign", "due", "resend")
+PUNCH_STATE_OPEN = ("capturing", "locating", "draft", "assign", "due", "resend")
 
 
 def _punch_photo_key(project_id: Any, session_id: Any, n: Any) -> str:
@@ -61571,12 +61580,62 @@ async def _punch_job_people(sess: dict) -> List[dict]:
 
 
 async def _punch_session(user_id: str) -> Optional[dict]:
+    """The walker's open walkthrough. One still capturing that heard nothing
+    for CAPTURE_IDLE_HOURS has ended (kept, never sent)."""
     try:
-        return await db[punch.SESSIONS].find_one(
+        sess = await db[punch.SESSIONS].find_one(
             {"user_id": str(user_id), "status": {"$in": list(PUNCH_STATE_OPEN)}},
             sort=[("updated_at", -1)])
     except Exception:
         return None
+    if sess and sess.get("status") == "capturing":
+        at = sess.get("updated_at")
+        if isinstance(at, datetime):
+            at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+            if at < datetime.now(timezone.utc) - timedelta(hours=punch.CAPTURE_IDLE_HOURS):
+                await db[punch.SESSIONS].update_one({"_id": sess["_id"]},
+                                                    {"$set": {"status": "expired"}})
+                return None
+    return sess
+
+
+async def _punch_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
+    """The job picked in this DM in the last 30 minutes (the assistant's
+    current job), when it is one of the walker's."""
+    remembered = await _dm_state_get("dm_job", dm_chat)
+    if remembered:
+        return _punch_project_of(ident, remembered.get("project_id"))
+    return None
+
+
+async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
+    await _punch_save(sess, project_id=str(project.get("_id") or project.get("id")),
+                      job_name=wa_assistant.street_label(project),
+                      job_code=punch.job_code(project))
+    # The assistant's current job too: "how many on site" next is this job.
+    await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                        project_id=sess["project_id"])
+
+
+async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False) -> bool:
+    """Every item needs a location before the draft: ask for the first one
+    missing (one question per photo), or show the draft when none is."""
+    items = sess["items"]
+    missing = punch.missing_location(items)
+    if not missing:
+        punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
+        await _punch_save(sess, status="draft", items=items, asking=None)
+        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
+        return True
+    first = missing[0]
+    await _punch_save(sess, status="locating", items=items, asking=first.get("n"))
+    head = ""
+    if intro:
+        n = len(missing)
+        head = (f"{n} item{'s' if n != 1 else ''} need{'s' if n == 1 else ''} a location "
+                "before the draft. ")
+    await send_whatsapp_message(dm_chat, head + punch.where_question(first))
+    return True
 
 
 async def _punch_save(sess: dict, **fields) -> None:
@@ -61628,6 +61687,9 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
             return False
         hint = (start or {}).get("job")
         project, why = punch.match_project(hint, ident.get("projects") or [])
+        if not project and not hint:
+            # A job picked in this DM in the last 30 minutes is the job.
+            project = await _punch_recent_job(ident, dm_chat)
         sess = {"_id": str(uuid.uuid4()), "user_id": str(ident["user_id"]),
                 "company_id": str(ident["company_id"]), "chat": dm_chat,
                 "project_id": str(project.get("_id") or project.get("id")) if project else None,
@@ -61636,21 +61698,42 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
                 "status": "capturing", "items": [], "created_at": now, "updated_at": now,
                 "reminded_at": None}
         await db[punch.SESSIONS].insert_one(dict(sess))
-        if start:
-            if project:
-                await send_whatsapp_message(dm_chat, (
-                    f"Walkthrough at {sess['job_name']} started. Send each photo with a caption "
-                    "or a voice note; 'done' when you're finished."))
-            else:
-                names = ", ".join(wa_assistant.street_label(p) for p in (ident.get("projects") or [])[:6])
-                await send_whatsapp_message(dm_chat, (
-                    f"Which job? Reply with its number or street ({names}). Photos you send "
-                    "meanwhile are kept."))
+        if project:
+            await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                                project_id=sess["project_id"])
+        if start and project:
+            await send_whatsapp_message(dm_chat, (
+                f"Walkthrough at {sess['job_name']} started. Send each photo with a caption "
+                "or a voice note; 'done' when you're finished."))
             return True
-        # A first photo starts it (below).
+        if not project:
+            # Asked ONCE, here; the answer may come any time before "done".
+            await _punch_save(sess, job_asked=True)
+            await send_whatsapp_message(dm_chat, punch.job_question(
+                ident.get("projects") or [], wa_assistant.street_label))
+            if start:
+                return True
+        # A first photo is the first item (below).
 
+    # A REPLY TO ONE OF THE WALK'S PHOTOS is about that item: its location,
+    # trade or words (588, Oct 11: "4th floor Apt 4F" under photo 2 went to
+    # the assistant, which asked "Which job?" again).
+    if not parsed.get("has_image") and sess.get("status") in ("capturing", "locating", "draft") \
+            and (parsed.get("quoted_message_id") or parsed.get("quoted_body")):
+        it = punch.item_for_reply(sess["items"], parsed.get("quoted_message_id"),
+                                  _punch_caption({"has_image": True}, parsed.get("quoted_body") or ""))
+        if it:
+            return await _punch_item_words(sess, dm_chat, parsed, it,
+                                           (voice or {}).get("transcript") or text, now)
+
+    if sess["status"] == "locating" and parsed.get("has_image"):
+        # One more photo while locations are asked: back to capturing, this
+        # photo is an item, and "done" asks again (Codex review on #754).
+        await _punch_save(sess, status="capturing", asking=None)
     if sess["status"] == "capturing":
         return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
+    if sess["status"] == "locating":
+        return await _punch_locate_turn(sess, dm_chat, parsed, text, voice, now)
     if sess["status"] == "draft":
         return await _punch_draft_turn(sess, dm_chat, text, voice)
     if sess["status"] == "assign":
@@ -61660,33 +61743,61 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
     return False
 
 
+async def _punch_item_words(sess, dm_chat, parsed, it, words, now) -> bool:
+    """Words about one item (a reply to its photo, "#2 …"): its location,
+    trade, caption or a note. While locating, the next question or the
+    draft follows; in the draft, the draft again."""
+    items = sess["items"]
+    punch.update_item(it, words, note_at=now)
+    await _punch_save(sess, items=items, pending_note=None)
+    if sess["status"] == "locating":
+        return await _punch_ask_where(sess, dm_chat)
+    if sess["status"] == "draft":
+        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
+        return True
+    await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+    return True
+
+
+def _punch_item_no(items: List[dict], n: int) -> Optional[dict]:
+    """"#2": the number the walker sees -- the order the photos came in,
+    the draft's numbers once there is a draft."""
+    live = [it for it in items if it.get("status", "draft") != "dropped"]
+    return next((it for it in live if it.get("n") == n), None)
+
+
 async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now) -> bool:
     items = sess["items"]
     low = text.strip().lower()
+    projects = ident.get("projects") or []
     if not sess.get("project_id") and text and not parsed.get("has_image"):
-        project, _ = punch.match_project(text, ident.get("projects") or [])
+        project = punch.pick_job(text, projects, numbered=bool(sess.get("job_asked")))
         if project:
-            await _punch_save(sess, project_id=str(project.get("_id") or project.get("id")),
-                              job_name=wa_assistant.street_label(project),
-                              job_code=punch.job_code(project))
+            await _punch_set_job(sess, project, dm_chat)
             await send_whatsapp_message(dm_chat, f"Walkthrough at {sess['job_name']}. Keep going; 'done' when finished.")
             return True
-    if low in ("cancel walkthrough", "cancel", "stop walkthrough"):
+    if sess.get("project_id") and text and not parsed.get("has_image") \
+            and not punch.read_location(text).get("area") and len(text.split()) <= 4:
+        same = punch.pick_job(text, projects)
+        if same and str(same.get("_id") or same.get("id")) == str(sess["project_id"]):
+            # "588... Same walkthrough": yes, this one.
+            await send_whatsapp_message(dm_chat, f"Still the walkthrough at {sess['job_name']}. "
+                                                 "Keep going; 'done' when finished.")
+            return True
+    if low in punch.CANCEL_WORDS:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    if low in ("done", "listo", "fartik", "finished", "that's it", "thats it"):
+    if low in punch.DONE_WORDS:
         if not sess.get("project_id"):
-            await send_whatsapp_message(dm_chat, "Which job is this walkthrough for? Reply with its number or street.")
+            await send_whatsapp_message(dm_chat, punch.job_question(projects, wa_assistant.street_label))
             return True
         if not items:
             await send_whatsapp_message(dm_chat, "No photos yet. Send each one with a caption or a voice note.")
             return True
-        # The numbers the walker reads are the ones the edits use: kept.
-        punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
-        await _punch_save(sess, status="draft", items=items)
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
-        return True
+        # NO DRAFT WITH AN ITEM NOBODY CAN FIND: each one missing a location
+        # is asked about first, one at a time.
+        return await _punch_ask_where(sess, dm_chat, intro=True)
     words = (voice or {}).get("transcript") or text
     if parsed.get("has_image"):
         n = len(items) + 1
@@ -61714,6 +61825,17 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         return True
     if voice or text:
         last = items[-1] if items else None
+        ref = punch.target_ref(text) if not voice else None
+        if ref and _punch_item_no(items, ref[0]):
+            # "#2 4th floor Apt 4F": about that photo.
+            return await _punch_item_words(sess, dm_chat, parsed, _punch_item_no(items, ref[0]),
+                                           ref[1], now)
+        pending = sess.get("pending_note")
+        bare = re.fullmatch(r"\s*#?\s*(\d{1,3})\s*", text or "")
+        if pending and bare and _punch_item_no(items, int(bare.group(1))):
+            # The answer to "Add to which photo?".
+            return await _punch_item_words(sess, dm_chat, parsed,
+                                           _punch_item_no(items, int(bare.group(1))), pending, now)
         if last and not last.get("text"):
             # The words for the photo just sent (a caption typed or spoken after it).
             fresh = punch.new_item(last["n"], words, photo_key=last.get("photo_key"),
@@ -61730,7 +61852,63 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
             await _punch_save(sess, items=items)
             await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
             return True
-    return False      # chatter: the assistant answers it as before
+        # ANYTHING ELSE TYPED DURING A WALK is about the walk, never a
+        # question for the assistant: a note on the photo just sent, or,
+        # when the last photo is not recent, which photo?
+        if not items:
+            await send_whatsapp_message(dm_chat, (
+                "Send each photo with a caption or a voice note; 'done' when you're finished."))
+            return True
+        at = last.get("at")
+        if isinstance(at, datetime) and not at.tzinfo:
+            at = at.replace(tzinfo=timezone.utc)
+        if isinstance(at, datetime) and now - at <= timedelta(minutes=punch.NOTE_LAST_MINUTES):
+            return await _punch_item_words(sess, dm_chat, parsed, last, text, now)
+        await _punch_save(sess, pending_note=text)
+        await send_whatsapp_message(dm_chat, punch.WHICH_PHOTO)
+        return True
+    return False
+
+
+async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
+    """Before the draft: the answer to "Where is #2 …?" (a reply to another
+    photo is handled before this, for that photo)."""
+    words = (voice or {}).get("transcript") or text
+    low = words.strip().lower()
+    items = sess["items"]
+    if low in punch.CANCEL_WORDS:
+        await _punch_save(sess, status="cancelled")
+        await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
+        return True
+    ref = punch.target_ref(words)
+    it = _punch_item_no(items, ref[0]) if ref else None
+    if ref and it is None:
+        # "#99 lobby": no such item -- never put it on the one being asked.
+        asked = _punch_item_no(items, sess.get("asking") or 0)
+        await send_whatsapp_message(dm_chat, f"There's no #{ref[0]} in this walkthrough."
+                                    + (" " + punch.where_question(asked) if asked else ""))
+        return True
+    if it is not None:
+        words = ref[1]
+    else:
+        it = _punch_item_no(items, sess.get("asking") or 0) or (punch.missing_location(items) or [None])[0]
+    if it is None:
+        return await _punch_ask_where(sess, dm_chat)
+    drop = re.fullmatch(r"\s*(?:drop|delete|remove|borra|quita)(?:\s+(?:it|this))?\s*", low)
+    if drop:
+        it["status"] = "dropped"
+        await _punch_save(sess, items=items)
+        return await _punch_ask_where(sess, dm_chat)
+    loc = punch.read_location(words)
+    bare = re.fullmatch(r"\s*(\d{1,3})\s*", words or "")
+    if bare and punch.location_state(it.get("floor"), it.get("area")) == "needs_floor":
+        loc = {"floor": bare.group(1).lstrip("0") or "0", "area": None}   # "Which floor?" "3"
+    if not (loc.get("floor") or loc.get("area")):
+        await send_whatsapp_message(dm_chat, punch.where_question(it) + "\n" + punch.WHERE_HELP)
+        return True
+    punch.merge_location(it, loc)
+    await _punch_save(sess, items=items)
+    return await _punch_ask_where(sess, dm_chat)
 
 
 async def _punch_draft_turn(sess, dm_chat, text, voice) -> bool:
@@ -61742,6 +61920,9 @@ async def _punch_draft_turn(sess, dm_chat, text, voice) -> bool:
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
     if low in ("send", "enviar", "manda", "shik"):
+        if punch.missing_location(items):
+            # An item added in the draft with no location: asked first.
+            return await _punch_ask_where(sess, dm_chat, intro=True)
         live = [it for it in items if it.get("status", "draft") != "dropped"]
         need = [it["n"] for it in punch.ordered(live) if it.get("trade") == punch.UNKNOWN]
         if need:
@@ -62123,7 +62304,7 @@ async def _punch_remind_tick(now: Optional[datetime] = None) -> int:
     n = 0
     try:
         rows = await db[punch.SESSIONS].find(
-            {"status": {"$in": ["draft", "assign", "due"]}, "reminded_at": None,
+            {"status": {"$in": ["locating", "draft", "assign", "due"]}, "reminded_at": None,
              "updated_at": {"$lt": cutoff}}).to_list(500)
     except Exception:
         return 0
@@ -63152,8 +63333,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             ident, dm_chat, body, parsed.get("message_id_serialized") or "",
             heard=body if parsed.get("has_audio") else None,
             quoted={"body": parsed.get("quoted_body") or "",
+                    "type": parsed.get("quoted_type") or "",
                     "from_bot": bool(parsed.get("quoted_from_me"))}
-            if (parsed.get("quoted_body") or "").strip() else None)
+            if (parsed.get("quoted_body") or "").strip() or parsed.get("quoted_type") else None)
 
     except Exception as e:
         logger.error(f"WhatsApp message processing error: {e}", exc_info=True)

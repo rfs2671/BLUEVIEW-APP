@@ -205,19 +205,79 @@ def is_nudge(text: Any) -> bool:
     return 0 < len(words) <= 2 and all(w in _NUDGE for w in words)
 
 
-def with_quoted(text: str, quoted_body: str, quoted_from_bot: bool) -> str:
+_MEDIA = {"image": "photo", "video": "video", "document": "document", "sticker": "sticker",
+          "ptt": "voice note", "audio": "voice note", "voice": "voice note",
+          "location": "location", "vcard": "contact card"}
+#: What a reply-to says of a photo sent with no caption.
+NO_CAPTION = "(no caption)"
+
+
+def media_word(quoted_type: Any) -> str:
+    """"photo" for WaAPI's "image" ... "" for text."""
+    return _MEDIA.get(str(quoted_type or "").strip().lower(), "")
+
+
+def quoted_words(node: Dict[str, Any]) -> str:
+    """The words of a quoted message: its text, or a photo's CAPTION. A
+    media message's body is its base64 thumbnail, never words (588, Oct 11:
+    a reply to a photo reached the assistant as "I can't access…")."""
+    if not isinstance(node, dict):
+        return ""
+    cap = str(node.get("caption") or "").strip()
+    body = str(node.get("body") or node.get("conversation") or "").strip()
+    if media_word(node.get("type")) or cap:
+        if cap:
+            return cap
+        return "" if (len(body) > 200 and " " not in body) or media_word(node.get("type")) == "voice note" \
+            else body
+    return "" if len(body) > 200 and " " not in body else body
+
+
+def with_quoted(text: str, quoted_body: str, quoted_from_bot: bool,
+                quoted_type: str = "") -> str:
     """The question to answer for a reply-to in a DM (as in groups): the
-    quoted message is the context. A nudge under your own question is that
-    question again."""
+    quoted message is the context -- its words and what it is (a photo with
+    its caption). A nudge under your own question is that question again."""
     q = str(quoted_body or "").strip()
     t = str(text or "").strip()
-    if not q:
+    kind = media_word(quoted_type)
+    if not q and not kind:
         return t
-    if not quoted_from_bot and is_nudge(t):
+    if not quoted_from_bot and is_nudge(t) and not kind:
         return q
-    who = "your (Levelog Assistant's) earlier message" if quoted_from_bot \
-        else "their earlier message"
-    return f"{t}\n\n(This is a reply to {who}: \"{q[:400]}\")"
+    who = "your (Levelog Assistant's) earlier" if quoted_from_bot else "their earlier"
+    if kind:
+        said = "with no caption" if q in ("", NO_CAPTION) else f"captioned \"{q[:400]}\""
+        return f"{t}\n\n(This is a reply to {who} {kind}, {said}.)"
+    return f"{t}\n\n(This is a reply to {who} message: \"{q[:400]}\")"
+
+
+# "I can't see the message you replied to", "I can't access the content of
+# the message you're replying to", "unable to view images".
+_DENIES_QUOTED = re.compile(
+    r"\b(?:can'?t|cannot|can ?not|unable to|not able to|don'?t have(?: any)? access|"
+    r"do not have(?: any)? access|no access|not have access)\b[^.?!\n]{0,60}"
+    r"\b(?:replied|replying|reply|quoted|previous message|earlier message|"
+    r"photos?|images?|pictures?|attachments?)", re.I)
+
+
+def denies_quoted_access(reply: str) -> bool:
+    """The reply claims it cannot see the replied-to message (it is given)."""
+    return bool(_DENIES_QUOTED.search(str(reply or "")))
+
+
+def quoted_fallback(question: str) -> str:
+    """Instead of a denial: what was replied to, and the question back."""
+    ctx = quoted_context(question)
+    m = re.match(r"\(This is a reply to (?:their|your \(Levelog Assistant's\)) earlier (.+?)[.)]*\s*$", ctx)
+    what = (m.group(1) if m else "message").replace("message: ", "message ")
+    return f"You replied to your {what}. What do you need about it?"
+
+
+def quoted_context(question: str) -> str:
+    """The "(This is a reply to …)" line of a question, or ""."""
+    m = re.search(r"\(This is a reply to [^\n]+\)\s*$", str(question or ""))
+    return m.group(0) if m else ""
 
 
 HISTORY_HOURS = 4
@@ -327,7 +387,11 @@ DM_AGENT_CLAUSE = (
     "are in the app. VOICE NOTES in the job's groups are transcribed and "
     "stored: read them with recent_voice_notes (the latest ones, or one "
     "person's) or search_project_history (records marked 🎤). Never say you "
-    "cannot access, hear or listen to voice notes, recordings or audio."
+    "cannot access, hear or listen to voice notes, recordings or audio. "
+    "A REPLY-TO: when the message replies to an earlier one, what it replied "
+    "to is given in the question (\"This is a reply to their earlier photo, "
+    "captioned …\"): its words and what it is. Use it; never say you cannot "
+    "see, open or access the message, photo or image being replied to."
 )
 
 
