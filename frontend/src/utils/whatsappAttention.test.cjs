@@ -151,5 +151,34 @@ console.log('forwarded');
   ok(/it\.forwarded/.test(read('src/components/whatsapp/AttentionCard.jsx')), 'the card shows it');
 }
 
+console.log('Yiddish notes, one row per group per day');
+{
+  const b = { key: 'k', label: '5 Yiddish voice notes to review', group_name: '588 – Site', day: '2026-10-11' };
+  ok(A.batchTitle(b) === '5 Yiddish voice notes to review · 588 – Site · Sun Oct 11', A.batchTitle(b));
+  const l = A.batchNoteLines({ sent_at: '2026-10-11T18:57:00+00:00', sender_last4: '1234',
+                               forwarded: true, english: 'Mazel tov on the new house' });
+  ok(l.head === '2:57 PM · forwarded by …1234', l.head);
+  ok(l.english === 'English: Mazel tov on the new house', 'its English');
+  ok(/play it/.test(A.batchNoteLines({}).english), 'no English: play it');
+  const card = read('src/components/whatsapp/AttentionCard.jsx');
+  ok(/voice_batches/.test(card) && /batchNoteLines/.test(card), 'the card renders batches');
+}
+
+console.log('batches sit among the items by recency (Codex review on #753)');
+{
+  const items = [{ id: 'new', created_at: '2026-10-12T15:00:00Z' },
+    { id: 'old', created_at: '2026-10-10T15:00:00Z' }];
+  const batches = [{ key: 'g1|2026-10-11', created_at: '2026-10-11T22:00:00Z' },
+    { key: 'g2|2026-10-09', created_at: '2026-10-09T12:00:00Z' }];
+  const rows = A.attentionRows(items, batches);
+  ok(rows.map((r) => r.key).join(',') === 'i:new,b:g1|2026-10-11,i:old,b:g2|2026-10-09',
+    rows.map((r) => r.key).join(','));
+  ok(A.attentionRows([], batches).length === 2 && A.attentionRows(items, []).length === 2,
+    'only batches, or only items');
+  const card = read('src/components/whatsapp/AttentionCard.jsx');
+  ok(/attentionRows\(items, batches\)/.test(card) && !/\{batches\.map\(/.test(card),
+    'the card renders one list, not batches first');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

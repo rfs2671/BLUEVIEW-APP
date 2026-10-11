@@ -12,7 +12,10 @@ import { GlassCard } from '../GlassCard';
 import GlassButton from '../GlassButton';
 import { useToast } from '../Toast';
 import { whatsappAPI } from '../../utils/api';
-import { BOT_SETTINGS, botSettingValue, withBotSetting, configForSave } from '../../utils/whatsappSettings';
+import {
+  BOT_SETTINGS, botSettingValue, withBotSetting, configForSave, GROUP_LANGUAGES, LANGUAGES_HINT,
+  toggleLanguage,
+} from '../../utils/whatsappSettings';
 import { spacing, borderRadius, typography } from '../../styles/theme';
 import { useTheme } from '../../context/ThemeContext';
 
@@ -233,6 +236,29 @@ export default function GroupConfigPanel({ group, onSaved, onClose }) {
           ) : null}
         </View>
       ))}
+
+      {/* LANGUAGES SPOKEN in this group's voice notes (none: any). */}
+      <View style={s.sectionInner}>
+        <Text style={s.subLabel}>Languages spoken</Text>
+        <View style={s.freqRow}>
+          {GROUP_LANGUAGES.map((l) => {
+            const active = (config.languages || []).includes(l.code);
+            return (
+              <Pressable
+                key={l.code}
+                onPress={() => updateField({ languages: toggleLanguage(config.languages, l.code) })}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: active }}
+                accessibilityLabel={`Languages spoken: ${l.label}`}
+                style={({ pressed }) => [s.freqPill, active && s.freqPillActive, pressed && { opacity: 0.8 }]}
+              >
+                <Text style={[s.freqText, active && s.freqTextActive]}>{l.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={s.masterHint}>{LANGUAGES_HINT}</Text>
+      </View>
 
       <View style={s.footerRow}>
         <GlassButton

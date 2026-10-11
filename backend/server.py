@@ -52828,6 +52828,8 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
                          "message_row_id": str(row["_id"]), "quote": quote,
                          "verified": True, "sent_at": ts, "sender": sender,
                          "sender_last4": sender[-4:], "kind": "voice",
+                         **({"lang": (extra_voice or {}).get("heard_lang")}
+                            if (extra_voice or {}).get("heard_lang") else {}),
                          **({"forwarded": True} if parsed.get("forwarded") else {})},
             "extraction": {"source": "voice", "prompt_version": wa_attention.PROMPT_VERSION},
             "needs_review": True, "excluded_from_metrics": True,
@@ -54362,6 +54364,11 @@ def _default_bot_config() -> dict:
         "checklist_extraction_enabled": False,
         "checklist_frequency": "daily",       # "daily" | "on_demand"
         "checklist_time": "16:00",
+        # LANGUAGES SPOKEN in the group's voice notes (en / es / yi); empty is
+        # any. One language: Whisper's hint for a sender with none of their
+        # own. A note heard in a language not listed is flagged for review and
+        # gets Whisper's English of the audio (lib/wa_voice.group_languages).
+        "languages": [],
         "features": {
             "who_on_site": True,
             "dob_status": True,
@@ -54420,7 +54427,7 @@ def _effective_bot_config(stored: Any) -> dict:
 _WHATSAPP_CONFIG_KEYS = {
     "bot_enabled", "daily_summary_enabled", "daily_summary_time",
     "daily_summary_days", "checklist_extraction_enabled",
-    "checklist_frequency", "checklist_time", "features",
+    "checklist_frequency", "checklist_time", "features", "languages",
 }
 # Accepted on PUT and ignored. `cross_project_summary` was stored and never
 # read by anything; app builds before its removal still send it.
@@ -62584,15 +62591,24 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     return
 
                 from lib import voice_ingest as _vi
-                sender_lang = await _sender_whisper_language(
+                # A FORWARDED NOTE IS SOMEONE ELSE'S VOICE: the forwarder's
+                # own language (People) says nothing about it; the group's
+                # languages decide.
+                sender_lang = None if parsed.get("forwarded") else await _sender_whisper_language(
                     msg_company_id, await _sender_language_jids(
                         msg_company_id, str(parsed.get("sender") or "")))
+                # The group's languages (its settings): one of them is the
+                # hint for a sender with none set on People; with more than
+                # one (EN+YI), no hint: Whisper detects.
+                group_langs = wa_voice.group_languages(
+                    (bot_config or {}).get("languages")) or []
+                whisper_hint = sender_lang or wa_voice.group_hint(group_langs)
                 try:
                     vresult = await _vi.process_voice_note(
                         audio_bytes,
                         openai_api_key=OPENAI_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
-                        language=sender_lang,
+                        language=whisper_hint,
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -62627,14 +62643,34 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 heard_lang = wa_voice.lang_code(vresult.language_detected,
                                                 vresult.original_transcript)
                 unreliable = list(getattr(vresult, "unreliable", None) or [])
-                direct = wa_voice.needs_direct_translation(heard_lang, sender_lang)
-                if direct or unreliable:
+                # Heard in a language the group does not speak (a Yiddish
+                # group's note "heard" as English or German): for a person.
+                outside = wa_voice.heard_outside(heard_lang, group_langs)
+                direct = wa_voice.needs_direct_translation(heard_lang, sender_lang) or outside
+                # A GROUP THAT SPEAKS YIDDISH: every note goes straight to
+                # English too, whatever Whisper says it heard (588, Oct 11,
+                # 2:57 PM: Yiddish audio labeled English).
+                yi_group = wa_voice.translates_every_note(group_langs)
+                if direct or unreliable or yi_group:
                     try:
                         english_direct = await _vi.translate_whisper(
                             audio_bytes, openai_api_key=OPENAI_API_KEY) or None
                     except Exception as _e:
                         logger.warning(f"[voice] direct translation failed: "
                                        f"{type(_e).__name__}")
+                if yi_group and heard_lang == "en" and not unreliable:
+                    # Heard as English: Whisper's English and its direct
+                    # English of the same audio must say the same thing.
+                    # When they do not (or there is no translation), the
+                    # transcript is not what was said.
+                    heard_en = vresult.english_transcript or vresult.original_transcript or ""
+                    sim = None
+                    if english_direct and heard_en.strip():
+                        vecs = await _memory_embed_many([heard_en, english_direct])
+                        sim = project_memory.cosine(vecs[0], vecs[1]) if vecs else None
+                    why_not = wa_voice.diverged(heard_en, english_direct, sim)
+                    if why_not:
+                        unreliable.append(why_not)
                 if unreliable:
                     # NOT WHAT WAS SAID (588, Oct 11, 2:57 PM: a Yiddish
                     # blessing stored as "People speaking in their native
@@ -62698,11 +62734,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     voice_block["english_direct"] = english_direct
                 voice_block["quality"] = getattr(vresult, "quality", None) or {}
                 if direct and not voice_block.get("review"):
-                    # Heard as Hebrew or German, or a sender set to Yiddish:
-                    # the words are for a person to check first.
+                    # Heard as Hebrew or German, a sender set to Yiddish, or a
+                    # language the group does not speak: the words are for a
+                    # person to check first.
                     voice_block["review"] = True
                     voice_block["review_reason"] = (
                         "sender_yiddish" if sender_lang == "yi" and heard_lang != "yi"
+                        else f"heard_{heard_lang}_not_spoken_here" if outside
                         else f"heard_{heard_lang}")
                 stored_body = voice_block["transcript"]
                 body = vresult.english_transcript or body
@@ -64003,6 +64041,13 @@ async def whatsapp_update_group_config(
 
     set_ops: Dict[str, Any] = {}
 
+    if "languages" in body:
+        langs = wa_voice.group_languages(body["languages"])
+        if langs is None:
+            raise HTTPException(status_code=422,
+                                detail="languages must be a list of 'en', 'es', 'yi'")
+        set_ops["bot_config.languages"] = langs
+
     if "bot_enabled" in body:
         if not isinstance(body["bot_enabled"], bool):
             raise HTTPException(status_code=422, detail="bot_enabled must be a boolean")
@@ -65105,7 +65150,8 @@ async def patch_project_punch(project_id: str, pid: str, body: dict,
 
 def _attention_item_view(it: dict, group_names: dict,
                          audio_rows: Optional[set] = None,
-                         yiddish: Optional[dict] = None) -> dict:
+                         yiddish: Optional[dict] = None,
+                         english: Optional[dict] = None) -> dict:
     """What the review screen shows. The phone digits stay on the server: a
     person is a name when resolved, else the words used and the last 4."""
     owner = it.get("owner") or {}
@@ -65154,12 +65200,19 @@ def _attention_item_view(it: dict, group_names: dict,
         "forwarded": bool(ev.get("forwarded")),
         # {original, english} for a Yiddish voice note, else None.
         "yiddish": (yiddish or {}).get(str(ev.get("message_row_id") or "")),
+        # The note's language (Yiddish notes to review are grouped) and
+        # Whisper's English of its audio, when there is one.
+        "lang": ev.get("lang"),
+        "english": (english or {}).get(str(ev.get("message_row_id") or "")),
         "review_reason": it.get("review_reason") or next(
             (h.get("note") for h in (it.get("history") or [])
              if isinstance(h, dict) and h.get("by") == "voice"), None),
         "sent_at": _iso_utc(sent) if isinstance(sent, datetime) else None,
         "sender_last4": ev.get("sender_last4") or "",
         "group_name": wa_groups.display_name(group_names.get(it.get("group_id"))),
+        "group_id": it.get("group_id"),
+        # The list's own order (newest first): batches sit among the items by it.
+        "created_at": _iso_utc(it.get("created_at")) if isinstance(it.get("created_at"), datetime) else None,
         "also_seen": len(it.get("also_seen") or []),
         "resolution_quote": (res or {}).get("quote"),
         "verdict": (review or {}).get("verdict"),
@@ -65766,8 +65819,15 @@ async def get_project_attention(project_id: str, status: str = "open",
     # English translation, one line each.
     yiddish = {str(m["_id"]): wa_voice.yiddish_lines(m.get("voice")) for m in notes
                if wa_voice.yiddish_lines(m.get("voice"))}
+    english = {str(m["_id"]): (m.get("voice") or {}).get("english_direct") for m in notes
+               if (m.get("voice") or {}).get("english_direct")}
+    views = [_attention_item_view(it, names, audio_rows, yiddish, english) for it in items]
+    # MANY YIDDISH NOTES TO REVIEW: one row per group per day ("5 Yiddish
+    # voice notes to review"), each note inside with ▶ Play and its English.
+    batches, views = wa_voice.yiddish_batches(views)
     return {
-        "items": [_attention_item_view(it, names, audio_rows, yiddish) for it in items],
+        "items": views,
+        "voice_batches": batches,
         "precision": wa_attention.precision(stats_rows),
         "state_precision": wa_attention_state.state_precision(stats_rows),
         "total": len(stats_rows),

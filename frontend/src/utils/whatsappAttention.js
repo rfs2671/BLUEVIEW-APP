@@ -165,6 +165,57 @@ export function yiddishLines(item) {
   return lines;
 }
 
+/** A group's Yiddish voice notes to review, one row: "5 Yiddish voice notes
+ *  to review · 588 – Site · Sun Oct 11". */
+/** One newest-first list: the items in the API's order, each batch placed
+ *  before the first item older than its newest note. */
+export function attentionRows(items, batches) {
+  const t = (v) => {
+    const n = Date.parse(v || '');
+    return Number.isNaN(n) ? -Infinity : n;
+  };
+  const rest = [...(batches || [])].sort((a, b) => t(b.created_at) - t(a.created_at));
+  const out = [];
+  for (const it of items || []) {
+    while (rest.length && t(rest[0].created_at) >= t(it.created_at)) {
+      out.push({ kind: 'batch', key: `b:${rest[0].key}`, batch: rest.shift() });
+    }
+    out.push({ kind: 'item', key: `i:${it.id}`, item: it });
+  }
+  for (const b of rest) out.push({ kind: 'batch', key: `b:${b.key}`, batch: b });
+  return out;
+}
+
+export function batchTitle(b) {
+  const x = b || {};
+  let day = '';
+  if (x.day) {
+    const d = new Date(`${x.day}T12:00:00Z`);
+    if (!Number.isNaN(d.getTime())) {
+      day = d.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' })
+        .replace(/,/g, '');
+    }
+  }
+  return [x.label, x.group_name, day].filter(Boolean).join(' · ');
+}
+
+/** One note in a batch: "2:57 PM · …1234", then its English or a note. */
+export function batchNoteLines(it) {
+  const x = it || {};
+  let when = '';
+  if (x.sent_at) {
+    const d = new Date(x.sent_at);
+    if (!Number.isNaN(d.getTime())) {
+      when = d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+    }
+  }
+  const who = x.sender_last4 ? `…${x.sender_last4}` : '';
+  return {
+    head: [when, x.forwarded ? `forwarded by ${who || 'someone'}` : who].filter(Boolean).join(' · '),
+    english: x.english ? `English: ${x.english}` : 'No English translation yet — play it.',
+  };
+}
+
 /** ▶ Play on a voice item whose audio is kept. */
 export function canPlay(item) {
   return !!item && !!item.voice && !!item.message_row_id && item.audio !== false;
