@@ -785,7 +785,7 @@ class TestServerIntegrationPins(unittest.TestCase):
         self.assertGreater(start, 0)
         slice_ = self.text[start:end]
         self.assertEqual(slice_.count("_upload_to_r2"), 1)
-        self.assertIn("wa_voice.audio_key(project_id, group_id, voice_message_id)", slice_)
+        self.assertIn("wa_voice.audio_key(project_id, group_id, voice_message_id, ext)", slice_)
         # A transcribed note's audio is uploaded after the transcription; a
         # note that failed leaves first, through _voice_not_processed, which
         # keeps its audio WITH a message row (voice.audio_key) -- so the
@@ -795,7 +795,7 @@ class TestServerIntegrationPins(unittest.TestCase):
         self.assertIn("if fail:", slice_[:up])
         helper = self.text[self.text.find("async def _voice_not_processed"):]
         helper = helper[:helper.find("async def download_audio")]
-        self.assertIn("wa_voice.audio_key(project_id, group_id, mid)", helper)
+        self.assertIn("wa_voice.audio_key(project_id, group_id, mid, ext)", helper)
         self.assertIn('"audio_key": audio_key', helper)
         self.assertIn("whatsapp_messages.insert_one(row)", helper)
         from lib import wa_voice

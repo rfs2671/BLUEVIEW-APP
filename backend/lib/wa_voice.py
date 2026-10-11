@@ -109,8 +109,8 @@ def _safe(v: Any) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(v or ""))[:80] or "x"
 
 
-def audio_key(project_id: Any, group_id: Any, message_id: Any) -> str:
-    return f"wa-audio/{_safe(project_id)}/{_safe(group_id)}/{_safe(message_id)}.ogg"
+def audio_key(project_id: Any, group_id: Any, message_id: Any, ext: str = "ogg") -> str:
+    return f"wa-audio/{_safe(project_id)}/{_safe(group_id)}/{_safe(message_id)}.{ext}"
 
 
 def row_fields(transcript: str, english: str, lang: str, confidence: Optional[float],
@@ -183,7 +183,9 @@ def playable(b: Optional[bytes]) -> Optional[str]:
         return None
     if b.startswith(b"OggS"):
         return "ogg"
-    if b.startswith(b"ID3") or b[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+    # An MPEG audio frame: 11 sync bits, any version, Layer I-III (not the
+    # reserved layer 00, which is also where AAC/ADTS sits).
+    if b.startswith(b"ID3") or (b[0] == 0xFF and (b[1] & 0xE0) == 0xE0 and b[1] & 0x06):
         return "mp3"
     if b.startswith(b"RIFF") and b[8:12] == b"WAVE":
         return "wav"
@@ -192,6 +194,18 @@ def playable(b: Optional[bytes]) -> Optional[str]:
     if b.startswith(b"\x1a\x45\xdf\xa3"):
         return "webm"
     return None
+
+
+_AUDIO_TYPES = {"ogg": ("ogg", "audio/ogg"), "mp3": ("mp3", "audio/mpeg"),
+                "wav": ("wav", "audio/wav"), "m4a": ("m4a", "audio/mp4"),
+                "webm": ("webm", "audio/webm")}
+
+
+def audio_type(b: Optional[bytes]) -> tuple:
+    """(file extension, mime) for what the bytes are; Ogg (a WhatsApp voice
+    note) when they say nothing. The Whisper upload and the kept copy in R2
+    are both named by it."""
+    return _AUDIO_TYPES[playable(b) or "ogg"]
 
 
 def media_key(raw: Any, depth: int = 0) -> Optional[str]:

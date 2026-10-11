@@ -52301,13 +52301,17 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
     """Keep the note (its audio when there is any) and put it in Attention as
     "Voice note not processed" with the reason. Nothing is posted anywhere."""
     mid = parsed.get("message_id") or ""
-    if mid and await db.whatsapp_voice_events.find_one({"message_id": mid}, {"_id": 1}):
+    # Done when its review item exists (the ledger row is written last, so a
+    # failure part-way leaves the note to be finished on a redelivery).
+    if mid and await db.attention_items.find_one(
+            {"type": wa_voice.REVIEW_TYPE, "evidence.message_id": mid}, {"_id": 1}):
         return
     audio_key = None
     if audio and wa_voice.playable(audio):
-        audio_key = wa_voice.audio_key(project_id, group_id, mid)
+        ext, mime = wa_voice.audio_type(audio)
+        audio_key = wa_voice.audio_key(project_id, group_id, mid, ext)
         try:
-            if not await asyncio.to_thread(_upload_to_r2, audio, audio_key, "audio/ogg"):
+            if not await asyncio.to_thread(_upload_to_r2, audio, audio_key, mime):
                 audio_key = None
         except Exception as e:
             logger.warning(f"[voice] audio upload failed: {type(e).__name__}")
@@ -52317,15 +52321,6 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
     ts = datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) \
         if parsed.get("timestamp") else now
     try:
-        await db.whatsapp_voice_events.insert_one({
-            "message_id": mid, "company_id": company_id, "group_id": group_id,
-            "sender": sender, "english_transcript": "", "original_transcript": said,
-            "language_detected": getattr(vresult, "language_detected", None),
-            "no_speech_prob": getattr(vresult, "no_speech_prob", None),
-            "user_reply": "", "error_kind": kind,
-            "telemetry": getattr(vresult, "telemetry", None) or {},
-            "received_at": now,
-        })
         row = {
             "group_id": group_id, "project_id": project_id, "company_id": company_id,
             "sender": sender, "sender_jid": str(parsed.get("sender") or ""),
@@ -52338,8 +52333,13 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
                       "duration_sec": dur, "audio_key": audio_key, "review": True,
                       "failed": kind},
         }
-        res = await db.whatsapp_messages.insert_one(row)
-        row["_id"] = res.inserted_id
+        kept = await db.whatsapp_messages.find_one(
+            {"message_id": mid, "group_id": group_id, "skipped": row["skipped"]}) if mid else None
+        if kept:
+            row = kept          # stored on an earlier try that stopped part-way
+        else:
+            res = await db.whatsapp_messages.insert_one(row)
+            row["_id"] = res.inserted_id
         quote = f"{wa_voice.QUOTE_MARK} Voice note" + (f": “{said[:120]}”" if said else "")
         await db.attention_items.insert_one({
             "company_id": str(company_id), "project_id": str(project_id),
@@ -52358,6 +52358,15 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
             "topic": [], "multi": False,
             "history": [_attention_event("created", None, "open", row, quote, "voice")],
             "parts_done": [], "review": None, "created_at": now, "updated_at": now,
+        })
+        await db.whatsapp_voice_events.insert_one({
+            "message_id": mid, "company_id": company_id, "group_id": group_id,
+            "sender": sender, "english_transcript": "", "original_transcript": said,
+            "language_detected": getattr(vresult, "language_detected", None),
+            "no_speech_prob": getattr(vresult, "no_speech_prob", None),
+            "user_reply": "", "error_kind": kind,
+            "telemetry": getattr(vresult, "telemetry", None) or {},
+            "received_at": now,
         })
     except Exception as e:
         logger.warning(f"[voice] not-processed row failed: {type(e).__name__}")
@@ -62025,7 +62034,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
 
                 # A DAILY CAP PER COMPANY. Whisper is billed per second; past
                 # the cap the note is kept, untranscribed, and nothing reads it.
-                if not await _voice_claim(msg_company_id, now):
+                # The retry of a failed note is the same note: it was counted
+                # on its first try, and the cap never drops it unreviewed.
+                if voice_attempt == 0 and not await _voice_claim(msg_company_id, now):
                     try:
                         await db.whatsapp_messages.insert_one({
                             "group_id": group_id, "project_id": project_id,
@@ -62092,10 +62103,11 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 # THE AUDIO IS KEPT (R2, under the project, so the project's
                 # delete sweeps it): the review screens play it next to the
                 # transcript.
-                voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id)
+                ext, mime = wa_voice.audio_type(audio_bytes)
+                voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id, ext)
                 try:
                     if not await asyncio.to_thread(
-                            _upload_to_r2, audio_bytes, voice_audio_key, "audio/ogg"):
+                            _upload_to_r2, audio_bytes, voice_audio_key, mime):
                         voice_audio_key = None
                 except Exception as _e:
                     logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")

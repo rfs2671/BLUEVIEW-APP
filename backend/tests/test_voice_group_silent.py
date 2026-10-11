@@ -333,3 +333,65 @@ class WhisperIsToldWhatTheFileIs(unittest.TestCase):
         msg = str(cm.exception)
         self.assertIn("Invalid file format", msg)
         self.assertIn("first8=fdffc918", msg)
+
+
+class CodexFindings(_Base):
+    """#746 review: the retry and the daily cap, the ledger written last,
+    every MP3 frame header, and the kept audio named for what it is."""
+
+    def test_a_retry_past_the_daily_cap_is_still_reviewed(self):
+        claims = []
+
+        async def claim(company_id, now):
+            claims.append(1)
+            return len(claims) == 1          # the first try took the last one
+        with patch.object(server, "_voice_claim", claim):
+            self.run_note([RuntimeError("whisper 500"), RuntimeError("whisper 500")])
+        self.assertEqual(len(claims), 1)     # the retry is not counted again
+        self.assertEqual(len(self.reviews()), 1)
+        self.assertEqual(self.group_posts(), [])
+        self.assertFalse([r for r in self.db.whatsapp_messages.rows
+                          if r.get("skipped") == "voice_cap"])
+
+    def test_a_review_that_failed_part_way_is_finished_on_redelivery(self):
+        db = self._db()
+        parsed = {"message_id": "M1", "timestamp": 1760000000, "sender": "1555@c.us",
+                  "push_name": "Dave"}
+        real = db.attention_items.insert_one
+        calls = []
+
+        async def flaky(doc):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("transient")
+            return await real(doc)
+        with _Ctx(db):
+            with patch.object(db.attention_items, "insert_one", flaky):
+                for _ in range(2):
+                    _run(server._voice_not_processed(
+                        parsed, GROUP, "proj_a", CO_A, "1555", datetime.now(timezone.utc),
+                        "whisper_failed", None))
+        self.assertEqual(len([i for i in db.attention_items.rows
+                              if i["type"] == "voice_review"]), 1)
+        self.assertEqual(len(db.whatsapp_voice_events.rows), 1)
+        self.assertEqual(len([r for r in db.whatsapp_messages.rows
+                              if r.get("message_id") == "M1"]), 1)   # the row is reused
+
+    def test_every_mpeg_layer_iii_header_is_audio(self):
+        pad = b"\0" * 40
+        for head in (b"\xff\xfb", b"\xff\xfa", b"\xff\xf3", b"\xff\xf2", b"\xff\xe3", b"\xff\xe2"):
+            self.assertEqual(wa_voice.playable(head + pad), "mp3", head.hex())
+        self.assertIsNone(wa_voice.playable(b"\xff\xf1" + pad))     # AAC/ADTS, layer 00
+        self.assertIsNone(wa_voice.playable(ENC))
+
+    def test_the_kept_audio_is_named_for_what_it_is(self):
+        mp3 = b"ID3\x04" + bytes(range(256)) * 2
+
+        async def download(parsed):
+            return mp3
+        heard, uploads = self.run_note([_ok()], download=download)
+        self.assertEqual(heard, [mp3])
+        self.assertEqual(len(uploads), 1)
+        self.assertTrue(uploads[0][0].endswith(".mp3"), uploads[0][0])
+        self.assertEqual(wa_voice.audio_type(mp3), ("mp3", "audio/mpeg"))
+        self.assertEqual(wa_voice.audio_type(OGG), ("ogg", "audio/ogg"))

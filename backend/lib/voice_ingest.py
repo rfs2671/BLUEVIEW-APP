@@ -343,16 +343,12 @@ def aggregate_no_speech_prob(segments: list) -> float:
 # Whisper call
 # ──────────────────────────────────────────────────────────────────
 
-_AUDIO_NAMES = {"ogg": ("voice.ogg", "audio/ogg"), "mp3": ("voice.mp3", "audio/mpeg"),
-                "wav": ("voice.wav", "audio/wav"), "m4a": ("voice.m4a", "audio/mp4"),
-                "webm": ("voice.webm", "audio/webm")}
-
-
 def audio_name(audio_bytes: Optional[bytes]) -> tuple:
     """(file name, mime) for the container the bytes are; Ogg (a WhatsApp
     voice note) when they say nothing."""
     from lib import wa_voice
-    return _AUDIO_NAMES.get(wa_voice.playable(audio_bytes) or "ogg")
+    ext, mime = wa_voice.audio_type(audio_bytes)
+    return f"voice.{ext}", mime
 
 
 async def transcribe_whisper(
