@@ -274,7 +274,11 @@ def reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime
            day: date) -> str:
     """Why it fired, for the reviewer."""
     dues = sorted({str((it.get("due") or {}).get("due_text") or "") for it in items} - {""})
-    due = f"due today ({', '.join(dues)})" if dues else "due today"
+    # The day itself, then the words that set it: "due today (Sat Oct 10 ·
+    # said 'tomorrow')" -- "due today (tomorrow)" read as a contradiction.
+    when = f"{day.strftime('%a %b')} {day.day}"
+    said_words = ", ".join(f"'{d}'" for d in dues)
+    due = f"due today ({when} · said {said_words})" if dues else f"due today ({when})"
     Due = "D" + due[1:]
     if slot == ADMIN:
         return (f"Still no update after the end of day nudge; {due}. "
