@@ -105,22 +105,13 @@ def build_prompt(job: Iterable[str] = (), subs: Iterable[str] = (),
 
 
 # ── THE EVAL'S MEASURE ───────────────────────────────────────────────────────
+# (lib/voice_metrics: the same normalization for English, Spanish, Yiddish.)
 
 def _words(text: str) -> List[str]:
-    t = str(text or "").lower().replace("’", "'")
-    return re.findall(r"[a-z0-9áéíóúñü']+", t)
+    from lib import voice_metrics
+    return voice_metrics.words(text)
 
 
 def wer(reference: str, hypothesis: str) -> float:
-    """Word error rate: (substitutions + deletions + insertions) / words in
-    the reference, case and punctuation aside."""
-    ref, hyp = _words(reference), _words(hypothesis)
-    if not ref:
-        return 0.0 if not hyp else 1.0
-    prev = list(range(len(hyp) + 1))
-    for i, r in enumerate(ref, 1):
-        cur = [i] + [0] * len(hyp)
-        for j, h in enumerate(hyp, 1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (r != h))
-        prev = cur
-    return prev[-1] / len(ref)
+    from lib import voice_metrics
+    return voice_metrics.wer(reference, hypothesis)

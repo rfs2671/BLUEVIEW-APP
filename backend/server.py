@@ -12877,6 +12877,7 @@ async def hard_delete_company(
     # The company's WhatsApp senders and the numbers kept for them (evidence
     # belongs to the company: it goes with it).
     await db[wa_sender_map.COLLECTION].delete_many({"company_id": str(company_id)})
+    await db[wa_voice.SENDER_LANG_COLLECTION].delete_many({"company_id": str(company_id)})
     await db[wa_mention.LOOKUP_COLLECTION].delete_many({"company_id": str(company_id)})
     result = await db.companies.delete_one({"_id": to_query_id(company_id)})
     if result.deleted_count == 0:
@@ -52342,6 +52343,21 @@ async def _voice_prompt(company_id: Any, project_id: Any) -> Optional[str]:
     return prompt
 
 
+async def _sender_whisper_language(company_id: Any, jids: List[str]) -> Optional[str]:
+    """The language set for this sender on People ("en", "es", "yi"), as
+    Whisper's hint; None when it is auto, unset, or cannot be read."""
+    jids = [j for j in jids if j]
+    if not company_id or not jids:
+        return None
+    try:
+        row = await db[wa_voice.SENDER_LANG_COLLECTION].find_one(
+            {"company_id": str(company_id), "sender_jid": {"$in": jids}}, {"language": 1})
+    except Exception as e:
+        logger.warning(f"[voice] sender language read failed: {type(e).__name__}")
+        return None
+    return wa_voice.whisper_language((row or {}).get("language"))
+
+
 def _playable_audio(audio: Optional[bytes], parsed: dict) -> tuple:
     """(bytes, None) when the downloaded bytes are audio a transcriber can
     read; else (None, "download_failed" | "not_audio"). WhatsApp's media URL
@@ -62175,6 +62191,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         audio_bytes,
                         openai_api_key=OPENAI_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
+                        language=await _sender_whisper_language(
+                            msg_company_id, [str(parsed.get("sender") or "")]),
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -62700,6 +62718,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     openai_api_key=OPENAI_API_KEY,
                     # A DM names no job yet: the glossary only.
                     prompt=await _voice_prompt(None, None),
+                    language=await _sender_whisper_language(
+                        ident.get("company_id"), _dm_chat_ids(dm_chat)),
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -65292,6 +65312,11 @@ async def _people_senders(company_id: str, project_id: str,
     maps = await db[wa_sender_map.COLLECTION].find(
         {"company_id": str(company_id)}).to_list(5000)
     by_jid = {m.get("sender_jid"): m for m in maps}
+    # What each sender speaks, when set (voice notes' Whisper hint).
+    langs = {r.get("sender_jid"): r.get("language") or "auto"
+             for r in await db[wa_voice.SENDER_LANG_COLLECTION].find(
+                 {"company_id": str(company_id)}, {"sender_jid": 1, "language": 1}
+             ).to_list(5000)}
     cache: dict = {}
     out = {}
     for jid, s in summary.items():
@@ -65301,6 +65326,7 @@ async def _people_senders(company_id: str, project_id: str,
                 continue          # a known user or worker: not unknown
         s["mapping"] = by_jid.get(jid)
         s["sender_phone"], s["sender_phone_at"] = phones.get(jid, (None, None))
+        s["language"] = langs.get(jid, "auto")
         out[jid] = s
     return out
 
@@ -65331,6 +65357,8 @@ def _people_row(company_id: str, s: dict, admin: bool = False) -> dict:
         # WaAPI's get-lid), when, and how: full for admins, else last 4.
         "phone": wa_mention.shown(number, admin) or None,
         "phone_at": _iso_utc(n_at) if isinstance(n_at, datetime) else None,
+        # Their voice notes' language: auto (detected), en, es, yi.
+        "language": s.get("language") or "auto",
     }
 
 
@@ -65438,6 +65466,46 @@ async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
     s["mapping"] = row
     return {**_people_row(company_id, s, is_company_admin(current_user)),
             "open_items_updated": updated}
+
+
+class SenderLanguageBody(BaseModel):
+    language: str
+
+
+@api_router.put("/projects/{project_id}/whatsapp/people/{key}/language",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLanguageBody,
+                                       project=Depends(require_project_access),
+                                       current_user=Depends(get_project_admin_user)):
+    """What a sender speaks: auto (Whisper detects it), en, es or yi. Their
+    voice notes are then transcribed with it as Whisper's language hint.
+    For every group of this company; no name needed."""
+    company_id = str(project.get("company_id") or "")
+    if not company_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        lang = wa_voice.sender_language(body.language)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    s = await _people_find(company_id, str(project_id), key,
+                           is_company_admin(current_user))
+    coll = db[wa_voice.SENDER_LANG_COLLECTION]
+    was = await coll.find_one({"company_id": company_id, "sender_jid": s["jid"]})
+    op = actor_id(current_user)
+    if lang == "auto":
+        await coll.delete_one({"company_id": company_id, "sender_jid": s["jid"]})
+    else:
+        await coll.update_one(
+            {"company_id": company_id, "sender_jid": s["jid"]},
+            {"$set": {"language": lang, "set_by": op, "set_at": datetime.now(timezone.utc)},
+             "$setOnInsert": {"company_id": company_id, "sender_jid": s["jid"]}},
+            upsert=True)
+    await audit_log("whatsapp_sender_language_set", op, "whatsapp_sender_language",
+                    str((was or {}).get("_id") or ""),
+                    {"project_id": str(project_id), "key": key, "language": lang,
+                     "was": (was or {}).get("language") or "auto"})
+    s["language"] = lang
+    return _people_row(company_id, s, is_company_admin(current_user))
 
 
 @api_router.delete("/projects/{project_id}/whatsapp/people/{key}",
@@ -68941,6 +69009,11 @@ async def startup_event():
     await db.attention_items.create_index([("project_id", 1), ("created_at", -1)])
     await _ensure_index_resilient(
         db[wa_sender_map.COLLECTION],
+        keys=[("company_id", 1), ("sender_jid", 1)],
+        name="company_id_1_sender_jid_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db[wa_voice.SENDER_LANG_COLLECTION],
         keys=[("company_id", 1), ("sender_jid", 1)],
         name="company_id_1_sender_jid_1", unique=True,
     )

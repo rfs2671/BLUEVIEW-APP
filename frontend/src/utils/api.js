@@ -1987,6 +1987,14 @@ export const whatsappAPI = {
     return r.data;
   },
 
+  // language: 'auto' | 'en' | 'es' | 'yi' — their voice notes' language.
+  setWhatsAppPersonLanguage: async (projectId, key, language) => {
+    const r = await apiClient.put(
+      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}/language`,
+      { language });
+    return r.data;
+  },
+
   clearWhatsAppPerson: async (projectId, key) => {
     const r = await apiClient.delete(
       `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`);

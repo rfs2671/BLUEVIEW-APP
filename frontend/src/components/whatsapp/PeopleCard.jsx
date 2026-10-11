@@ -25,7 +25,7 @@ import { spacing, borderRadius } from '../../styles/theme';
 import { semantic, withAlpha } from '../../styles/semanticColors';
 import {
   PEOPLE_TITLE, PEOPLE_NOTE, emptyText, assignmentLine, detailLine,
-  assignRequest, savedText, safeLabel, safeName, PHONE_NOTE,
+  assignRequest, savedText, safeLabel, safeName, PHONE_NOTE, LANGUAGES, LANGUAGE_NOTE,
 } from '../../utils/whatsappPeople';
 
 export default function PeopleCard({ projectId }) {
@@ -75,6 +75,21 @@ export default function PeopleCard({ projectId }) {
         'phone' in req.body ? req.body.phone : null);
       toast.success(req.body.personName, savedText(res));
       setEditing(null);
+      await load();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // The language saves on its own, on tap: it needs no name or company.
+  const setLanguage = async (language) => {
+    if (!editing || (editing.language || 'auto') === language) return;
+    setSaving(true);
+    try {
+      const row = await whatsappAPI.setWhatsAppPersonLanguage(projectId, editing.key, language);
+      setEditing((e) => (e ? { ...e, language: row.language } : e));
       await load();
     } catch (e) {
       fail(e);
@@ -171,6 +186,21 @@ export default function PeopleCard({ projectId }) {
                 {removePhone ? <Check size={16} color={semantic.verified} /> : null}
               </Pressable>
             ) : null}
+            <Text style={s.label}>Voice note language</Text>
+            <View style={s.langs}>
+              {LANGUAGES.map((l) => {
+                const on = ((editing && editing.language) || 'auto') === l.value;
+                return (
+                  <Pressable key={l.value} onPress={() => setLanguage(l.value)} disabled={saving}
+                    accessibilityRole="radio" accessibilityState={{ selected: on }}
+                    accessibilityLabel={`Voice note language: ${l.label}`}
+                    style={({ pressed }) => [s.lang, on && s.choiceOn, pressed && s.pressed]}>
+                    <Text style={s.choiceText}>{l.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={s.muted}>{LANGUAGE_NOTE}</Text>
             <Text style={s.label}>Company on this job</Text>
             <ScrollView style={s.choices}>
               {companies.map((c) => (
@@ -242,6 +272,11 @@ function buildStyles(colors) {
       minHeight: 44, paddingHorizontal: spacing.sm, borderRadius: borderRadius.md,
     },
     choiceOn: { backgroundColor: colors.glass.background },
+    langs: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+    lang: {
+      minHeight: 44, paddingHorizontal: spacing.md, justifyContent: 'center',
+      borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border,
+    },
     choiceText: { color: colors.text.primary, fontSize: 15 },
     actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
     cancel: {

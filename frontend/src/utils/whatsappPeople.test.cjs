@@ -83,6 +83,20 @@ ok(/Remove the number on file/.test(card) && /removePhone/.test(card), 'and can 
 const api = read('src/utils/api.js');
 ok(/phone !== null && phone !== undefined/.test(api), "the API keeps '' (remove) apart from left out (keep)");
 
+console.log('\nvoice note language');
+ok(P.LANGUAGES.map((l) => l.value).join(',') === 'auto,en,es,yi', 'Auto, English, Español, Yiddish');
+ok(P.languageLabel('es') === 'Spanish' && P.languageLabel('yi') === 'Yiddish'
+   && P.languageLabel('auto') === null && P.languageLabel(undefined) === null, 'labels');
+ok(/voice: Spanish$/.test(P.detailLine({ groups: ['588'], message_count: 3, language: 'es' })),
+   'a set language shows on the row');
+ok(!/voice:/.test(P.detailLine({ groups: ['588'], message_count: 3, language: 'auto' })),
+   'auto says nothing');
+ok(api.includes('/language`') && /setWhatsAppPersonLanguage/.test(api), 'its own endpoint');
+const langCard = read('src/components/whatsapp/PeopleCard.jsx');
+ok(/setWhatsAppPersonLanguage\(projectId, editing\.key, language\)/.test(langCard),
+   'saves on tap, with no name needed');
+ok(/accessibilityRole="radio"/.test(langCard) && /LANGUAGES\.map/.test(langCard), 'one choice of four');
+
 console.log('\nwho sees it');
 ok(P.canManagePeople({ role: 'admin' }) && P.canManagePeople({ role: ' PM ' }), 'admin and PM');
 ok(!P.canManagePeople({ role: 'cp' }) && !P.canManagePeople({ role: 'owner' }), 'not CP, not retired owner');

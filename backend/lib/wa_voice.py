@@ -249,3 +249,29 @@ def seconds(raw: Any, depth: int = 0) -> Optional[float]:
             return got
     return None
 
+
+
+# ── THE SENDER'S LANGUAGE (People) ───────────────────────────────────────────
+# An admin or PM can say what a sender speaks on People: English, Spanish,
+# Yiddish, or auto (Whisper detects it, as before). When set, it is Whisper's
+# `language` hint: a short or noisy note is not heard as the wrong language.
+# Kept per company and sender, apart from who they are (a language can be set
+# before a name is): SENDER_LANG_COLLECTION.
+
+SENDER_LANG_COLLECTION = "whatsapp_sender_language"
+#: People choice -> Whisper's ISO-639-1 code (None: detect).
+SENDER_LANGS = {"auto": None, "en": "en", "es": "es", "yi": "yi"}
+SENDER_LANG_LABELS = {"auto": "Auto", "en": "English", "es": "Spanish", "yi": "Yiddish"}
+
+
+def sender_language(value: Any) -> str:
+    """The stored choice ("auto", "en", "es", "yi"), or ValueError."""
+    v = str(value or "auto").strip().lower()
+    if v not in SENDER_LANGS:
+        raise ValueError("Pick English, Spanish, Yiddish or Auto.")
+    return v
+
+
+def whisper_language(value: Any) -> Optional[str]:
+    """Whisper's language hint for a stored choice; None for auto/unknown."""
+    return SENDER_LANGS.get(str(value or "").strip().lower())
