@@ -24,7 +24,7 @@ const g = { id: 'r1', where: 'group', place: '588 – Site', at: '2026-10-11T18:
   english: 'Tomorrow', status: 'flagged', reason: 'yiddish', forwarded: true, audio: true,
   message_row_id: 'r1', produced: [] };
 ok(V.whenLabel(g.at) === 'Sun Oct 11, 2:57 PM', `New York time (${V.whenLabel(g.at)})`);
-ok(V.headLine(g) === 'Yoel (forwarded) · 588 – Site · Yiddish · 62% · 4s', V.headLine(g));
+ok(V.headLine(g) === 'forwarded by Yoel · 588 – Site · Yiddish · 62% · 4s', V.headLine(g));
 ok(V.headLine({ ...g, where: 'dm', forwarded: false }) === 'Yoel · DM · Yiddish · 62% · 4s', 'a DM');
 ok(V.statusLine(g) === 'Flagged — yiddish', 'flagged with why');
 ok(V.statusLine({ status: 'not_processed', reason: 'shorter than 2 seconds' })
