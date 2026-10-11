@@ -54,8 +54,11 @@ function shortDate(iso, now = new Date()) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  const opts = { month: 'short', day: 'numeric' };
-  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  // New York's day, as every WhatsApp screen shows it (a message just after
+  // midnight New York is that day on a phone in California too).
+  const opts = { month: 'short', day: 'numeric', timeZone: 'America/New_York' };
+  const year = (x) => x.toLocaleDateString('en-US', { year: 'numeric', timeZone: 'America/New_York' });
+  if (year(d) !== year(now)) opts.year = 'numeric';
   return d.toLocaleDateString('en-US', opts);
 }
 

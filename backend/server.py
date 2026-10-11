@@ -46643,16 +46643,38 @@ def _attention_candidate(it: dict) -> dict:
 
 
 async def _attention_live_items(ctx: dict, sent_at: datetime) -> List[dict]:
+    window = {"$gte": sent_at - timedelta(days=ATTENTION_STATE_DAYS)}
+    if ctx.get("replay"):
+        # A replayed old message updates only what was said BEFORE it (live,
+        # nothing later exists yet).
+        window["$lt"] = sent_at
     try:
-        return await db.attention_items.find(
+        rows = await db.attention_items.find(
             {"group_id": ctx["group_id"], "project_id": ctx["project_id"],
              "company_id": ctx["company_id"],
              "status": {"$in": list(wa_attention_state.LIVE)},
-             "evidence.sent_at": {"$gte": sent_at - timedelta(
-                 days=ATTENTION_STATE_DAYS)}}).to_list(500)
+             "evidence.sent_at": window}).to_list(500)
     except Exception as e:
         logger.warning(f"[attention] live items read failed: {type(e).__name__}")
         return []
+    if ctx.get("replay"):
+        # Its state now is not its state then: an item already changed at or
+        # after this message (an Oct 10 move applied, an Oct 9 "done"
+        # missed) is left alone -- replaying the older message would undo
+        # the newer change.
+        rows = [r for r in rows if not _attention_changed_since(r, sent_at)]
+    return rows
+
+
+def _attention_changed_since(item: dict, at: datetime) -> bool:
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    for e in item.get("history") or []:
+        when = e.get("at") if isinstance(e, dict) else None
+        if not isinstance(when, datetime) or e.get("kind") in ("created", "follow_up"):
+            continue
+        if (when if when.tzinfo else when.replace(tzinfo=timezone.utc)) >= at:
+            return True
+    return False
 
 
 async def _attention_previous(msg: dict, ctx: dict) -> Optional[dict]:
@@ -47567,6 +47589,98 @@ async def _attention_tick(now: Optional[datetime] = None, llm=None,
         report["messages"] += await _attention_run_group(cur, ctx, report, llm=llm)
     logger.info(f"[attention] {report}")
     return report
+
+
+async def _attention_replay_state(project_id: str, since: datetime,
+                                  now: Optional[datetime] = None) -> dict:
+    """ONE-TIME CLEANUP: run today's state engine (done / sent / cancel /
+    reschedule / handover, and replies marking an ask answered) over every
+    stored message of the project's linked groups since `since`, oldest
+    first, as the worker would. Nothing is extracted as new and nothing is
+    sent. Each message updates only items said before it; what the worker
+    already applied is recognised by its message id. Returns what changed:
+    {items: [{id, summary, from, to}], messages, report}."""
+    now = now or datetime.now(timezone.utc)
+    groups = await db.whatsapp_groups.find(
+        {"project_id": str(project_id), "active": True}).to_list(50)
+    # Everything the engine can change, not only the status: a handover
+    # (owner), a part done or a flag (history), a second move (due).
+    snap = {"status": 1, "due": 1, "owner": 1, "chase_quote": 1, "history": 1}
+
+    def state_of(i: dict) -> dict:
+        o = i.get("owner") or {}
+        return {"status": i.get("status"), "due": i.get("due") or {},
+                "owner": [o.get(k) for k in ("kind", "id", "jid", "name", "status")],
+                "chase_quote": (i.get("chase_quote") or {}).get("quote"),
+                "history": len(i.get("history") or [])}
+
+    before = {str(i["_id"]): state_of(i) for i in await db.attention_items.find(
+        {"project_id": str(project_id)}, snap).to_list(10000)}
+    from collections import defaultdict
+    report: Dict[str, Any] = defaultdict(int)    # the worker's counters, all from 0
+    for g in groups:
+        gid, cid = g.get("wa_group_id"), str(g.get("company_id") or "")
+        if not (gid and cid):
+            continue
+        ctx = {"group_id": gid, "project_id": str(project_id), "company_id": cid,
+               "cache": {}, "now": now, "replay": True}
+        rows = await db.whatsapp_messages.find(
+            {"group_id": gid, "project_id": str(project_id),
+             "company_id": _company_id_filter(cid), "sender": {"$ne": "bot"},
+             "created_at": {"$gte": since}}).sort(
+            [("created_at", 1), ("_id", 1)]).to_list(5000)
+        for burst in wa_attention_state.bursts(rows):
+            msg = wa_attention_state.merge(burst)
+            text = wa_attention_state.text_of(msg)
+            msg = dict(msg, body=text)
+            report["messages"] += 1
+            report["marked_resolved"] += await _attention_mark_replies(msg, gid, str(project_id))
+            prev = await _attention_previous(msg, ctx)
+            await _attention_state_update(msg, text, prev, ctx, report)
+    after = await db.attention_items.find(
+        {"project_id": str(project_id)},
+        {**snap, "summary": 1, "type": 1}).to_list(10000)
+    changed = []
+    for i in after:
+        was, now_ = before.get(str(i["_id"])) or {}, state_of(i)
+        fields = [k for k in now_ if was.get(k) != now_[k]]
+        if not fields:
+            continue
+        added = (i.get("history") or [])[int(was.get("history") or 0):] or \
+            (i.get("history") or [{}])[-1:]
+        last = added[-1] if added else {}
+        changed.append({"id": str(i["_id"]), "summary": i.get("summary") or "",
+                        "type": i.get("type"), "from": was.get("status"),
+                        "to": i.get("status"), "changed": fields,
+                        "events": [e.get("kind") for e in added if isinstance(e, dict)],
+                        "because": last.get("quote") or "",
+                        "at": _iso_utc(last.get("at"))})
+    # Still open, but its owner said done / sent later in the same group in
+    # words that do not name it (no reply, no shared subject): not closed --
+    # that would be a guess -- but listed for a person to look at.
+    hints = []
+    for i in await db.attention_items.find(
+            {"project_id": str(project_id),
+             "status": {"$in": list(wa_attention_state.LIVE)}}).to_list(10000):
+        owner = _attention_owner_digits(i)
+        ev = i.get("evidence") or {}
+        if not owner or not isinstance(ev.get("sent_at"), datetime):
+            continue
+        later = await db.whatsapp_messages.find(
+            {"group_id": i.get("group_id"), "project_id": str(project_id),
+             "sender": owner, "created_at": {"$gt": ev["sent_at"]}}).sort(
+            [("created_at", 1)]).to_list(50)
+        for m in later:
+            c = wa_attention_state.classify(wa_attention_state.text_of(m) or "")
+            if c and c.get("kind") == "done":
+                hints.append({"id": str(i["_id"]), "summary": i.get("summary") or "",
+                              "status": i.get("status"), "said": m.get("body") or "",
+                              "at": _iso_utc(m.get("created_at"))})
+                break
+    logger.info(f"[attention] replay project={project_id} messages={report['messages']} "
+                f"changed={len(changed)} open_with_done_after={len(hints)}")
+    return {"items": changed, "open_with_done_after": hints,
+            "messages": report["messages"], "report": dict(report)}
 
 
 async def _attention_weekly_metrics(now: Optional[datetime] = None) -> List[dict]:
@@ -51308,6 +51422,16 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         await send_whatsapp_message(dm_chat, reply)
     elif eyes:
         await _react_to_message(dm_chat, message_id, "")
+
+
+def _iso_utc(v: Any) -> Any:
+    """A stored time for the app, always marked UTC ("…+00:00"). Mongo hands
+    back naive datetimes; without the offset a browser reads "19:12" as its
+    own local time, and New York screens showed UTC (the Would chase list,
+    2026-10-10). Non-datetimes pass through."""
+    if not isinstance(v, datetime):
+        return v
+    return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)).isoformat()
 
 
 def _log_chat(chat_id: Any) -> str:
@@ -64021,7 +64145,7 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
 def _punch_view(r: dict) -> dict:
     """A punch item for Project → Punch list. No phone number."""
     def iso(v):
-        return v.isoformat() if isinstance(v, datetime) else v
+        return _iso_utc(v) if isinstance(v, datetime) else v
     a = r.get("assignee") or {}
     comp = r.get("completion") or {}
     return {"pid": r.get("pid"), "seq": r.get("seq"), "text": r.get("text") or "",
@@ -64155,7 +64279,7 @@ def _attention_item_view(it: dict, group_names: dict) -> dict:
         "review_reason": it.get("review_reason") or next(
             (h.get("note") for h in (it.get("history") or [])
              if isinstance(h, dict) and h.get("by") == "voice"), None),
-        "sent_at": sent.isoformat() if isinstance(sent, datetime) else None,
+        "sent_at": _iso_utc(sent) if isinstance(sent, datetime) else None,
         "sender_last4": ev.get("sender_last4") or "",
         "group_name": wa_groups.display_name(group_names.get(it.get("group_id"))),
         "also_seen": len(it.get("also_seen") or []),
@@ -64178,7 +64302,7 @@ def _attention_event_view(e: dict) -> dict:
         "kind": e.get("kind"),
         "from": e.get("from"),
         "to": e.get("to"),
-        "at": at.isoformat() if isinstance(at, datetime) else None,
+        "at": _iso_utc(at) if isinstance(at, datetime) else None,
         "quote": e.get("quote") or "",
         "evidence_kind": e.get("evidence_kind") or "text",
         "message_row_id": e.get("message_row_id"),
@@ -64248,10 +64372,10 @@ async def get_whatsapp_source_message(project_id: str, row_id: str,
     return {"id": str(row["_id"]), "text": row.get("body") or "",
             "who": who,
             "phone": wa_mention.shown(number, admin) or None,
-            "phone_resolved_at": p_at.isoformat() if isinstance(p_at, datetime) else None,
+            "phone_resolved_at": _iso_utc(p_at) if isinstance(p_at, datetime) else None,
             # "Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM" (admins).
             "evidence": wa_mention.evidence_line(who or "Unknown sender", number, when, admin),
-            "at": at.isoformat() if isinstance(at, datetime) else None,
+            "at": _iso_utc(at) if isinstance(at, datetime) else None,
             "voice": ({"lang": v.get("lang"), "confidence": v.get("confidence"),
                        "duration_sec": v.get("duration_sec"), "english": v.get("english"),
                        "review": bool(v.get("review")), "audio_url": audio_url or None}
@@ -64280,7 +64404,7 @@ def _memory_source_view(src: dict, admin: bool = False) -> dict:
             "who": src.get("who") or "", "group": src.get("group") or "",
             "phone": wa_mention.shown(src.get("phone"), admin) or None,
             "when": src.get("when") or src.get("day_label") or "",
-            "at": at.isoformat() if isinstance(at, datetime) else None,
+            "at": _iso_utc(at) if isinstance(at, datetime) else None,
             "label": src.get("label") or "",
             "text": (src.get("text") or "")[:400],
             "voice": bool(src.get("voice")),
@@ -64680,7 +64804,7 @@ def _chase_view(r: dict) -> dict:
     return {
         "id": r.get("_id"), "kind": r.get("kind"), "slot": r.get("slot"),
         "day": r.get("day"),
-        "at": at.isoformat() if isinstance(at, datetime) else None,
+        "at": _iso_utc(at) if isinstance(at, datetime) else None,
         "group_name": r.get("group_name") or "",
         "owner": r.get("owner_name") or "",
         "to": r.get("to") or [],
@@ -64823,18 +64947,18 @@ def _people_row(company_id: str, s: dict, admin: bool = False) -> dict:
         "push_name": wa_sender_map.safe_push_name(s.get("push_name")) or None,
         "groups": sorted({n for n in s["groups"].values() if n}),
         "message_count": s["message_count"],
-        "last_message_at": at.isoformat() if isinstance(at, datetime) else None,
+        "last_message_at": _iso_utc(at) if isinstance(at, datetime) else None,
         "assigned": ({"person_name": m.get("person_name"),
                       "sub_company": m.get("sub_company"),
                       # The number the admin or PM gave, as this viewer may see it.
                       "phone": wa_mention.shown(m.get("phone"), admin) or None,
-                      "set_at": (m.get("set_at").isoformat()
+                      "set_at": (_iso_utc(m.get("set_at"))
                                  if isinstance(m.get("set_at"), datetime) else None)}
                      if m else None),
         # The sender's number however it was found (People, the id itself,
         # WaAPI's get-lid), when, and how: full for admins, else last 4.
         "phone": wa_mention.shown(number, admin) or None,
-        "phone_at": n_at.isoformat() if isinstance(n_at, datetime) else None,
+        "phone_at": _iso_utc(n_at) if isinstance(n_at, datetime) else None,
     }
 
 
