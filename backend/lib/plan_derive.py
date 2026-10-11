@@ -43,6 +43,35 @@ PLAN_TITLE = re.compile(r"\b(FLOOR\s+PLAN|MEZZANINE(\s+FLOOR)?\s+PLAN|ROOF\b.*\b
 ROLE_MECHANICAL, ROLE_ARCHITECTURAL = "mechanical", "architectural"
 
 
+#: A mechanical page, by its number, its discipline or its title's wording.
+_MECH_WORDS = re.compile(r"\b(HVAC|MECHANICAL|VENTILATION)\b", re.I)
+#: A plan of a level - as opposed to notes, schedules and details, which on
+#: 588 Boyland are the only other mechanical sheets and never say PLAN.
+_PLAN_WORD = re.compile(r"\bPLANS?\b", re.I)
+_LEVEL_WORD = re.compile(r"\b(FLOOR|ROOF|BULKHEAD|MEZZANINE|CELLAR|BASEMENT|LEVEL|"
+                         r"STOREY|STORY|PENTHOUSE)\b", re.I)
+
+
+def looks_like_a_mechanical_plan(page: dict) -> bool:
+    """Mechanical (number starts M, discipline ME, or HVAC / MECHANICAL /
+    VENTILATION in the title) AND titled as a plan of a level (PLAN(S) with
+    a level word, or with the mechanical wording itself: "HVAC PLAN").
+
+    Measured 2026-10-10 on every current Boyland page that is mechanical by
+    any of those tests: the seven plans say PLAN(S); M-001 (notes and symbol
+    list), M-200 (schedules and details), M-201 and M-202 (details) never do.
+    A false positive here refuses a sheet that could carry symbols, which
+    blocks every building total - so the test is the plan-ness, not the
+    discipline alone."""
+    num = (page.get("sheet_number") or "").strip().upper()
+    title = page.get("sheet_title") or ""
+    disc = str(page.get("discipline") or "").strip().upper()
+    mech = num.startswith("M") or disc in ("ME", "M", "MECH", "MECHANICAL") \
+        or bool(_MECH_WORDS.search(title))
+    return bool(mech and _PLAN_WORD.search(title)
+                and (_LEVEL_WORD.search(title) or _MECH_WORDS.search(title)))
+
+
 def pair_plan_sheets(pages: Iterable[dict]) -> dict:
     """{"pairs": [(arch, mech)], "refused": [(page, reason, role)],
     "unpaired_mech": [mech]}.
@@ -73,6 +102,17 @@ def pair_plan_sheets(pages: Iterable[dict]) -> dict:
         m = PLAN_SHEET.match(num)
         if m and m.group(1) in ("A", "M"):
             by_key.setdefault((m.group(1), m.group(2)), []).append(p)
+        elif looks_like_a_mechanical_plan(p):
+            # A MECHANICAL PLAN THE PAIRING CANNOT READ IS REFUSED, BY NAME
+            # (operator ruling 2026-10-10). Numbered outside the plan series
+            # - M101, M1.01, unnumbered - it was skipped: no row and no
+            # refusal, so a set numbered another way produced nothing and
+            # said nothing. It is refused as MECHANICAL: it may carry symbols,
+            # so no building total stands without it.
+            refused.append((p, f"{num or 'unnumbered sheet'} ({p.get('sheet_title') or 'untitled'}) "
+                               "looks like a mechanical plan, but its number is not in the "
+                               "plan series M-1xx.yy: it cannot be paired or counted",
+                            ROLE_MECHANICAL))
         elif PLAN_TITLE.search(p.get("sheet_title") or "") and \
                 (not num or re.match(r"^A[.\-]", num)):
             # ARCHITECTURAL or unnumbered only: FA-007 is a fire-alarm plan,
