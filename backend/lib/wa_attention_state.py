@@ -765,6 +765,14 @@ def _done(target: dict, link: str, live: List[dict]) -> List[Dict[str, Any]]:
     return out
 
 
+def own_voice_flag(e: Dict[str, Any], item: Dict[str, Any]) -> bool:
+    """The "unsure voice note" flag on the item that note made (same
+    message): judged with the item, not on its own (frontend reviewable())."""
+    row = (item.get("evidence") or {}).get("message_row_id")
+    return (e.get("kind") == "flag" and e.get("by") == "voice"
+            and bool(row) and e.get("message_row_id") == row)
+
+
 def state_precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Per change (rescheduled, done, cancelled, possibly_done, part_done,
     flag): correct, wrong, unreviewed, precision = correct / (correct +
@@ -777,8 +785,15 @@ def state_precision(items: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
             if not isinstance(e, dict) or e.get("kind") in NO_CHANGE_KINDS:
                 continue
             name = e.get("to") if e.get("kind") == "state" else e.get("kind")
-            row = out.setdefault(str(name), {"correct": 0, "wrong": 0, "unreviewed": 0})
             v = (e.get("review") or {}).get("verdict")
+            if v not in STATE_VERDICTS and own_voice_flag(e, it):
+                # The app shows no Correct / Wrong on this line: the item's
+                # own verdict is its verdict (Oct 11: "Flagged: not reviewed
+                # yet" stayed after every flagged voice item was judged).
+                v = (it.get("review") or {}).get("verdict")
+                if v == "dismissed":
+                    continue
+            row = out.setdefault(str(name), {"correct": 0, "wrong": 0, "unreviewed": 0})
             row[v if v in STATE_VERDICTS else "unreviewed"] += 1
     for row in out.values():
         judged = row["correct"] + row["wrong"]

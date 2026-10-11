@@ -152,7 +152,9 @@ class TheWindowRollsForward(_AddressingCase):
             "mention":      dict(body="levelog who is on site", mode="strict"),
             "reply_to_bot": dict(body="Done 2", quoted_from_bot=True, mode="strict"),
             "trigger":      dict(body="who is on site", mode="loose"),
-            "voice":        dict(body="", voice=True, mode="loose"),
+            # A voice note only as a reply to the bot (Oct 11: a transcript
+            # never wakes it on its own).
+            "voice_reply":  dict(body="", voice=True, quoted_from_bot=True, mode="loose"),
         }
         for name, kw in cases.items():
             with self.subTest(route=name):

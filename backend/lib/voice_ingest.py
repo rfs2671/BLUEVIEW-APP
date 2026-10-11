@@ -669,6 +669,25 @@ async def process_voice_note(
     telemetry["whisper_segments"] = wr.raw_segments
     telemetry["whisper_confidence"] = wr.confidence
 
+    # ── The prompt read back, not speech ───────────────────────────
+    # (588, Oct 11, 2:51 PM.) A failed transcription: never a message.
+    if prompt:
+        from lib import voice_glossary
+        if voice_glossary.prompt_echo(wr.transcript, prompt):
+            logger.info("[voice_ingest] prompt echo: transcript repeats the Whisper prompt")
+            telemetry["rejected_reason"] = "prompt_echo"
+            return VoiceIngestResult(
+                ok=False,
+                original_transcript=wr.transcript,
+                language_detected=wr.language,
+                no_speech_prob=wr.no_speech_prob,
+                confidence=wr.confidence,
+                duration_sec=wr.duration_sec,
+                user_reply=USER_REPLY_PROCESSING_FAILED,
+                error_kind="prompt_echo",
+                telemetry=telemetry,
+            )
+
     # ── Short-circuit ─────────────────────────────────────────────
     short_circuit, reason = should_short_circuit(wr.transcript, wr.no_speech_prob)
     if short_circuit:

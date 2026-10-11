@@ -168,6 +168,7 @@ _REASONS = {
     "low_confidence": "no words were heard",
     "empty": "no words were heard",
     "audio_too_long": "longer than the voice note limit",
+    "prompt_echo": "the transcript repeated Whisper's word list, not what was said",
 }
 
 

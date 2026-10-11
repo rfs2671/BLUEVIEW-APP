@@ -58960,8 +58960,12 @@ async def _is_bot_addressed(
           forward on every exchange, not only on an explicit mention)
 
       loose (the default for new groups) adds:
-        - any voice note
         - any message containing a soft-trigger word
+
+    A VOICE NOTE (is_voice) wakes the bot only as a reply to one of the
+    bot's own messages. Its transcript is never read for the name, a
+    trigger word or a session (588, Oct 11, 2:51 PM: a 4-second note was
+    answered in the group). Bot wake is typed text or a reply to the bot.
 
     Loose is the default because strict was measured losing about a third of
     the real questions put to it. What keeps loose from being noisy is the
@@ -58993,8 +58997,14 @@ async def _is_bot_addressed(
     # renewed it.
     reason = ""
 
+    if is_voice:
+        # Whisper's words are not the sender's typing: only the reply link
+        # (WhatsApp's, not the transcript's) can address the bot.
+        if quoted_from_bot:
+            reason = "reply_to_bot"
+
     # Explicit mention — the name, the handle, or a native @mention JID.
-    if _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
+    elif _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
         reason = "mention"
 
     # The message being replied to mentioned the bot.
@@ -59017,13 +59027,11 @@ async def _is_bot_addressed(
         reason = "session"
 
     elif mode == "loose":
-        # Any voice note, or any soft-trigger word. The NOREPLY escape hatch
-        # is what makes this safe to leave on: a message that trips a trigger
-        # but is not for the bot reaches the agent, which answers NOREPLY and
-        # says nothing. Loose mode costs model calls, not interruptions.
-        if is_voice:
-            reason = "voice"
-        elif body:
+        # Any soft-trigger word. The NOREPLY escape hatch is what makes this
+        # safe to leave on: a message that trips a trigger but is not for the
+        # bot reaches the agent, which answers NOREPLY and says nothing.
+        # Loose mode costs model calls, not interruptions.
+        if body:
             low = body.strip().lower()
             for t in _BOT_ADDRESS_SOFT_TRIGGERS:
                 if t in low:
@@ -59043,8 +59051,8 @@ async def _is_bot_addressed(
         # product decision, a session that expired is a TTL question, and a
         # session that was never written is the duplicate-key fault that ate
         # the first miss.
-        why = "no_mention"
-        if group_id and sender:
+        why = "voice" if is_voice else "no_mention"
+        if group_id and sender and not is_voice:
             try:
                 row = await db.whatsapp_conversation_state.find_one(
                     {"kind": "bot_session", "group_id": group_id, "sender": sender})
@@ -62531,6 +62539,15 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             if not bot_enabled:
                 return
 
+            # A TRANSCRIPT NEVER SPEAKS FOR THE BOT IN A GROUP (588, Oct 11,
+            # 2:51 PM: "I'll send the window shop drawings Tuesday" got the
+            # "say levelog" hint). Below, a voice note only reaches the agent
+            # as a reply to one of the bot's messages: no checklist reply,
+            # "done N", @levelog checklist, hint or material confirmation is
+            # read from Whisper's words. They are stored, and Attention reads
+            # them; nothing here answers them.
+            spoken = voice_block is not None
+
             # ── Sprint 6: interactive checklist assignment flow ──
             # If this group has an active draft checklist awaiting assignment,
             # try to parse the reply BEFORE running any other handlers.
@@ -62560,7 +62577,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 await db.whatsapp_conversation_state.delete_one(
                     {"kind": "checklist", "group_id": group_id})
                 convo_state = None
-            if convo_state and convo_state.get("awaiting") == "checklist_assignment":
+            if convo_state and convo_state.get("awaiting") == "checklist_assignment" \
+                    and not spoken:
                 reply = await _handle_checklist_assignment_reply(
                     convo_state, body or "", group_id, sender
                 )
@@ -62577,7 +62595,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
 
             # ── "done N" — mark checklist item complete ──
             # Must come before on-demand @levelog detection so short msgs match.
-            if body:
+            if body and not spoken:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
                 if done_match:
                     try:
@@ -62635,7 +62653,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     return
 
             # ── On-demand @levelog checklist / !checklist trigger ──
-            if body:
+            if body and not spoken:
                 ondemand = False
                 lower = body.strip().lower()
                 for kw in ("@levelog checklist", "@levelog  checklist", "!checklist"):
@@ -62714,7 +62732,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # @mention, literal @levelog text, or a quoted reply to either)?
             # If yes we lift the NOREPLY escape hatch for the agent — an
             # explicitly addressed message MUST get some reply.
-            explicit_mention = (
+            explicit_mention = not spoken and (
                 _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
                 or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
             )
@@ -62738,7 +62756,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             is_addressed = await _is_bot_addressed(
                 body,
                 bot_phone_digits,
-                parsed.get("has_audio", False),
+                spoken,
                 group_id=group_id,
                 sender=sender,
                 mode=address_mode,
@@ -62803,6 +62821,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             #
             # And only for something SHAPED like a question. A statement that
             # happens not to address the bot is not a failed interaction.
+            if spoken:
+                return
             if bot_enabled and _looks_like_a_question(body):
                 await _nudge_once(group_id)
 
@@ -65345,6 +65365,7 @@ async def get_project_attention(project_id: str, status: str = "open",
         {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id)},
         {"type": 1, "review.verdict": 1, "history": 1,
+         "evidence.message_row_id": 1,          # the voice flag's own item
          "excluded_from_metrics": 1}).to_list(10000)
     groups = await db.whatsapp_groups.find(
         {"project_id": str(project_id),
