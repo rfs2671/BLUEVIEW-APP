@@ -105,11 +105,21 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         self.assertEqual(self.sent, [], "shadow mode: nothing may be sent")
 
-    def say(self, body, at, sender=MIKE, group=G_A):
+    def say(self, body, at, sender=MIKE, group=G_A, quoted=""):
         self.db.whatsapp_messages.rows.append({
             "_id": f"w{len(self.db.whatsapp_messages.rows)}", "group_id": group,
             "project_id": "proj_a", "company_id": CO_A, "sender": sender,
-            "body": body, "created_at": at})
+            "body": body, "created_at": at, "quoted_message_id": quoted})
+
+    def nudges(self):
+        """(slot, kind) of every row, in slot order."""
+        order = ["morning", "midday", "eod", "admin_dm"]
+        return [(r["slot"], r.get("kind")) for r in sorted(
+            self.rows(), key=lambda r: order.index(r["slot"]))]
+
+    def day(self):
+        for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+            self.chase(_et(h, m))
 
 
 class WhatIsChased(_Base):
@@ -376,14 +386,105 @@ class TheSlots(_Base):
 
 class StopConditions(_Base):
 
-    def test_the_owner_says_anything_in_the_group(self):
-        _item(self.db)
+    ALL = [("morning", "group"), ("midday", "group"), ("eod", "group"),
+           ("admin_dm", "admin_dm")]
+
+    def _day_with(self, *said):
+        """The item, a full day of slots, and the owner saying `said`
+        ((body, h, m[, quoted])) at those times."""
+        it = _item(self.db, topic=["stair", "rfi"])
+        for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+            for s in said:
+                if (s[1], s[2]) < (h, m) and (s[1], s[2]) >= getattr(self, "_last", (0, 0)):
+                    self.say(s[0], _et(s[1], s[2]), quoted=s[3] if len(s) > 3 else "")
+            self._last = (h, m)
+            self.chase(_et(h, m))
+        return it
+
+    # Rule 3: anything else the owner says changes nothing.
+    def test_unrelated_chatter_keeps_chasing(self):
+        self._day_with(("morning all", 9, 10), ("the concrete truck is late", 11, 0),
+                       ("lunch at 1?", 12, 50), ("dale, voy", 14, 0))
+        self.assertEqual(self.nudges(), self.ALL)
+        mid = self.rows("midday")[0]
+        self.assertIn("Owner wrote at 11:00, not about this item: still chased", mid["reason"])
+
+    # Rule 2: a short ack within 15 minutes of a nudge skips the next slot.
+    def test_an_ack_after_a_nudge_skips_one_slot(self):
+        for ack in ("on it", "working on it", "later", "dale", "yo", "ya voy", "shpeter"):
+            self.db.attention_items.rows, self.db[wa_chase.COLLECTION].rows = [], []
+            self.db.whatsapp_messages.rows, self._last = [], (0, 0)
+            self._day_with((ack, 8, 45))
+            self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped"),
+                                             ("eod", "group"), ("admin_dm", "admin_dm")], ack)
+            skip = self.rows("midday")[0]
+            self.assertEqual(skip["reason"],
+                             f"Skipped midday: acknowledged '{ack}' 8:45. Later slots still run.")
+            eod = self.rows("eod")[0]
+            self.assertIn("Midday was skipped after their answer; this slot runs", eod["reason"])
+
+    def test_an_ack_long_after_the_nudge_is_chatter(self):
+        self._day_with(("on it", 10, 0))                     # 85 min after 8:35
+        self.assertEqual(self.nudges(), self.ALL)
+
+    def test_a_reply_to_the_items_message_skips_one_slot(self):
+        it = _item(self.db, topic=["stair", "rfi"])
         self.chase(_et(8, 35))
-        self.say("on it", _et(9, 10))
+        self.say("ok", _et(11, 0), quoted=it["evidence"]["message_id"])
         self.chase(_et(12, 35))
         self.chase(_et(15, 5))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped"),
+                                         ("eod", "group")])
+        self.assertEqual(self.rows("midday")[0]["reason"],
+                         "Skipped midday: replied 'ok' 11:00. Later slots still run.")
+
+    def test_a_reply_to_the_nudge_skips_one_slot(self):
+        it = _item(self.db, topic=["stair", "rfi"])
+        self.chase(_et(8, 35))
+        # Once sent, the nudge's WhatsApp id is on its row.
+        self.db[wa_chase.COLLECTION].rows[0]["message_id"] = "NUDGE1"
+        self.say("sí", _et(11, 0), quoted="NUDGE1")
+        self.chase(_et(12, 35))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped")])
+
+    def test_a_late_webhook_sent_before_the_nudge_answers_nothing(self):
+        # Codex, #744: received after the 8:35 nudge, but SENT at 8:20.
+        it = _item(self.db, topic=["stair", "rfi"])
+        self.chase(_et(8, 35))
+        self.say("the stair RFI goes out after lunch", _et(8, 50),
+                 quoted=it["evidence"]["message_id"])
+        self.db.whatsapp_messages.rows[-1]["timestamp"] = _et(8, 20)
+        self.chase(_et(12, 35))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "group")])
+
+    def test_writing_about_it_skips_one_slot(self):
+        self._day_with(("the RFI for the stairs goes out after lunch", 11, 30))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped"),
+                                         ("eod", "group"), ("admin_dm", "admin_dm")])
+        self.assertIn("wrote about it ('rfi')", self.rows("midday")[0]["reason"])
+
+    def test_an_answer_after_the_end_of_day_nudge_skips_the_admin_dm(self):
+        self._day_with(("working on it", 15, 10))
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "group"),
+                                         ("eod", "group"), ("admin_dm", "skipped")])
+
+    # Rule 1: a state change stops everything.
+    def test_done_after_an_ack_stops_all(self):
+        it = _item(self.db, topic=["stair", "rfi"])
+        self.chase(_et(8, 35))
+        self.say("on it", _et(8, 45))
+        self.chase(_et(12, 35))
+        it["status"] = "done"
+        it["history"].append({"id": "e1", "kind": "state", "to": "done", "at": _et(13, 0)})
+        self.chase(_et(15, 5))
         self.chase(_et(16, 5))
-        self.assertEqual([r["slot"] for r in self.rows()], ["morning"])
+        self.assertEqual(self.nudges(), [("morning", "group"), ("midday", "skipped")])
+
+    def test_skipped_slots_are_not_in_precision(self):
+        self._day_with(("on it", 8, 45))
+        p = wa_chase.precision(self.db[wa_chase.COLLECTION].rows)
+        self.assertEqual(p["unreviewed"], 3)
+        self.assertNotIn("midday", p["by_slot"])
 
     def test_the_owner_in_another_group_does_not_stop_it(self):
         _item(self.db)

@@ -28,9 +28,18 @@ slot's time is first chased at the next slot. A slot outside the project's
 alert hours is not sent; one that comes due later the same day, inside them,
 is.
 
-STOP, immediately: any change to the item after its first nudge (done,
-rescheduled, cancelled, possibly done, a part done, a flag), or any message
-from the owner in that group since the last nudge.
+STOP, for the day: any change to the item after its first nudge (done,
+rescheduled, cancelled, possibly done, a part done, a flag, a handover).
+
+SKIP ONE SLOT -- the next one only; later slots still run unless the item
+changes -- when, since the last nudge (or the last skip), the owner:
+  * replies to the nudge or to the item's own message (WhatsApp reply);
+  * writes about it: a subject word of the item ("risers by 2");
+  * acknowledges, within 15 minutes of a nudge, in a short message ("on it",
+    "working on it", "later", "dale", "ya voy", "yo", "shpeter").
+Anything else the owner says in the group (other work, other chatter) has
+no effect: they may well have forgotten. The skipped slot is recorded with
+which rule applied ("skipped midday: replied 'working on it' 9:05").
 
 HOW: in the item's own group, @mentioning the owner, quoting the original
 message (after a handover, the message of who took it on). At most one nudge per owner per group per slot: their items due
@@ -47,6 +56,9 @@ import os
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
+
+from lib import multilang as ml
+from lib import wa_attention_state as was
 
 try:
     from zoneinfo import ZoneInfo
@@ -184,25 +196,105 @@ def said_at(item: Dict[str, Any]) -> Optional[datetime]:
     return _at((item.get("evidence") or {}).get("sent_at"))
 
 
-def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]],
-                owner_spoke_at: Optional[datetime]) -> Optional[str]:
-    """Why chasing this item stopped today, or None.
+def stop_reason(item: Dict[str, Any], nudges: List[Dict[str, Any]]) -> Optional[str]:
+    """Why chasing this item stopped for the day (rule 1), or None: any
+    change to the item after its first nudge today.
 
-    `nudges`: today's earlier would-chase rows for this item, any order.
-    `owner_spoke_at`: the owner's latest message in the group, if any."""
+    `nudges`: today's earlier group nudges for this item, any order."""
     times = sorted(t for t in (_at(n.get("at")) for n in nudges) if t)
     if not times:
         return None
-    first, last = times[0], times[-1]
+    first = times[0]
     for e in item.get("history") or []:
         if not isinstance(e, dict) or e.get("kind") in (None, "created"):
             continue
         at = _at(e.get("at"))
         if at and at > first:
             return f"state_change:{e.get('kind')}"
-    if owner_spoke_at and owner_spoke_at > last:
-        return "owner_replied"
     return None
+
+
+# ── THE OWNER'S ANSWER (rule 2) ──────────────────────────────────────────────
+
+#: An ack counts only this soon after a nudge.
+ACK_MINUTES = 15
+SKIPPED = "skipped"
+# "On it", "working on it", "later" (and the Spanish / Yiddish for them):
+# a short message that is only that. Plain yeses ("ok", "dale", "yo") are
+# wa_attention_state.ack's.
+_CHASE_ACK = re.compile(
+    r"^\W*(?:(?:i'?m |im |i am )?(?:on it|working on it|on my way|omw|getting to it|will do"
+    r"|later|in a bit|soon|shortly|asap|in progress)"
+    r"|ya voy|voy|en eso|estoy en eso|trabajando en (?:eso|ello)|ahorita|al rato|mas tarde|luego"
+    r"|en camino|ahi voy"
+    r"|shpeter|bald|ikh arbet (?:oyf|af) dem|ikh bin (?:oyf|af) dem|bin dran|shoyn bald"
+    r"|שפעטער|באלד)"
+    r"(?:[\s,.!]+(?:boss|bro|jefe|man|thanks|thx|gracias|today|hoy|haynt))*\W*$")
+
+
+def _ack_said(body: str) -> bool:
+    text = str(body or "").strip()
+    if not text or len(text) > 40 or "?" in text:
+        return False
+    return bool(was.ack(text) or _CHASE_ACK.match(ml.fold(text)))
+
+
+def item_message_ids(item: Dict[str, Any]) -> set:
+    """The ids a reply about the item quotes: its own message, and after a
+    handover the message of who took it on."""
+    ids = {was.short_id((item.get("evidence") or {}).get("message_id")),
+           was.short_id((item.get("chase_quote") or {}).get("message_id"))}
+    ids.discard("")
+    return ids
+
+
+def owner_response(item: Dict[str, Any], msg: Dict[str, Any],
+                   nudges: List[Dict[str, Any]],
+                   after: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """What one message of the owner's says about the item, by rule 2:
+    {rule: reply|subject|ack, said, at, word?}; None for anything else (it
+    has no effect on the chase -- rule 3).
+
+    `msg`: {body, quoted_message_id, at}. `nudges`: today's group nudges
+    for the item (a sent one may carry its WhatsApp `message_id`). `after`:
+    the last nudge or skip -- a message SENT before it (a webhook that came
+    in late) answers nothing since."""
+    body = str(msg.get("body") or "").strip()
+    at = _at(msg.get("at"))
+    if not body or not at:
+        return None
+    if after is not None and _at(after) and at <= _at(after):
+        return None
+    said = " ".join(body.split())[:60]
+    quoted = was.short_id(msg.get("quoted_message_id"))
+    if quoted:
+        nudge_ids = {was.short_id(n.get("message_id")) for n in nudges} - {""}
+        if quoted in item_message_ids(item) or quoted in nudge_ids:
+            return {"rule": "reply", "said": said, "at": at}
+    words = was.subject_terms(was.topic_terms(body))
+    hit = sorted(words & was.subject_terms(item.get("topic") or ()))
+    if hit:
+        return {"rule": "subject", "said": said, "at": at, "word": hit[0]}
+    if _ack_said(body):
+        for n in nudges:
+            t = _at(n.get("at"))
+            if t and t <= at <= t + timedelta(minutes=ACK_MINUTES):
+                return {"rule": "ack", "said": said, "at": at}
+    return None
+
+
+_RULE_WORDS = {"reply": "replied", "subject": "wrote about it", "ack": "acknowledged"}
+
+
+def skip_text(slot: str, resp: Dict[str, Any]) -> str:
+    """The Why line of a skipped slot: "Skipped midday: replied 'working on
+    it' 9:05" / "Skipped end of day: wrote about it ('risers') 'risers by
+    2' 1:40"."""
+    what = _RULE_WORDS.get(resp.get("rule"), "answered")
+    if resp.get("rule") == "subject" and resp.get("word"):
+        what += f" ('{resp['word']}')"
+    return (f"Skipped {SLOT_LABELS.get(slot, slot)}: {what} '{resp.get('said') or ''}' "
+            f"{hhmm(resp.get('at'))}. Later slots still run.")
 
 
 def quoted(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,8 +363,23 @@ def _join(parts: List[str]) -> str:
 
 
 def reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime],
-           day: date) -> str:
-    """Why it fired, for the reviewer."""
+           day: date, chatter_at: Optional[datetime] = None,
+           skipped: Optional[str] = None) -> str:
+    """Why it fired, for the reviewer. `chatter_at`: the owner wrote since
+    the last nudge, about something else (rule 3: no effect). `skipped`: the
+    slot skipped since the last nudge (rule 2), now chased again."""
+    base = _reason(slot, items, last_nudge, day)
+    notes = []
+    if skipped:
+        notes.append(f"{SLOT_LABELS.get(skipped, skipped)} was skipped after their answer; "
+                     "this slot runs")
+    if chatter_at:
+        notes.append(f"owner wrote at {hhmm(chatter_at)}, not about this item: still chased")
+    return base + ("" if not notes else " " + "; ".join(n[0].upper() + n[1:] for n in notes) + ".")
+
+
+def _reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime],
+            day: date) -> str:
     dues = sorted({str((it.get("due") or {}).get("due_text") or "") for it in items} - {""})
     # The day itself, then the words that set it: "due today (Sat Oct 10 ·
     # said 'tomorrow')" -- "due today (tomorrow)" read as a contradiction.
@@ -284,7 +391,7 @@ def reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime
         return (f"Still no update after the end of day nudge; {due}. "
                 "Owner confirmed.")
     if last_nudge:
-        return f"{Due}; no update and no message from the owner since the {hhmm(last_nudge)} nudge."
+        return f"{Due}; no update and no answer from the owner about it since the {hhmm(last_nudge)} nudge."
     said = [hhmm(said_at(it)) for it in items if said_at(it)]
     since = f" since it was said at {said[0]}" if len(said) == 1 else ""
     return f"{Due}; owner confirmed; no update{since}."
@@ -303,8 +410,8 @@ def precision(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         return {"correct": 0, "wrong": 0, "unreviewed": 0}
     total, by_slot = blank(), {}
     for r in rows:
-        if r.get("slot") == NOT_CHASED:
-            continue                    # a listing, not a nudge
+        if r.get("slot") == NOT_CHASED or r.get("kind") == SKIPPED:
+            continue                    # a listing / a slot not sent, not a nudge
         v = (r.get("review") or {}).get("verdict")
         k = v if v in VERDICTS else "unreviewed"
         total[k] += 1

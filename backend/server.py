@@ -48118,23 +48118,51 @@ async def _serialized_message_id(group_id: str, message_id: Any) -> Optional[str
     return (row or {}).get("message_id_serialized") or None
 
 
-async def _chase_owner_spoke_at(group_id: str, item: dict,
-                                after: datetime) -> Optional[datetime]:
-    """The owner's latest message in the group after `after`, if any."""
+async def _chase_owner_messages(group_id: str, item: dict, after: datetime,
+                                until: datetime) -> List[dict]:
+    """The owner's messages in the group after `after` (up to `until`),
+    oldest first: {body, quoted_message_id, at}."""
     ids = {wa_chase.digits((item.get("owner") or {}).get("jid"))}
     if item.get("type") == "commitment" and (item.get("owner") or {}).get("source") != "handover":
         # Who said it -- unless it was handed over: then only who took it on.
         ids.add(str((item.get("evidence") or {}).get("sender") or ""))
     ids.discard("")
     if not ids:
-        return None
+        return []
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": group_id, "sender": {"$in": sorted(ids)},
-             "created_at": {"$gt": after}}).sort([("created_at", -1)]).to_list(1)
+             "created_at": {"$gt": after, "$lte": until}}).sort(
+            [("created_at", 1)]).to_list(200)
     except Exception:
-        return None
-    return _attention_sent_at(rows[0]) if rows else None
+        return []
+    return [{"body": wa_attention_state.text_of(r) or "",
+             "quoted_message_id": r.get("quoted_message_id") or "",
+             "at": _attention_sent_at(r)} for r in rows]
+
+
+async def _chase_skip(item: dict, slot: str, day, now: datetime, resp: dict) -> None:
+    """Rule 2: this item's slot is skipped (one slot only), and the Would
+    chase list says why ("Skipped midday: replied 'working on it' 9:05")."""
+    iid = str(item.get("_id"))
+    gid, pid = str(item.get("group_id")), str(item.get("project_id"))
+    owner = item.get("owner") or {}
+    rid = f"{wa_chase.row_id(day, gid, wa_chase.owner_key(item), slot)}|skip:{iid}"
+    g = await db.whatsapp_groups.find_one(
+        {"wa_group_id": gid, "project_id": pid}, {"group_name": 1}) or {}
+    await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": {
+        "_id": rid, "day": day.isoformat(), "slot": slot, "at": now,
+        "company_id": str(item.get("company_id")), "project_id": pid, "group_id": gid,
+        "group_name": g.get("group_name") or "", "owner_key": wa_chase.owner_key(item),
+        "owner_name": owner.get("name") or "", "owner_kind": owner.get("kind"),
+        "kind": wa_chase.SKIPPED, "item_ids": [iid],
+        "items": [{"id": iid, "type": item.get("type"), "summary": item.get("summary") or "",
+                   "quote": wa_chase.quote(item),
+                   "due_text": (item.get("due") or {}).get("due_text"),
+                   "message_id": wa_chase.quoted(item).get("message_id")}],
+        "skip": {"rule": resp["rule"], "said": resp["said"], "at": resp["at"]},
+        "text": "", "reason": wa_chase.skip_text(slot, resp),
+        "review": None, "created_at": now, "shadow": True}}, upsert=True)
 
 
 async def _chase_admins(company_id: str) -> List[dict]:
@@ -48279,17 +48307,41 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         if any(n.get("slot") == slot for n in nudges):
             report["already"] += 1
             continue
-        group_nudges = [n for n in nudges if n.get("slot") in wa_chase.GROUP_SLOTS]
+        group_nudges = [n for n in nudges if n.get("slot") in wa_chase.GROUP_SLOTS
+                        and n.get("kind") != wa_chase.SKIPPED]
+        skips = [n for n in nudges if n.get("kind") == wa_chase.SKIPPED]
         last = max((n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)),
                    default=None)
-        spoke = await _chase_owner_spoke_at(gid, it, last) if last else None
-        stop = wa_chase.stop_reason(it, group_nudges, spoke)
-        if stop:
+        # Rule 1: the item changed after its first nudge: done for the day.
+        if wa_chase.stop_reason(it, group_nudges):
             report["stopped"] += 1
             continue
         if slot == wa_chase.ADMIN and not any(
                 n.get("slot") == wa_chase.EOD for n in group_nudges):
             continue                            # only after the end of day nudge
+        chatter = None
+        skipped_slot = None
+        if last:
+            # Rule 2: the owner answered about it since the last nudge or
+            # the last skip: this slot (only) is skipped. Rule 3: anything
+            # else they said has no effect.
+            last_skip = max((n for n in skips if isinstance(n.get("at"), datetime)
+                             and n["at"] > last), key=lambda n: n["at"], default=None)
+            since = last_skip["at"] if last_skip else last
+            skipped_slot = last_skip.get("slot") if last_skip else None
+            resp = None
+            for m in await _chase_owner_messages(gid, it, since, now):
+                resp = wa_chase.owner_response(it, m, group_nudges, after=since)
+                if resp:
+                    break
+                chatter = m["at"]
+            if resp:
+                try:
+                    await _chase_skip(it, slot, day, now, resp)
+                except Exception as e:
+                    logger.warning(f"[chase] skip row failed: {type(e).__name__}")
+                report["skipped_slot"] = report.get("skipped_slot", 0) + 1
+                continue
         key = (pid, gid, wa_chase.owner_key(it))
         b = batches.setdefault(key, {"items": [], "nudged": {}, "last": None,
                                      "company_id": str(it.get("company_id"))})
@@ -48299,6 +48351,10 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                             if isinstance(n.get("at"), datetime)})
         if last and (b["last"] is None or last > b["last"]):
             b["last"] = last
+        if chatter and (b.get("chatter") is None or chatter > b["chatter"]):
+            b["chatter"] = chatter
+        if skipped_slot:
+            b["skipped"] = skipped_slot
     # Real @mentions: every new group nudge's owner, per company, resolved
     # together (one WaAPI get-lid call per 50 unresolved @lids).
     targets: Dict[tuple, dict] = {}
@@ -48342,7 +48398,9 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            "due_text": (i.get("due") or {}).get("due_text"),
                            "message_id": wa_chase.quoted(i).get("message_id")}
                           for i in b["items"]],
-                "reason": wa_chase.reason(slot, b["items"], b["last"], day),
+                "reason": wa_chase.reason(slot, b["items"], b["last"], day,
+                                          chatter_at=b.get("chatter"),
+                                          skipped=b.get("skipped")),
                 "review": None, "created_at": now, "shadow": True,
             }
             if slot == wa_chase.ADMIN:
@@ -64898,6 +64956,7 @@ def _chase_view(r: dict) -> dict:
         "text": r.get("text") or "",
         "reason": r.get("reason") or "",
         "not_chased": r.get("not_chased") or None,
+        "skipped": r.get("kind") == wa_chase.SKIPPED,
         # A group nudge whose @mention would not notify (no number for the
         # owner). Rows from before mentions carry no flag: nothing is said.
         "mention_note": (wa_mention.NO_NUMBER_NOTE
@@ -64917,7 +64976,7 @@ async def get_project_chase(project_id: str, current_user=Depends(get_current_us
     q = {"project_id": str(project_id), "company_id": str(company_id)}
     rows = await db[wa_chase.COLLECTION].find(q).sort([("at", -1)]).to_list(200)
     stats = await db[wa_chase.COLLECTION].find(
-        q, {"slot": 1, "review.verdict": 1}).to_list(10000)
+        q, {"slot": 1, "kind": 1, "review.verdict": 1}).to_list(10000)
     return {"entries": [_chase_view(r) for r in rows],
             "precision": wa_chase.precision(stats), "total": len(stats),
             "shadow_mode": True, "disabled": wa_chase.disabled()}

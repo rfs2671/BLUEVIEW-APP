@@ -48,7 +48,7 @@ export function clock(iso) {
 /** "Morning · 8:35 AM · Main St Project" / "DM to admin · 5:35 PM · to Ana". */
 export function headLine(e) {
   if (!e) return '';
-  const parts = [SLOT_LABELS[e.slot] || 'Nudge'];
+  const parts = [(SLOT_LABELS[e.slot] || 'Nudge') + (e.skipped ? ' (skipped)' : '')];
   const t = clock(e.at);
   if (e.day) parts.push(t ? `${e.day} ${t}` : e.day);
   else if (t) parts.push(t);
@@ -72,7 +72,14 @@ export function ownerLine(e) {
 export function bodyText(e) {
   if (!e) return '';
   if (e.not_chased) return `Not chased: ${e.not_chased}`;
+  if (e.skipped) return 'Not sent: the owner answered about this since the last nudge.';
   return e.text || '';
+}
+
+/** A slot skipped because the owner answered (the Why line says how) is
+ *  not a nudge: nothing to mark Correct / Wrong. */
+export function reviewable(e) {
+  return !!e && !e.skipped;
 }
 
 /** "@Mike won't notify (no number)": a group nudge whose @mention would not

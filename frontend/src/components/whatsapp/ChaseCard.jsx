@@ -17,7 +17,7 @@ import { whatsappAPI } from '../../utils/api';
 import { spacing } from '../../styles/theme';
 import {
   CHASE_TITLE, CHASE_NOTE, CHASE_OFF_NOTE, CHASE_VERDICTS, headLine, ownerLine,
-  reasonLine, bodyText, precisionLines, emptyText, mentionLine,
+  reasonLine, bodyText, precisionLines, emptyText, mentionLine, reviewable,
 } from '../../utils/whatsappChase';
 
 export default function ChaseCard({ projectId }) {
@@ -83,7 +83,7 @@ export default function ChaseCard({ projectId }) {
                 </View>
                 {mentionLine(e) ? <Text style={s.muted}>{mentionLine(e)}</Text> : null}
                 {reasonLine(e) ? <Text style={s.muted}>{reasonLine(e)}</Text> : null}
-                <View style={s.buttons}>
+                {reviewable(e) ? <View style={s.buttons}>
                   {busy === e.id ? <ActivityIndicator size="small" color={colors.text.muted} />
                     : CHASE_VERDICTS.map((v) => (
                       <Pressable
@@ -97,7 +97,7 @@ export default function ChaseCard({ projectId }) {
                         <Text style={s.buttonText}>{v.label}</Text>
                       </Pressable>
                     ))}
-                </View>
+                </View> : null}
               </View>
             ))}
           </>

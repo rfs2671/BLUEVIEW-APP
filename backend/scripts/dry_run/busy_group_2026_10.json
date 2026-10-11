@@ -1,6 +1,6 @@
 {
  "name": "busy group: 15 people, Wed 2026-10-14 (chased Thu/Fri)",
- "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Everyone with a confirmed, dated item is chased the same way, in the group: on Thursday Dave (a sub) on his RTU startup report, Kevin (a company user, PM) on the door schedule and Gina (mapped \"GC team\") on the logistics plan, each with the 4pm escalation to Roy (the admin). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items.",
+ "about": "Crosstalk, wrong-thread 'ok's, sarcasm, two Mikes, two Quality Plumbing subs. Thursday: Patricia is out and Jose takes her risers on for Friday (a handover); Roy closes Mike Rivera's panel confirm ('Mike already did'). Everyone with a confirmed, dated item is chased the same way, in the group: on Thursday Dave (a sub) on his RTU startup report, Kevin (a company user, PM) on the door schedule and Gina (mapped \"GC team\") on the logistics plan, each with the 4pm escalation to Roy (the admin). Friday chases Jose (risers, Patricia's commitment, now his) and Mike Rivera (lighting cut sheets). Not chased: anything only possibly someone's, unmapped senders, requests answered by a commitment (the commitment is chased), done or moved items. On the chase days the owners talk (Oct 11 stop rules): Kevin's 'on it' 5 minutes after his nudge and Gina's 'Logistics plan almost ready' skip their midday slot only; Dave's and Mike's unrelated messages change nothing; Jose's 'Risers submittal sent' closes his item and stops the day.",
  "tz": "America/New_York",
  "project": {
   "name": "8 Walworth St",
@@ -493,6 +493,53 @@
     "due_text": "Thursday"
    },
    "why": "The sub-owned variant of line 31: a 'possibly' owner is never chased, so this would silently drop Dave's chase. Own subject, owner confirmed, chased on its due day (Thursday)."
+  },
+  {
+   "from": "K",
+   "at": "2026-10-15 08:40:00",
+   "text": "on it",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Chase rule 2: a short ack within 15 minutes of the 8:35 nudge on his door schedule. Skips midday only; end of day and the 4pm escalation still run."
+  },
+  {
+   "from": "D",
+   "at": "2026-10-15 09:10:00",
+   "text": "Crane guy just showed up, opening the gate",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Chase rule 3: Dave talking about something else after his 8:35 nudge. No effect: the RTU startup report is chased at every slot."
+  },
+  {
+   "from": "G",
+   "at": "2026-10-15 11:00:00",
+   "text": "Logistics plan almost ready, after lunch",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Chase rule 2: Gina writes about her item (its subject words: logistics plan). Skips midday only."
+  },
+  {
+   "from": "J",
+   "at": "2026-10-16 10:00:00",
+   "text": "Risers submittal sent, check your email",
+   "expect": {
+    "kind": "state",
+    "of": 3,
+    "to": "done"
+   },
+   "why": "Chase rule 1: done after the morning nudge stops every later slot."
+  },
+  {
+   "from": "M",
+   "at": "2026-10-16 12:45:00",
+   "text": "Anyone seen the boom lift keys?",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Chase rule 3: Mike asks about something else after his midday nudge: still chased at end of day and escalated."
   }
  ],
  "chase": {
@@ -511,30 +558,6 @@
    },
    {
     "day": "2026-10-16",
-    "slot": "midday",
-    "owner": "J",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-16",
-    "slot": "eod",
-    "owner": "J",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-16",
-    "slot": "admin_dm",
-    "owner": "J",
-    "items": [
-     3
-    ]
-   },
-   {
-    "day": "2026-10-16",
     "slot": "morning",
     "owner": "M",
     "items": [
@@ -611,7 +634,8 @@
     "owner": "K",
     "items": [
      16
-    ]
+    ],
+    "skipped": true
    },
    {
     "day": "2026-10-15",
@@ -643,7 +667,8 @@
     "owner": "G",
     "items": [
      31
-    ]
+    ],
+    "skipped": true
    },
    {
     "day": "2026-10-15",
