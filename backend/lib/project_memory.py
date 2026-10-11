@@ -576,6 +576,104 @@ def lead_line(question: str, claims: Sequence[Dict[str, Any]], timeline: bool = 
     return no_record_line(question)
 
 
+# ── NOTHING ANSWERS IT, BUT IT WAS MENTIONED ─────────────────────────────────
+# "what did we decide about the core drill?" when the group only holds the
+# question about it (588, Oct 11): the model finds no claim, and a bare
+# NO_SOURCE reads as "never discussed". Say what IS there, quoted.
+
+# Words of the ASK, not of the subject: "decide" is in the question, never
+# what a message about the core drill has to share with it.
+_ASK_WORDS = set("""
+decide decided decision decisions agree agreed agreement settle settled choose
+chose chosen pick picked plan planned say said tell told know latest update
+updates status think thought go going get got end ended final finally made make
+""".split())
+_DECISION_Q = re.compile(r"\b(decid|decision|agree|settled?\b|chose|choose|pick(ed)?\b|final\b)",
+                         re.IGNORECASE)
+_ASKING = re.compile(r"^(who|what|when|where|why|how|which|is|are|was|were|do|does|did|"
+                     r"can|could|should|will|would|has|have|any(one|body)?)\b", re.IGNORECASE)
+
+
+def subject_terms(question: str) -> List[str]:
+    """The question's subject words: its search words less the ask words."""
+    return [t for t in terms(question) if t not in _ASK_WORDS]
+
+
+def _same_word(a: str, b: str) -> bool:
+    """"drill" ~ "drilling", "core" ~ "cores"; 4+ letters for a prefix."""
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 4 and long_.startswith(short)
+
+
+def on_topic(question: str, text: str) -> bool:
+    """Does `text` name the question's subject? Every subject word for a
+    one- or two-word subject ("core drill"), else most of them."""
+    subj = list(dict.fromkeys(subject_terms(question)))
+    if not subj:
+        return False
+    have = terms(text)
+    hits = sum(1 for s in subj if any(_same_word(s, w) for w in have))
+    need = len(subj) if len(subj) <= 2 else max(2, math.ceil(len(subj) / 2))
+    return hits >= need
+
+
+def _mention_quote(question: str, text: str) -> str:
+    """The sentence of `text` that names the subject, at most QUOTE_MAX
+    (a verbatim cut, never reworded)."""
+    # Lines first, then sentences, each cleaned: clean() folds newlines away.
+    parts = [clean(p) for line in str(text or "").splitlines()
+             for p in re.split(r"(?<=[.!?])\s+", line) if clean(p)]
+    pick = next((p for p in parts if on_topic(question, p)), clean(text))
+    if len(pick) > QUOTE_MAX:
+        pick = pick[:QUOTE_MAX - 1].rsplit(" ", 1)[0] + "…"
+    return pick
+
+
+def is_asking(quote: str) -> bool:
+    q = clean(quote)
+    return q.rstrip("…").rstrip().endswith("?") or bool(_ASKING.match(q))
+
+
+def mention_when(at: Any) -> str:
+    """"Sat 3:12 PM" (the caller passes a New York datetime)."""
+    if not isinstance(at, datetime):
+        return ""
+    h = at.strftime("%I").lstrip("0") or "12"
+    return f"{at.strftime('%a')} {h}:{at.strftime('%M %p')}"
+
+
+def last_mention_line(question: str, sources: Sequence[Dict[str, Any]]) -> str:
+    """When no claim survived but a source names the subject: "No decision
+    found. Last mention: Meilich asked 'Who is doing the core drill?' (Sat
+    3:12 PM)." from the newest such source. "" when none names it (then
+    NO_SOURCE stands). A source's `ny` is its New York time."""
+    hits = [s for s in sources
+            if s.get("source") in (SOURCE_WHATSAPP, SOURCE_DAILY)
+            and on_topic(question, s.get("text") or "")]
+    if not hits:
+        return ""
+
+    def key(s):
+        at = s.get("ny") or s.get("at")
+        return at.replace(tzinfo=None) if isinstance(at, datetime) else datetime.min
+
+    src = max(hits, key=key)
+    quote = _mention_quote(question, src.get("text") or "")
+    if src.get("source") == SOURCE_DAILY:
+        who, verb = "the daily report", "noted"
+        stamp = src.get("day_label") or ""
+    else:
+        who = src.get("who") or "someone"
+        verb = "asked" if is_asking(quote) else "said"
+        stamp = mention_when(src.get("ny")) or src.get("when") or ""
+    lead = ("No decision found." if _DECISION_Q.search(question or "")
+            else "No answer found.")
+    return (f"{lead} Last mention: {who} {verb} '{quote}'"
+            + (f" ({stamp})" if stamp else "") + ".")
+
+
 # ── WHAT THE PERSON READS ────────────────────────────────────────────────────
 
 def when(at: Any) -> str:

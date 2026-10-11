@@ -50444,6 +50444,12 @@ MEMORY_GC_PER_RUN = 500
 MEMORY_FALLBACK_ROWS = 3000
 MEMORY_EMBED_PAUSE = 0.5
 MEMORY_ATLAS_RETRY_SECONDS = 600
+# A message row is stamped `created_at` when its webhook starts, but stored
+# only after the work before it (a voice note's Whisper call: seconds). A
+# tick in between moves the cursor past it. Each tick looks this far back
+# behind the cursor for rows that are not indexed yet.
+MEMORY_LATE_SECONDS = 15 * 60
+MEMORY_LATE_PAGES = 20
 # Atlas Search: None not tried yet, True working, False not available (tried
 # again after MEMORY_ATLAS_RETRY_SECONDS: an index may still be building).
 _MEMORY_ATLAS: Dict[str, Any] = {"ok": None, "retry_at": None}
@@ -50592,10 +50598,45 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
                     {"created_at": state["wa_at"], "_id": {"$gt": state.get("wa_id")}}]
     rows = await db.whatsapp_messages.find(q).sort([("created_at", 1), ("_id", 1)]).limit(
         MEMORY_SCAN_PER_RUN).to_list(None)
+    if isinstance(state.get("wa_at"), datetime):
+        # 1b. Stored late, behind the cursor: rows of the last
+        #     MEMORY_LATE_SECONDS before it that have no memory row.
+        # The whole window, a page at a time (a busy 15 minutes can hold more
+        # than one page; a late row past the first must not be missed).
+        late: List[dict] = []
+        seen = {r["_id"] for r in rows}
+        after: Optional[Tuple[Any, Any]] = None
+        for _page in range(MEMORY_LATE_PAGES):
+            wq: Dict[str, Any] = {
+                "project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
+                "sender": {"$ne": "bot"},
+                "created_at": {"$gte": state["wa_at"] - timedelta(seconds=MEMORY_LATE_SECONDS),
+                               "$lte": state["wa_at"]}}
+            if after:
+                wq["$or"] = [{"created_at": {"$gt": after[0]}},
+                             {"created_at": after[0], "_id": {"$gt": after[1]}}]
+            near = await db.whatsapp_messages.find(wq).sort(
+                [("created_at", 1), ("_id", 1)]).limit(MEMORY_SCAN_PER_RUN).to_list(None)
+            if not near:
+                break
+            have = {d["_id"] for d in await db.project_memory.find(
+                {"_id": {"$in": [f"wa:{r['_id']}" for r in near]}}, {"_id": 1}).to_list(None)}
+            late += [r for r in near if f"wa:{r['_id']}" not in have and r["_id"] not in seen
+                     and str(r.get("company_id") or "") not in test_cos
+                     and project_memory.indexable_message(r)]
+            if len(near) < MEMORY_SCAN_PER_RUN:
+                break
+            after = (near[-1].get("created_at"), near[-1]["_id"])
+        if late:
+            report["late"] = len(late)
+        # First, so the cursor still ends on the newest row read below.
+        rows = late + rows
     names: Dict[str, str] = {}
     wa_at, wa_id = state.get("wa_at"), state.get("wa_id")
     for r in rows:
-        if isinstance(r.get("created_at"), datetime):
+        if isinstance(r.get("created_at"), datetime) and (
+                not isinstance(wa_at, datetime)
+                or _memory_when_key({"at": r["created_at"]}) >= _memory_when_key({"at": wa_at})):
             wa_at, wa_id = r["created_at"], r["_id"]
         if str(r.get("company_id") or "") in test_cos:
             report["skipped_test"] += 1
@@ -50680,7 +50721,8 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
         {"$set": {"wa_at": wa_at, "wa_id": wa_id, "dr_at": dr_at, "dr_id": dr_id,
                   "gc_after": gc_after, "ran_at": now}},
         upsert=True)
-    if any(report[k] for k in ("messages", "reports", "embedded", "removed", "embed_failed")):
+    if any(report.get(k) for k in ("messages", "reports", "embedded", "removed", "embed_failed",
+                                   "late")):
         logger.info(f"[memory] index {report}")
     return report
 
@@ -51008,7 +51050,7 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
         ny = _memory_ny(r.get("at"))
         src = {"sid": f"S{i}", "id": r["_id"], "source": r.get("source"),
                "text": r.get("text") or "", "group": r.get("group_name") or "",
-               "at": r.get("at"), "when": project_memory.when(ny) if ny else "",
+               "at": r.get("at"), "ny": ny, "when": project_memory.when(ny) if ny else "",
                "day_label": f"{ny.strftime('%b')} {ny.day}" if ny else (r.get("day") or ""),
                "label": r.get("label") or "", "who": "",
                "group_id": r.get("group_id"), "source_id": r.get("source_id"),
@@ -51096,18 +51138,21 @@ async def _memory_answer(company_id: str, project_id: str, query: str,
         for c in claims:
             c["date"] = c.get("date") or by_sid[c["sid"]]["day_label"]
     lead = project_memory.lead_line(query, claims, timeline)
+    mention = "" if claims else project_memory.last_mention_line(query, sources)
     texts = {}
     for view in ("none", "last4", "full"):
         phones = ({sid: wa_mention.shown(s.get("phone"), view == "full")
                    for sid, s in by_sid.items() if s.get("phone")} if view != "none" else {})
-        texts[view] = project_memory.format_answer(claims, by_sid, timeline, lead=lead,
-                                                   phones=phones)
+        # No claim, but the subject was mentioned: say so, with the words,
+        # never a bare NO_SOURCE over on-topic records.
+        texts[view] = mention or project_memory.format_answer(
+            claims, by_sid, timeline, lead=lead, phones=phones)
     result.update(text=texts.get(phone_view, texts["none"]), texts=texts,
-                  lead=lead, claims=claims, dropped=tally.get("dropped", 0),
+                  lead=lead, mention=mention, claims=claims, dropped=tally.get("dropped", 0),
                   merged=tally.get("merged", 0), made_faithful=tally.get("made_faithful", 0))
     logger.info(f"[memory] answer mode={mode} sources={len(sources)} "
                 f"claims={len(claims)} dropped={result['dropped']} merged={result['merged']} "
-                f"made_faithful={result['made_faithful']}")
+                f"made_faithful={result['made_faithful']} last_mention={bool(mention)}")
     return result
 
 
