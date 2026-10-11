@@ -318,9 +318,14 @@ class TheStoredRowIsReflagged(unittest.TestCase):
             {"_id": "e3", "status": "open", "source_ref": "x", "history": []}])
         from scripts import voice_reflag
         with _Ctx(db):
-            voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11"])
+            # The database is handed in: never a client of its own.
+            voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11"], db=db)
             self.assertNotIn("skipped", db.whatsapp_messages.rows[0])        # dry run
-            voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11", "--apply"])
+            with self.assertRaises(SystemExit):                    # the old flag: refused
+                voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11", "--apply"], db=db)
+            self.assertNotIn("skipped", db.whatsapp_messages.rows[0])
+            voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11", "--i-know",
+                               "--reason", "Oct 11 2:57 PM note", "--session", "s1"], db=db)
         r = db.whatsapp_messages.rows[0]
         self.assertEqual(r["skipped"], "voice_unreliable")
         self.assertEqual(r["voice"]["unreliable"],
@@ -337,6 +342,11 @@ class TheStoredRowIsReflagged(unittest.TestCase):
         self.assertTrue(ev["e2"]["needs_review"])
         self.assertEqual(ev["e3"]["status"], "open")
         self.assertNotIn("needs_review", ev["e3"])
+        # Every write audited, attributed.
+        audits = db.audit_logs.rows
+        self.assertTrue(audits)
+        self.assertTrue(all("voice_reflag" in str(r) and "Oct 11 2:57 PM note" in str(r)
+                            for r in audits))
 
 
 if __name__ == "__main__":

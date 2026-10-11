@@ -1,8 +1,10 @@
 """Re-check stored voice notes with the hallucination rules (Oct 11). DRY RUN
-unless --apply.
+unless --i-know (with --reason and --session: every write leaves an audit
+row, scripts/prod_guard.py).
 
     railway run python scripts/voice_reflag.py --project 588 --since 2026-10-11
-    railway run python scripts/voice_reflag.py --project 588 --since 2026-10-11 --apply
+    railway run python scripts/voice_reflag.py --project 588 --since 2026-10-11 \
+        --i-know --reason "reflag Oct 11 voice notes" --session <id>
 
 588, Sun Oct 11 2:57 PM: a forwarded Yiddish blessing was stored as "People
 speaking in their native language." and the DM assistant quoted it. Notes
@@ -11,7 +13,7 @@ checked. For each transcribed voice row of the project since --since:
   - the words (meta_transcript), and Whisper's scores where the note kept
     them (voice.quality, or the ledger's telemetry), say whether it is what
     was said;
-  - with --apply, a note that is not: voice.unreliable + review, skipped
+  - with --i-know, a note that is not: voice.unreliable + review, skipped
     "voice_unreliable" (no extraction), its project_memory doc removed (it is
     re-indexed only as Whisper's English of the audio, when there is one);
     the Attention items it made or changed (a "done", a new date) marked
@@ -30,6 +32,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+from prod_guard import add_guard_args, audited, check_guard, refuse_legacy_flag  # noqa: E402
+
+NAME = "voice_reflag"
 
 
 def reasons_for(row: dict, event: dict) -> list:
@@ -39,10 +45,14 @@ def reasons_for(row: dict, event: dict) -> list:
     return wa_voice.unreliable_reasons(v.get("transcript") or row.get("body") or "", q)
 
 
-async def main_async(a) -> int:
-    import server
+async def main_async(a, db=None) -> int:
     from scripts.wa_provenance import _find_project, _safe
-    db = server.db
+    if db is None:
+        import server
+        db = server.db
+    a.apply = check_guard(a)
+    # Every write below leaves an audit row (actor script:voice_reflag).
+    db = audited(db, a, NAME)
     p = await _find_project(db, a.project)
     since = datetime.fromisoformat(a.since).replace(tzinfo=timezone.utc)
     rows = await db.whatsapp_messages.find(
@@ -99,17 +109,18 @@ async def main_async(a) -> int:
               f"{changed} change(s) it made marked for review, "
               f"{getattr(ev_made, 'modified_count', 0)} event(s) dismissed, "
               f"{getattr(ev_moved, 'modified_count', 0)} event(s) it moved flagged")
-    print(f"{flagged} flagged" + ("" if a.apply else " (nothing written; --apply to write)"))
+    print(f"{flagged} flagged" + ("" if a.apply else " (nothing written; --i-know to write)"))
     return 0
 
 
-def main(argv=None) -> int:
+def main(argv=None, db=None) -> int:
+    refuse_legacy_flag(argv)
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--project", required=True, help="project id, or part of its name/address")
     ap.add_argument("--since", required=True, help="YYYY-MM-DD (UTC)")
-    ap.add_argument("--apply", action="store_true", help="write the flags")
-    return asyncio.run(main_async(ap.parse_args(argv)))
+    add_guard_args(ap)
+    return asyncio.run(main_async(ap.parse_args(argv), db))
 
 
 if __name__ == "__main__":
