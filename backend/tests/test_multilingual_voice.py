@@ -379,6 +379,27 @@ class FollowUpsShareTheSubject(unittest.TestCase):
             self.assertFalse(st.asks_for_action(body), body)
 
 
+    def test_only_the_items_own_words_decide(self):
+        # Codex, #740: two items in one message; the need stated in the first
+        # does not turn the second (a plain question) into a request.
+        from tests.test_whatsapp_attention import T0, _Model, _first_sight, _items, _msg, _tick, _world
+        db = _world()
+        _first_sight(db)
+        body = "I need someone to check the hoist. Is the delivery here?"
+        _msg(db, body, at=T0 + timedelta(minutes=5))
+        model = _Model({"hoist": [
+            {"type": "question", "quote": "I need someone to check the hoist",
+             "summary": "Check the hoist", "owner_text": None, "due_text": None,
+             "importance": "normal", "tags": []},
+            {"type": "question", "quote": "Is the delivery here?",
+             "summary": "Is the delivery here", "owner_text": None, "due_text": None,
+             "importance": "normal", "tags": []}]})
+        _tick(db, model, T0 + timedelta(hours=1))
+        got = {it["evidence"]["quote"]: it["type"] for it in _items(db)}
+        self.assertEqual(got, {"I need someone to check the hoist": "request",
+                               "Is the delivery here?": "question"})
+
+
 class TheDryRuns(unittest.TestCase):
 
     def test_spanish_attention_scripted(self):

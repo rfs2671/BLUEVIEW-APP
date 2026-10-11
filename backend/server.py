@@ -47238,7 +47238,7 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                      "$set": {"updated_at": datetime.now(timezone.utc)}})
                 report["follow_ups"] += 1
                 continue
-            if wa_attention_state.asks_for_action(body):
+            if wa_attention_state.asks_for_action(quote):
                 # Not a follow-up on anything open: what it asks for, new.
                 it = dict(it, type="request")
         link = None
