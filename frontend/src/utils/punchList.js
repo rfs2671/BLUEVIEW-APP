@@ -48,6 +48,14 @@ export function whoLine(it) {
   return it.due ? `${who} · due ${it.due}` : who;
 }
 
+/** "Mike Rivera: mention won't notify (no number)" when the send could not
+ *  @mention the assignee for real. */
+export function mentionLine(it) {
+  if (!it || !it.mention_note) return null;
+  const a = it.assignee || {};
+  return `${a.name || 'Assignee'}: ${it.mention_note}`;
+}
+
 /** The words as written or said: 🎤 marks a voice note. */
 export function itemWords(it) {
   const w = it.text || '(no words)';

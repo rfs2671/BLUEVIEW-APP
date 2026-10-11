@@ -53,6 +53,23 @@ ok(JSON.stringify(P.assignRequest({ name: '  Carlos   Baez ', company: 'GC team'
 ok(P.savedText({ open_items_updated: 0 }) === 'Saved for every group of your company.', 'saved, no items');
 ok(P.savedText({ open_items_updated: 2 }) === 'Saved. 2 open items now name them.', 'saved, items');
 
+console.log('\nthe optional WhatsApp number (real @mentions)');
+ok(P.cleanPhone('(718) 555-0144') === '17185550144', 'a 10-digit US number gets the 1');
+ok(P.cleanPhone('+972 52 123 4567') === '972521234567', 'an international number kept');
+ok(P.cleanPhone('') === '' && P.cleanPhone('  ') === '', 'none is fine');
+ok(P.cleanPhone('12') === null, 'not a number');
+ok(P.assignRequest({ name: 'Chris', company: 'GC team', phone: '12' }, cos).error, 'a bad number refused');
+ok(P.assignRequest({ name: 'Chris', company: 'GC team', phone: '718 555 0144' }, cos).body.phone
+  === '17185550144', 'the number sent as digits');
+ok(!('phone' in P.assignRequest({ name: 'Chris', company: 'GC team', phone: '' }, cos).body),
+  'no number typed: none sent (the one on file is kept)');
+ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone_last4: '0144' } })
+  === 'Chris · GC team · WhatsApp …0144', 'a number on file shows as its last 4');
+ok(/@mention/.test(P.PHONE_NOTE) && /won’t notify/.test(P.PHONE_NOTE), 'says what the number is for');
+const card = read('src/components/whatsapp/PeopleCard.jsx');
+ok(/keyboardType="phone-pad"/.test(card) && /PHONE_NOTE/.test(card), 'the form asks for it');
+ok(/req\.body\.phone/.test(card), 'and sends it');
+
 console.log('\nwho sees it');
 ok(P.canManagePeople({ role: 'admin' }) && P.canManagePeople({ role: ' PM ' }), 'admin and PM');
 ok(!P.canManagePeople({ role: 'cp' }) && !P.canManagePeople({ role: 'owner' }), 'not CP, not retired owner');

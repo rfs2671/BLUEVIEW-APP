@@ -75,6 +75,7 @@ from lib import wa_dm  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import wa_voice  # noqa: E402
+from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
 from lib import wa_groups  # noqa: E402
 from lib import wa_attention  # noqa: E402
@@ -1000,6 +1001,8 @@ RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 WAAPI_BASE_URL = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
 WAAPI_INSTANCE_ID = os.environ.get("WAAPI_INSTANCE_ID", "")
 WAAPI_TOKEN = os.environ.get("WAAPI_TOKEN", "")
+# WaAPI's "get contact LID and phone" action (scripts/waapi_lid_probe.py).
+WAAPI_LID_ACTION = os.environ.get("WAAPI_LID_ACTION", "get-contact-lid-and-phone")
 WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -47383,6 +47386,118 @@ async def _whatsapp_attention_weekly_job() -> None:
 CHASE_TICK_MINUTES = 5
 
 
+# ── REAL @MENTIONS: WHO A GROUP POST NAMES -> THEIR NUMBER ──────────────────
+#
+# The rules are lib/wa_mention.py. Here: where a person's number comes from,
+# in this order -- a Levelog user's phone, the People mapping's phone, the
+# WhatsApp id itself when it is a phone (@c.us), else WaAPI's lid -> phone
+# lookup, cached per company (whatsapp_lid_phone) and asked again weekly.
+# A person with no number keeps the plain "@Name" and is logged
+# "[mention] unresolved": the post still names them, it just won't notify.
+
+async def _waapi_lid_phone(lid: str) -> Tuple[bool, Optional[str]]:
+    """(asked, phone) from WaAPI for one @lid. asked=False when WaAPI could
+    not be asked (no credentials, an error): nothing is cached then."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and lid):
+        return False, None
+    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{WAAPI_LID_ACTION}"
+    code, body, exc = await _waapi_post_raw(
+        url, {"contactId": lid},
+        {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+    if exc is not None or code is None or code >= 400:
+        logger.info(f"[mention] lid lookup failed: {type(exc).__name__ if exc else code}")
+        return False, None
+    return True, wa_mention.phone(wa_mention.phone_from_lookup(body))
+
+
+async def _lid_phone_cached(company_id: str, lid: str,
+                            now: Optional[datetime] = None) -> Optional[str]:
+    now = now or datetime.now(timezone.utc)
+    key = f"{company_id}|{lid}"
+    col = db[wa_mention.LOOKUP_COLLECTION]
+    try:
+        row = await col.find_one({"_id": key})
+    except Exception:
+        row = None
+    at = (row or {}).get("checked_at")
+    if isinstance(at, datetime) and at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if row and isinstance(at, datetime) and now - at < timedelta(days=wa_mention.LOOKUP_TTL_DAYS):
+        return row.get("phone")
+    asked, number = await _waapi_lid_phone(lid)
+    if not asked:
+        return (row or {}).get("phone")      # a stale answer beats none
+    try:
+        await col.update_one({"_id": key}, {"$set": {
+            "company_id": str(company_id), "lid": lid, "phone": number,
+            "checked_at": now}}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[mention] lid cache write failed: {type(e).__name__}")
+    return number
+
+
+async def _mention_target(person: dict, company_id: str,
+                          now: Optional[datetime] = None) -> dict:
+    """{name, phone, source, handle, resolved} for one person a group post
+    names: an attention owner, a punch assignee ({kind, id, name, jid})."""
+    name = person.get("name") or ""
+    kind, pid = str(person.get("kind") or ""), str(person.get("id") or "")
+    jid = str(person.get("jid") or "")
+    cid = _company_id_filter(company_id)
+    try:
+        if kind == "user" and pid:
+            u = await db.users.find_one({"_id": to_query_id(pid), "company_id": cid,
+                                         "is_deleted": {"$ne": True}}, {"phone": 1})
+            if u and wa_mention.phone(u.get("phone")):
+                return wa_mention.target(name, u.get("phone"), "user")
+        if kind == "sender_map" or jid:
+            q = ({"_id": to_query_id(pid)} if kind == "sender_map" and pid
+                 else {"sender_jid": jid})
+            m = await db[wa_sender_map.COLLECTION].find_one(
+                {**q, "company_id": str(company_id)}, {"phone": 1, "sender_jid": 1})
+            if m and wa_mention.phone(m.get("phone")):
+                return wa_mention.target(name, m.get("phone"), "people")
+            jid = jid or str((m or {}).get("sender_jid") or "")
+    except Exception as e:
+        logger.warning(f"[mention] lookup failed: {type(e).__name__}")
+    if wa_mention.phone(jid):
+        return wa_mention.target(name, jid, "jid")
+    if wa_sender_map.is_lid(jid):
+        number = await _lid_phone_cached(str(company_id), jid, now)
+        if number:
+            return wa_mention.target(name, number, "lid_lookup")
+    logger.info(f"[mention] unresolved kind={kind or 'none'} "
+                f"id={'lid' if wa_sender_map.is_lid(jid) else ('none' if not jid else 'other')}")
+    return wa_mention.target(name, None)
+
+
+async def _group_post(group_id: str, text: str, targets: List[dict],
+                      reply_to: Optional[str] = None):
+    """Every group post that names people goes through here: the text holds
+    their tokens ("@15551234567" / "@Name"), `mentions` lists exactly the
+    numbers in it, and the app's copy of the post reads "@Name"."""
+    return await send_whatsapp_message(
+        group_id, text, reply_to,
+        mentions=wa_mention.mentions_for(text, targets) or None,
+        display_text=wa_mention.display(text, targets))
+
+
+async def _serialized_message_id(group_id: str, message_id: Any) -> Optional[str]:
+    """WaAPI's replyToMessageId for a stored group message (the short id is
+    what items keep; WaAPI wants {fromMe}_{chatId}_{messageId})."""
+    mid = str(message_id or "")
+    if not mid:
+        return None
+    if "_" in mid and "@" in mid:
+        return mid
+    try:
+        row = await db.whatsapp_messages.find_one(
+            {"group_id": group_id, "message_id": mid}, {"message_id_serialized": 1})
+    except Exception:
+        row = None
+    return (row or {}).get("message_id_serialized") or None
+
+
 async def _chase_owner_spoke_at(group_id: str, item: dict,
                                 after: datetime) -> Optional[datetime]:
     """The owner's latest message in the group after `after`, if any."""
@@ -47609,9 +47724,23 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                                                     b["items"], list(b["nudged"].values())))
                 report["admin_dm"] += 1
             else:
+                # The post as it would go out: a real @mention when the
+                # owner's number is known (lib/wa_mention), replying to the
+                # message the nudge quotes (WaAPI wants its serialized id).
+                tgt = await _mention_target(owner, b["company_id"], now)
+                send_text = wa_chase.group_text(row["owner_name"], b["items"], slot,
+                                                handle=tgt["handle"])
+                quoted_id = wa_chase.quoted(first).get("message_id")
                 row.update(kind="group",
-                           reply_to=wa_chase.quoted(first).get("message_id"),
-                           text=wa_chase.group_text(row["owner_name"], b["items"], slot))
+                           reply_to=await _serialized_message_id(gid, quoted_id),
+                           reply_to_message_id=quoted_id,
+                           text=wa_mention.display(send_text, [tgt]),
+                           # Server only: what WaAPI would get.
+                           send_text=send_text,
+                           mentions=wa_mention.mentions_for(send_text, [tgt]),
+                           mention={"resolved": tgt["resolved"], "source": tgt["source"]})
+                if not tgt["resolved"]:
+                    report["mention_unresolved"] = report.get("mention_unresolved", 0) + 1
                 report["would_chase"] += 1
             await db[wa_chase.COLLECTION].update_one(
                 {"_id": rid}, {"$setOnInsert": row}, upsert=True)
@@ -50644,7 +50773,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
 
 async def send_whatsapp_message(
     chat_id: str, message: str, reply_to: Optional[str] = None,
-    *, dm_meta: Optional[dict] = None,
+    *, dm_meta: Optional[dict] = None, mentions: Optional[List[str]] = None,
+    display_text: Optional[str] = None,
 ):
     """Send a WhatsApp message via WaAPI HTTP API.
 
@@ -50682,6 +50812,15 @@ async def send_whatsapp_message(
         payload["replyToMessageId"] = reply_to
 
     is_dm = not wa_dm.is_group_chat(chat_id)
+    # REAL @MENTIONS (groups only): the text carries "@<number>" and
+    # `mentions` the matching "<number>@c.us" (lib/wa_mention.py). A mismatch
+    # is a bug here, never sent: the post goes without `mentions`.
+    if mentions and not is_dm:
+        bad = wa_mention.check(message, list(mentions))
+        if bad:
+            logger.error(f"[mention] not sent as mentions: {bad}")
+        else:
+            payload["mentions"] = list(mentions)
     ledger_id = None
     if is_dm:
         # ── THE OPT-IN RULE LIVES HERE, NOT AT THE CALL SITES ──────────────
@@ -50707,6 +50846,11 @@ async def send_whatsapp_message(
     if not ok:
         logger.error(f"WhatsApp send failed to {chat_id}: {err}")
         return None
+    if payload.get("mentions") and not wa_mention.sent_ok(resp_json):
+        # A mention send is only a send when WaAPI says data.status "success".
+        logger.error(f"[mention] send not confirmed to {chat_id}: "
+                     f"{str((resp_json or {}).get('data', {}).get('status') if isinstance(resp_json, dict) else resp_json)[:60]}")
+        return None
 
     # Log outbound bot turn into whatsapp_messages so the agent's history
     # loader can recall it on the next user message (makes multi-turn
@@ -50720,7 +50864,8 @@ async def send_whatsapp_message(
         row = {
             "group_id":   chat_id,
             "sender":     "bot",
-            "body":       message,
+            # As people read it: "@Carlos", never the number behind a mention.
+            "body":       display_text or message,
             "has_audio":  False,
             "message_id": "",
             "from_me":    True,
@@ -60459,8 +60604,14 @@ async def _punch_send(ident: dict, sess: dict) -> str:
             await db[punch.COLLECTION].insert_one(row)
             rows.append(row)
         photos = sum(1 for r in rows if r.get("photo_key")) + sum(len(r["extra_photos"]) for r in rows)
+        tgt = await _mention_target({**person, "name": person.get("name") or person.get("company") or ""},
+                                    sess["company_id"], now)
+        for r in rows:
+            r["mention"] = {"resolved": tgt["resolved"], "source": tgt["source"]}
+            await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {"mention": r["mention"]}})
         batches.append({"name": person.get("name") or person.get("company") or "", "items": rows,
-                        "due_words": b["due_words"], "photos": photos, "jid": person.get("jid")})
+                        "due_words": b["due_words"], "photos": photos, "jid": person.get("jid"),
+                        "target": tgt, "mention_resolved": tgt["resolved"]})
     await _punch_save(sess, status="sent", sent_at=now, send_mode=mode)
     logger.info(f"[punch] sent walk={sess['_id']} mode={mode} items="
                 f"{sum(len(b['items']) for b in batches)} people={len(batches)}")
@@ -60475,7 +60626,9 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
     what WaAPI accepted."""
     failed, photo_fail = [], 0
     for b in batches:
-        ok = await send_whatsapp_message(group_id, punch.group_text(b["name"], b["items"], b["due_words"]))
+        tgt = b.get("target") or wa_mention.target(b["name"], None)
+        ok = await _group_post(group_id, punch.group_text(b["name"], b["items"], b["due_words"],
+                                                          handle=tgt["handle"]), [tgt])
         if not ok:
             failed.append(b)
             continue
@@ -60511,13 +60664,15 @@ async def _punch_resend(sess: dict) -> str:
     for r in sorted(rows, key=lambda r: r.get("seq") or 0):
         a = r.get("assignee") or {}
         b = by_person.setdefault(f"{a.get('kind')}:{a.get('id')}", {
-            "name": a.get("name") or a.get("company") or "", "items": [],
+            "name": a.get("name") or a.get("company") or "", "items": [], "person": a,
             "due_words": (r.get("due") or {}).get("due_text") or ""})
         b["items"].append(r)
     group_id = rows[0]["group_id"] if rows else None
     if not group_id:
         await _punch_save(sess, status="sent", undelivered=[])
         return "Nothing left to resend."
+    for b in by_person.values():
+        b["target"] = await _mention_target({**b["person"], "name": b["name"]}, sess["company_id"])
     return await _punch_post(sess, group_id, list(by_person.values()))
 
 
@@ -63312,6 +63467,8 @@ def _punch_view(r: dict) -> dict:
             "assignee": {"name": a.get("name") or "", "company": a.get("company") or ""},
             "due": (r.get("due") or {}).get("due_text"), "due_at": (r.get("due") or {}).get("due_at"),
             "has_photo": bool(r.get("photo_key")), "send_mode": r.get("send_mode"),
+            "mention_note": (wa_mention.NO_NUMBER_NOTE
+                             if (r.get("mention") or {}).get("resolved") is False else None),
             "created_at": iso(r.get("created_at")), "closed_at": iso(r.get("closed_at")),
             "completion": ({"quote": comp.get("quote"), "at": iso(comp.get("at")),
                             "has_photo": bool(comp.get("photo_key"))} if comp else None),
@@ -63945,6 +64102,11 @@ def _chase_view(r: dict) -> dict:
         "text": r.get("text") or "",
         "reason": r.get("reason") or "",
         "not_chased": r.get("not_chased") or None,
+        # A group nudge whose @mention would not notify (no number for the
+        # owner). Rows from before mentions carry no flag: nothing is said.
+        "mention_note": (wa_mention.NO_NUMBER_NOTE
+                         if r.get("kind") == "group"
+                         and (r.get("mention") or {}).get("resolved") is False else None),
         "verdict": (r.get("review") or {}).get("verdict"),
     }
 
@@ -64003,6 +64165,9 @@ async def review_project_chase(project_id: str, entry_id: str, body: dict,
 class SenderMapBody(BaseModel):
     person_name: str
     sub_company: str
+    # Optional: their WhatsApp number, so group posts can @mention them for
+    # real (lib/wa_mention). Absent: the number on file is kept; "": cleared.
+    phone: Optional[str] = None
 
 
 async def _people_senders(company_id: str, project_id: str,
@@ -64060,6 +64225,8 @@ def _people_row(company_id: str, s: dict) -> dict:
         "last_message_at": at.isoformat() if isinstance(at, datetime) else None,
         "assigned": ({"person_name": m.get("person_name"),
                       "sub_company": m.get("sub_company"),
+                      # The number the admin gave, as its last 4 only.
+                      "phone_last4": (str(m.get("phone"))[-4:] if m.get("phone") else None),
                       "set_at": (m.get("set_at").isoformat()
                                  if isinstance(m.get("set_at"), datetime) else None)}
                      if m else None),
@@ -64141,13 +64308,19 @@ async def set_whatsapp_person(project_id: str, key: str, body: SenderMapBody,
                                        wa_sender_map.company_choices(project))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    raw_phone = str(body.phone or "").strip()
+    number = wa_mention.phone(raw_phone) if raw_phone else None
+    if raw_phone and not number:
+        raise HTTPException(status_code=422, detail=(
+            "Enter their WhatsApp number with the country code, or a 10-digit US number."))
     s = await _people_find(company_id, str(project_id), key,
                            is_company_admin(current_user))
     now = datetime.now(timezone.utc)
     op = actor_id(current_user)
     await db[wa_sender_map.COLLECTION].update_one(
         {"company_id": company_id, "sender_jid": s["jid"]},
-        {"$set": {**clean, "set_by": op, "set_at": now},
+        {"$set": {**clean, **({"phone": number} if body.phone is not None else {}),
+                  "set_by": op, "set_at": now},
          "$setOnInsert": {"company_id": company_id, "sender_jid": s["jid"]}},
         upsert=True)
     row = await db[wa_sender_map.COLLECTION].find_one(

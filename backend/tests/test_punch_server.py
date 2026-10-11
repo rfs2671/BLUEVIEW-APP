@@ -252,7 +252,10 @@ class CodexRound1(unittest.TestCase):
         posts, dm = [], []
 
         async def ok_now(chat, text, *a, **k):
-            (posts if str(chat) == dry.GROUP else dm).append(text)
+            if str(chat) == dry.GROUP:
+                posts.append({"text": text, **k})
+            else:
+                dm.append(text)
             return True
 
         async def photo(group_id, key, caption):
@@ -262,7 +265,10 @@ class CodexRound1(unittest.TestCase):
             asyncio.run(server._punch_dm_turn(dry._ident(proj, sc), "17185550100@c.us",
                                               {"has_image": False, "message_id": "r"}, "resend"))
         self.assertEqual(len(posts), 1)
-        self.assertTrue(posts[0].startswith("@Ana Ortiz"))
+        self.assertTrue(posts[0]["display_text"].startswith("@Ana Ortiz"))
+        # A real mention: Ana's number in the text and in mentions.
+        self.assertTrue(posts[0]["text"].startswith("@17185550203 "))
+        self.assertEqual(posts[0]["mentions"], ["17185550203@c.us"])
         self.assertIn("Sent 3 items to 1 person", dm[-1])
         self.assertEqual((sess["status"], sess["undelivered"]), ("sent", []))
 

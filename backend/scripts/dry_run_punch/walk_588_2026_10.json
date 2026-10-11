@@ -62,7 +62,8 @@
    "key": "A",
    "name": "Ana Ortiz",
    "company": "Pro Paint",
-   "phone": "17185550203"
+   "phone": "17185550203",
+   "lid": "84894491394148"
   },
   {
    "key": "B",
@@ -80,7 +81,8 @@
    "key": "L",
    "name": "Luis Ortega",
    "company": "Arkon Drywall",
-   "phone": "17185550206"
+   "phone": "17185550206",
+   "lid": "84894491300006"
   }
  ],
  "dm": [
@@ -250,7 +252,15 @@
    "outlet cover": 0,
    "faucet": 4,
    "pintura": 4
-  }
+  },
+  "mention_resolved": [
+   "Mike Rivera",
+   "Jose Zarate",
+   "Ana Ortiz"
+  ],
+  "mention_unresolved": [
+   "Luis Ortega"
+  ]
  },
  "dm_after": [
   {
@@ -277,5 +287,8 @@
     "https://r2.invalid/wa-photos/p588/"
    ]
   }
- ]
+ ],
+ "lid_phones": {
+  "84894491394148": "17185550203"
+ }
 }

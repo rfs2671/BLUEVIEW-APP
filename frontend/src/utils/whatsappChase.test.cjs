@@ -82,5 +82,12 @@ console.log('\nscreen wiring');
      'admins only, on the project WhatsApp screen');
 }
 
+// Real @mentions: a nudge whose owner has no number says it won't notify.
+ok(C.mentionLine({ owner: 'Dave Kim', mention_note: "mention won't notify (no number)" })
+  === "@Dave Kim: mention won't notify (no number)", 'no number: flagged');
+ok(C.mentionLine({ owner: 'Mike', mention_note: null }) === null, 'a real mention: nothing to say');
+ok(/mentionLine\(e\)/.test(fs.readFileSync(path.join(__dirname, '../components/whatsapp/ChaseCard.jsx'), 'utf8')),
+  'the card shows it');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

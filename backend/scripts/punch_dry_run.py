@@ -32,6 +32,10 @@ SCENARIO (scripts/dry_run_punch/*.json)
   group [{from: KEY|"walker", text}]   "{pid:words}" -> that item's P-id.
   dm_after [{text, contains: [..], not_contains: [..]}]   questions afterwards.
   fail_posts_for [name]   (tests) WaAPI refuses that person's group list.
+  people[].lid, lid_phones {lid: phone}   a person known only by a WhatsApp
+        privacy id, and what the (mocked) lid -> phone lookup answers.
+  expect.mention_resolved / mention_unresolved [name]   whose @mention would
+        notify, and who is flagged "mention won't notify (no number)".
   expect {status, assignee, floor, due_weekday {words: 0-6}, pid_prefix,
           attention_items, closed_by {words: "walker"},
           ready_to_check_then_reopened [words]}
@@ -98,9 +102,13 @@ def world(sc: dict):
                                  "punch_sends": sc.get("punch_sends") or "shadow"}}],
         attention_items=[],
     )
+    # A person writes from their phone (@c.us), or from a WhatsApp privacy id
+    # ("lid": …): then their number is only what the (mocked) lid lookup
+    # answers, from the scenario's "lid_phones".
     db[wa_sender_map.COLLECTION].rows.extend(
         {"_id": f"m_{p['key'].lower()}", "company_id": COMPANY, "person_name": p["name"],
-         "sub_company": p["company"], "sender_jid": f"{p['phone']}@c.us"}
+         "sub_company": p["company"],
+         "sender_jid": f"{p['lid']}@lid" if p.get("lid") else f"{p['phone']}@c.us"}
         for p in sc.get("people") or [])
     return db, proj
 
@@ -134,6 +142,7 @@ async def run(sc: dict) -> dict:
     dm_out: List[str] = []
     group_out: List[tuple] = []
     reacts: List[str] = []
+    mention_posts: List[dict] = []
     walker_chat = f"{sc['walker']['phone']}@c.us"
 
     def recorder(name):
@@ -145,10 +154,15 @@ async def run(sc: dict) -> dict:
             elif str(chat) == walker_chat:
                 dm_out.append(str(text))
             else:
+                # The post as people read it ("@Ana Ortiz"); what WaAPI got
+                # ("@15551234567" + mentions) is kept beside it.
+                shown = k.get("display_text") or text
                 # A test can make WaAPI refuse one person's list.
-                if any(str(text).startswith(f"@{n}") for n in sc.get("fail_posts_for") or []):
+                if any(str(shown).startswith(f"@{n}") for n in sc.get("fail_posts_for") or []):
                     return None
-                group_out.append((name, chat, text))
+                group_out.append((name, chat, shown))
+                if name == "send_whatsapp_message":
+                    mention_posts.append({"text": text, "mentions": list(k.get("mentions") or [])})
             return True
         return _rec
 
@@ -166,6 +180,13 @@ async def run(sc: dict) -> dict:
                patch.object(server, "_upload_to_r2", fake_upload),
                patch.object(server, "_presign_r2_get", lambda key, ttl=900: f"https://r2.invalid/{key}?sig")]
     patches += [patch.object(server, n, recorder(n)) for n in SEND_PATHS if hasattr(server, n)]
+    lookups: List[str] = []
+
+    async def fake_lid_phone(lid):
+        # WaAPI's lid -> phone lookup, answered from the scenario.
+        lookups.append(lid)
+        return True, (sc.get("lid_phones") or {}).get(lid.split("@")[0])
+    patches.append(patch.object(server, "_waapi_lid_phone", fake_lid_phone))
     ident = _ident(proj, sc)
     checks: List[tuple] = []          # (ok, what)
     transcript: List[str] = []
@@ -308,11 +329,27 @@ async def run(sc: dict) -> dict:
         a = next(x for x in db.attention_items.rows if x.get("punch_id") == r["pid"])
         checks.append((a["status"] == "open", f"{words}: chase resumes (attention {a['status']})"))
     # In-memory rows this run wrote (not a probe of a real collection).
+    from lib import wa_mention
+    for k, mp in enumerate(mention_posts, 1):
+        bad = wa_mention.check(mp["text"], mp["mentions"])
+        checks.append((bad is None, f"post {k}: mentions match the text's @numbers"
+                                    + (f" ({bad})" if bad else "")))
+    for name in exp.get("mention_resolved") or []:
+        r = next(r for r in rows if (r.get("assignee") or {}).get("name") == name)
+        checks.append(((r.get("mention") or {}).get("resolved") is True,
+                       f"{name}: @mention would notify ({(r.get('mention') or {}).get('source')})"))
+    for name in exp.get("mention_unresolved") or []:
+        r = next(r for r in rows if (r.get("assignee") or {}).get("name") == name)
+        note = f"(@{name}: mention won't notify (no number))"
+        checks.append(((r.get("mention") or {}).get("resolved") is False
+                       and any(note in t for t in transcript),
+                       f"{name}: no number -> plain @{name}, flagged in the send reply"))
     photos = 0
     for r in rows:
         keys = [r.get("photo_key"), *(r.get("extra_photos") or [])]
         photos += len([k for k in keys if k])
     return {"checks": checks, "transcript": transcript, "group_posts": group_out,
+            "mention_posts": mention_posts,
             "reacts": reacts, "uploads": uploads, "photos_on_items": photos,
             "rows": rows, "mode": sc.get("punch_sends") or "shadow"}
 

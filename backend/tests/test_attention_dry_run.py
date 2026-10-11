@@ -259,6 +259,7 @@ class TheThreeGaps(unittest.TestCase):
         # the item's evidence.
         self.assertEqual(it["evidence"]["quote"], "Yes, I'll send them tomorrow AM")
         jose = out["rows"][17]["message_id"]
+        jose_ser = out["rows"][17]["message_id_serialized"]
         rows = [c for c in out["db"]["chase_shadow"].rows if c["owner_name"] == "Jose Zarate"
                 and c["day"] == "2026-10-16"]
         self.assertEqual(len(rows), 4)
@@ -267,7 +268,9 @@ class TheThreeGaps(unittest.TestCase):
         for c in rows:
             self.assertEqual(c["items"][0]["message_id"], jose)
             if c["kind"] == "group":
-                self.assertEqual(c["reply_to"], jose)
+                # Replies to Jose's message, by the id WaAPI wants.
+                self.assertEqual(c["reply_to_message_id"], jose)
+                self.assertEqual(c["reply_to"], jose_ser)
 
     def test_a_handover_with_a_new_date_word_is_still_a_handover(self):
         # "instead" reads as a reschedule; the takeover comes first.

@@ -41,6 +41,8 @@ SEND_MODES = ("shadow", "live")
 DEFAULT_SEND_MODE = "shadow"
 DRAFT_REMIND_HOURS = 24
 UNKNOWN = "?"
+#: Beside an assignee whose @mention would not notify (lib/wa_mention).
+NO_NUMBER_NOTE = "mention won't notify (no number)"
 
 # ── STARTING A WALKTHROUGH ───────────────────────────────────────────────────
 
@@ -467,9 +469,12 @@ def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str
 
 # ── SENDING ──────────────────────────────────────────────────────────────────
 
-def group_text(name: str, items: List[dict], due_words: str) -> str:
-    """One message per assignee: @them, their items, the due day."""
-    lines = [f"@{name} punch list — due {due_words}:"]
+def group_text(name: str, items: List[dict], due_words: str,
+               handle: Optional[str] = None) -> str:
+    """One message per assignee: @them, their items, the due day. `handle`
+    is their token from lib/wa_mention ("@15551234567" mentions them for
+    real); without it, "@Name"."""
+    lines = [f"{handle or '@' + name} punch list — due {due_words}:"]
     for it in items:
         where = " · ".join(x for x in (floor_label(it["floor"]) if it.get("floor") not in (None, UNKNOWN) else "",
                                         it.get("area") if it.get("area") not in (None, UNKNOWN) else "") if x)
@@ -484,6 +489,8 @@ def shadow_text(batches: List[Dict[str, Any]]) -> str:
     for b in batches:
         lines.append("")
         lines.append(group_text(b["name"], b["items"], b["due_words"]))
+        if b.get("mention_resolved") is False:
+            lines.append(f"(@{b['name']}: {NO_NUMBER_NOTE})")
         if b.get("photos"):
             lines.append(f"(+{b['photos']} photo{'s' if b['photos'] != 1 else ''})")
     return "\n".join(lines)
