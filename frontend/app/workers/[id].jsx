@@ -1,5 +1,5 @@
 import apiClient, { workersAPI } from '../../src/utils/api';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,7 @@ import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import { VoiceLanguageSetting } from '../../src/components/whatsapp/VoiceLanguagePicker';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
 import {
   certLabel,
@@ -177,6 +178,10 @@ export default function WorkerDetailScreen() {
   const [oshaState, setOshaState] = useState('ok');
 
   const isAdmin = isCompanyAdmin(user);
+  const voiceLanguageLoad = useCallback(
+    () => workersAPI.getVoiceLanguage(workerId), [workerId]);
+  const voiceLanguageSave = useCallback(
+    (language) => workersAPI.setVoiceLanguage(workerId, language), [workerId]);
 
   // Credential expiry tone. Both the certification list and the OSHA/SST card
   // route through this: fixing only one of them leaves the other silently
@@ -730,6 +735,14 @@ export default function WorkerDetailScreen() {
               </View>
             )}
           </GlassCard>
+
+          {/* What they speak in WhatsApp voice notes (Whisper's hint), keyed by
+              their number. Admins set it; it saves on tap. */}
+          {isAdmin && detailState === 'ok' ? (
+            <GlassCard style={s.profileCard}>
+              <VoiceLanguageSetting key={workerId} load={voiceLanguageLoad} save={voiceLanguageSave} />
+            </GlassCard>
+          ) : null}
 
           {canViewOsha && (
             <View style={s.section}>

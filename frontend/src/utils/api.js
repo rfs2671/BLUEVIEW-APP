@@ -657,6 +657,12 @@ export const causalLiftAPI = {
  * Workers APIs
  */
 export const workersAPI = {
+  // Their voice notes' language: { language: 'auto'|'en'|'es'|'yi', has_phone }.
+  getVoiceLanguage: async (workerId) => (await apiClient.get(
+    `/api/workers/${encodeURIComponent(workerId)}/voice-language`)).data,
+  setVoiceLanguage: async (workerId, language) => (await apiClient.put(
+    `/api/workers/${encodeURIComponent(workerId)}/voice-language`, { language })).data,
+
   getAll: async () => {
     const response = await apiClient.get('/api/workers');
     const data = response.data;
@@ -953,6 +959,12 @@ export const dropboxAPI = {
  * Admin User Management APIs
  */
 export const adminUsersAPI = {
+  // Their voice notes' language: { language: 'auto'|'en'|'es'|'yi', has_phone }.
+  getVoiceLanguage: async (userId) => (await apiClient.get(
+    `/api/admin/users/${encodeURIComponent(userId)}/voice-language`)).data,
+  setVoiceLanguage: async (userId, language) => (await apiClient.put(
+    `/api/admin/users/${encodeURIComponent(userId)}/voice-language`, { language })).data,
+
   // `includeAllRoles` WIDENS WHICH ROLES, NEVER WHICH COMPANY. The server
   // scopes every caller to his own company regardless; this only opts out of
   // the ADMIN_MANAGED_ROLES row filter, and only for a caller that asks.
@@ -1984,6 +1996,14 @@ export const whatsappAPI = {
     if (phone !== null && phone !== undefined) body.phone = phone;
     const r = await apiClient.put(
       `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}`, body);
+    return r.data;
+  },
+
+  // language: 'auto' | 'en' | 'es' | 'yi' — their voice notes' language.
+  setWhatsAppPersonLanguage: async (projectId, key, language) => {
+    const r = await apiClient.put(
+      `/api/projects/${projectId}/whatsapp/people/${encodeURIComponent(key)}/language`,
+      { language });
     return r.data;
   },
 

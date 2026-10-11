@@ -14,7 +14,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Linking } from 'react-native';
 import { GlassCard } from '../GlassCard';
 import { useToast } from '../Toast';
 import { useTheme } from '../../context/ThemeContext';
@@ -25,7 +25,7 @@ import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
   statusLine, precisionLines, emptyText, LISTS, STATE_VERDICTS, eventLine, linkLine,
-  reviewable, statePrecisionLines,
+  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT,
 } from '../../utils/whatsappAttention';
 
 export default function AttentionCard({ projectId }) {
@@ -68,6 +68,22 @@ export default function AttentionCard({ projectId }) {
       await load();
     } catch (e) {
       toast.error('Not saved', 'That could not be saved. Try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ▶ Play: a fresh short-lived audio link from the source endpoint (the
+  // same one the original-message sheet uses), opened in the phone's player.
+  const play = async (it) => {
+    setBusy(`play:${it.id}`);
+    try {
+      const src = await whatsappAPI.getSource(projectId, it.message_row_id);
+      const url = src && src.voice && src.voice.audio_url;
+      if (url) await Linking.openURL(url);
+      else toast.error('No audio', NO_AUDIO_TEXT);
+    } catch (e) {
+      toast.error('Not played', 'The audio could not be opened. Try again.');
     } finally {
       setBusy(null);
     }
@@ -122,6 +138,18 @@ export default function AttentionCard({ projectId }) {
                 </Pressable>
                 {reviewNote(null, it.review_reason)
                   ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
+                {canPlay(it) ? (
+                  <View style={s.buttons}>
+                    {busy === `play:${it.id}`
+                      ? <ActivityIndicator size="small" color={colors.text.muted} />
+                      : (
+                        <Pressable onPress={() => play(it)} disabled={!!busy} style={s.button}
+                          accessibilityRole="button" accessibilityLabel="Play the voice note">
+                          <Text style={s.buttonText}>{PLAY_LABEL}</Text>
+                        </Pressable>
+                      )}
+                  </View>
+                ) : null}
                 {it.summary ? <Text style={s.muted}>{it.summary}</Text> : null}
                 {[ownerLine(it), dueLine(it), statusLine(it)].filter(Boolean).map((l) => (
                   <Text key={l} style={s.muted}>{l}</Text>
@@ -143,7 +171,7 @@ export default function AttentionCard({ projectId }) {
                         {e.kind !== 'created' && linkLine(e) ? (
                           <Text style={s.muted}>{linkLine(e)}</Text>
                         ) : null}
-                        {reviewable(e) ? (
+                        {reviewable(e, it) ? (
                           <View style={s.buttons}>
                             {busy === e.id
                               ? <ActivityIndicator size="small" color={colors.text.muted} />

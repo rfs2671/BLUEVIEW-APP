@@ -72,7 +72,28 @@ export function detailLine(row, now) {
   parts.push(plural(row.message_count || 0, 'message', 'messages'));
   const last = shortDate(row.last_message_at, now);
   if (last) parts.push(`last ${last}`);
+  const lang = languageLabel(row.language);
+  if (lang) parts.push(`voice: ${lang}`);
   return parts.join(' · ');
+}
+
+/** What a sender speaks, for their voice notes (Whisper's language hint).
+ *  Auto: Whisper detects it, as before. */
+export const LANGUAGES = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Español' },
+  { value: 'yi', label: 'Yiddish' },
+];
+export const LANGUAGE_NOTE =
+  'Their voice notes are transcribed in this language. Auto: detected from the note.';
+
+export const NO_PHONE_LANGUAGE_NOTE =
+  'Add their phone number first: their voice notes are matched to them by it.';
+
+/** "Spanish" for a set language; null for auto or unset. */
+export function languageLabel(value) {
+  return { en: 'English', es: 'Spanish', yi: 'Yiddish' }[value] || null;
 }
 
 /** The form: what to send, or why not yet. */

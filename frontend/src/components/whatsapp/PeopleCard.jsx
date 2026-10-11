@@ -27,6 +27,7 @@ import {
   PEOPLE_TITLE, PEOPLE_NOTE, emptyText, assignmentLine, detailLine,
   assignRequest, savedText, safeLabel, safeName, PHONE_NOTE,
 } from '../../utils/whatsappPeople';
+import { VoiceLanguagePicker } from './VoiceLanguagePicker';
 
 export default function PeopleCard({ projectId }) {
   const { colors } = useTheme();
@@ -75,6 +76,21 @@ export default function PeopleCard({ projectId }) {
         'phone' in req.body ? req.body.phone : null);
       toast.success(req.body.personName, savedText(res));
       setEditing(null);
+      await load();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // The language saves on its own, on tap: it needs no name or company.
+  const setLanguage = async (language) => {
+    if (!editing || (editing.language || 'auto') === language) return;
+    setSaving(true);
+    try {
+      const row = await whatsappAPI.setWhatsAppPersonLanguage(projectId, editing.key, language);
+      setEditing((e) => (e ? { ...e, language: row.language } : e));
       await load();
     } catch (e) {
       fail(e);
@@ -171,6 +187,8 @@ export default function PeopleCard({ projectId }) {
                 {removePhone ? <Check size={16} color={semantic.verified} /> : null}
               </Pressable>
             ) : null}
+            <VoiceLanguagePicker value={editing && editing.language}
+              onSelect={setLanguage} disabled={saving} />
             <Text style={s.label}>Company on this job</Text>
             <ScrollView style={s.choices}>
               {companies.map((c) => (

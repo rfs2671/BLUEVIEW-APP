@@ -142,8 +142,11 @@ class _Base(unittest.TestCase):
         results = list(results)
         _WaapiDownload.calls = []
 
+        self.kw = []
+
         async def transcribe(audio_bytes, **kw):
             heard.append(audio_bytes)
+            self.kw.append(kw)
             r = results.pop(0)
             if isinstance(r, Exception):
                 raise r
