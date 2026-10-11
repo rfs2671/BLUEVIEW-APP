@@ -154,3 +154,51 @@ def phones_from_lookup(resp: Any, asked: Iterable[str]) -> Optional[Dict[str, Op
         if lid in out:
             out[lid] = phone(c.get("pn")) if c.get("pn") else None
     return out
+
+
+# ── A PHONE NUMBER IS EVIDENCE ───────────────────────────────────────────────
+#
+# Who sent a message, by number, is kept for good (on the message row and the
+# sender's record, with when and how it was resolved) and shown by role:
+# company ADMINS see the full number; PMs and everyone else the name and the
+# last 4. Never in a server log (the lid and "resolved" / "no number" only),
+# never in a group post beyond the @mention itself.
+
+def pretty(number: Any) -> str:
+    """"17187559520" -> "+1 718-755-9520"; other countries "+<digits>"."""
+    d = phone(number)
+    if not d:
+        return ""
+    if len(d) == 11 and d.startswith("1"):
+        return f"+1 {d[1:4]}-{d[4:7]}-{d[7:]}"
+    return f"+{d}"
+
+
+def last4(number: Any) -> str:
+    d = phone(number) or re.sub(r"\D", "", str(number or ""))
+    return f"…{d[-4:]}" if len(d) >= 4 else ""
+
+
+def shown(number: Any, admin: bool) -> str:
+    """The number as this viewer may see it: full for a company admin,
+    else the last 4. "" when there is none."""
+    if not number:
+        return ""
+    return pretty(number) if admin else last4(number)
+
+
+def evidence_line(name: Any, number: Any, when: str, admin: bool) -> str:
+    """"Mark Rivera · +1 718-755-9520 · Oct 10, 11:11:11 AM" (admins);
+    "Mark Rivera · …9520 · Oct 10, 11:11:11 AM" (everyone else)."""
+    parts = [" ".join(str(name or "").split()) or "Unknown sender"]
+    if shown(number, admin):
+        parts.append(shown(number, admin))
+    if when:
+        parts.append(when)
+    return " · ".join(parts)
+
+
+def stamp(number: Optional[str], source: str, at: Any) -> Dict[str, Any]:
+    """The fields a message row / sender record keeps for good."""
+    return {"sender_phone": number, "sender_phone_source": source,
+            "sender_phone_at": at}
