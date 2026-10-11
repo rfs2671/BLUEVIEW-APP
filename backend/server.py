@@ -47438,7 +47438,8 @@ async def _stamp_sender_phone(company_id: str, jid: str, number: str, source: st
         await db.whatsapp_messages.update_many(
             {"company_id": _company_id_filter(company_id), "sender_jid": jid,
              "sender_phone": None},
-            {"$set": wa_mention.stamp(number, source, at)})
+            {"$set": {"sender_phone": number, "sender_phone_source": source,
+                      "sender_phone_at": at}})
         await db[wa_sender_map.COLLECTION].update_many(
             {"company_id": str(company_id), "sender_jid": jid},
             {"$set": {"resolved_phone": number, "resolved_phone_source": source,

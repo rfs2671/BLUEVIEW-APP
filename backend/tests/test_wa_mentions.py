@@ -473,7 +473,7 @@ class EvidenceKept(unittest.TestCase):
         # Logged: the lid and "resolved" -- never the number.
         joined = "\n".join(logs.output)
         self.assertIn(f"[mention] get-lid {LID}: resolved", joined)
-        self.assertNotIn("7559520", joined)
+        self.assertNotRegex(joined, r"(?<!\d)1?718-?755-?9520(?!\d)")
         # A new message from them is stamped at once, from the record.
         nxt = self.store(LID, NOW + timedelta(hours=3))
         self.assertEqual((nxt["sender_phone"], nxt["sender_phone_source"]), ("17187559520", "lid_lookup"))
