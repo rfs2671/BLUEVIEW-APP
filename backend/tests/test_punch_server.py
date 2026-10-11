@@ -136,7 +136,8 @@ class Sending(unittest.TestCase):
         for a in att:
             self.assertEqual((a["type"], a["status"]), ("request", "open"))
             self.assertEqual(a["owner"]["status"], "resolved")
-            self.assertTrue(a["owner"]["jid"].endswith("@c.us"))
+            # A phone or a WhatsApp privacy id (Ana and Luis write from one).
+            self.assertRegex(a["owner"]["jid"], r"@(c\.us|lid)$")
             self.assertRegex(a["due"]["due_at"], r"^\d{4}-\d{2}-\d{2}")
             self.assertGreaterEqual(a["extraction"]["prompt_version"], "att-v1.2")
             self.assertFalse(a.get("needs_review"))
