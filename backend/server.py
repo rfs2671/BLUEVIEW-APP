@@ -47635,6 +47635,18 @@ async def _attention_replay_state(project_id: str, since: datetime,
             [("created_at", 1), ("_id", 1)]).to_list(5000)
         report["groups"] += 1
         report["rows"] += len(rows)
+        for i, r in enumerate(rows):
+            # A reply stored with only the quoted words (before the webhook
+            # matched them, Oct 9): linked as the webhook links one now.
+            if not r.get("quoted_message_id") and str(r.get("quoted_body") or "").strip() \
+                    and isinstance(r.get("created_at"), datetime):
+                hit = await _quoted_by_body(gid, r["quoted_body"], r["created_at"])
+                if hit:
+                    rows[i] = dict(r, quoted_message_id=str(hit.get("message_id") or ""),
+                                   quoted_author=r.get("quoted_author") or str(
+                                       hit.get("sender_jid") or ""),
+                                   quoted_link="body_match")
+                    report["linked_by_quoted_words"] += 1
         for burst in wa_attention_state.bursts(rows):
             msg = wa_attention_state.merge(burst)
             text = wa_attention_state.text_of(msg)
@@ -60804,16 +60816,17 @@ QUOTED_BODY_DAYS = 7
 
 
 async def _quoted_by_body(group_id: str, quoted_body: str, now: datetime) -> Optional[dict]:
-    """The one earlier message of this group (last 7 days) whose words are
-    `quoted_body` (trimmed, curly quotes straight). None for no match or
-    more than one."""
+    """The one earlier message of this group (the 7 days before `now`) whose
+    words are `quoted_body` (trimmed, curly quotes straight). None for no
+    match or more than one. `now` is the reply's own time: the webhook's
+    clock, or a stored reply's when the replay links it."""
     want = wa_attention_state.norm_quote(quoted_body)
     if not want:
         return None
     try:
         rows = await db.whatsapp_messages.find(
             {"group_id": group_id,
-             "created_at": {"$gte": now - timedelta(days=QUOTED_BODY_DAYS)}},
+             "created_at": {"$gte": now - timedelta(days=QUOTED_BODY_DAYS), "$lt": now}},
             {"message_id": 1, "sender_jid": 1, "body": 1}).sort(
             [("created_at", -1)]).to_list(5000)
     except Exception as e:

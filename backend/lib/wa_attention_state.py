@@ -485,6 +485,14 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                               upd)
             if len(got["items"]) == 1:
                 got = {**got, "by": "gc_staff"}
+        named = cancel_subject(upd.get("own_terms") or ())
+        if named:
+            # A cancel that names what it calls off calls off only that: "Never
+            # mind the load calcs" right after the core drill question is not
+            # about core drills (588, Oct 11: it was cancelled by "previous").
+            # Whatever the link, no shared subject word: no change.
+            got = {**got, "items": [c for c in got["items"]
+                                    if named & subject_terms(c.get("topic") or ())]}
         if len(got["items"]) == 1 and got["link"] != "only_open":
             target = got["items"][0]
             by = got.get("by") or "requester"
@@ -739,6 +747,20 @@ tengo hoy ana manana pasado temprano tarde noche lunes marte miercole jueve
 vierne sabado domingo todavia aun bien bueno gracias
 dos der mit far nit nisht ikh mir zey vos ven haynt morgn
 """.split())
+
+
+# The words of calling something off, not of what is called off: a bare
+# "Never mind" / "Nvm, cancel that" names nothing.
+_CANCEL_NOT_SUBJECT = {"never", "mind", "nvm", "cancel", "cancelled", "canceled",
+                       "cancelling", "canceling", "scratch", "forget", "ignore", "longer",
+                       "anymore", "olvidalo", "olvida", "importa", "cancela", "cancelado",
+                       "cancelada", "farges", "abgeshtelt"}
+
+
+def cancel_subject(terms: Iterable[str]) -> Set[str]:
+    """What a cancel names as its own subject ("Never mind the load calcs,
+    owner changed scope" -> load, calc, ...); empty for "Never mind"."""
+    return {t for t in subject_terms(terms) if t not in _CANCEL_NOT_SUBJECT}
 
 
 def subject_terms(terms: Iterable[str]) -> Set[str]:

@@ -151,6 +151,65 @@ class TheReplay(unittest.TestCase):
         self.assertIn("history", c["changed"])
 
 
+class Live588DryRun(unittest.TestCase):
+    """The 588 replay dry run, Oct 11: two engine bugs, these exact lines."""
+
+    def test_a_cancel_must_name_the_items_subject(self):
+        # "Never mind the load calcs" came right after the core drill question
+        # and cancelled it: the message just before is not its subject.
+        db = _world()
+        m1 = _msg(db, "Need confirmation on core drill locations.", at=OCT8, sender=MIKE)
+        db.attention_items.rows.append({
+            "_id": "it_core", "company_id": CO_A, "project_id": "proj_a", "group_id": G_A,
+            "type": "question", "status": "open",
+            "summary": "Confirm core drill locations",
+            "owner": {"kind": "none", "status": "unresolved"},
+            "evidence": {"message_id": m1["message_id"], "sender": MIKE, "sent_at": OCT8,
+                         "quote": "Need confirmation on core drill locations."},
+            "topic": ["confirmation", "core", "drill", "location"],
+            "history": [{"id": "e0", "kind": "created", "at": OCT8}],
+            "extraction": {"source": "live", "prompt_version": "att-v1.2"}})
+        _msg(db, "Never mind the load calcs, owner changed scope",
+             at=OCT8 + timedelta(minutes=3), sender=MIKE)
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        self.assertEqual(db.attention_items.rows[0]["status"], "open")
+        self.assertEqual(out["items"], [])
+
+    def test_the_cancel_rule_itself(self):
+        from lib import wa_attention_state as st
+        core = {"id": "c", "type": "question", "status": "open", "requester": MIKE,
+                "key": "K1", "topic": st.topic_terms("Need confirmation on core drill locations.")}
+        upd = {"kind": "cancel", "sender": MIKE, "previous_key": "K1", "reply_key": ""}
+
+        def run(text, **kw):
+            own = st.topic_terms(text)
+            return st.decide({**upd, "terms": own, "own_terms": own, **kw}, [core])
+        self.assertEqual(run("Never mind the load calcs, owner changed scope"), [])
+        self.assertEqual(run("Never mind the load calcs", reply_key="K1"), [])
+        # A bare "never mind" right after it, or one naming it: cancelled.
+        self.assertEqual(run("Never mind")[0]["to"], "cancelled")
+        self.assertEqual(run("Never mind the core drill locations")[0]["to"], "cancelled")
+
+    def test_a_reply_by_its_quoted_words_closes_the_door_hardware(self):
+        # "Just sent, check ur email" was a reply to the door hardware ask, but
+        # WaAPI sent only the quoted words: quoted_body, no quoted_message_id
+        # (stored before the webhook matched them).
+        db = _world()
+        m1 = _msg(db, "I'll send the door hardware submittal tomorrow", at=OCT8, sender=MIKE)
+        _item(db, "it_door", "I'll send the door hardware submittal tomorrow", OCT8,
+              m1["message_id"])
+        _msg(db, "cool", at=OCT8 + timedelta(hours=1), sender="17185550999")
+        _msg(db, "Just sent, check ur email", at=OCT9, sender=MIKE,
+             quoted_body="I'll send the door hardware submittal tomorrow")
+        with patch.object(server, "db", db):
+            out = asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        self.assertEqual(db.attention_items.rows[0]["status"], "done")
+        (c,) = out["items"]
+        self.assertEqual((c["id"], c["to"], c["because"]),
+                         ("it_door", "done", "Just sent, check ur email"))
+
+
 class TestCleanup(unittest.TestCase):
     """--dismiss-open-before: one-time test cleanup of what is still open."""
 
