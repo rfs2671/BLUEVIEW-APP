@@ -10,8 +10,8 @@ TEST CLEANUP: --dismiss-open-before dismisses every attention item of the
 project still open and created before the date (reason "test cleanup"): off
 the open list, never chased, left out of precision. Counts are printed.
 
-    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-11
-    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-11 --apply
+    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10
+    railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10 --apply
 
 Both together: the replay first, then the cleanup of what is still open.
 
