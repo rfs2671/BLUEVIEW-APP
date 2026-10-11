@@ -458,8 +458,23 @@ class TheSearch(unittest.TestCase):
         with patch.object(server, "db", db), patch.object(server, "_memory_embed_many", _fake_embed), \
                 patch.dict(server._MEMORY_ATLAS, {"ok": False}):
             got = _run(server._memory_answer("co1", "p1", "when did we pour underpinning?", llm=liar))
-        self.assertEqual(got["text"], pm.NO_SOURCE)
+        # The made-up quote is dropped; what IS on record about it is quoted
+        # as it is (never a bare NO_SOURCE over on-topic records, 588 Oct 11).
+        self.assertEqual(got["claims"], [])
         self.assertEqual(got["dropped"], 1)
+        self.assertTrue(got["text"].startswith("No answer found. Last mention: "), got["text"])
+        self.assertNotIn("5000 psi", got["text"])
+
+    def test_off_topic_records_are_still_no_source(self):
+        db = self._db()
+
+        async def nothing(messages):
+            return json.dumps({"claims": []})
+        with patch.object(server, "db", db), patch.object(server, "_memory_embed_many", _fake_embed), \
+                patch.dict(server._MEMORY_ATLAS, {"ok": False}):
+            got = _run(server._memory_answer("co1", "p1", "when was the elevator inspected?",
+                                             llm=nothing))
+        self.assertEqual(got["text"], pm.NO_SOURCE)
 
     def test_a_cited_answer(self):
         db = self._db()
