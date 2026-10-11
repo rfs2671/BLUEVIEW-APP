@@ -343,14 +343,21 @@ def aggregate_no_speech_prob(segments: list) -> float:
 # Whisper call
 # ──────────────────────────────────────────────────────────────────
 
+def audio_name(audio_bytes: Optional[bytes]) -> tuple:
+    """(file name, mime) for the container the bytes are; Ogg (a WhatsApp
+    voice note) when they say nothing."""
+    from lib import wa_voice
+    ext, mime = wa_voice.audio_type(audio_bytes)
+    return f"voice.{ext}", mime
+
 
 async def transcribe_whisper(
     audio_bytes: bytes,
     *,
     openai_api_key: str,
     http_client: Any = None,
-    audio_filename: str = "voice.ogg",
-    audio_mime: str = "audio/ogg",
+    audio_filename: Optional[str] = None,
+    audio_mime: Optional[str] = None,
 ) -> WhisperResult:
     """Call OpenAI Whisper in verbose_json mode so we get
     no_speech_prob per segment. Auto-detects language. Retries
@@ -375,6 +382,11 @@ async def transcribe_whisper(
 
     url = "https://api.openai.com/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {openai_api_key}"}
+    # Named for what the bytes ARE: Whisper reads the format from the file
+    # name, and a forwarded MP3/M4A sent as "voice.ogg" is refused.
+    name, mime = audio_name(audio_bytes)
+    audio_filename = audio_filename or name
+    audio_mime = audio_mime or mime
 
     # Multipart body: model + file + response_format. We force
     # verbose_json so segments[].no_speech_prob is in the response.
@@ -418,6 +430,13 @@ async def transcribe_whisper(
                 confidence=confidence,
             )
         except Exception as e:
+            # OpenAI's reason ("Invalid file format…") is in the body, not in
+            # the exception's text: kept, so a failure says why.
+            body = getattr(getattr(e, "response", None), "text", None)
+            if body:
+                e = RuntimeError(f"{type(e).__name__} {getattr(e.response, 'status_code', '')}: "
+                                 f"{str(body)[:300]} (sent {audio_filename}, "
+                                 f"{len(audio_bytes)} bytes, first8={audio_bytes[:8].hex()})")
             last_exc = e
             if attempt < WHISPER_MAX_RETRIES:
                 logger.warning(

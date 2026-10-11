@@ -52291,6 +52291,132 @@ async def _contact_companies_ambiguous(phone: str) -> bool:
     return len(companies) > 1
 
 
+def _playable_audio(audio: Optional[bytes], parsed: dict) -> tuple:
+    """(bytes, None) when the downloaded bytes are audio a transcriber can
+    read; else (None, "download_failed" | "not_audio"). WhatsApp's media URL
+    (and a WaAPI answer without its key) is the AES-encrypted .enc blob:
+    decrypted here with the note's own mediaKey from the webhook. Whisper was
+    handed that blob and refused it (400), and the group was told to retype."""
+    if not audio:
+        return None, "download_failed"
+    if wa_voice.playable(audio):
+        return audio, None
+    key = wa_voice.media_key(parsed.get("raw"))
+    dec = _decrypt_whatsapp_media(audio, key, "audio") if key else None
+    if wa_voice.playable(dec):
+        logger.info(f"[voice] decrypted with the webhook mediaKey: {len(audio)} -> {len(dec)} bytes")
+        return dec, None
+    logger.warning(f"[voice] not playable audio: size={len(audio)} "
+                   f"first8={audio[:8].hex()} media_key={'yes' if key else 'no'} "
+                   f"decrypted={'yes' if dec else 'no'}")
+    return None, "not_audio"
+
+
+#: Voice notes waiting for their one retry (message ids): a webhook
+#: redelivered meanwhile is not processed twice.
+_VOICE_RETRY_PENDING: set = set()
+
+
+async def _voice_failed(payload: dict, parsed: dict, group_id: str, project_id: Any,
+                        company_id: Any, sender: str, now: datetime, kind: str,
+                        audio: Optional[bytes], attempt: int, vresult: Any = None) -> None:
+    """A group voice note that could not be read: retried once after
+    wa_voice.RETRY_SECONDS when the failure may pass (download, transcription),
+    else (or after the retry) kept as "Voice note not processed". Never a word
+    in the group."""
+    mid = parsed.get("message_id") or ""
+    logger.info(wa_voice.log_line(where="group", not_processed=kind, attempt=attempt + 1,
+                                  company=str(company_id)))
+    if kind in wa_voice.RETRYABLE and attempt == 0 and mid:
+        _VOICE_RETRY_PENDING.add(mid)
+
+        async def _later():
+            await asyncio.sleep(wa_voice.RETRY_SECONDS)
+            await _process_whatsapp_message(payload, voice_attempt=1)
+        asyncio.create_task(_later())
+        return
+    await _voice_not_processed(parsed, group_id, project_id, company_id, sender, now, kind,
+                               audio, vresult=vresult)
+
+
+async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, company_id: Any,
+                               sender: str, now: datetime, kind: str,
+                               audio: Optional[bytes], vresult: Any = None,
+                               seconds: Optional[float] = None) -> None:
+    """Keep the note (its audio when there is any) and put it in Attention as
+    "Voice note not processed" with the reason. Nothing is posted anywhere."""
+    mid = parsed.get("message_id") or ""
+    # Done when its review item exists (the ledger row is written last, so a
+    # failure part-way leaves the note to be finished on a redelivery).
+    if mid and await db.attention_items.find_one(
+            {"type": wa_voice.REVIEW_TYPE, "evidence.message_id": mid}, {"_id": 1}):
+        return
+    audio_key = None
+    if audio and wa_voice.playable(audio):
+        ext, mime = wa_voice.audio_type(audio)
+        audio_key = wa_voice.audio_key(project_id, group_id, mid, ext)
+        try:
+            if not await asyncio.to_thread(_upload_to_r2, audio, audio_key, mime):
+                audio_key = None
+        except Exception as e:
+            logger.warning(f"[voice] audio upload failed: {type(e).__name__}")
+            audio_key = None
+    said = (getattr(vresult, "original_transcript", None) or "").strip()
+    dur = getattr(vresult, "duration_sec", None) or seconds
+    ts = datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) \
+        if parsed.get("timestamp") else now
+    try:
+        row = {
+            "group_id": group_id, "project_id": project_id, "company_id": company_id,
+            "sender": sender, "sender_jid": str(parsed.get("sender") or ""),
+            "sender_name": parsed.get("push_name") or "",
+            "body": "(voice note — not processed)", "has_audio": True,
+            "message_id": mid,
+            "message_id_serialized": parsed.get("message_id_serialized") or "",
+            "timestamp": ts, "created_at": now, "skipped": f"voice_{kind}",
+            "voice": {"transcript": said, "lang": None, "confidence": None,
+                      "duration_sec": dur, "audio_key": audio_key, "review": True,
+                      "failed": kind},
+        }
+        kept = await db.whatsapp_messages.find_one(
+            {"message_id": mid, "group_id": group_id, "skipped": row["skipped"]}) if mid else None
+        if kept:
+            row = kept          # stored on an earlier try that stopped part-way
+        else:
+            res = await db.whatsapp_messages.insert_one(row)
+            row["_id"] = res.inserted_id
+        quote = f"{wa_voice.QUOTE_MARK} Voice note" + (f": “{said[:120]}”" if said else "")
+        await db.attention_items.insert_one({
+            "company_id": str(company_id), "project_id": str(project_id),
+            "group_id": group_id, "type": wa_voice.REVIEW_TYPE, "status": "open",
+            "summary": f"Voice note not processed — {wa_voice.not_processed(kind)}",
+            "voice_failure": kind,
+            "owner": {"kind": "none", "id": None, "status": "unresolved", "jid": None},
+            "requester": None, "due": {"due_text": None, "due_at": None, "due_source": "none"},
+            "importance": "normal", "tags": [],
+            "evidence": {"message_id": mid, "message_key": wa_attention_state.short_id(mid),
+                         "message_row_id": str(row["_id"]), "quote": quote,
+                         "verified": True, "sent_at": ts, "sender": sender,
+                         "sender_last4": sender[-4:], "kind": "voice"},
+            "extraction": {"source": "voice", "prompt_version": wa_attention.PROMPT_VERSION},
+            "needs_review": True, "excluded_from_metrics": True,
+            "topic": [], "multi": False,
+            "history": [_attention_event("created", None, "open", row, quote, "voice")],
+            "parts_done": [], "review": None, "created_at": now, "updated_at": now,
+        })
+        await db.whatsapp_voice_events.insert_one({
+            "message_id": mid, "company_id": company_id, "group_id": group_id,
+            "sender": sender, "english_transcript": "", "original_transcript": said,
+            "language_detected": getattr(vresult, "language_detected", None),
+            "no_speech_prob": getattr(vresult, "no_speech_prob", None),
+            "user_reply": "", "error_kind": kind,
+            "telemetry": getattr(vresult, "telemetry", None) or {},
+            "received_at": now,
+        })
+    except Exception as e:
+        logger.warning(f"[voice] not-processed row failed: {type(e).__name__}")
+
+
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
     """Download audio bytes for a voicenote.
 
@@ -61723,7 +61849,7 @@ async def _punch_remind_job() -> None:
         logger.warning(f"[punch] remind job failed: {type(e).__name__}")
 
 
-async def _process_whatsapp_message(payload: dict):
+async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
     """Background task to process an inbound WhatsApp message."""
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
@@ -61938,6 +62064,9 @@ async def _process_whatsapp_message(payload: dict):
                 # uses for this.
                 voice_message_id = parsed.get("message_id") or ""
                 already = None
+                if voice_attempt == 0 and voice_message_id in _VOICE_RETRY_PENDING:
+                    return                          # redelivered while its retry waits
+                _VOICE_RETRY_PENDING.discard(voice_message_id)
                 if voice_message_id:
                     try:
                         already = await db.whatsapp_voice_events.find_one(
@@ -61950,7 +62079,9 @@ async def _process_whatsapp_message(payload: dict):
 
                 # A DAILY CAP PER COMPANY. Whisper is billed per second; past
                 # the cap the note is kept, untranscribed, and nothing reads it.
-                if not await _voice_claim(msg_company_id, now):
+                # The retry of a failed note is the same note: it was counted
+                # on its first try, and the cap never drops it unreviewed.
+                if voice_attempt == 0 and not await _voice_claim(msg_company_id, now):
                     try:
                         await db.whatsapp_messages.insert_one({
                             "group_id": group_id, "project_id": project_id,
@@ -61969,72 +62100,63 @@ async def _process_whatsapp_message(payload: dict):
                         cap=wa_voice.VOICE_DAILY_CAP))
                     return
 
-                audio_bytes = await download_audio(parsed)
+                # NEVER A FAILURE IN THE GROUP (Oct 11, 588: a 3-second note got
+                # "Voice note couldn't be processed, please retype as text"
+                # posted to everyone). A note that cannot be read is retried
+                # once; then it is kept, with its audio when there is any, as
+                # "Voice note not processed" in Attention. Silent here.
+                said_secs = wa_voice.seconds(parsed.get("raw"))
+                audio_bytes, why = _playable_audio(await download_audio(parsed), parsed)
+                if said_secs is not None and said_secs < wa_voice.MIN_SECONDS:
+                    # Too short to say anything: not transcribed (nor billed).
+                    await _voice_not_processed(parsed, group_id, project_id, msg_company_id,
+                                               sender, now, "too_short", audio_bytes,
+                                               seconds=said_secs)
+                    return
                 if not audio_bytes:
-                    try:
-                        await db.whatsapp_messages.insert_one({
-                            "group_id":   group_id,
-                            "project_id": project_id,
-                            "company_id": msg_company_id,
-                            "sender":     sender,
-                            "body":       "(voicenote — download failed)",
-                            "has_audio":  True,
-                            "message_id": voice_message_id,
-                            "timestamp":  datetime.fromtimestamp(
-                                parsed["timestamp"], tz=timezone.utc
-                            ) if parsed.get("timestamp") else now,
-                            "created_at": now,
-                            "skipped":    "voice_download_failed",
-                        })
-                        await db.whatsapp_voice_events.insert_one({
-                            "message_id": voice_message_id,
-                            "company_id": msg_company_id,
-                            "group_id":   group_id,
-                            "sender":     sender,
-                            "english_transcript": "",
-                            "original_transcript": "",
-                            "language_detected": None,
-                            "no_speech_prob": None,
-                            "user_reply": "download_failed",
-                            "error_kind": "download_failed",
-                            "telemetry":  {"audio_bytes_size": 0},
-                            "received_at": now,
-                        })
-                    except Exception:
-                        pass
-                    await send_whatsapp_message(
-                        group_id,
-                        "Couldn't play that voice note. Send it as text and "
-                        "I'll answer.",
-                    )
+                    await _voice_failed(payload, parsed, group_id, project_id, msg_company_id,
+                                        sender, now, why, None, voice_attempt)
                     return
 
-                from lib.voice_ingest import process_voice_note as _process_voice
-                vresult = await _process_voice(
-                    audio_bytes,
-                    openai_api_key=OPENAI_API_KEY,
-                    sentry_capture=(
-                        (lambda m, level="warning":
-                            sentry_sdk.capture_message(m, level=level))
-                        if _SENTRY_AVAILABLE and sentry_sdk is not None
-                        else None
-                    ),
-                )
+                from lib import voice_ingest as _vi
+                try:
+                    vresult = await _vi.process_voice_note(
+                        audio_bytes,
+                        openai_api_key=OPENAI_API_KEY,
+                        sentry_capture=(
+                            (lambda m, level="warning":
+                                sentry_sdk.capture_message(m, level=level))
+                            if _SENTRY_AVAILABLE and sentry_sdk is not None
+                            else None
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"[voice] transcription raised: {type(e).__name__}: {str(e)[:200]}")
+                    vresult = _vi.VoiceIngestResult(ok=False, error_kind="whisper_failed",
+                                                    telemetry={})
+                fail = None if vresult.ok else (vresult.error_kind or "whisper_failed")
+                if vresult.ok and vresult.duration_sec and vresult.duration_sec < wa_voice.MIN_SECONDS:
+                    fail = "too_short"
+                elif vresult.ok and not (vresult.original_transcript or
+                                         vresult.english_transcript or "").strip():
+                    fail = "empty"
+                if fail:
+                    await _voice_failed(payload, parsed, group_id, project_id, msg_company_id,
+                                        sender, now, fail, audio_bytes, voice_attempt,
+                                        vresult=vresult)
+                    return
                 # THE AUDIO IS KEPT (R2, under the project, so the project's
-                # delete sweeps it) -- only for a note that is transcribed and
-                # stored: the review screens play it next to the transcript.
-                # A rejected note (no speech, too long, Whisper failed) has no
-                # message row to find it by, so it is never uploaded.
-                voice_audio_key = None
-                if vresult.ok:
-                    voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id)
-                    try:
-                        if not await asyncio.to_thread(
-                                _upload_to_r2, audio_bytes, voice_audio_key, "audio/ogg"):
-                            voice_audio_key = None
-                    except Exception as _e:
-                        logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")
+                # delete sweeps it): the review screens play it next to the
+                # transcript.
+                ext, mime = wa_voice.audio_type(audio_bytes)
+                voice_audio_key = wa_voice.audio_key(project_id, group_id, voice_message_id, ext)
+                try:
+                    if not await asyncio.to_thread(
+                            _upload_to_r2, audio_bytes, voice_audio_key, mime):
                         voice_audio_key = None
+                except Exception as _e:
+                    logger.warning(f"[voice] audio upload failed: {type(_e).__name__}")
+                    voice_audio_key = None
                 del audio_bytes
 
                 try:
@@ -62047,20 +62169,13 @@ async def _process_whatsapp_message(payload: dict):
                         "original_transcript": vresult.original_transcript,
                         "language_detected":   vresult.language_detected,
                         "no_speech_prob":      vresult.no_speech_prob,
-                        "user_reply":          vresult.user_reply,
-                        "error_kind":          vresult.error_kind,
+                        "user_reply":          "",
+                        "error_kind":          None,
                         "telemetry":           vresult.telemetry,
                         "received_at":         now,
                     })
                 except Exception as _e:
                     logger.warning(f"group voice event insert skipped: {_e}")
-
-                if not vresult.ok:
-                    # "I didn't catch that" and "too long" are both worth
-                    # saying out loud. The speaker is standing there waiting.
-                    if vresult.user_reply:
-                        await send_whatsapp_message(group_id, vresult.user_reply)
-                    return
 
                 # THE TRANSCRIPT IS THE MESSAGE FROM HERE DOWN. Everything
                 # below — storage, addressing, the agent — runs on it exactly
@@ -62485,7 +62600,9 @@ async def _process_whatsapp_message(payload: dict):
                     await send_whatsapp_message(
                         parsed["from"], "Voice notes are paused for today. Send it as text.")
                     return
-                audio_bytes = await download_audio(parsed)
+                # Real audio, or decrypted with the webhook's mediaKey; an
+                # encrypted .enc blob is a failed download, not Whisper's.
+                audio_bytes, _audio_why = _playable_audio(await download_audio(parsed), parsed)
                 if not audio_bytes:
                     # WaAPI fetch failed (download_audio handles its own
                     # retries internally; if it returns None we tell the
