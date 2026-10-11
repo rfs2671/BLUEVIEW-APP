@@ -337,6 +337,45 @@ class CodexRound1(unittest.TestCase):
         self.assertFalse(u.worth_a_call("inspection"))
 
 
+class FollowUpsShareTheSubject(unittest.TestCase):
+    """Live eval, Oct 11: "Necesito que alguien me confirme la entrega de
+    los paneles para el viernes" was linked as a follow-up of Carlos's
+    colado plan on "para" alone."""
+
+    def _plan(self):
+        from lib import wa_attention_state as st
+        topic = (st.topic_terms("@Carlos ¿puedes mandar el plan de colado para mañana?")
+                 | st.topic_terms("Sí, lo mando mañana temprano"))
+        return {"id": "c1", "type": "commitment", "status": "open", "owner": "C",
+                "topic": topic}
+
+    def test_a_function_word_is_no_shared_subject(self):
+        from lib import wa_attention_state as st
+        q = st.topic_terms("Necesito que alguien me confirme la entrega de los paneles "
+                           "para el viernes")
+        self.assertIn("para", q & self._plan()["topic"])          # what linked it live
+        self.assertIsNone(st.follow_up_of(q, "M", [self._plan()]))
+        self.assertEqual(st.subject_terms(q), {"entrega", "panele"})
+
+    def test_the_same_subject_still_follows_up(self):
+        from lib import wa_attention_state as st
+        q = st.topic_terms("¿Ya está listo el plan de colado?")
+        self.assertEqual(st.follow_up_of(q, "M", [self._plan()]), "c1")
+        risers = {"id": "r1", "type": "commitment", "status": "open", "owner": "B",
+                  "topic": st.topic_terms("I'll get the risers in Thursday")}
+        self.assertEqual(st.follow_up_of(st.topic_terms("B the risers came in?"), "R",
+                                         [risers]), "r1")
+
+    def test_an_ask_of_someone_is_a_request(self):
+        from lib import wa_attention_state as st
+        for body in ("Necesito que alguien me confirme la entrega de los paneles para el viernes",
+                     "Alguien me puede mandar las fotos?", "I need someone to check the hoist",
+                     "Can someone confirm the panel delivery?"):
+            self.assertTrue(st.asks_for_action(body), body)
+        for body in ("B the risers came in?", "¿Ya llegó la varilla?", "Is the pour still on?"):
+            self.assertFalse(st.asks_for_action(body), body)
+
+
 class TheDryRuns(unittest.TestCase):
 
     def test_spanish_attention_scripted(self):

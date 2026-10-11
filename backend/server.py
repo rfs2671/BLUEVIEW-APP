@@ -72,6 +72,7 @@ from lib import wa_security  # noqa: E402
 from lib import owner_portal  # noqa: E402
 from lib import wa_sender_map  # noqa: E402
 from lib import wa_dm  # noqa: E402
+from lib import datefmt  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import wa_voice  # noqa: E402
@@ -47215,6 +47216,9 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                      "$set": {"updated_at": datetime.now(timezone.utc)}})
                 report["follow_ups"] += 1
                 continue
+            if wa_attention_state.asks_for_action(body):
+                # Not a follow-up on anything open: what it asks for, new.
+                it = dict(it, type="request")
         link = None
         mine = wa_attention_state.own_subject(quote) if it["type"] == "commitment" else set()
         if it["type"] == "commitment":
@@ -61198,7 +61202,8 @@ async def _punch_answer(ident: dict, q: dict) -> str:
             return f"{row['pid']} is not closed ({row.get('status', '').replace('_', ' ')})."
         who = await db.users.find_one({"_id": to_query_id(row.get("closed_by"))}, {"name": 1}) or {}
         at = row.get("closed_at")
-        when = at.astimezone(_MEMORY_NY).strftime("%b %-d, %-I:%M %p") if isinstance(at, datetime) else ""
+        when = (datefmt.strftime(at.astimezone(_MEMORY_NY), "%b %-d, %-I:%M %p")
+                if isinstance(at, datetime) else "")
         return f"{row['pid']} was closed by {who.get('name') or 'an admin'}{' on ' + when if when else ''}."
     # photo
     key = row.get("photo_key")
@@ -61752,9 +61757,7 @@ async def _process_whatsapp_message(payload: dict):
                             if gen_est.tzinfo is None:
                                 gen_est = gen_est.replace(tzinfo=timezone.utc)
                             gen_local = gen_est.astimezone(ZoneInfo("America/New_York"))
-                            label = gen_local.strftime("%-I:%M %p") if hasattr(gen_local, 'strftime') else str(gen_local)
-                            # Windows fallback — strftime %-I is POSIX only
-                            label = gen_local.strftime("%I:%M %p").lstrip("0")
+                            label = datefmt.strftime(gen_local, "%-I:%M %p")
                         else:
                             label = "today's"
                     except Exception:
@@ -64116,8 +64119,9 @@ async def get_whatsapp_source_message(project_id: str, row_id: str,
     who = who or wa_sender_map.safe_push_name(row.get("sender_name")) or ""
     number = row.get("sender_phone")
     p_at = row.get("sender_phone_at")
-    when = ((at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(_MEMORY_NY)
-            .strftime("%b %-d, %-I:%M:%S %p") if isinstance(at, datetime) else "")
+    when = (datefmt.strftime((at if at.tzinfo else at.replace(tzinfo=timezone.utc))
+                             .astimezone(_MEMORY_NY), "%b %-d, %-I:%M:%S %p")
+            if isinstance(at, datetime) else "")
     return {"id": str(row["_id"]), "text": row.get("body") or "",
             "who": who,
             "phone": wa_mention.shown(number, admin) or None,

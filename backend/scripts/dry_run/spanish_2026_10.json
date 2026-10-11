@@ -89,7 +89,14 @@
     "due_text": "para el viernes",
     "flagged": false
    },
-   "why": "a confident Spanish voice note: read like typed text"
+   "why": "a confident Spanish voice note: read like typed text. The model's live answer (Oct 11) is replayed: a QUESTION, which shared only 'para' with Carlos's colado plan and was linked as its follow-up; a follow-up must share the subject, and an ask of someone ('Necesito que alguien…') is a request",
+   "model": [
+    {
+     "type": "question",
+     "quote": "Necesito que alguien me confirme la entrega de los paneles para el viernes",
+     "due_text": "para el viernes"
+    }
+   ]
   },
   {
    "from": "R",

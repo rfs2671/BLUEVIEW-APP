@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from lib import datefmt
+
 
 # ── Severity constants ────────────────────────────────────────────
 
@@ -50,7 +52,7 @@ def _date_short(value: Any) -> str:
                    "%Y-%m-%d"):
         try:
             d = datetime.strptime(s.split(".")[0] if "." in s else s.split("+")[0], fmt_in.replace(".%f", "").replace("%z", ""))
-            return d.strftime("%a %b %-d") if hasattr(d, "strftime") else s[:10]
+            return datefmt.strftime(d, "%a %b %-d")
         except (ValueError, AttributeError):
             continue
     # Fallback.
