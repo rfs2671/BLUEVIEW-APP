@@ -428,6 +428,18 @@ export default function WhatsAppGroupsScreen() {
                 <ChaseCard projectId={projectId} />
               ) : null}
 
+              {/* ── VOICE LOG, admins: every voice note of this job ─────── */}
+              {isAdmin && !readOnly ? (
+                <Pressable
+                  onPress={() => router.push(`/projects/${projectId}/voice-log`)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open the voice log"
+                  style={({ pressed }) => [s.quietLink, pressed && { opacity: 0.7 }]}
+                >
+                  <Text style={s.quietLinkText}>Voice log — every voice note, what it said and produced</Text>
+                </Pressable>
+              ) : null}
+
               {/* ── WHAT THE BOT DOES IN GROUPS (admins) ─────────────────── */}
               {isAdmin && !readOnly && groups.length > 0 ? (
                 <>

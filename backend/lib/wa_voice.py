@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from lib import multilang
 
@@ -195,6 +195,73 @@ def voice_note_lines(row: Dict[str, Any], who: str, group: str, ny: Any) -> str:
     if english and english != said and v.get("lang") not in (None, "en"):
         lines.append(f"English: {english}")
     return "\n".join(lines)
+
+
+# ── THE VOICE LOG (admin): one row per voice note ───────────────────────────
+
+LOG_STATUSES = ("transcribed", "flagged", "not_processed")
+BOT_OFF_REASON = "not transcribed: the bot was off for this group"
+
+
+def log_status(voice: Optional[Dict[str, Any]], skipped: Any = None,
+               error_kind: Any = None) -> Dict[str, Any]:
+    """{status, reason}: not_processed (why), flagged (an unsure note: a
+    Yiddish note or low confidence; why), or transcribed."""
+    v = voice or {}
+    failed = v.get("failed") or error_kind or (
+        str(skipped).replace("voice_", "") if skipped else None)
+    if failed:
+        return {"status": "not_processed", "reason": not_processed(failed)}
+    if v.get("review"):
+        return {"status": "flagged", "reason": v.get("review_reason")}
+    return {"status": "transcribed", "reason": None}
+
+
+def log_row(row: Dict[str, Any], *, who: str, where: str, place: str, at: Any,
+            produced: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """A group voice note for the log. No phone number."""
+    v = row.get("voice") or {}
+    said = str(v.get("transcript") or "").strip()
+    english = str(v.get("english_direct") or v.get("english") or "").strip()
+    return {"id": str(row.get("_id")), "where": where, "place": place, "at": at,
+            "who": who, "lang": v.get("lang"), "confidence": v.get("confidence"),
+            "duration_sec": v.get("duration_sec"), "transcript": said,
+            "english": english if english and english != said else "",
+            **(log_status(v, row.get("skipped")) if (v or row.get("skipped")) else
+               # Stored while the bot was off for the group: never transcribed.
+               {"status": "not_processed", "reason": BOT_OFF_REASON}),
+            "forwarded": bool(row.get("forwarded")),
+            "audio": bool(v.get("audio_key")), "message_row_id": str(row.get("_id")),
+            "produced": produced}
+
+
+def log_row_dm(ev: Dict[str, Any], *, who: str, at: Any) -> Dict[str, Any]:
+    """A DM voice note (whatsapp_voice_events) for the log: no audio is kept
+    for a DM, and a DM produces no item."""
+    said = str(ev.get("original_transcript") or "").strip()
+    english = str(ev.get("english_transcript") or "").strip()
+    st = log_status(None, None, ev.get("error_kind"))
+    if st["status"] == "transcribed" and needs_review(
+            ev.get("lang") or lang_code(ev.get("language_detected"), said), ev.get("confidence")):
+        st = {"status": "flagged",
+              "reason": review_reason(ev.get("lang") or "", ev.get("confidence"))}
+    return {"id": str(ev.get("_id")), "where": "dm", "place": "DM", "at": at, "who": who,
+            "lang": ev.get("lang") or (lang_code(ev.get("language_detected"), said) if said
+                                       else None),
+            "confidence": ev.get("confidence"), "duration_sec": ev.get("duration_sec"),
+            "transcript": said, "english": english if english and english != said else "",
+            **st, "forwarded": False, "audio": False, "message_row_id": None, "produced": []}
+
+
+def log_keep(row: Dict[str, Any], *, sender: str = "", lang: str = "",
+             status: str = "") -> bool:
+    if sender and not name_matches(sender, row.get("who")):
+        return False
+    if lang and (row.get("lang") or "") != lang:
+        return False
+    if status and row.get("status") != status:
+        return False
+    return True
 
 
 def is_voice(row: Dict[str, Any]) -> bool:
