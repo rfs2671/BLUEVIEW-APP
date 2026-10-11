@@ -50563,7 +50563,8 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
         return memory
-    if reply and wa_assistant.denies_voice_access(reply):
+    if reply and wa_assistant.asks_about_voice_notes(body) \
+            and wa_assistant.denies_voice_access(reply):
         # NEVER "I can't access voice notes" (588, Oct 11 2:58 PM): they are
         # transcribed and stored. The notes themselves go out instead.
         logger.info("[wa-assistant] reply denied voice access; sending the notes")
@@ -50675,6 +50676,28 @@ async def _memory_embed_one(text: str) -> Optional[list]:
     return got[0] if got else None
 
 
+async def _voice_rows_newest_first(company_id: str, gids: List[str], page: int = 80,
+                                   max_rows: int = 2000):
+    """The groups' voice-note rows, newest first, a page at a time (a
+    person's last note may be far down a busy job's history). Stops at
+    max_rows."""
+    before = None
+    seen = 0
+    while seen < max_rows:
+        q = {"group_id": {"$in": gids}, "company_id": _company_id_filter(company_id),
+             "has_audio": True, "sender": {"$ne": "bot"}}
+        if before is not None:
+            q["created_at"] = {"$lt": before}
+        batch = await db.whatsapp_messages.find(q).sort(
+            [("created_at", -1)]).limit(page).to_list(page)
+        for r in batch:
+            yield r
+        seen += len(batch)
+        if len(batch) < page or not isinstance(batch[-1].get("created_at"), datetime):
+            return
+        before = batch[-1]["created_at"]
+
+
 async def _recent_voice_notes(company_id: str, project_id: str, n: int = 3,
                               sender: str = "") -> str:
     """The job's latest group voice notes, newest first, for the DM:
@@ -50690,13 +50713,9 @@ async def _recent_voice_notes(company_id: str, project_id: str, n: int = 3,
               for g in groups if g.get("wa_group_id")}
     if not gnames:
         return "This job has no linked WhatsApp group."
-    rows = await db.whatsapp_messages.find(
-        {"group_id": {"$in": list(gnames)}, "company_id": _company_id_filter(company_id),
-         "has_audio": True, "sender": {"$ne": "bot"}}).sort(
-        [("created_at", -1)]).limit(80).to_list(80)
     cache: Dict[str, Any] = {}
     notes = []
-    for r in rows:
+    async for r in _voice_rows_newest_first(company_id, list(gnames)):
         if not r.get("voice") and not r.get("skipped"):
             continue
         jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
@@ -52758,6 +52777,7 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
             "message_id": mid,
             "message_id_serialized": parsed.get("message_id_serialized") or "",
             "timestamp": ts, "created_at": now, "skipped": f"voice_{kind}",
+            "forwarded": bool(parsed.get("forwarded")),
             "voice": {"transcript": said, "lang": None, "confidence": None,
                       "duration_sec": dur, "audio_key": audio_key, "review": True,
                       "failed": kind},
@@ -52781,7 +52801,8 @@ async def _voice_not_processed(parsed: dict, group_id: str, project_id: Any, com
             "evidence": {"message_id": mid, "message_key": wa_attention_state.short_id(mid),
                          "message_row_id": str(row["_id"]), "quote": quote,
                          "verified": True, "sent_at": ts, "sender": sender,
-                         "sender_last4": sender[-4:], "kind": "voice"},
+                         "sender_last4": sender[-4:], "kind": "voice",
+                         **({"forwarded": True} if parsed.get("forwarded") else {})},
             "extraction": {"source": "voice", "prompt_version": wa_attention.PROMPT_VERSION},
             "needs_review": True, "excluded_from_metrics": True,
             "topic": [], "multi": False,
