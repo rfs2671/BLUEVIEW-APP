@@ -36,6 +36,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+from scripts.probe_helpers import counted  # noqa: E402
+
 _PHONE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 
 
@@ -137,9 +139,11 @@ async def main_async(a) -> int:
                               "source_id": 1}).to_list(None)
     wa_docs = [d for d in docs if d.get("source") == pm.SOURCE_WHATSAPP]
     newest_doc = max((d.get("at") for d in docs if isinstance(d.get("at"), datetime)), default=None)
+    # Counted through probe_helpers: an absent `embedded` field raises
+    # instead of reading as "0 embedded".
+    emb = counted(docs, "embedded", bool) if docs else 0
     print(f"   project_memory: {len(docs)} rows ({len(wa_docs)} WhatsApp), newest at "
-          f"{_t(newest_doc)}; embedded {sum(1 for d in docs if d.get('embedded'))}, "
-          f"not embedded {sum(1 for d in docs if not d.get('embedded'))}")
+          f"{_t(newest_doc)}; embedded {emb}, not embedded {len(docs) - emb}")
     doc_cos = sorted({str(d.get("company_id")) for d in docs})
     print(f"   project_memory company_id(s): {doc_cos}")
     have = {str(d.get("source_id")) for d in wa_docs}
@@ -217,7 +221,8 @@ async def main_async(a) -> int:
     if a.answer:
         print("\nANSWER")
         got = await server._memory_answer(pco, pid, a.question or a.query)
-        print(f"   sources={len(got['sources'])} claims={len(got['claims'])} "
+        sources, claims = got["sources"], got["claims"]
+        print(f"   sources={len(sources)} claims={len(claims)} "
               f"dropped={got.get('dropped')} last_mention={bool(got.get('mention'))}")
         print("   " + _safe(got["text"], 600))
     return 0
