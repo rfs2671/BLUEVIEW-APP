@@ -193,7 +193,9 @@ export const GROUP_LANGUAGES = [
 ];
 export const LANGUAGES_HINT =
   'Voice notes in another language are flagged for review, with an English translation. '
-  + 'With one language picked, it is also the transcription hint.';
+  + 'With one language picked, it is also the transcription hint. '
+  + 'With Yiddish picked, every note also gets a direct English translation, and a note '
+  + 'heard as English that the translation disagrees with is flagged.';
 
 /** The list with `code` added or taken out, in a fixed order. */
 export function toggleLanguage(langs, code) {

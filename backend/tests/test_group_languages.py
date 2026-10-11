@@ -77,23 +77,47 @@ class InAGroup(The257NoteInTheGroup):
     test_a_sender_set_to_yiddish_gets_the_translation_and_a_flag = None
     test_heard_as_german_or_hebrew = None
 
+    #: How alike Whisper's English and its direct English are (embeddings).
+    similarity = 0.95
+
     def _db(self):
         db = super()._db()
         if self.langs is not None:
             db.whatsapp_groups.rows[0]["bot_config"]["languages"] = self.langs
         return db
 
+    def _deliver(self, *a, **kw):
+        self.embedded = []
+
+        async def embed(texts):
+            self.embedded.append(list(texts))
+            s = self.similarity
+            return None if s is None else [[1.0, 0.0], [s, (1 - s * s) ** 0.5]]
+        with patch.object(server, "_memory_embed_many", embed):
+            return super()._deliver(*a, **kw)
+
     def _row(self):
         (row,) = [r for r in self.db.whatsapp_messages.rows if r.get("sender") != "bot"]
         return row
 
     def test_a_yiddish_group_flags_a_note_heard_as_english(self):
-        self.langs = ["yi"]
+        # The words agree with the audio's English, but the group speaks
+        # only Yiddish: for a person.
+        self.langs, self.translation = ["yi"], CLEAN_EN["text"]
         self._deliver(CLEAN_EN, forwarded=False)
         row = self._row()
         self.assertTrue(row["voice"]["review"])
         self.assertEqual(row["voice"]["review_reason"], "heard_en_not_spoken_here")
-        self.assertEqual(row["voice"]["english_direct"], BLESSING_EN)
+        self.assertEqual(row["voice"]["english_direct"], CLEAN_EN["text"])
+
+    def _flagged(self):
+        (rev,) = self.reviews()
+        self.assertEqual(rev["voice_failure"], "unreliable")
+        row = self._row()
+        self.assertEqual(row["skipped"], "voice_unreliable")
+        self.assertEqual(self.group_posts(), [])
+        self.assertEqual(self.agent_calls, [])
+        return rev, row
 
     def test_an_english_group_leaves_it_alone(self):
         self.langs = ["en", "es"]
@@ -126,6 +150,130 @@ class InAGroup(The257NoteInTheGroup):
         with patch.object(voice_ingest, "process_voice_note", process):
             self._deliver(CLEAN_EN, forwarded=False, sender_lang="en")
         self.assertEqual(got.get("language"), "en")
+
+
+class AnEnglishAndYiddishGroup(InAGroup):
+    """588 is EN+YI. Every note also goes straight to English; a note heard as
+    English whose direct English says something else is not what was said."""
+
+    langs = ["en", "yi"]
+    test_a_yiddish_group_flags_a_note_heard_as_english = None
+    test_an_english_group_leaves_it_alone = None
+    test_one_language_is_the_hint = None
+    test_a_senders_own_language_wins = None
+
+    def test_the_257_clip_is_flagged(self):
+        # Forwarded Williamsburg Yiddish, labeled English by Whisper.
+        self._deliver()
+        rev, row = self._flagged()
+        self.assertEqual(self.translations, [b"OggS"])
+        self.assertEqual(row["voice"]["english_direct"], BLESSING_EN)
+        self.assertNotIn("People speaking", rev["evidence"]["quote"])
+
+    def test_the_257_clip_with_fluent_english_words_is_flagged_too(self):
+        # The same audio, had Whisper made up a plausible sentence instead of
+        # describing it: nothing in its scores or words gives it away; the
+        # direct English does.
+        self.similarity = 0.31
+        self._deliver(dict(CLEAN_EN, text="I'll be at the house on Tuesday"))
+        rev, row = self._flagged()
+        self.assertEqual(self.embedded, [["I'll be at the house on Tuesday", BLESSING_EN]])
+        (why,) = row["voice"]["unreliable"]
+        self.assertIn(wa_voice.DIVERGED, why)
+
+    def test_an_english_note_that_agrees_is_untouched(self):
+        self.translation = "The concrete truck is at the gate"
+        self._deliver(CLEAN_EN, forwarded=False)
+        self.assertEqual(self.reviews(), [])
+        row = self._row()
+        self.assertFalse(row["voice"]["review"])
+        self.assertEqual(row["voice"]["english_direct"], "The concrete truck is at the gate")
+        self.assertEqual(self.translations, [b"OggS"])        # every note, any language
+
+    def test_no_translation_or_no_comparison_is_flagged(self):
+        self.translation = ""
+        self._deliver(CLEAN_EN, forwarded=False)
+        self.assertEqual(self._flagged()[1]["voice"]["unreliable"],
+                         ["no direct translation of the audio"])
+        self.similarity, self.translation = None, CLEAN_EN["text"]
+        self._deliver(CLEAN_EN, forwarded=False)
+        self._flagged()
+
+    def test_no_hint(self):
+        got = {}
+        from lib import voice_ingest
+        real_process = voice_ingest.process_voice_note
+
+        async def process(audio, **kw):
+            got.update(kw)
+            return await real_process(audio, **kw)
+        self.translation = CLEAN_EN["text"]
+        with patch.object(voice_ingest, "process_voice_note", process):
+            self._deliver(CLEAN_EN, forwarded=False)
+        self.assertIsNone(got.get("language"))
+
+
+class AForwardedNote(InAGroup):
+    """Someone else's voice: the forwarder's own language is not used."""
+
+    test_a_yiddish_group_flags_a_note_heard_as_english = None
+    test_an_english_group_leaves_it_alone = None
+    test_one_language_is_the_hint = None
+    test_a_senders_own_language_wins = None
+
+    def test_the_group_decides_not_the_forwarder(self):
+        self.langs = ["es"]
+        got = {}
+        from lib import voice_ingest
+        real_process = voice_ingest.process_voice_note
+
+        async def process(audio, **kw):
+            got.update(kw)
+            return await real_process(audio, **kw)
+        with patch.object(voice_ingest, "process_voice_note", process):
+            self._deliver(CLEAN_EN, forwarded=True, sender_lang="yi")
+        self.assertEqual(got.get("language"), "es")
+        # Not "sender_yiddish": the forwarder's Yiddish is not the note's.
+        self.assertNotEqual(self._row()["voice"].get("review_reason"), "sender_yiddish")
+
+    def test_typed_by_the_sender_their_language_still_counts(self):
+        self.langs = ["es"]
+        self._deliver(CLEAN_EN, forwarded=False, sender_lang="yi")
+        self.assertEqual(self._row()["voice"]["review_reason"], "sender_yiddish")
+
+
+class TheDivergenceRule(unittest.TestCase):
+
+    def test_the_pure_rule(self):
+        self.assertTrue(wa_voice.translates_every_note(["en", "yi"]))
+        self.assertFalse(wa_voice.translates_every_note(["en", "es"]))
+        self.assertFalse(wa_voice.translates_every_note([]))
+        self.assertIsNone(wa_voice.diverged("a", "b", 0.75))
+        self.assertIn(wa_voice.DIVERGED, wa_voice.diverged("a", "b", 0.74))
+        self.assertEqual(wa_voice.diverged("a", "  ", 0.99), "no direct translation of the audio")
+        self.assertTrue(wa_voice.diverged("a", "b", None))
+
+
+class SettingA588(unittest.TestCase):
+    """scripts/group_languages_set.py: 588 is set to EN+YI by a run, not code."""
+
+    def _run_script(self, *argv):
+        from scripts import group_languages_set as s
+        db = FakeDb(projects=[{"_id": "proj_a", "name": "588 Bedford", "company_id": CO_A}],
+                    whatsapp_groups=[_group_row(CO_A, "proj_a", _id="g1"),
+                                     _group_row(CO_A, "proj_b", _id="g2")])
+        with patch.object(server, "db", db):
+            _run(s.main_async(s.argparse.Namespace(project="proj_a", group="", **dict(argv))))
+        return db
+
+    def test_dry_run_writes_nothing_and_apply_writes(self):
+        db = self._run_script(("langs", "en,yi"), ("apply", False))
+        self.assertEqual(db.whatsapp_groups.rows[0]["bot_config"]["languages"], [])
+        db = self._run_script(("langs", "yi,en"), ("apply", True))
+        self.assertEqual(db.whatsapp_groups.rows[0]["bot_config"]["languages"], ["en", "yi"])
+        self.assertEqual(db.whatsapp_groups.rows[1]["bot_config"]["languages"], [])   # not 588
+        with self.assertRaises(SystemExit):
+            self._run_script(("langs", "en,fr"), ("apply", True))
 
 
 def _yid_item(i, group="g1", minutes=0, verdict=None, lang="yi"):

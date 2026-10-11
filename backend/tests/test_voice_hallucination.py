@@ -138,7 +138,7 @@ class The257NoteInTheGroup(_Group):
 
         async def translate(audio, **kw):
             self.translations.append(audio[:4])
-            return BLESSING_EN
+            return getattr(self, "translation", BLESSING_EN)
 
         async def lang(company_id, jids):
             return sender_lang

@@ -62416,11 +62416,15 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     return
 
                 from lib import voice_ingest as _vi
-                sender_lang = await _sender_whisper_language(
+                # A FORWARDED NOTE IS SOMEONE ELSE'S VOICE: the forwarder's
+                # own language (People) says nothing about it; the group's
+                # languages decide.
+                sender_lang = None if parsed.get("forwarded") else await _sender_whisper_language(
                     msg_company_id, await _sender_language_jids(
                         msg_company_id, str(parsed.get("sender") or "")))
                 # The group's languages (its settings): one of them is the
-                # hint for a sender with none set on People.
+                # hint for a sender with none set on People; with more than
+                # one (EN+YI), no hint: Whisper detects.
                 group_langs = wa_voice.group_languages(
                     (bot_config or {}).get("languages")) or []
                 whisper_hint = sender_lang or wa_voice.group_hint(group_langs)
@@ -62468,13 +62472,30 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 # group's note "heard" as English or German): for a person.
                 outside = wa_voice.heard_outside(heard_lang, group_langs)
                 direct = wa_voice.needs_direct_translation(heard_lang, sender_lang) or outside
-                if direct or unreliable:
+                # A GROUP THAT SPEAKS YIDDISH: every note goes straight to
+                # English too, whatever Whisper says it heard (588, Oct 11,
+                # 2:57 PM: Yiddish audio labeled English).
+                yi_group = wa_voice.translates_every_note(group_langs)
+                if direct or unreliable or yi_group:
                     try:
                         english_direct = await _vi.translate_whisper(
                             audio_bytes, openai_api_key=OPENAI_API_KEY) or None
                     except Exception as _e:
                         logger.warning(f"[voice] direct translation failed: "
                                        f"{type(_e).__name__}")
+                if yi_group and heard_lang == "en" and not unreliable:
+                    # Heard as English: Whisper's English and its direct
+                    # English of the same audio must say the same thing.
+                    # When they do not (or there is no translation), the
+                    # transcript is not what was said.
+                    heard_en = vresult.english_transcript or vresult.original_transcript or ""
+                    sim = None
+                    if english_direct and heard_en.strip():
+                        vecs = await _memory_embed_many([heard_en, english_direct])
+                        sim = project_memory.cosine(vecs[0], vecs[1]) if vecs else None
+                    why_not = wa_voice.diverged(heard_en, english_direct, sim)
+                    if why_not:
+                        unreliable.append(why_not)
                 if unreliable:
                     # NOT WHAT WAS SAID (588, Oct 11, 2:57 PM: a Yiddish
                     # blessing stored as "People speaking in their native

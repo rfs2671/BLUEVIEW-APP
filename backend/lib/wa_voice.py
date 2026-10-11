@@ -475,6 +475,36 @@ def heard_outside(lang: Optional[str], langs: Optional[List[str]]) -> bool:
     return bool(langs) and bool(lang) and lang not in langs
 
 
+def translates_every_note(langs: Optional[List[str]]) -> bool:
+    """A group that speaks Yiddish: every note also goes straight to English,
+    whatever Whisper says it heard (588, Oct 11, 2:57 PM: Yiddish audio
+    labeled English)."""
+    return "yi" in (langs or [])
+
+
+#: Under this, Whisper's English transcript and its direct English of the same
+#: audio are not the same words (text-embedding-3-small cosine).
+DIVERGE_MIN = 0.75
+DIVERGED = "transcript and direct translation disagree"
+
+
+def diverged(transcript: str, translation: Optional[str],
+             similarity: Optional[float]) -> Optional[str]:
+    """Why a note heard as English is not what was said, in a group that
+    speaks Yiddish: no direct English for the audio, a similarity under
+    DIVERGE_MIN, or none to compare (the embeddings failed). None when they
+    agree."""
+    if not str(translation or "").strip():
+        return "no direct translation of the audio"
+    if not str(transcript or "").strip():
+        return DIVERGED
+    if not isinstance(similarity, (int, float)):
+        return "transcript and direct translation could not be compared"
+    if similarity < DIVERGE_MIN:
+        return f"{DIVERGED} (similarity {round(similarity, 2)} < {DIVERGE_MIN})"
+    return None
+
+
 def needs_direct_translation(lang: Optional[str], sender_hint: Optional[str]) -> bool:
     return (lang or "") in TRANSLATE_LANGS or (sender_hint or "") == "yi"
 
