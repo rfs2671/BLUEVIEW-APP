@@ -73,12 +73,16 @@ export function detailLine(row, now) {
 }
 
 /** The form: what to send, or why not yet. */
-export function assignRequest({ name, company, phone }, companies) {
+export function assignRequest({ name, company, phone, removePhone = false }, companies) {
   const n = String(name || '').trim().replace(/\s+/g, ' ');
   if (!n) return { error: 'Enter the person’s name.' };
   if (n.length > 80) return { error: 'Keep the name under 80 characters.' };
   const list = companies || [];
   if (!company || !list.includes(company)) return { error: 'Pick their company.' };
+  if (removePhone) {
+    // Remove the number on file: sent as '' (left out, it is kept).
+    return { body: { personName: n, subCompany: company, phone: '' } };
+  }
   const p = cleanPhone(phone);
   if (p === null) {
     return { error: 'Enter their WhatsApp number with the country code, or a 10-digit US number.' };

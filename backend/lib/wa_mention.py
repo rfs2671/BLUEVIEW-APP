@@ -94,7 +94,10 @@ def mentions_for(text: str, targets: Iterable[Dict[str, Any]]) -> List[str]:
 
 
 def check(text: str, mentions: List[str]) -> Optional[str]:
-    """None when text and mentions agree; else what is wrong."""
+    """None when every mention is a valid jid whose "@<number>" is in the
+    text; else what is wrong. An "@<digits>" in the text that is NOT
+    mentioned is fine: it is someone's own words quoted (a chase quote, a
+    punch item), plain text, and must not cost the real mention."""
     for m in mentions:
         if not MENTION_JID.match(str(m)):
             return f"bad jid {m!r}"
@@ -103,9 +106,6 @@ def check(text: str, mentions: List[str]) -> Optional[str]:
     missing = [n for n in nums if n not in in_text]
     if missing:
         return f"mentioned but not in the text: {len(missing)}"
-    extra = [n for n in in_text if n not in nums]
-    if extra:
-        return f"in the text but not mentioned: {len(extra)}"
     return None
 
 

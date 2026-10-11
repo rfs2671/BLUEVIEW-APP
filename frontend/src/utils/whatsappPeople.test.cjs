@@ -63,6 +63,8 @@ ok(P.assignRequest({ name: 'Chris', company: 'GC team', phone: '718 555 0144' },
   === '17185550144', 'the number sent as digits');
 ok(!('phone' in P.assignRequest({ name: 'Chris', company: 'GC team', phone: '' }, cos).body),
   'no number typed: none sent (the one on file is kept)');
+ok(P.assignRequest({ name: 'Chris', company: 'GC team', phone: '', removePhone: true }, cos).body.phone === '',
+  'removing the number on file sends an explicit empty phone');
 ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone: '+1 718-555-0144' } })
   === 'Chris · GC team · +1 718-555-0144', 'an admin sees the full number');
 ok(P.assignmentLine({ assigned: { person_name: 'Chris', sub_company: 'GC team', phone: '…0144' } })
@@ -73,6 +75,9 @@ ok(/@mention/.test(P.PHONE_NOTE) && /won’t notify/.test(P.PHONE_NOTE), 'says w
 const card = read('src/components/whatsapp/PeopleCard.jsx');
 ok(/keyboardType="phone-pad"/.test(card) && /PHONE_NOTE/.test(card), 'the form asks for it');
 ok(/req\.body\.phone/.test(card), 'and sends it');
+ok(/Remove the number on file/.test(card) && /removePhone/.test(card), 'and can remove a wrong one');
+const api = read('src/utils/api.js');
+ok(/phone !== null && phone !== undefined/.test(api), "the API keeps '' (remove) apart from left out (keep)");
 
 console.log('\nwho sees it');
 ok(P.canManagePeople({ role: 'admin' }) && P.canManagePeople({ role: ' PM ' }), 'admin and PM');

@@ -86,7 +86,8 @@ class TheRules(unittest.TestCase):
 
     def test_a_mismatch_is_caught_either_way(self):
         self.assertIn("not in the text", m.check("@Ana hi", ["17185550001@c.us"]))
-        self.assertIn("not mentioned", m.check("@17185550001 hi", []))
+        # Someone's own "@<number>" quoted in the post is plain text: fine.
+        self.assertIsNone(m.check("@17185550001 hi", []))
         self.assertIn("bad jid", m.check("@17185550001 hi", ["17185550001@lid"]))
         # An email or a P-id is not a mention token.
         self.assertEqual(m.tokens("mail a@17185550001.com, P-588-12, @171855"), [])
@@ -201,6 +202,16 @@ class TheSend(unittest.TestCase):
         (_a, payload), = w.calls
         self.assertNotIn("mentions", payload)
         self.assertTrue(any("[mention] not sent as mentions" in l for l in logs.output))
+
+    def test_a_quoted_at_number_does_not_cost_the_real_mention(self):
+        w = _Waapi()
+        a = m.target("Ana", "17185550001")
+        text = f"{a['handle']} end of day — did this get done?\n“call @17185550200 about the crane”"
+        db = FakeDb(whatsapp_messages=[], whatsapp_groups=[])
+        with patch.object(server, "_resolve_group_binding", lambda g: _async({})):
+            _with(_ctx(db, w), server._group_post(GROUP, text, [a]))
+        (_a, payload), = w.calls
+        self.assertEqual(payload["mentions"], ["17185550001@c.us"])
 
 
 async def _async(v):
