@@ -89,5 +89,18 @@ ok(C.mentionLine({ owner: 'Mike', mention_note: null }) === null, 'a real mentio
 ok(/mentionLine\(e\)/.test(fs.readFileSync(path.join(__dirname, '../components/whatsapp/ChaseCard.jsx'), 'utf8')),
   'the card shows it');
 
+console.log('\nskipped slots (the owner answered)');
+const SKIP = { slot: 'midday', kind: 'skipped', skipped: true, day: '2026-10-15',
+  at: '2026-10-15T16:35:00+00:00', group_name: 'Main St', owner: 'Mike Rivera',
+  reason: "Skipped midday: acknowledged 'working on it' 9:05. Later slots still run." };
+ok(C.headLine(SKIP).startsWith('Midday (skipped) · 2026-10-15 12:35'), 'head says skipped');
+ok(C.bodyText(SKIP) === 'Not sent: the owner answered about this since the last nudge.', 'not sent');
+ok(C.reasonLine(SKIP) === "Why: Skipped midday: acknowledged 'working on it' 9:05. Later slots still run.",
+  'why names the rule');
+ok(!C.reviewable(SKIP) && C.reviewable({ slot: 'midday', kind: 'group' }), 'no verdict on a skipped slot');
+ok(/reviewable\(e\) \? <View style=\{s\.buttons\}>/.test(
+  require('fs').readFileSync(require('path').join(__dirname, '../components/whatsapp/ChaseCard.jsx'), 'utf8')),
+  'the card hides Correct / Wrong on skipped slots');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

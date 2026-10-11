@@ -175,6 +175,15 @@
     "kind": "none"
    },
    "why": "laughing is not a yes"
+  },
+  {
+   "from": "C",
+   "at": "2026-10-16 08:42:00",
+   "text": "dale",
+   "expect": {
+    "kind": "none"
+   },
+   "why": "Chase rule 2 in Spanish: 'dale' 7 minutes after the 8:35 nudge skips midday only; end of day and the admin DM still run."
   }
  ],
  "chase": {
@@ -197,7 +206,8 @@
     "owner": "C",
     "items": [
      2
-    ]
+    ],
+    "skipped": true
    },
    {
     "day": "2026-10-16",

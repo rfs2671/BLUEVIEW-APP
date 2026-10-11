@@ -46,7 +46,8 @@ SCENARIO FILE (see scripts/dry_run/*.json)
              expect: {kind: item|none|state|merged|review|flag|follow_up|part_done|handover,
                       type?, due_text?, owner?, owner_possibly?, flagged?, of?, also?, to?,
                       into?}}]
-  chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line]}]}
+  chase    {days: ["YYYY-MM-DD"], expect: [{day, slot, owner: KEY, items: [line],
+            skipped?: true (the slot skipped: the owner answered about it)}]}
 """
 
 from __future__ import annotations
@@ -455,6 +456,8 @@ def chase_check(sc: dict, out: dict) -> dict:
         got.append({"day": r["day"], "slot": r["slot"], "owner": owner,
                     "items": sorted(line_of.get(items[i]["evidence"]["message_id"])
                                     for i in r["item_ids"] if i in items),
+                    # A slot skipped because the owner answered (not a nudge).
+                    "skipped": r.get("kind") == wa_chase.SKIPPED,
                     "text": r.get("text"), "reason": r.get("reason"),
                     # A group nudge: does its @mention notify (a number found)?
                     "mention": ((r.get("mention") or {}).get("source") or "none")
@@ -462,7 +465,8 @@ def chase_check(sc: dict, out: dict) -> dict:
     want = (sc.get("chase") or {}).get("expect") or []
 
     def key(e):
-        return (e["day"], e["slot"], e["owner"], tuple(sorted(e["items"])))
+        return (e["day"], e["slot"], e["owner"], tuple(sorted(e["items"])),
+                bool(e.get("skipped")))
     gk = {key(e): e for e in got}
     wk = {key(e): e for e in want}
     return {"got": got, "missing": [wk[k] for k in wk if k not in gk],
@@ -538,12 +542,15 @@ def print_report(r: dict) -> None:
         tag = ("" if e.get("mention") is None else
                "  [@ won't notify: no number]" if e["mention"] == "none"
                else f"  [@ {e['mention']}]")
+        what = (e['reason'] or '')[:90] if e.get("skipped") else \
+            ((e['text'] or e['reason'] or '').splitlines() or [''])[0][:60]
         p(f"  {e['day']} {e['slot']:<9} {e['owner'] or '?':<4} lines {e['items']}  "
-          f"{((e['text'] or e['reason'] or '').splitlines() or [''])[0][:60]}{tag}")
+          f"{'SKIPPED ' if e.get('skipped') else ''}{what}{tag}")
     if not r["chase"]["got"]:
         p("  (nothing would be chased)")
     for e in r["chase"]["missing"]:
-        p(f"  MISSING    {e['day']} {e['slot']} {e['owner']} lines {e['items']}")
+        p(f"  MISSING    {e['day']} {e['slot']} {e['owner']} lines {e['items']}"
+          + (" (skipped)" if e.get("skipped") else ""))
     for e in r["chase"]["unexpected"]:
         p(f"  UNEXPECTED {e['day']} {e['slot']} {e['owner']} lines {e['items']}")
     s = r["score"]

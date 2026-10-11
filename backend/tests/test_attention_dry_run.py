@@ -248,7 +248,7 @@ class TheThreeGaps(unittest.TestCase):
                   if i["evidence"]["message_id"] == out["rows"][3]["message_id"])
         self.assertEqual((it["owner"]["name"], it["owner"]["source"]), ("Jose Zarate", "handover"))
         self.assertEqual((it["due"]["due_text"], it["due"]["due_at"]), ("Friday", "2026-10-16"))
-        h = it["history"][-1]
+        h = next(e for e in it["history"] if e["kind"] == "handover")
         self.assertEqual((h["kind"], h["owner_from"]["name"], h["owner_to"]["name"]),
                          ("handover", "Patricia Lee", "Jose Zarate"))
         # Jose's words are the handover, not a second commitment.
@@ -262,7 +262,8 @@ class TheThreeGaps(unittest.TestCase):
         jose_ser = out["rows"][17]["message_id_serialized"]
         rows = [c for c in out["db"]["chase_shadow"].rows if c["owner_name"] == "Jose Zarate"
                 and c["day"] == "2026-10-16"]
-        self.assertEqual(len(rows), 4)
+        # Morning only: his "Risers submittal sent" at 10:00 closes it (rule 1).
+        self.assertEqual([c["slot"] for c in rows], ["morning"])
         self.assertEqual(rows[0]["text"], "@Jose Zarate morning — this is due today:\n"
                                           "“Patricia's out sick, I'll send the risers Friday”")
         for c in rows:
@@ -280,21 +281,33 @@ class TheThreeGaps(unittest.TestCase):
         self.assertTrue(_line(r, 17)["hard"], _line(r, 17)["notes"])
         self.assertEqual(dry.exit_code(r), 0)
 
-    def test_after_a_handover_only_who_took_it_on_stops_the_chase(self):
+    def test_after_a_handover_only_who_took_it_on_answers_for_it(self):
         raw = json.loads((DIR / "busy_group_2026_10.json").read_text(encoding="utf-8"))
+        # Without Jose's "Risers submittal sent", he is chased all Friday.
+        raw["messages"] = [m for m in raw["messages"]
+                           if m["text"] != "Risers submittal sent, check your email"]
+        raw["chase"]["expect"] += [{"day": "2026-10-16", "slot": s, "owner": "J", "items": [3]}
+                                   for s in ("midday", "eod", "admin_dm")]
 
-        def with_(sender):
+        def with_(sender, text="The risers are on the way"):
             sc = copy.deepcopy(raw)
             sc["messages"].append({"from": sender, "at": "2026-10-16 09:00:00",
-                                   "text": "Morning all", "expect": {"kind": "none"}})
+                                   "text": text, "expect": {"kind": "none"}})
             return dry.load_dict(sc)
-        # Patricia, back Friday morning, says something: Jose is still chased.
+        # Patricia, back Friday morning, writes about the risers: not hers
+        # any more, so Jose is still chased at every slot.
         _out, r = _run(with_("P"))
         self.assertEqual(dry.exit_code(r), 0)
-        # Jose says something after the morning nudge: his chase stops.
+        # Jose writes about them after the morning nudge: midday is skipped,
+        # the rest still runs (rule 2).
         _out, r = _run(with_("J"))
-        self.assertEqual(sorted(c["slot"] for c in r["chase"]["missing"] if c["owner"] == "J"),
-                         ["admin_dm", "eod", "midday"])
+        self.assertEqual([(c["slot"], c.get("skipped")) for c in r["chase"]["missing"]
+                          if c["owner"] == "J"], [("midday", None)])
+        self.assertEqual([(c["slot"], c["skipped"]) for c in r["chase"]["unexpected"]
+                          if c["owner"] == "J"], [("midday", True)])
+        # Jose talking about something else changes nothing (rule 3).
+        _out, r = _run(with_("J", "Morning all"))
+        self.assertEqual(dry.exit_code(r), 0)
 
     def test_a_handover_that_is_not_clear_is_flagged_and_nobody_is_chased(self):
         # Jose at another company, words that do not say what: possibly a
