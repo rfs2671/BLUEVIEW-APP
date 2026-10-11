@@ -47,7 +47,10 @@ def _note(i, body, minutes, sender="15550007788", name="Meilich", lang="en",
             "created_at": at, "transcribed": True,
             "voice": {"transcript": body, "english": english or body, "lang": lang,
                       "confidence": 0.9, "duration_sec": 4.0, "audio_key": None,
-                      "review": lang == "yi"}, **extra}
+                      "review": lang == "yi",
+                      # A Yiddish note gets Whisper's English of the audio.
+                      **({"english_direct": english} if lang == "yi" and english else {})},
+            **extra}
 
 
 def _world(*rows):
@@ -72,8 +75,14 @@ class InTheIndex(unittest.TestCase):
         self.assertEqual((doc["kind"], doc["voice"], doc["lang"], doc["forwarded"]),
                          ("voice", True, "yi", True))
         self.assertEqual(doc["english"], "We pour the foundation tomorrow")
-        self.assertEqual(doc["text"], ROWS[2]["body"])            # as said
+        # Flagged (Yiddish): indexed as Whisper's English of the audio, marked,
+        # never the transcript as said (Oct 11, 2:57 PM).
+        self.assertEqual((doc["text"], doc["unreliable"]),
+                         ("We pour the foundation tomorrow", True))
         self.assertTrue(project_memory.indexable_message(ROWS[2]))
+        no_direct = {**ROWS[2], "voice": {k: v for k, v in ROWS[2]["voice"].items()
+                                          if k != "english_direct"}}
+        self.assertFalse(project_memory.indexable_message(no_direct))
         text = server._memory_wa_doc({**ROWS[0], "voice": None}, "g")
         self.assertEqual((text["kind"], text["english"], text["forwarded"]),
                          ("text", None, False))
@@ -95,8 +104,8 @@ class InTheIndex(unittest.TestCase):
         src = {"source": "whatsapp", "who": "Yoel", "group": "588 – Site",
                "when": "Oct 11, 2:57 PM", "voice": True, "forwarded": True}
         self.assertEqual(project_memory.cite(src),
-                         "Yoel (forwarded) · 588 – Site · 🎤 Oct 11, 2:57 PM")
-        self.assertIn("(forwarded)", project_memory.ANSWER_PROMPT)
+                         "forwarded by Yoel · 588 – Site · 🎤 Oct 11, 2:57 PM")
+        self.assertIn('"forwarded by <name>"', project_memory.ANSWER_PROMPT)
         view = server._memory_source_view({**src, "id": "x"})
         self.assertTrue(view["forwarded"])
 
@@ -112,10 +121,14 @@ class RecentVoiceNotes(unittest.TestCase):
         got = self._ask(3)
         blocks = got.split("\n\n")
         self.assertEqual(len(blocks), 3)
-        self.assertTrue(blocks[0].startswith("🎤 Sun Oct 11, 2:57 PM · Yoel · 588 – Site (forwarded)"),
-                        blocks[0])
-        self.assertIn("Said: “מאָרגן", blocks[0])
-        self.assertIn("English: We pour the foundation tomorrow", blocks[0])
+        self.assertTrue(blocks[0].startswith(
+            "🎤 Sun Oct 11, 2:57 PM · forwarded by Yoel · 588 – Site"), blocks[0])
+        # Flagged (Yiddish): never quoted as what was said.
+        self.assertNotIn("Said:", blocks[0])
+        self.assertNotIn("מאָרגן", blocks[0])
+        self.assertIn(wa_voice.UNRELIABLE_TEXT, blocks[0])
+        self.assertIn("English (Whisper's translation of the audio): "
+                      "We pour the foundation tomorrow", blocks[0])
         self.assertTrue(blocks[1].startswith("🎤 Sun Oct 11, 2:51 PM · Meilich"), blocks[1])
         self.assertIn("Is there any inspection coming up for electricity?", blocks[1])
         self.assertNotIn("English:", blocks[1])                    # English already

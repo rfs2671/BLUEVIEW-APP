@@ -73,7 +73,9 @@ VOICE_DAILY_CAP = _env_int("VOICE_DAILY_CAP", 200)
 DAILY = "voice_daily"           # {_id: "<company>|<day>", count, lang: {..}, review}
 
 _LANGS = {"english": "en", "en": "en", "spanish": "es", "es": "es", "castilian": "es",
-          "yiddish": "yi", "yi": "yi", "hebrew": "yi", "he": "yi", "iw": "yi"}
+          "yiddish": "yi", "yi": "yi", "hebrew": "yi", "he": "yi", "iw": "yi",
+          # What Whisper often calls Yiddish it does not know: reviewed, translated.
+          "german": "de", "de": "de"}
 
 
 def lang_code(label: Optional[str], text: str = "") -> str:
@@ -175,23 +177,58 @@ def name_matches(asked: str, *names: Any) -> bool:
     return False
 
 
+def unreliable_note(v: Optional[Dict[str, Any]]) -> bool:
+    """A note whose transcript must not be quoted as what was said: one
+    Whisper's scores or words gave away, or any note flagged for review
+    (Yiddish, Hebrew, German, a sender set to Yiddish, low confidence)."""
+    v = v or {}
+    if v.get("unreliable") or v.get("failed") == "unreliable":
+        return True
+    # A note that failed for another reason (too short, download) has no
+    # transcript to doubt: it is "not transcribed", said as such.
+    return bool(v.get("review")) and not v.get("failed")
+
+
+def fact_text(row: Dict[str, Any]) -> str:
+    """What a model may read of a stored message: its words, or for a voice
+    note that may not be what was said, a label (and Whisper's English of the
+    audio) -- never the transcript as if someone said it."""
+    v = (row or {}).get("voice") or {}
+    if v and unreliable_note(v):
+        direct = str(v.get("english_direct") or "").strip()
+        return (f"(voice note, {UNRELIABLE_TEXT[:-1].lower()}"
+                + (f"; Whisper's English of the audio: {direct}" if direct else "") + ")")
+    return str((row or {}).get("body") or "").strip()
+
+
+def who_line(who: str, forwarded: bool) -> str:
+    """"Meilich", or "forwarded by Meilich" (the words are someone else's)."""
+    who = who or "Someone"
+    return f"forwarded by {who}" if forwarded else who
+
+
 def voice_note_lines(row: Dict[str, Any], who: str, group: str, ny: Any) -> str:
-    """One voice note for the DM: "🎤 Sun Oct 11, 2:57 PM · Meilich · 588 Site
-    (forwarded)", then "Said: “…”" and, when it is not English, "English: …"."""
+    """One voice note for the DM: "🎤 Sun Oct 11, 2:57 PM · Meilich · 588 Site"
+    ("forwarded by Meilich" when forwarded), then "Said: “…”" and, when it is
+    not English, "English: …". A flagged note is never quoted: "Not reliably
+    transcribed — play it." and Whisper's direct English, if any."""
     v = row.get("voice") or {}
     when = ""
     if ny is not None:
         h = ny.strftime("%I").lstrip("0") or "12"
         when = f"{ny.strftime('%a %b')} {ny.day}, {h}:{ny.strftime('%M %p')}"
-    head = " · ".join(p for p in (f"{QUOTE_MARK} {when}".strip(), who or "Someone", group) if p)
-    if row.get("forwarded"):
-        head += " (forwarded)"
+    head = " · ".join(p for p in (f"{QUOTE_MARK} {when}".strip(),
+                                  who_line(who, bool(row.get("forwarded"))), group) if p)
     said = str(v.get("transcript") or "").strip()
+    direct = str(v.get("english_direct") or "").strip()
+    if unreliable_note(v):
+        return "\n".join([head, UNRELIABLE_TEXT] + (
+            [f"English (Whisper's translation of the audio): {direct}"] if direct else []))
     if v.get("failed") or row.get("skipped"):
         why = not_processed(v.get("failed") or str(row.get("skipped") or "").replace("voice_", ""))
-        return f"{head}\n(not transcribed: {why})" + (f"\nHeard: “{said}”" if said else "")
+        return f"{head}\n(not transcribed: {why})"
     lines = [head, f"Said: “{said}”"]
-    english = str(v.get("english_direct") or v.get("english") or "").strip()
+    english = str(direct or v.get("english") or "").strip()
     if english and english != said and v.get("lang") not in (None, "en"):
         lines.append(f"English: {english}")
     return "\n".join(lines)
@@ -283,6 +320,97 @@ def log_line(**kw: Any) -> str:
     return "[voice] " + json.dumps(kw, default=str, sort_keys=True)
 
 
+# ── A TRANSCRIPT THAT IS NOT WHAT WAS SAID ──────────────────────────────────
+#
+# 588, Oct 11, 2:57 PM: a forwarded Williamsburg Yiddish blessing came back as
+# "People speaking in their native language." -- English, unflagged, and the
+# DM assistant quoted it as fact. Whisper describes audio it cannot read, or
+# makes up fluent words, and says so in its own scores. Any one of these and
+# the note is "not reliably transcribed": kept, never extracted, chased or
+# quoted as what was said.
+
+#: Whisper's own limits for a segment it is not sure of (its decoder uses the
+#: same three: logprob -1.0, no_speech 0.6 with logprob, compression 2.4).
+AVG_LOGPROB_MIN = -1.0
+NO_SPEECH_MAX = 0.5
+COMPRESSION_MAX = 2.4
+
+#: What Whisper writes when it describes the audio instead of transcribing it.
+_TAGS = r"(?:music|applause|laughter|inaudible|silence|indistinct|background noise|" \
+        r"foreign(?: language)?|speaking foreign language|no speech|crosstalk)"
+_LANGUAGE = (r"(?:native|foreign|another|other|different)?\s*(?:language|tongue)|"
+             r"\w+ish|\w+ese|\w+ian|hebrew|arabic|german|french|greek|dutch|hindi|urdu|"
+             r"english")
+_META = re.compile(
+    r"\bpeople\s+(?:are\s+)?(?:speaking|talking|singing|chatting|praying)\b|"
+    r"\b(?:speaking|talking)\s+in\s+(?:a\s+|their\s+|his\s+|her\s+|the\s+)?(?:"
+    + _LANGUAGE + r")\b|"
+    r"\bforeign\s+language\b|"
+    r"[\[(]\s*" + _TAGS + r"\s*[\])]|"
+    r"^\W*" + _TAGS + r"\W*$|"
+    r"\bsubtitles?\s+(?:by|created|provided)\b|\bcaptions?\s+by\b|\btranscribed\s+by\b|"
+    r"\bthanks?\s+(?:you\s+)?for\s+watching\b|\bplease\s+subscribe\b", re.I)
+
+
+def quality_signals(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Whisper's verbose_json scores for a note: avg_logprob (weighted by
+    segment length), the highest no_speech_prob and compression_ratio, and
+    the segment count. Missing scores stay None."""
+    num = den = 0.0
+    ns, cr = [], []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        if isinstance(seg.get("avg_logprob"), (int, float)):
+            w = max(float(seg.get("end") or 0) - float(seg.get("start") or 0), 0.01)
+            num += float(seg["avg_logprob"]) * w
+            den += w
+        if isinstance(seg.get("no_speech_prob"), (int, float)):
+            ns.append(float(seg["no_speech_prob"]))
+        if isinstance(seg.get("compression_ratio"), (int, float)):
+            cr.append(float(seg["compression_ratio"]))
+    return {"avg_logprob": round(num / den, 3) if den else None,
+            "no_speech_prob": round(max(ns), 3) if ns else None,
+            "compression_ratio": round(max(cr), 3) if cr else None,
+            "segments": len(segments or [])}
+
+
+def meta_transcript(text: str) -> bool:
+    """The transcript describes the audio ("People speaking in their
+    native language", "[Music]", "Subtitles by …") instead of saying it."""
+    return bool(_META.search(str(text or "")))
+
+
+def unreliable_reasons(transcript: str, q: Optional[Dict[str, Any]]) -> List[str]:
+    """Why this transcript is not what was said ([] when it can be used)."""
+    q = q or {}
+    out = []
+    if isinstance(q.get("avg_logprob"), (int, float)) and q["avg_logprob"] < AVG_LOGPROB_MIN:
+        out.append(f"avg_logprob {q['avg_logprob']} < {AVG_LOGPROB_MIN}")
+    if isinstance(q.get("no_speech_prob"), (int, float)) and q["no_speech_prob"] > NO_SPEECH_MAX:
+        out.append(f"no_speech_prob {q['no_speech_prob']} > {NO_SPEECH_MAX}")
+    if isinstance(q.get("compression_ratio"), (int, float)) \
+            and q["compression_ratio"] > COMPRESSION_MAX:
+        out.append(f"compression_ratio {q['compression_ratio']} > {COMPRESSION_MAX}")
+    if meta_transcript(transcript):
+        out.append("describes the audio instead of transcribing it")
+    return out
+
+
+#: Heard in these, or the sender is set to Yiddish: Whisper's direct
+#: audio -> English translation too, and a review flag.
+TRANSLATE_LANGS = ("yi", "he", "de")
+
+
+def needs_direct_translation(lang: Optional[str], sender_hint: Optional[str]) -> bool:
+    return (lang or "") in TRANSLATE_LANGS or (sender_hint or "") == "yi"
+
+
+UNRELIABLE_TEXT = "Not reliably transcribed — play it."
+DM_UNRELIABLE_REPLY = ("I couldn't reliably make out that voice note. "
+                       "Please send it again, or type it.")
+
+
 # ── A NOTE THAT CANNOT BE READ ───────────────────────────────────────────────
 
 #: Under this long, a note is not transcribed (nothing to read; it bills).
@@ -303,6 +431,7 @@ _REASONS = {
     "empty": "no words were heard",
     "audio_too_long": "longer than the voice note limit",
     "prompt_echo": "the transcript repeated Whisper's word list, not what was said",
+    "unreliable": "not reliably transcribed",
 }
 
 
