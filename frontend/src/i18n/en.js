@@ -246,6 +246,12 @@ export default {
     code_SUBMIT_INVALID_DATE_FIELD:
       '{field} holds "{value}", which is not a date. Enter it as MM/DD/YYYY, '
       + 'or clear the field, then submit again.',
+    // The superintendent's log, 2026-10-10. Slot-free for the same reason as
+    // the date code above: LogbookLockBar renders it from a stored code alone.
+    code_SUBMIT_DEPARTURE_BEFORE_ARRIVAL:
+      'Your departure time is earlier than your arrival time. Correct the '
+      + 'times on step 1, or tick "I left after midnight" if you did, then '
+      + 'submit again.',
     // The PRE-FLIGHT's title. "Could not finalize" is the right words for a
     // refusal that came back from the server; this one is the device stopping
     // him before the round trip — including offline, where there is no round
@@ -1528,7 +1534,9 @@ export default {
     stepSign: 'Scope & sign',
 
     presenceHeading: 'Your presence on site',
-    presenceNote: 'These times are YOUR statement of when you arrived and left, not a measurement the app made. Change them if they are wrong.',
+    presenceNote: 'Enter the times you arrived on site and left it. They are YOUR statement, not a measurement the app made.',
+    departureBeforeArrival: 'Your departure is earlier than your arrival. Correct the times, or tick the box below if you left after midnight.',
+    departureBeforeArrivalHint: 'Go back to step 1: your departure is earlier than your arrival. Correct the times, or tick "I left after midnight" if you did.',
     arrivedAt: 'ARRIVED',
     departedAt: 'DEPARTED',
     printedName: 'PRINTED NAME',

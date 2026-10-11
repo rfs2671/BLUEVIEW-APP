@@ -30217,6 +30217,68 @@ def _submit_invalid_date_detail(log_type, payload, log_date=None):
             "value": first["value"], "row": first["row"], "fields": bad}
 
 
+_PRESENCE_CLOCK = re.compile(
+    r"^(\d{1,2}):(\d{2})\s*([AaPp][Mm])?$")
+
+
+def _presence_clock_minutes(value) -> Optional[int]:
+    """Minutes after midnight for a presence time, or None.
+
+    BOTH SHAPES THE FIELD HAS HELD: "hh:mm AM/PM", which TimeField writes, and
+    the 24-hour "HH:MM" an older prefill filed. Anything else is None -- a time
+    this cannot read is not one it may call out of order.
+    """
+    m = _PRESENCE_CLOCK.match(" ".join(str(value or "").split()))
+    if not m:
+        return None
+    h, mins, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
+    if mins > 59:
+        return None
+    if ampm:
+        if not 1 <= h <= 12:
+            return None
+        h = (h % 12) + (12 if ampm.lower() == "pm" else 0)
+    elif h > 23:
+        return None
+    return h * 60 + mins
+
+
+def _submit_presence_order_detail(log_type, payload):
+    """A filed superintendent's log does not have him leave before he arrived.
+
+    Returns the HTTPException detail to raise, or None to allow.
+
+    THE DEFECT, ruled 2026-10-10. 588 Thomas filed five superintendent's logs
+    whose departure precedes the arrival with "departed next day" unticked --
+    2026-10-05 reads "arrived 05:50 PM, departed 04:30 PM". Nothing on either
+    side compared the two: the form checked only that both were present.
+
+    REFUSED, NEVER CORRECTED. Departure before arrival is filed only when he
+    has ticked "departed next day", which is his statement that the shift
+    crossed midnight. The two times are never used to infer that tick, and
+    nothing here rewrites a time: the remedy is his.
+
+    A TIME IT CANNOT READ IS NOT REFUSED HERE -- a blank or malformed value is
+    another gate's business. Equal times are allowed.
+
+    NOTHING ALREADY FILED IS TOUCHED. This fires on a submit or a finalize.
+    """
+    if log_type != "site_superintendent_log" or not isinstance(payload, dict):
+        return None
+    presence = payload.get("presence")
+    if not isinstance(presence, dict) or presence.get("departed_next_day") is True:
+        return None
+    arrived = _presence_clock_minutes(presence.get("arrived_at"))
+    departed = _presence_clock_minutes(presence.get("departed_at"))
+    if arrived is None or departed is None or departed >= arrived:
+        return None
+    return {
+        "code": "SUBMIT_DEPARTURE_BEFORE_ARRIVAL",
+        "arrived_at": presence.get("arrived_at"),
+        "departed_at": presence.get("departed_at"),
+    }
+
+
 def _dotted(record, path):
     """A dotted path into a record; missing is None. The engine's `_get` rule
     (lib/legal_render/primitives.py) -- a field the record does not carry is an
@@ -30740,6 +30802,11 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             data.log_type, data.data, data.date)
         if _bad_date:
             raise HTTPException(status_code=400, detail=_bad_date)
+        # HE DOES NOT LEAVE BEFORE HE ARRIVED, unless he says the shift
+        # crossed midnight. See the helper.
+        _bad_order = _submit_presence_order_detail(data.log_type, data.data)
+        if _bad_order:
+            raise HTTPException(status_code=400, detail=_bad_order)
 
         # AN ATTESTABLE ITEM MUST BE ANSWERED ONE WAY OR THE OTHER.
         #
@@ -31316,6 +31383,10 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             _cur.get("log_type"), _eff_data, _cur.get("date"))
         if _bad_date:
             raise HTTPException(status_code=400, detail=_bad_date)
+        _bad_order = _submit_presence_order_detail(
+            _cur.get("log_type"), _eff_data)
+        if _bad_order:
+            raise HTTPException(status_code=400, detail=_bad_order)
         # THE SAME REFUSAL ON THE PATH THE CP ACTUALLY WALKS. Save Draft then
         # Submit arrives here as a PUT, so a gate on create alone would let the
         # wrong man file by taking the ordinary two-step route -- the identical
@@ -32322,6 +32393,10 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         existing.get("log_type"), existing.get("data"), existing.get("date"))
     if _bad_date:
         raise HTTPException(status_code=400, detail=_bad_date)
+    _bad_order = _submit_presence_order_detail(
+        existing.get("log_type"), existing.get("data"))
+    if _bad_order:
+        raise HTTPException(status_code=400, detail=_bad_order)
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {

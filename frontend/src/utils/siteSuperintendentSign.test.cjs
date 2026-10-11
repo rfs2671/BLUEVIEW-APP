@@ -197,8 +197,8 @@ console.log('\n3. ARRIVAL AND DEPARTURE ARE HIS STATEMENT, NOT AN OBSERVATION');
 {
   ok(/presenceNote/.test(CODE(SCREEN)), 'the screen says so in words');
   const en = read('src', 'i18n', 'en.js');
-  ok(/YOUR statement of when you arrived and left, not a measurement/.test(en),
-    'and the words say it plainly — he may open the app in his truck');
+  ok(/They are YOUR statement, not a measurement the app made/.test(en),
+    'and the words say it plainly — he enters both times, nothing is filled in');
   // RE-POINTED FROM `editable={!locked}` TO THE PICKERS. That assertion was
   // about the two TextInputs these fields used to be, and it kept passing
   // after they became TimeFields — because `editable={!locked}` lives inside
@@ -328,136 +328,85 @@ console.log('\n3d. STORED AS A WALL CLOCK, WITH THE NEXT DAY STATED');
   ok(!/displayClock/.test(csCode),
     'and the screen never normalises a filed value at render time');
 
-  // THE PREFILL IS IN THE PICKER'S OWN FORMAT AND ON ITS OWN GRID. A 24-hour
-  // "07:17" would put a second shape in the same key and would select no chip.
-  // THE REAL PARSER AND THE REAL GRID, not a copy of them. loadEsm cannot take
-  // this file — it is JSX, and the harness compiles modules with the CommonJS
-  // transform alone — so the component is dropped and its three PURE exports
-  // are lifted, exactly as portedFormPayloads.test.cjs already lifts them for
-  // hotWorkModel. A hand-typed grid here would be a second opinion about the
-  // format, which is the whole thing this section is guarding against.
+}
+
+console.log('\n3e. NOTHING IS PREFILLED, AND HE DOES NOT LEAVE BEFORE HE ARRIVED');
+{
+  const csCode = CODE(SCREEN);
+
+  // ── RULED 2026-10-10: HE TYPES BOTH ────────────────────────────────────
+  //
+  // This section used to assert the two prefills -- arrival from the clock
+  // when the screen opened, departure from the clock on reaching the sign
+  // step. 2026-10-05 on 588 Thomas filed "arrived 05:50 PM" on a log created
+  // at 5:52 PM: the prefill was the moment he opened the form, after the day.
+  // Both are gone, and every write to the two times is now one of three:
+  // his pick, the stored value on hydrate, or his own device draft.
+  ok(!/nowClock/.test(csCode), 'no clock helper is left to prefill with');
+  ok(!/prefilledArrival|prefilledDeparture|prefillableDay/.test(csCode),
+    'the two prefill effects and their day guard are gone');
+  const writes = (setter) => (csCode.match(new RegExp(`${setter}\\(`, 'g')) || []).length;
+  const allowed = (setter, field, draftKey) => [
+    new RegExp(`onChange=\\{${setter}\\}`),
+    new RegExp(`${setter}\\(g\\('presence'\\)\\.${field} \\|\\| ''\\)`),
+    new RegExp(`${setter}\\(v\\.${draftKey} \\?\\? ''\\)`),
+  ];
+  for (const [setter, field, draftKey] of [['setArrivedAt', 'arrived_at', 'arrivedAt'],
+                                           ['setDepartedAt', 'departed_at', 'departedAt']]) {
+    const calls = writes(setter);
+    const known = allowed(setter, field, draftKey).slice(1)
+      .filter((re) => re.test(csCode)).length;
+    ok(calls === known && allowed(setter, field, draftKey)[0].test(csCode),
+      `${setter} is written only by his pick, hydrate and his draft (${calls} calls)`);
+  }
+
+  // ── THE ORDER GATE ─────────────────────────────────────────────────────
+  ok(/const departureBeforeArrival = !departedNextDay\s*&& clockPrecedes\(departedAt, arrivedAt\);/
+    .test(csCode),
+    'departure before arrival is refused unless he ticked "departed next day"');
+  ok(/if \(departureBeforeArrival\) return;/.test(csCode),
+    'the handler refuses it');
+  ok(/submitDisabled=\{[^}]*\|\| departureBeforeArrival/.test(csCode),
+    'and the submit is unreachable while it holds');
+  ok(/t\('departureBeforeArrivalHint'\)/.test(csCode)
+     && /t\('departureBeforeArrival'\)/.test(csCode),
+    'it is said in the hint and under the two times on step 1');
+  const gate = csCode.slice(csCode.indexOf('const departureBeforeArrival'),
+    csCode.indexOf('const handleSubmit'));
+  ok(gate.length > 20 && !/setDepartedNextDay|setDepartedAt|setArrivedAt/.test(gate),
+    'A REFUSAL, NEVER AN INFERENCE: the gate sets neither the tick nor a time');
+  const en = read('src', 'i18n', 'en.js');
+  ok(/departureBeforeArrival: '/.test(en) && /departureBeforeArrivalHint: '/.test(en),
+    'both strings exist');
+
+  // ── RUN, NOT READ: the comparison it uses ─────────────────────────────
+  // THE REAL HELPER, lifted out of TimeField.jsx with its parser, so the gate
+  // reads the format the picker writes and not a copy of it.
   const TF = (() => {
     const src = read('src', 'components', 'logbookStepper', 'TimeField.jsx')
       .replace(/^import .*$/gm, '')
       .replace(/^export default [\s\S]*$/m, '')
       .replace(/^export (const|function) /gm, '$1 ');
     // eslint-disable-next-line no-new-func
-    return new Function(`${src}\nreturn { parseClock, toClock, timeOptions };`)();
+    return new Function(`${src}\nreturn { clockPrecedes };`)();
   })();
-  ok(/toClock\(p\.h24, p\.m - \(p\.m % 5\)\)/.test(csCode),
-    'nowClock floors onto the five-minute grid the picker offers');
-  const grid = TF.timeOptions().map((o) => TF.toClock(o.h24, o.m));
-  for (const probe of ['07:17', '00:03', '23:59', '12:31']) {
-    const p = TF.parseClock(probe);
-    const out = TF.toClock(p.h24, p.m - (p.m % 5));
-    ok(grid.includes(out),
-      `a ${probe} prefill lands on a selectable row (${out})`);
+  // THE FIVE FILED LOGS THAT READ BACKWARDS ON 588 THOMAS (departed, arrived).
+  for (const [dep, arr, day] of [['04:30 AM', '06:05 PM', '09-04'],
+                                 ['04:00 AM', '06:30 PM', '09-08'],
+                                 ['04:04 AM', '03:19 PM', '09-16'],
+                                 ['03:40 AM', '03:00 PM', '09-18'],
+                                 ['04:30 PM', '05:50 PM', '10-05']]) {
+    ok(TF.clockPrecedes(dep, arr) === true,
+      `${day}: departed ${dep} before arrived ${arr} is caught`);
   }
-}
-
-console.log('\n3e. THE PREFILLS ARE SUGGESTIONS, AND ONLY ON THE LOG\'S OWN DAY');
-{
-  const csCode = CODE(SCREEN);
-
-  // ── THE DEPARTURE SUGGESTION, AND WHERE IT IS ALLOWED TO LAND ───────────
-  //
-  // THE OPERATOR: he signs before he leaves, so the moment he signs is the
-  // departure and he should not type it. Section 2 is why that cannot be done
-  // AT THE TAP — a value written into the payload at the instant of filing is
-  // one he never sees and can never correct. The whole ruling lives in the
-  // difference between those two moments, so the moment is what is asserted.
-  const depEffect = csCode.slice(
-    csCode.indexOf('const prefilledDeparture'),
-    csCode.indexOf('const dailyOfferRef'),
-  );
-  ok(depEffect.length > 100,
-    'the departure prefill effect is present to inspect');
-  ok(/step < TOTAL_STEPS/.test(depEffect),
-    'it fires on ENTERING THE SIGN STEP — a prefill on step 1 would suggest a '
-    + 'departure before he has worked the day');
-  ok(/setDepartedAt\(\(v\) => v \|\| nowClock\(\)\)/.test(depEffect),
-    'NEVER over a value he entered: `v ||` is asked at the moment it writes, '
-    + 'not remembered in the ref');
-
-  // THE ORDERING GUARD IS LOAD-SHAPED, NOT COSMETIC. A restored draft can open
-  // straight onto step 4, and `hydrate` writes `departed_at || ''`
-  // unconditionally — so an effect that ran before the load settled would
-  // prefill, be wiped back to blank, and the ref would stop it running again.
-  ok(/if \(loading \|\| locked \|\| prefilledDeparture\.current\) return;/
-    .test(depEffect),
-    'without the `loading` guard the ref burns on a value hydrate then wipes');
-
-  // AND IT IS STILL A GATE. A field that can never be blank at submit can
-  // never be reported missing — the failure section 2 retracted. The prefill
-  // must not resurrect it by another route, so the refusal is re-asserted here
-  // beside the thing that could undo it.
-  ok(/const departureMissing = !departedAt\.trim\(\);/.test(csCode)
-    && /if \(presenceMissing\.length > 0\) return;/.test(csCode),
-    'a blank departure is still refused rather than filled in');
-
-  // EDITABLE. He may sign at the trailer and leave twenty minutes later.
-  //
-  // SLICED TO THE ELEMENT, NOT TO A CHARACTER COUNT. This read
-  // `.slice(0, 400)` from the label and FAILED ON THE UNFIXED SCREEN — where
-  // the departure field has never taken `locked`. 400 characters reaches past
-  // the closing `/>` and into the `departedNextDay` Pressable, which carries
-  // `disabled={locked}` and always has. The check was answering about a
-  // different control, and would have gone green the day somebody locked the
-  // time field and unlocked the tick.
-  const depAt = csCode.indexOf("label={t('departedAt')}");
-  const depField = depAt < 0 ? '' : csCode.slice(depAt, csCode.indexOf('/>', depAt));
-  ok(depField.length > 50 && depField.includes('onChange={setDepartedAt}'),
-    'the departure TimeField was located by its own closing tag');
-  ok(!/locked/.test(depField),
-    'the departure TimeField takes no `locked` prop — a prefill he cannot '
-    + 'change is a stamp with extra steps');
-
-  // ── AND NOTHING DERIVES THE NEXT DAY ───────────────────────────────────
-  //
-  // `departed_next_day` is HIS statement that the shift crossed midnight. A
-  // clock reading cannot support it and must not touch it. Asserted over the
-  // two prefill effects specifically, because section 3d already bans the
-  // `departed < arrived` inference file-wide and this is the other way in.
-  const arrEffect = csCode.slice(
-    csCode.indexOf('const prefilledArrival'),
-    csCode.indexOf('const dailyOfferRef'),
-  );
-  ok(!/setDepartedNextDay/.test(arrEffect),
-    'no prefill writes departed_next_day');
-
-  // ── THE DATE GUARD, WHICH WAS ALREADY LIVE ON ARRIVAL ──────────────────
-  //
-  // `nowClock()` reads the clock and knows nothing about `logDate`. The
-  // arrival effect had NO date guard, so opening yesterday's log this morning
-  // prefilled this morning's time onto yesterday's record. Departure would
-  // have doubled it. Both are guarded now, through ONE expression — two
-  // copies of a date rule is how two fields come to disagree about what day
-  // it is.
-  ok(/const prefillableDay = logDate === todayISO\(\);/.test(csCode),
-    'one expression decides it for both fields');
-  ok(/prefilledArrival\.current \|\| !prefillableDay/.test(arrEffect),
-    'arrival is guarded — this is the half that was already wrong in '
-    + 'production');
-  ok(/!prefillableDay/.test(depEffect), 'and departure is guarded too');
-
-  // ONE TIMEZONE ON BOTH SIDES. A guard reading UTC "today" against a value
-  // read in New York would open for an hour every evening — the log would be
-  // dated yesterday and the clock would say today. Asserted by lifting the two
-  // declarations rather than by trusting that they look similar.
-  const decl = (name) => {
-    const i = csCode.indexOf(`const ${name} = `);
-    return i < 0 ? '' : csCode.slice(i, csCode.indexOf('\n\n', i));
-  };
-  for (const fn of ['todayISO', 'nowClock']) {
-    ok(/America\/New_York/.test(decl(fn)),
-      `${fn} reads America/New_York, so the guard cannot disagree with the `
-      + 'value it guards');
-  }
-
-  // OFF-DAY, THE APP SUGGESTS NOTHING. Stated in the source, because the
-  // reason a field is blank is the thing a later reader will want to change.
-  ok(/OFF-DAY, NOTHING IS SUGGESTED/.test(SCREEN),
-    'the reason a back-dated log opens with blank times is written down');
+  ok(TF.clockPrecedes('04:00 PM', '07:00 AM') === false, 'an ordinary day passes');
+  ok(TF.clockPrecedes('07:00 AM', '07:00 AM') === false, 'equal times pass');
+  ok(TF.clockPrecedes('', '07:00 AM') === false && TF.clockPrecedes('07:00 AM', '') === false,
+    'a blank is the presence gate\'s business, not this one');
+  ok(TF.clockPrecedes('16:30', '05:50 PM') === true,
+    'the 24-hour shape an older prefill filed is read too');
+  ok(TF.clockPrecedes('12:30 AM', '11:00 PM') === true,
+    '12 AM is the start of the day, not noon');
 }
 
 /**

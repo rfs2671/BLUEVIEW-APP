@@ -63,6 +63,18 @@ export function parseClock(value) {
   return null;
 }
 
+/**
+ * True when clock time `a` falls strictly before `b` on the same day. False
+ * when either does not parse -- a time this cannot read is not one it may
+ * call out of order -- and false when they are equal.
+ */
+export function clockPrecedes(a, b) {
+  const pa = parseClock(a);
+  const pb = parseClock(b);
+  if (!pa || !pb) return false;
+  return pa.h24 * 60 + pa.m < pb.h24 * 60 + pb.m;
+}
+
 /** {h24, m} -> "09:30 AM" — the format already on file. */
 export function toClock(h24, m) {
   const period = h24 >= 12 ? 'PM' : 'AM';

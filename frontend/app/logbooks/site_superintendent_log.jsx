@@ -51,11 +51,11 @@ import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // and DateField were both hand-built under, stated at the top of TimeField.jsx
 // and again in src/i18n/index.js, which refused expo-localization on it.
 //
-// `parseClock` and `toClock` come from the same file for the same reason
-// hotWorkModel takes them from there: the prefill below has to be written in
-// the format the picker itself writes, and a second implementation of that
-// format is how two of them start to disagree.
-import TimeField, { parseClock, toClock } from '../../src/components/logbookStepper/TimeField';
+// `clockPrecedes` comes from the same file for the same reason hotWorkModel
+// takes its clock helpers from there: the order gate below has to read the
+// format the picker itself writes, and a second implementation of that format
+// is how two of them start to disagree.
+import TimeField, { clockPrecedes } from '../../src/components/logbookStepper/TimeField';
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
 import { Card, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
 import SignaturePad from '../../src/components/SignaturePad';
@@ -184,39 +184,6 @@ const NO_RECORD_RETURNED = 'LOG_NOT_FILED';
 
 const todayISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
   .format(new Date());
-
-/**
- * The site's wall clock right now, IN THE PICKER'S OWN FORMAT AND ON ITS GRID,
- * for a prefill he confirms or changes.
- *
- * IT USED TO BE `nowHHMM()`, RETURNING 24-HOUR "HH:MM", and both reasons it
- * cannot stay that way are about the filed record rather than the control:
- *
- *   TWO FORMATS IN ONE FIELD. `presence.arrived_at` now holds what TimeField
- *   writes — "hh:mm AM/PM". A 24-hour prefill he never retapped would file a
- *   SECOND format into the same key, and every reader of it (server.py's
- *   `_arrived`/`_departed`, app/site/logbooks.jsx's "On site" line) echoes the
- *   string raw and converts nothing. A key that holds two shapes is how a
- *   reader eventually starts converting.
- *
- *   AN OFF-GRID MINUTE IS INVISIBLE IN THE PICKER. TimeField selects the chip
- *   whose {h24, m} matches exactly, on a five-minute grid. Prefill 07:17 and
- *   the modal opens with nothing selected — the field says one thing and the
- *   list he is choosing from says he has chosen nothing.
- *
- * FLOORED, NEVER ROUNDED UP. A prefill is a suggestion about a moment that has
- * already happened, and rounding forward would suggest an arrival the clock
- * cannot support yet.
- */
-const nowClock = () => {
-  const hhmm = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date()).replace(/^24:/, '00:');
-  const p = parseClock(hhmm);
-  // Unparseable means no suggestion, never a guess. The field stays blank and
-  // the gate below names it — which is the honest outcome and not a defect.
-  return p ? toClock(p.h24, p.m - (p.m % 5)) : '';
-};
 
 // ── THE FIELD COMPONENTS LIVE HERE, AND THAT IS THE WHOLE POINT ─────────────
 //
@@ -575,10 +542,15 @@ export default function SiteSuperintendentLog() {
     [tFinalize]);
 
   // ── item state ──────────────────────────────────────────────────────────
-  // ARRIVAL IS PREFILLED AND IS HIS TO CHANGE. He may open the app in his
-  // truck, so the first-open time is a SUGGESTION, never an observation the
-  // app asserts on a licensed signature. The screen says so in words
-  // (presenceNote) as well as by leaving the field editable.
+  // HE TYPES BOTH TIMES. NOTHING IS PREFILLED -- ruled 2026-10-10.
+  //
+  // Arrival was prefilled with the clock when the screen opened, and the
+  // screen is opened when he fills the log -- which on 588 Thomas was often
+  // after the day. 2026-10-05 filed "arrived 05:50 PM" on a log created at
+  // 5:52 PM: the moment he opened the form, not when he reached the site.
+  // Departure was prefilled on reaching the sign step for the same reason and
+  // with the same flaw. A blank field and the gate below are the honest
+  // outcome; the app does not know when he arrived or left.
   const [arrivedAt, setArrivedAt] = useState('');
   const [departedAt, setDepartedAt] = useState('');
   // ── HE LEFT AFTER MIDNIGHT, AND HE SAYS SO ──────────────────────────────
@@ -692,33 +664,6 @@ export default function SiteSuperintendentLog() {
   // lawful in exactly one circumstance and the tick asserts that circumstance.
   // It is not the bare "nothing to report" that items 4 to 7 carry.
   const [cpNone, setCpNone] = useState(false);
-
-  // ── A CLOCK PREFILL IS ONLY HONEST ON THE DAY THE LOG IS FOR ─────────────
-  //
-  // `nowClock()` READS THE CLOCK AND KNOWS NOTHING ABOUT `logDate`. This
-  // effect had no date guard, so opening YESTERDAY'S log this morning
-  // prefilled THIS MORNING'S time onto yesterday's record — a value from the
-  // wrong day, in a field that gates the submit, on a licensed signature. It
-  // was live on arrival before departure ever prefilled anything; departure
-  // would have doubled it.
-  //
-  // OFF-DAY, NOTHING IS SUGGESTED. The required mark and the submit gate
-  // already name a blank time, which is the honest outcome: the app does not
-  // know when he arrived on a day that is not today, and a wrong suggestion he
-  // did not retap is worse than a blank one he must fill.
-  //
-  // AMERICA/NEW_YORK ON BOTH SIDES. `todayISO` and `nowClock` read the same
-  // timezone, so the guard cannot disagree with the value it is guarding —
-  // a UTC "today" would open the gate for an hour every evening.
-  const prefillableDay = logDate === todayISO();
-
-  const prefilledArrival = useRef(false);
-
-  useEffect(() => {
-    if (prefilledArrival.current || !prefillableDay) return;
-    prefilledArrival.current = true;
-    setArrivedAt((v) => v || nowClock());
-  }, [prefillableDay]);
 
   // PREFILLED FROM THE SESSION, NOT THE CACHED PROFILE.
   //
@@ -917,51 +862,6 @@ export default function SiteSuperintendentLog() {
   // questions and a failure of one must not silently cost him the other --
   // Promise.all would have let a 403 on the roster suppress the finding
   // offers.
-  // ── DEPARTURE IS SUGGESTED WHEN HE REACHES THE SIGN STEP ────────────────
-  //
-  // THE OPERATOR'S POINT: he signs the log before he leaves the site, so the
-  // moment he signs is the departure. He should not type it.
-  //
-  // AND THE MOMENT IT IS WRITTEN IS THE WHOLE RULING. `handleSubmit` once
-  // read `departedAt.trim() || nowHHMM()` and stamped the clock into the
-  // payload AT THE TAP. That was retracted, and its retraction names the
-  // reason this effect fires HERE instead:
-  //
-  //     Arrival's prefill lands in a VISIBLE field he can correct for as long
-  //     as he is filling the log; this one landed in the payload at the
-  //     instant of filing, where he never saw it and could never correct it.
-  //
-  // Arriving at step 4 puts the value on screen, above the signature, with
-  // the field still live. He confirms it or he retaps it — and the note over
-  // both fields already says the times are his statement and not a
-  // measurement the app made. A stamp at the tap would be the same fabrication
-  // coming back through a different door.
-  //
-  // HE MAY SIGN AT THE TRAILER AND LEAVE TWENTY MINUTES LATER, so nothing
-  // locks. `TimeField` is exactly the control it was, with no `locked` prop.
-  //
-  // NEVER OVER A VALUE HE ENTERED, and never on a filed log. `!departedAt` is
-  // asked at the moment the effect runs rather than in the ref, so a man who
-  // typed 16:00 on step 1 keeps 16:00 when he reaches step 4.
-  //
-  // GUARDED ON `loading` FOR AN ORDERING REASON, not a cosmetic one. A
-  // restored draft can open the screen straight onto step 4, and `hydrate`
-  // writes `departed_at || ''` unconditionally — so an effect that fired
-  // before the load settled would prefill, then be wiped back to blank by
-  // hydrate, and the ref would stop it ever running again. Waiting for
-  // `loading` to clear is what makes the ref safe.
-  //
-  // AND IT NEVER TOUCHES `departedNextDay`. That flag is his statement that
-  // the shift crossed midnight; deriving it from a clock reading is the exact
-  // inference `departedNextDay`'s own note refuses.
-  const prefilledDeparture = useRef(false);
-  useEffect(() => {
-    if (loading || locked || prefilledDeparture.current) return;
-    if (step < TOTAL_STEPS || !prefillableDay) return;
-    prefilledDeparture.current = true;
-    setDepartedAt((v) => v || nowClock());
-  }, [loading, locked, step, prefillableDay]);
-
   const dailyOfferRef = useRef(false);
   useEffect(() => {
     if (loading || locked || dailyOfferRef.current) return undefined;
@@ -1252,7 +1152,7 @@ export default function SiteSuperintendentLog() {
       presence: {
         printed_name: printedName.trim(),
         // A WALL-CLOCK STRING, NOT AN INSTANT. See the note on
-        // `departedNextDay` above for why, and `nowClock` for the format.
+        // `departedNextDay` above for why, and TimeField for the format.
         arrived_at: arrivedAt.trim(),
         departed_at: departedAt.trim(),
         // ALWAYS WRITTEN, both ways. An absent key is the shape every other
@@ -1458,6 +1358,21 @@ export default function SiteSuperintendentLog() {
     arrivalMissing ? t('arrivedAt') : null,
     departureMissing ? t('departedAt') : null,
   ].filter(Boolean);
+  // ── HE DID NOT LEAVE BEFORE HE ARRIVED, UNLESS HE SAYS SO ───────────────
+  //
+  // Ruled 2026-10-10: departure before arrival is refused unless he has ticked
+  // "departed next day". Five filed logs on 588 Thomas read that way with the
+  // tick off -- "arrived 05:50 PM, departed 04:30 PM" among them -- because
+  // nothing compared the two.
+  //
+  // A REFUSAL, NEVER AN INFERENCE. The comparison decides only whether he may
+  // file; it never sets `departedNextDay` and never changes a time. The tick
+  // stays his statement, for the reasons its own note gives.
+  //
+  // The server refuses the same thing (SUBMIT_DEPARTURE_BEFORE_ARRIVAL), so a
+  // bundle that predates this gate cannot file it either.
+  const departureBeforeArrival = !departedNextDay
+    && clockPrecedes(departedAt, arrivedAt);
 
   const handleSubmit = async () => {
     if (signing || locked) return;
@@ -1500,6 +1415,7 @@ export default function SiteSuperintendentLog() {
     //
     // He picks it, from the same clock list as everything else on this screen.
     if (presenceMissing.length > 0) return;
+    if (departureBeforeArrival) return;
     if (!isAffirmedSignature(cpSignature)) return;
     if (unanswered.length > 0) return;
 
@@ -1950,6 +1866,11 @@ export default function SiteSuperintendentLog() {
         required={departureMissing}
         requiredLabel={t('requiredField')}
       />
+      {departureBeforeArrival ? (
+        <Text style={s.noteText} accessibilityRole="alert">
+          {t('departureBeforeArrival')}
+        </Text>
+      ) : null}
       {/* MARKED FROM THE START, BUT `nextDisabled` IS DELIBERATELY NOT SET.
           toolbox_talk blocks Next on its required step-1 fields; this screen
           must not, because in the morning he does not yet know when he will
@@ -2387,6 +2308,7 @@ export default function SiteSuperintendentLog() {
          a refusal he cannot read. */
       submitDisabled={!isAffirmedSignature(cpSignature)
         || presenceMissing.length > 0
+        || departureBeforeArrival
         || unanswered.length > 0}
       draftConflict={draftConflict}
       // HE TOOK THE OVERRIDE. Stored ON the verdict rather than beside it, so
@@ -2405,6 +2327,8 @@ export default function SiteSuperintendentLog() {
       submitHint={
         presenceMissing.length > 0
           ? t('presenceHint').replace('{fields}', presenceMissing.join(' and '))
+          : departureBeforeArrival
+          ? t('departureBeforeArrivalHint')
           : (!isAffirmedSignature(cpSignature)
             ? t('signatureHint')
             : (unanswered.length > 0

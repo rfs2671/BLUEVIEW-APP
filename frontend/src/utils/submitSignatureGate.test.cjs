@@ -267,7 +267,11 @@ const SUBMIT_CODES = [...new Set(
 // for a value the CP had typed, so a signed log could say a date was blank
 // when it was not. The population it reads is DERIVED from the sheet's own
 // declaration (lib/legal_render/schema.py), not listed in server.py.
+// EIGHT since SUBMIT_DEPARTURE_BEFORE_ARRIVAL, ruled 2026-10-10: the
+// superintendent's log may not have him leave before he arrived unless he
+// ticked "departed next day". Five filed logs on 588 Thomas read backwards.
 const EXPECTED_SUBMIT_CODES = [
+  'SUBMIT_DEPARTURE_BEFORE_ARRIVAL',
   'SUBMIT_EMPTY_LOG',
   'SUBMIT_INVALID_CP_NAME',
   'SUBMIT_INVALID_DATE',
