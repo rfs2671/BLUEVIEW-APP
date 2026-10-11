@@ -61726,6 +61726,10 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
             return await _punch_item_words(sess, dm_chat, parsed, it,
                                            (voice or {}).get("transcript") or text, now)
 
+    if sess["status"] == "locating" and parsed.get("has_image"):
+        # One more photo while locations are asked: back to capturing, this
+        # photo is an item, and "done" asks again (Codex review on #754).
+        await _punch_save(sess, status="capturing", asking=None)
     if sess["status"] == "capturing":
         return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
     if sess["status"] == "locating":
@@ -61872,16 +61876,18 @@ async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
     words = (voice or {}).get("transcript") or text
     low = words.strip().lower()
     items = sess["items"]
-    if parsed.get("has_image"):
-        # One more photo: back to capturing, and asked again at "done".
-        await _punch_save(sess, status="capturing", asking=None)
-        return False
     if low in punch.CANCEL_WORDS:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
     ref = punch.target_ref(words)
     it = _punch_item_no(items, ref[0]) if ref else None
+    if ref and it is None:
+        # "#99 lobby": no such item -- never put it on the one being asked.
+        asked = _punch_item_no(items, sess.get("asking") or 0)
+        await send_whatsapp_message(dm_chat, f"There's no #{ref[0]} in this walkthrough."
+                                    + (" " + punch.where_question(asked) if asked else ""))
+        return True
     if it is not None:
         words = ref[1]
     else:

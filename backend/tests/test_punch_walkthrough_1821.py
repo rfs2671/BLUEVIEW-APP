@@ -264,6 +264,26 @@ class EveryItemNeedsALocation(_Walk):
         (q,) = self._turn("send")
         self.assertIn("Where on floor 3 is #2 'exit sign out floor 3'?", q)
 
+    def test_a_photo_while_asked_is_an_item(self):
+        # Codex review on #754: it was dropped.
+        self._turn("Bulb burnt", photo=True)
+        self._turn("done")
+        self.assertEqual(self._turn("Loose outlet 3B", photo=True), [])
+        self.assertEqual(self.sess()["status"], "capturing")
+        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt", "Loose outlet 3B"])
+        (q,) = self._turn("done")
+        self.assertIn("Where is #1 'Bulb burnt'?", q)
+        self.assertEqual(self.assistant, [])
+
+    def test_an_unknown_number_changes_nothing(self):
+        # Codex review on #754: "#99 lobby" went on the item being asked.
+        self._turn("Bulb burnt", photo=True)
+        self._turn("done")
+        (q,) = self._turn("#99 lobby")
+        self.assertEqual(q, "There's no #99 in this walkthrough. "
+                            "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
+        self.assertEqual(self.item(1)["area"], punch.UNKNOWN)
+
     def test_drop_instead(self):
         self._turn("Bulb burnt", photo=True)
         self._turn("Missing screw 4F", photo=True)
