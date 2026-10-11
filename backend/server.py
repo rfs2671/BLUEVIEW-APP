@@ -52392,11 +52392,16 @@ async def _voice_prompt(company_id: Any, project_id: Any) -> Optional[str]:
                 {"name": 1, "address": 1, "trade_assignments": 1}) or {}
             job = [p.get("address") or "", p.get("name") or ""]
             subs = [c for c in wa_sender_map.company_choices(p) if c != wa_sender_map.GC_TEAM]
+            # THIS COMPANY'S ROWS ONLY: a group re-linked from another company
+            # keeps that company's history, and its senders' names must not go
+            # to OpenAI in this company's prompt (as _people_senders).
             groups = [g.get("wa_group_id") for g in await db.whatsapp_groups.find(
-                {"project_id": str(project_id), "active": True},
+                {"project_id": str(project_id), "active": True,
+                 "company_id": _company_id_filter(company_id)},
                 {"wa_group_id": 1}).to_list(20) if g.get("wa_group_id")]
             recent = await db.whatsapp_messages.find(
-                {"group_id": {"$in": groups}, "sender": {"$ne": "bot"}},
+                {"group_id": {"$in": groups}, "sender": {"$ne": "bot"},
+                 "company_id": _company_id_filter(company_id)},
                 {"sender_jid": 1, "sender_name": 1}).sort([("created_at", -1)]).limit(
                 300).to_list(None) if groups else []
             jids = list(dict.fromkeys(r.get("sender_jid") for r in recent if r.get("sender_jid")))

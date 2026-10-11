@@ -156,11 +156,11 @@ class TheJobsTerms(unittest.TestCase):
             whatsapp_groups=[{"wa_group_id": "g588@g.us", "project_id": "p588",
                               "company_id": "co1", "active": True}],
             whatsapp_messages=[
-                {"group_id": "g588@g.us", "sender": "1", "sender_jid": "1@lid",
+                {"group_id": "g588@g.us", "company_id": "co1", "sender": "1", "sender_jid": "1@lid",
                  "sender_name": "M F", "created_at": now},
-                {"group_id": "g588@g.us", "sender": "2", "sender_jid": "2@c.us",
+                {"group_id": "g588@g.us", "company_id": "co1", "sender": "2", "sender_jid": "2@c.us",
                  "sender_name": "Carlos 🔨", "created_at": now - timedelta(minutes=1)},
-                {"group_id": "g588@g.us", "sender": "bot", "sender_name": "Levelog",
+                {"group_id": "g588@g.us", "company_id": "co1", "sender": "bot", "sender_name": "Levelog",
                  "created_at": now}],
             whatsapp_sender_map=[{"company_id": "co1", "sender_jid": "1@lid",
                                   "person_name": "Meilich Friedman"}])
@@ -176,6 +176,17 @@ class TheJobsTerms(unittest.TestCase):
         self.assertIn("People: Meilich Friedman", tail)              # the name set in People
         self.assertIn("Carlos.", tail)                                # no emoji
         self.assertNotIn("Levelog", tail)                             # never the bot
+
+    def test_another_companys_history_in_a_relinked_group_stays_out(self):
+        db = self._db()
+        db.whatsapp_messages.rows.append(
+            {"group_id": "g588@g.us", "company_id": "co_old", "sender": "9",
+             "sender_jid": "9@c.us", "sender_name": "Former Foreman",
+             "created_at": datetime.now(timezone.utc)})
+        with patch.object(server, "db", db), patch.dict(server._VOICE_PROMPTS, clear=True):
+            p = _run(server._voice_prompt("co1", "p588"))
+        self.assertNotIn("Former Foreman", p)
+        self.assertIn("Meilich Friedman", p)
 
     def test_cached_and_switchable(self):
         db = self._db()
