@@ -485,7 +485,8 @@ def decide(upd: Dict[str, Any], items: List[dict]) -> List[Dict[str, Any]]:
                               upd)
             if len(got["items"]) == 1:
                 got = {**got, "by": "gc_staff"}
-        named = cancel_subject(upd.get("own_terms") or ())
+        named = cancel_subject(upd["body"]) if "body" in upd else \
+            {t for t in subject_terms(upd.get("own_terms") or ()) if t not in _CANCEL_NOT_SUBJECT}
         if named:
             # A cancel that names what it calls off calls off only that: "Never
             # mind the load calcs" right after the core drill question is not
@@ -757,10 +758,30 @@ _CANCEL_NOT_SUBJECT = {"never", "mind", "nvm", "cancel", "cancelled", "canceled"
                        "cancelada", "farges", "abgeshtelt"}
 
 
-def cancel_subject(terms: Iterable[str]) -> Set[str]:
-    """What a cancel names as its own subject ("Never mind the load calcs,
-    owner changed scope" -> load, calc, ...); empty for "Never mind"."""
-    return {t for t in subject_terms(terms) if t not in _CANCEL_NOT_SUBJECT}
+def _fold_in_place(text: str) -> str:
+    """ml.fold one character at a time, the same length as `text`, so a
+    span matched on the folded text is the same span of the original."""
+    out = []
+    for ch in str(text or ""):
+        f = ml.fold(ch)
+        out.append(f[0] if len(f) == 1 else (f[:1] or " ") if f else " ")
+    return "".join(out)
+
+
+def cancel_subject(body: Any) -> Set[str]:
+    """What a cancel names as its own subject: its words once every phrase
+    the cancel classifier accepts is taken out ("Never mind the load calcs,
+    owner changed scope" -> load, calc, owner, ...; "Never mind", "Hold
+    off", "Olvídalo", "Farges es" -> nothing)."""
+    text = str(body or "")
+    folded = _fold_in_place(text)
+    spans = [m.span() for rx, t in ((_CANCEL, text), (_FORGET, text), (_ML_CANCEL, folded))
+             for m in rx.finditer(t)]
+    chars = list(text)
+    for a, b in spans:
+        chars[a:b] = " " * (b - a)
+    rest = "".join(chars)
+    return {t for t in subject_terms(topic_terms(rest)) if t not in _CANCEL_NOT_SUBJECT}
 
 
 def subject_terms(terms: Iterable[str]) -> Set[str]:

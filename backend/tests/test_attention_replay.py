@@ -190,6 +190,18 @@ class Live588DryRun(unittest.TestCase):
         # A bare "never mind" right after it, or one naming it: cancelled.
         self.assertEqual(run("Never mind")[0]["to"], "cancelled")
         self.assertEqual(run("Never mind the core drill locations")[0]["to"], "cancelled")
+        # Codex, #742: every phrase the classifier reads as a cancel is the
+        # cancel, not a subject -- bare, these call off the ask just before.
+        for bare in ("Hold off", "Hold off on that", "Olvídalo", "Farges es",
+                     "Scope changed", "Nvm"):
+            self.assertEqual(st.classify(bare), {"kind": "cancel"}, bare)
+            self.assertEqual(st.cancel_subject(bare), set(), bare)
+            got = st.decide({**upd, "terms": st.topic_terms(bare),
+                             "own_terms": st.topic_terms(bare), "body": bare}, [core])
+            self.assertEqual(got[0]["to"], "cancelled", bare)
+        body = "Never mind the load calcs, owner changed scope"
+        self.assertEqual(st.decide({**upd, "terms": st.topic_terms(body),
+                                    "own_terms": st.topic_terms(body), "body": body}, [core]), [])
 
     def test_a_reply_by_its_quoted_words_closes_the_door_hardware(self):
         # "Just sent, check ur email" was a reply to the door hardware ask, but
@@ -208,6 +220,36 @@ class Live588DryRun(unittest.TestCase):
         (c,) = out["items"]
         self.assertEqual((c["id"], c["to"], c["because"]),
                          ("it_door", "done", "Just sent, check ur email"))
+
+
+class QuotedWordsOrder(unittest.TestCase):
+    """Codex, #742: receipt order is not send order."""
+
+    def _replay(self, quoted_at, reply_at, quoted_ts, reply_ts):
+        db = _world()
+        m1 = _msg(db, "I'll send the door hardware submittal tomorrow", at=quoted_at,
+                  sender=MIKE, timestamp=quoted_ts)
+        _item(db, "it_door", "I'll send the door hardware submittal tomorrow", quoted_ts,
+              m1["message_id"])
+        _msg(db, "Just sent, check ur email", at=reply_at, sender=MIKE, timestamp=reply_ts,
+             quoted_body="I'll send the door hardware submittal tomorrow")
+        with patch.object(server, "db", db):
+            asyncio.run(server._attention_replay_state("proj_a", OCT8 - timedelta(days=1)))
+        return db.attention_items.rows[0]["status"]
+
+    def test_stored_in_the_same_millisecond(self):
+        t = OCT9
+        self.assertEqual(self._replay(t, t, t - timedelta(minutes=5), t), "done")
+
+    def test_webhooks_out_of_order(self):
+        # The quoted message's webhook landed 2 minutes after the reply's.
+        self.assertEqual(self._replay(OCT9 + timedelta(minutes=2), OCT9,
+                                      OCT9 - timedelta(minutes=5), OCT9), "done")
+
+    def test_a_later_message_with_those_words_is_not_what_it_quotes(self):
+        # Sent AFTER the reply (WhatsApp time), within the slack: no link.
+        self.assertEqual(self._replay(OCT9 + timedelta(minutes=2), OCT9,
+                                      OCT9 + timedelta(minutes=1), OCT9), "open")
 
 
 class TestCleanup(unittest.TestCase):
