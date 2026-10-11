@@ -1624,6 +1624,25 @@ def _qty_check(fam: GlyphFamily, tags: Sequence[str], n: int) -> Tuple[str, Opti
     return ("agrees" if total == n else "disagrees"), total
 
 
+#: A per-apartment phrase: "each unit", "every apartment", "per floor".
+#: Narrower than _PER_UNIT on purpose - "21 PTAC-1 per the schedule" is a
+#: building figure with its source, not a per-unit claim.
+_PER_APARTMENT = re.compile(
+    r"\b(each|every|per)\s+(?:\w+\s+)?(unit|units|apartment|apartments|apt|dwelling|"
+    r"dwellings|room|rooms|floor|floors|level|levels|storey|storeys|story)\b|\bapiece\b",
+    re.I)
+
+
+def _building_scope(clause: str, book: GlyphBook) -> bool:
+    """The clause names no floor, no unit and no per-apartment share - and no
+    level or unit that maps to nothing. Only such a clause may state a
+    figure that is printed for the whole building."""
+    keys, floor_unknown = _clause_floors(clause, book)
+    units, unit_unknown = _clause_units(clause, book)
+    return not (keys or floor_unknown or units or unit_unknown
+                or _PER_APARTMENT.search(clause))
+
+
 def _qty_in_clause(clause: str, book: GlyphBook) -> Tuple[set, set]:
     """(QTY figures the clause may state, QTY figures it may not), for every
     tag it names that has a readable QTY cell.
@@ -1642,12 +1661,9 @@ def _qty_in_clause(clause: str, book: GlyphBook) -> Tuple[set, set]:
     An unreadable cell (PTAC-2: "(readings disagree)") is neither: it adds
     nothing and withholds nothing."""
     add, drop = set(), set()
-    # A SCHEDULE'S QTY IS A BUILDING FIGURE: it is added only to a clause that
-    # names no floor and no unit. ("The bulkhead has 1 DH-1." is not what the
-    # schedule says.)
-    keys, floor_unknown = _clause_floors(clause, book)
-    units, unit_unknown = _clause_units(clause, book)
-    building = not (keys or floor_unknown or units or unit_unknown)
+    # A SCHEDULE'S QTY IS A BUILDING FIGURE: it is added only to a clause at
+    # building scope. ("The bulkhead has 1 DH-1." is not what the schedule says.)
+    building = _building_scope(clause, book)
     for fam in book.families.values():
         for t in _named_tags(clause, fam.tags):
             q = fam.qty.get(t) or ""
@@ -1994,6 +2010,18 @@ def _count_answer_is_bound(text: str, records: Sequence[Dict[str, Any]]
         allowed: set = set()
         for ident in _idents_named_in(clause, by_ident.keys()):
             allowed |= by_ident[ident]
+        # ── A PRINTED COUNT IS A BUILDING FIGURE ───────────────────────────
+        #
+        # Every counting source _values_by_ident lends is a schedule's QTY
+        # cell, or an element count read from one - a figure for the whole
+        # building. It bound in ANY clause naming the mark: measured on 588
+        # Boyland 2026-10-10, 80 wrong answers across PTAC-1 21, PTAC-3 11,
+        # WH-1 9 and DH-1 1 - "The fourth floor has 21 PTAC-1.", "4A has 9
+        # WH-1.", "Each unit on the second floor has 11 PTAC-3." So a printed
+        # count binds only at building scope; a floor or unit figure comes
+        # from the located symbols (glyph_values, added below) or not at all.
+        if not _building_scope(clause, book):
+            allowed = set()
         # THE SCHEDULE'S QTY AND THE LOCATED COUNT AGREE, OR NEITHER IS SAID
         # (_qty_in_clause). Applied to the printed figures BEFORE the located
         # ones are added below, so a floor figure that happens to equal a
