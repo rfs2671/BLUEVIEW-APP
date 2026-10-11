@@ -88,6 +88,9 @@ export const LANGUAGES = [
 export const LANGUAGE_NOTE =
   'Their voice notes are transcribed in this language. Auto: detected from the note.';
 
+export const NO_PHONE_LANGUAGE_NOTE =
+  'Add their phone number first: their voice notes are matched to them by it.';
+
 /** "Spanish" for a set language; null for auto or unset. */
 export function languageLabel(value) {
   return { en: 'English', es: 'Spanish', yi: 'Yiddish' }[value] || null;

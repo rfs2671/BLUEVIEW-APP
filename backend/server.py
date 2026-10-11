@@ -11706,6 +11706,49 @@ async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_adm
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
+class VoiceLanguageBody(BaseModel):
+    language: str
+
+
+def _voice_lang_view(language: str, jid: Optional[str]) -> dict:
+    return {"language": language, "has_phone": bool(jid)}
+
+
+_NO_PHONE_FOR_LANGUAGE = ("Add their phone number first: their voice notes are matched "
+                          "to them by it.")
+
+
+async def _admin_target_user(user_id: str, admin: dict) -> dict:
+    user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+                                   {"phone": 1, "company_id": 1})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not is_platform_operator(admin) and not _same_company(admin, user):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this user")
+    return user
+
+
+@api_router.get("/admin/users/{user_id}/voice-language")
+async def get_admin_user_voice_language(user_id: str, admin=Depends(get_user_admin)):
+    """What this user speaks in voice notes: auto, en, es or yi (Whisper's
+    hint). Keyed by company + their phone."""
+    user = await _admin_target_user(user_id, admin)
+    jid = wa_voice.phone_sender_jid(user.get("phone"))
+    return _voice_lang_view(await _voice_lang_get(user.get("company_id"), jid), jid)
+
+
+@api_router.put("/admin/users/{user_id}/voice-language")
+async def set_admin_user_voice_language(user_id: str, body: VoiceLanguageBody,
+                                        admin=Depends(get_user_admin)):
+    user = await _admin_target_user(user_id, admin)
+    jid = wa_voice.phone_sender_jid(user.get("phone"))
+    if not jid or not user.get("company_id"):
+        raise HTTPException(status_code=422, detail=_NO_PHONE_FOR_LANGUAGE)
+    lang = await _voice_lang_set(user["company_id"], jid, body.language, actor_id(admin),
+                                 {"kind": "user", "user_id": user_id})
+    return _voice_lang_view(lang, jid)
+
+
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
 async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_user_admin)):
     # Field whitelist — prevent privilege escalation via arbitrary field injection
@@ -11855,6 +11898,9 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
 
     # Sync whatsapp_contacts on phone change
     new_phone = update_data.get("phone", old_phone)
+    if company_id and "phone" in update_data and new_phone != old_phone:
+        # Their voice-note language is kept under their number: it moves too.
+        await _voice_lang_move(company_id, old_phone, new_phone)
     if company_id and "phone" in update_data:
         try:
             if new_phone != old_phone:
@@ -22405,6 +22451,7 @@ async def update_worker(
         ]
 
     update_data["updated_at"] = datetime.now(timezone.utc)
+    old_phone = worker.get("phone")
     
     result = await db.workers.update_one(
         {"_id": to_query_id(worker_id)},
@@ -22413,9 +22460,32 @@ async def update_worker(
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Worker not found")
+    if "phone" in update_data:
+        # Their voice-note language is kept under their number: it moves too.
+        await _voice_lang_move(worker.get("company_id"), old_phone, update_data["phone"])
     
     worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
     return WorkerResponse(**serialize_id(worker))
+
+
+@api_router.get("/workers/{worker_id}/voice-language")
+async def get_worker_voice_language(worker_id: str, worker=Depends(require_worker_access)):
+    """What this worker speaks in voice notes: auto, en, es or yi (Whisper's
+    hint). Keyed by company + their phone, beside People's unknown senders."""
+    jid = wa_voice.phone_sender_jid(worker.get("phone"))
+    return _voice_lang_view(await _voice_lang_get(worker.get("company_id"), jid), jid)
+
+
+@api_router.put("/workers/{worker_id}/voice-language")
+async def set_worker_voice_language(worker_id: str, body: VoiceLanguageBody,
+                                    worker=Depends(require_worker_write_access),
+                                    current_user=Depends(get_current_user)):
+    jid = wa_voice.phone_sender_jid(worker.get("phone"))
+    if not jid or not worker.get("company_id"):
+        raise HTTPException(status_code=422, detail=_NO_PHONE_FOR_LANGUAGE)
+    lang = await _voice_lang_set(worker["company_id"], jid, body.language,
+                                 actor_id(current_user), {"kind": "worker", "worker_id": worker_id})
+    return _voice_lang_view(lang, jid)
 
 @api_router.delete("/workers/{worker_id}")
 async def delete_worker(
@@ -52350,12 +52420,95 @@ async def _sender_whisper_language(company_id: Any, jids: List[str]) -> Optional
     if not company_id or not jids:
         return None
     try:
-        row = await db[wa_voice.SENDER_LANG_COLLECTION].find_one(
-            {"company_id": str(company_id), "sender_jid": {"$in": jids}}, {"language": 1})
+        rows = await db[wa_voice.SENDER_LANG_COLLECTION].find(
+            {"company_id": str(company_id), "sender_jid": {"$in": jids}},
+            {"sender_jid": 1, "language": 1}).to_list(len(jids) + 2)
     except Exception as e:
         logger.warning(f"[voice] sender language read failed: {type(e).__name__}")
         return None
-    return wa_voice.whisper_language((row or {}).get("language"))
+    # The first key wins: the jid the note came from, then their phone.
+    by = {r.get("sender_jid"): r.get("language") for r in rows}
+    return next((wa_voice.whisper_language(by[j]) for j in jids if j in by), None)
+
+
+async def _sender_language_jids(company_id: Any, jid: str) -> List[str]:
+    """The keys a sender's language may be stored under: the jid their note
+    came from (People), then their phone's "<digits>@c.us" (a user or worker
+    on file, set on their own screen). A privacy id (@lid) finds the phone
+    through what is known of it (People, the WaAPI lookup) or a user's
+    opt-in. Never raises."""
+    keys = [jid] if jid else []
+    try:
+        number = wa_mention.phone(jid)
+        if not number and jid and company_id:
+            number = (await _known_sender_phone(str(company_id), jid,
+                                                datetime.now(timezone.utc))).get("sender_phone")
+        if not number and wa_sender_map.is_lid(jid) and company_id:
+            optin = await db[WA_OPTINS].find_one(
+                {"status": "active", "chat_digits": wa_dm.phone_digits(jid)}, {"user_id": 1})
+            if optin and optin.get("user_id"):
+                u = await db.users.find_one(
+                    {"_id": to_query_id(str(optin["user_id"])),
+                     "company_id": _company_id_filter(company_id)}, {"phone": 1})
+                number = wa_mention.phone((u or {}).get("phone"))
+        if number and f"{number}@c.us" not in keys:
+            keys.append(f"{number}@c.us")
+    except Exception as e:
+        logger.warning(f"[voice] sender keys failed: {type(e).__name__}")
+    return keys
+
+
+async def _voice_lang_get(company_id: Any, jid: Optional[str]) -> str:
+    if not company_id or not jid:
+        return "auto"
+    row = await db[wa_voice.SENDER_LANG_COLLECTION].find_one(
+        {"company_id": str(company_id), "sender_jid": jid}, {"language": 1})
+    return (row or {}).get("language") or "auto"
+
+
+async def _voice_lang_set(company_id: Any, jid: str, language: Any, op: Any,
+                          context: dict) -> str:
+    """Store (or, for auto, remove) what a sender speaks; audited. 422 for a
+    language not offered."""
+    try:
+        lang = wa_voice.sender_language(language)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    coll = db[wa_voice.SENDER_LANG_COLLECTION]
+    q = {"company_id": str(company_id), "sender_jid": jid}
+    was = await coll.find_one(q)
+    if lang == "auto":
+        await coll.delete_one(q)
+    else:
+        await coll.update_one(
+            q, {"$set": {"language": lang, "set_by": op, "set_at": datetime.now(timezone.utc)},
+                "$setOnInsert": dict(q)}, upsert=True)
+    await audit_log("whatsapp_sender_language_set", op, "whatsapp_sender_language",
+                    str((was or {}).get("_id") or ""),
+                    {**context, "language": lang, "was": (was or {}).get("language") or "auto"})
+    return lang
+
+
+async def _voice_lang_move(company_id: Any, old_phone: Any, new_phone: Any) -> None:
+    """A user's or worker's number changed: their language goes with it."""
+    old_j, new_j = wa_voice.phone_sender_jid(old_phone), wa_voice.phone_sender_jid(new_phone)
+    if not company_id or not old_j or old_j == new_j:
+        return
+    coll = db[wa_voice.SENDER_LANG_COLLECTION]
+    try:
+        row = await coll.find_one({"company_id": str(company_id), "sender_jid": old_j})
+        if not row:
+            return
+        await coll.delete_one({"company_id": str(company_id), "sender_jid": old_j})
+        if new_j:
+            await coll.update_one(
+                {"company_id": str(company_id), "sender_jid": new_j},
+                {"$set": {"language": row.get("language"), "set_by": row.get("set_by"),
+                          "set_at": row.get("set_at")},
+                 "$setOnInsert": {"company_id": str(company_id), "sender_jid": new_j}},
+                upsert=True)
+    except Exception as e:
+        logger.warning(f"[voice] language move failed: {type(e).__name__}")
 
 
 def _playable_audio(audio: Optional[bytes], parsed: dict) -> tuple:
@@ -62192,7 +62345,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         openai_api_key=OPENAI_API_KEY,
                         prompt=await _voice_prompt(msg_company_id, project_id),
                         language=await _sender_whisper_language(
-                            msg_company_id, [str(parsed.get("sender") or "")]),
+                            msg_company_id, await _sender_language_jids(
+                                msg_company_id, str(parsed.get("sender") or ""))),
                         sentry_capture=(
                             (lambda m, level="warning":
                                 sentry_sdk.capture_message(m, level=level))
@@ -62719,7 +62873,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     # A DM names no job yet: the glossary only.
                     prompt=await _voice_prompt(None, None),
                     language=await _sender_whisper_language(
-                        ident.get("company_id"), _dm_chat_ids(dm_chat)),
+                        ident.get("company_id"), _dm_chat_ids(dm_chat) + [
+                            j for j in [wa_voice.phone_sender_jid(
+                                (ident.get("user") or {}).get("phone"))] if j]),
                     sentry_capture=(
                         (lambda msg, level="warning":
                             sentry_sdk.capture_message(msg, level=level))
@@ -65489,22 +65645,9 @@ async def set_whatsapp_person_language(project_id: str, key: str, body: SenderLa
         raise HTTPException(status_code=422, detail=str(e))
     s = await _people_find(company_id, str(project_id), key,
                            is_company_admin(current_user))
-    coll = db[wa_voice.SENDER_LANG_COLLECTION]
-    was = await coll.find_one({"company_id": company_id, "sender_jid": s["jid"]})
-    op = actor_id(current_user)
-    if lang == "auto":
-        await coll.delete_one({"company_id": company_id, "sender_jid": s["jid"]})
-    else:
-        await coll.update_one(
-            {"company_id": company_id, "sender_jid": s["jid"]},
-            {"$set": {"language": lang, "set_by": op, "set_at": datetime.now(timezone.utc)},
-             "$setOnInsert": {"company_id": company_id, "sender_jid": s["jid"]}},
-            upsert=True)
-    await audit_log("whatsapp_sender_language_set", op, "whatsapp_sender_language",
-                    str((was or {}).get("_id") or ""),
-                    {"project_id": str(project_id), "key": key, "language": lang,
-                     "was": (was or {}).get("language") or "auto"})
-    s["language"] = lang
+    s["language"] = await _voice_lang_set(
+        company_id, s["jid"], lang, actor_id(current_user),
+        {"kind": "sender", "project_id": str(project_id), "key": key})
     return _people_row(company_id, s, is_company_admin(current_user))
 
 

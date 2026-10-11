@@ -95,7 +95,26 @@ ok(api.includes('/language`') && /setWhatsAppPersonLanguage/.test(api), 'its own
 const langCard = read('src/components/whatsapp/PeopleCard.jsx');
 ok(/setWhatsAppPersonLanguage\(projectId, editing\.key, language\)/.test(langCard),
    'saves on tap, with no name needed');
-ok(/accessibilityRole="radio"/.test(langCard) && /LANGUAGES\.map/.test(langCard), 'one choice of four');
+ok(/accessibilityRole="radio"/.test(read('src/components/whatsapp/VoiceLanguagePicker.jsx'))
+   && /VoiceLanguagePicker/.test(langCard), 'one choice of four (the shared picker)');
+
+console.log('\nthe same picker on every person who can send a voice note');
+const picker = read('src/components/whatsapp/VoiceLanguagePicker.jsx');
+ok(/export function VoiceLanguagePicker/.test(picker) && /export function VoiceLanguageSetting/.test(picker),
+   'one picker, and a self-loading setting');
+ok(/LANGUAGES\.map/.test(picker) && /NO_PHONE_LANGUAGE_NOTE/.test(picker), 'four choices; no phone: says so');
+ok(/VoiceLanguagePicker value=\{editing && editing\.language\}/.test(langCard), 'People (unknown senders)');
+const users = read('app/admin/users.jsx');
+ok(/<VoiceLanguageSetting key=\{selectedUser\.id\}/.test(users)
+   && /adminUsersAPI\.getVoiceLanguage\(selectedUser\.id\)/.test(users)
+   && /adminUsersAPI\.setVoiceLanguage\(selectedUser\.id, language\)/.test(users), 'users: the edit sheet');
+const worker = read('app/workers/[id].jsx');
+ok(/<VoiceLanguageSetting key=\{workerId\}/.test(worker)
+   && /workersAPI\.getVoiceLanguage\(workerId\)/.test(worker)
+   && /workersAPI\.setVoiceLanguage\(workerId, language\)/.test(worker), 'workers: their screen');
+ok(api.includes('/api/admin/users/${encodeURIComponent(userId)}/voice-language')
+   && api.includes('/api/workers/${encodeURIComponent(workerId)}/voice-language'), 'their endpoints');
+ok(/Add their phone number first/.test(P.NO_PHONE_LANGUAGE_NOTE), 'the no-phone note');
 
 console.log('\nwho sees it');
 ok(P.canManagePeople({ role: 'admin' }) && P.canManagePeople({ role: ' PM ' }), 'admin and PM');

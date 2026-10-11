@@ -275,3 +275,12 @@ def sender_language(value: Any) -> str:
 def whisper_language(value: Any) -> Optional[str]:
     """Whisper's language hint for a stored choice; None for auto/unknown."""
     return SENDER_LANGS.get(str(value or "").strip().lower())
+
+
+def phone_sender_jid(phone: Any) -> Optional[str]:
+    """The sender key for a person on file (a user, a worker) from their
+    phone: "12125551234@c.us"; None without a usable number. Unknown senders
+    are keyed by the jid their messages came from."""
+    from lib import wa_mention
+    n = wa_mention.phone(phone)
+    return f"{n}@c.us" if n else None

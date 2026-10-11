@@ -233,3 +233,137 @@ class CompanyDelete(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Everyone who can send a voice note: users, workers, and People ──────────
+
+from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
+    _db as _phase1_db, CO_A as P1_CO, PM_PHONE)
+from tests._fake_mongo import FakeDb  # noqa: E402
+
+ADMIN_A = {"id": "u_admin", "_id": "u_admin", "role": "admin", "company_id": P1_CO}
+ADMIN_B = {"id": "u_b", "_id": "u_b", "role": "admin", "company_id": "co_b"}
+
+
+def _lang_rows(db):
+    return sorted((r["company_id"], r["sender_jid"], r["language"])
+                  for r in db[wa_voice.SENDER_LANG_COLLECTION].rows)
+
+
+class ForUsers(unittest.TestCase):
+
+    def test_set_by_their_number_and_read_back(self):
+        db = _phase1_db()
+        with patch.object(server, "db", db):
+            self.assertEqual(_run(server.get_admin_user_voice_language("u_pm", admin=ADMIN_A)),
+                             {"language": "auto", "has_phone": True})
+            out = _run(server.set_admin_user_voice_language(
+                "u_pm", server.VoiceLanguageBody(language="es"), admin=ADMIN_A))
+        self.assertEqual(out, {"language": "es", "has_phone": True})
+        self.assertEqual(_lang_rows(db), [(P1_CO, f"{PM_PHONE}@c.us", "es")])
+
+    def test_another_companys_admin_is_refused(self):
+        db = _phase1_db()
+        with patch.object(server, "db", db), self.assertRaises(HTTPException) as cm:
+            _run(server.set_admin_user_voice_language(
+                "u_pm", server.VoiceLanguageBody(language="es"), admin=ADMIN_B))
+        self.assertEqual(cm.exception.status_code, 403)
+        self.assertEqual(_lang_rows(db), [])
+
+    def test_no_phone_no_language(self):
+        db = _phase1_db()
+        db.users.rows.append({"_id": "u_nophone", "company_id": P1_CO, "role": "cp", "name": "N"})
+        with patch.object(server, "db", db):
+            self.assertEqual(_run(server.get_admin_user_voice_language("u_nophone", admin=ADMIN_A)),
+                             {"language": "auto", "has_phone": False})
+            with self.assertRaises(HTTPException) as cm:
+                _run(server.set_admin_user_voice_language(
+                    "u_nophone", server.VoiceLanguageBody(language="yi"), admin=ADMIN_A))
+        self.assertEqual(cm.exception.status_code, 422)
+
+    def test_the_language_moves_with_their_number(self):
+        db = _phase1_db()
+        with patch.object(server, "db", db):
+            _run(server._voice_lang_set(P1_CO, f"{PM_PHONE}@c.us", "yi", "u_admin", {}))
+            _run(server._voice_lang_move(P1_CO, "+" + PM_PHONE, "(718) 555-0199"))
+        self.assertEqual(_lang_rows(db), [(P1_CO, "17185550199@c.us", "yi")])
+
+
+class ForWorkers(unittest.TestCase):
+
+    def _db(self):
+        return FakeDb(workers=[{"_id": "w1", "company_id": "co1", "name": "Carlos",
+                                "phone": "718-555-0142"},
+                               {"_id": "w2", "company_id": "co1", "name": "No Phone"}])
+
+    def test_set_and_read(self):
+        db = self._db()
+        w = db.workers.rows[0]
+        with patch.object(server, "db", db):
+            out = _run(server.set_worker_voice_language(
+                "w1", server.VoiceLanguageBody(language="es"), worker=w, current_user=ADMIN_A))
+            self.assertEqual(out["language"], "es")
+            self.assertEqual(_run(server.get_worker_voice_language("w1", worker=w))["language"], "es")
+        self.assertEqual(_lang_rows(db), [("co1", "17185550142@c.us", "es")])
+
+    def test_no_phone_is_refused(self):
+        db = self._db()
+        with patch.object(server, "db", db), self.assertRaises(HTTPException) as cm:
+            _run(server.set_worker_voice_language(
+                "w2", server.VoiceLanguageBody(language="es"), worker=db.workers.rows[1],
+                current_user=ADMIN_A))
+        self.assertEqual(cm.exception.status_code, 422)
+
+    def test_a_new_number_takes_the_language_along(self):
+        db = self._db()
+        with patch.object(server, "db", db):
+            _run(server._voice_lang_set("co1", "17185550142@c.us", "es", "a", {}))
+            _run(server.update_worker("w1", {"phone": "718-555-0177"}, worker=dict(db.workers.rows[0])))
+        self.assertEqual(_lang_rows(db), [("co1", "17185550177@c.us", "es")])
+
+
+class TheNoteFindsThem(unittest.TestCase):
+
+    def test_a_phone_sender_is_their_own_key(self):
+        with patch.object(server, "db", FakeDb()):
+            self.assertEqual(_run(server._sender_language_jids("co1", "17185550142@c.us")),
+                             ["17185550142@c.us"])
+
+    def test_a_privacy_id_finds_the_users_number_through_their_optin(self):
+        db = _phase1_db()
+        db[server.WA_OPTINS].rows.append({"status": "active", "chat_digits": "99887766554433",
+                                          "user_id": "u_pm", "phone": "+" + PM_PHONE})
+        with patch.object(server, "db", db):
+            keys = _run(server._sender_language_jids(P1_CO, "99887766554433@lid"))
+        self.assertEqual(keys, ["99887766554433@lid", f"{PM_PHONE}@c.us"])
+
+    def test_a_privacy_id_finds_a_number_people_gave(self):
+        db = FakeDb(whatsapp_sender_map=[{"company_id": "co1", "sender_jid": "4455@lid",
+                                          "phone": "17185550142", "set_at": T0}])
+        with patch.object(server, "db", db):
+            keys = _run(server._sender_language_jids("co1", "4455@lid"))
+        self.assertEqual(keys, ["4455@lid", "17185550142@c.us"])
+
+    def test_the_note_jid_wins_over_the_phone(self):
+        db = FakeDb()
+        db[wa_voice.SENDER_LANG_COLLECTION].rows.extend([
+            {"company_id": "co1", "sender_jid": "17185550142@c.us", "language": "en"},
+            {"company_id": "co1", "sender_jid": "4455@lid", "language": "yi"}])
+        with patch.object(server, "db", db):
+            self.assertEqual(_run(server._sender_whisper_language(
+                "co1", ["4455@lid", "17185550142@c.us"])), "yi")
+            self.assertEqual(_run(server._sender_whisper_language(
+                "co1", ["9999@lid", "17185550142@c.us"])), "en")
+
+
+class AUserSetOnTheirScreenIsHeardInTheGroup(_Base):
+
+    def _db(self):
+        db = super()._db()
+        db[wa_voice.SENDER_LANG_COLLECTION].rows.append(
+            {"company_id": CO_A, "sender_jid": f"{PM_PHONE}@c.us", "language": "es"})
+        return db
+
+    def test_their_group_voice_note_gets_the_hint(self):
+        self.run_note([_ok()])
+        self.assertEqual(self.kw[0].get("language"), "es")
