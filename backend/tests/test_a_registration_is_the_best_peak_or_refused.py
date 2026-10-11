@@ -161,16 +161,37 @@ class SpreadIsMeasuredAgainstThePlan(unittest.TestCase):
         r = PS.register(arch, mech)
         self.assertGreater(min(r["spread"]), 0.95)
 
-    def test_no_wall_layer_no_spread_and_refused(self):
+    def test_no_wall_layer_spread_unmeasured_the_rest_still_decides(self):
         """The fallback: long segments span 0.39 on every Boyland sheet (tables
-        and dimension lines are long too), so without a wall layer the plan
-        has no measurable extent, and placement is refused, saying why."""
+        and dimension lines are long too), so without a wall layer there is
+        no plan extent and spread is NOT MEASURED (None). The registration
+        is not refused for that - the geometric pipeline exists for exactly
+        these sheets - but the under-half check still refuses a decoy."""
         _present()
         arch, mech, _, _ = _pair(wall=False)
         r = PS.register(arch, mech)
         self.assertIsNone(r["spread"])
+        self.assertTrue(r["usable"], r["refused"])
+        with patch.object(PS, "best_translation", _old_step):
+            r = PS.register(arch, mech)
+        self.assertIsNone(r["spread"])
         self.assertFalse(r["usable"])
-        self.assertIn("no wall layer", r["refused"])
+        self.assertIn("under half", r["refused"])
+
+    def test_a_spread_under_half_the_plan_is_refused(self):
+        """MIN_ANCHOR_SPREAD_FRAC applies against the wall layer: anchors
+        bunched in one corner of the plan do not register it."""
+        _present()
+        arch, mech, _, _ = _pair()
+        A = arch["corners"]
+        corner = (A[:, 0] < 400) & (A[:, 1] < 250)
+        lo, hi = A.min(0), A.max(0)
+        arch = {"corners": A[corner], "att": [((lo[0], lo[1], hi[0], hi[1]), "A-WALL")]}
+        mech = {"corners": mech["corners"], "att": []}
+        r = PS.register(arch, mech)
+        self.assertLess(max(r["spread"]), 0.5)
+        self.assertFalse(r["usable"])
+        self.assertIn("need 0.5 in both axes", r["refused"])
 
 
 # ── the two measured failures, on the real sheets ─────────────────────────

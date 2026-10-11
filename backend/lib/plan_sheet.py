@@ -380,7 +380,7 @@ def plan_extent(sheet: dict):
     A-105.01 draws the bulkhead plan beside the roof). Long segments were
     tried as a fallback and span 0.39 again - tables and dimension lines
     are long too - so a sheet with no wall layer has NO plan extent, and
-    its spread is not measured."""
+    its spread is not measured (register records that; see there)."""
     from lib.plan_space_layers import role_of     # it imports this module
     walls = [s for s, layer in sheet.get("att") or () if role_of(layer) == "wall"]
     if not walls:
@@ -403,7 +403,12 @@ def register(arch: dict, mech: dict) -> dict:
     not a constant fitted to the pairs measured. Count and spread
     (registration_verdict, against plan_extent) must hold too; spread is a
     condition, not the discriminator - it did not separate either failure.
-    A sheet with no wall layer cannot show its spread and is refused."""
+
+    A SHEET WITH NO WALL LAYER HAS NO PLAN TO MEASURE SPREAD AGAINST, so
+    spread is recorded as not measured and the other conditions still
+    decide. Refusing instead would close the geometric pipeline, which
+    exists for exactly those sheets and is ruled REPORTED, NOT GATED
+    (operator 2026-10-06; test_a_unit_is_answered_or_refused_never_wrong)."""
     A = np.asarray(arch["corners"], dtype=float)
     B = np.asarray(mech["corners"], dtype=float)
     (dx, dy), matched, _b, dist = best_translation(
@@ -418,20 +423,19 @@ def register(arch: dict, mech: dict) -> dict:
                        f"{best_n} of the best peak at ({best_xy[0]:.1f}, "
                        f"{best_xy[1]:.1f})")
     extent, spread = plan_extent(arch), None
-    if extent is None:
-        refused.append("the architectural sheet has no wall layer, so the "
-                       "anchors' spread over the plan cannot be measured")
-    else:
+    if extent is not None:
         lo, hi = extent
         if n:
             got = (np.minimum(matched.max(0), hi) - np.maximum(matched.min(0), lo))
             spread = np.clip(got / np.maximum(hi - lo, 1e-9), 0.0, 1.0)
         else:
             spread = np.zeros(2)
-        verdict, why = reg.registration_verdict(n, float(spread[0]),
-                                                float(spread[1]), rms, mx)
-        if verdict != "registered":
-            refused.extend(why)
+    # no wall layer: spread unmeasured, so the verdict judges count and
+    # residuals only (a full span stands in for the missing measurement)
+    sx, sy = (1.0, 1.0) if spread is None else (float(spread[0]), float(spread[1]))
+    verdict, why = reg.registration_verdict(n, sx, sy, rms, mx)
+    if verdict != "registered":
+        refused.extend(why)
     if not reg.usable_for("room_membership", rms, max_residual_in=mx):
         refused.append(f"RMS {rms:.2f}in over the room-membership tolerance")
     return {"dx": float(dx), "dy": float(dy), "anchors": n,
