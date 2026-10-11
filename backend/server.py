@@ -35271,15 +35271,28 @@ async def _signature_saved_by_another_account(sig, user_id) -> Optional[dict]:
     key = _signature_drawing_key(sig)
     if not key:
         return None
-    others = await db.users.find(
-        {"_id": {"$ne": to_query_id(user_id)},
-         "cp_signature.paths": {"$exists": True},
-         "is_deleted": {"$ne": True}},
-        {"cp_signature.paths": 1, "name": 1, "full_name": 1},
-    ).to_list(10000)
-    for other in others:
-        if _signature_drawing_key(other.get("cp_signature")) == key:
-            return other
+    # ONE INDEXABLE READ, the strokes matched exactly. The saved profile
+    # signature and a mark copied from it are the same array from the same
+    # client object, so exact equality is the copy this exists to catch.
+    query = {"cp_signature.paths": sig.get("paths"), "is_deleted": {"$ne": True}}
+    if str(user_id or "").strip():
+        query["_id"] = {"$ne": to_query_id(user_id)}
+    # A LOOKUP THAT CANNOT RUN DOES NOT REFUSE A FILING. This is a defence
+    # against a copied signature, not a precondition of filing; a transient
+    # read failure here must not stop a superintendent signing before he
+    # leaves the site. It is logged, so a check that stopped running is seen.
+    try:
+        other = await db.users.find_one(
+            query, {"cp_signature.paths": 1, "name": 1, "full_name": 1})
+    except Exception as e:
+        logger.warning("signature cross-account check could not run: %r", e)
+        return None
+    # RE-ASKED, NOT TRUSTED: the answer must be a different account whose
+    # saved drawing really is these strokes.
+    if (isinstance(other, dict)
+            and str(other.get("_id") or "") != str(user_id or "")
+            and _signature_drawing_key(other.get("cp_signature")) == key):
+        return other
     return None
 
 

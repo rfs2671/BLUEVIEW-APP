@@ -54,21 +54,24 @@ SHAWN_USER = {"_id": "shawn", "name": "shawn",
               "cp_signature": {"paths": SHAWN_PATHS}}
 
 
-def _with_users(db, users):
-    """The fake collection's find().to_list() answers with `users`, filtered on
-    the one clause the helper sends that matters: not the asking account."""
+def _with_users(db, users, profile=None):
+    """db.users.find_one answers the two questions the server asks of it: the
+    helper's (another account whose saved strokes are these), and the profile
+    route's (this account's current profile, `profile`)."""
     coll = db.users
-    state = {"q": {}}
 
-    def find(q=None, *a, **k):
-        state["q"] = q or {}
-        return coll
-
-    async def to_list(*a, **k):
-        not_id = ((state["q"].get("_id") or {}).get("$ne"))
-        return [u for u in users if str(u["_id"]) != str(not_id)]
-    coll.find = find
-    coll.to_list = to_list
+    async def find_one(q=None, *a, **k):
+        q = q or {}
+        if "cp_signature.paths" in q:
+            not_id = (q.get("_id") or {}).get("$ne")
+            for u in users:
+                if (str(u["_id"]) != str(not_id)
+                        and (u.get("cp_signature") or {}).get("paths")
+                        == q["cp_signature.paths"]):
+                    return u
+            return None
+        return profile
+    coll.find_one = find_one
     return db
 
 
@@ -84,6 +87,41 @@ class TheFingerprint(unittest.TestCase):
     def test_no_strokes_no_fingerprint(self):
         for sig in (None, {}, {"paths": []}, "x"):
             self.assertIsNone(server._signature_drawing_key(sig))
+
+
+class ALookupThatCannotRunDoesNotRefuse(unittest.TestCase):
+    """A defence, not a precondition: a read failure must not stop a filing."""
+
+    def test_a_failing_read_returns_none_and_is_logged(self):
+        import asyncio
+
+        class _Boom:
+            async def find_one(self, *a, **k):
+                raise RuntimeError("primary stepped down")
+
+        class _Db:
+            users = _Boom()
+
+        with patch.object(server, "db", _Db()), \
+                self.assertLogs(server.logger, level="WARNING") as logs:
+            out = asyncio.run(server._signature_saved_by_another_account(
+                SHAWN_MARK, "u1"))
+        self.assertIsNone(out)
+        self.assertTrue(any("could not run" in m for m in logs.output))
+
+    def test_an_answer_naming_the_signer_himself_is_not_another_account(self):
+        import asyncio
+
+        class _Users:
+            async def find_one(self, *a, **k):
+                return {"_id": "u1", "cp_signature": {"paths": SHAWN_PATHS}}
+
+        class _Db:
+            users = _Users()
+
+        with patch.object(server, "db", _Db()):
+            self.assertIsNone(asyncio.run(
+                server._signature_saved_by_another_account(SHAWN_MARK, "u1")))
 
 
 class FilingIsRefused(unittest.TestCase):
@@ -191,8 +229,8 @@ class TheProfileSave(unittest.TestCase):
             server.app.dependency_overrides.clear()
 
     def test_another_accounts_drawing_is_refused_and_nothing_is_written(self):
-        db = _with_users(_FakeDb(), [SHAWN_USER])
-        db.users.set_find_one(lambda q: {"_id": "u1", "cp_name": "Michael Cespedes"})
+        db = _with_users(_FakeDb(), [SHAWN_USER],
+                         profile={"_id": "u1", "cp_name": "Michael Cespedes"})
         resp, audits = self._put_profile(db, {"cp_name": "Michael Cespedes",
                                               "cp_signature": {"paths": SHAWN_PATHS}})
         self.assertEqual(resp.status_code, 409, resp.text)
@@ -202,9 +240,9 @@ class TheProfileSave(unittest.TestCase):
         self.assertEqual(audits, [])
 
     def test_a_real_change_is_audited_with_old_and_new(self):
-        db = _with_users(_FakeDb(), [SHAWN_USER])
-        db.users.set_find_one(lambda q: {"_id": "u1", "cp_name": "shawn",
-                                         "cp_signature": {"paths": SHAWN_PATHS}})
+        db = _with_users(_FakeDb(), [SHAWN_USER],
+                         profile={"_id": "u1", "cp_name": "shawn",
+                                  "cp_signature": {"paths": SHAWN_PATHS}})
         resp, audits = self._put_profile(db, {"cp_name": "Michael Cespedes",
                                               "cp_signature": {"paths": MICHAEL_PATHS}})
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -225,9 +263,9 @@ class TheProfileSave(unittest.TestCase):
         self.assertIn("_signature_drawing_key(update[\"cp_signature\"])", audit_part)
 
     def test_an_unchanged_save_writes_no_audit_row(self):
-        db = _with_users(_FakeDb(), [SHAWN_USER])
-        db.users.set_find_one(lambda q: {"_id": "u1", "cp_name": "Michael Cespedes",
-                                         "cp_signature": {"paths": MICHAEL_PATHS}})
+        db = _with_users(_FakeDb(), [SHAWN_USER],
+                         profile={"_id": "u1", "cp_name": "Michael Cespedes",
+                                  "cp_signature": {"paths": MICHAEL_PATHS}})
         resp, audits = self._put_profile(db, {"cp_name": "Michael Cespedes",
                                               "cp_signature": {"paths": MICHAEL_PATHS}})
         self.assertEqual(resp.status_code, 200, resp.text)
