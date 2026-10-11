@@ -1696,6 +1696,100 @@ def _continues(book: GlyphBook, k: str) -> Optional[Dict[str, List[str]]]:
     return book.multi.get(k) if k in book.multi else None
 
 
+#: The link a stair writes between a duplex's two sheets
+#: (plan_glyph_pass.seed_from_stairs): the lower unit's stair "reaches" the
+#: upper plan, and the upper unit was "seeded from" the lower one.
+_LEVEL_LINK = re.compile(r"\b(?:reaches|seeded from) ([A-Z]-\d{3}\.\d{2})\b")
+
+
+def _apartment_floors(book: GlyphBook, u: str) -> Optional[List[str]]:
+    """The floors one apartment spans, by following the links its evidence
+    names - or None when they cannot be followed to the end.
+
+    A unit nothing says continues is its one floor. A unit that continues
+    must NAME where (a LOWER word or an unlinked stair says only that it
+    goes on somewhere), every floor it names must list it, and every floor
+    that lists the tag must be reached - a tag on two unlinked floors is two
+    apartments or a mistake, never one apartment."""
+    start = sorted(k for k, us in book.units.items() if u in (us or []))
+    if not start:
+        return None
+    seen: set = set()
+    todo = [start[0]]
+    while todo:
+        k = todo.pop()
+        if k in seen:
+            continue
+        seen.add(k)
+        cont = _continues(book, k)
+        if cont is None or u not in (book.units.get(k) or []):
+            return None
+        ev = cont.get(u) or []
+        links = [_floor_key(m) for e in ev for m in _LEVEL_LINK.findall(e)]
+        if ev and not links:
+            return None                 # it continues, and nothing says where
+        if any(lk is None for lk in links):
+            return None
+        todo.extend(lk for lk in links if lk not in seen)
+    if set(start) - seen:
+        return None
+    return sorted(seen)
+
+
+def _placed(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
+            k: str) -> Optional[List[Dict[str, Any]]]:
+    """The family's rows of `tags` on floor k when every row there named
+    itself and every one of `tags` was placed (a unit or a named non-unit
+    space), else None."""
+    on = [r for r in fam.rows if _row_floor(r) == k]
+    if any(r.get("glyph_status") != _tally.RESOLVED for r in on):
+        return None
+    mine = [r for r in on if r.get("label") in tags]
+    if any(not r.get("unit") or str(r.get("unit")).startswith("sheet:") for r in mine):
+        return None
+    return mine
+
+
+def _apartment_count(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
+                     u: str) -> Optional[int]:
+    """THE WHOLE APARTMENT, summed across the sheets its stair links
+    (ruling 2026-10-11): only when every linked sheet lists the unit, each
+    of those floors is complete for the family (its census matched, nothing
+    that could carry the symbols refused), and every symbol there named
+    itself and was placed. A unit that continues with no link still
+    refuses."""
+    floors = _apartment_floors(book, u)
+    if not floors:
+        return None
+    total = 0
+    for k in floors:
+        if fam.why or k in _refused_floors(book):
+            return None
+        mine = _placed(book, fam, tags, k)
+        if mine is None:
+            return None
+        total += sum(1 for r in mine if r.get("unit") == u)
+    return total
+
+
+def _floor_label(book: GlyphBook, k: str) -> str:
+    return " / ".join(sorted(book.sheets.get(k) or [])) or k
+
+
+def _whole_note(book: GlyphBook, units: Iterable[str]) -> str:
+    """'; the whole apartment, across A-103.00 / M-103.00 + A-104.00 / M-104.00'
+    for the units among `units` that span linked sheets - the render names
+    both sheets (ruling 2026-10-11)."""
+    spans: Dict[Tuple[str, ...], List[str]] = {}
+    for u in units:
+        fl = _apartment_floors(book, u) or []
+        if len(fl) > 1:
+            spans.setdefault(tuple(fl), []).append(u)
+    return "".join(f"; {', '.join(us)}: the whole apartment, counted across "
+                   f"{' + '.join(_floor_label(book, k) for k in fl)}"
+                   for fl, us in spans.items())
+
+
 def _unit_counts(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
                  k: str) -> Optional[Dict[str, int]]:
     """Per apartment on floor k, or None when the split may not be made: the
@@ -1713,20 +1807,34 @@ def _unit_counts(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
     # say is single-sheet; a unit anything says continues elsewhere is left
     # out, and so is every unit on a floor whose rows never read that
     # (operator ruling: fail closed until the rebuild).
+    #
+    # ── A DUPLEX IS COUNTED WHOLE WHEN ITS STAIR LINKS ITS SHEETS ──────────
+    #
+    # Since 2026-10-11 a stair carries its unit to the level it reaches
+    # (plan_glyph_pass.seed_from_stairs), and the rows on both sheets name
+    # the other. A unit whose links can be followed to every sheet, each
+    # complete and placed, gets the WHOLE apartment's count (4A: 2 fans on
+    # A-103.00 + 1 on A-104.00 = 3) - on either floor, since a floor named
+    # alongside says which units, not which part. A unit that continues
+    # with no link is still left out.
     """
     if _floor_count(book, fam, tags, k) is None or not book.units.get(k):
         return None
     cont = _continues(book, k)
     if cont is None:
         return None
-    on = [r for r in fam.rows if _row_floor(r) == k]
-    if any(r.get("glyph_status") != _tally.RESOLVED for r in on):
+    mine = _placed(book, fam, tags, k)
+    if mine is None:
         return None
-    mine = [r for r in on if r.get("label") in tags]
-    if any(not r.get("unit") or str(r.get("unit")).startswith("sheet:") for r in mine):
-        return None
-    return {u: sum(1 for r in mine if r.get("unit") == u) for u in book.units[k]
-            if not cont.get(u)}
+    out: Dict[str, int] = {}
+    for u in book.units[k]:
+        if not cont.get(u):
+            out[u] = sum(1 for r in mine if r.get("unit") == u)
+        else:
+            v = _apartment_count(book, fam, tags, u)
+            if v is not None:
+                out[u] = v
+    return out
 
 
 def _per_unit(book: GlyphBook, fam: GlyphFamily, tags: Sequence[str],
@@ -1792,8 +1900,11 @@ def _clause_units(clause: str, book: GlyphBook) -> Tuple[Dict[str, str], bool]:
         if re.fullmatch(r"\d{1,2}(ST|ND|RD|TH)", tok):
             continue
         where = [k for k, us in book.units.items() if tok in us]
+        span = _apartment_floors(book, tok) if len(where) > 1 else None
         if len(where) == 1:
             found[tok] = where[0]
+        elif span and set(where) <= set(span):
+            found[tok] = where[0]       # one apartment over linked sheets
         else:
             unknown = True
     return found, unknown
@@ -1839,12 +1950,12 @@ def glyph_values(clause: str, book: GlyphBook) -> set:
         return out
     for fam, tags in subjects:
         if named_units:
-            if keys and any(k not in keys for k in named_units.values()):
-                continue                # '4A on the third floor'
             for u, k in named_units.items():
-                counts = _unit_counts(book, fam, tags, k)
-                if counts and counts.get(u):
-                    out.add(str(counts[u]))
+                if keys and not (keys & set(_apartment_floors(book, u) or [k])):
+                    continue            # '4A on the third floor'
+                v = _apartment_count(book, fam, tags, u)
+                if v:
+                    out.add(str(v))
         elif _PER_UNIT.search(clause):
             if keys:
                 for k in keys:
@@ -1920,7 +2031,7 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                          "predate the reading of which units continue on "
                          "another sheet)")
             elif per is not None:
-                line += f"; each unit ({', '.join(counts)}) has {per}"
+                line += f"; each unit ({', '.join(counts)}) has {per}" + _whole_note(book, counts)
             elif cont and any(cont.values()) and not counts:
                 line += (f"; {', '.join(u for u in book.units[k] if cont.get(u))} "
                          f"continue on another sheet, so no per-apartment figure")
@@ -1928,10 +2039,11 @@ def render_glyph_evidence(records: Sequence[Dict[str, Any]]) -> str:
                 # A zero is never bound (glyph_values), so it is not printed as
                 # a figure either.
                 line += "; per unit " + ", ".join(f"{u} {n}" for u, n in counts.items() if n)
+                line += _whole_note(book, [u for u, n in counts.items() if n])
                 none = [u for u, n in counts.items() if not n]
                 if none:
                     line += f"; none placed in {', '.join(none)}"
-                more = [u for u in book.units[k] if (cont or {}).get(u)]
+                more = [u for u in book.units[k] if (cont or {}).get(u) and u not in counts]
                 if more:
                     line += (f"; {', '.join(more)} continue on another sheet, "
                              f"so no figure for them")

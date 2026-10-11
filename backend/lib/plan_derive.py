@@ -345,3 +345,93 @@ def multi_level_units(directed_words: Iterable[Tuple[str, float, float, str]],
             out[u].append(f"{kind} {text.upper()} at ({round(x)}, {round(y)})")
     return out
 
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# A stair carries its unit to the level it reaches
+# ══════════════════════════════════════════════════════════════════════════
+#
+# RULE (b) (operator, 2026-10-07; coded 2026-10-11): a private stair inside
+# unit U carries U to the level it reaches. On 588 Boyland A-104.00 (the
+# mezzanine) prints no unit tag and no occupancy table, so M-104.00's
+# symbols were counted but never placed; A-103.00's four apartments each
+# hold one stair labelled UP, and the same stairs sit at the same points
+# on A-104.00 (A-103 -> A-104 registers at (-0.01, 0.00), 1413 anchors).
+# Seeded from those four points, A-104.00's wall layer closes four regions,
+# one quadrant each, and M-104.00 places 1 EF-1, 1 PTAC-1 and 1 PTAC-2 in
+# each - what the sheet shows by eye.
+#
+# WHICH SHEET A STAIR REACHES (ruling 2026-10-11): the next plan in the
+# series (UP: A-1nn -> A-1nn+1; DN: A-1nn-1), CONFIRMED against the printed
+# title ordinals where both sheets print one. A title that contradicts the
+# series is REFUSED, never picked between. A-104.00 is titled MEZZANINE PLAN
+# - no ordinal - so on Boyland the series alone decides, unconfirmed.
+#
+# ONE STAIR LABEL OR NO SEEDING (ruling 2026-10-11): a unit holding two
+# stair labels is not seeded; whatever it continues to stays unplaced, and
+# its whole-apartment count keeps refusing.
+
+_TITLE_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12,
+}
+_TITLE_ORDINAL_WORD = re.compile(
+    r"\b(" + "|".join(_TITLE_ORDINALS) + r"|\d{1,2}(?:st|nd|rd|th))\b", re.I)
+#: "FIRST UNDERGROUND FLOOR" (P-200.00) is the cellar, not floor 1.
+_BELOW_GRADE = re.compile(r"\b(underground|cellar|basement|sub-?\s*cellar|below\s+grade)\b", re.I)
+_TITLE_FLOOR_WORD = re.compile(r"\b(floor|floors|fl\.?|level|levels|storey|story)\b", re.I)
+
+
+def title_ordinal(title: Optional[str]) -> Optional[int]:
+    """The floor ordinal a sheet title prints ("FOURTH FLOOR PLAN" -> 4,
+    "4TH FLOOR FRAMING PLAN" -> 4), or None ("MEZZANINE PLAN", "ROOF ...").
+    A title naming two ordinals ("FIRST AND SECOND FLOOR PLANS") has none:
+    it is not one level."""
+    t = str(title or "")
+    if not _TITLE_FLOOR_WORD.search(t) or _BELOW_GRADE.search(t):
+        return None
+    found = set()
+    for m in _TITLE_ORDINAL_WORD.finditer(t):
+        w = m.group(1).lower()
+        found.add(_TITLE_ORDINALS.get(w) or int(re.match(r"\d+", w).group(0)))
+    return found.pop() if len(found) == 1 else None
+
+
+def unit_stairs(directed_words: Iterable[Tuple[str, float, float, str]],
+                unit_at, tags: Sequence[str]) -> Dict[str, List[Tuple[str, float, float]]]:
+    """tag -> the stair labels (UP / DN / DOWN, x, y) printed inside it, by
+    the same membership map multi_level_units reads."""
+    out: Dict[str, List[Tuple[str, float, float]]] = {str(t): [] for t in (tags or [])}
+    for text, x, y, _d in directed_words or []:
+        if STAIR_LABEL.match(text):
+            u = unit_at(x, y)
+            if u in out:
+                out[u].append((text.upper(), float(x), float(y)))
+    return out
+
+
+def stair_target(source: dict, label: str, plans: Sequence[dict]
+                 ) -> Tuple[Optional[dict], Optional[str]]:
+    """(the architectural plan a stair labelled `label` on `source` reaches,
+    None) or (None, why not). `plans` are the paired architectural plans."""
+    m = PLAN_SHEET.match(str(source.get("sheet_number") or "").upper())
+    if not m:
+        return None, f"{source.get('sheet_number')} is not in the plan series"
+    step = 1 if label.upper() == "UP" else -1
+    want = int(m.group(2)) + step
+    hits = [p for p in plans
+            if (PLAN_SHEET.match(str(p.get("sheet_number") or "").upper()) or [None] * 4)[2]
+            == str(want)]
+    if len(hits) != 1:
+        return None, (f"no plan {m.group(1)}-{want} for the stair to reach" if not hits
+                      else f"{len(hits)} plans numbered {m.group(1)}-{want}")
+    target = hits[0]
+    src_o, tgt_o = title_ordinal(source.get("sheet_title")), title_ordinal(target.get("sheet_title"))
+    if src_o is not None and tgt_o is not None and tgt_o != src_o + step:
+        return None, (f"the series puts {target.get('sheet_number')} "
+                      f"{'above' if step > 0 else 'below'} {source.get('sheet_number')} "
+                      f"({source.get('sheet_title')}), but it is titled "
+                      f"{target.get('sheet_title')!r}: the title and the series "
+                      f"disagree, so neither is picked")
+    return target, None

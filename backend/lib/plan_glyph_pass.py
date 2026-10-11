@@ -137,37 +137,58 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         seq = (derive.PLAN_SHEET.match(str(m_sheet or "").upper()) or [None, None, "?"])[2]
         sheet_scope(mech_p, None, f"{m_sheet} has no architectural partner A-{seq}")
 
+    # EVERY FLOOR'S UNITS AND MEMBERSHIP MAP FIRST: a stair on one floor may
+    # carry its unit to another (rule (b), plan_derive.stair_target), so no
+    # floor is placed before every floor has been read.
+    floors_in: List[Dict[str, Any]] = []
     for arch_p, mech_p in paired["pairs"]:
-        a_sheet, m_sheet = arch_p.get("sheet_number"), mech_p.get("sheet_number")
-        summary["pairs"].append([a_sheet, m_sheet])
+        f: Dict[str, Any] = {"arch_p": arch_p, "mech_p": mech_p,
+                             "a_sheet": arch_p.get("sheet_number"),
+                             "m_sheet": mech_p.get("sheet_number")}
+        floors_in.append(f)
+        summary["pairs"].append([f["a_sheet"], f["m_sheet"]])
+        if not run_fams:
+            continue
+        arch_pg = open_page(arch_p)
+        f["data"] = load_sheet(arch_pg)
+        f["units"] = derive.unit_tags(f["data"]["words"], f["data"]["corners"])
+        if f["units"]["tags"] is None:
+            continue
+        # one membership map per floor, whatever the family
+        f["space"] = build_space(arch_pg, f["units"]["tags"], door["inches"], f["data"])
+        # WHICH UNITS CONTINUE ON ANOTHER SHEET, read by the membership map
+        # the placements use (plan_derive.multi_level_units). Written on
+        # every row so the gate can refuse a whole-apartment count it cannot
+        # complete - and so a row that predates the reading says nothing.
+        member = Units(f["space"]["units"], f["space"]["lo"], f["space"]["cell_pt"],
+                       f["space"]["refused"], f["space"], f["space"]["tags"])
+        f["units"] = dict(f["units"], multi_level=derive.multi_level_units(
+            arch_pg.directed_words, member.at, f["units"]["tags"]))
+        f["stairs"] = derive.unit_stairs(arch_pg.directed_words, member.at,
+                                         f["units"]["tags"])
+    summary["stair_seeds"] = seed_from_stairs(floors_in, open_page, door["inches"])
+
+    for f in floors_in:
+        arch_p, mech_p, a_sheet, m_sheet = f["arch_p"], f["mech_p"], f["a_sheet"], f["m_sheet"]
         if not run_fams:
             rows.append(emit.sheet_refusal(
                 mech_p, "no equipment schedule with an identifier column",
                 pass_key=f"{a_sheet}|{m_sheet}", role=derive.ROLE_MECHANICAL))
             continue
-        arch_pg, mech_pg = open_page(arch_p), open_page(mech_p)
-        a_sheet_data = load_sheet(arch_pg)
-        units = derive.unit_tags(a_sheet_data["words"], a_sheet_data["corners"])
+        units = f["units"]
         if units["tags"] is None:
             sheet_scope(mech_p, arch_p, f"{a_sheet}: {units['why']}")
             continue
-        floor = {"arch": a_sheet, "mech": m_sheet, "units": units, "families": {}}
+        arch_pg, mech_pg = open_page(arch_p), open_page(mech_p)
+        space = f["space"]
+        floor = {"arch": a_sheet, "mech": m_sheet, "units": units, "families": {},
+                 "method": space.get("method"),
+                 "fallback_reason": space.get("fallback_reason")}
+        if units.get("seeded"):
+            floor["seeded"] = units["seeded"]
         summary["floors"].append(floor)
         mech_sheet = load_sheet(mech_pg)
         reads = sweep(mech_pg, mech_sheet["segs"])
-        # one membership map per floor, whatever the family
-        space = build_space(arch_pg, units["tags"], door["inches"], a_sheet_data)
-        # WHICH UNITS CONTINUE ON ANOTHER SHEET, read by the membership map
-        # the placements use (plan_derive.multi_level_units). Written on
-        # every row so the gate can refuse a whole-apartment count it cannot
-        # complete - and so a row that predates the reading says nothing.
-        member = Units(space["units"], space["lo"], space["cell_pt"],
-                       space["refused"], space, space["tags"])
-        units = dict(units, multi_level=derive.multi_level_units(
-            arch_pg.directed_words, member.at, units["tags"]))
-        floor["units"] = units
-        floor["method"] = space.get("method")
-        floor["fallback_reason"] = space.get("fallback_reason")
         for name, fam in run_fams.items():
             key = f"{a_sheet}|{m_sheet}|{name}"
             try:
@@ -190,3 +211,96 @@ def run_pass(pages: Sequence[Dict[str, Any]], open_page: Callable[[Dict[str, Any
         r["ordinal"] = i
     summary["rows"] = len(rows)
     return {"rows": rows, "summary": summary}
+
+
+def seed_from_stairs(floors: List[Dict[str, Any]], open_page: Callable[[Dict[str, Any]], Any],
+                     door_in) -> List[str]:
+    """A STAIR CARRIES ITS UNIT TO THE LEVEL IT REACHES (rule (b), rulings
+    2026-10-11; plan_derive). For every unit holding exactly one stair label,
+    the plan that stair reaches - the next in the series, confirmed against
+    the title ordinals where both print one - is seeded with the unit at the
+    stair's registered position, IF that plan names no units of its own and
+    the two register. Its membership map is then built from the seeds as if
+    they were printed tags. Both sheets' rows record the link: the source's
+    stair evidence gains "reaches <sheet>", and the seeded unit's evidence
+    is "seeded from <sheet>: ..." - which the gate needs to sum a duplex.
+
+    Each seeded region's area is reported beside the unit's NET on its own
+    floor (informational, as the existing ratios are); a seeded region is
+    otherwise checked only by render. Returns a line per decision."""
+    from lib.plan_sheet import register
+    from lib.plan_space import build_space
+
+    notes: List[str] = []
+    plans = [f["arch_p"] for f in floors]
+    by_sheet = {f["a_sheet"]: f for f in floors}
+    wanted: Dict[str, Dict[str, list]] = {}
+    for f in floors:
+        for u, labs in (f.get("stairs") or {}).items():
+            if not labs:
+                continue
+            if len(labs) != 1:
+                notes.append(f"{f['a_sheet']} {u}: {len(labs)} stair labels in the unit - "
+                             f"one stair label or no seeding: not seeded")
+                continue
+            lab, x, y = labs[0]
+            tgt_p, why = derive.stair_target(f["arch_p"], lab, plans)
+            if tgt_p is None:
+                notes.append(f"{f['a_sheet']} {u}: stair {lab} not followed - {why}")
+                continue
+            t = by_sheet.get(tgt_p.get("sheet_number"))
+            if t is None or "data" not in t:
+                notes.append(f"{f['a_sheet']} {u}: {tgt_p.get('sheet_number')} was not read")
+                continue
+            if (t.get("units") or {}).get("tags") is not None:
+                notes.append(f"{f['a_sheet']} {u}: {t['a_sheet']} names its own units - "
+                             f"not seeded")
+                continue
+            reg_ = register(f["data"], t["data"])
+            if not reg_["usable"]:
+                notes.append(f"{f['a_sheet']} {u}: {f['a_sheet']} -> {t['a_sheet']} does not "
+                             f"register ({reg_.get('refused')}) - not seeded")
+                continue
+            wanted.setdefault(t["a_sheet"], {}).setdefault(u, []).append(
+                (x + reg_["dx"], y + reg_["dy"], f, lab, x, y))
+
+    for tgt, by_unit in wanted.items():
+        t = by_sheet[tgt]
+        one = {}
+        for u, cands in sorted(by_unit.items()):
+            if len(cands) != 1:
+                notes.append(f"{tgt} {u}: seeded by {len(cands)} stairs - not seeded")
+            else:
+                one[u] = cands[0]
+        if not one:
+            continue
+        tags = sorted(one)
+        data = dict(t["data"], words=list(t["data"]["words"])
+                    + [(u, sx, sy) for u, (sx, sy, *_r) in one.items()])
+        space = build_space(open_page(t["arch_p"]), tags, door_in, data)
+        seeded: Dict[str, Any] = {}
+        multi: Dict[str, List[str]] = {}
+        for u, (sx, sy, src, lab, x, y) in one.items():
+            area = (space.get("ratio") or {}).get(u, (None, None))[0]
+            net = ((src.get("space") or {}).get("net") or {}).get(u)
+            seeded[u] = {"from": src["a_sheet"], "stair": [round(x, 1), round(y, 1)],
+                         "at": [round(sx, 1), round(sy, 1)],
+                         "area_sf": None if area is None else round(area),
+                         "net_sf_on_own_floor": net, "net_on": src["a_sheet"],
+                         "ratio": (round(area / net, 2) if area and net else None)}
+            multi[u] = [f"seeded from {src['a_sheet']}: stair label {lab} at "
+                        f"({round(x)}, {round(y)})"]
+            key = f"stair label {lab} at ({round(x)}, {round(y)})"
+            ml = src["units"]["multi_level"]
+            ml[u] = [e + f" reaches {tgt}" if e == key else e for e in ml.get(u, [])]
+            notes.append(f"{tgt} {u}: seeded from {src['a_sheet']}'s stair {lab} at "
+                         f"({round(x)}, {round(y)}); region {seeded[u]['area_sf']} sf "
+                         f"(the unit's NET on {src['a_sheet']}: {net} sf"
+                         f"{'' if seeded[u]['ratio'] is None else ', ratio ' + str(seeded[u]['ratio'])})"
+                         " - informational")
+        t["data"], t["space"] = data, space
+        t["units"] = {"tags": tags, "method": "stair_seeded", "zero_units": False,
+                      "why": None, "multi_level": multi, "seeded": seeded}
+    for n in notes:
+        log.info("glyph pass stair seeding: %s", n)
+    return notes

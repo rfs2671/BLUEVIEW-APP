@@ -46,7 +46,12 @@ SOURCE = "plan_takeoff"
 #: 4 (2026-10-10): payload.registration records the offset, the anchors it
 #: holds, the best peak the census found, the anchors' spread over the plan
 #: and why it was refused - a registration is the best peak or refused.
-EMIT_VERSION = 4
+#: 5 (2026-10-11): a stair carries its unit to the level it reaches. A unit
+#: seeded on a plan that names none carries payload.units.seeded (where
+#: from, its region's area beside the unit's NET on its own floor), and the
+#: multi_level evidence on both sheets names the other ("reaches <sheet>" /
+#: "seeded from <sheet>") - the link the gate sums a duplex across.
+EMIT_VERSION = 5
 
 #: the citation fields a row carries from its page (as _write_page_records)
 CITE = ("project_id", "company_id", "file_id", "file_hash", "file_name",
@@ -121,7 +126,7 @@ def glyph_rows(result: Dict[str, Any], *, mech: Dict[str, Any],
                                    "usable", "best_peak_anchors", "best_peak",
                                    "spread", "refused")},
         "units": {k: units.get(k) for k in ("tags", "method", "zero_units",
-                                            "multi_level") if k in units},
+                                            "multi_level", "seeded") if k in units},
         "widest_door_in": widest_door.get("inches"),
     }
     rows: List[Dict[str, Any]] = []
