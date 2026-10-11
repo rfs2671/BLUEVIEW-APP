@@ -307,5 +307,46 @@ class Forwarded(unittest.TestCase):
             {**it, "evidence": {"message_row_id": "r1"}}, {})["forwarded"])
 
 
+class CodexReviewOn750(unittest.TestCase):
+
+    def test_a_senders_note_past_the_first_page_is_found(self):
+        """Meilich's note is older than 200 notes from Dave."""
+        rows = [_note(100 + i, f"Dave note {i}", i, sender="15550004444", name="Dave")
+                for i in range(200)] + [_note(9, "Rebar is on 3", 500)]
+        with _Ctx(_world(*rows)):
+            got = _run(server._recent_voice_notes(CO_A, PID, 1, "meilich"))
+        self.assertIn("Rebar is on 3", got)
+
+    def test_the_denial_fallback_only_for_a_voice_note_question(self):
+        self.assertFalse(wa_assistant.denies_voice_access("I can't find any audio system plans."))
+        self.assertFalse(wa_assistant.asks_about_voice_notes("any audio system plans?"))
+
+        async def agent(**kw):
+            return "I can't access voice notes directly."
+        ident = {"company_id": CO_A, "user": {}, "role": "admin", "projects": []}
+        with _Ctx(_world(*ROWS)), patch.object(server, "_run_group_agent", agent):
+            got = _run(server._dm_answer_job(ident, {"_id": PID, "address": "588 Atlantic Ave"},
+                                             "15550009999@c.us", "who is on site?", "MID2"))
+        self.assertFalse(got.startswith("🎤"), got)       # not a voice question: left alone
+
+    def test_a_forwarded_note_that_failed_stays_forwarded(self):
+        from tests.test_voice_never_wakes_the_bot import _Group
+        from tests.test_voice_group_silent import _payload as vpayload
+
+        class G(_Group):
+            def runTest(self):
+                pass
+        g = G()
+        p = vpayload(seconds="1")                          # too short: not processed
+        p["data"]["message"]["isForwarded"] = True
+        g.run_note([], payload=p)
+        (rev,) = g.reviews()
+        self.assertTrue(rev["evidence"]["forwarded"])
+        row = next(r for r in g.db.whatsapp_messages.rows
+                   if str(r["_id"]) == rev["evidence"]["message_row_id"])
+        self.assertTrue(row["forwarded"])
+        self.assertTrue(server._attention_item_view(rev, {})["forwarded"])
+
+
 if __name__ == "__main__":
     unittest.main()

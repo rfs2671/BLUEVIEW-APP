@@ -334,14 +334,16 @@ DM_AGENT_CLAUSE = (
 # "the last voice note", "what did Meilich say in his voicenote", "nota de voz".
 _VOICE_Q = re.compile(
     r"\b(?:voice\s*-?\s*notes?|voicenotes?|voice\s+(?:messages?|memos?|msgs?)|"
-    r"audios?|recordings?|notas?\s+de\s+voz|grabaci[oó]n(?:es)?)\b", re.I)
+    r"audio\s+(?:notes?|messages?|msgs?|clips?)|audios|notas?\s+de\s+voz|"
+    r"grabaci[oó]n(?:es)?)\b", re.I)
 
 # "I can't access voice notes", "I don't have access to audio", "unable to
 # listen to recordings".
 _DENIES_VOICE = re.compile(
     r"\b(?:can'?t|cannot|can ?not|unable to|not able to|don'?t have(?: any)? access|"
     r"do not have(?: any)? access|no access|not have access)\b[^.?!\n]{0,40}"
-    r"\b(?:voice|audio|recordings?|listen)", re.I)
+    r"\b(?:voice\s*-?\s*notes?|voicenotes?|voice\s+(?:messages?|recordings?)|"
+    r"audio\s+(?:notes?|messages?|recordings?)|recordings|listen)", re.I)
 
 
 def asks_about_voice_notes(text: str) -> bool:
