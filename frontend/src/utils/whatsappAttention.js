@@ -171,6 +171,9 @@ export function canPlay(item) {
 }
 
 export const PLAY_LABEL = '▶ Play';
+/** A forwarded message: the words are not the sender's own. */
+export const FORWARDED_TEXT = 'Forwarded — someone else\'s words, passed on.';
+
 export const NO_AUDIO_TEXT = 'No audio was kept for this voice note.';
 
 const CHANGE_LABELS = {

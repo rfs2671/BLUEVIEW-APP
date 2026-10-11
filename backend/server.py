@@ -47402,6 +47402,12 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
         if link:
             terms |= link["topic"]
         cand = wa_attention.owner_candidate(it["type"], msg)
+        if msg.get("forwarded") and cand.get("source") == "sender":
+            # A FORWARDED message (a voice note passed on): the words are
+            # someone else's. Never a commitment owned by the forwarder.
+            report.setdefault("dropped_forwarded", 0)
+            report["dropped_forwarded"] += 1
+            continue
         owner = {"kind": "none", "id": None, "name": "", "status": "unresolved",
                  "jid": None, "reason": "nobody_named", "source": "text"}
         if cand.get("jid"):
@@ -47492,6 +47498,8 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
                         "sender_last4": sender[-4:]}
             if msg.get("merged_ids"):
                 evidence["merged_ids"] = msg["merged_ids"]
+            if msg.get("forwarded"):
+                evidence["forwarded"] = True        # the card says so
             unsure = wa_voice.unsure(msg)
             ev_kind = "voice" if wa_voice.is_voice(msg) else "text"
             if ev_kind == "voice":
@@ -50555,6 +50563,11 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
         return memory
+    if reply and wa_assistant.denies_voice_access(reply):
+        # NEVER "I can't access voice notes" (588, Oct 11 2:58 PM): they are
+        # transcribed and stored. The notes themselves go out instead.
+        logger.info("[wa-assistant] reply denied voice access; sending the notes")
+        return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
     if not reply:
         return reply
     allowed = " ".join([body, wa_assistant.street_label(project)]
@@ -50662,6 +50675,47 @@ async def _memory_embed_one(text: str) -> Optional[list]:
     return got[0] if got else None
 
 
+async def _recent_voice_notes(company_id: str, project_id: str, n: int = 3,
+                              sender: str = "") -> str:
+    """The job's latest group voice notes, newest first, for the DM:
+    "🎤 Sun Oct 11, 2:57 PM · Meilich · 588 Site" then what was said and its
+    English (lib/wa_voice.voice_note_lines). `sender`: only notes whose
+    sender's name contains those words. A note that could not be read says
+    so. No phone numbers."""
+    groups = await db.whatsapp_groups.find(
+        {"project_id": str(project_id), "active": True,
+         "company_id": _company_id_filter(company_id)},
+        {"wa_group_id": 1, "group_name": 1}).to_list(20)
+    gnames = {g.get("wa_group_id"): wa_groups.display_name(g.get("group_name"))
+              for g in groups if g.get("wa_group_id")}
+    if not gnames:
+        return "This job has no linked WhatsApp group."
+    rows = await db.whatsapp_messages.find(
+        {"group_id": {"$in": list(gnames)}, "company_id": _company_id_filter(company_id),
+         "has_audio": True, "sender": {"$ne": "bot"}}).sort(
+        [("created_at", -1)]).limit(80).to_list(80)
+    cache: Dict[str, Any] = {}
+    notes = []
+    for r in rows:
+        if not r.get("voice") and not r.get("skipped"):
+            continue
+        jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
+        person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
+        who = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
+               else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+        if sender and not wa_voice.name_matches(sender, who, r.get("sender_name")):
+            continue
+        at = r.get("timestamp") if isinstance(r.get("timestamp"), datetime) else r.get("created_at")
+        notes.append(wa_voice.voice_note_lines(r, who, gnames.get(r.get("group_id")) or "",
+                                               _memory_ny(at)))
+        if len(notes) >= n:
+            break
+    if not notes:
+        return (f"No voice notes from {sender} in this job's groups." if sender
+                else "No voice notes in this job's groups yet.")
+    return "\n\n".join(notes)
+
+
 def _memory_wa_doc(row: dict, group_name: str) -> dict:
     at = row.get("timestamp") if isinstance(row.get("timestamp"), datetime) else row.get("created_at")
     ny = _memory_ny(at)
@@ -50680,8 +50734,13 @@ def _memory_wa_doc(row: dict, group_name: str) -> dict:
         "day": ny.strftime("%Y-%m-%d") if ny else None,
         "text": project_memory.clean(row.get("body"))[:project_memory.TEXT_MAX],
         # A voice note: its text is the transcript as said.
+        "kind": "voice" if row.get("voice") else "text",
         "voice": bool(row.get("voice")),
         "lang": (row.get("voice") or {}).get("lang"),
+        "english": ((row.get("voice") or {}).get("english_direct")
+                    or (row.get("voice") or {}).get("english") or None)
+        if row.get("voice") else None,
+        "forwarded": bool(row.get("forwarded")),
     }
 
 
@@ -51211,7 +51270,7 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
                "day_label": f"{ny.strftime('%b')} {ny.day}" if ny else (r.get("day") or ""),
                "label": r.get("label") or "", "who": "",
                "group_id": r.get("group_id"), "source_id": r.get("source_id"),
-               "voice": bool(r.get("voice"))}
+               "voice": bool(r.get("voice")), "forwarded": bool(r.get("forwarded"))}
         if r.get("source") == project_memory.SOURCE_WHATSAPP:
             jid = r.get("sender_jid") or (f"{r.get('sender')}@c.us" if r.get("sender") else "")
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
@@ -51956,6 +52015,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                 "quoted_from_me":    False,
                 "quoted_author":     "",
                 "mentioned_jids":    [],
+                "forwarded":         False,
                 "has_audio":         False,
                 "audio_url":         None,
                 "has_image":         False,
@@ -52258,6 +52318,8 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "quoted_from_me": quoted_from_me,
             "quoted_author": quoted_author,
             "mentioned_jids": mentioned_jids,
+            # WhatsApp's "Forwarded" label: the words are someone else's.
+            "forwarded": wa_voice.forwarded(msg, inner),
             "is_group": is_group,
             "group_id": from_field if is_group else None,
             "timestamp": ts,
@@ -59130,8 +59192,9 @@ _AGENT_TOOLS = [
         "function": {
             "name": "search_project_history",
             "description": (
-                "Search this project's own history -- its WhatsApp group messages, "
-                "filed daily reports and tracked items -- and answer with citations. "
+                "Search this project's own history -- its WhatsApp group messages "
+                "(voice notes included, by their transcripts, marked 🎤), filed "
+                "daily reports and tracked items -- and answer with citations. "
                 "Use for anything about what was said or done on the job in the past: "
                 "'who said to change the window?', 'when did we pour underpinning?', "
                 "'what happened with the storefront?', 'did Patricia send the risers?'. "
@@ -59148,6 +59211,31 @@ _AGENT_TOOLS = [
                                 "description": "Optional latest day, YYYY-MM-DD."},
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recent_voice_notes",
+            "description": (
+                "The latest VOICE NOTES from this job's WhatsApp groups, newest "
+                "first: when, who, the transcript (what was said, in its own "
+                "language) and its English. Voice notes are transcribed and "
+                "readable here. Use for 'what was said in the last voice note', "
+                "'last voicenote on 588', 'what did Meilich say in his voice "
+                "note', 'any voice notes today?'. Pass `sender` to get one "
+                "person's notes. For a SUBJECT across all messages, use "
+                "search_project_history."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "description": "How many, 1-10 (default 3)."},
+                    "sender": {"type": "string",
+                               "description": "Optional: the person's name as the user said it."},
+                },
                 "additionalProperties": False,
             },
         },
@@ -60296,6 +60384,9 @@ async def _run_group_agent(
         # Project history is answered in a DM only, never in a group.
         if name == "search_project_history" and (not dm or _memory_disabled()):
             continue
+        # Voice notes are read in a DM only, like project history.
+        if name == "recent_voice_notes" and not dm:
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -60344,6 +60435,12 @@ async def _run_group_agent(
                         f"{group_id[-10:] if group_id else '?'} outcome={outcome}")
                 return sent
 
+            # A DM question about voice notes ("the last voice note on 588")
+            # starts with the voice notes, not with the model's guess.
+            first_choice = ({"type": "function", "function": {"name": "recent_voice_notes"}}
+                            if dm and wa_assistant.asks_about_voice_notes(body)
+                            and any(t["function"]["name"] == "recent_voice_notes"
+                                    for t in enabled_tools) else None)
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -60356,7 +60453,8 @@ async def _run_group_agent(
                         "temperature": 0.2,
                         "max_tokens": AGENT_MAX_TOKENS,
                         "tools": enabled_tools,
-                        "tool_choice": "auto",
+                        "tool_choice": (first_choice if _turn == 0 and first_choice
+                                        else "auto"),
                         "messages": messages,
                     },
                 )
@@ -60534,6 +60632,15 @@ async def _dispatch_agent_tool(
                         reason=f"tool:{name}")
         return wa_security.BOT_SCOPE_REFUSAL
     try:
+        if name == "recent_voice_notes":
+            if not group_id or str(group_id).endswith("@g.us"):
+                return "Voice notes are read in a direct message only."
+            try:
+                n = int(args.get("n") or 3)
+            except (TypeError, ValueError):
+                n = 3
+            return await _recent_voice_notes(str(company_id), str(project_id),
+                                             max(1, min(10, n)), str(args.get("sender") or ""))
         if name == "search_project_history":
             # DM only (the tool is never offered in a group). The checked,
             # cited answer is kept for this chat and sent as it is.
@@ -61142,6 +61249,8 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
         "media_type": parsed.get("media_type") or "",
         "file_name": parsed.get("file_name") or "",
         "from_me": bool(parsed.get("from_me")),
+        # Forwarded (WhatsApp's label): someone else's words, passed on.
+        "forwarded": bool(parsed.get("forwarded")),
         "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
         "created_at": now,
     }
@@ -62473,7 +62582,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
 
             # ── "done N" — mark checklist item complete ──
             # Must come before on-demand @levelog detection so short msgs match.
-            if body and not spoken and is_addressed:
+            # Typed only. Marking the item and a ✅ need no address (a
+            # reaction is not the bot speaking); any TEXT reply does.
+            if body and not spoken:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
                 if done_match:
                     try:
@@ -62489,17 +62600,19 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         sort=[("generated_at", -1)],
                     )
                     if not latest:
-                        await send_whatsapp_message(
-                            group_id,
-                            "No active checklist found for this group.",
-                        )
+                        if is_addressed:
+                            await send_whatsapp_message(
+                                group_id,
+                                "No active checklist found for this group.",
+                            )
                         return
                     items_list = latest.get("items") or []
                     if n < 1 or n > len(items_list):
-                        await send_whatsapp_message(
-                            group_id,
-                            f"Item {n} not found. This checklist has {len(items_list)} items.",
-                        )
+                        if is_addressed:
+                            await send_whatsapp_message(
+                                group_id,
+                                f"Item {n} not found. This checklist has {len(items_list)} items.",
+                            )
                         return
                     idx = n - 1
                     items_list[idx]["completed"] = True
@@ -62523,15 +62636,22 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                             label = "today's"
                     except Exception:
                         label = "today's"
-                    # Closed, nothing to add: ✅ on the "done N" message.
-                    await _react_or_say(
-                        group_id, parsed.get("message_id_serialized"),
-                        wa_react.COMPLETE,
-                        f"✓ Item {n} of {label} checklist marked complete.")
+                    # Closed, nothing to add: ✅ on the "done N" message. The
+                    # text fallback (no reaction possible) only when addressed.
+                    if is_addressed:
+                        await _react_or_say(
+                            group_id, parsed.get("message_id_serialized"),
+                            wa_react.COMPLETE,
+                            f"✓ Item {n} of {label} checklist marked complete.")
+                    else:
+                        await _react_to_message(group_id, parsed.get("message_id_serialized"),
+                                                wa_react.COMPLETE)
                     return
 
             # ── On-demand @levelog checklist / !checklist trigger ──
-            if body and not spoken:
+            # Answers only when addressed ("@levelog checklist" is; a bare
+            # "!checklist" now needs a reply to the bot or the wake word).
+            if body and not spoken and is_addressed:
                 ondemand = False
                 lower = body.strip().lower()
                 for kw in ("@levelog checklist", "@levelog  checklist", "!checklist"):
@@ -64741,6 +64861,8 @@ def _attention_item_view(it: dict, group_names: dict,
         # Its audio is kept (R2): the card shows ▶ Play. None: not looked up.
         "audio": (None if audio_rows is None
                   else str(ev.get("message_row_id") or "") in audio_rows),
+        # WhatsApp's "Forwarded": the words are not the sender's own.
+        "forwarded": bool(ev.get("forwarded")),
         # {original, english} for a Yiddish voice note, else None.
         "yiddish": (yiddish or {}).get(str(ev.get("message_row_id") or "")),
         "review_reason": it.get("review_reason") or next(
@@ -64876,6 +64998,7 @@ def _memory_source_view(src: dict, admin: bool = False) -> dict:
             "label": src.get("label") or "",
             "text": (src.get("text") or "")[:400],
             "voice": bool(src.get("voice")),
+            "forwarded": bool(src.get("forwarded")),
             "message_row_id": (src.get("source_id")
                                if src.get("source") == project_memory.SOURCE_WHATSAPP else None)}
 

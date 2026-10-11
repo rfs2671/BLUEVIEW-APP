@@ -25,7 +25,7 @@ import { spacing } from '../../styles/theme';
 import {
   ATTENTION_TITLE, ATTENTION_NOTE, VERDICTS, typeLabel, ownerLine, dueLine,
   statusLine, precisionLines, emptyText, LISTS, STATE_VERDICTS, eventLine, linkLine,
-  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines,
+  reviewable, statePrecisionLines, canPlay, PLAY_LABEL, NO_AUDIO_TEXT, yiddishLines, FORWARDED_TEXT,
 } from '../../utils/whatsappAttention';
 
 export default function AttentionCard({ projectId }) {
@@ -141,6 +141,8 @@ export default function AttentionCard({ projectId }) {
                     </Text>
                   )) : <Text style={s.quote}>{quoteText(it.quote, it.voice)}</Text>}
                 </Pressable>
+                {it.forwarded
+                  ? <Text style={s.muted}>{FORWARDED_TEXT}</Text> : null}
                 {reviewNote(null, it.review_reason)
                   ? <Text style={s.muted}>{reviewNote(null, it.review_reason)}</Text> : null}
                 {canPlay(it) ? (

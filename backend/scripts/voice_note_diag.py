@@ -1,6 +1,7 @@
 """What did Whisper hear, and why did the bot answer? READ-ONLY.
 
     railway run python scripts/voice_note_diag.py --project 588 --at "2026-10-11 14:51"
+    railway run python scripts/voice_note_diag.py --project 588 --at "2026-10-11 13:30" --minutes 120
 
 --at is New York time (or an ISO time with Z). Every voice note stored in the
 project's groups within --minutes of it (default 5) is printed with:
@@ -12,6 +13,7 @@ project's groups within --minutes of it (default 5) is printed with:
   - (the once-a-day "say levelog" hint that answered an unaddressed
     question is gone from groups since Oct 11; a voice note never wakes the
     bot unless it is a reply to the bot);
+  - whether it is in project_memory (the DM's search) and how;
   - what the bot posted in the group in the 3 minutes after it.
 Then the Whisper prompt this job builds today, and whether it names the bot.
 
@@ -98,6 +100,15 @@ async def main_async(a) -> int:
               f"error={ev.get('error_kind')}")
         print(f"   says 'levelog': {v['says_levelog']}   prompt echo: {v['prompt_echo']}   "
               f"quoted: {_safe(r.get('quoted_body'), 60)!r}")
+        mem = await db.project_memory.find_one(
+            {"_id": f"wa:{r['_id']}"},
+            {"kind": 1, "voice": 1, "embedded": 1, "forwarded": 1, "text": 1})
+        print("   project_memory: " + (
+            f"indexed (kind={mem.get('kind')} voice={mem.get('voice')} "
+            f"embedded={mem.get('embedded')} forwarded={mem.get('forwarded')}) "
+            f"{_safe(mem.get('text'), 60)!r}" if mem else
+            ("not indexed (skipped rows are placeholders, never indexed)"
+             if r.get("skipped") else "NOT INDEXED")))
         bot = await db.whatsapp_messages.find(
             {"group_id": r.get("group_id"), "sender": "bot",
              "created_at": {"$gte": ca, "$lte": ca + AFTER}},

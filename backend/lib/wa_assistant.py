@@ -324,8 +324,34 @@ DM_AGENT_CLAUSE = (
     "asked, say that is done in the Levelog app. You cannot send drawing "
     "images or the company's full worker roster here: say what the drawings "
     "say (search_plans) or who is on this job (who_on_site), and that sheets "
-    "are in the app."
+    "are in the app. VOICE NOTES in the job's groups are transcribed and "
+    "stored: read them with recent_voice_notes (the latest ones, or one "
+    "person's) or search_project_history (records marked 🎤). Never say you "
+    "cannot access, hear or listen to voice notes, recordings or audio."
 )
+
+
+# "the last voice note", "what did Meilich say in his voicenote", "nota de voz".
+_VOICE_Q = re.compile(
+    r"\b(?:voice\s*-?\s*notes?|voicenotes?|voice\s+(?:messages?|memos?|msgs?)|"
+    r"audios?|recordings?|notas?\s+de\s+voz|grabaci[oó]n(?:es)?)\b", re.I)
+
+# "I can't access voice notes", "I don't have access to audio", "unable to
+# listen to recordings".
+_DENIES_VOICE = re.compile(
+    r"\b(?:can'?t|cannot|can ?not|unable to|not able to|don'?t have(?: any)? access|"
+    r"do not have(?: any)? access|no access|not have access)\b[^.?!\n]{0,40}"
+    r"\b(?:voice|audio|recordings?|listen)", re.I)
+
+
+def asks_about_voice_notes(text: str) -> bool:
+    """A DM question about voice notes: answered from recent_voice_notes."""
+    return bool(_VOICE_Q.search(str(text or "")))
+
+
+def denies_voice_access(reply: str) -> bool:
+    """The reply claims it cannot read voice notes (it can)."""
+    return bool(_DENIES_VOICE.search(str(reply or "")))
 
 CROSS_SYSTEM_PROMPT = (
     "You are Levelog Assistant, answering one project admin or PM in a private "

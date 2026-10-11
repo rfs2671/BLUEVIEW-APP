@@ -145,5 +145,11 @@ console.log('a Yiddish voice note: what was said, and the direct English');
   ok(/yiddishLines\(it\)/.test(card), 'the card renders them');
 }
 
+console.log('forwarded');
+{
+  ok(/Forwarded/.test(A.FORWARDED_TEXT), 'the label');
+  ok(/it\.forwarded/.test(read('src/components/whatsapp/AttentionCard.jsx')), 'the card shows it');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

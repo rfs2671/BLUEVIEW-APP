@@ -147,6 +147,56 @@ def yiddish_lines(voice: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
             ("translated_transcript" if english else None)}
 
 
+def forwarded(*nodes: Any) -> bool:
+    """WhatsApp's "Forwarded" label on a webhook message (wweb.js:
+    isForwarded, or a forwardingScore above 0, on the message or its _data)."""
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        if n.get("isForwarded") is True:
+            return True
+        try:
+            if int(n.get("forwardingScore") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def name_matches(asked: str, *names: Any) -> bool:
+    """"meilich" matches "Meilich Friedman"; every word asked is in a name."""
+    words = [w for w in re.findall(r"[^\W_]+", str(asked or "").lower()) if len(w) > 1]
+    if not words:
+        return True
+    for n in names:
+        have = set(re.findall(r"[^\W_]+", str(n or "").lower()))
+        if have and all(any(h.startswith(w) for h in have) for w in words):
+            return True
+    return False
+
+
+def voice_note_lines(row: Dict[str, Any], who: str, group: str, ny: Any) -> str:
+    """One voice note for the DM: "🎤 Sun Oct 11, 2:57 PM · Meilich · 588 Site
+    (forwarded)", then "Said: “…”" and, when it is not English, "English: …"."""
+    v = row.get("voice") or {}
+    when = ""
+    if ny is not None:
+        h = ny.strftime("%I").lstrip("0") or "12"
+        when = f"{ny.strftime('%a %b')} {ny.day}, {h}:{ny.strftime('%M %p')}"
+    head = " · ".join(p for p in (f"{QUOTE_MARK} {when}".strip(), who or "Someone", group) if p)
+    if row.get("forwarded"):
+        head += " (forwarded)"
+    said = str(v.get("transcript") or "").strip()
+    if v.get("failed") or row.get("skipped"):
+        why = not_processed(v.get("failed") or str(row.get("skipped") or "").replace("voice_", ""))
+        return f"{head}\n(not transcribed: {why})" + (f"\nHeard: “{said}”" if said else "")
+    lines = [head, f"Said: “{said}”"]
+    english = str(v.get("english_direct") or v.get("english") or "").strip()
+    if english and english != said and v.get("lang") not in (None, "en"):
+        lines.append(f"English: {english}")
+    return "\n".join(lines)
+
+
 def is_voice(row: Dict[str, Any]) -> bool:
     return bool((row or {}).get("voice"))
 
