@@ -98,13 +98,39 @@ console.log('\nscreen wiring');
   ok(/whatsappAPI\.getAttention\(projectId, list\)/.test(card), 'loads the open or closed list');
   ok(/whatsappAPI\.reviewAttentionChange\(projectId, itemId, changeId, verdict\)/.test(card),
      'sends a verdict per change');
-  ok(/reviewable\(e\)/.test(card) && /eventLine\(e\)/.test(card), 'renders the timeline');
+  ok(/reviewable\(e, it\)/.test(card) && /eventLine\(e\)/.test(card), 'renders the timeline');
   ok(/whatsappAPI\.reviewAttention\(projectId, itemId, verdict\)/.test(card), 'sends the verdict');
   const api = read('src/utils/api.js');
   ok(api.includes('`/api/projects/${projectId}/attention`'), 'GET path');
   ok(api.includes('/attention/${encodeURIComponent(itemId)}/review'), 'review path');
   ok(api.includes('/history/${encodeURIComponent(changeId)}/review'), 'change review path');
   ok(!/sendWhatsApp|send-message|sendMessage/.test(card), 'the card sends nothing to anyone');
+  // ▶ Play: a fresh signed link from the source endpoint, opened in the player.
+  ok(/canPlay\(it\)/.test(card) && /PLAY_LABEL/.test(card), 'voice items get ▶ Play');
+  ok(/whatsappAPI\.getSource\(projectId, it\.message_row_id\)/.test(card)
+     && /Linking\.openURL\(url\)/.test(card), 'Play opens the signed audio link');
+}
+
+// ── Voice items: ▶ Play, and one Correct / Wrong set ─────────────────────────
+{
+  const item = { id: 'i1', voice: true, message_row_id: 'r1', audio: true };
+  ok(A.canPlay(item), 'a voice item with its audio kept plays');
+  ok(!A.canPlay({ ...item, audio: false }), 'no audio kept: no Play');
+  ok(A.canPlay({ ...item, audio: null }), 'not looked up: Play, and the tap says if none');
+  ok(!A.canPlay({ ...item, voice: false }) && !A.canPlay({ ...item, message_row_id: null }),
+     'a text item, or no source row: no Play');
+  ok(A.PLAY_LABEL === '▶ Play', 'the label');
+  const created = { id: 'e0', kind: 'created', message_row_id: 'r1' };
+  const ownFlag = { id: 'e1', kind: 'flag', by: 'voice', message_row_id: 'r1',
+                    note: 'low_confidence_voice' };
+  ok(!A.reviewable(created, item) && !A.reviewable(ownFlag, item),
+     'the flag on the item it made has no second Correct / Wrong');
+  ok(A.eventLine(ownFlag) === 'Flagged for review. Not applied.', 'its line stays, as text');
+  ok(A.reviewable({ ...ownFlag, message_row_id: 'r9' }, item),
+     'a voice note holding a change on another item keeps its own verdict');
+  ok(A.reviewable({ id: 'e2', kind: 'flag', by: 'other', message_row_id: 'r1' }, item),
+     'other flags keep theirs');
+  ok(A.reviewable(ownFlag), 'without the item (old callers) nothing changes');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

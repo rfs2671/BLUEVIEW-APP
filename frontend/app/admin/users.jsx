@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -49,6 +49,7 @@ import {
 } from '../../src/utils/roleVocabulary';
 import { promoteToSuperintendentBody } from '../../src/utils/superintendentPromotionCopy';
 import DateInput from '../../src/components/DateInput';
+import { VoiceLanguageSetting } from '../../src/components/whatsapp/VoiceLanguagePicker';
 import { dateEntryError, toStoredDate } from '../../src/utils/dateEntry';
 
 export default function AdminUsersScreen() {
@@ -459,6 +460,11 @@ export default function AdminUsersScreen() {
         : [...prev, projectId]
     );
   };
+
+  const voiceLanguageLoad = useCallback(
+    () => adminUsersAPI.getVoiceLanguage(selectedUser.id), [selectedUser]);
+  const voiceLanguageSave = useCallback(
+    (language) => adminUsersAPI.setVoiceLanguage(selectedUser.id, language), [selectedUser]);
 
   const openEditModal = (userItem) => {
     // PREVENT EDITING SELF
@@ -1158,6 +1164,12 @@ export default function AdminUsersScreen() {
             keyboardType="phone-pad"
             style={s.inputSpacing}
           />
+          {/* What they speak in WhatsApp voice notes (Whisper's hint). Saves
+              on tap, apart from Save: it is keyed by the number on file. */}
+          {selectedUser ? (
+            <VoiceLanguageSetting key={selectedUser.id}
+              load={voiceLanguageLoad} save={voiceLanguageSave} />
+          ) : null}
           {renderRolePicker()}
           {renderLicenceFields()}
         </FormSheet>
