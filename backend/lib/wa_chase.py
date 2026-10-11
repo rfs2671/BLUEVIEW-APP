@@ -140,8 +140,10 @@ def owner_key(item: Dict[str, Any]) -> str:
     return f"{o.get('kind')}:{o.get('id')}"
 
 
-def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
-    """Why this item is not chased today, or None when it is eligible."""
+def skip_reason(item: Dict[str, Any], day: date,
+                parent: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Why this item is not chased today, or None when it is eligible.
+    `parent`: the ask a commitment answers, when it has one."""
     if item.get("type") not in CHASE_TYPES:
         return "type"
     if item.get("status") not in CHASE_STATUSES:
@@ -152,6 +154,8 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         return "old_prompt"             # extracted before att-v1.2
     if (item.get("review") or {}).get("verdict") in ("wrong", "dismissed"):
         return "reviewed_wrong"         # an admin rejected the item itself
+    if ack_only(item, parent):
+        return ACK_ONLY                 # "Working on it" is not something to chase
     o = item.get("owner") or {}
     if o.get("status") != "resolved" or not o.get("id"):
         return "owner_unconfirmed"
@@ -168,6 +172,40 @@ def skip_reason(item: Dict[str, Any], day: date) -> Optional[str]:
         # Last, so it means "would be chased today, but nobody to @mention".
         return NO_MENTION
     return None
+
+
+#: A nudge never quotes words that are only an ack ("Working on it", "on
+#: it", "ok"): they say nothing to act on. Live, 588 (Oct 11): "checking in —
+#: still on for today? 'Working on it'". A yes that answers an ask (a request
+#: or question) is chased with THE ASK's words; any other ack-only item is not
+#: chased at all.
+ACK_ONLY = "ack_only"
+_ASKS = ("request", "question")
+
+
+def ack_words(text: Any) -> bool:
+    t = str(text or "").strip()
+    return bool(t) and bool(was.ack(t) is not None or was.progress_ack(t, accept=True))
+
+
+def ack_only(item: Dict[str, Any], parent: Optional[Dict[str, Any]] = None) -> bool:
+    """The words a nudge would quote are only an ack, and no ask (`parent`)
+    gives it words instead: never chased."""
+    if not ack_words(quoted(item).get("quote")):
+        return False
+    return not (parent and parent.get("type") in _ASKS
+                and (parent.get("evidence") or {}).get("quote"))
+
+
+def ask_quote(item: Dict[str, Any], parent: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """For a yes under an ask: the ask's words and message, to quote instead
+    of "on it". None when the item's own words say something."""
+    if not parent or parent.get("type") not in _ASKS or not ack_words(quoted(item).get("quote")):
+        return None
+    ev = parent.get("evidence") or {}
+    if not ev.get("quote") or not ev.get("message_id"):
+        return None
+    return {"quote": ev["quote"], "message_id": ev["message_id"], "from": "ask"}
 
 
 def is_gc_staff(owner: Dict[str, Any]) -> bool:

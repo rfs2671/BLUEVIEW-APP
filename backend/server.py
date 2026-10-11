@@ -47860,17 +47860,8 @@ async def _attention_dismiss_open_before(project_id: str, before: datetime,
          "status": {"$in": list(_ATTENTION_STILL_OPEN)},
          "created_at": {"$lt": before}},
         {"status": 1, "type": 1}).to_list(10000)
-    out = await _attention_test_dismiss(rows, now)
-    logger.info(f"[attention] test cleanup project={project_id} dismissed={out['total']}")
-    return out
-
-
-async def _attention_test_dismiss(rows: List[dict], now: datetime) -> dict:
-    """Dismiss these items, reason "test cleanup": off the open list, never
-    chased, out of precision. {total, by_status, by_type, items}."""
     by_status: Dict[str, int] = {}
     by_type: Dict[str, int] = {}
-    done: List[dict] = []
     for it in rows:
         was = str(it.get("status") or "")
         res = await db.attention_items.update_one(
@@ -47890,29 +47881,9 @@ async def _attention_test_dismiss(rows: List[dict], now: datetime) -> dict:
             by_status[was] = by_status.get(was, 0) + 1
             typ = str(it.get("type") or "other")
             by_type[typ] = by_type.get(typ, 0) + 1
-            done.append({"id": str(it["_id"]), "type": typ,
-                         "quote": (it.get("evidence") or {}).get("quote") or "",
-                         "summary": it.get("summary") or ""})
-    return {"total": sum(by_status.values()), "by_status": by_status, "by_type": by_type,
-            "items": done}
-
-
-async def _attention_dismiss_progress_items(project_id: str,
-                                            now: Optional[datetime] = None) -> dict:
-    """ONE-TIME TEST CLEANUP for the "Working on it" bug (588, Oct 11): open
-    items made from a message that only says work is under way -- the engine
-    now records those as progress on the item they reply to. Dismissed,
-    reason "test cleanup"."""
-    now = now or datetime.now(timezone.utc)
-    rows = await db.attention_items.find(
-        {"project_id": str(project_id), "status": {"$in": list(_ATTENTION_STILL_OPEN)}},
-        {"status": 1, "type": 1, "evidence": 1, "summary": 1}).to_list(10000)
-    bogus = [r for r in rows
-             if wa_attention_state.progress_ack((r.get("evidence") or {}).get("quote"))]
-    out = await _attention_test_dismiss(bogus, now)
-    logger.info(f"[attention] progress-item cleanup project={project_id} "
-                f"dismissed={out['total']}")
-    return out
+    total = sum(by_status.values())
+    logger.info(f"[attention] test cleanup project={project_id} dismissed={total}")
+    return {"total": total, "by_status": by_status, "by_type": by_type}
 
 
 async def _attention_weekly_metrics(now: Optional[datetime] = None) -> List[dict]:
@@ -48421,9 +48392,24 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         except Exception as e:
             logger.warning(f"[chase] answers read failed: {type(e).__name__}")
             return report
+    # The asks commitments answer: a yes ("on it") is chased with the ask's
+    # words, and an ack with no ask behind it is not chased (wa_chase.ack_only).
+    parent_ids = list({str(it["parent_id"]) for it in items if it.get("parent_id")})
+    parents: Dict[str, dict] = {}
+    if parent_ids:
+        try:
+            parents = {str(p["_id"]): p for p in await db.attention_items.find(
+                {"_id": {"$in": [to_query_id(i) for i in parent_ids]}},
+                {"type": 1, "evidence": 1}).to_list(len(parent_ids) + 5)}
+        except Exception as e:
+            logger.warning(f"[chase] parents read failed: {type(e).__name__}")
     for it in items:
         report["items"] += 1
-        why = wa_chase.skip_reason(it, day)
+        parent = parents.get(str(it.get("parent_id") or ""))
+        why = wa_chase.skip_reason(it, day, parent)
+        ask_q = wa_chase.ask_quote(it, parent)
+        if ask_q and not why:
+            it = dict(it, chase_quote=ask_q)
         if why in (None, wa_chase.NO_MENTION) and str(it.get("_id")) in answered:
             why = "answered_by_commitment"
         # Would be chased, but no WhatsApp number to @mention: listed below,

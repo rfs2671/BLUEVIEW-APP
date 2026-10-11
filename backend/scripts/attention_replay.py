@@ -13,14 +13,6 @@ the open list, never chased, left out of precision. Counts are printed.
     railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10
     railway run python scripts/attention_replay.py --project 588 --dismiss-open-before 2026-10-10 --apply
 
---dismiss-progress-items dismisses the open items made from a message that
-only says work is under way ("Working on it" as a new commitment, 588 Oct 11),
-reason "test cleanup"; the engine now records those as progress on the item
-replied to.
-
-    railway run python scripts/attention_replay.py --project 588 --dismiss-progress-items
-    railway run python scripts/attention_replay.py --project 588 --dismiss-progress-items --apply
-
 Both together: the replay first, then the cleanup of what is still open.
 
 Without --apply it is a DRY RUN: the project's messages, items and people are
@@ -119,8 +111,7 @@ async def main_async(a) -> int:
     before = _ny_day(a.dismiss_open_before) if getattr(a, "dismiss_open_before", None) else None
     real = server.db
     project = await _find_project(real, a.project)
-    db = real if a.apply else await _copy(
-        real, project, since or before or datetime.now(timezone.utc))
+    db = real if a.apply else await _copy(real, project, since or before)
 
     def refuse(name):
         async def _r(*x, **k):
@@ -130,14 +121,12 @@ async def main_async(a) -> int:
         patch.object(server, n, refuse(n)) for n in SEND_PATHS if hasattr(server, n)]
     for p in patches:
         p.start()
-    out, cleaned, progress = None, None, None
+    out, cleaned = None, None
     try:
         if since:
             out = await server._attention_replay_state(str(project["_id"]), since)
         if before:
             cleaned = await server._attention_dismiss_open_before(str(project["_id"]), before)
-        if getattr(a, "dismiss_progress_items", False):
-            progress = await server._attention_dismiss_progress_items(str(project["_id"]))
     except Sent as e:
         print(f"STOPPED: something tried to send ({e}). Nothing more was done.")
         return 3
@@ -157,15 +146,6 @@ async def main_async(a) -> int:
             if counts:
                 print(f"  {label}: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
         if not a.apply and cleaned["total"]:
-            print("\nRe-run with --apply to dismiss them.")
-    if progress is not None:
-        verb = "dismissed" if a.apply else "would be dismissed"
-        print(f"{mode}: {project.get('name')} · items made from a progress reply "
-              f"(\"Working on it\"): {progress['total']} {verb} (reason "
-              f"\"{server.ATTENTION_TEST_CLEANUP}\")")
-        for it in progress["items"]:
-            print(f"  {it['type']:<10} “{it['quote'][:60]}”  {it['summary'][:60]}")
-        if not a.apply and progress["total"]:
             print("\nRe-run with --apply to dismiss them.")
     return 0
 
@@ -199,13 +179,10 @@ def main(argv=None) -> int:
     ap.add_argument("--dismiss-open-before", metavar="YYYY-MM-DD",
                     help="test cleanup: dismiss items still open and created before this day "
                          "(New York)")
-    ap.add_argument("--dismiss-progress-items", action="store_true",
-                    help="test cleanup: dismiss open items made from a progress reply "
-                         "(\"Working on it\")")
     ap.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     a = ap.parse_args(argv)
-    if not (a.since or a.dismiss_open_before or a.dismiss_progress_items):
-        ap.error("give --since, --dismiss-open-before, --dismiss-progress-items, or several")
+    if not (a.since or a.dismiss_open_before):
+        ap.error("give --since, --dismiss-open-before, or both")
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

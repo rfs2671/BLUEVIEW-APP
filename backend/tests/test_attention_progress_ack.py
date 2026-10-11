@@ -8,7 +8,7 @@
   * It changes nothing: status, due, chase (rule 1 is not triggered; it is
     rule 2's ack), state precision.
   * Unlinked, it goes on as before.
-  * The one-time cleanup dismisses the bogus item, reason "test cleanup".
+  * The chase never nudges an item whose words are only an ack.
 """
 
 from __future__ import annotations
@@ -149,25 +149,40 @@ class ItChangesNothing(unittest.TestCase):
         self.assertIn('"Working on it"', wa_attention.SYSTEM_PROMPT)
 
 
-class TheCleanup(unittest.TestCase):
+class TheChaseNeverNudgesAnAck(unittest.TestCase):
 
-    def test_the_bogus_item_is_dismissed_as_test_cleanup(self):
-        db = _world()
-        db[server.ATTENTION_ITEMS].rows.extend([
-            {"_id": "bogus", "project_id": "proj_a", "company_id": CO_A, "status": "open",
-             "type": "commitment", "summary": "Working on it",
-             "evidence": {"quote": "Working on it"}, "history": []},
-            {"_id": "real", "project_id": "proj_a", "company_id": CO_A, "status": "open",
-             "type": "commitment", "summary": "Send the risers",
-             "evidence": {"quote": "I'll send the risers Friday"}, "history": []}])
-        with patch.object(server, "db", db):
-            out = _run(server._attention_dismiss_progress_items("proj_a"))
-        self.assertEqual(out["total"], 1)
-        by = {i["_id"]: i for i in _items(db)}
-        self.assertEqual(by["bogus"]["status"], "dismissed")
-        self.assertEqual(by["bogus"]["dismissed_reason"], "test cleanup")
-        self.assertTrue(by["bogus"]["excluded_from_metrics"])
-        self.assertEqual(by["real"]["status"], "open")
+    def _item(self, quote, summary):
+        from datetime import date
+        return {"type": "commitment", "status": "open", "summary": summary,
+                "evidence": {"quote": quote, "message_id": "M1"},
+                "extraction": {"prompt_version": wa_attention.PROMPT_VERSION},
+                "owner": {"status": "resolved", "id": "u1", "kind": "user", "jid": "1@c.us"},
+                "due": {"due_text": "today", "due_at": "2026-10-11T21:00:00+00:00"}}, \
+            date(2026, 10, 11)
+
+    def test_the_live_item_is_not_chased(self):
+        it, day = self._item("Working on it", "Working on it")
+        self.assertEqual(wa_chase.skip_reason(it, day), wa_chase.ACK_ONLY)
+        for q in ("on it", "ok", "Np", "estoy en eso", "will do"):
+            it, day = self._item(q, q)
+            self.assertEqual(wa_chase.skip_reason(it, day), wa_chase.ACK_ONLY, q)
+
+    def test_a_yes_under_an_ask_is_chased_with_the_asks_words(self):
+        ask = {"type": "request", "evidence": {"quote": "please send the lighting cut sheets",
+                                               "message_id": "M0"}}
+        it, day = self._item("on it", "Will do: Send the lighting cut sheets by Friday")
+        self.assertIsNone(wa_chase.skip_reason(it, day, ask))
+        self.assertEqual(wa_chase.ask_quote(it, ask)["quote"], "please send the lighting cut sheets")
+        # Under anything but an ask (a commitment, an issue) or nothing: not chased.
+        self.assertEqual(wa_chase.skip_reason(it, day, dict(ask, type="commitment")),
+                         wa_chase.ACK_ONLY)
+        self.assertEqual(wa_chase.skip_reason(it, day), wa_chase.ACK_ONLY)
+
+    def test_real_words_are_chased_as_before(self):
+        it, day = self._item("I'll send the risers today", "Send the risers")
+        self.assertIsNone(wa_chase.skip_reason(it, day))
+        self.assertIsNone(wa_chase.ask_quote(it, {"type": "request", "evidence": {
+            "quote": "x", "message_id": "M0"}}))
 
 
 if __name__ == "__main__":
