@@ -164,5 +164,21 @@ console.log('Yiddish notes, one row per group per day');
   ok(/voice_batches/.test(card) && /batchNoteLines/.test(card), 'the card renders batches');
 }
 
+console.log('batches sit among the items by recency (Codex review on #753)');
+{
+  const items = [{ id: 'new', created_at: '2026-10-12T15:00:00Z' },
+    { id: 'old', created_at: '2026-10-10T15:00:00Z' }];
+  const batches = [{ key: 'g1|2026-10-11', created_at: '2026-10-11T22:00:00Z' },
+    { key: 'g2|2026-10-09', created_at: '2026-10-09T12:00:00Z' }];
+  const rows = A.attentionRows(items, batches);
+  ok(rows.map((r) => r.key).join(',') === 'i:new,b:g1|2026-10-11,i:old,b:g2|2026-10-09',
+    rows.map((r) => r.key).join(','));
+  ok(A.attentionRows([], batches).length === 2 && A.attentionRows(items, []).length === 2,
+    'only batches, or only items');
+  const card = read('src/components/whatsapp/AttentionCard.jsx');
+  ok(/attentionRows\(items, batches\)/.test(card) && !/\{batches\.map\(/.test(card),
+    'the card renders one list, not batches first');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -327,18 +327,23 @@ def yiddish_batches(views: List[Dict[str, Any]], min_count: int = YIDDISH_BATCH_
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for v in views:
         if yid(v):
-            groups.setdefault((v.get("group_name") or "", _ny_day(v.get("sent_at"))), []).append(v)
+            # By the group's id: two groups can share a name ("Unnamed group").
+            gid = v.get("group_id") or v.get("group_name") or ""
+            groups.setdefault((str(gid), _ny_day(v.get("sent_at"))), []).append(v)
     batches, batched = [], set()
-    for (gname, day), vs in groups.items():
+    for (gid, day), vs in groups.items():
         if len(vs) < min_count:
             continue
         vs = sorted(vs, key=lambda v: v.get("sent_at") or "")
         batched |= {id(v) for v in vs}
-        batches.append({"key": f"{gname}|{day}", "group_name": gname, "day": day,
+        batches.append({"key": f"{gid}|{day}", "group_id": gid,
+                        "group_name": vs[0].get("group_name") or "", "day": day,
                         "count": len(vs),
                         "label": f"{len(vs)} Yiddish voice notes to review",
+                        # Where it sits in the newest-first list: its newest note.
+                        "created_at": max((v.get("created_at") or "" for v in vs), default="") or None,
                         "items": vs})
-    batches.sort(key=lambda b: (b["day"], b["group_name"]), reverse=True)
+    batches.sort(key=lambda b: (b["day"], b["group_id"]), reverse=True)
     return batches, [v for v in views if id(v) not in batched]
 
 

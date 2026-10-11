@@ -330,6 +330,29 @@ class TheBatches(unittest.TestCase):
         self.assertEqual([(b["group_name"], b["day"], b["count"]) for b in out["voice_batches"]],
                          [("588 – Site", "2026-10-12", 3), ("588 – Office", "2026-10-11", 3)])
 
+    def test_two_groups_with_one_name_are_not_merged(self):
+        # Codex review on #753: both "Unnamed group"; 2 notes each.
+        items = ([_yid_item(i, group="g1", minutes=i) for i in range(2)]
+                 + [_yid_item(10 + i, group="g2", minutes=i) for i in range(2)])
+        db_groups = [{"_id": "G1", "wa_group_id": "g1", "project_id": "proj_a",
+                      "company_id": CO_A, "group_name": ""},
+                     {"_id": "G2", "wa_group_id": "g2", "project_id": "proj_a",
+                      "company_id": CO_A, "group_name": ""}]
+        db = FakeDb(attention_items=items, whatsapp_messages=[], whatsapp_groups=db_groups)
+
+        async def admin(project_id, user):
+            return CO_A
+        with patch.object(server, "db", db), \
+                patch.object(server, "_attention_admin_project", admin):
+            out = _run(server.get_project_attention("proj_a", "open", current_user=ADMIN))
+        self.assertEqual(out["voice_batches"], [])
+        self.assertEqual(len(out["items"]), 4)
+
+    def test_a_batch_carries_where_it_sits_in_the_list(self):
+        out = self._list([_yid_item(i, minutes=i) for i in range(3)])
+        (b,) = out["voice_batches"]
+        self.assertEqual((b["group_id"], b["created_at"]), ("g1", "2026-10-11T18:02:00+00:00"))
+
     def test_reviewed_or_not_yiddish_are_not_batched(self):
         items = ([_yid_item(i, minutes=i) for i in range(2)]
                  + [_yid_item(5, verdict="correct"), _yid_item(6, lang="es")])

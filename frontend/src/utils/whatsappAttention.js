@@ -167,6 +167,25 @@ export function yiddishLines(item) {
 
 /** A group's Yiddish voice notes to review, one row: "5 Yiddish voice notes
  *  to review · 588 – Site · Sun Oct 11". */
+/** One newest-first list: the items in the API's order, each batch placed
+ *  before the first item older than its newest note. */
+export function attentionRows(items, batches) {
+  const t = (v) => {
+    const n = Date.parse(v || '');
+    return Number.isNaN(n) ? -Infinity : n;
+  };
+  const rest = [...(batches || [])].sort((a, b) => t(b.created_at) - t(a.created_at));
+  const out = [];
+  for (const it of items || []) {
+    while (rest.length && t(rest[0].created_at) >= t(it.created_at)) {
+      out.push({ kind: 'batch', key: `b:${rest[0].key}`, batch: rest.shift() });
+    }
+    out.push({ kind: 'item', key: `i:${it.id}`, item: it });
+  }
+  for (const b of rest) out.push({ kind: 'batch', key: `b:${b.key}`, batch: b });
+  return out;
+}
+
 export function batchTitle(b) {
   const x = b || {};
   let day = '';
