@@ -247,11 +247,16 @@ class WhatIsNotSeeded(unittest.TestCase):
 # ── on the real sheets ─────────────────────────────────────────────────────
 
 class OnTheRealSheets(unittest.TestCase):
-    """A-103.00 seeds A-104.00 through the pass's own reading."""
+    """A-103.00 seeds A-104.00 through the pass's own reading. Loaded once,
+    inside the first test: a presence check in setUpClass reports as an
+    ERROR, not a failure by assertion."""
+
+    _done = False
 
     @classmethod
-    def setUpClass(cls):
-        _present()
+    def _load(cls):
+        if cls._done:
+            return
         from lib.plan_page import PlanPage
         from lib.plan_sheet import load_sheet
         from lib.plan_space import build_space
@@ -271,8 +276,8 @@ class OnTheRealSheets(unittest.TestCase):
         cls.tgt = {"arch_p": {"sheet_number": "A-104.00", "sheet_title": "MEZZANINE PLAN"},
                    "a_sheet": "A-104.00", "data": a4,
                    "units": D.unit_tags(a4["words"], a4["corners"])}
-        cls.notes = G.seed_from_stairs([cls.src, cls.tgt],
-                                       lambda p: cls.pages[5], 56.0)
+        cls.notes = G.seed_from_stairs([cls.src, cls.tgt], lambda p: cls.pages[5], 56.0)
+        cls._done = True
 
     @classmethod
     def tearDownClass(cls):
@@ -280,21 +285,27 @@ class OnTheRealSheets(unittest.TestCase):
             p.close()
 
     def test_four_units_seeded_one_region_each(self):
+        _present()
+        self._load()
         u = self.tgt["units"]
         self.assertEqual(u["tags"], ["4A", "4B", "4C", "4D"], self.notes)
         self.assertEqual(u["method"], "stair_seeded")
         self.assertEqual(self.tgt["space"]["refused"], [])
         self.assertEqual(self.tgt["space"].get("incomplete") or {}, {})
-        areas = {t: s["area_sf"] for t, s in u["seeded"].items()}
+        areas = {t: s_["area_sf"] for t, s_ in u["seeded"].items()}
         self.assertEqual(areas, {"4A": 482, "4B": 483, "4C": 443, "4D": 444})
 
     def test_the_area_is_reported_against_the_net_on_its_own_floor(self):
-        s = self.tgt["units"]["seeded"]["4A"]
-        self.assertEqual((s["from"], s["net_on"]), ("A-103.00", "A-103.00"))
-        self.assertEqual(s["net_sf_on_own_floor"], 507)
-        self.assertAlmostEqual(s["ratio"], round(482 / 507, 2))
+        _present()
+        self._load()
+        s_ = self.tgt["units"]["seeded"]["4A"]
+        self.assertEqual((s_["from"], s_["net_on"]), ("A-103.00", "A-103.00"))
+        self.assertEqual(s_["net_sf_on_own_floor"], 507)
+        self.assertAlmostEqual(s_["ratio"], round(482 / 507, 2))
 
     def test_both_sheets_name_the_link(self):
+        _present()
+        self._load()
         self.assertIn("stair label UP at (1244, 691) reaches A-104.00",
                       self.src["units"]["multi_level"]["4A"])
         self.assertEqual(self.tgt["units"]["multi_level"]["4A"],
