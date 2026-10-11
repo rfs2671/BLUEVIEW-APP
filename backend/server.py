@@ -50449,6 +50449,7 @@ MEMORY_ATLAS_RETRY_SECONDS = 600
 # tick in between moves the cursor past it. Each tick looks this far back
 # behind the cursor for rows that are not indexed yet.
 MEMORY_LATE_SECONDS = 15 * 60
+MEMORY_LATE_PAGES = 20
 # Atlas Search: None not tried yet, True working, False not available (tried
 # again after MEMORY_ATLAS_RETRY_SECONDS: an index may still be building).
 _MEMORY_ATLAS: Dict[str, Any] = {"ok": None, "retry_at": None}
@@ -50600,23 +50601,36 @@ async def _memory_index_tick(now: Optional[datetime] = None) -> dict:
     if isinstance(state.get("wa_at"), datetime):
         # 1b. Stored late, behind the cursor: rows of the last
         #     MEMORY_LATE_SECONDS before it that have no memory row.
-        near = await db.whatsapp_messages.find(
-            {"project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
-             "sender": {"$ne": "bot"},
-             "created_at": {"$gte": state["wa_at"] - timedelta(seconds=MEMORY_LATE_SECONDS),
-                            "$lte": state["wa_at"]}}).sort(
-            [("created_at", 1), ("_id", 1)]).limit(MEMORY_SCAN_PER_RUN).to_list(None)
-        if near:
+        # The whole window, a page at a time (a busy 15 minutes can hold more
+        # than one page; a late row past the first must not be missed).
+        late: List[dict] = []
+        seen = {r["_id"] for r in rows}
+        after: Optional[Tuple[Any, Any]] = None
+        for _page in range(MEMORY_LATE_PAGES):
+            wq: Dict[str, Any] = {
+                "project_id": {"$nin": [None, ""]}, "is_dm": {"$ne": True},
+                "sender": {"$ne": "bot"},
+                "created_at": {"$gte": state["wa_at"] - timedelta(seconds=MEMORY_LATE_SECONDS),
+                               "$lte": state["wa_at"]}}
+            if after:
+                wq["$or"] = [{"created_at": {"$gt": after[0]}},
+                             {"created_at": after[0], "_id": {"$gt": after[1]}}]
+            near = await db.whatsapp_messages.find(wq).sort(
+                [("created_at", 1), ("_id", 1)]).limit(MEMORY_SCAN_PER_RUN).to_list(None)
+            if not near:
+                break
             have = {d["_id"] for d in await db.project_memory.find(
                 {"_id": {"$in": [f"wa:{r['_id']}" for r in near]}}, {"_id": 1}).to_list(None)}
-            seen = {r["_id"] for r in rows}
-            late = [r for r in near if f"wa:{r['_id']}" not in have and r["_id"] not in seen
-                    and str(r.get("company_id") or "") not in test_cos
-                    and project_memory.indexable_message(r)]
-            if late:
-                report["late"] = len(late)
-            # First, so the cursor still ends on the newest row read below.
-            rows = late + rows
+            late += [r for r in near if f"wa:{r['_id']}" not in have and r["_id"] not in seen
+                     and str(r.get("company_id") or "") not in test_cos
+                     and project_memory.indexable_message(r)]
+            if len(near) < MEMORY_SCAN_PER_RUN:
+                break
+            after = (near[-1].get("created_at"), near[-1]["_id"])
+        if late:
+            report["late"] = len(late)
+        # First, so the cursor still ends on the newest row read below.
+        rows = late + rows
     names: Dict[str, str] = {}
     wa_at, wa_id = state.get("wa_at"), state.get("wa_id")
     for r in rows:

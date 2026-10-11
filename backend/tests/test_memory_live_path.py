@@ -168,6 +168,26 @@ class AWebhookMessageIsSearchable(unittest.TestCase):
             self.assertIsNone(w.tick().get("late"))
 
 
+    def test_a_late_row_past_the_first_page_of_the_window_is_found(self):
+        with _Live() as w:
+            w.webhook(_payload("M588B", "Concrete truck at the gate", at=SAT_312PM))
+            base = w.db.whatsapp_messages.rows[-1]
+            base["created_at"] = SAT_312PM + timedelta(minutes=5)
+            # A busy window: five indexed rows before the late one.
+            for i in range(5):
+                w.db.whatsapp_messages.rows.append(dict(
+                    base, _id=f"busy{i}", message_id=f"B{i}", body=f"Truck {i} unloading",
+                    created_at=SAT_312PM + timedelta(seconds=i)))
+            w.tick()
+            w.db.whatsapp_messages.rows.append(dict(
+                base, _id="late2", message_id="M588D", body=QUESTION,
+                created_at=SAT_312PM + timedelta(minutes=1)))
+            with patch.object(server, "MEMORY_SCAN_PER_RUN", 2):
+                rep = w.tick()
+            self.assertEqual(rep.get("late"), 1)
+            self.assertIn("wa:late2", {d["_id"] for d in w.db.project_memory.rows})
+
+
 class LastMention(unittest.TestCase):
 
     def _src(self, text, who="Meilich", at=SAT_312PM, source="whatsapp"):
@@ -192,6 +212,20 @@ class LastMention(unittest.TestCase):
     def test_not_a_decision_question(self):
         line = pm.last_mention_line("who has the core drilling?", [self._src(QUESTION)])
         self.assertTrue(line.startswith("No answer found. Last mention:"))
+
+    def test_finally_is_not_a_decision_question(self):
+        line = pm.last_mention_line("what finally happened with the core drill?",
+                                    [self._src(QUESTION)])
+        self.assertTrue(line.startswith("No answer found."), line)
+        self.assertTrue(pm.last_mention_line("final call on the core drill?",
+                                             [self._src(QUESTION)]).startswith("No decision found."))
+
+    def test_a_multiline_message_quotes_the_line_that_names_it(self):
+        text = ("Morning all\n" + "Lots of deliveries today, gate is busy " * 6
+                + "\nWho is doing the core drill on 3")
+        line = pm.last_mention_line("what did we decide about the core drill?",
+                                    [self._src(text)])
+        self.assertIn("asked 'Who is doing the core drill on 3'", line)
 
     def test_daily_report(self):
         line = pm.last_mention_line("core drill decision?", [self._src(

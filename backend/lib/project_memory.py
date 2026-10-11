@@ -588,7 +588,7 @@ decide decided decision decisions agree agreed agreement settle settled choose
 chose chosen pick picked plan planned say said tell told know latest update
 updates status think thought go going get got end ended final finally made make
 """.split())
-_DECISION_Q = re.compile(r"\b(decid|decision|agree|settled?\b|chose|choose|pick(ed)?\b|final)",
+_DECISION_Q = re.compile(r"\b(decid|decision|agree|settled?\b|chose|choose|pick(ed)?\b|final\b)",
                          re.IGNORECASE)
 _ASKING = re.compile(r"^(who|what|when|where|why|how|which|is|are|was|were|do|does|did|"
                      r"can|could|should|will|would|has|have|any(one|body)?)\b", re.IGNORECASE)
@@ -622,9 +622,10 @@ def on_topic(question: str, text: str) -> bool:
 def _mention_quote(question: str, text: str) -> str:
     """The sentence of `text` that names the subject, at most QUOTE_MAX
     (a verbatim cut, never reworded)."""
-    body = clean(text)
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", body) if p.strip()]
-    pick = next((p for p in parts if on_topic(question, p)), body)
+    # Lines first, then sentences, each cleaned: clean() folds newlines away.
+    parts = [clean(p) for line in str(text or "").splitlines()
+             for p in re.split(r"(?<=[.!?])\s+", line) if clean(p)]
+    pick = next((p for p in parts if on_topic(question, p)), clean(text))
     if len(pick) > QUOTE_MAX:
         pick = pick[:QUOTE_MAX - 1].rsplit(" ", 1)[0] + "…"
     return pick
