@@ -13,8 +13,10 @@ checked. For each transcribed voice row of the project since --since:
     was said;
   - with --apply, a note that is not: voice.unreliable + review, skipped
     "voice_unreliable" (no extraction), its project_memory doc removed (it is
-    re-indexed only as Whisper's English of the audio, when there is one),
-    and the Attention items made from it marked needs_review (never chased).
+    re-indexed only as Whisper's English of the audio, when there is one);
+    the Attention items it made or changed (a "done", a new date) marked
+    needs_review (never chased) and each change listed to check -- never
+    undone here; Upcoming events it made dismissed, events it moved flagged.
 Nothing is sent. Transcripts are cut to 80 characters; no phone numbers.
 """
 
@@ -65,11 +67,38 @@ async def main_async(a) -> int:
             "voice.unreliable": why, "voice.review": True,
             "voice.review_reason": "unreliable", "skipped": "voice_unreliable"}})
         await db.project_memory.delete_one({"_id": f"wa:{r['_id']}"})
-        res = await db.attention_items.update_many(
-            {"evidence.message_row_id": str(r["_id"]), "type": {"$ne": "voice_review"}},
-            {"$set": {"needs_review": True, "voice_unreliable": True}})
-        print(f"      applied: row flagged, memory doc removed, "
-              f"{getattr(res, 'modified_count', 0)} attention item(s) marked for review")
+        rid, mid = str(r["_id"]), str(r.get("message_id") or "")
+        # Items it MADE, and items whose state it CHANGED (a "done", a new
+        # date): both for a person; the changes are listed, never undone here.
+        made = changed = 0
+        for it in await db.attention_items.find(
+                {"$or": [{"evidence.message_row_id": rid}, {"history.message_row_id": rid}],
+                 "type": {"$ne": "voice_review"}}).to_list(500):
+            by_it = [h for h in it.get("history") or []
+                     if isinstance(h, dict) and h.get("message_row_id") == rid
+                     and h.get("kind") not in ("created",)]
+            await db.attention_items.update_one({"_id": it["_id"]}, {"$set": {
+                "needs_review": True, "voice_unreliable": True}})
+            if (it.get("evidence") or {}).get("message_row_id") == rid:
+                made += 1
+            for h in by_it:
+                changed += 1
+                print(f"      item {it['_id']}: {h.get('kind')} {h.get('from')} -> {h.get('to')}"
+                      f" came from this note -- check it (status now {it.get('status')})")
+        # Upcoming events it made are dismissed (no reminder from made-up
+        # words); events it moved are flagged for a look.
+        now = datetime.now(timezone.utc)
+        ev_made = await db.upcoming_events.update_many(
+            {"source_ref": rid, "status": "open"},
+            {"$set": {"status": "dismissed", "dismissed_by": "voice_reflag",
+                      "dismissed_at": now, "dismissed_reason": "voice_unreliable"}})
+        ev_moved = await db.upcoming_events.update_many(
+            {"history.message_id": mid, "source_ref": {"$ne": rid}} if mid else {"_id": None},
+            {"$set": {"needs_review": True, "review_reason": "voice_unreliable"}})
+        print(f"      applied: row flagged, memory doc removed, {made} item(s) it made and "
+              f"{changed} change(s) it made marked for review, "
+              f"{getattr(ev_made, 'modified_count', 0)} event(s) dismissed, "
+              f"{getattr(ev_moved, 'modified_count', 0)} event(s) it moved flagged")
     print(f"{flagged} flagged" + ("" if a.apply else " (nothing written; --apply to write)"))
     return 0
 

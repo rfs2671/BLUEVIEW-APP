@@ -79,8 +79,8 @@ class TheSignals(unittest.TestCase):
         self.assertEqual(wr.language, "english")
         self.assertEqual(wr.segments[0]["compression_ratio"], 0.93)
         q = wa_voice.quality_signals(wr.segments)
-        self.assertEqual(q, {"avg_logprob": -0.48, "no_speech_prob": 0.21,
-                             "compression_ratio": 0.93, "segments": 1})
+        self.assertEqual(q, {"avg_logprob": -0.48, "min_avg_logprob": -0.48,
+                             "no_speech_prob": 0.21, "compression_ratio": 0.93, "segments": 1})
         self.assertEqual(wa_voice.unreliable_reasons(wr.transcript, q),
                          ["describes the audio instead of transcribing it"])
 
@@ -95,6 +95,18 @@ class TheSignals(unittest.TestCase):
             q = wa_voice.quality_signals([dict(seg, **{k: v})])
             (r,) = wa_voice.unreliable_reasons("pour friday", q)
             self.assertTrue(r.startswith(want), r)
+
+    def test_one_unsure_segment_is_not_hidden_by_a_sure_one(self):
+        """Codex review on #752: a short -1.2 segment and a long -0.2 one
+        average above -1.0; each segment is held to the limit."""
+        q = wa_voice.quality_signals([
+            {"start": 0, "end": 1, "avg_logprob": -1.2, "no_speech_prob": 0.1,
+             "compression_ratio": 1.0},
+            {"start": 1, "end": 12, "avg_logprob": -0.2, "no_speech_prob": 0.1,
+             "compression_ratio": 1.0}])
+        self.assertGreater(q["avg_logprob"], -1.0)
+        self.assertEqual(wa_voice.unreliable_reasons("pour friday", q),
+                         ["avg_logprob -1.2 < -1.0"])
 
     def test_the_words_that_describe_audio(self):
         for t in (HALLUCINATION, "[Music]", "(inaudible)", "Foreign language.",
@@ -273,6 +285,10 @@ class InAnswers(unittest.TestCase):
         src = inspect.getsource(server._process_whatsapp_message)
         self.assertIn("wa_voice.DM_UNRELIABLE_REPLY", src)
         self.assertIn('getattr(vresult, "unreliable", None)', src)
+        # A redelivered webhook replays the reply, not the rejected words
+        # (Codex review on #752): the ledger keeps no usable transcript.
+        self.assertIn('"english_transcript": "",', src)
+        self.assertIn('"user_reply": wa_voice.DM_UNRELIABLE_REPLY', src)
 
 
 class TheStoredRowIsReflagged(unittest.TestCase):
@@ -288,6 +304,18 @@ class TheStoredRowIsReflagged(unittest.TestCase):
         db.project_memory.rows.append({"_id": "wa:v257", "text": HALLUCINATION})
         db.attention_items.rows.append({"_id": "a1", "type": "commitment",
                                         "evidence": {"message_row_id": "v257"}})
+        # An older item the bad note marked done, and events it made / moved.
+        db.attention_items.rows.append({
+            "_id": "a2", "type": "commitment", "status": "done",
+            "evidence": {"message_row_id": "other"},
+            "history": [{"kind": "created", "message_row_id": "other"},
+                        {"kind": "state", "from": "open", "to": "done",
+                         "message_row_id": "v257"}]})
+        db.upcoming_events.rows.extend([
+            {"_id": "e1", "status": "open", "source_ref": "v257", "history": []},
+            {"_id": "e2", "status": "open", "source_ref": "other",
+             "history": [{"kind": "rescheduled", "message_id": "M257"}]},
+            {"_id": "e3", "status": "open", "source_ref": "x", "history": []}])
         from scripts import voice_reflag
         with _Ctx(db):
             voice_reflag.main(["--project", "proj_a", "--since", "2026-10-11"])
@@ -300,6 +328,15 @@ class TheStoredRowIsReflagged(unittest.TestCase):
         self.assertNotIn("skipped", db.whatsapp_messages.rows[1])            # a real question
         self.assertEqual(db.project_memory.rows, [])
         self.assertTrue(db.attention_items.rows[0]["needs_review"])
+        # Codex review on #752: what it changed, and the events.
+        self.assertTrue(db.attention_items.rows[1]["needs_review"])
+        self.assertEqual(db.attention_items.rows[1]["status"], "done")   # listed, not undone
+        ev = {e["_id"]: e for e in db.upcoming_events.rows}
+        self.assertEqual((ev["e1"]["status"], ev["e1"]["dismissed_reason"]),
+                         ("dismissed", "voice_unreliable"))
+        self.assertTrue(ev["e2"]["needs_review"])
+        self.assertEqual(ev["e3"]["status"], "open")
+        self.assertNotIn("needs_review", ev["e3"])
 
 
 if __name__ == "__main__":
