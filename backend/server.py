@@ -75,6 +75,7 @@ from lib import wa_dm  # noqa: E402
 from lib import datefmt  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
+from lib import punch_link  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -17504,8 +17505,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     # Phase 1: proactive direct-message ledger rows carry the project they
     # were about.
     "whatsapp_notification_ledger",
-    # Punch list: the job's items and its walkthroughs.
-    "punch_items", "punch_sessions",
+    # Punch list: the job's items and its walkthroughs, and the assignees'
+    # private links (lib/punch_link.py).
+    "punch_items", "punch_sessions", "punch_links",
 ]
 
 
@@ -51127,6 +51129,9 @@ async def ensure_upcoming_indexes() -> None:
                                   keys=[("company_id", 1), ("user_id", 1), ("source", 1),
                                         ("status", 1), ("date", 1)],
                                   name="upcoming_by_user_reminders")
+    await _ensure_index_resilient(db[punch_link.COLLECTION],
+                                  keys=[("project_id", 1), ("assignee_key", 1), ("revoked_at", 1)],
+                                  name="punch_links_by_assignee")
     await _ensure_index_resilient(db.calendar_feeds, keys=[("token_hash", 1)],
                                   name="calendar_feeds_by_token", unique=True)
     await _ensure_index_resilient(db.calendar_feeds, keys=[("user_id", 1), ("revoked_at", 1)],
@@ -63029,6 +63034,7 @@ async def _punch_send(ident: dict, sess: dict) -> str:
             else:
                 batch.update(via="group", grouped=False,
                              text=punch.group_text(name, rows, b["due_words"], handle=tgt["handle"]))
+        await _punch_add_links(batch, sess["company_id"], sess["project_id"], now)
         batches.append(batch)
     await _punch_save(sess, status="sent", sent_at=now, send_mode=mode)
     logger.info(f"[punch] sent walk={sess['_id']} mode={mode} items="
@@ -63128,7 +63134,197 @@ async def _punch_resend(sess: dict) -> str:
                 or wa_mention.target(b["name"], None)
             b["target"] = t
             b["text"] = punch.group_text(b["name"], b["items"], due, handle=t["handle"])
+        await _punch_add_links(b, sess["company_id"], sess["project_id"], datetime.now(timezone.utc))
     return await _punch_post(sess, group_id, list(by_key.values()))
+
+
+# ── THE ASSIGNEE'S PRIVATE LINK (lib/punch_link.py) ─────────────────────────
+#
+# Every punch message ends with each assignee's private link: their open
+# items on this job, full photos, "Mark done" with a photo -> ready to check.
+# No login: the token is the key (signed; one per assignee per job). Shadow
+# mode makes the link and shows it in the shadow text; nothing is sent.
+
+def _punch_link_secret() -> str:
+    return os.environ.get("PUNCH_LINK_SECRET") or JWT_SECRET
+
+
+def _punch_link_base() -> str:
+    return os.environ.get("PUBLIC_BASE_URL", "https://api.levelog.com").rstrip("/")
+
+
+async def _punch_link_for(company_id: Any, project_id: Any, person: Optional[dict],
+                          now: datetime) -> Optional[str]:
+    """This assignee's live link on this job (made if there is none)."""
+    key = punch_link.person_key(person)
+    if not key:
+        return None
+    try:
+        rows = await db[punch_link.COLLECTION].find(
+            {"project_id": str(project_id), "company_id": str(company_id),
+             "assignee_key": key, "revoked_at": None}).to_list(20)
+        row = next((r for r in rows if punch_link.live(r, now)), None)
+        if not row:
+            row = {"_id": secrets.token_urlsafe(16), "company_id": str(company_id),
+                   "project_id": str(project_id), "assignee_key": key,
+                   "assignee": {k: (person or {}).get(k) for k in ("kind", "id", "name", "company")},
+                   "created_at": now, "expires_at": punch_link.expires_at(now),
+                   "revoked_at": None, "last_opened_at": None}
+            await db[punch_link.COLLECTION].insert_one(row)
+    except Exception as e:
+        logger.warning(f"[punch-link] make failed: {type(e).__name__}")
+        return None
+    return punch_link.url(_punch_link_base(), punch_link.token(row["_id"], _punch_link_secret()))
+
+
+async def _punch_add_links(batch: dict, company_id: Any, project_id: Any, now: datetime) -> None:
+    """End a punch message with its assignees' private links."""
+    people: Dict[str, dict] = {}
+    for r in batch.get("items") or []:
+        a = r.get("assignee")
+        if punch_link.person_key(a):
+            people.setdefault(punch_link.person_key(a), a)
+    links = [((p.get("name") or p.get("company") or ""),
+              await _punch_link_for(company_id, project_id, p, now)) for p in people.values()]
+    lines = punch_link.link_lines(links)
+    if lines:
+        batch["text"] = (batch.get("text") or "").rstrip() + "\n\n" + lines
+        batch["links"] = [u for _n, u in links if u]
+
+
+async def _punch_link_open(tok: str, now: datetime) -> Optional[Tuple[dict, List[dict]]]:
+    """The link a token opens and its assignee's live items on its job, or
+    None: a bad signature, unknown, revoked, past 30 days, a project gone,
+    or every item of theirs closed (then it is revoked for good)."""
+    link_id = punch_link.verify(tok, _punch_link_secret())
+    if not link_id:
+        return None
+    try:
+        link = await db[punch_link.COLLECTION].find_one({"_id": link_id})
+        if not punch_link.live(link, now):
+            return None
+        project = await db.projects.find_one(
+            {"_id": to_query_id(link["project_id"]),
+             "company_id": _company_id_filter(link["company_id"]),
+             "is_deleted": {"$ne": True}})
+        if not project:
+            return None
+        rows = await db[punch.COLLECTION].find(
+            {"project_id": str(link["project_id"]), "company_id": str(link["company_id"]),
+             "status": {"$in": list(punch_link.LIVE)}}).sort([("seq", 1)]).to_list(500)
+    except Exception as e:
+        logger.warning(f"[punch-link] open failed: {type(e).__name__}")
+        return None
+    rows = [r for r in rows if punch_link.person_key(r.get("assignee")) == link["assignee_key"]]
+    if not rows:
+        await db[punch_link.COLLECTION].update_one(
+            {"_id": link_id, "revoked_at": None},
+            {"$set": {"revoked_at": now, "revoked_reason": "all_closed"}})
+        return None
+    link["job"] = wa_assistant.street_label(project)
+    return link, rows
+
+
+def _punch_link_gone():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(punch_link.gone_page(), status_code=404,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/public/punch/{tok}")
+async def public_punch_link(tok: str, done: str = ""):
+    """The assignee's phone page (no login): their open items on the job."""
+    from fastapi.responses import HTMLResponse
+    now = datetime.now(timezone.utc)
+    got = await _punch_link_open(tok, now)
+    if not got:
+        return _punch_link_gone()
+    link, rows = got
+    await db[punch_link.COLLECTION].update_one({"_id": link["_id"]},
+                                               {"$set": {"last_opened_at": now}})
+    items = [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
+                                         "due", "status")},
+              "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k])}
+             for r in rows]
+    ok_pid = done if any(r.get("pid") == done for r in rows) else None
+    body = punch_link.page(name=(link.get("assignee") or {}).get("name") or "",
+                           job=link["job"], items=items, tok=tok, done=ok_pid)
+    return HTMLResponse(body, headers={"Cache-Control": "no-store",
+                                       "X-Robots-Tag": "noindex, nofollow"})
+
+
+@app.get("/api/public/punch/{tok}/photo/{pid}/{n}")
+async def public_punch_link_photo(tok: str, pid: str, n: int):
+    """One of this assignee's item photos, full size: a short-lived R2 link."""
+    from fastapi.responses import RedirectResponse
+    got = await _punch_link_open(tok, datetime.now(timezone.utc))
+    row = next((r for r in got[1] if r.get("pid") == pid), None) if got else None
+    keys = [k for k in [(row or {}).get("photo_key"), *((row or {}).get("extra_photos") or [])] if k]
+    if not row or not 1 <= n <= len(keys):
+        raise HTTPException(status_code=404, detail="Not found")
+    signed = await asyncio.to_thread(_presign_r2_get, keys[n - 1], 900)
+    if not signed:
+        raise HTTPException(status_code=404, detail="Not found")
+    return RedirectResponse(signed, status_code=302, headers={"Cache-Control": "no-store"})
+
+
+#: A completion photo from the link: at most this big.
+PUNCH_LINK_PHOTO_MAX = 15 * 1024 * 1024
+
+
+def _punch_link_is_photo(data: bytes) -> bool:
+    """A real photo: JPEG / PNG / WebP / GIF that opens, or an iPhone HEIC."""
+    if data[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1", b"ftypheif"):
+        return True
+    if not data.startswith((b"\xff\xd8\xff", b"\x89PNG", b"RIFF", b"GIF8")):
+        return False
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
+@app.post("/api/public/punch/{tok}/done/{pid}")
+async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile] = File(None)):
+    """"Mark done" on the assignee's page: their open item -> ready to check,
+    with the photo they attached (kept in full, R2). A GC admin or PM still
+    closes it."""
+    from fastapi.responses import RedirectResponse
+    now = datetime.now(timezone.utc)
+    got = await _punch_link_open(tok, now)
+    row = next((r for r in got[1] if r.get("pid") == pid), None) if got else None
+    if not row:
+        return _punch_link_gone()
+    link = got[0]
+    if row.get("status") != "open":
+        return RedirectResponse(f"/api/public/punch/{tok}", status_code=303)
+    key = None
+    if photo is not None and (photo.filename or ""):
+        data = await photo.read(PUNCH_LINK_PHOTO_MAX + 1)
+        if len(data) > PUNCH_LINK_PHOTO_MAX or not _punch_link_is_photo(data):
+            from fastapi.responses import HTMLResponse
+            items = [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
+                                                 "due", "status")},
+                      "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])]
+                                     if k])} for r in got[1]]
+            return HTMLResponse(punch_link.page(
+                name=(link.get("assignee") or {}).get("name") or "", job=link["job"], items=items,
+                tok=tok, error="That file is not a photo we can use (a JPEG, PNG or HEIC "
+                               "under 15 MB). Nothing was changed."), status_code=422,
+                headers={"Cache-Control": "no-store"})
+        key = _punch_photo_key(row.get("project_id"), "link", f"{pid}-{int(now.timestamp())}")
+        try:
+            if not await asyncio.to_thread(_upload_to_r2, data, key,
+                                           photo.content_type or "image/jpeg"):
+                key = None
+        except Exception:
+            key = None
+    await _punch_set_status(row, "ready_to_check", now, by=f"link:{link['assignee_key']}",
+                            quote="Marked done on their link", photo_key=key)
+    return RedirectResponse(f"/api/public/punch/{tok}?done={pid}", status_code=303)
 
 
 async def _punch_send_photo(group_id: str, key: str, caption: str) -> bool:

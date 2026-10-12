@@ -42,7 +42,10 @@ from lib import project_retention
 # inside the document; chase_shadow rows quote attention items, so they go
 # with them; upcoming_events quote group messages (city and personal ones go
 # by the same clock: a project's, or 24 months unlinked).
-COLLECTIONS = ("whatsapp_messages", "attention_items", "chase_shadow", "upcoming_events")
+# punch_links (an assignee's private link to their punch items) carry the
+# project and company they open, and go by the same clock.
+COLLECTIONS = ("whatsapp_messages", "attention_items", "chase_shadow", "upcoming_events",
+               "punch_links")
 LEDGER = "retention_ledger"
 
 RETENTION_YEARS = project_retention.RETENTION_YEARS
