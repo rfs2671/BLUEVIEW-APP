@@ -279,7 +279,9 @@ class Sending(_Live):
         self.turn("electrical → Dov; plumbing → Sam")
         self.turn("ok")
         row = next(r for r in self.db[punch.COLLECTION].rows if r["trade"] == "electrical")
-        msg = {"body": f"done {row['seq']}", "sender": "17185550222", "message_id": "g1"}
+        # Marked by the live handler (no checklist open, his item).
+        msg = {"body": f"done {row['seq']}", "sender": "17185550222", "message_id": "g1",
+               "done_for": "punch"}
         ctx = {"project_id": "p588", "company_id": CO, "group_id": GROUP}
 
         async def who(m, c):
@@ -430,7 +432,8 @@ class CodexOn759(_Live):
 class DoneNInAGroup(_Live):
     """Follow-up to #759: in a group, a bare "done 1" is the checklist's;
     "done P1" / "done P-588-1" close a punch item. With no checklist open for
-    the job today, "done 1" from the item's assignee may close punch #1. In
+    the job today, "done 1" from the item's assignee may close punch #1 --
+    decided once, by the live handler, and marked on the stored message. In
     a DM, "done 1" is the punch item."""
 
     CTX = {"project_id": "p588", "company_id": CO, "group_id": GROUP}
@@ -441,24 +444,35 @@ class DoneNInAGroup(_Live):
         self.turn("ok")
         return next(r for r in self.db[punch.COLLECTION].rows if r["trade"] == "electrical")
 
-    def _say(self, text, sender="17185550222"):
+    def _say(self, text, sender="17185550222", done_for=None):
+        """The attention run on the stored message."""
         async def who(m, c):
             return None
+        msg = {"body": text, "sender": sender, "message_id": "g1",
+               **({"done_for": done_for} if done_for else {})}
         with patch.object(server, "db", self.db), patch.object(server, "_attention_sender", who):
-            return asyncio.run(server._punch_group_message(
-                {"body": text, "sender": sender, "message_id": "g1"}, self.CTX))
+            return asyncio.run(server._punch_group_message(msg, self.CTX))
+
+    def _live(self, seq, sender="17185550222"):
+        """What the live handler decides for "done N": the punch item?"""
+        async def go():
+            return (not await server._checklist_open_today(GROUP, "p588", CO)
+                    and await server._punch_done_is_theirs("p588", seq, {"sender": sender}))
+        with patch.object(server, "db", self.db):
+            return asyncio.run(go())
 
     def _status(self, row):
         return next(r for r in self.db[punch.COLLECTION].rows if r["_id"] == row["_id"])["status"]
 
-    def _checklist(self, when, done=False):
+    def _checklist(self, when, done=False, _id="cl1"):
         self.db.whatsapp_checklists.rows.append({
-            "_id": "cl1", "project_id": "p588", "company_id": CO, "group_id": GROUP,
+            "_id": _id, "project_id": "p588", "company_id": CO, "group_id": GROUP,
             "generated_at": when, "items": [{"text": "Clean up", "completed": done}]})
 
     def test_an_open_checklist_today_keeps_done_1(self):
         row = self._sent()
         self._checklist(datetime.now(timezone.utc))
+        self.assertFalse(self._live(row["seq"]))                            # not marked
         self.assertFalse(self._say(f"done {row['seq']}"))
         self.assertEqual(self._status(row), "open")
         self.assertTrue(self._say(f"done P{row['seq']}"))                   # "done P1": the punch item
@@ -473,16 +487,34 @@ class DoneNInAGroup(_Live):
     def test_no_checklist_today_done_1_from_its_assignee(self):
         row = self._sent()
         self._checklist(datetime.now(timezone.utc) - timedelta(days=2))     # an old one: not today
-        self.assertFalse(self._say(f"done {row['seq']}", sender="17185550333"))   # Sam: not his
-        self.assertEqual(self._status(row), "open")
-        self.assertTrue(self._say(f"done {row['seq']}"))
+        self.assertFalse(self._live(row["seq"], sender="17185550333"))      # Sam: not his
+        self.assertTrue(self._live(row["seq"]))
+        self.assertTrue(self._say(f"done {row['seq']}", done_for="punch"))
         self.assertEqual(self._status(row), "ready_to_check")
+
+    def test_a_bare_done_never_marked_is_never_punch(self):
+        # Codex review on #760: the "done N" that ticked the checklist's last
+        # item ran through the attention run later, found no checklist open
+        # and closed punch #N too. The run never re-decides: unmarked, it is
+        # the checklist's.
+        row = self._sent()
+        self._checklist(datetime.now(timezone.utc), done=True)              # its last item, just ticked
+        self.assertFalse(self._say(f"done {row['seq']}"))
+        self.assertEqual(self._status(row), "open")
 
     def test_todays_checklist_all_ticked_is_not_open(self):
         row = self._sent()
         self._checklist(datetime.now(timezone.utc), done=True)
-        self.assertTrue(self._say(f"done {row['seq']}"))
-        self.assertEqual(self._status(row), "ready_to_check")
+        self.assertTrue(self._live(row["seq"]))
+
+    def test_the_latest_checklist_is_the_one_asked(self):
+        # Codex review on #760: an older unfinished checklist of today kept
+        # "done N" though "done N" ticks only the latest, already complete.
+        row = self._sent()
+        now = datetime.now(timezone.utc)
+        self._checklist(now - timedelta(minutes=30), done=False, _id="cl_old")
+        self._checklist(now, done=True, _id="cl_new")
+        self.assertTrue(self._live(row["seq"]))
 
     def test_in_a_dm_done_1_is_the_punch_item(self):
         self._to_assign()

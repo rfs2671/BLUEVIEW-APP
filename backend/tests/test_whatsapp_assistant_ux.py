@@ -367,6 +367,9 @@ class Reactions(unittest.TestCase):
         sent, reactions, _ = self._process(db, "done 2")
         self.assertTrue(db.whatsapp_checklists.rows[0]["items"][1]["completed"])
         self.assertEqual(db.punch_items.rows[0]["status"], "open")
+        # Not marked for the punch item: the attention run leaves it alone.
+        (stored,) = [m for m in db.whatsapp_messages.rows if m.get("body") == "done 2"]
+        self.assertNotIn("done_for", stored)
 
     def test_done_n_with_no_checklist_today_is_left_to_the_punch_item(self):
         from tests.test_whatsapp_phase0_security import HUMAN
@@ -377,6 +380,8 @@ class Reactions(unittest.TestCase):
         sent, reactions, _ = self._process(db, "done 2")
         self.assertNotIn("completed", db.whatsapp_checklists.rows[0]["items"][1])   # not the old list
         self.assertEqual((sent, reactions), ([], []))                              # the punch run's
+        (stored,) = [m for m in db.whatsapp_messages.rows if m.get("body") == "done 2"]
+        self.assertEqual(stored["done_for"], "punch")                              # decided once
 
     def test_a_failed_reaction_falls_back_to_the_text_never_both(self):
         """As a reply to the bot's checklist: the bot may speak."""
