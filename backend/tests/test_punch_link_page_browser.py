@@ -68,10 +68,11 @@ def items(reopened=False):
     return rows
 
 
-def html(lang="en", reopened=False):
+def html(lang="en", reopened=False, done_items=True, company="Blueview Construction Inc"):
+    rows = [r for r in items(reopened) if done_items or r["status"] != "ready_to_check"]
     return punch_link.page(name="Mike Rivera", job="588 Thomas S Boyland St",
-                           items=items(reopened), tok=TOK, lang=lang, today="2026-10-12",
-                           wa_url="https://wa.me/17185550100")
+                           items=rows, tok=TOK, lang=lang, today="2026-10-12",
+                           wa_url="https://wa.me/17185550100", company=company)
 
 
 DEV_CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
@@ -117,7 +118,8 @@ class OnA360PxAndroid(unittest.TestCase):
         self.page = self.ctx.new_page()
         self.uploads, self.dones = [], []
         self.fail_uploads = 0
-        self.lang, self.reopened = "en", False
+        self.lang, self.reopened, self.done_items = "en", False, True
+        self.company = "Blueview Construction Inc"
         self.ctx.route(f"{ORIGIN}/**", self.serve)
 
     def tearDown(self):
@@ -129,7 +131,7 @@ class OnA360PxAndroid(unittest.TestCase):
         url = req.url.split("?")[0]
         if url == PAGE:
             return route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                                 body=html(self.lang, self.reopened))
+                                 body=html(self.lang, self.reopened, self.done_items, self.company))
         if "/photo/" in url:
             return route.fulfill(status=200, content_type="image/jpeg",
                                  body=_jpeg(240, 180) if "thumb=1" in req.url else _jpeg(1600, 1200))
@@ -179,7 +181,7 @@ class OnA360PxAndroid(unittest.TestCase):
         self.assertEqual(p.locator(".count").inner_text(), "1 of 5 done")
         self.assertEqual(p.locator("main h2").all_inner_texts(), ["Lobby", "Floor 3", "Floor 4"])
         self.assertEqual(p.locator(".card[data-state=open] .fix").first.inner_text().split("\n")[0],
-                         "✅ I fixed it")
+                         "✓ I fixed it")
         self.assertEqual(self.card("P-588-1").locator(".due").inner_text(), "Due today")
         self.assertEqual(self.card("P-588-3").locator(".due").inner_text(), "Overdue")
         self.assertEqual(self.card("P-588-2").locator(".due").count(), 0)      # Fri: not yet
@@ -205,6 +207,54 @@ class OnA360PxAndroid(unittest.TestCase):
         self.shot("1-first-look-360.png")
         self.shot("1-first-look-360-screen.png", full=False)
 
+    def test_a_levelog_page_blue_to_press_green_only_when_done(self):
+        self.open()
+        p = self.page
+        logo = p.locator(".brand img.logo")
+        self.assertEqual(logo.get_attribute("alt"), "Levelog")
+        self.assertTrue(logo.get_attribute("src").startswith("data:image/png;base64,"))
+        self.assertLessEqual(logo.bounding_box()["height"], 32)
+        self.assertLess(logo.bounding_box()["x"], 30)                   # top left
+        gc = p.locator(".top .gc")
+        self.assertEqual(gc.inner_text(), "BLUEVIEW CONSTRUCTION INC")   # the app's thin uppercase
+        self.assertLess(logo.bounding_box()["y"], gc.bounding_box()["y"])  # under the logo
+        self.assertEqual(gc.evaluate("e => e.getClientRects().length"), 1)
+        self.assertLessEqual(gc.bounding_box()["height"], 32)           # one line, never broken
+        self.assertEqual(gc.evaluate("e => getComputedStyle(e).fontWeight"), "300")
+        blue, green = "rgb(21, 101, 192)", "rgb(46, 125, 50)"
+        style = lambda sel, prop: p.locator(sel).first.evaluate(
+            f"e => getComputedStyle(e).{prop}")
+        self.assertEqual(style(".fix", "backgroundColor"), blue)        # I fixed it: blue
+        self.assertEqual(style(".bar i", "backgroundColor"), blue)
+        self.assertEqual(style(".langs a.on", "backgroundColor"), blue)
+        self.assertEqual(style(".wa", "color"), blue)
+        self.assertEqual(style("body", "backgroundColor"), "rgb(255, 255, 255)")
+        self.assertEqual(style("details.waiting summary", "color"), green)   # done: green
+        # Nothing green that is not done.
+        greens = p.evaluate("""() => [...document.querySelectorAll('body *')].filter(e => {
+            const s = getComputedStyle(e);
+            return e.offsetParent && [s.color, s.backgroundColor, s.borderTopColor]
+                .includes('rgb(46, 125, 50)');
+        }).filter(e => !e.closest('details.waiting, [data-ui=done]')).map(e => e.outerHTML.slice(0, 80))""")
+        self.assertEqual(greens, [])
+        self.assertEqual(p.locator(".powered").inner_text(), "Powered by Levelog")
+        self.assertEqual(style(".powered", "fontSize"), "13px")
+
+    def test_a_long_gc_name_stays_on_one_line(self):
+        # Codex review on #767: as the app's header, one line, smaller for a
+        # long name, "…" only when even that does not fit.
+        for name in ("Blueview Construction and General Contracting Services of New York LLC",
+                     "SUPERLONGCONSTRUCTIONCOMPANYNAMEWITHOUTANYSPACESATALLINC"):
+            self.company = name
+            self.open()
+            gc = self.page.locator(".top .gc")
+            self.assertEqual(gc.evaluate("e => e.getClientRects().length"), 1, name)
+            self.assertLessEqual(gc.bounding_box()["height"], 32, name)
+            self.assertLessEqual(gc.bounding_box()["x"] + gc.bounding_box()["width"], 360 - 15, name)
+            self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), 360, name)
+            self.assertGreaterEqual(float(gc.evaluate("e => getComputedStyle(e).fontSize")[:-2]), 10)
+        self.shot("8-long-gc-name-360-screen.png", full=False)
+
     def test_in_spanish(self):
         self.lang = "es"
         self.open()
@@ -212,7 +262,7 @@ class OnA360PxAndroid(unittest.TestCase):
         self.assertEqual(p.locator("h1").inner_text(), "Hola Mike 👋")
         self.assertEqual(p.locator(".top .left").inner_text(), "4 cosas por arreglar")
         self.assertEqual(p.locator(".card[data-state=open] .fix").first.inner_text().split("\n")[0],
-                         "✅ Ya lo arreglé")
+                         "✓ Ya lo arreglé")
         self.assertEqual(p.locator(".wa").inner_text(), "¿Preguntas? Responda por WhatsApp")
         self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), 360)
         self.shot("5-spanish-360-screen.png", full=False)
@@ -249,6 +299,28 @@ class OnA360PxAndroid(unittest.TestCase):
         self.assertEqual(self.page.locator(".count").inner_text(), "2 of 5 done")
         self.assertEqual(self.page.locator(".top .left").inner_text(), "3 things to fix")
         self.shot("2-fixed-green-360-screen.png", full=False, at="P-588-1")
+        # Then down into "Done — waiting for the GC to check (2)", folded; its
+        # floor ("Floor 3", nothing else on it) goes; open ones stay on top.
+        self.page.wait_for_selector('details.waiting .card[data-pid="P-588-1"]', state="attached")
+        box = self.page.locator("details.waiting")
+        self.assertFalse(box.evaluate("d => d.open"))
+        self.assertEqual(" ".join(box.locator("summary").inner_text().split()),
+                         "✅ Done — waiting for the GC to check (2)")
+        self.assertEqual(self.page.locator("main h2").all_inner_texts(), ["Lobby", "Floor 4"])
+        first_open = self.page.locator(".card[data-state=open]:not([data-ui=done])").first
+        self.assertLess(first_open.bounding_box()["y"], box.bounding_box()["y"])
+        box.scroll_into_view_if_needed()
+        self.shot("7-done-folded-at-the-bottom-360-screen.png", full=False)
+
+    def test_the_first_done_makes_the_folded_list(self):
+        self.done_items = False
+        self.open()
+        self.assertTrue(self.page.locator("details.waiting").is_hidden())
+        self.card("P-588-12").locator(".skip").click()
+        self.page.wait_for_selector('details.waiting .card[data-pid="P-588-12"]', state="attached")
+        self.assertTrue(self.page.locator("details.waiting").is_visible())
+        self.assertIn("(1)", self.page.locator("details.waiting summary").inner_text())
+        self.assertNotIn("Lobby", self.page.locator("main h2").all_inner_texts())
 
     def test_skip_photo(self):
         self.open()
