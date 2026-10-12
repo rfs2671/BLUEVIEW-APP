@@ -305,6 +305,50 @@ _UNSUPPORTED = re.compile(r"^(?:please\s+)?(?P<what>(?:delete|remove|erase|get r
                           r"|close out|borra(?:r)?|elimina(?:r)?|quita(?:r)?|cierra)\b.{0,60})$")
 
 
+# ── WHAT THEY WANT, BEFORE THE DETAILS ───────────────────────────────────────
+#
+# "Starting a new job I wanna set up" (Mon 7:17 PM, live): no address yet, so
+# none of the patterns above matched, the model missed it too, and the DM went
+# to the questions assistant -- which asked "Which job? 1) 588 2) 8 Walworth".
+# A request with no details is still that request: these catch it, and the
+# step asks the one thing missing ("Sure — what's the address?").
+_QUESTION = re.compile(r"^(?:what|whats|who|whos|how|hows|when|where|why|which|is|are|do|does|did"
+                       r"|any|cuantos|cuantas|que|quien|cuando|donde)\b|\?\s*$")
+_BARE = [
+    ("set_punch_contact", re.compile(
+        r"\b(?:set(?:\s*up)?|add|change|update|pick|choose|new|assign|who gets)\b.{0,30}"
+        r"\bpunch(?: list)?\s+(?:contact|person|guy)s?\b"
+        r"|\bpunch(?: list)?\s+(?:contact|person)s?\b.{0,20}\b(?:set|add|change|update)\b"
+        r"|\bcontacto de punch\b")),
+    ("add_job", re.compile(
+        r"\b(?:new|another|nuevo|nueva|otro)\s+(?:job|project|site|building|jobsite|trabajo|proyecto|obra)\b"
+        r"|\b(?:trabajo|proyecto|obra)\s+(?:nuevo|nueva)\b"
+        r"|\b(?:add|create|set\s*up|start|open|track|agrega(?:r)?|crea(?:r)?)\s+(?:a|an|un|una|the)?\s*"
+        r"(?:new\s+)?(?:job|project|site|jobsite|trabajo|proyecto|obra)\b"
+        r"|\b(?:got|have|signed|picked up|landed|won)\s+(?:a|another)\s+(?:new\s+)?(?:job|project|site)\b")),
+    ("add_sub", re.compile(
+        r"\b(?:add|put|assign|new|set\s*up|agrega(?:r)?|pon(?:er)?)\s+(?:a|an|another|un|otro)?\s*"
+        r"(?:new\s+)?(?:sub|subs|subcontractor|subcontractors|subcontratista|trade)\b")),
+    ("add_person", re.compile(
+        r"\b(?:add|save|new|put in|agrega(?:r)?|guarda(?:r)?)\s+(?:a|an|another|un|una|otro)?\s*"
+        r"(?:new\s+)?(?:someone|somebody|person|contact|number|phone number|guy|worker|people|"
+        r"alguien|persona|contacto|numero)\b")),
+]
+
+
+def bare_request(text: Any) -> Dict[str, Any]:
+    """The request a message makes before any detail is given ("Starting a
+    new job I wanna set up", "need to add someone"), else {"action": "none"}.
+    Never a question ("any new jobs this week?")."""
+    t = _fold(text)
+    if not t or _QUESTION.search(t):
+        return {"action": "none"}
+    for action, rx in _BARE:
+        if rx.search(t):
+            return {"action": action}
+    return {"action": "none"}
+
+
 _NOT_JOB = {"for", "real", "reals", "live", "please", "pls", "on", "weekends", "weekend", "too",
             "now", "again", "de", "verdad", "también", "tambien", "also", "the", "lists", "list",
             "punch", "really", "en", "serio", "thanks", "asap", "anymore"}
@@ -390,7 +434,7 @@ def rules(text: Any) -> Dict[str, Any]:
             return clean({"action": "add_sub", "company": company,
                           "job": _strip_tail(m.group("job")),
                           "trade": (m.groupdict().get("trade") or "").strip()})
-    return {"action": "none"}
+    return bare_request(text)
 
 
 #: Words that make a message worth reading as a request at all (before the
@@ -510,7 +554,7 @@ TEXT = {
         "no_match": "I couldn't find that address. Which borough is it in?",
         "no_match_again": "I still can't find it. What's the ZIP code?",
         "no_match_last": "I can't find that address. You can add it in the app.",
-        "ask_address": "What's the address of the new job?",
+        "ask_address": "Sure — what's the address?",
         "already_job": "{job} is already one of your jobs.",
         "job_done": "Done — {job} is set up. I'll start watching DOB and DOT for it.",
         "which_job": "Which job?",
@@ -574,7 +618,7 @@ TEXT = {
         "no_match": "No encontré esa dirección. ¿En qué condado está?",
         "no_match_again": "Todavía no la encuentro. ¿Cuál es el código postal?",
         "no_match_last": "No encuentro esa dirección. Puede agregarla en la app.",
-        "ask_address": "¿Cuál es la dirección del trabajo nuevo?",
+        "ask_address": "Claro, ¿cuál es la dirección?",
         "already_job": "{job} ya es uno de sus trabajos.",
         "job_done": "Listo — {job} está creado. Voy a vigilar DOB y DOT para ese trabajo.",
         "which_job": "¿Cuál trabajo?",
