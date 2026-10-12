@@ -3218,6 +3218,9 @@ class UserResponse(BaseModel):
     role: str
     # A PM's permission level ("assigned" / "full"); None for other roles.
     pm_access: Optional[str] = None
+    # "Gets chase escalation DMs", stored only when an admin set it; unset =
+    # the role's default (admin on, PM off).
+    chase_escalation_dms: Optional[bool] = None
     company_name: Optional[str] = None
     company_id: Optional[str] = None
     phone: Optional[str] = None
@@ -8909,6 +8912,46 @@ async def audit_pm_access_change(actor: str, user_id: str, before, after) -> Non
                         {"before": before, "after": after})
 
 
+# ── "GETS CHASE ESCALATION DMs" ─────────────────────────────────────────────
+#
+# Per user, for the two roles a chase escalation may go to: an admin (default
+# on) and a PM (default off). Stored only when an admin sets it
+# (`chase_escalation_dms`, a bool); unset, the role's default applies. A role
+# change drops a stored value, so the new role's default applies again.
+CHASE_ESCALATION_FIELD = "chase_escalation_dms"
+
+
+def chase_escalation_eligible(user) -> bool:
+    return holds_admin_seat(user) or pm_access_level(user) is not None
+
+
+def gets_chase_escalation(user) -> bool:
+    """Whether this user gets the chase escalation DM."""
+    if not chase_escalation_eligible(user):
+        return False
+    stored = (user or {}).get(CHASE_ESCALATION_FIELD)
+    if isinstance(stored, bool):
+        return stored
+    return holds_admin_seat(user)
+
+
+def chase_escalation_on_role_change(user: dict, new_role) -> dict:
+    """The $unset a role change applies: a stored choice goes with the role."""
+    changed = (str((user or {}).get("role") or "").strip().lower()
+               != str(new_role or "").strip().lower())
+    if changed and (user or {}).get(CHASE_ESCALATION_FIELD) is not None:
+        return {CHASE_ESCALATION_FIELD: ""}
+    return {}
+
+
+async def audit_chase_escalation_change(actor: str, user_id: str, before: bool, after: bool,
+                                        via: str) -> None:
+    """One `user_chase_escalation_change` row when the effective value changed."""
+    if before != after:
+        await audit_log("user_chase_escalation_change", actor, "user", str(user_id),
+                        {"before": before, "after": after, "via": via})
+
+
 async def run_pm_access_startup_migration():
     """Every PM without a permission level gets "assigned jobs only" -- what
     they could do before the level existed. Idempotent; only field-less PMs."""
@@ -11583,6 +11626,7 @@ async def get_admin_users(
     # not ship to an admin console by default.
     USER_LIST_FIELDS = {
         "name": 1, "full_name": 1, "email": 1, "phone": 1, "role": 1, "pm_access": 1,
+        "chase_escalation_dms": 1,
         "company_id": 1, "company_name": 1, "assigned_projects": 1,
         "deletion_requested_at": 1, "client_version": 1,
         "is_active": 1, "status": 1, "is_deleted": 1,
@@ -11888,6 +11932,34 @@ async def set_admin_user_voice_language(user_id: str, body: VoiceLanguageBody,
     return _voice_lang_view(lang, jid)
 
 
+class ChaseEscalationBody(BaseModel):
+    on: bool
+
+
+@api_router.put("/admin/users/{user_id}/chase-escalation",
+                dependencies=[Depends(require_approved)])
+async def set_user_chase_escalation(user_id: str, body: ChaseEscalationBody,
+                                    admin=Depends(get_user_admin)):
+    """ "Gets chase escalation DMs", for an admin or a PM of the caller's
+    company (an admin may set their own). Admins only; audited."""
+    user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+                                   {"role": 1, "company_id": 1, "pm_access": 1,
+                                    "is_platform_operator": 1, CHASE_ESCALATION_FIELD: 1})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not is_platform_operator(admin) and not _same_company(admin, user):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this user")
+    if not chase_escalation_eligible(user):
+        raise HTTPException(status_code=422,
+                            detail="Only an admin or a PM can get chase escalation DMs.")
+    before = gets_chase_escalation(user)
+    await db.users.update_one({"_id": user["_id"]},
+                              {"$set": {CHASE_ESCALATION_FIELD: bool(body.on),
+                                        "updated_at": datetime.now(timezone.utc)}})
+    await audit_chase_escalation_change(actor_id(admin), user_id, before, bool(body.on), "toggle")
+    return {"user_id": str(user_id), "chase_escalation_dms": bool(body.on)}
+
+
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
 async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_user_admin)):
     # Field whitelist — prevent privilege escalation via arbitrary field injection
@@ -12031,6 +12103,15 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
         _unset_licence = {**_unset_licence, "pm_access": ""}
     _pm_access_after = (update_data.get("pm_access") or existing_user.get("pm_access")
                         or PM_ACCESS_ASSIGNED) if _resulting_role == ROLE_PM else None
+    # "Gets chase escalation DMs" goes with the role (chase_escalation_on_role_change).
+    _chase_before = gets_chase_escalation(existing_user)
+    _chase_unset = chase_escalation_on_role_change(existing_user, _resulting_role)
+    if _chase_unset:
+        _unset_licence = {**_unset_licence, **_chase_unset}
+    _after_doc = {**existing_user, **update_data}
+    for _k in _unset_licence:
+        _after_doc.pop(_k, None)
+    _chase_after = gets_chase_escalation(_after_doc)
 
     _write = {"$set": update_data}
     if _unset_licence:
@@ -12094,6 +12175,8 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     if audit_details:
         await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
     await audit_pm_access_change(actor_id(admin), user_id, _pm_access_before, _pm_access_after)
+    await audit_chase_escalation_change(actor_id(admin), user_id, _chase_before, _chase_after,
+                                        "role_change")
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
@@ -15673,11 +15756,15 @@ async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
             })
         uid = str(existing["_id"])
         _pm_set, _pm_unset = pm_access_on_role_change(existing, "admin")
+        _pm_unset = {**_pm_unset, **chase_escalation_on_role_change(existing, "admin")}
         _promote = {"$set": {"role": "admin", "updated_at": now}}
         if _pm_unset:
             _promote["$unset"] = _pm_unset
         await db.users.update_one({"_id": existing["_id"]}, _promote)
         await audit_pm_access_change(op, uid, pm_access_level(existing), None)
+        await audit_chase_escalation_change(
+            op, uid, gets_chase_escalation(existing),
+            gets_chase_escalation({"role": "admin"}), "role_change")
         await audit_log("owner_admin_add", op, "user", uid, {
             "company_id": company_id, "email": existing.get("email"),
             "mode": "promoted", "from_role": existing.get("role"),
@@ -15745,6 +15832,7 @@ async def owner_change_user_role(company_id: str, user_id: str,
     now = datetime.now(timezone.utc)
     # The PM permission level follows the role (pm_access_on_role_change).
     pm_set, pm_unset = pm_access_on_role_change(target, role)
+    pm_unset = {**pm_unset, **chase_escalation_on_role_change(target, role)}
     write = {"$set": {"role": role, "updated_at": now, **pm_set}}
     if pm_unset:
         write["$unset"] = pm_unset
@@ -15755,11 +15843,20 @@ async def owner_change_user_role(company_id: str, user_id: str,
             undo["$set"]["pm_access"] = target["pm_access"]
         elif pm_set:
             undo["$unset"] = {"pm_access": ""}
+        if target.get(CHASE_ESCALATION_FIELD) is not None:
+            undo["$set"][CHASE_ESCALATION_FIELD] = target[CHASE_ESCALATION_FIELD]
         await db.users.update_one({"_id": target["_id"]}, undo)
         raise _owner_last_admin()
     await audit_pm_access_change(actor_id(operator), str(user_id), pm_access_level(target),
                                  pm_access_level({**target, "role": role, **pm_set,
-                                                  **({"pm_access": None} if pm_unset else {})}))
+                                                  **({"pm_access": None}
+                                                     if "pm_access" in pm_unset else {})}))
+    _after = {**target, "role": role, **pm_set}
+    for _k in pm_unset:
+        _after.pop(_k, None)
+    await audit_chase_escalation_change(actor_id(operator), str(user_id),
+                                        gets_chase_escalation(target),
+                                        gets_chase_escalation(_after), "role_change")
     await audit_log("owner_role_change", actor_id(operator), "user",
                     str(user_id), {"company_id": company_id,
                                    "email": target.get("email"),
@@ -48593,15 +48690,27 @@ async def _chase_skip(item: dict, slot: str, day, now: datetime, resp: dict) -> 
         "review": None, "created_at": now, "shadow": True}}, upsert=True)
 
 
-async def _chase_admins(company_id: str) -> List[dict]:
+async def _chase_admins(company_id: str, project_id: Optional[str] = None) -> List[dict]:
+    """Who gets the chase escalation DM: everyone in the company with "Gets
+    chase escalation DMs" on (admins by default; a PM when an admin turns it
+    on). A PM on assigned jobs only gets it for those jobs."""
     try:
         users = await db.users.find(
             {"company_id": _company_id_filter(company_id),
-             "is_deleted": {"$ne": True}}, {"name": 1, "role": 1}).to_list(500)
+             "is_deleted": {"$ne": True}},
+            {"name": 1, "role": 1, "pm_access": 1, "assigned_projects": 1,
+             CHASE_ESCALATION_FIELD: 1}).to_list(500)
     except Exception:
         return []
-    return [{"id": str(u.get("_id")), "name": u.get("name") or ""}
-            for u in users if holds_admin_seat(u)]
+    out = []
+    for u in users:
+        if not gets_chase_escalation(u):
+            continue
+        if (project_id and pm_scoped_to_assigned(u)
+                and str(project_id) not in [str(x) for x in (u.get("assigned_projects") or [])]):
+            continue
+        out.append({"id": str(u.get("_id")), "name": u.get("name") or ""})
+    return out
 
 
 async def _chase_no_number(item: dict, day, now: datetime) -> None:
@@ -48868,10 +48977,11 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 "review": None, "created_at": now, "shadow": True,
             }
             if slot == wa_chase.ADMIN:
-                # Every company admin except the owner (a PM, super or admin
+                # Everyone with "Gets chase escalation DMs" on (admins by
+                # default), except the owner (a PM, super or admin
                 # is chased like anyone); an owner who is the only admin: none.
                 admins = wa_chase.escalate_to(
-                    await _chase_admins(b["company_id"]),
+                    await _chase_admins(b["company_id"], pid),
                     owner.get("id") if owner.get("kind") == "user" else None)
                 if not admins:
                     report["admin_self"] += 1

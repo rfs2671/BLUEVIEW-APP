@@ -40,6 +40,7 @@ import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import { bundleAgeLabel } from '../src/utils/bundleAge';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
+import ChaseEscalationToggle from '../src/components/ChaseEscalationToggle';
 import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
 import DateInput from '../src/components/DateInput';
@@ -1047,6 +1048,18 @@ export default function SettingsScreen() {
               )}
             </>
           )}
+
+          {/* ── CHASE ESCALATION (an admin, for their own account) ──────
+              The Users screen lists PMs, supers and CPs, not admins, so an
+              admin turns their own off (or back on) here. */}
+          {isAccountAdmin(user) && (user?.id || user?._id) ? (
+            <>
+              <Text style={s.sectionLabel}>CHASE</Text>
+              <GlassCard style={s.card}>
+                <ChaseEscalationToggle userRow={user} />
+              </GlassCard>
+            </>
+          ) : null}
 
           {/* ── SECURITY (admin only) ──────────────────────────────────── */}
           {/* The admin-seat password route: not a full-access PM's. */}

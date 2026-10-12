@@ -45,12 +45,13 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
   ROLE_SUPERINTENDENT, ROLE_PM, roleHasLicence, userCardRoleLabel,
-  PM_ACCESS_ASSIGNED, PM_ACCESS_LEVELS, pmAccessLevel,
+  PM_ACCESS_ASSIGNED, PM_ACCESS_LEVELS, pmAccessLevel, chaseEscalationEligible,
   licenceSentence, rolesAssignableBy, canBecomeSuperintendent,
 } from '../../src/utils/roleVocabulary';
 import { promoteToSuperintendentBody } from '../../src/utils/superintendentPromotionCopy';
 import DateInput from '../../src/components/DateInput';
 import { VoiceLanguageSetting } from '../../src/components/whatsapp/VoiceLanguagePicker';
+import ChaseEscalationToggle from '../../src/components/ChaseEscalationToggle';
 import { dateEntryError, toStoredDate } from '../../src/utils/dateEntry';
 
 export default function AdminUsersScreen() {
@@ -1205,6 +1206,12 @@ export default function AdminUsersScreen() {
               load={voiceLanguageLoad} save={voiceLanguageSave} />
           ) : null}
           {renderRolePicker()}
+          {/* Saves on tap, like the language above. An admin or a PM only. */}
+          {selectedUser && chaseEscalationEligible(selectedUser) ? (
+            <ChaseEscalationToggle key={`ce-${selectedUser.id}`} userRow={selectedUser}
+              onSaved={(on) => setUsers((list) => list.map((u) => (
+                u.id === selectedUser.id ? { ...u, chase_escalation_dms: on } : u)))} />
+          ) : null}
           {renderLicenceFields()}
         </FormSheet>
 
