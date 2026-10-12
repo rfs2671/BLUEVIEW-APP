@@ -262,7 +262,7 @@ class EveryItemNeedsALocation(_Walk):
         self._turn("done")
         self._turn("add: exit sign out floor 3")
         (q,) = self._turn("send")
-        self.assertIn("Where on floor 3 is #2 'exit sign out floor 3'?", q)
+        self.assertIn("Where on floor 3 is #2 'Exit sign out'?", q)
 
     def test_a_photo_while_asked_is_an_item(self):
         # Codex review on #754: it was dropped.

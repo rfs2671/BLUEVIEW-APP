@@ -119,7 +119,7 @@ class Sending(unittest.TestCase):
         self.assertTrue(all(r["send_mode"] == "live" for r in res["rows"]))
 
     def test_no_group_linked_keeps_the_draft(self):
-        sc = _upto(_sc(), "electrical Mon, everything else Fri")
+        sc = _upto(_sc(), "ok")
         db, proj = dry.world(sc)
         db.notification_preferences.rows[0]["whatsapp_project"].pop("gc_group_id")
         with patch.object(dry, "world", lambda _sc: (db, proj)):
@@ -128,7 +128,7 @@ class Sending(unittest.TestCase):
         self.assertIn("no WhatsApp group linked", "\n".join(res["transcript"]))
 
     def test_sent_items_are_chased_like_any_confirmed_request(self):
-        sc = _upto(_sc(), "electrical Mon, everything else Fri")
+        sc = _upto(_sc(), "ok")
         db, proj = dry.world(sc)
         with patch.object(dry, "world", lambda _sc: (db, proj)):
             _run(sc)
@@ -148,7 +148,7 @@ class Sending(unittest.TestCase):
 class Closing(unittest.TestCase):
 
     def _sent(self):
-        sc = _upto(_sc(), "electrical Mon, everything else Fri")
+        sc = _upto(_sc(), "ok")
         db, proj = dry.world(sc)
         with patch.object(dry, "world", lambda _sc: (db, proj)):
             _run(sc)
@@ -239,7 +239,7 @@ class CodexRound1(unittest.TestCase):
             self.assertEqual(r["_id"], f"p588:{r['pid']}")
 
     def test_a_failed_live_post_is_not_called_sent_and_can_be_resent(self):
-        sc = _upto(_sc(), "electrical Mon, everything else Fri")
+        sc = _upto(_sc(), "ok")
         sc["punch_sends"], sc["fail_posts_for"] = "live", ["Ana Ortiz"]
         db, proj = dry.world(sc)
         with patch.object(dry, "world", lambda _sc: (db, proj)):

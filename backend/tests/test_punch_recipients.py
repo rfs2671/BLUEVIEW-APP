@@ -61,23 +61,24 @@ def _run(db, coro):
 
 class CheckInsAreNeverAssignees(unittest.TestCase):
 
+    SESS = {"_id": "walk1", "company_id": CO, "project_id": "p588"}
+
     def test_the_831_pm_suggestion_is_gone(self):
         db = _world()
-        people = _run(db, server._punch_people(P588, CO))
-        self.assertNotIn("Yeyzmar B Bate", [p["name"] for p in people])
-        self.assertEqual(punch.suggest_assignees(["electrical"], people), {"electrical": None})
+        self.assertEqual(_run(db, server._punch_suggest(dict(self.SESS), ["electrical"])),
+                         {"electrical": None})
         self.assertIn("electrical → ?", punch.assign_text({"electrical": None}))
         # Nor can the walker name him: he is no one the company named.
-        self.assertIsNone(punch.pick_person("Yeyzmar", people))
+        pool = _run(db, server._punch_name_pool(dict(self.SESS)))
+        self.assertNotIn("Yeyzmar B Bate", [p["name"] for p in pool])
+        self.assertIsNone(punch.pick_person("Yeyzmar", pool))
 
-    def test_a_named_person_in_people_still_is(self):
+    def test_a_named_person_in_people_or_a_user_is(self):
         db = _world([{"_id": "m_dov", "company_id": CO, "person_name": "Dov Klein",
                       "sub_company": "Power Direct", "sender_jid": "17185550222@c.us"}])
-        people = _run(db, server._punch_people(P588, CO))
-        self.assertEqual(punch.suggest_assignees(["electrical"], people)["electrical"]["name"],
-                         "Dov Klein")
-        # A user is named, never suggested by trade.
-        self.assertEqual(punch.pick_person("Chris", people)["kind"], "user")
+        pool = _run(db, server._punch_name_pool(dict(self.SESS)))
+        self.assertEqual(punch.pick_person("Dov", pool)["name"], "Dov Klein")
+        self.assertEqual(punch.pick_person("Chris", pool)["kind"], "user")
 
 
 class TheGuard(unittest.TestCase):
@@ -169,10 +170,11 @@ class NamesAreNeverGuessed(unittest.TestCase):
         self.assertTrue(reply.startswith("Which Chris?"))
         reply, sess = self._say(db, sess, "2")
         self.assertEqual(sess["assign"]["electrical"]["name"], "Chris Lopez")
-        self.assertIn("electrical → Chris Lopez (Arkon, not on this job)", reply)
+        # The recap, marked; 'ok' to it is still what sends.
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertIn("Reply 'ok' to send", reply)
         self.assertIsNone(sess.get("choose"))
-        reply, sess = self._say(db, sess, "ok")                 # 'ok' still required
-        self.assertEqual(sess["status"], "due")
+        self.assertEqual(sess["status"], "recap")
 
     def test_this_jobs_people_come_first(self):
         db = _world([self.LOPEZ, {**self.LOPEZ, "_id": "m_lopez2", "person_name": "Chris Diaz",
@@ -181,7 +183,7 @@ class NamesAreNeverGuessed(unittest.TestCase):
                                           "group_id": GROUP, "sender_jid": "17185550444@c.us"})
         sess = self._walk(db)
         reply, _ = self._say(db, sess, "electrical → Chris from Arkon")
-        self.assertIn("electrical → Chris Lopez (Arkon, not on this job)", reply)  # narrowed: one
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)   # narrowed: one
         db[punch.SESSIONS].rows.clear()
         sess = self._walk(db)
         reply, _ = self._say(db, sess, "electrical → Chris")
@@ -197,14 +199,37 @@ class NamesAreNeverGuessed(unittest.TestCase):
                                           "assignee": {"kind": "sender_map", "id": "m_dov"}})
         sess = self._walk(db)
         reply, sess = self._say(db, sess, "electrical → Dov")
-        self.assertIn("electrical → Dov Klein (Power Direct)\n", reply)
+        self.assertIn("Dov Klein (Power Direct): #1\n", reply)
         self.assertFalse(sess["assign"]["electrical"]["not_on_job"])
+
+    def test_all_to_an_ambiguous_name_asks_then_the_whole_list(self):
+        db = _world([self.LOPEZ])
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "all → Chris")
+        self.assertTrue(reply.startswith("Which Chris? 1) Chris Weiss (GC team) "), reply)
+        self.assertIsNone(sess.get("whole"))
+        reply, sess = self._say(db, sess, "1")
+        self.assertEqual(sess["whole"]["name"], "Chris Weiss")
+        self.assertEqual(sess["status"], "recap")
+        self.assertIn("Chris Weiss (GC team): #1", reply)
+
+    def test_filling_the_question_marks_with_an_ambiguous_name_asks(self):
+        db = _world([self.LOPEZ])
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "Chris")
+        self.assertTrue(reply.startswith("Which Chris?"), reply)
+        self.assertIsNone(sess["assign"]["electrical"])
+        reply, sess = self._say(db, sess, "2")
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertTrue(sess["assign"]["electrical"]["not_on_job"])
 
     def test_a_worker_who_only_checked_in_is_unknown(self):
         db = _world()
         sess = self._walk(db)
         reply, sess = self._say(db, sess, "electrical → Yeyzmar")
-        self.assertTrue(reply.startswith("I don't know Yeyzmar (only your team, People"), reply)
+        self.assertTrue(reply.startswith("I don't know Yeyzmar on this job. A name has to be "
+                                         "in People, a user of your company, or a sub's punch "
+                                         "contact"), reply)
         self.assertIsNone(sess["assign"]["electrical"])
 
 

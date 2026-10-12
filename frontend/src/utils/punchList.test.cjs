@@ -59,5 +59,18 @@ ok(M.mentionLine({ assignee: { name: 'Ana' } }) === null, 'punch: a real mention
 ok(/mentionLine\(it\)/.test(screen), 'the punch screen shows it');
 
 ok(/timeZone: 'America\/New_York'/.test(screen), 'the punch screen shows New York time');
+// Oct 11 8:31 PM: who a punch list may go to.
+ok(M.punchToMode({ punch_to: 'one_person' }) === 'one_person' && M.punchToMode(null) === 'per_trade',
+  'Punch list goes to: per trade unless one person');
+ok(M.punchContactLine({ trade: 'Electrical', company: 'Power Direct', contact_name: 'Dov Klein' }).title
+  === 'Electrical · Power Direct', 'a sub row');
+ok(/Dov Klein/.test(M.punchContactLine({ contact_name: 'Dov Klein' }).line)
+  && /asks/.test(M.punchContactLine({ options: [{ id: 'm' }] }).line)
+  && /No one from this sub/.test(M.punchContactLine({}).line), 'its contact, none, or no People');
+ok(/never messaged/.test(M.PUNCH_CONTACTS_NOTE), 'check-ins are never messaged, said');
+ok(/patch\('punch_to', \{ punch_to: o\.mode \}\)/.test(card)
+  && /punch_to_user: u\.id/.test(card) && /punch_contacts: \{ \[r\.row_id\]/.test(card),
+  'the card sets who the list goes to and each punch contact');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

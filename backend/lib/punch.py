@@ -38,6 +38,9 @@ COUNTERS = "punch_counters"
 STATUSES = ("draft", "open", "ready_to_check", "closed", "dropped")
 LIVE = ("open",)                       # what the chase engine chases
 SEND_MODES = ("shadow", "live")
+#: Project setting "Punch list goes to": one message per trade (default), or
+#: the whole list to one person.
+PUNCH_TO = ("per_trade", "one_person")
 DEFAULT_SEND_MODE = "shadow"
 DRAFT_REMIND_HOURS = 24
 UNKNOWN = "?"
@@ -92,8 +95,13 @@ WHICH_PHOTO = "Add to which photo? Reply to it, or send its number (e.g. #2)."
 WHERE_HELP = ("e.g. \"4th floor Apt 4F\", \"4F\", or a named area: lobby, roof, cellar, "
               "boiler room, meter room, elevator machine room, stairwell A, corridor + floor. "
               "Or 'drop' to leave it out.")
+#: In the draft (and the recap): these send it on.
+SEND_WORDS = ("send", "send it", "enviar", "manda", "mandalo", "shik", "done", "ok", "okay",
+              "looks good", "look good", "good", "all good", "go", "yes", "listo", "fartik")
 DONE_WORDS = ("done", "listo", "fartik", "finished", "that's it", "thats it")
-CANCEL_WORDS = ("cancel walkthrough", "cancel", "stop walkthrough")
+CANCEL_WORDS = ("cancel walkthrough", "cancel", "stop walkthrough", "cancel punch",
+                "cancel punch list", "cancel the walkthrough", "cancel the punch list",
+                "cancelar", "cancela")
 
 
 def job_question(projects: List[Dict[str, Any]], label=None) -> str:
@@ -140,7 +148,9 @@ def item_for_reply(items: List[dict], quoted_id: Any, quoted_body: Any = "") -> 
     q = short_message_id(quoted_id)
     if q:
         for it in live:
-            ids = [it.get("message_id")] + list(it.get("merged") or [])
+            # Its photo, a photo merged into it, or a message that gave it its
+            # words (a reply to "Time wrong" is about the tile photo).
+            ids = [it.get("message_id")] + list(it.get("merged") or []) + list(it.get("caption_ids") or [])
             if any(short_message_id(x) == q for x in ids if x):
                 return it
     body = " ".join(str(quoted_body or "").split()).lower()
@@ -149,6 +159,43 @@ def item_for_reply(items: List[dict], quoted_id: Any, quoted_body: Any = "") -> 
         if len(hits) == 1:
             return hits[0]
     return None
+
+
+# ── EVERY PHOTO IS ON THE LIST ──────────────────────────────────────────────
+
+_ADD_PHOTO = re.compile(r"^\s*add\s+(?:the\s+)?photo\s*#?\s*(\d{1,3})\s*[:\-–]?\s*(.*)$",
+                        re.IGNORECASE | re.DOTALL)
+
+
+def add_photo_ref(text: str) -> Optional[Tuple[int, str]]:
+    """"add photo 3: tile cracked 4F" -> (3, "tile cracked 4F")."""
+    m = _ADD_PHOTO.match(str(text or ""))
+    return (int(m.group(1)), m.group(2).strip()) if m else None
+
+
+def orphan_photos(sess: Dict[str, Any]) -> List[Tuple[int, dict]]:
+    """(its number in the order photos came, the photo) for every photo of the
+    walk that is on no item (live, dropped or merged items all count)."""
+    on_items = set()
+    for it in sess.get("items") or []:
+        for x in [it.get("message_id"), *(it.get("merged") or [])]:
+            if x:
+                on_items.add(short_message_id(x))
+        for k in [it.get("photo_key"), *(it.get("extra_photos") or [])]:
+            if k:
+                on_items.add(k)
+    out = []
+    for i, ph in enumerate(sess.get("photos") or [], 1):
+        if short_message_id(ph.get("message_id")) not in on_items \
+                and (not ph.get("key") or ph.get("key") not in on_items):
+            out.append((i, ph))
+    return out
+
+
+def orphan_text(orphans: List[Tuple[int, dict]], fmt_time) -> str:
+    lines = [f"Photo at {fmt_time(ph.get('at'))} isn't on the list. Add it? "
+             f"(reply: add photo {i}: description)" for i, ph in orphans]
+    return "\n".join(lines + ["Or 'done' again to go on without it."])
 
 
 _TARGET = re.compile(r"^\s*#\s*(\d{1,3})\s*[:\-.,]?\s*(.*)$|^\s*(\d{1,3})\s*[:\-]\s*(.+)$", re.DOTALL)
@@ -176,8 +223,9 @@ def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
     if merge_location(it, loc):
         changed.append("location")
     tr = read_trade(w)
-    if tr and (it.get("trade") or UNKNOWN) == UNKNOWN:
-        it["trade"] = tr
+    if tr and ((it.get("trade") or UNKNOWN) == UNKNOWN or it.get("trade_guess")) and it.get("text"):
+        # Words about the item that name a trade ("electrician"): that trade.
+        it["trade"], it["trade_guess"] = tr, False
         changed.append("trade")
     rest = w
     if loc.get("floor") or loc.get("area"):
@@ -189,15 +237,90 @@ def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
         if read_location(rest)["area"] == loc.get("area"):
             rest = re.sub(r"(?i)\b" + re.escape(str(loc.get("area") or "")) + r"\b", " ", rest).strip()
     if not it.get("text"):
-        it["text"] = w
-        if (it.get("trade") or UNKNOWN) == UNKNOWN:
-            it["trade"] = read_trade(w) or UNKNOWN
+        it["text"] = clean_caption(w) if loc.get("floor") or loc.get("area") else w
+        if (it.get("trade") or UNKNOWN) == UNKNOWN or it.get("trade_guess"):
+            it["trade"], it["trade_guess"] = trade_for(w)
         changed.append("caption")
     elif len(rest) > 3 if "location" in changed else bool(rest):
         # Words beyond the location ("2D, and the hinge is loose"): kept.
         it.setdefault("notes", []).append({"text": w, "at": note_at})
         changed.append("note")
     return "+".join(changed)
+
+
+# ── A CAPTION CORRECTED ──────────────────────────────────────────────────────
+#
+# 8:31 PM: "Time wrong" (for "Tile wrong"), then "I meant tile" in reply to
+# it. That is the caption, fixed -- never a trade or a note on another item.
+
+_CORRECTION = re.compile(
+    r"^\s*(?:(?:no,?\s*)?i\s+mean(?:t)?|meant|should\s+(?:be|say|read)|(?:it\s+)?should've\s+been"
+    r"|(?:sorry,?\s*)?typo[:,.!]*\s*(?:(?:it\s+)?should\s+be|i\s+meant|it'?s)?|correction[:,]?"
+    r"|quise\s+decir|ich\s+mein(?:te)?)\s*[:,-]?\s*(?P<x>.+?)\s*[.!]*\s*$"
+    r"|^\s*\*\s*(?P<y>\S.*?)\s*$", re.IGNORECASE)
+
+
+def correction(text: str) -> Optional[str]:
+    """The corrected words of "I meant tile", "should be tile", "typo: tile",
+    "*tile" (None when it is not a correction). A bare "typo" is "" (which
+    word is not said)."""
+    t = str(text or "").strip()
+    if re.fullmatch(r"(?i)(?:sorry,?\s*)?typo[.!]*", t):
+        return ""
+    m = _CORRECTION.match(t)
+    if not m:
+        return None
+    x = (m.group("x") or m.group("y") or "").strip().strip("\"'“”")
+    return x or None
+
+
+def _edits(a: str, b: str) -> int:
+    a, b = a.lower(), b.lower()
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def apply_correction(caption: str, fix: str) -> str:
+    """"Time wrong" + "tile" -> "Tile wrong": one word replaces the caption's
+    closest word (a typo is a word or two letters off); more words, or no
+    close word, replace the caption."""
+    cap, fix = str(caption or "").strip(), str(fix or "").strip()
+    words = cap.split()
+    if fix and len(fix.split()) == 1 and words:
+        dist = [(_edits(re.sub(r"\W", "", w), fix), i) for i, w in enumerate(words)]
+        d, i = min(dist)
+        if d <= max(2, len(fix) // 2) and d > 0:
+            old = words[i]
+            new = fix if not old[:1].isupper() else fix[:1].upper() + fix[1:]
+            words[i] = re.sub(r"^\W*\w+", new, old) if re.match(r"^\W*\w", old) else new
+            return " ".join(words)
+    return capitalize(fix) if fix else cap
+
+
+def capitalize(text: str) -> str:
+    t = str(text or "").strip()
+    return t[:1].upper() + t[1:] if t else t
+
+
+def clean_caption(words: str) -> str:
+    """An item's words with the location taken out ("tile cracked 4F" ->
+    "Tile cracked": the location is its own field), first letter capital.
+    A named area is taken out only at the end ("roof drain clogged" keeps
+    its roof)."""
+    t = str(words or "")
+    for rx in (_LOC_UNIT, _LOC_FLOOR):
+        t = rx.sub(" ", t)
+    t = re.sub(r"(?<![\w#/.-])\d{1,2}\s?[a-z](?![\w/])", " ", t, flags=re.IGNORECASE)
+    tail = re.compile(r"(?:\s+(?:in|at|on|by)?\s*(?:the\s+)?(?:" + "|".join(
+        rx for _, rx in _COMMON + _NEEDS_FLOOR) + r"|stair\s*(?:well|case)?\s+[ab]))\s*$", re.IGNORECASE)
+    t = tail.sub("", t)
+    t = re.sub(r"\s*[,;:-]+\s*$", "", re.sub(r"\s+", " ", t)).strip(" ,;:-")
+    return capitalize(t) if t else capitalize(str(words or ""))
 
 
 def job_code(project: Dict[str, Any]) -> str:
@@ -277,6 +400,33 @@ _AREA = re.compile(
     r"(?<!\w)(?:(?:apt|apartment|unit|apto|depto)\.?\s*#?\s*(?P<u>[0-9]{1,4}[a-z]?|[a-z]{1,2}\d{0,3})"
     r"|(?P<room>kitchen|bath(?:room)?|bedroom|hallway|corridor|stair(?:well|s)?|lobby|mech(?:anical)? room"
     r"|cocina|ba[ñn]o|pasillo|escalera|habitaci[oó]n|dormitorio))(?!\w)", re.IGNORECASE)
+
+
+#: A trade GUESSED from what a caption is about (shown "electrical?", the
+#: walker overrides it): checked when the words name no trade outright.
+_GUESS = [
+    ("electrical", r"bulbs?|lamps?|outlets?|switch(?:es)?|fixtures?|receptacles?|sockets?|bombillos?|focos?"),
+    ("tile", r"tiles?|grout|backsplash"),
+    ("carpentry", r"tables?|cabinets?|doors?|trim|counters?|shel(?:f|ves)|drawers?|base ?boards?|mesas?"),
+    ("paint", r"paint\w*|touch[- ]?ups?|scuffs?|marks?"),
+    ("plumbing", r"leak\w*|faucets?|drips?|toilets?|sinks?|showers?"),
+    ("drywall", r"sheetrock|patch(?:es|ing)?|holes?|cracks? in (?:the )?wall|nail pops?"),
+]
+_GUESS_RX = [(t, re.compile(r"(?<!\w)(?:" + p + r")(?!\w)", re.IGNORECASE)) for t, p in _GUESS]
+
+
+def guess_trade(text: str) -> Optional[str]:
+    """The one trade what the words are ABOUT suggests (a bulb: electrical; a
+    table: carpentry), or None."""
+    hits = {t for t, rx in _GUESS_RX if rx.search(str(text or ""))}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def trade_for(text: str) -> Tuple[str, bool]:
+    """(trade, guessed) for an item's words: every trade read from a caption
+    is a guess the walker can override ("electrical?"); UNKNOWN when none."""
+    t = read_trade(text) or guess_trade(text)
+    return (t, True) if t else (UNKNOWN, False)
 
 
 def read_trade(text: str) -> Optional[str]:
@@ -503,7 +653,8 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
         "captured": n,                  # the order it came in; `n` follows the draft
         "floor": _loc(w)["floor"] or UNKNOWN,
         "area": _loc(w)["area"] or UNKNOWN,
-        "trade": read_trade(w) or UNKNOWN,
+        "trade": trade_for(w)[0],
+        "trade_guess": trade_for(w)[1],
         "at": at,
     }
 
@@ -567,6 +718,8 @@ def item_line(it: dict) -> str:
     """"3. 📷 Outlet cover missing — electrical" (area shown when known)."""
     words = it.get("text") or "(no words)"
     trade = it.get("trade") or UNKNOWN
+    if trade != UNKNOWN and it.get("trade_guess"):
+        trade += "?"                       # a guess from the caption: say if wrong
     area = it.get("area")
     where = f" ({area})" if area and area != UNKNOWN and area != it.get("floor") else ""
     return f"{it['n']}. {marker(it)} {words}{where} — {trade}".replace("  ", " ")
@@ -651,8 +804,9 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
     by_n = {it["n"]: it for it in items if it.get("status", "draft") != "dropped"}
     if e["op"] == "add":
         cap = max([it.get("captured") or 0 for it in items] or [0]) + 1
-        items.append({**new_item(next_n, e["text"], photo_key=None, message_id=""),
-                      "captured": cap, "added": True})
+        it = new_item(next_n, e["text"], photo_key=None, message_id="")
+        it["text"] = clean_caption(e["text"])            # "Tile cracked", Apt 4F its own field
+        items.append({**it, "captured": cap, "added": True})
         return True, f"added {next_n}"
     if e["op"] == "merge":
         a, b = by_n.get(e["a"]), by_n.get(e["b"])
@@ -670,7 +824,7 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
     if not it:
         return False, f"no item {e['n']}"
     if e["op"] == "trade":
-        it["trade"] = e["trade"]
+        it["trade"], it["trade_guess"] = e["trade"], False
     elif e["op"] == "drop":
         it["status"] = "dropped"
     elif e["op"] == "floor":
@@ -681,22 +835,6 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
 
 
 # ── ASSIGNING ────────────────────────────────────────────────────────────────
-
-def suggest_assignees(trades: Iterable[str], people: List[Dict[str, Any]]) -> Dict[str, Optional[dict]]:
-    """trade -> the one company/person on this job for it (from check-ins and
-    People), or None when there is none or more than one."""
-    out: Dict[str, Optional[dict]] = {}
-    for t in trades:
-        if t == UNKNOWN:
-            continue
-        hits = [p for p in people if t in (p.get("trades") or [])]
-        # One per company: two people of the same company are one choice.
-        by_co: Dict[str, dict] = {}
-        for p in hits:
-            by_co.setdefault(multilang.fold(p.get("company") or p.get("name") or ""), p)
-        out[t] = next(iter(by_co.values())) if len(by_co) == 1 else None
-    return out
-
 
 def assign_text(sugg: Dict[str, Optional[dict]]) -> str:
     lines = ["Who gets what?"]
@@ -719,6 +857,40 @@ def parse_assign(text: str) -> List[Tuple[str, str]]:
             if t:
                 out.append((t, m.group(2)))
     return out
+
+
+_ALL = re.compile(
+    r"^\s*(?:send\s+)?(?:all|everything|the\s+whole\s+(?:list|thing)|whole\s+list|all\s+of\s+(?:it|them)"
+    r"|the\s+(?:whole\s+)?list|todo|todos)\s*(?:items\s*)?(?:→|->|=>|>|:|=|to|goes\s+to|go\s+to|a|para)\s*(?P<name>.+?)\s*[.!]*\s*$",
+    re.IGNORECASE)
+
+
+def parse_assign_reply(text: str) -> Dict[str, Any]:
+    """What an answer to "Who gets what?" says:
+      {"all": name}            "all → Chris", "send all to Chris", "whole list to Chris"
+      {"pairs": [(trade, name)]}  "electrical → Mike; paint → Ana"
+      {"fill": name}           "Chris from gc." -- for every trade still "?"
+      {"ok": True}             "ok"
+      {}                       nothing that names anyone."""
+    t = str(text or "").strip()
+    if not t:
+        return {}
+    if t.lower().strip(" .!") in ("ok", "okay", "yes", "si", "sí", "yo", "dale", "👍", "good",
+                                  "looks good", "correct"):
+        return {"ok": True}
+    m = _ALL.match(t)
+    if m:
+        return {"all": m.group("name")}
+    pairs = parse_assign(t)
+    if pairs:
+        return {"pairs": pairs}
+    name = re.sub(r"^\s*(?:give\s+(?:it|them|the\s+rest)\s+to|send\s+(?:it|them|the\s+rest)\s+to"
+                  r"|(?:the\s+)?rest\s+(?:to|→|->)|others?\s+(?:to|→|->)|assign\s+(?:to\s+)?|to)\s+",
+                  "", t, flags=re.IGNORECASE)
+    if re.search(r"[a-z]", name, re.IGNORECASE) and len(name.split()) <= 6 \
+            and not re.search(r"\?$", name):
+        return {"fill": name}
+    return {}
 
 
 def split_name(said: str) -> Tuple[str, str]:
@@ -804,7 +976,6 @@ def due_date(words: str, sent_at):
     return wa_attention.parse_due(multilang.normalize_when(words), sent_at)
 
 
-DUE_QUESTION = "Due Fri for all, or by trade? (e.g. \"Fri\", or \"electrical Mon, paint Fri\")"
 
 
 def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str]]:
@@ -835,18 +1006,72 @@ def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str
 
 # ── SENDING ──────────────────────────────────────────────────────────────────
 
+def _where(it: dict) -> str:
+    return " · ".join(x for x in (floor_label(it["floor"]) if it.get("floor") not in (None, UNKNOWN) else "",
+                                  it.get("area") if it.get("area") not in (None, UNKNOWN) else "") if x)
+
+
 def group_text(name: str, items: List[dict], due_words: str,
-               handle: Optional[str] = None) -> str:
+               handle: Optional[str] = None, grouped: bool = False) -> str:
     """One message per assignee: @them, their items, the due day. `handle`
     is their token from lib/wa_mention ("@15551234567" mentions them for
-    real); without it, "@Name"."""
+    real); without it, "@Name". `grouped` (the whole list to one person):
+    the items under their floor, then trade."""
     lines = [f"{handle or '@' + name} punch list — due {due_words}:"]
-    for it in items:
-        where = " · ".join(x for x in (floor_label(it["floor"]) if it.get("floor") not in (None, UNKNOWN) else "",
-                                        it.get("area") if it.get("area") not in (None, UNKNOWN) else "") if x)
-        lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
+    if grouped:
+        by_floor: Dict[str, Dict[str, List[dict]]] = {}
+        for it in items:
+            by_floor.setdefault(it.get("floor") or UNKNOWN, {}).setdefault(
+                it.get("trade") or UNKNOWN, []).append(it)
+        for f in sorted(by_floor, key=_floor_key):
+            lines.append(f"*{floor_label(f)}*")
+            for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
+                lines.append(f"_{t}_")
+                for it in by_floor[f][t]:
+                    a = it.get("area")
+                    lines.append(f"• {it['pid']} {it.get('text') or ''}"
+                                 f"{(' (' + a + ')') if a not in (None, UNKNOWN) and a != f else ''}")
+    else:
+        for it in items:
+            where = _where(it)
+            lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
     lines.append("Reply \"done P23\" (a photo helps) when each one is finished.")
     return "\n".join(lines)
+
+
+DEFAULT_DUE = "Fri"
+
+
+def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
+               mode: str = DEFAULT_SEND_MODE, whole: Optional[dict] = None) -> str:
+    """The exact send, before it happens: who gets which numbers, and when.
+    "Chris Weiss (GC team): #2, #3 · Dov Klein (Power Direct): #1" -- 'ok' sends."""
+    live = ordered([it for it in items if it.get("status", "draft") != "dropped"])
+    groups: Dict[str, Dict[str, Any]] = {}
+    for it in live:
+        p = whole or assign.get(it.get("trade") or UNKNOWN)
+        k = who_label(p)
+        groups.setdefault(k, {"nums": [], "dues": set()})
+        groups[k]["nums"].append(it["n"])
+        groups[k]["dues"].add(due.get(it.get("trade") or UNKNOWN) or DEFAULT_DUE)
+    parts = [f"{k}: {', '.join('#' + str(n) for n in g['nums'])}" for k, g in groups.items()]
+    dues = sorted({d for g in groups.values() for d in g["dues"]})
+    if len(dues) == 1:
+        when = f"due {dues[0]}"
+    else:
+        by_t = {}
+        for it in live:
+            by_t[it.get("trade") or UNKNOWN] = due.get(it.get("trade") or UNKNOWN) or DEFAULT_DUE
+        counts: Dict[str, int] = {}
+        for d in by_t.values():
+            counts[d] = counts.get(d, 0) + 1
+        rest = max(sorted(counts), key=lambda d: counts[d])     # the day most trades share
+        when = "due " + ", ".join([f"{t} {d}" for t, d in sorted(by_t.items()) if d != rest]
+                                  + [f"the rest {rest}"])
+    head = "Ready to send" + (" (shadow mode: nothing will be posted)" if mode != "live" else "") + ":"
+    return "\n".join([head, " · ".join(parts), capitalize(when), "",
+                      "Reply 'ok' to send. Or change it: \"electrical → Mike\", \"all → Chris\", "
+                      "\"electrical Mon\", or 'cancel'."])
 
 
 def shadow_text(batches: List[Dict[str, Any]]) -> str:
@@ -854,7 +1079,7 @@ def shadow_text(batches: List[Dict[str, Any]]) -> str:
     lines = ["Punch sends are in shadow mode: nothing was posted. Would send:"]
     for b in batches:
         lines.append("")
-        lines.append(group_text(b["name"], b["items"], b["due_words"]))
+        lines.append(group_text(b["name"], b["items"], b["due_words"], grouped=bool(b.get("grouped"))))
         if b.get("mention_resolved") is False:
             lines.append(f"(@{b['name']}: {NO_NUMBER_NOTE})")
         if b.get("photos"):

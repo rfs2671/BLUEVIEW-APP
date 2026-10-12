@@ -75,6 +75,12 @@ async def main_async(a, server=None) -> int:
                  if s.get("pending_note") else ""))
         for it in items:
             print(item_line(it))
+        photos = s.get("photos") or []
+        orphans = punch.orphan_photos(s)
+        print(f"  photos received: {len(photos)}"
+              + (" (walks before Oct 12 did not record them)" if not photos else "")
+              + (f"; ON NO ITEM: " + ", ".join(f"photo {i} at {_t(ph.get('at'))}" for i, ph in orphans)
+                 if orphans else ""))
         chat = s.get("chat") or ""
         for kind in ("dm_job", "dm_menu"):
             st = await server._dm_state_get(kind, chat)

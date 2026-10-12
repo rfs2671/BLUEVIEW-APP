@@ -618,7 +618,9 @@ class TheSettingsEndpoints(unittest.TestCase):
                          (True, True))
         self.assertEqual(set(out), {"project_id", "gc_group", "gc_pending_question",
                                     "groups", "send_window", "chase_weekends", "punch_sends",
-                                    *server.wa_alerts.SWITCHES})
+                                    # Who a punch list goes to, each sub's punch contact.
+                                    "punch_to", "punch_to_user", "punch_to_options",
+                                    "punch_contacts", *server.wa_alerts.SWITCHES})
 
     def test_a_pm_cannot_read_or_change(self):
         with _Ctx(db=_world()):

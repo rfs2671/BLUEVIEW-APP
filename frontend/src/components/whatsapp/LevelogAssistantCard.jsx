@@ -23,7 +23,10 @@ import { TimePickerRow } from './GroupConfigPanel';
 import {
   assistantView, SEND_WINDOW_OPTIONS, sendWindowLine, cleanSendWindow,
 } from '../../utils/whatsappSettings';
-import { PUNCH_SENDS_OPTIONS, punchSendsMode } from '../../utils/punchList';
+import {
+  PUNCH_SENDS_OPTIONS, punchSendsMode, PUNCH_TO_OPTIONS, punchToMode, punchContactLine,
+  PUNCH_CONTACTS_NOTE,
+} from '../../utils/punchList';
 
 // Every half hour, midnight to 11:30 PM, for custom hours.
 const ALL_DAY = Array.from({ length: 48 }, (_, i) =>
@@ -230,6 +233,69 @@ export default function LevelogAssistantCard({ projectId }) {
                   : punchSendsMode(data) === o.mode ? <Check size={18} color={colors.primary} /> : null}
               </Pressable>
             ))}
+
+            {/* Punch list goes to: per trade, or the whole list to one person */}
+            <Text style={s.sub}>Punch list goes to</Text>
+            {PUNCH_TO_OPTIONS.map((o) => (
+              <Pressable
+                key={o.mode}
+                onPress={() => patch('punch_to', { punch_to: o.mode })}
+                disabled={!!busy || punchToMode(data) === o.mode}
+                style={s.choice}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: punchToMode(data) === o.mode }}
+              >
+                <View style={{ flex: 1, marginRight: spacing.sm }}>
+                  <Text style={s.value}>{o.label}</Text>
+                  <Text style={s.muted}>{o.line}</Text>
+                </View>
+                {busy === 'punch_to' ? <ActivityIndicator size="small" color={colors.text.muted} />
+                  : punchToMode(data) === o.mode ? <Check size={18} color={colors.primary} /> : null}
+              </Pressable>
+            ))}
+            {punchToMode(data) === 'one_person' ? ((data && data.punch_to_options) || []).map((u) => (
+              <Pressable
+                key={u.id}
+                onPress={() => patch('punch_to_user', { punch_to_user: u.id })}
+                disabled={!!busy || (data && data.punch_to_user) === u.id}
+                style={s.choice}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: (data && data.punch_to_user) === u.id }}
+              >
+                <Text style={[s.value, { flex: 1 }]}>{u.name}</Text>
+                {(data && data.punch_to_user) === u.id ? <Check size={18} color={colors.primary} /> : null}
+              </Pressable>
+            )) : null}
+
+            {/* Each sub's punch contact: the only person suggested for it */}
+            {((data && data.punch_contacts) || []).length ? (
+              <>
+                <Text style={s.sub}>Punch contacts</Text>
+                <Text style={s.muted}>{PUNCH_CONTACTS_NOTE}</Text>
+                {((data && data.punch_contacts) || []).map((r) => (
+                  <View key={r.row_id} style={{ marginTop: spacing.sm }}>
+                    <Text style={s.value}>{punchContactLine(r).title}</Text>
+                    <Text style={s.muted}>{punchContactLine(r).line}</Text>
+                    <View style={[s.row, { flexWrap: 'wrap' }]}>
+                      {(r.options || []).map((o) => (
+                        <Pressable
+                          key={o.id}
+                          onPress={() => patch(`pc:${r.row_id}`, {
+                            punch_contacts: { [r.row_id]: r.contact_id === o.id ? null : o.id } })}
+                          disabled={!!busy}
+                          style={[s.choice, { marginRight: spacing.sm }]}
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: r.contact_id === o.id }}
+                        >
+                          <Text style={s.value}>{o.name}</Text>
+                          {r.contact_id === o.id ? <Check size={16} color={colors.primary} /> : null}
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                ))}
+              </>
+            ) : null}
           </>
         )}
       </GlassCard>
