@@ -190,14 +190,6 @@
    },
    {
     "day": "2026-10-12",
-    "slot": "morning",
-    "owner": "C",
-    "items": [
-     6
-    ]
-   },
-   {
-    "day": "2026-10-12",
     "slot": "midday",
     "owner": "C",
     "items": [
@@ -213,11 +205,29 @@
     ]
    },
    {
+    "day": "2026-10-11",
+    "slot": "morning",
+    "owner": "C",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "morning",
+    "owner": "C",
+    "items": [
+     6,
+     8
+    ]
+   },
+   {
     "day": "2026-10-12",
     "slot": "admin_dm",
     "owner": "C",
     "items": [
-     6
+     6,
+     8
     ]
    }
   ]

@@ -417,7 +417,8 @@ Scenario4 = _scenario(3)
 class ChaseWeekend(_FixtureChecks, unittest.TestCase):
     """Fri 3:25-3:43 PM, then the chase worker on Saturday, Sunday and
     Monday (588 Thomas has Chase on weekends on). Only the sleeve shop
-    drawings are chased; nothing is sent."""
+    drawings are chased (Sunday and Monday mornings: overdue); nothing is
+    sent."""
 
     LINES, FINAL, USERS = CHASE["lines"], CHASE["final"], CHASE["users"]
     PEOPLE = CHASE["people"]          # Patricia is a sub: GC staff are never chased
@@ -460,9 +461,15 @@ class ChaseWeekend(_FixtureChecks, unittest.TestCase):
         self.assertEqual(first["text"], "@Patricia Lee morning — this is due today:\n"
                                         "“I'll also send the sleeve shop drawings Saturday morning”")
 
-    def test_sunday_and_monday_nothing(self):
+    def test_sunday_and_monday_overdue_mornings_only(self):
+        # Never sent and never closed: overdue, chased each morning; from
+        # the second overdue day (Monday) the admin DM too.
         for name in ("sunday", "monday"):
             self.assertEqual(self._chased(name), CHASE["chase"][name]["items"], name)
+            self.assertEqual([r["slot"] for r in self.chase_rows[name]],
+                             CHASE["chase"][name]["slots"], name)
+        self.assertEqual(self.chase_rows["sunday"][0]["text"].split("\n")[0],
+                         "@Patricia Lee morning — overdue since Sat Oct 10:")
 
     def test_the_possible_owner_items_are_flagged_not_chased(self):
         for n in (3, 4, 5, 6):

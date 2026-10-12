@@ -244,6 +244,30 @@
     "items": [
      8
     ]
+   },
+   {
+    "day": "2026-10-11",
+    "slot": "morning",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "morning",
+    "owner": "P",
+    "items": [
+     8
+    ]
+   },
+   {
+    "day": "2026-10-12",
+    "slot": "admin_dm",
+    "owner": "P",
+    "items": [
+     8
+    ]
    }
   ]
  }

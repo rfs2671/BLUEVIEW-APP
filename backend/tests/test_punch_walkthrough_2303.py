@@ -394,7 +394,7 @@ class CodexOn759(_Live):
         self.assertTrue(matches(due("ASAP", "2026-10-13"), q))               # ASAP, since yesterday
         self.assertTrue(matches(due("ASAP", "2026-10-14"), q))
         self.assertFalse(matches(due("ASAP", "2026-10-15"), q))              # not yet
-        self.assertFalse(matches(due("Fri", "2026-10-13"), q))               # a past day: no
+        self.assertTrue(matches(due("Fri", "2026-10-13"), q))                # overdue: chased mornings
         self.assertFalse(matches(due("", None), q))                          # no due date: never
 
     def test_asap_due_at_is_a_day(self):

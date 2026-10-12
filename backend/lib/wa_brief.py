@@ -17,6 +17,14 @@ record without the value a line needs is left out, never filled in.
    them — none is guessed)
 
 Sort: DOB/regulatory, then permits. At most 7 items in all.
+
+Then, per job, the follow-ups (not counted in the 7):
+  Due today / overdue: open Attention items due today or before that the
+      recipient owns or asked for, in their exact words, with the owner and
+      "overdue since <day>" (punch items are under Open punch instead)
+  Open punch: open punch items per assignee, with the oldest one's age
+
+"No action needed today." only when every one of these is empty.
 """
 
 from __future__ import annotations
@@ -307,6 +315,126 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
     return items
 
 
+# ── Follow-ups: due today / overdue, open punch ─────────────────────────────
+
+DUE_HEAD = "Due today / overdue:"
+MAX_DUE = 10
+_LIVE = ("open", "rescheduled")
+
+
+def _last10(v: Any) -> str:
+    d = "".join(ch for ch in str(v or "").split("@")[0] if ch.isdigit())
+    return d[-10:] if len(d) >= 10 else ""
+
+
+def is_me(person: Any, me: Dict[str, Any]) -> bool:
+    """A stored person (owner / requester) is the recipient: their user id,
+    or their WhatsApp number."""
+    p = person if isinstance(person, dict) else {}
+    if p.get("kind") == "user" and p.get("id") and str(p["id"]) == str(me.get("user_id")):
+        return True
+    d = _last10(p.get("jid"))
+    return bool(d) and d in (me.get("digits") or set())
+
+
+def _asked_by(item: Dict[str, Any], me: Dict[str, Any]) -> bool:
+    if is_me(item.get("requester"), me):
+        return True
+    ev = item.get("evidence") or {}
+    # A request or question: whoever wrote it asked for it.
+    return (item.get("type") in ("request", "question")
+            and _last10(ev.get("sender")) in (me.get("digits") or set())
+            and bool(_last10(ev.get("sender"))))
+
+
+def _day_label(d: date) -> str:
+    return f"{d.strftime('%a %b')} {d.day}"
+
+
+def _due_day(item: Dict[str, Any]) -> Optional[date]:
+    try:
+        return date.fromisoformat(str((item.get("due") or {}).get("due_at") or "")[:10])
+    except ValueError:
+        return None
+
+
+def _words(item: Dict[str, Any]) -> str:
+    """The item's own words: the quote it was read from (never a summary)."""
+    q = item.get("chase_quote") or {}
+    text = q.get("quote") if q.get("quote") else (item.get("evidence") or {}).get("quote")
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= 160 else text[:159].rstrip() + "…"
+
+
+def due_lines(items: Iterable[Dict[str, Any]], today: date,
+              me: Dict[str, Any]) -> List[str]:
+    """'Due today / overdue:' then one line per item the recipient owns or
+    asked for: “words” — Owner · overdue since Sun Oct 11 | due today | ASAP.
+    Empty when there is none."""
+    rows = []
+    for it in items:
+        if it.get("status") not in _LIVE or "punch" in (it.get("tags") or []):
+            continue
+        if it.get("needs_review") or (it.get("review") or {}).get("verdict") in (
+                "wrong", "dismissed"):
+            continue
+        d = _due_day(it)
+        words = _words(it)
+        if not d or d > today or not words:
+            continue
+        if not (is_me(it.get("owner"), me) or _asked_by(it, me)):
+            continue
+        asap = str((it.get("due") or {}).get("due_text") or "").strip().upper() == "ASAP"
+        when = "ASAP" if asap else (
+            "due today" if d == today else f"overdue since {_day_label(d)}")
+        owner = it.get("owner") or {}
+        who = owner.get("name") if owner.get("status") == "resolved" and owner.get("name") \
+            else "no owner yet"
+        rows.append(((0 if d < today and not asap else 1, d.toordinal(), words),
+                     f"• “{words}” — {who} · {when}"))
+    if not rows:
+        return []
+    rows.sort(key=lambda r: r[0])
+    out = [DUE_HEAD] + [r[1] for r in rows[:MAX_DUE]]
+    if len(rows) > MAX_DUE:
+        out.append(f"+{len(rows) - MAX_DUE} more in the Levelog app.")
+    return out
+
+
+def _age(d: date, today: date) -> str:
+    n = (today - d).days
+    return "today" if n <= 0 else f"{n} day{'s' if n != 1 else ''}"
+
+
+def punch_lines(rows: Iterable[Dict[str, Any]], today: date) -> List[str]:
+    """'Open punch: Yeyzmar B Bate 3 (oldest 2 days), Chris Lopez 1 (oldest
+    today)'; then 'Ready to check: 1' when any. Empty when none."""
+    by: Dict[str, List[date]] = {}
+    ready = 0
+    for r in rows:
+        st = r.get("status")
+        if st == "ready_to_check":
+            ready += 1
+            continue
+        if st != "open":
+            continue
+        who = ((r.get("assignee") or {}).get("name") or "").strip() or "Unassigned"
+        at = r.get("assigned_at") or r.get("created_at")
+        if isinstance(at, datetime):
+            d = local_now(at if at.tzinfo else at.replace(tzinfo=timezone.utc)).date()
+        else:
+            d = today
+        by.setdefault(who, []).append(d)
+    out = []
+    if by:
+        parts = sorted(by.items(), key=lambda kv: (min(kv[1]), kv[0].lower()))
+        out.append("Open punch: " + ", ".join(
+            f"{who} {len(ds)} (oldest {_age(min(ds), today)})" for who, ds in parts))
+    if ready:
+        out.append(f"Ready to check: {ready}")
+    return out
+
+
 # ── Who is on site ──────────────────────────────────────────────────────────
 
 MAX_COMPANIES = 5
@@ -373,17 +501,24 @@ def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     # nobody on site, is named in one line at the end.
     def uses(j):
         return jobs[j].get("uses_checkins", True)
+
+    def follow(j):
+        return list(jobs[j].get("due") or []) + list(jobs[j].get("punch") or [])
+    acting = [j for j in range(len(jobs)) if follow(j)]
     quiet = [j for j in range(len(jobs))
-             if j not in per_job and uses(j) and jobs[j]["headcount"] == NO_CHECKINS]
+             if j not in per_job and j not in acting and uses(j)
+             and jobs[j]["headcount"] == NO_CHECKINS]
     with_items = sorted(per_job, key=lambda j: min(
         r[0] for r in kept if r[1] == j))
+    with_follow = [j for j in acting if j not in per_job]
     others = [j for j in range(len(jobs))
-              if j not in per_job and uses(j) and j not in quiet]
-    if not kept and not others and not quiet:
+              if j not in per_job and j not in acting and uses(j) and j not in quiet]
+    if not kept and not acting and not others and not quiet:
         return NOTHING_TODAY
-    lines = [header(now_utc) if kept else NOTHING_TODAY]
-    for j in with_items + others:
-        lines += ["", jobs[j]["label"]] + per_job.get(j, [])
+    # "No action needed" only when there are no items and no follow-ups.
+    lines = [header(now_utc) if kept or acting else NOTHING_TODAY]
+    for j in with_items + with_follow + others:
+        lines += ["", jobs[j]["label"]] + per_job.get(j, []) + follow(j)
         if uses(j):
             lines.append(jobs[j]["headcount"])
     if quiet:

@@ -48434,10 +48434,10 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         items = await db.attention_items.find(
             {"type": {"$in": list(wa_chase.CHASE_TYPES)},
              "status": {"$in": list(wa_chase.CHASE_STATUSES)},
-             # Due today -- or ASAP and due by today: chased every day from
-             # its first (Codex review on #759).
-             "$or": [{"due.due_at": day.isoformat()},
-                     {"due.due_text": punch.ASAP, "due.due_at": {"$lte": day.isoformat()}}]}
+             # Due today, or overdue (its day passed, still open: the morning
+             # slot every day), or ASAP and due by today (Codex review on
+             # #759). Due today or before, whichever.
+             "due.due_at": {"$lte": day.isoformat() + "\uffff"}}
         ).to_list(5000)
     except Exception as e:
         logger.warning(f"[chase] items read failed: {type(e).__name__}")
@@ -48484,9 +48484,15 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         # Would be chased, but no WhatsApp number to @mention: listed below,
         # once the slot, group and hours rules say it would have gone out.
         no_number = why == wa_chase.NO_MENTION
+        if not why:
+            # Overdue: the morning slot daily; the admin DM from day 2.
+            why = wa_chase.overdue_slot_reason(it, slot, day)
         if why and not no_number:
             report["skipped"][why] = report["skipped"].get(why, 0) + 1
             continue
+        if no_number and wa_chase.overdue_slot_reason(it, slot, day):
+            continue                            # listed at the morning slot
+        late = wa_chase.overdue_days(it, day)
         report["eligible"] += 1
         pid, gid = str(it.get("project_id")), str(it.get("group_id"))
         said = wa_chase.said_at(it)
@@ -48524,6 +48530,12 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         try:
             nudges = await db[wa_chase.COLLECTION].find(
                 {"day": day.isoformat(), "item_ids": iid}).to_list(10)
+            # Overdue: the skip rules look back past today, to its last
+            # nudge (yesterday's morning) and any skip since.
+            earlier = await db[wa_chase.COLLECTION].find(
+                {"item_ids": iid, "day": {"$lt": day.isoformat()},
+                 "slot": {"$in": list(wa_chase.GROUP_SLOTS)}}).sort(
+                [("at", -1)]).to_list(20) if late else []
         except Exception:
             continue
         if any(n.get("slot") == slot for n in nudges):
@@ -48532,15 +48544,20 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         group_nudges = [n for n in nudges if n.get("slot") in wa_chase.GROUP_SLOTS
                         and n.get("kind") != wa_chase.SKIPPED]
         skips = [n for n in nudges if n.get("kind") == wa_chase.SKIPPED]
-        last = max((n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)),
+        answer_nudges = group_nudges + [n for n in earlier if n.get("kind") == "group"]
+        skips += [n for n in earlier if n.get("kind") == wa_chase.SKIPPED]
+        last = max((n["at"] for n in answer_nudges if isinstance(n.get("at"), datetime)),
                    default=None)
         # Rule 1: the item changed after its first nudge: done for the day.
         if wa_chase.stop_reason(it, group_nudges):
             report["stopped"] += 1
             continue
         if slot == wa_chase.ADMIN and not any(
-                n.get("slot") == wa_chase.EOD for n in group_nudges):
-            continue                            # only after the end of day nudge
+                n.get("slot") == (wa_chase.MORNING if late else wa_chase.EOD)
+                for n in group_nudges):
+            # Only after the end of day nudge -- for an overdue item, after
+            # today's morning nudge.
+            continue
         chatter = None
         skipped_slot = None
         if last:
@@ -48553,7 +48570,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             skipped_slot = last_skip.get("slot") if last_skip else None
             resp = None
             for m in await _chase_owner_messages(gid, it, since, now):
-                resp = wa_chase.owner_response(it, m, group_nudges, after=since)
+                resp = wa_chase.owner_response(it, m, answer_nudges, after=since)
                 if resp:
                     break
                 chatter = m["at"]
@@ -48638,7 +48655,8 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            to=[a["name"] for a in admins],
                            to_user_ids=[a["id"] for a in admins],
                            text=wa_chase.admin_text(row["owner_name"], row["group_name"],
-                                                    b["items"], list(b["nudged"].values())))
+                                                    b["items"], list(b["nudged"].values()),
+                                                    day=day))
                 report["admin_dm"] += 1
             else:
                 owner_co = b["company_id"]
@@ -48661,7 +48679,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 tgt = targets.get((pid, gid, okey)) or await _mention_target(
                     owner, b["company_id"], now)
                 send_text = wa_chase.group_text(row["owner_name"], b["items"], slot,
-                                                handle=tgt["handle"])
+                                                handle=tgt["handle"], day=day)
                 quoted_id = wa_chase.quoted(first).get("message_id")
                 row.update(kind="group",
                            reply_to=await _serialized_message_id(gid, quoted_id),
@@ -49556,9 +49574,49 @@ async def _brief_since(user_id: str, now: datetime) -> datetime:
     return max(now - timedelta(days=1), floor)
 
 
+async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
+                            me: Optional[dict]) -> dict:
+    """The job's Due today / overdue lines (items `me` owns or asked for)
+    and its Open punch line. A read that fails leaves its lines out."""
+    today = wa_brief.local_now(now).date()
+    out = {"due": [], "punch": []}
+    if me:
+        try:
+            items = await db.attention_items.find({
+                "project_id": pid, "company_id": _company_id_filter(company_id),
+                "status": {"$in": ["open", "rescheduled"]},
+                "due.due_at": {"$lte": today.isoformat() + "\uffff"}}).to_list(2000)
+            out["due"] = wa_brief.due_lines(items, today, me)
+        except Exception as e:
+            logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
+    try:
+        rows = await db[punch.COLLECTION].find({
+            "project_id": pid, "company_id": _company_id_filter(company_id),
+            "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
+        out["punch"] = wa_brief.punch_lines(rows, today)
+    except Exception as e:
+        logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
+    return out
+
+
+async def _brief_me(user: dict) -> dict:
+    """Who the brief is for, as items store people: the user id, and every
+    WhatsApp number of theirs (profile phone, active opt-ins)."""
+    uid = str(user.get("_id"))
+    nums = [user.get("phone")]
+    try:
+        nums += [o.get("phone") for o in await db[WA_OPTINS].find(
+            {"user_id": uid, "status": "active"}, {"phone": 1}).to_list(10)]
+    except Exception:
+        pass
+    return {"user_id": uid,
+            "digits": {d for d in (wa_brief._last10(n) for n in nums) if d}}
+
+
 async def _brief_job(project: dict, company_id: str, since: datetime,
-                     now: datetime) -> dict:
-    """One job's block: its address, its items, its headcount line."""
+                     now: datetime, me: Optional[dict] = None) -> dict:
+    """One job's block: its address, its items, its follow-ups (due today /
+    overdue, open punch), its headcount line."""
     pid = str(project.get("_id"))
     # Before the rows (as in the GC tick): a source mid-way through its
     # first sync is skipped, never read half-stored.
@@ -49581,6 +49639,7 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
     }).to_list(2000)
     return {"label": wa_assistant.street_label(project),
             "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
+            **await _brief_follow_ups(pid, company_id, now, me),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
                 pid, company_id, now)}
@@ -49622,7 +49681,8 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     if not projects:
         return None
     since = await _brief_since(str(user.get("_id")), now)
-    jobs = [await _brief_job(p, company_id, since, now) for p in projects]
+    me = await _brief_me(user)
+    jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
     text = wa_brief.compose(now, jobs)
     try:
         coming = await _upcoming_brief_lines(user, company_id, role, now)
@@ -61398,6 +61458,10 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
     }
     if row_id is not None:
         row["_id"] = row_id
+    if parsed.get("photo_key"):
+        # A completion photo, downloaded in full and kept (R2): the punch
+        # item's "done" carries it.
+        row["photo_key"] = parsed["photo_key"]
     if voice:
         # A voice note: the body is its transcript as said; the language,
         # Whisper's confidence, the duration, the R2 audio key and the
@@ -61532,39 +61596,116 @@ def _wa_media_key(node: Any, depth: int = 0) -> Optional[str]:
 _IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG", b"RIFF", b"GIF8")
 
 
+#: WhatsApp's webhook carries a tiny preview of every photo (jpegThumbnail,
+#: ~100 px; the body of an uncaptioned image). It is never what we keep:
+#: the original is WaAPI's download-media, and anything this small is not it.
+FULL_PHOTO_MIN_PX = 400
+_PHOTO_TRIES = (0.0, 2.0, 5.0)
+
+
+def _image_px(b: bytes) -> Tuple[int, int]:
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(b)) as im:
+            return im.size
+    except Exception:
+        return (0, 0)
+
+
+def _wa_media_blobs(node: Any, depth: int = 0, media: bool = False) -> List[Tuple[bool, bytes]]:
+    """Every base64 blob in a WaAPI answer: (is it the `media` node's data,
+    bytes). The media node ({mimetype, data}) is the file itself; anything
+    else (a message's body, its preview) is not."""
+    out: List[Tuple[bool, bytes]] = []
+    if depth > 10 or node is None:
+        return out
+    if isinstance(node, str):
+        b = _wa_media_bytes(node)
+        return [(media, b)] if b else out
+    if isinstance(node, dict):
+        here = media or bool(node.get("mimetype") and "data" in node)
+        for k, v in node.items():
+            out += _wa_media_blobs(v, depth + 1, here and k == "data")
+    elif isinstance(node, list):
+        for v in node:
+            out += _wa_media_blobs(v, depth + 1, media)
+    return out
+
+
+def _webhook_thumbnail(parsed_msg: dict) -> Optional[bytes]:
+    """The preview the webhook itself carried (to tell it apart)."""
+    raw = parsed_msg.get("raw") or {}
+    for node in (raw, raw.get("_data") or {}, (raw.get("message") or {}),
+                 ((raw.get("message") or {}).get("_data") or {})):
+        if not isinstance(node, dict):
+            continue
+        for k in ("jpegThumbnail", "body"):
+            v = node.get(k)
+            if isinstance(v, str) and len(v) > 200 and " " not in v:
+                try:
+                    return base64.b64decode(v, validate=False)
+                except Exception:
+                    continue
+    return None
+
+
+def full_photo(answer: Any, parsed_msg: dict) -> Optional[bytes]:
+    """The original photo in a download-media answer: the media node's bytes
+    first, then the largest other blob; decrypted with the mediaKey (from
+    the answer, else the webhook) when it is still the .enc file. Never the
+    preview: an image under FULL_PHOTO_MIN_PX on its longer side, or the
+    webhook's own thumbnail, is not the photo."""
+    thumb = _webhook_thumbnail(parsed_msg)
+    keys = [k for k in (_wa_media_key(answer), _wa_media_key(parsed_msg.get("raw"))) if k]
+    blobs = sorted(_wa_media_blobs(answer), key=lambda mb: (not mb[0], -len(mb[1])))
+    for _media, raw in blobs:
+        cands = [raw] if raw.startswith(_IMAGE_MAGIC) else []
+        for key in keys:
+            try:
+                dec = _decrypt_whatsapp_media(raw, key, "image")
+            except Exception:
+                dec = None
+            if dec and dec.startswith(_IMAGE_MAGIC):
+                cands.append(dec)
+        for img in cands:
+            if thumb and img == thumb:
+                continue
+            if max(_image_px(img)) >= FULL_PHOTO_MIN_PX:
+                return img
+    return None
+
+
 async def download_image(parsed_msg: dict) -> Optional[bytes]:
-    """A WhatsApp photo's bytes, through WaAPI download-media (decrypted with
-    its mediaKey when WaAPI hands back the .enc blob). None on failure."""
+    """A WhatsApp photo's ORIGINAL bytes, through WaAPI download-media
+    (decrypted with its mediaKey when WaAPI hands back the .enc blob). Live
+    588, Oct 12: the punch photos in the app were the webhook's ~100 px
+    preview, blown up. Only the full photo is returned (`full_photo`); a
+    preview, or nothing yet, is tried again (WaAPI may still be fetching
+    it), then None."""
     message_id = parsed_msg.get("message_id_serialized") or parsed_msg.get("message_id") or ""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
         return None
-    try:
-        async with ServerHttpClient(timeout=45) as client_http:
-            resp = await client_http.post(
-                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
-                headers={"Authorization": f"Bearer {WAAPI_TOKEN}",
-                         "Content-Type": "application/json"},
-                json={"messageId": message_id})
-            if not (200 <= resp.status_code < 300):
-                logger.info(f"[punch] image download status={resp.status_code}")
-                return None
-            j = resp.json() if resp.content else {}
-    except Exception as e:
-        logger.warning(f"[punch] image download failed: {type(e).__name__}")
-        return None
-    raw = _wa_media_bytes(j)
-    if not raw:
-        return None
-    if raw.startswith(_IMAGE_MAGIC):
-        return raw
-    key = _wa_media_key(j)
-    if key:
+    for wait in _PHOTO_TRIES:
+        if wait:
+            await asyncio.sleep(wait)
         try:
-            dec = _decrypt_whatsapp_media(raw, key, "image")
-            if dec and dec.startswith(_IMAGE_MAGIC):
-                return dec
-        except Exception:
-            return None
+            async with ServerHttpClient(timeout=45) as client_http:
+                resp = await client_http.post(
+                    f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
+                    headers={"Authorization": f"Bearer {WAAPI_TOKEN}",
+                             "Content-Type": "application/json"},
+                    json={"messageId": message_id})
+                if not (200 <= resp.status_code < 300):
+                    logger.info(f"[punch] image download status={resp.status_code}")
+                    continue
+                j = resp.json() if resp.content else {}
+        except Exception as e:
+            logger.warning(f"[punch] image download failed: {type(e).__name__}")
+            continue
+        img = full_photo(j, parsed_msg)
+        if img:
+            return img
+        logger.info("[punch] image download: no full-size photo in the answer yet")
     return None
 
 
@@ -61575,6 +61716,31 @@ def _punch_caption(parsed: dict, body: str) -> str:
     if parsed.get("has_image") and len(b) > 200 and " " not in b:
         return ""
     return b
+
+
+async def _punch_message_photo(parsed: dict, project_id: Any) -> Optional[str]:
+    """A completion photo ("done P-588-1" as a photo's caption): the original
+    downloaded and kept in R2 under the job (wa-photos/<project>/msg/<id>.jpg,
+    swept with the project). Its key, or None."""
+    if not parsed.get("has_image"):
+        return None
+    img = await download_image(parsed)
+    if not img:
+        return None
+    key = _punch_photo_key(project_id or "unassigned", "msg", parsed.get("message_id") or "x")
+    try:
+        return key if await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg") else None
+    except Exception:
+        return None
+
+
+def _punch_photo_caption_ref(parsed: dict, body: str) -> bool:
+    """A photo whose caption names a punch item ("done P1", "done P-588-1",
+    "done 1"): its photo is the completion photo."""
+    if not parsed.get("has_image"):
+        return False
+    text = _punch_caption(parsed, body)
+    return bool(text and (punch.parse_pid(text) or punch.parse_done_ref(text)))
 
 
 async def _punch_next_seq(project_id: str) -> int:
@@ -61792,14 +61958,16 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     sess = await _punch_session(ident["user_id"])
 
     # Questions and verdicts work with or without a walkthrough.
-    if not parsed.get("has_image") and not voice:
+    if not voice and (not parsed.get("has_image") or _punch_photo_caption_ref(parsed, body)):
         ref = punch.parse_done_ref(text)
         if ref:
-            # A whole list DM'd to someone: their "done P-588-1" comes here.
+            # A whole list DM'd to someone: their "done P-588-1" comes here
+            # (as a photo's caption: with that photo).
             reply = await _punch_dm_done(ident, dm_chat, ref, text, parsed, now)
             if reply:
                 await send_whatsapp_message(dm_chat, reply)
                 return True
+    if not parsed.get("has_image") and not voice:
         q = punch.parse_query(text)
         if q:
             await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
@@ -63195,7 +63363,8 @@ async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str
     if not mine:
         return None
     await _punch_set_status(row, "ready_to_check", now, by=str(ident.get("user_id")), quote=text,
-                            message_id=str(parsed.get("message_id") or ""))
+                            message_id=str(parsed.get("message_id") or ""),
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63218,8 +63387,9 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
         return None
     row = rows[0]
     await _punch_set_status(row, "ready_to_check", datetime.now(timezone.utc), by=digits,
-                            quote=str(parsed.get("body") or ""),
-                            message_id=str(parsed.get("message_id") or ""))
+                            quote=_punch_caption(parsed, parsed.get("body") or ""),
+                            message_id=str(parsed.get("message_id") or ""),
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63246,6 +63416,32 @@ async def _checklist_open_today(group_id: str, project_id: Any, company_id: Any,
         at = at.replace(tzinfo=timezone.utc)
     return bool(isinstance(at, datetime) and at >= start
                 and any(not it.get("completed") for it in (latest.get("items") or [])))
+
+
+async def _punch_group_completion_ok(parsed: dict, body: str, project_id: Any,
+                                     company_id: Any) -> bool:
+    """A group photo captioned "done P1" whose photo will be the item's
+    completion photo: a sub's "done" naming one open item on this job, sent
+    by its assignee -- what _punch_group_message then accepts. Checked before
+    anything is downloaded or kept."""
+    text = _punch_caption(parsed, body)
+    ref = punch.parse_pid(text)
+    if not ref or not punch.sub_done(text) or punch.super_verdict(text):
+        return False
+    try:
+        rows = await db[punch.COLLECTION].find(
+            {"project_id": str(project_id), "seq": int(ref[1]), "status": "open"}).to_list(20)
+    except Exception:
+        return False
+    if ref[0]:
+        rows = [r for r in rows if str(r.get("pid") or "").upper().startswith(f"P-{ref[0].upper()}-")]
+    if len(rows) != 1:
+        return False
+    jid = str(parsed.get("sender") or "")
+    msg = {"sender_jid": jid, "sender": jid.split("@")[0]}
+    who = await _attention_sender(msg, {"company_id": str(company_id), "project_id": str(project_id),
+                                        "cache": {}})
+    return _punch_is_assignee(rows[0], who, msg)
 
 
 async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
@@ -63770,6 +63966,16 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # `transcribed` marks a row whose body is Whisper's words rather
             # than the sender's typing, so anyone reading the corpus later can
             # tell speech from text instead of guessing.
+            if _punch_photo_caption_ref(parsed, body):
+                # "done P1" sent as a photo's caption: the photo, in full,
+                # is the item's completion photo -- kept only when it is the
+                # assignee's "done" on their open item (Codex review on #762:
+                # any "photo of P1" was uploaded and never used).
+                try:
+                    if await _punch_group_completion_ok(parsed, body, project_id, msg_company_id):
+                        parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
+                except Exception as e:
+                    logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
                                        stored_body if voice_block else body, now,
                                        voice=voice_block)
@@ -64145,7 +64351,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # A punch list DM'd to a sub: their "done P-588-1" is answered
             # here, only for an open item sent to THIS number (Codex review
             # on #759: it got the not-for-you line).
-            ref = punch.parse_done_ref(parsed.get("body")) if not parsed.get("has_image") else None
+            ref = punch.parse_done_ref(_punch_caption(parsed, parsed.get("body") or "")) \
+                if not parsed.get("has_image") or _punch_photo_caption_ref(
+                    parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
@@ -67006,6 +67214,13 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
                        "langs": sorted(langs)}}
 
 
+#: Punch items ride attention_items so the chase engine reads them, but they
+#: are explicit (a walkthrough sent them), not the model's guesses: never in
+#: the Attention review queue or its precision. Filtered, never deleted; they
+#: live in the Punch list (live 588, Oct 12: "Request" cards with Correct/Wrong).
+ATTENTION_NOT_PUNCH = {"extraction.source": {"$ne": "punch"}, "tags": {"$ne": "punch"}}
+
+
 @api_router.get("/projects/{project_id}/attention",
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_attention(project_id: str, status: str = "open",
@@ -67027,12 +67242,13 @@ async def get_project_attention(project_id: str, status: str = "open",
                             detail="status: open, closed, reviewed or all")
     q = {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id),
-         "status": status_cond, "review": review_cond}
+         "status": status_cond, "review": review_cond,
+         **ATTENTION_NOT_PUNCH}
     items = await db.attention_items.find(q).sort(
         [("created_at", -1)]).to_list(200)
     stats_rows = await db.attention_items.find(
         {"project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)},
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH},
         {"type": 1, "review.verdict": 1, "history": 1,
          "evidence.message_row_id": 1,          # the voice flag's own item
          "excluded_from_metrics": 1}).to_list(10000)
@@ -67094,7 +67310,7 @@ async def review_project_attention(project_id: str, item_id: str, body: dict,
         fields["status"] = "dismissed"
     it = await db.attention_items.find_one_and_update(
         {"_id": oid, "project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)},
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH},
         {"$set": fields}, return_document=_canary_return_after())
     if not it:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -67120,7 +67336,7 @@ async def review_project_attention_event(project_id: str, item_id: str, event_id
     if not oid:
         raise HTTPException(status_code=404, detail="Item not found")
     q = {"_id": oid, "project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)}
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH}
     it = await db.attention_items.find_one(q)
     history = list((it or {}).get("history") or [])
     idx = next((i for i, e in enumerate(history) if isinstance(e, dict)
