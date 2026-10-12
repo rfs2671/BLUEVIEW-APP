@@ -210,6 +210,26 @@ export function userCardRoleLabel(user) {
   return roleLabel((user || {}).role);
 }
 
+// ── "GETS CHASE ESCALATION DMs" ─────────────────────────────────────────────
+//
+// For an admin (default on) or a PM (default off). Stored only once an admin
+// sets it (`chase_escalation_dms`); mirrors the server's gets_chase_escalation.
+export const CHASE_ESCALATION_LABEL = 'Gets chase escalation DMs';
+export const CHASE_ESCALATION_NOTE =
+  'When a sub still hasn\'t answered the chase reminders, the escalation DM goes to them.';
+
+export function chaseEscalationEligible(user) {
+  const role = String((user || {}).role || '').trim().toLowerCase();
+  return role === 'admin' || role === ROLE_PM || (user || {}).is_platform_operator === true;
+}
+
+export function getsChaseEscalation(user) {
+  if (!chaseEscalationEligible(user)) return false;
+  const stored = (user || {}).chase_escalation_dms;
+  if (typeof stored === 'boolean') return stored;
+  return String((user || {}).role || '').trim().toLowerCase() !== ROLE_PM;
+}
+
 /** Does this role carry a DOB registration? */
 export function roleHasLicence(role) {
   return String(role || '').trim().toLowerCase() === ROLE_SUPERINTENDENT;
