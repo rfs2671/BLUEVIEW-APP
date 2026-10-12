@@ -1009,6 +1009,13 @@ export const adminUsersAPI = {
     return response.data;
   },
 
+  // "Gets chase escalation DMs" (an admin or a PM); admins only, audited.
+  setChaseEscalation: async (userId, on) => {
+    const response = await apiClient.put(
+      `/api/admin/users/${encodeURIComponent(userId)}/chase-escalation`, { on: !!on });
+    return response.data;
+  },
+
   delete: async (userId) => {
     const response = await apiClient.delete(`/api/admin/users/${userId}`);
     return response.data;
