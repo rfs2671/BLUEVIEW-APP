@@ -206,6 +206,21 @@ class Redesign(unittest.TestCase):
             resp = _call(self.db, server.public_punch_link_photo, self.tok, r["pid"], 1, thumb=1)
             self.assertEqual(resp.status_code, 302)                      # the full one, then
 
+    def test_a_project_purge_deletes_the_thumbnails_too(self):
+        # Codex review on #766: the thumbnails are kept nowhere but R2, and
+        # the purge deletes by key (the prefix sweep removes nothing here).
+        import inspect
+        rows = [{"photo_key": "wa-photos/p/w/1.jpg", "extra_photos": ["wa-photos/p/w/2.jpg"],
+                 "completion": {"photo_key": "wa-photos/p/msg/9.jpg"},
+                 "link_photo_pending": {"key": "wa-photos/p/link/P-1-5.jpg"}},
+                {"photo_key": None}]
+        walks = [{"items": [{"photo_key": "wa-photos/p/w/1.jpg"}, {"photo_key": "wa-photos/p/w/3.jpg"}]}]
+        self.assertEqual(server._punch_r2_keys(rows, walks), [
+            "wa-photos/p/w/1.jpg", "wa-photos/p/w/2.jpg",
+            "wa-photos/p/w/1-thumb.jpg", "wa-photos/p/w/2-thumb.jpg",
+            "wa-photos/p/msg/9.jpg", "wa-photos/p/link/P-1-5.jpg", "wa-photos/p/w/3.jpg"])
+        self.assertIn("_punch_r2_keys(", inspect.getsource(server.hard_delete_project))
+
     # ── Questions ───────────────────────────────────────────────────────
 
     def test_questions_open_the_assistants_chat(self):

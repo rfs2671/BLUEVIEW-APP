@@ -17800,13 +17800,10 @@ async def hard_delete_project(
     # ── R2: the project's punch-list photos, by key from its items and
     # walkthroughs (before they go), then the wa-photos/<project>/ sweep.
     try:
-        _pkeys = []
-        for _r in await db[punch.COLLECTION].find({"project_id": str(project_id)}).to_list(None):
-            _pkeys += [_r.get("photo_key"), *(_r.get("extra_photos") or []),
-                       (_r.get("completion") or {}).get("photo_key")]
-        for _s in await db[punch.SESSIONS].find({"project_id": str(project_id)}).to_list(None):
-            _pkeys += [i.get("photo_key") for i in _s.get("items") or []]
-        r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, [k for k in _pkeys if k])
+        _pkeys = _punch_r2_keys(
+            await db[punch.COLLECTION].find({"project_id": str(project_id)}).to_list(None),
+            await db[punch.SESSIONS].find({"project_id": str(project_id)}).to_list(None))
+        r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, _pkeys)
     except Exception as e:
         logger.warning(f"[hard_delete] punch photo delete skipped: {e!r}")
     r2_deleted += await _r2_delete_prefix(
@@ -63812,6 +63809,22 @@ PUNCH_LINK_THUMB_PX = 240
 
 def _punch_thumb_key(key: str) -> str:
     return (key[:-4] if key.endswith(".jpg") else key) + "-thumb.jpg"
+
+
+def _punch_r2_keys(rows: List[dict], sessions: List[dict]) -> List[str]:
+    """Every R2 object a project's punch items and walks hold, by key: the
+    photos, the done photos, a photo sent from the link and not yet
+    confirmed, and the link page's thumbnails, which are kept nowhere else
+    (Codex review on #766: the prefix sweep removes nothing here)."""
+    keys: List[str] = []
+    for r in rows:
+        shown = [r.get("photo_key"), *(r.get("extra_photos") or [])]
+        keys += shown + [_punch_thumb_key(k) for k in shown if k]
+        keys += [(r.get("completion") or {}).get("photo_key"),
+                 (r.get("link_photo_pending") or {}).get("key")]
+    for s_ in sessions:
+        keys += [i.get("photo_key") for i in s_.get("items") or []]
+    return list(dict.fromkeys(k for k in keys if k))
 
 
 def _punch_thumb_bytes(key: str) -> Optional[bytes]:

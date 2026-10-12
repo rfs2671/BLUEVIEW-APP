@@ -269,6 +269,28 @@ class OnA360PxAndroid(unittest.TestCase):
         (pid, body), = self.uploads
         self.assertEqual((pid, self.sent_photo(body).size), ("P-588-3", (1200, 900)))
 
+    def test_a_photo_kept_for_another_jobs_link_is_not_sent_here(self):
+        # Codex review on #766: two jobs can share an item's number. A photo
+        # left on the phone by job 2's link must not be sent as P-588-3 here.
+        self.open()
+        self.page.evaluate("""() => new Promise(ok => {
+            const r = indexedDB.open('levelog-punch', 1);
+            r.onupgradeneeded = () => r.result.createObjectStore('photos');
+            r.onsuccess = () => {
+                const tx = r.result.transaction('photos', 'readwrite');
+                tx.objectStore('photos').put(new Blob(['x'], {type: 'image/jpeg'}),
+                                             'otherjoblink00.SIG/done/P-588-3');
+                tx.objectStore('photos').put(new Blob(['x'], {type: 'image/jpeg'}),
+                                             'P-588-3');      // the key before the fix
+                tx.oncomplete = ok;
+            };
+        })""")
+        self.page.reload()
+        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_timeout(300)
+        self.assertEqual((self.uploads, self.dones), ([], []))
+        self.assertIsNone(self.card("P-588-3").get_attribute("data-ui"))
+
     # ── The photo ───────────────────────────────────────────────────────
 
     def test_the_photo_full_screen_and_back(self):

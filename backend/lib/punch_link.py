@@ -429,7 +429,7 @@ _SCRIPT = r"""
   function bar(card, p) { var i = card.querySelector('.prog i'); if (i) i.style.width = p + '%'; }
 
   function send(card, blob) {
-    var pid = card.getAttribute('data-pid');
+    var pid = card.getAttribute('data-done');
     ui(card, 'sending', blob ? T.sending : T.finishing);
     bar(card, blob ? 3 : 60);
     var up = blob ? new Promise(function (ok) {
@@ -460,7 +460,10 @@ _SCRIPT = r"""
 
   document.querySelectorAll('.card[data-state=open]').forEach(function (card) {
     var inp = card.querySelector('input[type=file]');
-    var pid = card.getAttribute('data-pid');
+    // A photo kept on the phone is this link's, for this item (two jobs can
+    // share an item's number; Codex review on #766): its key is the card's
+    // own address, which names both.
+    var pid = card.getAttribute('data-done');
     if (inp) inp.addEventListener('change', function () {
       var f = inp.files && inp.files[0];
       if (!f) return;
