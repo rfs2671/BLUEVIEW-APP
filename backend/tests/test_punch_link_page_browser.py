@@ -10,12 +10,17 @@ reload; "Skip photo"; the photo full screen. Nothing on the page is wider
 than the screen, and every button is at least 56 px tall.
 
 Needs Python Playwright and its Chromium (in the dev container); skipped
-where they are missing (the CI image). SAVE_SCREENS=<dir> keeps the
-screenshots (the PR's).
+where they are missing (CI has the library, not the browser).
+SAVE_SCREENS=<dir> keeps the screenshots (the PR's).
+
+A Playwright that started but could not launch a browser is stopped before
+skipping: left running, its event loop broke asyncio.run() for every test
+after this file (CI on #766: 1,654 failures).
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -69,18 +74,35 @@ def html(lang="en", reopened=False):
                            wa_url="https://wa.me/17185550100")
 
 
+DEV_CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+
+
+def start_browser(exe=None):
+    """(playwright, browser), or SkipTest with Playwright stopped again."""
+    exe = exe or (DEV_CHROMIUM if os.path.exists(DEV_CHROMIUM) else None)
+    pw = sync_playwright().start()
+    try:
+        return pw, pw.chromium.launch(**({"executable_path": exe} if exe else {}))
+    except Exception as e:
+        pw.stop()
+        raise unittest.SkipTest(f"no Chromium: {type(e).__name__}")
+
+
+@unittest.skipIf(sync_playwright is None, "Playwright is not installed")
+class NoBrowserLeavesNothingRunning(unittest.TestCase):
+
+    def test_a_failed_launch_stops_playwright(self):
+        with self.assertRaises(unittest.SkipTest):
+            start_browser("/nonexistent/chrome")
+        self.assertEqual(asyncio.run(asyncio.sleep(0, "ok")), "ok")
+
+
 @unittest.skipIf(sync_playwright is None, "Playwright is not installed")
 class OnA360PxAndroid(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            cls.pw = sync_playwright().start()
-            exe = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
-            cls.browser = cls.pw.chromium.launch(
-                **({"executable_path": exe} if os.path.exists(exe) else {}))
-        except Exception as e:                          # pragma: no cover
-            raise unittest.SkipTest(f"no Chromium: {e}")
+        cls.pw, cls.browser = start_browser()
         cls.shots = os.environ.get("SAVE_SCREENS")
 
     @classmethod
