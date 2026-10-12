@@ -316,6 +316,9 @@ def clean_caption(words: str) -> str:
     A named area is taken out only at the end ("roof drain clogged" keeps
     its roof)."""
     t = str(words or "")
+    r = room_span(t)
+    if r:
+        t = t[:r[1]] + " " + t[r[2]:]                   # "3d br": the room is the location's
     for rx in (_LOC_UNIT, _LOC_FLOOR):
         t = rx.sub(" ", t)
     t = re.sub(r"(?<![\w#/.-])\d{1,2}\s?[a-z](?![\w/])", " ", t, flags=re.IGNORECASE)
@@ -534,9 +537,61 @@ _LOC_UNIT = re.compile(
 _BARE_UNIT = re.compile(r"(?<![\w#/.-])(?P<f>\d{1,2})\s?(?P<l>[a-z])(?![\w/])", re.IGNORECASE)
 
 
+#: A ROOM inside an apartment, its sub-location: "Light fixture broke 3d br"
+#: is Apt 3D · bedroom (11:03 PM). EN / ES / YI (Hebrew script and as said).
+_ROOMS = [
+    ("bedroom", r"br|bdrm|bed\s*room|dormitorio|habitaci[oó]n|rec[aá]mara|cuarto"
+                r"|שלאַ?פֿ?צימער|שלאפצימער|shlof\s*tsimer|shlofzimer"),
+    ("bathroom", r"bath(?:room)?|bthrm|ba[ñn]o|וואַ?שצימער|באָ?דצימער|vash\s*tsimer|bod\s*tsimer"),
+    ("kitchen", r"kitchen|kit|cocina|קיך|kich"),
+    ("living room", r"lr|living\s*room|living|sala|וווי?נצימער|וואוינצימער|סאַ?לאָ?ן|salon"),
+    ("closet", r"closet|cl[oó]set|armario|שאַ?נק|שאפע|shank"),
+    ("terrace", r"terrace|balcony|terraza|balc[oó]n|טעראַ?סע|טעראסע"),
+]
+_ROOM_ANY = r"(?:" + "|".join(rx for _, rx in _ROOMS) + r")"
+_ROOM_LABEL = [(label, re.compile(r"^(?:" + rx + r")$", re.IGNORECASE)) for label, rx in _ROOMS]
+_ROOM_AFTER = re.compile(r"\s*(?:,\s*)?(?:(?:in|en)\s+(?:the\s+|el\s+|la\s+)?)?(?P<r>" + _ROOM_ANY + r")(?!\w)",
+                         re.IGNORECASE)
+_ROOM_BEFORE = re.compile(r"(?<!\w)(?P<r>" + _ROOM_ANY + r")\s*,?\s*$", re.IGNORECASE)
+_ROOM_END = re.compile(r"(?<!\w)(?:(?:in|en)\s+(?:the\s+|el\s+|la\s+)?)?(?P<r>" + _ROOM_ANY + r")\s*[.!]*\s*$",
+                       re.IGNORECASE)
+#: What a room said as the area alone ("kitchen", then "4C") becomes.
+ROOM_LABELS = tuple(label for label, _ in _ROOMS)
+
+
+def _room_label(word: str) -> Optional[str]:
+    w = multilang.fold(word).strip() if word else ""
+    for label, rx in _ROOM_LABEL:
+        if rx.match(w) or rx.match(str(word or "").strip()):
+            return label
+    return None
+
+
+def room_span(text: str) -> Optional[Tuple[str, int, int]]:
+    """The room next to the caption's unit ("3d br", "br 3d", "4C, in the
+    kitchen") or at its very end -- (label, start, end) -- else None. A room
+    word elsewhere is words ("Bathroom tile 2b broken": Apt 2B only)."""
+    t = str(text or "")
+    unit = _LOC_UNIT.search(t) or _BARE_UNIT.search(re.sub(
+        r"(?<!\w)(?:floor|fl\.?|piso)\s*\d+", lambda m: " " * len(m.group(0)), t, flags=re.I))
+    if not unit:
+        return None
+    m = _ROOM_AFTER.match(t, unit.end())
+    if m:
+        return _room_label(m.group("r")), unit.end(), m.end()
+    m = _ROOM_BEFORE.search(t[:unit.start()])
+    if m:
+        return _room_label(m.group("r")), m.start(), unit.start()
+    m = _ROOM_END.search(t)
+    if m and m.start("r") >= unit.end():
+        return _room_label(m.group("r")), m.start(), m.end()
+    return None
+
+
 def read_location(text: str) -> Dict[str, Optional[str]]:
     """{"floor": "4" | "cellar" | None, "area": "Apt 4F" | "lobby" |
-    "corridor" | None} from words in English, Spanish or Yiddish."""
+    "corridor" | None} from words in English, Spanish or Yiddish; with
+    "room": "bedroom" when a room is named with the unit ("3d br")."""
     t = str(text or "")
     floor = area = None
     m = _LOC_FLOOR.search(t)
@@ -575,7 +630,12 @@ def read_location(text: str) -> Dict[str, Optional[str]]:
         room = read_area(t)          # a room in an apartment: kept, not enough
         if room and not room.startswith("Apt "):
             area = room
-    return {"floor": floor, "area": area}
+    out = {"floor": floor, "area": area}
+    if area and area.startswith("Apt "):
+        r = room_span(t)
+        if r and r[0]:
+            out["room"] = r[0]
+    return out
 
 
 def location_state(floor: Optional[str], area: Optional[str]) -> str:
@@ -599,7 +659,14 @@ def merge_location(it: dict, loc: Dict[str, Optional[str]]) -> bool:
     if loc.get("floor"):
         it["floor"], named = loc["floor"], True
     if loc.get("area"):
+        if str(loc["area"]).startswith("Apt ") and (it.get("area") in ROOM_LABELS
+                                                     or it.get("area") in ("kitchen", "bathroom", "bedroom")):
+            it["room"] = it["area"]                     # "kitchen", then "4C": Apt 4C · kitchen
+        elif not loc.get("room"):
+            it.pop("room", None)                        # a new place: its old room is not in it
         it["area"], named = loc["area"], True
+    if loc.get("room"):
+        it["room"], named = loc["room"], True
     common = it.get("area") in COMMON_AREAS
     if common and not loc.get("floor") and loc.get("area"):
         it["floor"] = UNKNOWN if it.get("area") not in ("cellar", "basement", "roof",
@@ -619,7 +686,17 @@ def location_label(it: dict) -> str:
         parts.append(floor_label(f))
     if a != UNKNOWN:
         parts.append(a if parts else a[:1].upper() + a[1:])
+    if it.get("room") and a != UNKNOWN:
+        parts.append(it["room"])
     return " · ".join(parts)
+
+
+def unit_label(it: dict) -> str:
+    """"Apt 3D · bedroom", "Apt 4D", "lobby" (the area, and its room)."""
+    a = it.get("area") or UNKNOWN
+    if a == UNKNOWN:
+        return ""
+    return f"{a} · {it['room']}" if it.get("room") else a
 
 
 def where_question(it: dict) -> str:
@@ -653,7 +730,7 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
     # The location is its own field: taken out of the words wherever it is
     # ("4d tile chipped", "tile chipped 4d" -> "Tile chipped"), as "add:".
     text = clean_caption(w) if (loc["floor"] or loc["area"]) and w else w
-    return {
+    return {**({"room": loc["room"]} if loc.get("room") else {}),
         "n": n,
         "text": text,
         **({"said": w} if text != w else {}),
@@ -676,7 +753,7 @@ def added_text(it: dict) -> str:
     if len(words) > 60:
         words = words[:57].rstrip() + "…"
     a = it.get("area") or UNKNOWN
-    where = a if a != UNKNOWN and re.match(r"(?i)apt\b", a) else location_label(it)
+    where = unit_label(it) if a != UNKNOWN and re.match(r"(?i)apt\b", a) else location_label(it)
     return (f"Added #{it.get('n')}" + (f" '{words}'" if words else " (photo)")
             + (f" ({where})" if where else "") + ".")
 
@@ -736,7 +813,7 @@ def item_line(it: dict) -> str:
     if trade != UNKNOWN and it.get("trade_guess"):
         trade += "?"                       # a guess from the caption: say if wrong
     area = it.get("area")
-    where = f" ({area})" if area and area != UNKNOWN and area != it.get("floor") else ""
+    where = f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor") else ""
     return f"{it['n']}. {marker(it)} {words}{where} — {trade}".replace("  ", " ")
 
 
@@ -846,6 +923,7 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
         it["floor"] = e["floor"]
     elif e["op"] == "area":
         it["area"] = e["area"]
+        it.pop("room", None)                            # a new place: no old room in it
     return True, f"{e['op']} {e['n']}"
 
 
@@ -855,8 +933,13 @@ def assign_text(sugg: Dict[str, Optional[dict]]) -> str:
     lines = ["Who gets what?"]
     for t, p in sorted(sugg.items()):
         lines.append(f"• {t} → {who_label(p)}")
-    lines.append("Reply 'ok', or fix one: \"electrical → Mike\".")
+    lines.append(ASSIGN_HINT)
     return "\n".join(lines)
+
+
+#: "all → Chris" read like "send to everyone" (11:05 PM).
+ASSIGN_HINT = ("Reply 'ok', fix one (\"electrical → Mike\"), or send the whole list to one "
+               "person (\"whole list → Chris\").")
 
 
 _ASSIGN = re.compile(r"^\s*([a-z /áéíóúñ]+?)\s*(?:→|->|=>|>|:|=|to)\s*(.+?)\s*$", re.IGNORECASE)
@@ -875,14 +958,28 @@ def parse_assign(text: str) -> List[Tuple[str, str]]:
 
 
 _ALL = re.compile(
-    r"^\s*(?:send\s+)?(?:all|everything|the\s+whole\s+(?:list|thing)|whole\s+list|all\s+of\s+(?:it|them)"
-    r"|the\s+(?:whole\s+)?list|todo|todos)\s*(?:items\s*)?(?:→|->|=>|>|:|=|to|goes\s+to|go\s+to|a|para)\s*(?P<name>.+?)\s*[.!]*\s*$",
+    r"^\s*(?:send\s+|give\s+)?(?:all\s+items|all\s+of\s+(?:it|them)|all|everything|the\s+whole\s+(?:list|thing)"
+    r"|whole\s+list|the\s+(?:whole\s+)?list|todo|todos)\s*(?:items\s*)?"
+    r"(?:→|->|=>|>|:|=|to|for|goes\s+to|go\s+to|a|para)\s*(?P<name>.+?)\s*[.!]*\s*$",
     re.IGNORECASE)
+#: The job's own WhatsApp group as the target: the whole list posted there,
+#: each trade's owner @mentioned where known.
+_GROUP = re.compile(
+    r"^\s*(?:(?:send|post|put)\s+(?:it\s+|them\s+|everything\s+|all\s+|the\s+(?:whole\s+)?list\s+)?"
+    r"|(?:all|everything|the\s+(?:whole\s+)?list|whole\s+list)\s+)?"
+    r"(?:(?:to|in|into|on|→|->)\s+)?(?:the\s+|this\s+|our\s+)?(?:gc\s+|job\s+|whatsapp\s+)?group"
+    r"(?:\s+chat)?\s*[.!]*\s*$", re.IGNORECASE)
+_WHO = re.compile(
+    r"^\s*(?:who\s+(?:can|could|do)\s+(?:you|i|it|we)\s+(?:send|give|assign)|who(?:'?s|\s+is)\s+(?:available|there|on\s+(?:this\s+)?job)"
+    r"|(?:what\s+are\s+(?:the|my)\s+)?options|list\s+(?:the\s+)?people|who\s+can\s+(?:i|you)\s+pick"
+    r"|show\s+(?:me\s+)?(?:the\s+)?people|people|who\s*\?)", re.IGNORECASE)
 
 
 def parse_assign_reply(text: str) -> Dict[str, Any]:
     """What an answer to "Who gets what?" says:
-      {"all": name}            "all → Chris", "send all to Chris", "whole list to Chris"
+      {"all": name}            "all → Chris", "everything to Chris GC", "whole list for Chris"
+      {"group": True}          "to the group", "post in group", "GC group"
+      {"who": True}            "who can you send it to?", "options", "list people"
       {"pairs": [(trade, name)]}  "electrical → Mike; paint → Ana"
       {"fill": name}           "Chris from gc." -- for every trade still "?"
       {"ok": True}             "ok"
@@ -893,8 +990,14 @@ def parse_assign_reply(text: str) -> Dict[str, Any]:
     if t.lower().strip(" .!") in ("ok", "okay", "yes", "si", "sí", "yo", "dale", "👍", "good",
                                   "looks good", "correct"):
         return {"ok": True}
+    if _GROUP.match(t):
+        return {"group": True}
+    if _WHO.match(t):
+        return {"who": True}
     m = _ALL.match(t)
     if m:
+        if _GROUP.match(m.group("name")):
+            return {"group": True}
         return {"all": m.group("name")}
     pairs = parse_assign(t)
     if pairs:
@@ -908,12 +1011,24 @@ def parse_assign_reply(text: str) -> Dict[str, Any]:
     return {}
 
 
+#: Words that say WHICH side someone is on: the GC (the company's own users).
+ROLE_TAGS = ("gc team", "gc", "general contractor", "super", "superintendent", "pm",
+             "project manager", "office", "the office", "us", "team", "foreman")
+
+
 def split_name(said: str) -> Tuple[str, str]:
-    """"Chris from gc." -> ("chris", "gc"); "Mike (Bright)" -> ("mike", "bright")."""
+    """"Chris from gc." -> ("chris", "gc"); "Mike (Bright)" -> ("mike", "bright");
+    "Chris GC" / "Chris GC team" / "the super Chris" -> ("chris", "gc" / "super")."""
     t = multilang.fold(str(said or "")).strip().strip(".!,;")
+    t = re.sub(r"^(?:the|to)\s+", "", t)
     m = re.match(r"^(.*?)\s*(?:\(([^)]*)\)|\s(?:from|of|at|with|de|del)\s+(?:the\s+)?(.+))$", t)
     if m:
         return m.group(1).strip(), (m.group(2) or m.group(3) or "").strip()
+    for tag in sorted(ROLE_TAGS, key=len, reverse=True):
+        m = re.match(r"^(.+?)\s+(?:the\s+)?" + re.escape(tag) + r"$", t) \
+            or re.match(r"^(?:the\s+)?" + re.escape(tag) + r"\s+(.+)$", t)
+        if m:
+            return m.group(1).strip(), tag
     return t, ""
 
 
@@ -939,16 +1054,66 @@ def name_candidates(name: str, people: List[Dict[str, Any]]) -> List[dict]:
     hits = [p for p in people if name_hit(p)]
     if not hits and n:
         hits = [p for p in people if n == multilang.fold(p.get("company") or "")]
+    if not hits and n and " " in n and not co:
+        # "Mike Bright": the first name, and the rest names his company.
+        first, rest = n.split(" ", 1)
+        n, co = first, rest
+        hits = [p for p in people if name_hit(p)]
     if co:
+        role = co in ROLE_TAGS
         narrowed = [p for p in hits if co in multilang.fold(p.get("company") or "")
-                    or (co in ("gc", "general contractor", "us", "office", "the office")
-                        and p.get("kind") == "user")]
-        hits = narrowed or hits
+                    or (role and (p.get("kind") == "user"
+                                  or multilang.fold(p.get("company") or "") in ("gc", "gc team")))]
+        hits = narrowed or ([] if role else hits)
     uniq: Dict[tuple, dict] = {}
     for p in hits:
         uniq.setdefault(_person_key(p), p)
     return sorted(uniq.values(), key=lambda p: (not p.get("on_job"),
                                                 multilang.fold(p.get("name") or "")))
+
+
+def closest_names(name: str, people: List[Dict[str, Any]], k: int = 3) -> List[str]:
+    """The k people a name not found is closest to ("Did you mean: …?")."""
+    import difflib
+    n = split_name(name)[0] or multilang.fold(str(name or ""))
+    scored = []
+    for p in people:
+        full = multilang.fold(p.get("name") or "")
+        if not full:
+            continue
+        first = full.split(" ")[0]
+        score = max(difflib.SequenceMatcher(None, n, full).ratio(),
+                    difflib.SequenceMatcher(None, n, first).ratio())
+        scored.append((-score, not p.get("on_job", True), full, p))
+    seen, out = set(), []
+    for *_k, p in sorted(scored, key=lambda x: x[:3]):
+        label = who_label({**p, "not_on_job": not p.get("on_job", True)})
+        if label not in seen:
+            seen.add(label)
+            out.append(label)
+        if len(out) == k:
+            break
+    return out
+
+
+def people_text(people: List[Dict[str, Any]], contacts: List[dict], group_name: str) -> str:
+    """Who a punch list can go to (4): the company's users, People on this
+    job, the subs' punch contacts, and the job's group."""
+    users = sorted({f"{p['name']} · GC team" for p in people if p.get("kind") == "user" and p.get("name")})
+    on_job = sorted({f"{p['name']} · {p.get('company') or '?'}" for p in people
+                     if p.get("kind") != "user" and p.get("on_job") and p.get("name")})
+    subs = sorted({f"{c['name']} · {c.get('company') or '?'} ({c.get('trade') or 'punch contact'})"
+                   for c in contacts if c.get("name")})
+    lines = ["Who can get it:"]
+    if users:
+        lines.append("Your team: " + "; ".join(users))
+    if on_job:
+        lines.append("People on this job: " + "; ".join(on_job))
+    if subs:
+        lines.append("Punch contacts: " + "; ".join(subs))
+    lines.append(f"Or the group: \"to the group\" posts the list in {group_name or 'the job group'}"
+                 " and @mentions each trade's person.")
+    return "\n".join(lines)
 
 
 def pick_person(name: str, people: List[Dict[str, Any]]) -> Optional[dict]:
@@ -985,116 +1150,251 @@ def pick_choice(text: str, options: List[dict]) -> Optional[dict]:
     return None
 
 
-def due_date(words: str, sent_at):
-    """The day a due answer names (Spanish / Yiddish read as English)."""
+# ── DUE ──────────────────────────────────────────────────────────────────────
+#
+# 11:06 PM: "No due date. Asap on all" was ignored and the recap stayed "Due
+# Fri" -- the old fixed default (DEFAULT_DUE). Now:
+#   ASAP        chased every day from tomorrow
+#   no due date never chased; the item is shown open
+#   a day       "today", "tomorrow", "Mon", "by Wed", "Oct 20": chased that day
+# per trade ("electrical Mon") or for all ("all asap"). The project's
+# "Punch items due" setting is the default (ASAP unless changed).
+
+ASAP = "ASAP"
+NO_DUE = "no due date"
+#: The project setting's choices ("punch_due_default"), and the default.
+DUE_DEFAULTS = ("asap", "none", "tomorrow", "fri")
+DEFAULT_DUE_SETTING = "asap"
+_ASAP = re.compile(r"^(?:asap|a\.s\.a\.p\.?|as\s+soon\s+as\s+possible|urgent|right\s+away|immediately|now"
+                   r"|ya|lo\s+antes\s+posible|cuanto\s+antes|urgente|גלייך|תיכף|bald)$", re.IGNORECASE)
+_NO_DUE = re.compile(r"^(?:no\s+(?:due\s+)?(?:date|deadline|due)|none|no\s+due\s+date|whenever|no\s+rush"
+                     r"|sin\s+fecha|sin\s+prisa|nisht\s+eilig)$", re.IGNORECASE)
+
+
+def due_default(setting: Any) -> str:
+    """The project's default due words ("ASAP" unless set otherwise)."""
+    v = str(setting or DEFAULT_DUE_SETTING).lower()
+    return {"asap": ASAP, "none": NO_DUE, "tomorrow": "tomorrow", "fri": "Fri"}.get(v, ASAP)
+
+
+#: Kept for the walks stored with it; new walks use the project's setting.
+DEFAULT_DUE = ASAP
+
+
+def due_words(words: Any) -> Optional[str]:
+    """The due words as kept -- "ASAP", "no due date", or a day the date
+    readers can read ("Mon", "tomorrow", "by Wed" -> "Wed") -- else None."""
     from lib import wa_attention
+    from datetime import datetime, timezone
+    w = re.sub(r"^\s*(?:due\s+|by\s+|para\s+(?:el\s+)?|el\s+|on\s+)+", "", str(words or ""),
+               flags=re.IGNORECASE).strip(" .!")
+    if not w:
+        return None
+    if _ASAP.match(w):
+        return ASAP
+    if _NO_DUE.match(w):
+        return NO_DUE
+    if wa_attention.parse_due(multilang.normalize_when(w), datetime(2026, 1, 5, tzinfo=timezone.utc)):
+        return w
+    return None
+
+
+def due_label(words: Any) -> str:
+    """"due ASAP", "no due date", "due Fri"."""
+    w = str(words or ASAP)
+    return NO_DUE if w == NO_DUE else f"due {w}"
+
+
+def due_date(words: str, sent_at):
+    """The day a due answer names (Spanish / Yiddish read as English): ASAP
+    is tomorrow (then chased every day); no due date is None."""
+    from lib import wa_attention
+    from datetime import timedelta
+    if words == ASAP:
+        return (sent_at + timedelta(days=1)).date()        # a day, as the chase reads due_at
+    if words == NO_DUE or not words:
+        return None
     return wa_attention.parse_due(multilang.normalize_when(words), sent_at)
 
 
+#: "the rest" / "everything else": the trades not named; "all": every trade.
+_REST_WORDS = (r"(?:everything\s+else|everyone\s+else|all\s+else|all\s+others|the\s+others|others"
+               r"|(?:the\s+)?rest|lo\s+dem[aá]s|el\s+resto)")
+_ALL_WORDS = (r"(?:" + _REST_WORDS + r"|all\s+items|all\s+of\s+(?:it|them)|all|everything|everyone"
+              r"|todos|todo)")
 
 
 def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str]]:
-    """"Fri" / "all Friday" -> every trade that day; "electrical Mon, paint
-    Fri" -> per trade. Returns {trade: due words} or None. A day the date
-    readers cannot read is not accepted. Spanish / Yiddish days read too."""
-    from lib import wa_attention
-    from datetime import datetime, timezone
-    probe = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    """"asap" / "all asap" / "Asap on all" / "Fri" -> every trade; "electrical
+    Mon, paint Fri" -> per trade; "no due date" -> none for all. Each part
+    in order, a later one winning ("No due date. Asap on all" -> ASAP).
+    Returns {trade: due words} or None when nothing in it reads as a due."""
     ts = [t for t in trades if t != UNKNOWN]
     out: Dict[str, str] = {}
-    for part in re.split(r"[\n;,]+", str(text or "")):
+    named: set = set()
+    for part in re.split(r"[\n;,]+|\.\s+|\.$", str(text or "")):
         part = part.strip()
         if not part:
             continue
-        m = re.match(r"^\s*([a-z /áéíóúñ]+?)\s+(?:by\s+|para\s+el\s+|el\s+)?(.+)$", part, re.IGNORECASE)
+        m = re.match(r"^\s*([a-z /áéíóúñ]+?)\s+(?:by\s+|due\s+|para\s+el\s+|el\s+)?(.+)$", part, re.IGNORECASE)
         t = trade_word(m.group(1)) if m else None
-        if t and wa_attention.parse_due(multilang.normalize_when(m.group(2)), probe):
-            out[t] = m.group(2).strip()
+        if t and due_words(m.group(2)):
+            out[t] = due_words(m.group(2))
+            named.add(t)
             continue
-        words = re.sub(r"^\s*(?:(?:all|everything|everyone)(?:\s+else)?|(?:the\s+)?rest|all\s+others"
-                       r"|todo|todos|lo\s+dem[aá]s|el\s+resto)\s+", "", part, flags=re.IGNORECASE)
-        if wa_attention.parse_due(multilang.normalize_when(words), probe):
+        rest = bool(re.match(r"^\s*" + _REST_WORDS + r"\b", part, re.IGNORECASE)
+                    or re.search(r"\s(?:on|for|to)\s+" + _REST_WORDS + r"\s*$", part, re.IGNORECASE))
+        words = re.sub(r"^\s*" + _ALL_WORDS + r"\s+", "", part, flags=re.IGNORECASE)
+        words = re.sub(r"\s+(?:on|for|to)\s+" + _ALL_WORDS + r"\s*$", "", words, flags=re.IGNORECASE)
+        d = due_words(words)
+        if d:
             for t2 in ts:
-                out.setdefault(t2, words)
+                if rest and t2 in named:
+                    continue                    # "the rest": not the trades just named
+                out[t2] = d
     return out or None
+
+
+#: Due-ish words: an answer with these that could not be read is asked again.
+_DUE_HINT = re.compile(r"\b(?:due|date|deadline|asap|by|today|tomorrow|tonight|week|monday|tuesday|wednesday"
+                       r"|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|fecha|para\s+el)\b",
+                       re.IGNORECASE)
+DUE_ASK = "Due when? (asap / no date / a day)"
+
+
+def due_said(text: str) -> bool:
+    return bool(_DUE_HINT.search(str(text or "")))
 
 
 # ── SENDING ──────────────────────────────────────────────────────────────────
 
 def _where(it: dict) -> str:
     return " · ".join(x for x in (floor_label(it["floor"]) if it.get("floor") not in (None, UNKNOWN) else "",
-                                  it.get("area") if it.get("area") not in (None, UNKNOWN) else "") if x)
+                                  unit_label(it)) if x)
+
+
+def done_hint(items: List[dict]) -> str:
+    """With a real id from THIS list (11:07 PM: it said "done P23")."""
+    pid = next((it.get("pid") for it in items if it.get("pid")), "P-1")
+    return f"Reply \"done {pid}\" (a photo helps) when each one is finished."
+
+
+def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None) -> List[str]:
+    """Items under their floor, then trade; a trade's owner @mentioned
+    beside it when `mentions` names one."""
+    lines: List[str] = []
+    by_floor: Dict[str, Dict[str, List[dict]]] = {}
+    for it in items:
+        by_floor.setdefault(it.get("floor") or UNKNOWN, {}).setdefault(
+            it.get("trade") or UNKNOWN, []).append(it)
+    for f in sorted(by_floor, key=_floor_key):
+        lines.append(f"*{floor_label(f)}*")
+        for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
+            who = (mentions or {}).get(t)
+            lines.append(f"_{t}_" + (f" {who}" if who else ""))
+            for it in by_floor[f][t]:
+                u = unit_label(it)
+                lines.append(f"• {it['pid']} {it.get('text') or ''}"
+                             f"{(' (' + u + ')') if u and u != f else ''}")
+    return lines
 
 
 def group_text(name: str, items: List[dict], due_words: str,
                handle: Optional[str] = None, grouped: bool = False) -> str:
-    """One message per assignee: @them, their items, the due day. `handle`
-    is their token from lib/wa_mention ("@15551234567" mentions them for
-    real); without it, "@Name". `grouped` (the whole list to one person):
-    the items under their floor, then trade."""
-    lines = [f"{handle or '@' + name} punch list — due {due_words}:"]
+    """One message per assignee: @them, their items, the due. `handle` is
+    their token from lib/wa_mention ("@15551234567" mentions them for real);
+    without it, "@Name". `grouped`: the items under their floor, then trade."""
+    lines = [f"{handle or '@' + name} punch list — {due_label(due_words)}:"]
     if grouped:
-        by_floor: Dict[str, Dict[str, List[dict]]] = {}
-        for it in items:
-            by_floor.setdefault(it.get("floor") or UNKNOWN, {}).setdefault(
-                it.get("trade") or UNKNOWN, []).append(it)
-        for f in sorted(by_floor, key=_floor_key):
-            lines.append(f"*{floor_label(f)}*")
-            for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
-                lines.append(f"_{t}_")
-                for it in by_floor[f][t]:
-                    a = it.get("area")
-                    lines.append(f"• {it['pid']} {it.get('text') or ''}"
-                                 f"{(' (' + a + ')') if a not in (None, UNKNOWN) and a != f else ''}")
+        lines.extend(_list_lines(items))
     else:
         for it in items:
             where = _where(it)
             lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
-    lines.append("Reply \"done P23\" (a photo helps) when each one is finished.")
+    lines.append(done_hint(items))
     return "\n".join(lines)
 
 
-DEFAULT_DUE = "Fri"
+def dm_text(job_name: str, items: List[dict], due_words: str) -> str:
+    """The whole list, by DM to one person."""
+    return "\n".join([f"{job_name} punch list — {due_label(due_words)}:", *_list_lines(items),
+                      done_hint(items)])
+
+
+def full_list_text(job_name: str, items: List[dict], due_words: str,
+                   mentions: Dict[str, str]) -> str:
+    """The whole list posted in the job's group, each trade's owner
+    @mentioned beside it where known."""
+    return "\n".join([f"{job_name} punch list — {due_label(due_words)}:",
+                      *_list_lines(items, mentions), done_hint(items)])
 
 
 def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
-               mode: str = DEFAULT_SEND_MODE, whole: Optional[dict] = None) -> str:
-    """The exact send, before it happens: who gets which numbers, and when.
-    "Chris Weiss (GC team): #2, #3 · Dov Klein (Power Direct): #1" -- 'ok' sends."""
+               mode: str = DEFAULT_SEND_MODE, whole: Optional[dict] = None, *,
+               target: Optional[str] = None, group_name: str = "",
+               default_due: str = ASAP) -> str:
+    """The exact send, before it happens: where it goes, who gets which
+    numbers, and when. 'ok' sends."""
     live = ordered([it for it in items if it.get("status", "draft") != "dropped"])
-    groups: Dict[str, Dict[str, Any]] = {}
-    for it in live:
-        p = whole or assign.get(it.get("trade") or UNKNOWN)
-        k = who_label(p)
-        groups.setdefault(k, {"nums": [], "dues": set()})
-        groups[k]["nums"].append(it["n"])
-        groups[k]["dues"].add(due.get(it.get("trade") or UNKNOWN) or DEFAULT_DUE)
-    parts = [f"{k}: {', '.join('#' + str(n) for n in sorted(g['nums']))}" for k, g in groups.items()]
-    dues = sorted({d for g in groups.values() for d in g["dues"]})
-    if len(dues) == 1:
-        when = f"due {dues[0]}"
+    shadow = " (shadow mode: nothing will be sent)" if mode != "live" else ""
+    group = group_name or "the job group"
+
+    def nums(ns):
+        return ", ".join("#" + str(n) for n in sorted(ns))
+    if target == "group":
+        owners = sorted({f"{who_label(assign.get(t))} ({t})"
+                         for t in {it.get("trade") for it in live} if assign.get(t)})
+        head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}",
+                ("Mentioning " + "; ".join(owners)) if owners
+                else "No one to mention (no trade has a name)."]
+    elif whole:
+        head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
+                f"{nums(it['n'] for it in live)}"]
     else:
-        by_t = {}
+        groups: Dict[str, List[int]] = {}
         for it in live:
-            by_t[it.get("trade") or UNKNOWN] = due.get(it.get("trade") or UNKNOWN) or DEFAULT_DUE
+            groups.setdefault(who_label(assign.get(it.get("trade") or UNKNOWN)), []).append(it["n"])
+        head = [f"Ready to post in {group}{shadow}, mentioning each one:",
+                " · ".join(f"{k}: {nums(v)}" for k, v in groups.items())]
+    by_t: Dict[str, str] = {}
+    for it in live:
+        by_t[it.get("trade") or UNKNOWN] = due.get(it.get("trade") or UNKNOWN) or default_due
+    days = sorted(set(by_t.values()))
+    if len(days) <= 1:
+        when = due_label(days[0] if days else default_due)
+    else:
         counts: Dict[str, int] = {}
         for d in by_t.values():
             counts[d] = counts.get(d, 0) + 1
-        rest = max(sorted(counts), key=lambda d: counts[d])     # the day most trades share
-        when = "due " + ", ".join([f"{t} {d}" for t, d in sorted(by_t.items()) if d != rest]
-                                  + [f"the rest {rest}"])
-    head = "Ready to send" + (" (shadow mode: nothing will be posted)" if mode != "live" else "") + ":"
-    return "\n".join([head, " · ".join(parts), capitalize(when), "",
-                      "Reply 'ok' to send. Or change it: \"electrical → Mike\", \"all → Chris\", "
-                      "\"electrical Mon\", or 'cancel'."])
+        rest = max(sorted(counts), key=lambda d: counts[d])     # the one most trades share
+        short = lambda d: "no date" if d == NO_DUE else d        # noqa: E731
+        when = "due " + ", ".join([f"{t} {short(d)}" for t, d in sorted(by_t.items()) if d != rest]
+                                  + [f"the rest {short(rest)}"])
+    return "\n".join(head + [capitalize(when), "",
+                             "Reply 'ok' to send. Or change it: \"electrical → Mike\", "
+                             "\"whole list → Chris\", \"to the group\", \"asap\" / \"electrical Mon\", "
+                             "or 'cancel'."])
 
 
-def shadow_text(batches: List[Dict[str, Any]]) -> str:
-    """What the walker sees while sends are in shadow: what WOULD be posted."""
-    lines = ["Punch sends are in shadow mode: nothing was posted. Would send:"]
+def destination(b: Dict[str, Any], group_name: str = "", live: bool = False) -> str:
+    """"Would DM Chris Weiss (GC team)" / "Would post in 588 Thomas St,
+    mentioning Dov Klein" (live: "DM'd …" / "Posted in …")."""
+    if b.get("via") == "dm":
+        return f"{'DM' + chr(39) + 'd' if live else 'Would DM'} {b.get('who') or b['name']}"
+    names = b.get("mentions_named") or ([b["name"]] if b.get("name") else [])
+    tail = f", mentioning {', '.join(names)}" if names else ""
+    return f"{'Posted' if live else 'Would post'} in {group_name or 'the job group'}{tail}"
+
+
+def shadow_text(batches: List[Dict[str, Any]], group_name: str = "") -> str:
+    """What the walker sees while sends are in shadow: where each message
+    WOULD go, and what it would say."""
+    lines = ["Punch sends are in shadow mode: nothing was sent."]
     for b in batches:
         lines.append("")
-        lines.append(group_text(b["name"], b["items"], b["due_words"], grouped=bool(b.get("grouped"))))
+        lines.append(destination(b, group_name) + ":")
+        lines.append(b.get("text") or group_text(b["name"], b["items"], b["due_words"],
+                                                 grouped=bool(b.get("grouped"))))
         if b.get("mention_resolved") is False:
             lines.append(f"(@{b['name']}: {NO_NUMBER_NOTE})")
         if b.get("photos"):
@@ -1110,6 +1410,18 @@ _SUPER_OK = re.compile(r"^\s*(?:P-?[\w-]*\d+)\s*(?:is\s+)?(ok|okay|good|approved
                        re.IGNORECASE)
 _SUPER_NOT = re.compile(r"^\s*(?:P-?[\w-]*\d+)\s*(?:is\s+)?(not done|not ok|no|reopen|redo|incomplete|no est[aá]|falta)\b",
                         re.IGNORECASE)
+
+
+_DONE_REF = re.compile(r"^\s*(?:done|finished|fixed|listo|terminado|fartik)\s*#?\s*"
+                       r"(?:p-?(?:(?P<code>[a-z0-9]{1,12})-)?)?(?P<seq>\d{1,5})\s*[.!]*\s*$", re.IGNORECASE)
+
+
+def parse_done_ref(text: str) -> Optional[Tuple[Optional[str], int]]:
+    """"done 1", "done #1", "done P1", "done P-588-1" -> (code or None, 1)."""
+    m = _DONE_REF.match(str(text or ""))
+    if not m:
+        return None
+    return ((m.group("code") or "").upper() or None), int(m.group("seq"))
 
 
 def sub_done(text: str) -> bool:

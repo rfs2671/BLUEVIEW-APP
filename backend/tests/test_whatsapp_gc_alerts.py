@@ -620,7 +620,10 @@ class TheSettingsEndpoints(unittest.TestCase):
                                     "groups", "send_window", "chase_weekends", "punch_sends",
                                     # Who a punch list goes to, each sub's punch contact.
                                     "punch_to", "punch_to_user", "punch_to_options",
-                                    "punch_contacts", *server.wa_alerts.SWITCHES})
+                                    "punch_contacts",
+                                    # The default due (11:06 PM: it was a fixed "Fri").
+                                    "punch_due_default", "punch_due_options",
+                                    *server.wa_alerts.SWITCHES})
 
     def test_a_pm_cannot_read_or_change(self):
         with _Ctx(db=_world()):

@@ -45707,6 +45707,10 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
     # Each sub's punch contact: {trade row id: People (sender map) id}.
     pc = stored.get("punch_contacts")
     out["punch_contacts"] = {str(k): str(v) for k, v in pc.items() if v} if isinstance(pc, dict) else {}
+    # "Punch items due": the due a walk's items get unless the walker says
+    # (ASAP by default; it was a fixed "Fri" -- 11:06 PM).
+    out["punch_due_default"] = stored.get("punch_due_default") \
+        if stored.get("punch_due_default") in punch.DUE_DEFAULTS else punch.DEFAULT_DUE_SETTING
     return out
 
 
@@ -47256,9 +47260,9 @@ async def _attention_process(msg: dict, ctx: dict, report: dict,
     group_id, project_id, company_id = ctx["group_id"], ctx["project_id"], ctx["company_id"]
     text = wa_attention_state.text_of(msg)
     msg = dict(msg, body=text)
-    if punch.parse_pid(text):
-        # A punch item named by its id: "done P23" (ready to check), "P23
-        # ok" / "P23 not done" (closed / reopened).
+    if punch.parse_pid(text) or punch.parse_done_ref(text):
+        # A punch item named by its id: "done P23" / "done 1" (ready to
+        # check), "P23 ok" / "P23 not done" (closed / reopened).
         try:
             if await _punch_group_message(msg, ctx):
                 report["punch"] = report.get("punch", 0) + 1
@@ -48430,7 +48434,11 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         items = await db.attention_items.find(
             {"type": {"$in": list(wa_chase.CHASE_TYPES)},
              "status": {"$in": list(wa_chase.CHASE_STATUSES)},
-             "due.due_at": day.isoformat()}).to_list(5000)
+             # Due today -- or ASAP and due by today: chased every day from
+             # its first (Codex review on #759).
+             "$or": [{"due.due_at": day.isoformat()},
+                     {"due.due_text": punch.ASAP, "due.due_at": {"$lte": day.isoformat()}}]}
+        ).to_list(5000)
     except Exception as e:
         logger.warning(f"[chase] items read failed: {type(e).__name__}")
         return report
@@ -61785,6 +61793,13 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
 
     # Questions and verdicts work with or without a walkthrough.
     if not parsed.get("has_image") and not voice:
+        ref = punch.parse_done_ref(text)
+        if ref:
+            # A whole list DM'd to someone: their "done P-588-1" comes here.
+            reply = await _punch_dm_done(ident, dm_chat, ref, text, parsed, now)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+                return True
         q = punch.parse_query(text)
         if q:
             await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
@@ -62249,6 +62264,16 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             await _punch_save(sess, choose=None)
             return await _punch_assign_to(sess, dm_chat, assign, choose["target"], picked, [])
     r = punch.parse_assign_reply(text)
+    if r.get("group"):
+        # The job's group: the whole list posted there, each trade's owner
+        # @mentioned where known. Recap first; 'ok' sends.
+        await _punch_save(sess, status="recap", target="group", whole=None, choose=None)
+        return await _punch_show_recap(sess, dm_chat)
+    if r.get("who"):
+        # 11:05 PM: "who can you send it to?" got the same list again.
+        await send_whatsapp_message(dm_chat, await _punch_people_text(sess) + "\n\n"
+                                    + punch.assign_text(assign))
+        return True
     if choose and not (r.get("all") or r.get("pairs") or r.get("fill")):
         await send_whatsapp_message(dm_chat, punch.which_text(choose["said"], choose["options"]))
         return True
@@ -62270,6 +62295,10 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         person = resolve(r["all"], "all")
         if person:
             return await _punch_assign_to(sess, dm_chat, assign, "all", person, [])
+        if miss:
+            await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
+                                        + punch.assign_text(assign))
+            return True
     elif r.get("pairs"):
         for t, name in r["pairs"]:
             person = resolve(name, t)
@@ -62289,6 +62318,10 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         person = resolve(r["fill"], "fill")
         if person:
             return await _punch_assign_to(sess, dm_chat, assign, "fill", person, [])
+        if miss:
+            await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
+                                        + punch.assign_text(assign))
+            return True
     elif not r.get("ok"):
         await send_whatsapp_message(dm_chat, punch.assign_text(assign))
         return True
@@ -62298,7 +62331,41 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
                           else sess.get("whole"))
         await send_whatsapp_message(dm_chat, punch.which_text(ask["said"], ask["options"]))
         return True
-    return await _punch_assign_to(sess, dm_chat, assign, None, None, miss)
+    if miss:
+        await _punch_save(sess, assign=assign, whole=None, target=None)
+        await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
+                                    + punch.assign_text(assign))
+        return True
+    return await _punch_assign_to(sess, dm_chat, assign, None, None, [])
+
+
+async def _punch_people_text(sess) -> str:
+    """Who this walk's list can go to (users, People on this job, the subs'
+    punch contacts, the group)."""
+    pool = await _punch_name_pool(sess)
+    settings = await _whatsapp_project_settings(sess["project_id"])
+    project = await db.projects.find_one(
+        {"_id": to_query_id(sess["project_id"]),
+         "company_id": _company_id_filter(sess["company_id"])}) or {}
+    contacts = []
+    rows = {str(r.get("id")): r for r in _active_assignments(project)}
+    for rid, mid in (settings.get("punch_contacts") or {}).items():
+        p = next((x for x in pool if x.get("kind") == "sender_map" and str(x.get("id")) == str(mid)), None)
+        if p and rid in rows:
+            contacts.append({"name": p.get("name"), "company": rows[rid].get("company"),
+                             "trade": punch.trade_word(str(rows[rid].get("trade") or ""))})
+    return punch.people_text(pool, contacts, await _punch_group_name(settings.get("gc_group_id")))
+
+
+async def _punch_group_name(group_id: Optional[str]) -> str:
+    """The job's linked WhatsApp group, by its name."""
+    if not group_id:
+        return ""
+    try:
+        g = await db.whatsapp_groups.find_one({"wa_group_id": str(group_id)}, {"group_name": 1})
+    except Exception:
+        g = None
+    return str((g or {}).get("group_name") or "").strip() or "the job group"
 
 
 async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
@@ -62306,8 +62373,8 @@ async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
     list again while any trade is "?" or a name was unknown, else the
     recap -- where only 'ok' sends."""
     if target == "all":
-        # THE WHOLE LIST to one person: one message, by floor and trade.
-        await _punch_save(sess, status="recap", whole=_punch_who(person), choose=None,
+        # THE WHOLE LIST to one person: one message, by floor and trade, by DM.
+        await _punch_save(sess, status="recap", whole=_punch_who(person), choose=None, target=None,
                           assign={t: _punch_who(person) for t in assign})
         return await _punch_show_recap(sess, dm_chat)
     if target == "fill":
@@ -62317,11 +62384,7 @@ async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
         assign[target] = _punch_who(person)
     # Per trade now: a whole list ("all → Chris", or the one-person setting)
     # gave way to "electrical → Mike" (Codex review on #756).
-    await _punch_save(sess, assign=assign, whole=None)
-    if miss:
-        await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss)) + "\n\n"
-                                    + punch.assign_text(assign))
-        return True
+    await _punch_save(sess, assign=assign, whole=None, target=None)
     if any(not p for p in assign.values()):
         await send_whatsapp_message(dm_chat, punch.assign_text(assign))
         return True
@@ -62329,9 +62392,13 @@ async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
     return await _punch_show_recap(sess, dm_chat)
 
 
-def _punch_unknown(names: str) -> str:
+def _punch_unknown(names: str, pool: Optional[List[dict]] = None) -> str:
+    """Not a name anyone the list may go to answers to -- and the three
+    closest who may ("Did you mean: Chris Weiss (GC team)?")."""
+    near = punch.closest_names(names.split(",")[0], pool or [])
     return (f"I don't know {names} on this job. A name has to be in People, a user of "
-            "your company, or a sub's punch contact (Project → WhatsApp).")
+            "your company, or a sub's punch contact (Project → WhatsApp)."
+            + (f" Did you mean: {', '.join(near)}?" if near else ""))
 
 
 #: Stages after the photos are in: a photo sent then is one more item.
@@ -62430,7 +62497,7 @@ async def _punch_back_to(sess, dm_chat, prior, it, head) -> bool:
     elif trade not in assign:
         assign[trade] = _punch_who((await _punch_suggest(sess, [trade])).get(trade))
     await _punch_save(sess, assign=assign)
-    if prior in ("recap", "due") and assign.get(trade):
+    if prior in ("recap", "due") and (assign.get(trade) or sess.get("target") == "group"):
         await _punch_save(sess, status=prior)
         return await _punch_show_recap(sess, dm_chat, back)
     await _punch_save(sess, status="assign")
@@ -62477,7 +62544,9 @@ async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
     mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
         else punch.DEFAULT_SEND_MODE
     await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "") + punch.recap_text(
-        sess["items"], sess.get("assign") or {}, sess.get("due") or {}, mode, sess.get("whole")))
+        sess["items"], sess.get("assign") or {}, sess.get("due") or {}, mode, sess.get("whole"),
+        target=sess.get("target"), group_name=await _punch_group_name(settings.get("gc_group_id")),
+        default_due=punch.due_default(settings.get("punch_due_default"))))
     return True
 
 
@@ -62491,20 +62560,27 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         return True
     if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok"):
         live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
-        due = {t: (sess.get("due") or {}).get(t) or punch.DEFAULT_DUE
-               for t in {it["trade"] for it in live}}
+        settings = await _whatsapp_project_settings(sess["project_id"])
+        default = punch.due_default(settings.get("punch_due_default"))
+        due = {t: (sess.get("due") or {}).get(t) or default for t in {it["trade"] for it in live}}
         await _punch_save(sess, due=due)
         await send_whatsapp_message(dm_chat, await _punch_send(ident, sess))
         return True
-    trades = sorted((sess.get("assign") or {}).keys())
+    live_trades = {it["trade"] for it in sess["items"] if it.get("status", "draft") != "dropped"}
+    trades = sorted(set((sess.get("assign") or {}).keys()) | live_trades)
     due = punch.parse_due_answer(text, trades)
     if due:
         await _punch_save(sess, due={**(sess.get("due") or {}), **due})
         return await _punch_show_recap(sess, dm_chat)
     r = punch.parse_assign_reply(text)
-    if r.get("all") or r.get("pairs"):
+    if r.get("all") or r.get("pairs") or r.get("group") or r.get("who"):
         await _punch_save(sess, status="assign")
         return await _punch_assign_turn(ident, sess, dm_chat, text)
+    if punch.due_said(text):
+        # 11:06 PM: "No due date. Asap on all" was ignored. A due that could
+        # not be read is asked, never dropped.
+        await send_whatsapp_message(dm_chat, punch.DUE_ASK)
+        return True
     return await _punch_show_recap(sess, dm_chat)
 
 
@@ -62728,23 +62804,30 @@ async def _recipient_refused(company_id: Any, project_id: Any, group_id: Optiona
 
 
 async def _punch_send(ident: dict, sess: dict) -> str:
-    """Make the punch items (and their attention items: confirmed owner, due
-    date, chased by the chase engine), then post one message per assignee --
-    or, in shadow, tell the walker what WOULD be posted."""
+    """Make the punch items (and their attention items: confirmed owner, due,
+    chased by the chase engine), then send -- or, in shadow, tell the walker
+    what WOULD be sent, and where:
+      the whole list to one person  -> a DM to them
+      "to the group"                -> the whole list posted in the job's
+                                       group, each trade's owner @mentioned
+      per trade (default)           -> one post per person in the group."""
     now = datetime.now(timezone.utc)
     settings = await _whatsapp_project_settings(sess["project_id"])
     mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
         else punch.DEFAULT_SEND_MODE
+    default_due = punch.due_default(settings.get("punch_due_default"))
     group_id = settings.get("gc_group_id")
-    if not group_id:
+    whole = sess.get("whole")
+    to_group = sess.get("target") == "group"
+    if not group_id and not whole:
         return ("This job has no WhatsApp group linked (Project → WhatsApp), so there is "
-                "nowhere to send the punch list. The draft is kept.")
+                "nowhere to post the punch list. The draft is kept.")
     # NO ONE THE COMPANY DID NOT NAME: every assignee checked before anything
     # is made or posted (live or shadow).
     refused = []
     to_check = dict(sess.get("assign") or {})
-    if sess.get("whole"):
-        to_check = {t: sess["whole"] for t in to_check} or {"all": sess["whole"]}
+    if whole:
+        to_check = {t: whole for t in to_check} or {"all": whole}
     for t, person in sorted(to_check.items()):
         why = await _recipient_refusal(sess["company_id"], person) if person else None
         if why:
@@ -62760,36 +62843,55 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         names = "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)
         return (f"Not sent: {names} — {RECIPIENT_REFUSED}. Nothing was posted.\n\n"
                 + punch.assign_text(assign))
+    if whole and not to_group and not whole.get("jid"):
+        await _punch_save(sess, status="recap")
+        return (f"{punch.who_label(whole)} has no WhatsApp number to DM. Say \"to the group\" "
+                "to post it in the job's group, or name someone else (\"whole list → Mike\").")
     walker_digits = wa_dm.phone_digits(sess.get("chat") or "")
     due_of = {t: w for t, w in (sess.get("due") or {}).items()}
-    whole = sess.get("whole")
+    group_name = await _punch_group_name(group_id)
+    live = punch.ordered([i for i in sess["items"] if i.get("status", "draft") != "dropped"])
+    # Who each item goes to (None: the group, with no one to mention).
+    owner_of = (lambda it: whole) if whole else (lambda it: (sess.get("assign") or {}).get(it["trade"]))
     by_person: Dict[str, dict] = {}
-    for it in punch.ordered([i for i in sess["items"] if i.get("status", "draft") != "dropped"]):
-        person = whole or (sess.get("assign") or {}).get(it["trade"])
-        if not person:
+    for it in live:
+        person = owner_of(it)
+        if not person and not to_group:
             continue
-        b = by_person.setdefault(f"{person['kind']}:{person['id']}",
-                                 {"person": person, "items": [], "dues": {}})
+        key = "group" if to_group else f"{person['kind']}:{person['id']}"
+        b = by_person.setdefault(key, {"person": None if to_group else person, "items": [], "dues": {}})
         b["items"].append(it)
-        b["dues"][it["trade"]] = due_of.get(it["trade"]) or punch.DEFAULT_DUE
+        b["dues"][it["trade"]] = due_of.get(it["trade"]) or default_due
     for b in by_person.values():
-        # One day for all of a person's items, else "electrical Mon, tile Fri".
+        # One due for all of a message's items, else "electrical Mon, tile Fri".
         days = sorted(set(b["dues"].values()))
         b["due_words"] = days[0] if len(days) == 1 else ", ".join(
-            f"{t} {d}" for t, d in sorted(b["dues"].items()))
-    batches = []
-    # Real @mentions: every assignee resolved together (one get-lid call
-    # per 50 unresolved @lids).
-    named = {k: {**b["person"], "name": b["person"].get("name") or b["person"].get("company") or ""}
-             for k, b in by_person.items()}
+            f"{t} {punch.due_label(d)}" for t, d in sorted(b["dues"].items()))
+    # Real @mentions: every person resolved together (one get-lid call per 50
+    # unresolved @lids) -- per trade owner for the group post.
+    people = {}
+    for k, b in by_person.items():
+        if to_group:
+            for it in b["items"]:
+                p = (sess.get("assign") or {}).get(it["trade"])
+                if p:
+                    people.setdefault(f"{p['kind']}:{p['id']}", p)
+        else:
+            people[k] = b["person"]
+    named = {k: {**p, "name": p.get("name") or p.get("company") or ""} for k, p in people.items()}
     tgts = dict(zip(named, await _mention_targets(list(named.values()), sess["company_id"], now)))
+    batches = []
     for key, b in by_person.items():
-        person, rows = b["person"], []
+        rows = []
         for it in b["items"]:
+            person = owner_of(it)
             seq = await _punch_next_seq(sess["project_id"])
             pid = punch.punch_id(sess["job_code"] or "JOB", seq)
-            item_due = b["dues"].get(it["trade"]) or punch.DEFAULT_DUE
+            item_due = b["dues"].get(it["trade"]) or default_due
             due_at = punch.due_date(item_due, now)
+            due_doc = {"due_text": "" if item_due == punch.NO_DUE else item_due,
+                       "due_at": due_at.isoformat() if due_at else None}
+            via = "group_list" if to_group else ("dm" if whole else "group")
             # `pid` is what people say ("P-588-23"); the stored id is scoped to
             # the project, since two jobs can share a street number.
             row = {"_id": f"{sess['project_id']}:{pid}", "pid": pid, "seq": seq,
@@ -62797,25 +62899,25 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                    "project_id": sess["project_id"], "group_id": group_id,
                    "text": it.get("text") or "", "voice": it.get("voice"),
                    "photo_key": it.get("photo_key"), "extra_photos": it.get("extra_photos") or [],
-                   "floor": it.get("floor"), "area": it.get("area"), "trade": it.get("trade"),
-                   "assignee": person, "created_by": sess["user_id"], "walk_id": sess["_id"],
-                   "created_at": it.get("at") or now, "assigned_at": now,
-                   "due": {"due_text": item_due, "due_at": due_at.isoformat() if due_at else None},
-                   "status": "open", "send_mode": mode,
+                   "floor": it.get("floor"), "area": it.get("area"), "room": it.get("room"),
+                   "trade": it.get("trade"), "n": it.get("n"),
+                   "assignee": person, "sent_via": via, "created_by": sess["user_id"],
+                   "walk_id": sess["_id"], "created_at": it.get("at") or now, "assigned_at": now,
+                   "due": due_doc, "status": "open", "send_mode": mode,
                    "history": [{"at": now, "action": "sent", "to": "open", "by": sess["user_id"],
-                                "mode": mode}],
+                                "mode": mode, "via": via}],
                    "completion": None, "closed_by": None, "closed_at": None}
             ev_id = f"punch:{pid}"
+            owner = ({k: person.get(k) for k in ("kind", "id", "name", "jid")}
+                     | {"status": "resolved", "reason": None, "source": "punch",
+                        "sub_company": person.get("company")}) if person else \
+                {"status": "unknown", "reason": "no one named for this trade", "source": "punch"}
             att = {
                 "company_id": sess["company_id"], "project_id": sess["project_id"],
                 "group_id": group_id, "type": "request", "status": "open",
                 "summary": f"{pid}: {it.get('text') or ''}"[:200],
-                "owner": {k: person.get(k) for k in ("kind", "id", "name", "jid")}
-                         | {"status": "resolved", "reason": None, "source": "punch",
-                            "sub_company": person.get("company")},
-                "requester": None,
-                "due": {"due_text": item_due, "due_at": due_at.isoformat() if due_at else None,
-                        "due_source": "parsed" if due_at else "none"},
+                "owner": owner, "requester": None,
+                "due": {**due_doc, "due_source": "parsed" if due_at else "none"},
                 "importance": "normal", "tags": ["punch"],
                 "evidence": {"message_id": ev_id, "message_key": ev_id, "quote": it.get("text") or pid,
                              "verified": True, "sent_at": now, "sender": walker_digits,
@@ -62832,53 +62934,84 @@ async def _punch_send(ident: dict, sess: dict) -> str:
             await db[punch.COLLECTION].insert_one(row)
             rows.append(row)
         photos = sum(1 for r in rows if r.get("photo_key")) + sum(len(r["extra_photos"]) for r in rows)
-        tgt = tgts[key]
-        for r in rows:
-            r["mention"] = {"resolved": tgt["resolved"], "source": tgt["source"]}
-            await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {"mention": r["mention"]}})
-        batches.append({"name": person.get("name") or person.get("company") or "", "items": rows,
-                        "due_words": b["due_words"], "photos": photos, "jid": person.get("jid"),
-                        "target": tgt, "mention_resolved": tgt["resolved"],
-                        "grouped": bool(whole)})
+        batch = {"items": rows, "due_words": b["due_words"], "photos": photos, "grouped": True}
+        if to_group:
+            mentions, named_list, tlist = {}, [], []
+            for t in sorted({r["trade"] for r in rows}):
+                p = (sess.get("assign") or {}).get(t)
+                tgt = tgts.get(f"{p['kind']}:{p['id']}") if p else None
+                if tgt:
+                    mentions[t] = tgt["handle"]
+                    tlist.append(tgt)
+                    if p.get("name") not in named_list:
+                        named_list.append(p.get("name"))
+            for r in rows:
+                p = r.get("assignee")
+                tgt = tgts.get(f"{p['kind']}:{p['id']}") if p else None
+                r["mention"] = {"resolved": bool(tgt and tgt["resolved"]),
+                                "source": tgt["source"] if tgt else None}
+                await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {"mention": r["mention"]}})
+            batch.update(via="group_list", name="", targets=tlist, mentions_named=named_list,
+                         text=punch.full_list_text(sess.get("job_name") or "", rows,
+                                                   b["due_words"], mentions))
+        else:
+            person = b["person"]
+            tgt = tgts[key]
+            for r in rows:
+                r["mention"] = {"resolved": tgt["resolved"], "source": tgt["source"]}
+                await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {"mention": r["mention"]}})
+            name = person.get("name") or person.get("company") or ""
+            batch.update(name=name, who=punch.who_label(person), jid=person.get("jid"), target=tgt,
+                         mention_resolved=None if whole else tgt["resolved"])
+            if whole:
+                batch.update(via="dm", text=punch.dm_text(sess.get("job_name") or "", rows,
+                                                         b["due_words"]))
+            else:
+                batch.update(via="group", grouped=False,
+                             text=punch.group_text(name, rows, b["due_words"], handle=tgt["handle"]))
+        batches.append(batch)
     await _punch_save(sess, status="sent", sent_at=now, send_mode=mode)
     logger.info(f"[punch] sent walk={sess['_id']} mode={mode} items="
-                f"{sum(len(b['items']) for b in batches)} people={len(batches)}")
+                f"{sum(len(b['items']) for b in batches)} messages={len(batches)}")
     if mode != "live":
-        return punch.shadow_text(batches)
+        return punch.shadow_text(batches, group_name)
     return await _punch_post(sess, group_id, batches)
 
 
 async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
-    """Post each assignee's message (then its photos). What did not go out is
-    kept on the walk: "resend" tries those again. Success is only said for
-    what WaAPI accepted."""
-    failed, photo_fail = [], 0
+    """Send each message (then its photos): a DM, or a post in the group.
+    What did not go out is kept on the walk: "resend" tries those again.
+    Success is only said for what WaAPI accepted."""
+    failed, photo_fail, done = [], 0, []
+    group_name = await _punch_group_name(group_id)
     for b in batches:
-        tgt = b.get("target") or wa_mention.target(b["name"], None)
-        ok = await _group_post(group_id, punch.group_text(b["name"], b["items"], b["due_words"],
-                                                          handle=tgt["handle"],
-                                                          grouped=bool(b.get("grouped"))), [tgt])
+        if b.get("via") == "dm":
+            chat = b.get("jid")
+            ok = bool(chat) and bool(await send_whatsapp_message(chat, b["text"]))
+        else:
+            chat = group_id
+            ok = await _group_post(group_id, b["text"], b.get("targets") or
+                                   [b.get("target") or wa_mention.target(b["name"], None)])
         if not ok:
             failed.append(b)
             continue
+        done.append(b)
         for r in b["items"]:
             for key in [r.get("photo_key"), *(r.get("extra_photos") or [])]:
-                if key and not await _punch_send_photo(group_id, key, r["pid"]):
+                if key and not await _punch_send_photo(chat, key, r["pid"]):
                     photo_fail += 1
-    sent = [b for b in batches if b not in failed]
-    n = sum(len(b["items"]) for b in sent)
     lines = []
-    if sent:
-        lines.append(f"Sent {n} item{'s' if n != 1 else ''} to {len(sent)} "
-                     f"{'person' if len(sent) == 1 else 'people'} in the group.")
+    for b in done:
+        n = len(b["items"])
+        lines.append(f"{punch.destination(b, group_name, live=True)}: {n} item{'s' if n != 1 else ''}.")
     if photo_fail:
-        lines.append(f"{photo_fail} photo{'s' if photo_fail != 1 else ''} could not be posted "
+        lines.append(f"{photo_fail} photo{'s' if photo_fail != 1 else ''} could not be sent "
                      "(the items are kept with them; ask \"show P23 photo\").")
     if failed:
         await _punch_save(sess, status="resend",
                           undelivered=[r["pid"] for b in failed for r in b["items"]])
-        names = ", ".join(b["name"] for b in failed)
-        lines.append(f"Couldn't post the list for {names}. The items are saved. "
+        names = ", ".join(b.get("who") or b.get("name") or "the group" for b in failed)
+        lines.append(f"Couldn't send the list for {names}. The items are saved. "
                      "Reply 'resend' to try again.")
     else:
         await _punch_save(sess, status="sent", undelivered=[])
@@ -62886,26 +63019,56 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
 
 
 async def _punch_resend(sess: dict) -> str:
+    """What did not go out, sent again the way it was first sent: a DM, the
+    whole list in the group, or a post per person."""
     rows = await db[punch.COLLECTION].find(
         {"project_id": sess["project_id"], "pid": {"$in": list(sess.get("undelivered") or [])}}
     ).to_list(500)
-    by_person: Dict[str, dict] = {}
-    for r in sorted(rows, key=lambda r: r.get("seq") or 0):
-        a = r.get("assignee") or {}
-        b = by_person.setdefault(f"{a.get('kind')}:{a.get('id')}", {
-            "name": a.get("name") or a.get("company") or "", "items": [], "person": a,
-            "due_words": (r.get("due") or {}).get("due_text") or "",
-            "grouped": bool(sess.get("whole"))})       # a whole list stays by floor and trade
-        b["items"].append(r)
-    group_id = rows[0]["group_id"] if rows else None
-    if not group_id:
+    if not rows:
         await _punch_save(sess, status="sent", undelivered=[])
         return "Nothing left to resend."
-    bs = list(by_person.values())
-    for b, t in zip(bs, await _mention_targets([{**b["person"], "name": b["name"]} for b in bs],
-                                               sess["company_id"])):
-        b["target"] = t
-    return await _punch_post(sess, group_id, list(by_person.values()))
+    group_id = rows[0].get("group_id")
+    by_key: Dict[str, dict] = {}
+    for r in sorted(rows, key=lambda r: r.get("seq") or 0):
+        a = r.get("assignee") or {}
+        via = r.get("sent_via") or ("dm" if sess.get("whole") else "group")
+        key = "group" if via == "group_list" else f"{via}:{a.get('kind')}:{a.get('id')}"
+        b = by_key.setdefault(key, {"via": via, "items": [], "person": a, "dues": set(),
+                                    "name": a.get("name") or a.get("company") or "",
+                                    "who": punch.who_label(a) if a else "", "jid": a.get("jid"),
+                                    "grouped": via != "group"})     # a whole list stays by floor/trade
+        b["items"].append(r)
+        b["dues"].add((r.get("due") or {}).get("due_text") or punch.NO_DUE)
+    people = {}
+    for b in by_key.values():
+        for r in b["items"]:
+            p = r.get("assignee")
+            if p:
+                people.setdefault(f"{p.get('kind')}:{p.get('id')}", p)
+    named = {k: {**p, "name": p.get("name") or p.get("company") or ""} for k, p in people.items()}
+    tgts = dict(zip(named, await _mention_targets(list(named.values()), sess["company_id"])))
+    if not group_id and any(b["via"] != "dm" for b in by_key.values()):
+        await _punch_save(sess, status="sent", undelivered=[])
+        return "Nothing left to resend."
+    for b in by_key.values():
+        due = sorted(b["dues"])[0] if len(b["dues"]) == 1 else ", ".join(sorted(b["dues"]))
+        if b["via"] == "group_list":
+            mentions = {}
+            for r in b["items"]:
+                p = r.get("assignee")
+                t = tgts.get(f"{p.get('kind')}:{p.get('id')}") if p else None
+                if t:
+                    mentions[r["trade"]] = t["handle"]
+            b["targets"] = [t for t in tgts.values()]
+            b["text"] = punch.full_list_text(sess.get("job_name") or "", b["items"], due, mentions)
+        elif b["via"] == "dm":
+            b["text"] = punch.dm_text(sess.get("job_name") or "", b["items"], due)
+        else:
+            t = tgts.get(f"{b['person'].get('kind')}:{b['person'].get('id')}") \
+                or wa_mention.target(b["name"], None)
+            b["target"] = t
+            b["text"] = punch.group_text(b["name"], b["items"], due, handle=t["handle"])
+    return await _punch_post(sess, group_id, list(by_key.values()))
 
 
 async def _punch_send_photo(group_id: str, key: str, caption: str) -> bool:
@@ -63017,12 +63180,65 @@ def _punch_is_assignee(row: dict, who: Optional[dict], msg: dict) -> bool:
                 and str(who.get("kind")) == str(a.get("kind")) and str(who.get("id")) == str(a.get("id")))
 
 
+async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str]:
+    """"done P-588-1" (or "done 1") in a DM from the item's assignee: ready
+    to check. None when it is not one of theirs (the message goes on)."""
+    code, seq = ref
+    pids = [str(p.get("_id") or p.get("id")) for p in ident.get("projects") or []]
+    row = await _punch_find(pids, code, seq) if pids else None
+    if not row or row.get("status") != "open":
+        return None
+    a = row.get("assignee") or {}
+    mine = (a.get("kind") == "user" and str(a.get("id")) == str(ident.get("user_id"))) or (
+        wa_dm.phone_digits(a.get("jid") or "") and
+        wa_dm.phone_digits(a.get("jid") or "") == wa_dm.phone_digits(dm_chat))
+    if not mine:
+        return None
+    await _punch_set_status(row, "ready_to_check", now, by=str(ident.get("user_id")), quote=text,
+                            message_id=str(parsed.get("message_id") or ""))
+    return f"{row['pid']} marked done — ready to check."
+
+
+async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[str]:
+    """"done P-588-1" by DM from the number an item was DM'd to: ready to
+    check. None unless exactly one open DM'd item matches it and that number."""
+    code, seq = ref
+    digits = wa_dm.phone_digits(dm_chat)
+    if not digits:
+        return None
+    try:
+        rows = await db[punch.COLLECTION].find(
+            {"seq": int(seq), "status": "open", "sent_via": "dm"}).to_list(50)
+    except Exception:
+        return None
+    rows = [r for r in rows
+            if wa_dm.phone_digits((r.get("assignee") or {}).get("jid") or "") == digits
+            and (not code or str(r.get("pid") or "").upper().startswith(f"P-{code}-"))]
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    await _punch_set_status(row, "ready_to_check", datetime.now(timezone.utc), by=digits,
+                            quote=str(parsed.get("body") or ""),
+                            message_id=str(parsed.get("message_id") or ""))
+    return f"{row['pid']} marked done — ready to check."
+
+
+async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
+    """An open punch item #seq on this job, given to whoever sent `msg`."""
+    try:
+        row = await db[punch.COLLECTION].find_one(
+            {"project_id": str(project_id), "seq": int(seq), "status": "open"})
+    except Exception:
+        return False
+    return bool(row) and _punch_is_assignee(row, None, msg)
+
+
 async def _punch_group_message(msg: dict, ctx: dict) -> bool:
     """The closing words in the job's group: a sub's "done P23" (or "done"
     replying to the punch message) -> ready to check; an admin or PM's
     "P23 ok" / "P23 not done" -> closed / reopened. True when handled."""
     text = str(msg.get("body") or "")
-    pid = punch.parse_pid(text)
+    pid = punch.parse_pid(text) or punch.parse_done_ref(text)      # "done 1", "done P1", "done P-588-1"
     if not pid:
         return False
     row = await _punch_find([str(ctx["project_id"])], pid[0], pid[1])
@@ -63641,6 +63857,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # reaction is not the bot speaking); any TEXT reply does.
             if body and not spoken:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
+                if done_match and await _punch_done_is_theirs(
+                        project_id, int(done_match.group(1)),
+                        {"sender_jid": parsed.get("sender") or "", "sender": sender}):
+                    # "done 1" from the owner of punch item P-…-1: the punch
+                    # item (closed by the attention run on the stored
+                    # message), never checklist item 1.
+                    return
                 if done_match:
                     try:
                         n = int(done_match.group(1))
@@ -63875,7 +64098,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # sender never matched, checked no role, and picked one project.
         ident = await _dm_assistant_identity(dm_chat)
         if ident is None:
-            await send_whatsapp_message(dm_chat, wa_assistant.NOT_FOR_YOU_TEXT)
+            # A punch list DM'd to a sub: their "done P-588-1" is answered
+            # here, only for an open item sent to THIS number (Codex review
+            # on #759: it got the not-for-you line).
+            ref = punch.parse_done_ref(parsed.get("body")) if not parsed.get("has_image") else None
+            reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
+            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
 
         # Transcribe audio if present.
@@ -65802,7 +66030,9 @@ async def _punch_settings_view(project_id: Any, company_id: Any, settings: dict)
     return {"punch_to": settings.get("punch_to") or punch.PUNCH_TO[0],
             "punch_to_user": settings.get("punch_to_user"),
             "punch_to_options": user_opts,
-            "punch_contacts": subs}
+            "punch_contacts": subs,
+            "punch_due_default": settings.get("punch_due_default") or punch.DEFAULT_DUE_SETTING,
+            "punch_due_options": list(punch.DUE_DEFAULTS)}
 
 
 @api_router.get("/projects/{project_id}/whatsapp-settings",
@@ -65831,7 +66061,7 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
         raise HTTPException(status_code=404, detail="Project not found")
     # The alert switches, and chase_weekends (sub chasing on Sat/Sun).
     switches = wa_alerts.SWITCHES + ("chase_weekends",)
-    punch_keys = ("punch_sends", "punch_to", "punch_to_user", "punch_contacts")
+    punch_keys = ("punch_sends", "punch_to", "punch_to_user", "punch_contacts", "punch_due_default")
     if (not isinstance(body, dict) or not body
             or any(k not in switches + ("send_window",) + punch_keys for k in body)
             or any(not isinstance(body[k], bool) for k in switches if k in body)
@@ -65839,17 +66069,21 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
             or ("punch_to" in body and body["punch_to"] not in punch.PUNCH_TO)
             or ("punch_to_user" in body and body["punch_to_user"] is not None
                 and not isinstance(body["punch_to_user"], str))
-            or ("punch_contacts" in body and not isinstance(body["punch_contacts"], dict))):
+            or ("punch_contacts" in body and not isinstance(body["punch_contacts"], dict))
+            or ("punch_due_default" in body and body["punch_due_default"] not in punch.DUE_DEFAULTS)):
         raise HTTPException(
             status_code=422,
             detail="Send alert switches (" + ", ".join(switches) + ") as true "
                    "or false, and/or send_window, and/or punch_sends (shadow or live), "
-                   "punch_to (per_trade or one_person), punch_to_user, punch_contacts.")
+                   "punch_to (per_trade or one_person), punch_to_user, punch_contacts, "
+                   "punch_due_default (" + ", ".join(punch.DUE_DEFAULTS) + ").")
     fields = {k: body[k] for k in switches if k in body}
     if "punch_sends" in body:
         fields["punch_sends"] = body["punch_sends"]     # "shadow" | "live"
     if "punch_to" in body:
         fields["punch_to"] = body["punch_to"]           # "per_trade" | "one_person"
+    if "punch_due_default" in body:
+        fields["punch_due_default"] = body["punch_due_default"]
     if "punch_to_user" in body:
         if body["punch_to_user"] and not await _punch_user_person(str(company_id), body["punch_to_user"]):
             raise HTTPException(status_code=422, detail="punch_to_user: not a user of your company.")
@@ -65901,6 +66135,7 @@ def _punch_view(r: dict) -> dict:
     comp = r.get("completion") or {}
     return {"pid": r.get("pid"), "seq": r.get("seq"), "text": r.get("text") or "",
             "voice": bool(r.get("voice")), "floor": r.get("floor"), "area": r.get("area"),
+            "room": r.get("room"),
             "trade": r.get("trade"), "status": r.get("status"),
             "assignee": {"name": a.get("name") or "", "company": a.get("company") or ""},
             "due": (r.get("due") or {}).get("due_text"), "due_at": (r.get("due") or {}).get("due_at"),

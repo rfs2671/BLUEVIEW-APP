@@ -25,6 +25,7 @@ import {
 } from '../../utils/whatsappSettings';
 import {
   PUNCH_SENDS_OPTIONS, punchSendsMode, PUNCH_TO_OPTIONS, punchToMode, punchContactLine,
+  PUNCH_DUE_OPTIONS, punchDueMode,
   PUNCH_CONTACTS_NOTE,
 } from '../../utils/punchList';
 
@@ -266,6 +267,26 @@ export default function LevelogAssistantCard({ projectId }) {
                 {(data && data.punch_to_user) === u.id ? <Check size={18} color={colors.primary} /> : null}
               </Pressable>
             )) : null}
+
+            {/* Punch items due: the default when the walker does not say */}
+            <Text style={s.sub}>Punch items due</Text>
+            {PUNCH_DUE_OPTIONS.map((o) => (
+              <Pressable
+                key={o.mode}
+                onPress={() => patch('punch_due_default', { punch_due_default: o.mode })}
+                disabled={!!busy || punchDueMode(data) === o.mode}
+                style={s.choice}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: punchDueMode(data) === o.mode }}
+              >
+                <View style={{ flex: 1, marginRight: spacing.sm }}>
+                  <Text style={s.value}>{o.label}</Text>
+                  <Text style={s.muted}>{o.line}</Text>
+                </View>
+                {busy === 'punch_due_default' ? <ActivityIndicator size="small" color={colors.text.muted} />
+                  : punchDueMode(data) === o.mode ? <Check size={18} color={colors.primary} /> : null}
+              </Pressable>
+            ))}
 
             {/* Each sub's punch contact: the only person suggested for it */}
             {((data && data.punch_contacts) || []).length ? (

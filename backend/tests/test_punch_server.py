@@ -245,7 +245,7 @@ class CodexRound1(unittest.TestCase):
         with patch.object(dry, "world", lambda _sc: (db, proj)):
             res = _run(sc)
         said = "\n".join(res["transcript"])
-        self.assertIn("Couldn't post the list for Ana Ortiz", said)
+        self.assertIn("Couldn't send the list for Ana Ortiz", said)
         self.assertIn("Reply 'resend'", said)
         self.assertNotIn("@Ana Ortiz", "\n".join(t for _n, _c, t in res["group_posts"]))
         sess = db[punch.SESSIONS].rows[0]
@@ -271,7 +271,7 @@ class CodexRound1(unittest.TestCase):
         # A real mention: Ana's number in the text and in mentions.
         self.assertTrue(posts[0]["text"].startswith("@17185550203 "))
         self.assertEqual(posts[0]["mentions"], ["17185550203@c.us"])
-        self.assertIn("Sent 3 items to 1 person", dm[-1])
+        self.assertIn("Posted in the job group, mentioning Ana Ortiz: 3 items.", dm[-1])   # where it went (11:07 PM)
         self.assertEqual((sess["status"], sess["undelivered"]), ("sent", []))
 
 

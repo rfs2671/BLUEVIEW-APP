@@ -213,11 +213,11 @@ class The2031Sequence(_Walk):
         self.assertIn("electrical → ?", who)
         # "Chris from gc." (8): Chris, the GC's user, gets every "?" trade.
         (recap,) = self.turn("Chris from gc.")
-        self.assertTrue(recap.startswith("Ready to send (shadow mode"), recap)   # (12)
+        self.assertTrue(recap.startswith("Ready to post in the job group (shadow mode"), recap)  # (12)
         self.assertIn("Chris Weiss (GC team): #1, #2, #3, #4", recap)
         self.assertEqual(self.db[punch.COLLECTION].rows, [])       # nothing before 'ok'
         (sent,) = self.turn("ok")
-        self.assertIn("shadow mode: nothing was posted", sent)
+        self.assertIn("shadow mode: nothing was sent", sent)
         rows = self.db[punch.COLLECTION].rows
         self.assertEqual(len(rows), 4)
         self.assertEqual({r["assignee"]["name"] for r in rows}, {"Chris Weiss"})
@@ -363,7 +363,7 @@ class Assigning(_Walk):
         (out,) = self.turn("electrical → Nobody")
         self.assertIn("I don't know Nobody on this job", out)
         (out,) = self.turn("electrical → Dov; plumbing → Sam")
-        self.assertTrue(out.startswith("Ready to send"), out)
+        self.assertTrue(out.startswith("Ready to post in the job group"), out)
         self.assertIn("Dov Klein (Power Direct): #", out)
 
     def test_whole_list_to_one_person(self):
@@ -372,7 +372,9 @@ class Assigning(_Walk):
                 self.setUp()
                 self._to_assign()
                 (recap,) = self.turn(said)
-                self.assertIn("Chris Weiss (GC team): #1, #2", recap)
+                # The whole list to one person goes by DM (11:07 PM).
+                self.assertIn("Ready to DM the whole list to Chris Weiss (GC team)", recap)
+                self.assertIn(": #1, #2", recap)
                 (sent,) = self.turn("ok")
                 # ONE message, by floor and trade, with the photos.
                 self.assertEqual(sent.count("punch list — due"), 1, sent)
@@ -385,8 +387,7 @@ class Assigning(_Walk):
         self.db.notification_preferences.rows[0]["whatsapp_project"].update(
             punch_to="one_person", punch_to_user="u_chris")
         out = self._to_assign()
-        self.assertTrue(out.startswith("Ready to send"), out)
-        self.assertIn("Chris Weiss (GC team): #1, #2", out)
+        self.assertTrue(out.startswith("Ready to DM the whole list to Chris Weiss (GC team)"), out)
 
     def test_a_trade_after_the_whole_list_is_per_trade_again(self):
         # Codex review on #756: "electrical → Dov" after "all → Chris" did

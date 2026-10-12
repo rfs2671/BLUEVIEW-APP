@@ -134,7 +134,7 @@ class AssignAndDue(unittest.TestCase):
                          {"electrical": "Fri", "paint": "Fri"})
         self.assertEqual(p.parse_due_answer("electrical Mon, paint Fri", ["electrical", "paint"]),
                          {"electrical": "Mon", "paint": "Fri"})
-        self.assertEqual(p.parse_due_answer("el viernes", ["paint"]), {"paint": "el viernes"})
+        self.assertEqual(p.parse_due_answer("el viernes", ["paint"]), {"paint": "viernes"})
         self.assertIsNone(p.parse_due_answer("soon", ["paint"]))         # never guessed
 
 
@@ -146,7 +146,7 @@ class SendingAndClosing(unittest.TestCase):
         self.assertTrue(g.startswith("@Mike Rivera punch list — due Fri:"))
         self.assertIn("P-588-1 outlet cover (Floor 6 · Apt 6B)", g)
         sh = p.shadow_text([{"name": "Mike Rivera", "items": its, "due_words": "Fri", "photos": 1}])
-        self.assertTrue(sh.startswith("Punch sends are in shadow mode: nothing was posted"))
+        self.assertTrue(sh.startswith("Punch sends are in shadow mode: nothing was sent"))
 
     def test_closing_words(self):
         self.assertTrue(p.sub_done("done P23"))
