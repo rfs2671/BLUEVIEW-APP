@@ -59713,6 +59713,9 @@ _AGENT_EXPLICIT_CLAUSE = (
 
 # ==================== SPRINT 6 — INTERACTIVE CHECKLIST CREATION ====================
 
+# TODO: restrict this menu to who may be messaged -- the company's users,
+# People, and a sub's punch contact -- not the workers list (check-ins). It
+# only stores a name today, nothing is sent from it.
 async def _get_checklist_candidates(
     company_id: Optional[str], project_id: str, limit: int = 40
 ) -> list:
@@ -62137,7 +62140,11 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
 
 
 def _punch_who(p: Optional[dict]) -> Optional[dict]:
-    return p and {k: p.get(k) for k in ("kind", "id", "name", "company", "jid")}
+    """What an assignment keeps: who, and whether they were off this job
+    (shown "(Arkon, not on this job)" before anything is sent). A
+    suggestion -- a punch contact, the trade's last assignee -- is on it."""
+    return p and {**{k: p.get(k) for k in ("kind", "id", "name", "company", "jid")},
+                  "not_on_job": p.get("on_job") is False}
 
 
 async def _punch_to_assign(ident, sess, dm_chat) -> bool:
@@ -62154,9 +62161,9 @@ async def _punch_to_assign(ident, sess, dm_chat) -> bool:
                               assign={t: _punch_who(person) for t in trades})
             return await _punch_show_recap(sess, dm_chat)
     sugg = await _punch_suggest(sess, trades)
-    await _punch_save(sess, status="assign", whole=None,
-                      assign={t: _punch_who(p) for t, p in sugg.items()})
-    await send_whatsapp_message(dm_chat, punch.assign_text(sugg))
+    assign = {t: _punch_who(p) for t, p in sugg.items()}
+    await _punch_save(sess, status="assign", whole=None, choose=None, assign=assign)
+    await send_whatsapp_message(dm_chat, punch.assign_text(assign))
     return True
 
 
@@ -62170,42 +62177,83 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
+    choose = sess.get("choose")
+    if choose:
+        # The answer to "Which Chris? 1) … 2) …": a number, never a guess.
+        picked = punch.pick_choice(text, choose["options"])
+        if picked:
+            await _punch_save(sess, choose=None)
+            return await _punch_assign_to(sess, dm_chat, assign, choose["target"], picked, [])
     r = punch.parse_assign_reply(text)
+    if choose and not (r.get("all") or r.get("pairs") or r.get("fill")):
+        await send_whatsapp_message(dm_chat, punch.which_text(choose["said"], choose["options"]))
+        return True
     pool = await _punch_name_pool(sess)
+    asks, miss = [], []
+
+    def resolve(name, target):
+        cands = punch.name_candidates(name, pool)
+        if len(cands) == 1:
+            return cands[0]
+        if cands:
+            # A name more than one person answers to: asked, never picked.
+            asks.append({"target": target, "said": name, "options": cands[:9]})
+        else:
+            miss.append(name)
+        return None
+
     if r.get("all"):
-        person = punch.pick_person(r["all"], pool)
-        if not person:
-            await send_whatsapp_message(dm_chat, _punch_unknown(r["all"]) + "\n\n" + punch.assign_text(assign))
-            return True
-        # THE WHOLE LIST to one person: one message, by floor and trade.
-        await _punch_save(sess, status="recap", whole=_punch_who(person),
-                          assign={t: _punch_who(person) for t in assign})
-        return await _punch_show_recap(sess, dm_chat)
-    miss = []
-    if r.get("pairs"):
+        person = resolve(r["all"], "all")
+        if person:
+            return await _punch_assign_to(sess, dm_chat, assign, "all", person, [])
+    elif r.get("pairs"):
         for t, name in r["pairs"]:
-            person = punch.pick_person(name, pool)
+            person = resolve(name, t)
             if person:
                 assign[t] = _punch_who(person)
-            else:
-                miss.append(name)
+            elif t in assign and asks and asks[-1]["target"] == t:
+                assign[t] = None
     elif r.get("fill"):
         open_trades = [t for t, p in assign.items() if not p]
-        person = punch.pick_person(r["fill"], pool)
-        if not person:
-            miss.append(r["fill"])
-        elif not open_trades:
+        if not open_trades:
+            person = punch.pick_person(r["fill"], pool)
+            who = (person or {}).get("name") or r["fill"]
             await send_whatsapp_message(dm_chat, (
-                f"Every trade has someone. For {person.get('name')}, say which: "
-                f"\"electrical → {person.get('name')}\", or \"all → {person.get('name')}\"."))
+                f"Every trade has someone. For {who}, say which: "
+                f"\"electrical → {who}\", or \"all → {who}\"."))
             return True
-        else:
-            for t in open_trades:
-                assign[t] = _punch_who(person)
+        person = resolve(r["fill"], "fill")
+        if person:
+            return await _punch_assign_to(sess, dm_chat, assign, "fill", person, [])
     elif not r.get("ok"):
         await send_whatsapp_message(dm_chat, punch.assign_text(assign))
         return True
-    await _punch_save(sess, assign=assign)
+    if asks:
+        ask = asks[0]
+        await _punch_save(sess, assign=assign, choose=ask, whole=None if ask["target"] != "all"
+                          else sess.get("whole"))
+        await send_whatsapp_message(dm_chat, punch.which_text(ask["said"], ask["options"]))
+        return True
+    return await _punch_assign_to(sess, dm_chat, assign, None, None, miss)
+
+
+async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
+    """Apply one pick ("all", "fill", a trade, or nothing more), then the
+    list again while any trade is "?" or a name was unknown, else the
+    recap -- where only 'ok' sends."""
+    if target == "all":
+        # THE WHOLE LIST to one person: one message, by floor and trade.
+        await _punch_save(sess, status="recap", whole=_punch_who(person), choose=None,
+                          assign={t: _punch_who(person) for t in assign})
+        return await _punch_show_recap(sess, dm_chat)
+    if target == "fill":
+        for t in [t for t, p in assign.items() if not p]:
+            assign[t] = _punch_who(person)
+    elif target:
+        assign[target] = _punch_who(person)
+    # Per trade now: a whole list ("all → Chris", or the one-person setting)
+    # gave way to "electrical → Mike" (Codex review on #756).
+    await _punch_save(sess, assign=assign, whole=None)
     if miss:
         await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss)) + "\n\n"
                                     + punch.assign_text(assign))
@@ -62296,7 +62344,46 @@ async def _punch_name_pool(sess: dict) -> List[dict]:
         if (u.get("name") or "").strip():
             out.append({"kind": "user", "id": str(u["_id"]), "name": u.get("name"),
                         "company": "GC", "jid": f"{digits}@c.us" if digits else None})
+    await _punch_mark_on_job(sess, out)
     return out
+
+
+async def _punch_mark_on_job(sess: dict, people: List[dict]) -> None:
+    """p["on_job"]: active on THIS job -- the company's users (the GC team
+    runs every job), a sub on its roster, a sub's punch contact, someone who
+    wrote in its WhatsApp groups or was given one of its punch items. Names
+    match these first; anyone else is company-wide and marked so."""
+    company_id, pid = str(sess["company_id"]), str(sess["project_id"])
+    project = await db.projects.find_one(
+        {"_id": to_query_id(pid), "company_id": _company_id_filter(company_id)}) or {}
+    roster = {multilang.fold(r.get("company") or "") for r in _active_assignments(project)}
+    roster.discard("")
+    contacts = {str(v) for v in ((await _whatsapp_project_settings(pid)).get("punch_contacts")
+                                 or {}).values() if v}
+    spoke, given = set(), set()
+    try:
+        for j in await db.whatsapp_messages.distinct(
+                "sender_jid", {"project_id": pid, "company_id": company_id}):
+            spoke.add(wa_dm.phone_digits(str(j or "")))
+    except Exception:
+        pass
+    try:
+        for r in await db[punch.COLLECTION].find({"project_id": pid}).to_list(2000):
+            a = r.get("assignee") or {}
+            given.add((a.get("kind"), str(a.get("id") or "")))
+            if a.get("jid"):
+                given.add(("jid", wa_dm.phone_digits(str(a["jid"]))))
+    except Exception:
+        pass
+    spoke.discard("")
+    for p in people:
+        d = wa_dm.phone_digits(str(p.get("jid") or ""))
+        p["on_job"] = bool(p.get("kind") == "user"
+                           or (p.get("kind") == "sender_map" and str(p.get("id")) in contacts)
+                           or (p.get("kind") != "user"
+                               and multilang.fold(p.get("company") or "") in roster)
+                           or (d and (d in spoke or ("jid", d) in given))
+                           or (p.get("kind"), str(p.get("id") or "")) in given)
 
 
 async def _punch_suggest(sess: dict, trades: List[str]) -> Dict[str, Optional[dict]]:
@@ -62329,7 +62416,10 @@ async def _punch_suggest(sess: dict, trades: List[str]) -> Dict[str, Optional[di
             if punch.trade_word(str(r.get("trade") or "")) != t:
                 continue
             m = maps.get(str(contacts.get(str(r.get("id"))) or ""))
-            if m and m.get("sender_jid"):
+            # Only a person OF that sub: one moved to another sub since is not
+            # its contact (Codex review on #756).
+            if m and m.get("sender_jid") and multilang.fold(m.get("sub_company") or "") \
+                    == multilang.fold(r.get("company") or ""):
                 p = {**wa_sender_map.owner_from_map(m), "company": r.get("company") or m.get("sub_company") or "",
                      "jid": m.get("sender_jid")}
                 cands[p["id"]] = p
@@ -62597,7 +62687,8 @@ async def _punch_resend(sess: dict) -> str:
         a = r.get("assignee") or {}
         b = by_person.setdefault(f"{a.get('kind')}:{a.get('id')}", {
             "name": a.get("name") or a.get("company") or "", "items": [], "person": a,
-            "due_words": (r.get("due") or {}).get("due_text") or ""})
+            "due_words": (r.get("due") or {}).get("due_text") or "",
+            "grouped": bool(sess.get("whole"))})       # a whole list stays by floor and trade
         b["items"].append(r)
     group_id = rows[0]["group_id"] if rows else None
     if not group_id:
@@ -65555,7 +65646,7 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
         # this company only; merged onto what is stored.
         project = await db.projects.find_one(
             {"_id": to_query_id(project_id), "company_id": _company_id_filter(company_id)}) or {}
-        rows = {str(r.get("id")) for r in _active_assignments(project)}
+        rows = {str(r.get("id")): r for r in _active_assignments(project)}
         current = dict((await _whatsapp_project_settings(project_id)).get("punch_contacts") or {})
         for rid, mid in body["punch_contacts"].items():
             if str(rid) not in rows:
@@ -65567,6 +65658,11 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
                         {"_id": str(mid), "company_id": str(company_id)})
                 if not m:
                     raise HTTPException(status_code=422, detail="punch_contacts: not one of your People.")
+                if multilang.fold(m.get("sub_company") or "") != \
+                        multilang.fold(rows[str(rid)].get("company") or ""):
+                    raise HTTPException(status_code=422, detail=(
+                        f"punch_contacts: {m.get('person_name') or 'that person'} is not with "
+                        f"{rows[str(rid)].get('company') or 'that sub'}."))
                 current[str(rid)] = str(m["_id"])
             else:
                 current.pop(str(rid), None)

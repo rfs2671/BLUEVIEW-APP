@@ -214,7 +214,7 @@ class The2031Sequence(_Walk):
         # "Chris from gc." (8): Chris, the GC's user, gets every "?" trade.
         (recap,) = self.turn("Chris from gc.")
         self.assertTrue(recap.startswith("Ready to send (shadow mode"), recap)   # (12)
-        self.assertIn("Chris Weiss (GC): #1, #2, #3, #4", recap)
+        self.assertIn("Chris Weiss (GC team): #1, #2, #3, #4", recap)
         self.assertEqual(self.db[punch.COLLECTION].rows, [])       # nothing before 'ok'
         (sent,) = self.turn("ok")
         self.assertIn("shadow mode: nothing was posted", sent)
@@ -372,7 +372,7 @@ class Assigning(_Walk):
                 self.setUp()
                 self._to_assign()
                 (recap,) = self.turn(said)
-                self.assertIn("Chris Weiss (GC): #1, #2", recap)
+                self.assertIn("Chris Weiss (GC team): #1, #2", recap)
                 (sent,) = self.turn("ok")
                 # ONE message, by floor and trade, with the photos.
                 self.assertEqual(sent.count("punch list — due"), 1, sent)
@@ -386,7 +386,36 @@ class Assigning(_Walk):
             punch_to="one_person", punch_to_user="u_chris")
         out = self._to_assign()
         self.assertTrue(out.startswith("Ready to send"), out)
-        self.assertIn("Chris Weiss (GC): #1, #2", out)
+        self.assertIn("Chris Weiss (GC team): #1, #2", out)
+
+    def test_a_trade_after_the_whole_list_is_per_trade_again(self):
+        # Codex review on #756: "electrical → Dov" after "all → Chris" did
+        # nothing, and 'ok' still sent everything to Chris.
+        for start in ("all", "setting"):
+            with self.subTest(start):
+                self.setUp()
+                if start == "setting":
+                    self.db.notification_preferences.rows[0]["whatsapp_project"].update(
+                        punch_to="one_person", punch_to_user="u_chris")
+                    self._to_assign()
+                else:
+                    self._to_assign()
+                    self.turn("all → Chris")
+                (recap,) = self.turn("electrical → Dov")
+                self.assertIn("Dov Klein (Power Direct): #", recap)
+                self.assertIn("Chris Weiss (GC team): #", recap)
+                self.assertIsNone(self.sess().get("whole"))
+                (sent,) = self.turn("ok")
+                self.assertEqual(sent.count("punch list — due"), 2, sent)
+
+    def test_a_contact_moved_to_another_sub_is_not_its_contact(self):
+        # Codex review on #756: Sam (Good Plumbing) stored as Power Direct's
+        # contact was suggested, labelled Power Direct.
+        self.db.notification_preferences.rows[0]["whatsapp_project"]["punch_contacts"] = {
+            "r_el": "m_sam"}
+        who = self._to_assign()
+        self.assertIn("electrical → ?", who)
+        self.assertNotIn("Sam Gold", who)
 
     def test_due_days_change_the_recap(self):
         self._to_assign()
@@ -432,7 +461,8 @@ class TheSettings(unittest.TestCase):
         el = next(r for r in out["punch_contacts"] if r["row_id"] == "r_el")
         self.assertEqual(el["contact_name"], "Dov Klein")
         for bad in ({"punch_to": "everyone"}, {"punch_to_user": "u_nobody"},
-                    {"punch_contacts": {"r_nope": "m_dov"}}, {"punch_contacts": {"r_el": "m_x"}}):
+                    {"punch_contacts": {"r_nope": "m_dov"}}, {"punch_contacts": {"r_el": "m_x"}},
+                    {"punch_contacts": {"r_el": "m_sam"}}):          # Good Plumbing's, not Power Direct's
             with self.subTest(bad), self.assertRaises(HTTPException) as e:
                 self._call(server.patch_project_whatsapp_alerts, "p588", bad, self.ADMIN)
             self.assertEqual(e.exception.status_code, 422)
@@ -459,3 +489,31 @@ class TheRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheResend(unittest.TestCase):
+
+    def test_a_whole_list_resend_stays_by_floor_and_trade(self):
+        # Codex review on #756: the retry of a failed whole-list post was flat.
+        db = _world()
+        chris = {"kind": "user", "id": "u_chris", "name": "Chris Weiss", "jid": "17185550111@c.us"}
+        for i, t in ((1, "electrical"), (2, "plumbing")):
+            db[punch.COLLECTION].rows.append({
+                "_id": f"p588:P-588-{i}", "project_id": "p588", "pid": f"P-588-{i}", "seq": i,
+                "trade": t, "group_id": GROUP, "assignee": chris, "due": {"due_text": "Fri"}})
+        posted = []
+
+        async def post(sess, group_id, batches):
+            posted.extend(batches)
+            return "ok"
+
+        async def targets(people, company_id, now=None):
+            return [{"handle": "@x", "resolved": True, "source": "jid"} for _ in people]
+        for whole in (chris, None):
+            posted.clear()
+            sess = {"_id": "w", "company_id": CO, "project_id": "p588", "whole": whole,
+                    "undelivered": ["P-588-1", "P-588-2"]}
+            with patch.object(server, "db", db), patch.object(server, "_punch_post", post), \
+                    patch.object(server, "_mention_targets", targets):
+                asyncio.run(server._punch_resend(sess))
+            self.assertEqual([b["grouped"] for b in posted], [whole is not None])
