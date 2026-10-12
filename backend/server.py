@@ -63223,6 +63223,23 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
     return f"{row['pid']} marked done — ready to check."
 
 
+async def _checklist_open_today(project_id: Any, company_id: Any,
+                                now: Optional[datetime] = None) -> bool:
+    """A checklist for this job made today (New York) with an item not yet
+    done. While one is open, a group's bare "done 1" is the checklist's."""
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(timezone.utc)
+    ny = ZoneInfo("America/New_York")
+    start = now.astimezone(ny).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    try:
+        rows = await db.whatsapp_checklists.find(
+            {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
+             "is_deleted": {"$ne": True}, "generated_at": {"$gte": start}}).to_list(20)
+    except Exception:
+        return True                 # cannot tell: the checklist keeps "done N"
+    return any(any(not it.get("completed") for it in (r.get("items") or [])) for r in rows)
+
+
 async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
     """An open punch item #seq on this job, given to whoever sent `msg`."""
     try:
@@ -63238,7 +63255,14 @@ async def _punch_group_message(msg: dict, ctx: dict) -> bool:
     replying to the punch message) -> ready to check; an admin or PM's
     "P23 ok" / "P23 not done" -> closed / reopened. True when handled."""
     text = str(msg.get("body") or "")
-    pid = punch.parse_pid(text) or punch.parse_done_ref(text)      # "done 1", "done P1", "done P-588-1"
+    # "done P1" / "done P-588-1" name a punch item. A bare "done 1" is the
+    # checklist's in a group -- unless no checklist is open for the job
+    # today; then it may close punch #1 (for its assignee, below).
+    pid = punch.parse_pid(text)
+    if not pid:
+        ref = punch.parse_done_ref(text)
+        if ref and not await _checklist_open_today(ctx["project_id"], ctx["company_id"]):
+            pid = ref
     if not pid:
         return False
     row = await _punch_find([str(ctx["project_id"])], pid[0], pid[1])
@@ -63857,12 +63881,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # reaction is not the bot speaking); any TEXT reply does.
             if body and not spoken:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
-                if done_match and await _punch_done_is_theirs(
-                        project_id, int(done_match.group(1)),
-                        {"sender_jid": parsed.get("sender") or "", "sender": sender}):
-                    # "done 1" from the owner of punch item P-…-1: the punch
-                    # item (closed by the attention run on the stored
-                    # message), never checklist item 1.
+                if done_match and not await _checklist_open_today(project_id, msg_company_id, now) \
+                        and await _punch_done_is_theirs(
+                            project_id, int(done_match.group(1)),
+                            {"sender_jid": parsed.get("sender") or "", "sender": sender}):
+                    # "done 1" stays the checklist's while one is open today;
+                    # with none open, from the owner of punch item P-…-1 it
+                    # is that punch item (closed by the attention run on the
+                    # stored message).
                     return
                 if done_match:
                     try:

@@ -425,3 +425,79 @@ class CodexOn759(_Live):
         self.turn("ok")
         row = self.db[punch.COLLECTION].rows[0]
         self.assertEqual(server._punch_view(row)["room"], "bedroom")
+
+
+class DoneNInAGroup(_Live):
+    """Follow-up to #759: in a group, a bare "done 1" is the checklist's;
+    "done P1" / "done P-588-1" close a punch item. With no checklist open for
+    the job today, "done 1" from the item's assignee may close punch #1. In
+    a DM, "done 1" is the punch item."""
+
+    CTX = {"project_id": "p588", "company_id": CO, "group_id": GROUP}
+
+    def _sent(self):
+        self._to_assign()
+        self.turn("electrical → Dov; plumbing → Sam")
+        self.turn("ok")
+        return next(r for r in self.db[punch.COLLECTION].rows if r["trade"] == "electrical")
+
+    def _say(self, text, sender="17185550222"):
+        async def who(m, c):
+            return None
+        with patch.object(server, "db", self.db), patch.object(server, "_attention_sender", who):
+            return asyncio.run(server._punch_group_message(
+                {"body": text, "sender": sender, "message_id": "g1"}, self.CTX))
+
+    def _status(self, row):
+        return next(r for r in self.db[punch.COLLECTION].rows if r["_id"] == row["_id"])["status"]
+
+    def _checklist(self, when, done=False):
+        self.db.whatsapp_checklists.rows.append({
+            "_id": "cl1", "project_id": "p588", "company_id": CO, "group_id": GROUP,
+            "generated_at": when, "items": [{"text": "Clean up", "completed": done}]})
+
+    def test_an_open_checklist_today_keeps_done_1(self):
+        row = self._sent()
+        self._checklist(datetime.now(timezone.utc))
+        self.assertFalse(self._say(f"done {row['seq']}"))
+        self.assertEqual(self._status(row), "open")
+        self.assertTrue(self._say(f"done P{row['seq']}"))                   # "done P1": the punch item
+        self.assertEqual(self._status(row), "ready_to_check")
+
+    def test_done_p_588_1_with_a_checklist_open(self):
+        row = self._sent()
+        self._checklist(datetime.now(timezone.utc))
+        self.assertTrue(self._say(f"done {row['pid']}"))
+        self.assertEqual(self._status(row), "ready_to_check")
+
+    def test_no_checklist_today_done_1_from_its_assignee(self):
+        row = self._sent()
+        self._checklist(datetime.now(timezone.utc) - timedelta(days=2))     # an old one: not today
+        self.assertFalse(self._say(f"done {row['seq']}", sender="17185550333"))   # Sam: not his
+        self.assertEqual(self._status(row), "open")
+        self.assertTrue(self._say(f"done {row['seq']}"))
+        self.assertEqual(self._status(row), "ready_to_check")
+
+    def test_todays_checklist_all_ticked_is_not_open(self):
+        row = self._sent()
+        self._checklist(datetime.now(timezone.utc), done=True)
+        self.assertTrue(self._say(f"done {row['seq']}"))
+        self.assertEqual(self._status(row), "ready_to_check")
+
+    def test_in_a_dm_done_1_is_the_punch_item(self):
+        self._to_assign()
+        self.turn("whole list → Chris")
+        self.turn("ok")
+        self._checklist(datetime.now(timezone.utc))                         # a DM never asks
+        row = self.db[punch.COLLECTION].rows[0]
+        chris = {"user_id": "u_chris", "company_id": CO, "role": "pm",
+                 "user": {"_id": "u_chris"}, "projects": [P588]}
+        said = []
+
+        async def send(chat, msg, *a, **k):
+            said.append(msg)
+        with patch.object(server, "db", self.db), patch.object(server, "send_whatsapp_message", send):
+            self.assertTrue(asyncio.run(server._punch_dm_turn(
+                chris, "17185550111@c.us", {"message_id": "d1"}, f"done {row['seq']}")))
+        self.assertEqual(said, [f"{row['pid']} marked done — ready to check."])
+        self.assertEqual(self._status(row), "ready_to_check")

@@ -357,6 +357,27 @@ class Reactions(unittest.TestCase):
         self.assertEqual(sent, [])
         self.assertTrue(db.whatsapp_checklists.rows[0]["items"][1]["completed"])
 
+    def test_done_n_is_the_checklists_while_one_is_open_today(self):
+        # Follow-up to #759: a punch item #2 assigned to this very sender
+        # does not take "done 2" while today's checklist is open.
+        from tests.test_whatsapp_phase0_security import HUMAN
+        db = self._checklist_db()
+        db.punch_items.rows.append({"_id": "proj_a:P-A-2", "pid": "P-A-2", "seq": 2, "status": "open",
+                                    "project_id": "proj_a", "assignee": {"jid": f"{HUMAN}@c.us"}})
+        sent, reactions, _ = self._process(db, "done 2")
+        self.assertTrue(db.whatsapp_checklists.rows[0]["items"][1]["completed"])
+        self.assertEqual(db.punch_items.rows[0]["status"], "open")
+
+    def test_done_n_with_no_checklist_today_is_left_to_the_punch_item(self):
+        from tests.test_whatsapp_phase0_security import HUMAN
+        db = self._checklist_db()
+        db.whatsapp_checklists.rows[0]["generated_at"] = datetime.now(timezone.utc) - timedelta(days=2)
+        db.punch_items.rows.append({"_id": "proj_a:P-A-2", "pid": "P-A-2", "seq": 2, "status": "open",
+                                    "project_id": "proj_a", "assignee": {"jid": f"{HUMAN}@c.us"}})
+        sent, reactions, _ = self._process(db, "done 2")
+        self.assertNotIn("completed", db.whatsapp_checklists.rows[0]["items"][1])   # not the old list
+        self.assertEqual((sent, reactions), ([], []))                              # the punch run's
+
     def test_a_failed_reaction_falls_back_to_the_text_never_both(self):
         """As a reply to the bot's checklist: the bot may speak."""
         sent, reactions, _ = self._process(self._checklist_db(), "done 2", react_ok=False,
