@@ -46,8 +46,11 @@ def item_line(it: dict) -> str:
             + (f" | notes: {notes}" if notes else ""))
 
 
-async def main_async(a) -> int:
-    import server
+async def main_async(a, server=None) -> int:
+    # `server` is passed by a test: the module whose `db` it patched (another
+    # test may have put a different one in sys.modules).
+    if server is None:
+        import server
     from lib import punch, wa_dm
     from scripts.wa_provenance import _safe, _t
     db = server.db
