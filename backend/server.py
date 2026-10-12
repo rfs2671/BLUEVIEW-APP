@@ -48434,10 +48434,10 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         items = await db.attention_items.find(
             {"type": {"$in": list(wa_chase.CHASE_TYPES)},
              "status": {"$in": list(wa_chase.CHASE_STATUSES)},
-             # Due today -- or ASAP and due by today: chased every day from
-             # its first (Codex review on #759).
-             "$or": [{"due.due_at": day.isoformat()},
-                     {"due.due_text": punch.ASAP, "due.due_at": {"$lte": day.isoformat()}}]}
+             # Due today, or overdue (its day passed, still open: the morning
+             # slot every day), or ASAP and due by today (Codex review on
+             # #759). Due today or before, whichever.
+             "due.due_at": {"$lte": day.isoformat() + "\uffff"}}
         ).to_list(5000)
     except Exception as e:
         logger.warning(f"[chase] items read failed: {type(e).__name__}")
@@ -48484,9 +48484,15 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         # Would be chased, but no WhatsApp number to @mention: listed below,
         # once the slot, group and hours rules say it would have gone out.
         no_number = why == wa_chase.NO_MENTION
+        if not why:
+            # Overdue: the morning slot daily; the admin DM from day 2.
+            why = wa_chase.overdue_slot_reason(it, slot, day)
         if why and not no_number:
             report["skipped"][why] = report["skipped"].get(why, 0) + 1
             continue
+        if no_number and wa_chase.overdue_slot_reason(it, slot, day):
+            continue                            # listed at the morning slot
+        late = wa_chase.overdue_days(it, day)
         report["eligible"] += 1
         pid, gid = str(it.get("project_id")), str(it.get("group_id"))
         said = wa_chase.said_at(it)
@@ -48524,6 +48530,12 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         try:
             nudges = await db[wa_chase.COLLECTION].find(
                 {"day": day.isoformat(), "item_ids": iid}).to_list(10)
+            # Overdue: the skip rules look back past today, to its last
+            # nudge (yesterday's morning) and any skip since.
+            earlier = await db[wa_chase.COLLECTION].find(
+                {"item_ids": iid, "day": {"$lt": day.isoformat()},
+                 "slot": {"$in": list(wa_chase.GROUP_SLOTS)}}).sort(
+                [("at", -1)]).to_list(20) if late else []
         except Exception:
             continue
         if any(n.get("slot") == slot for n in nudges):
@@ -48532,15 +48544,20 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         group_nudges = [n for n in nudges if n.get("slot") in wa_chase.GROUP_SLOTS
                         and n.get("kind") != wa_chase.SKIPPED]
         skips = [n for n in nudges if n.get("kind") == wa_chase.SKIPPED]
-        last = max((n["at"] for n in group_nudges if isinstance(n.get("at"), datetime)),
+        answer_nudges = group_nudges + [n for n in earlier if n.get("kind") == "group"]
+        skips += [n for n in earlier if n.get("kind") == wa_chase.SKIPPED]
+        last = max((n["at"] for n in answer_nudges if isinstance(n.get("at"), datetime)),
                    default=None)
         # Rule 1: the item changed after its first nudge: done for the day.
         if wa_chase.stop_reason(it, group_nudges):
             report["stopped"] += 1
             continue
         if slot == wa_chase.ADMIN and not any(
-                n.get("slot") == wa_chase.EOD for n in group_nudges):
-            continue                            # only after the end of day nudge
+                n.get("slot") == (wa_chase.MORNING if late else wa_chase.EOD)
+                for n in group_nudges):
+            # Only after the end of day nudge -- for an overdue item, after
+            # today's morning nudge.
+            continue
         chatter = None
         skipped_slot = None
         if last:
@@ -48553,7 +48570,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             skipped_slot = last_skip.get("slot") if last_skip else None
             resp = None
             for m in await _chase_owner_messages(gid, it, since, now):
-                resp = wa_chase.owner_response(it, m, group_nudges, after=since)
+                resp = wa_chase.owner_response(it, m, answer_nudges, after=since)
                 if resp:
                     break
                 chatter = m["at"]
@@ -48638,7 +48655,8 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                            to=[a["name"] for a in admins],
                            to_user_ids=[a["id"] for a in admins],
                            text=wa_chase.admin_text(row["owner_name"], row["group_name"],
-                                                    b["items"], list(b["nudged"].values())))
+                                                    b["items"], list(b["nudged"].values()),
+                                                    day=day))
                 report["admin_dm"] += 1
             else:
                 owner_co = b["company_id"]
@@ -48661,7 +48679,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                 tgt = targets.get((pid, gid, okey)) or await _mention_target(
                     owner, b["company_id"], now)
                 send_text = wa_chase.group_text(row["owner_name"], b["items"], slot,
-                                                handle=tgt["handle"])
+                                                handle=tgt["handle"], day=day)
                 quoted_id = wa_chase.quoted(first).get("message_id")
                 row.update(kind="group",
                            reply_to=await _serialized_message_id(gid, quoted_id),
@@ -49556,9 +49574,49 @@ async def _brief_since(user_id: str, now: datetime) -> datetime:
     return max(now - timedelta(days=1), floor)
 
 
+async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
+                            me: Optional[dict]) -> dict:
+    """The job's Due today / overdue lines (items `me` owns or asked for)
+    and its Open punch line. A read that fails leaves its lines out."""
+    today = wa_brief.local_now(now).date()
+    out = {"due": [], "punch": []}
+    if me:
+        try:
+            items = await db.attention_items.find({
+                "project_id": pid, "company_id": _company_id_filter(company_id),
+                "status": {"$in": ["open", "rescheduled"]},
+                "due.due_at": {"$lte": today.isoformat() + "\uffff"}}).to_list(2000)
+            out["due"] = wa_brief.due_lines(items, today, me)
+        except Exception as e:
+            logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
+    try:
+        rows = await db[punch.COLLECTION].find({
+            "project_id": pid, "company_id": _company_id_filter(company_id),
+            "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
+        out["punch"] = wa_brief.punch_lines(rows, today)
+    except Exception as e:
+        logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
+    return out
+
+
+async def _brief_me(user: dict) -> dict:
+    """Who the brief is for, as items store people: the user id, and every
+    WhatsApp number of theirs (profile phone, active opt-ins)."""
+    uid = str(user.get("_id"))
+    nums = [user.get("phone")]
+    try:
+        nums += [o.get("phone") for o in await db[WA_OPTINS].find(
+            {"user_id": uid, "status": "active"}, {"phone": 1}).to_list(10)]
+    except Exception:
+        pass
+    return {"user_id": uid,
+            "digits": {d for d in (wa_brief._last10(n) for n in nums) if d}}
+
+
 async def _brief_job(project: dict, company_id: str, since: datetime,
-                     now: datetime) -> dict:
-    """One job's block: its address, its items, its headcount line."""
+                     now: datetime, me: Optional[dict] = None) -> dict:
+    """One job's block: its address, its items, its follow-ups (due today /
+    overdue, open punch), its headcount line."""
     pid = str(project.get("_id"))
     # Before the rows (as in the GC tick): a source mid-way through its
     # first sync is skipped, never read half-stored.
@@ -49581,6 +49639,7 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
     }).to_list(2000)
     return {"label": wa_assistant.street_label(project),
             "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
+            **await _brief_follow_ups(pid, company_id, now, me),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
                 pid, company_id, now)}
@@ -49622,7 +49681,8 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     if not projects:
         return None
     since = await _brief_since(str(user.get("_id")), now)
-    jobs = [await _brief_job(p, company_id, since, now) for p in projects]
+    me = await _brief_me(user)
+    jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
     text = wa_brief.compose(now, jobs)
     try:
         coming = await _upcoming_brief_lines(user, company_id, role, now)

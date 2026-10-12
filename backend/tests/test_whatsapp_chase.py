@@ -409,10 +409,106 @@ class TheSlots(_Base):
         self.chase(_et(16, 5))
         self.assertEqual(self.rows(), [])
 
-    def test_not_on_another_day(self):
-        _item(self.db, due={"due_at": "2026-10-07"})          # yesterday's
-        self.chase(_et(8, 35))
+    def test_not_before_its_day(self):
+        _item(self.db, due={"due_at": "2026-10-09"})          # tomorrow's
+        self.day()
         self.assertEqual(self.rows(), [])
+
+
+class Overdue(_Base):
+    """Live 588, Mon Oct 12: the calcs item, due Sun Oct 11 and never closed,
+    was not chased at the 8:30 morning slot."""
+
+    def calcs(self, **over):
+        return _item(self.db, quote="I'll send the calcs Sunday", **{
+            "due": {"due_text": "Sunday", "due_at": "2026-10-11"},
+            "evidence": {"sent_at": _et(9, 0, day=9)},
+            "history": [{"id": "e0", "kind": "created", "at": _et(9, 0, day=9)}],
+            "topic": ["calc"], **over})
+
+    def run_day(self, day, said=()):
+        for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
+            for body, sh, sm in said:
+                if (sh, sm) < (h, m) and not any(
+                        r["body"] == body for r in self.db.whatsapp_messages.rows):
+                    self.say(body, _et(sh, sm, day=day))
+            self.chase(_et(h, m, day=day))
+
+    def on(self, day):
+        return [(r["slot"], r.get("kind")) for r in self.rows() if r["day"] == f"2026-10-{day}"]
+
+    def test_due_sunday_no_reply_chased_monday_and_tuesday_admin_dm_tuesday(self):
+        self.calcs()
+        self.run_day(12)                                       # Mon: day 1 overdue
+        self.assertEqual(self.on(12), [("morning", "group")])  # the morning slot only
+        mon = self.rows("morning")[0]
+        self.assertEqual(mon["text"], "@Mike Rivera morning — overdue since Sun Oct 11:\n"
+                                      "“I'll send the calcs Sunday”")
+        self.assertIn("Overdue since Sun Oct 11 (1 day overdue)", mon["reason"])
+        self.run_day(13)                                       # Tue: day 2 -> admin too
+        self.assertEqual(self.on(13), [("morning", "group"), ("admin_dm", "admin_dm")])
+        dm = [r for r in self.rows("admin_dm") if r["day"] == "2026-10-13"][0]
+        self.assertEqual(dm["to"], ["Ana Admin"])
+        self.assertEqual(dm["text"],
+                         "Mike Rivera hasn't answered on this, overdue since Sun Oct 11 "
+                         "in Main St Project:\n“I'll send the calcs Sunday”\n"
+                         "Nudged in the group at 8:35.")
+        tue = [r for r in self.rows("morning") if r["day"] == "2026-10-13"][0]
+        self.assertIn("since the Mon Oct 12 8:35 nudge", tue["reason"])
+        self.run_day(14)                                       # and every day after
+        self.assertEqual(self.on(14), [("morning", "group"), ("admin_dm", "admin_dm")])
+
+    def test_the_admin_dm_skips_the_owner(self):
+        self.db.users.rows.append({"_id": "u_mike_user", "company_id": CO_A,
+                                   "name": "Mike Rivera", "role": "admin"})
+        self.calcs(owner={"kind": "user", "id": "u_mike_user"})
+        self.run_day(12)
+        self.run_day(13)
+        dm = self.rows("admin_dm")[0]
+        self.assertNotIn("Mike Rivera", dm["to"])
+
+    def test_an_answer_skips_the_next_morning_only(self):
+        self.calcs()
+        self.run_day(12, said=[("calcs are with the engineer", 10, 0)])
+        self.run_day(13)
+        self.assertEqual(self.on(13), [("morning", "skipped")])   # no admin DM either
+        self.assertIn("wrote about it ('calc')", self.rows("morning")[1]["reason"])
+        self.run_day(14)
+        self.assertEqual(self.on(14), [("morning", "group"), ("admin_dm", "admin_dm")])
+
+    def test_done_moved_or_cancelled_stops_it(self):
+        for change in ({"status": "done"}, {"status": "cancelled"},
+                       {"status": "rescheduled", "due": {"due_text": "Friday",
+                                                         "due_at": "2026-10-16"}}):
+            self.db.attention_items.rows, self.db[wa_chase.COLLECTION].rows = [], []
+            it = self.calcs()
+            self.run_day(12)
+            it.update(change)
+            self.run_day(13)
+            self.assertEqual(self.on(13), [], change)
+
+    def test_weekends_off_still_skip_saturday_and_sunday(self):
+        self.calcs(due={"due_at": "2026-10-09", "due_text": "Friday"})
+        self.run_day(10)                                       # Sat: off by default
+        self.run_day(11)
+        self.assertEqual(self.rows(), [])
+        self.run_day(12)
+        self.assertEqual(self.on(12), [("morning", "group"), ("admin_dm", "admin_dm")])
+        self.assertIn("overdue since Fri Oct 9", self.rows("morning")[0]["text"])
+
+    def test_with_one_due_today_one_message(self):
+        self.calcs()
+        _item(self.db, quote="I'll send the stair RFI today",
+              due={"due_at": "2026-10-12"}, evidence={"sent_at": _et(7, 0, day=12)})
+        self.chase(_et(8, 35, day=12))
+        self.assertEqual(self.rows("morning")[0]["text"],
+                         "@Mike Rivera morning — these are still open:\n"
+                         "“I'll send the calcs Sunday” (overdue since Sun Oct 11)\n"
+                         "“I'll send the stair RFI today” (due today)")
+        self.chase(_et(12, 35, day=12))                       # the RFI alone at midday
+        self.assertEqual(self.rows("midday")[0]["text"],
+                         "@Mike Rivera checking in — still on for today?\n"
+                         "“I'll send the stair RFI today”")
 
 
 class StopConditions(_Base):

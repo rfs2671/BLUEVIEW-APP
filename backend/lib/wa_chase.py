@@ -46,6 +46,12 @@ message (after a handover, the message of who took it on). At most one nudge per
 today go in one message. The words are a fixed template and the item's own
 quote. No model writes any of it.
 
+OVERDUE: an item whose due day has passed and that is still open (not done,
+moved or cancelled) is chased every day in the morning slot only ("overdue
+since Sun Oct 11"), by the same skip rules -- an answer since its last nudge,
+on any earlier day, skips that morning. From its second overdue day, the 4:00
+admin DM too (the owner excluded), after that day's morning nudge.
+
 WEEKENDS: Saturday and Sunday only for a project with "Chase on weekends" on
 (Project → WhatsApp → Levelog Assistant; default off). All four slots.
 """
@@ -171,12 +177,55 @@ def skip_reason(item: Dict[str, Any], day: date,
         # "asap" is due tomorrow, then every day it stays open).
         if str(due.get("due_at"))[:10] > day.isoformat():
             return "not_due_today"
-    elif str(due.get("due_at"))[:10] != day.isoformat():
-        return "not_due_today"
+    elif str(due.get("due_at"))[:10] > day.isoformat():
+        return "not_due_today"          # before the day: overdue ones are chased
     if not o.get("jid"):
         # Last, so it means "would be chased today, but nobody to @mention".
         return NO_MENTION
     return None
+
+
+def due_day(item: Dict[str, Any]) -> Optional[date]:
+    try:
+        return date.fromisoformat(str((item.get("due") or {}).get("due_at") or "")[:10])
+    except ValueError:
+        return None
+
+
+def overdue_days(item: Dict[str, Any], day: date) -> int:
+    """How many days past its due day an item is on `day` (0: due today, or
+    not overdue). ASAP items are chased every day anyway: never overdue."""
+    if str((item.get("due") or {}).get("due_text") or "").strip().upper() == "ASAP":
+        return 0
+    d = due_day(item)
+    return max(0, (day - d).days) if d else 0
+
+
+#: From this many overdue days, the 4:00 admin DM as well.
+OVERDUE_ADMIN_DAYS = 2
+
+
+def day_label(d: date) -> str:
+    """"Sun Oct 11"."""
+    return f"{d.strftime('%a %b')} {d.day}"
+
+
+def overdue_since(item: Dict[str, Any]) -> str:
+    d = due_day(item)
+    return f"overdue since {day_label(d)}" if d else "overdue"
+
+
+def overdue_slot_reason(item: Dict[str, Any], slot: str, day: date) -> Optional[str]:
+    """For an overdue item: why this slot does not chase it, or None. The
+    morning slot only; the admin DM from the second overdue day."""
+    n = overdue_days(item, day)
+    if not n:
+        return None
+    if slot == MORNING:
+        return None
+    if slot == ADMIN and n >= OVERDUE_ADMIN_DAYS:
+        return None
+    return "overdue_morning_only"
 
 
 #: A nudge never quotes words that are only an ack ("Working on it", "on
@@ -365,25 +414,44 @@ _OPENERS = {
 
 
 def group_text(owner_name: str, items: List[Dict[str, Any]], slot: str,
-               handle: Optional[str] = None) -> str:
+               handle: Optional[str] = None, day: Optional[date] = None) -> str:
     """The group message: @owner, a fixed line, the item quote(s). `handle`
     is the owner's token from lib/wa_mention ("@15551234567" for a real
-    mention); without it, "@Name"."""
-    one, many = _OPENERS[slot]
+    mention); without it, "@Name". `day`: today, to say which items are
+    overdue ("overdue since Sun Oct 11")."""
     who = handle or "@" + (owner_name.strip() or "there")
-    lines = [f"{who} {one if len(items) == 1 else many}"]
-    lines += [f"“{quote(it)}”" for it in items]
+    late = [it for it in items if day and overdue_days(it, day)]
+    if not late:
+        one, many = _OPENERS[slot]
+        lines = [f"{who} {one if len(items) == 1 else many}"]
+        lines += [f"“{quote(it)}”" for it in items]
+        return "\n".join(lines)
+    if len(items) == 1:
+        return f"{who} morning — {overdue_since(items[0])}:\n“{quote(items[0])}”"
+    lines = [f"{who} morning — these are still open:"]
+    lines += [f"“{quote(it)}” ({overdue_since(it) if it in late else 'due today'})"
+              for it in items]
     return "\n".join(lines)
 
 
 def admin_text(owner_name: str, group_name: str, items: List[Dict[str, Any]],
-               nudged_at: List[datetime]) -> str:
-    """The private DM to the company admin after the end of day nudge."""
+               nudged_at: List[datetime], day: Optional[date] = None) -> str:
+    """The private DM to the company admin after the end of day nudge (an
+    overdue item: after the morning nudge, from its second overdue day)."""
     who = owner_name.strip() or "The owner"
     where = f" in {group_name}" if group_name else ""
     what = "this" if len(items) == 1 else f"these {len(items)}"
-    lines = [f"{who} hasn't answered on {what}, due today{where}:"]
-    lines += [f"“{quote(it)}”" for it in items]
+    late = [it for it in items if day and overdue_days(it, day)]
+    if not late:
+        lines = [f"{who} hasn't answered on {what}, due today{where}:"]
+        lines += [f"“{quote(it)}”" for it in items]
+    elif len(items) == 1:
+        lines = [f"{who} hasn't answered on this, {overdue_since(items[0])}{where}:",
+                 f"“{quote(items[0])}”"]
+    else:
+        lines = [f"{who} hasn't answered on these {len(items)}{where}:"]
+        lines += [f"“{quote(it)}” ({overdue_since(it) if it in late else 'due today'})"
+                  for it in items]
     times = [hhmm(t) for t in sorted(nudged_at)]
     if times:
         lines.append("Nudged in the group at " + _join(times) + ".")
@@ -418,6 +486,21 @@ def reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime
 
 def _reason(slot: str, items: List[Dict[str, Any]], last_nudge: Optional[datetime],
             day: date) -> str:
+    late = [it for it in items if overdue_days(it, day)]
+    if late:
+        n = max(overdue_days(it, day) for it in late)
+        what = ", ".join(sorted({overdue_since(it) for it in late}))
+        days = f"{n} day{'s' if n != 1 else ''} overdue"
+        if slot == ADMIN:
+            return (f"Still no update after this morning's nudge; {what} ({days}). "
+                    "Owner confirmed.")
+        if last_nudge:
+            when = hhmm(last_nudge)
+            if local(last_nudge).date() != day:
+                when = f"{day_label(local(last_nudge).date())} {when}"
+            return (f"{what[0].upper() + what[1:]} ({days}); no update and no answer "
+                    f"from the owner about it since the {when} nudge.")
+        return f"{what[0].upper() + what[1:]} ({days}); owner confirmed; no update."
     dues = sorted({str((it.get("due") or {}).get("due_text") or "") for it in items} - {""})
     # The day itself, then the words that set it: "due today (Sat Oct 10 ·
     # said 'tomorrow')" -- "due today (tomorrow)" read as a contradiction.
