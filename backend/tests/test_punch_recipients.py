@@ -132,6 +132,107 @@ class TheGuard(unittest.TestCase):
         self.assertNotIn("17185550199", str(rev))                   # never the number
 
 
+class NamesAreNeverGuessed(unittest.TestCase):
+    """#755: company-wide, with guards. This job's people first; a name more
+    than one person answers to is a question; one off the job is marked."""
+
+    def _walk(self, db, assign=None):
+        sess = {"_id": "walk9", "user_id": "u_chris", "company_id": CO, "project_id": "p588",
+                "chat": "17185550111@c.us", "job_name": "588 Thomas St", "job_code": "588",
+                "status": "assign", "assign": assign or {"electrical": None},
+                "items": [{"n": 1, "text": "Bulb", "trade": "electrical", "floor": "4"}]}
+        db[punch.SESSIONS].rows.append(dict(sess))
+        return sess
+
+    def _say(self, db, sess, text):
+        sent = []
+
+        async def send(chat, body, *a, **k):
+            sent.append(body)
+        with patch.object(server, "send_whatsapp_message", send):
+            _run(db, server._punch_assign_turn({"user_id": "u_chris"}, sess, sess["chat"], text))
+        return sent[-1], db[punch.SESSIONS].rows[0] | sess
+
+    LOPEZ = {"_id": "m_lopez", "company_id": CO, "person_name": "Chris Lopez",
+             "sub_company": "Arkon", "sender_jid": "17185550333@c.us"}
+    DOV = {"_id": "m_dov", "company_id": CO, "person_name": "Dov Klein",
+           "sub_company": "Power Direct", "sender_jid": "17185550222@c.us"}
+
+    def test_two_chrises_is_a_question_never_a_pick(self):
+        db = _world([self.LOPEZ])
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "electrical → Chris")
+        self.assertEqual(reply.splitlines()[0],
+                         "Which Chris? 1) Chris Weiss (GC team) "
+                         "2) Chris Lopez (Arkon, not on this job)")
+        self.assertIsNone(sess["assign"]["electrical"])
+        reply, sess = self._say(db, sess, "ok")                 # not an answer
+        self.assertTrue(reply.startswith("Which Chris?"))
+        reply, sess = self._say(db, sess, "2")
+        self.assertEqual(sess["assign"]["electrical"]["name"], "Chris Lopez")
+        # The recap, marked; 'ok' to it is still what sends.
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertIn("Reply 'ok' to send", reply)
+        self.assertIsNone(sess.get("choose"))
+        self.assertEqual(sess["status"], "recap")
+
+    def test_this_jobs_people_come_first(self):
+        db = _world([self.LOPEZ, {**self.LOPEZ, "_id": "m_lopez2", "person_name": "Chris Diaz",
+                                  "sub_company": "Bright", "sender_jid": "17185550444@c.us"}])
+        db.whatsapp_messages.rows.append({"_id": "w1", "project_id": "p588", "company_id": CO,
+                                          "group_id": GROUP, "sender_jid": "17185550444@c.us"})
+        sess = self._walk(db)
+        reply, _ = self._say(db, sess, "electrical → Chris from Arkon")
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)   # narrowed: one
+        db[punch.SESSIONS].rows.clear()
+        sess = self._walk(db)
+        reply, _ = self._say(db, sess, "electrical → Chris")
+        # Chris Diaz wrote in the job's group: first; then the GC team;
+        # then company-wide, marked.
+        self.assertEqual(reply.splitlines()[0],
+                         "Which Chris? 1) Chris Diaz (Bright) 2) Chris Weiss (GC team) "
+                         "3) Chris Lopez (Arkon, not on this job)")
+
+    def test_one_match_on_the_job_is_unmarked(self):
+        db = _world([self.DOV])
+        db[punch.COLLECTION].rows.append({"_id": "p588:P-588-1", "project_id": "p588",
+                                          "assignee": {"kind": "sender_map", "id": "m_dov"}})
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "electrical → Dov")
+        self.assertIn("Dov Klein (Power Direct): #1\n", reply)
+        self.assertFalse(sess["assign"]["electrical"]["not_on_job"])
+
+    def test_all_to_an_ambiguous_name_asks_then_the_whole_list(self):
+        db = _world([self.LOPEZ])
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "all → Chris")
+        self.assertTrue(reply.startswith("Which Chris? 1) Chris Weiss (GC team) "), reply)
+        self.assertIsNone(sess.get("whole"))
+        reply, sess = self._say(db, sess, "1")
+        self.assertEqual(sess["whole"]["name"], "Chris Weiss")
+        self.assertEqual(sess["status"], "recap")
+        self.assertIn("Chris Weiss (GC team): #1", reply)
+
+    def test_filling_the_question_marks_with_an_ambiguous_name_asks(self):
+        db = _world([self.LOPEZ])
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "Chris")
+        self.assertTrue(reply.startswith("Which Chris?"), reply)
+        self.assertIsNone(sess["assign"]["electrical"])
+        reply, sess = self._say(db, sess, "2")
+        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertTrue(sess["assign"]["electrical"]["not_on_job"])
+
+    def test_a_worker_who_only_checked_in_is_unknown(self):
+        db = _world()
+        sess = self._walk(db)
+        reply, sess = self._say(db, sess, "electrical → Yeyzmar")
+        self.assertTrue(reply.startswith("I don't know Yeyzmar on this job. A name has to be "
+                                         "in People, a user of your company, or a sub's punch "
+                                         "contact"), reply)
+        self.assertIsNone(sess["assign"]["electrical"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

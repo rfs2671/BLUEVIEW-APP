@@ -214,7 +214,7 @@ class The2031Sequence(_Walk):
         # "Chris from gc." (8): Chris, the GC's user, gets every "?" trade.
         (recap,) = self.turn("Chris from gc.")
         self.assertTrue(recap.startswith("Ready to send (shadow mode"), recap)   # (12)
-        self.assertIn("Chris Weiss (GC): #1, #2, #3, #4", recap)
+        self.assertIn("Chris Weiss (GC team): #1, #2, #3, #4", recap)
         self.assertEqual(self.db[punch.COLLECTION].rows, [])       # nothing before 'ok'
         (sent,) = self.turn("ok")
         self.assertIn("shadow mode: nothing was posted", sent)
@@ -372,7 +372,7 @@ class Assigning(_Walk):
                 self.setUp()
                 self._to_assign()
                 (recap,) = self.turn(said)
-                self.assertIn("Chris Weiss (GC): #1, #2", recap)
+                self.assertIn("Chris Weiss (GC team): #1, #2", recap)
                 (sent,) = self.turn("ok")
                 # ONE message, by floor and trade, with the photos.
                 self.assertEqual(sent.count("punch list — due"), 1, sent)
@@ -386,7 +386,7 @@ class Assigning(_Walk):
             punch_to="one_person", punch_to_user="u_chris")
         out = self._to_assign()
         self.assertTrue(out.startswith("Ready to send"), out)
-        self.assertIn("Chris Weiss (GC): #1, #2", out)
+        self.assertIn("Chris Weiss (GC team): #1, #2", out)
 
     def test_due_days_change_the_recap(self):
         self._to_assign()
