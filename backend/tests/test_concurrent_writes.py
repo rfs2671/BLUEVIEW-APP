@@ -133,7 +133,7 @@ class PunchWalks(unittest.TestCase):
             _both(db, *(server._punch_dm_turn(ident, "c@c.us", msg(i), f"Item {i} 4F")
                         for i in range(3)))
         (s,) = db[punch.SESSIONS].rows
-        self.assertEqual(sorted(it["text"] for it in s["items"]), ["Item 0 4F", "Item 1 4F", "Item 2 4F"])
+        self.assertEqual(sorted(it["text"] for it in s["items"]), ["Item 0", "Item 1", "Item 2"])   # 4F: each one's place
         self.assertEqual(len(s["photos"]), 3)
         self.assertEqual(db[punch.LEASES].rows, [])            # every lease given back
 
