@@ -93,7 +93,8 @@ class The1036Photo(_Walk):
 
     def test_no_words_asks_what_then_back(self):
         (q,) = self.turn("", photo=True)
-        self.assertEqual(q, 'Added #4 (photo). What is it, and where? (e.g. "4D tile chipped")')
+        self.assertEqual(q, 'Added #4 (photo). What is it, and where? (e.g. "4D tile chipped"; '
+                            'or reply to a photo with its words)')
         (out,) = self.turn("4d tile chipped")
         self.assertTrue(out.startswith("Added #4 'Tile chipped' (Apt 4D). Back to: Who gets what?"),
                         out)
@@ -290,3 +291,44 @@ class Captions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexOn758(_Walk):
+    """Two photos with no words at a later stage; a caption as a reply."""
+
+    def test_two_wordless_photos_both_get_their_words(self):
+        self.db[punch.SESSIONS].rows.append(_old_walk())
+        (q,) = self.turn("", photo=True)
+        self.assertTrue(q.startswith("Added #4 (photo). What is it, and where?"), q)
+        (q,) = self.turn("", photo=True)
+        self.assertTrue(q.startswith("Added #5 (photo). What is #4, and where?"), q)
+        (q,) = self.turn("4d tile chipped")
+        self.assertEqual(q, "Added #4 'Tile chipped' (Apt 4D). What is #5, and where?")
+        (out,) = self.turn("tile cracked")                         # no location: asked
+        self.assertEqual(out, "Added #5 'tile cracked'. Where is #5 'tile cracked'? "
+                              "(floor + unit, or a named area)")
+        (out,) = self.turn("4E")
+        self.assertIn("Back to: Who gets what?", out)
+        items = {it["n"]: it for it in self.sess()["items"]}
+        self.assertEqual((items[4]["text"], items[5]["text"], items[5]["area"]),
+                         ("Tile chipped", "tile cracked", "Apt 4E"))
+        self.assertEqual(self.sess().get("await_caption"), [])
+
+    def test_a_reply_to_the_photo_is_its_caption_and_send_is_send(self):
+        self.db[punch.SESSIONS].rows.append(_old_walk(status="draft", assign={}))
+        self.turn("", photo=True)                                   # message 1: #4
+        (out,) = self.turn("Tile chipped 4D", reply_to=1, quoted_body="")
+        self.assertEqual(self.sess().get("await_caption"), [])
+        self.assertEqual(next(it for it in self.sess()["items"] if it["n"] == 4)["text"],
+                         "Tile chipped")
+        (who,) = self.turn("send")                                  # never a caption
+        self.assertNotEqual(next(it for it in self.sess()["items"] if it["n"] == 4)["text"], "send")
+
+    def test_a_reply_picks_which_photo(self):
+        self.db[punch.SESSIONS].rows.append(_old_walk())
+        self.turn("", photo=True)                                   # message 1: #4
+        self.turn("", photo=True)                                   # message 2: #5
+        self.turn("2b paint scuff", reply_to=2, quoted_body="")
+        items = {it["n"]: it for it in self.sess()["items"]}
+        self.assertEqual((items[5]["text"], items[4]["text"]), ("Paint scuff", ""))
+        self.assertEqual(len(self.sess()["await_caption"]), 1)

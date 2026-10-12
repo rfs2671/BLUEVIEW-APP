@@ -61865,6 +61865,11 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
             # never a trade or a note on another item (8:31 PM).
             return await _punch_correct(sess, dm_chat, parsed, it, fix, now)
         if it:
+            if it.get("captured") in _punch_awaiting(sess):
+                # Its words came as a reply to the photo: no longer awaited
+                # (Codex review on #758: the next "send" became its caption).
+                await _punch_save(sess, await_caption=[c for c in _punch_awaiting(sess)
+                                                       if c != it.get("captured")])
             return await _punch_item_words(sess, dm_chat, parsed, it, said, now)
     if not parsed.get("has_image") and sess.get("status") in ("capturing", "locating", "draft") \
             and not replying and sess.get("last_captioned"):
@@ -61883,9 +61888,12 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
         # words for that stage (10:36 PM: "4d tile chipped" under "Who gets
         # what?" was read as a name).
         return await _punch_late_photo(sess, dm_chat, parsed, said, voice, msg_id, now)
-    if sess.get("await_caption") and not parsed.get("has_image") and said.strip() \
+    if _punch_awaiting(sess) and not parsed.get("has_image") and said.strip() \
             and sess["status"] in PUNCH_LATER_STAGES:
-        return await _punch_late_caption(sess, dm_chat, said, now)
+        quoted = punch.item_for_reply(sess["items"], parsed.get("quoted_message_id"),
+                                      _punch_caption({"has_image": True}, parsed.get("quoted_body") or "")) \
+            if replying else None
+        return await _punch_late_caption(sess, dm_chat, said, now, quoted)
     if sess["status"] in ("assign", "recap", "due"):
         # Stored names are checked against who may be messaged EVERY time
         # (a walk from before #755 kept a checked-in worker).
@@ -62404,34 +62412,62 @@ async def _punch_late_photo(sess, dm_chat, parsed, words, voice, msg_id, now) ->
     n = max([int(it.get("n") or 0) for it in sess["items"]] or [0]) + 1
     it = await _punch_photo_item(sess, parsed, words, voice, msg_id, now, n=n)
     if not (it.get("text") or "").strip():
-        await _punch_save(sess, await_caption=it["captured"])
+        # Every photo with no words is queued (Codex review on #758: a second
+        # one replaced the first, which could then go out with no words).
+        waiting = _punch_awaiting(sess) + [it["captured"]]
+        await _punch_save(sess, await_caption=waiting)
+        first = _punch_item_by_captured(sess["items"], waiting[0])
+        ask = f"#{first['n']}" if first and first is not it else "it"
         await send_whatsapp_message(dm_chat, (
-            f"Added #{n} (photo). What is it, and where? (e.g. \"4D tile chipped\")"))
+            f"Added #{n} (photo). What is {ask}, and where? (e.g. \"4D tile chipped\"; "
+            "or reply to a photo with its words)"))
         return True
     return await _punch_placed(sess, dm_chat, prior, it)
 
 
-async def _punch_late_caption(sess, dm_chat, words, now) -> bool:
-    """The words for a late photo sent without any."""
-    it = _punch_item_by_captured(sess["items"], sess.get("await_caption"))
-    await _punch_save(sess, await_caption=None)
+def _punch_awaiting(sess) -> List[Any]:
+    """The late photos still waiting for their words, oldest first."""
+    w = sess.get("await_caption")
+    if w is None or w == []:
+        return []
+    return list(w) if isinstance(w, list) else [w]
+
+
+async def _punch_late_caption(sess, dm_chat, words, now, quoted=None) -> bool:
+    """The words for a late photo sent without any: the one replied to, else
+    the oldest waiting. Each in turn; then their locations, then back."""
+    waiting = _punch_awaiting(sess)
+    target = quoted.get("captured") if quoted and quoted.get("captured") in waiting else waiting[0]
+    rest = [c for c in waiting if c != target]
+    await _punch_save(sess, await_caption=rest)
+    it = _punch_item_by_captured(sess["items"], target)
+    if it is not None:
+        fresh = punch.new_item(it["n"], words, photo_key=None, message_id="")
+        for k in ("text", "said", "floor", "area", "trade", "trade_guess"):
+            if k in fresh:
+                it[k] = fresh[k]
+        await _punch_save(sess, items=sess["items"])
+    if rest:
+        nxt = _punch_item_by_captured(sess["items"], rest[0])
+        await send_whatsapp_message(dm_chat, (
+            (punch.added_text(it) + " " if it else "")
+            + f"What is #{(nxt or {}).get('n', '?')}, and where?"))
+        return True
     if it is None:
         return await _punch_back_to(sess, dm_chat, sess["status"], None, "")
-    fresh = punch.new_item(it["n"], words, photo_key=None, message_id="")
-    for k in ("text", "said", "floor", "area", "trade", "trade_guess"):
-        if k in fresh:
-            it[k] = fresh[k]
-    await _punch_save(sess, items=sess["items"])
     return await _punch_placed(sess, dm_chat, sess["status"], it)
 
 
 async def _punch_placed(sess, dm_chat, prior, it) -> bool:
     """The late item has words: its location asked first if they do not
     give it, else back to `prior`."""
-    if prior != "locating" and not punch.location_ok(it):
-        await _punch_save(sess, status="locating", asking=it.get("n"),
+    missing = punch.missing_location(sess["items"]) if prior != "locating" else []
+    if missing:
+        # Its location -- or an earlier late photo's -- asked first.
+        ask = it if it in missing else missing[0]
+        await _punch_save(sess, status="locating", asking=ask.get("n"),
                           resume=prior, resume_item=it.get("captured"))
-        await send_whatsapp_message(dm_chat, punch.added_text(it) + " " + punch.where_question(it))
+        await send_whatsapp_message(dm_chat, punch.added_text(it) + " " + punch.where_question(ask))
         return True
     return await _punch_back_to(sess, dm_chat, prior, it, punch.added_text(it))
 
