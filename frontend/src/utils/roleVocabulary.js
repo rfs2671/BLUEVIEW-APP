@@ -60,8 +60,12 @@ export const ASSIGNABLE_ROLES = [
   {
     value: ROLE_PM,
     label: 'Site Manager / PM',
-    blurb: 'Admin powers on assigned projects only. Cannot create projects. '
-      + 'Daily logs are view-only — may add photographs, may not sign.',
+    // The permission level (below) decides how far that goes.
+    blurb: 'Runs jobs. On "Assigned jobs only" (the default): adds subs, sets punch '
+      + 'contacts and acts on the jobs they are assigned to. Cannot create projects, '
+      + 'and daily logs are view-only — may add photographs, may not sign. '
+      + 'On "Same as admin": everything an admin does on every job. '
+      + 'Never manages users or admins.',
   },
   {
     value: ROLE_SUPERINTENDENT,
@@ -167,6 +171,43 @@ export function roleLabel(role) {
   if (v === 'demo') return 'Demo';
   if (v === 'site_device') return 'Site Device';
   return v ? v.toUpperCase() : 'UNKNOWN';
+}
+
+// ── THE PM'S PERMISSION LEVEL ───────────────────────────────────────────────
+//
+// Set by an admin when creating a PM and editable later (only an admin may
+// change it; the server audits each change). The server reads a PM row
+// without the field as "assigned" -- and a startup migration writes it -- so
+// this does too.
+export const PM_ACCESS_ASSIGNED = 'assigned';
+export const PM_ACCESS_FULL = 'full';
+
+export const PM_ACCESS_LEVELS = [
+  {
+    value: PM_ACCESS_ASSIGNED,
+    label: 'Assigned jobs only',
+    blurb: 'Adds subs, sets punch contacts and acts only on the jobs they are assigned to.',
+  },
+  {
+    value: PM_ACCESS_FULL,
+    label: 'Same as admin',
+    blurb: 'Everything an admin can do, on all jobs, except managing users and admins.',
+  },
+];
+
+/** "assigned" | "full" for a PM, null for anyone else. */
+export function pmAccessLevel(user) {
+  const u = user || {};
+  if (String(u.role || '').trim().toLowerCase() !== ROLE_PM) return null;
+  return u.pm_access === PM_ACCESS_FULL ? PM_ACCESS_FULL : PM_ACCESS_ASSIGNED;
+}
+
+/** The role as a user's card shows it: "PM · assigned jobs" / "PM · full access". */
+export function userCardRoleLabel(user) {
+  const level = pmAccessLevel(user);
+  if (level === PM_ACCESS_FULL) return 'PM · full access';
+  if (level === PM_ACCESS_ASSIGNED) return 'PM · assigned jobs';
+  return roleLabel((user || {}).role);
 }
 
 /** Does this role carry a DOB registration? */

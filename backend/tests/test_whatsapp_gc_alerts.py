@@ -623,19 +623,43 @@ class TheSettingsEndpoints(unittest.TestCase):
                                     "punch_contacts",
                                     # The default due (11:06 PM: it was a fixed "Fri").
                                     "punch_due_default", "punch_due_options",
+                                    # What the caller may change ("all" for an admin).
+                                    "edit",
                                     *server.wa_alerts.SWITCHES})
+        self.assertEqual(out["edit"], "all")
 
-    def test_a_pm_cannot_read_or_change(self):
+    def test_a_pm_on_assigned_jobs_reads_and_sets_punch_contacts_only(self):
+        # PM permission level "Assigned jobs only": on his job he reads the
+        # settings and may set punch contacts; the switches and the GC group
+        # stay with an admin (or a PM with full access).
         with _Ctx(db=_world()):
-            for call in (lambda: server.get_project_whatsapp_settings("proj_a", PM),
-                         lambda: server.patch_project_whatsapp_alerts(
+            out = _run(server.get_project_whatsapp_settings("proj_a", PM))
+            self.assertEqual(out["edit"], "punch_contacts")
+            for call in (lambda: server.patch_project_whatsapp_alerts(
                              "proj_a", {"violation_alerts": False}, PM),
+                         lambda: server.patch_project_whatsapp_alerts(
+                             "proj_a", {"violation_alerts": False, "punch_contacts": {}}, PM),
+                         # Chase settings and punch sends: not his.
+                         lambda: server.patch_project_whatsapp_alerts(
+                             "proj_a", {"chase_weekends": True}, PM),
+                         lambda: server.patch_project_whatsapp_alerts(
+                             "proj_a", {"punch_sends": "live"}, PM),
                          lambda: server.put_project_whatsapp_gc_group(
                              "proj_a", {"gc_group_id": G_GC,
                                         "gc_group_confirmed": True}, PM)):
                 with self.assertRaises(HTTPException) as e:
                     _run(call())
                 self.assertEqual(e.exception.status_code, 403)
+            self.assertTrue(_settings()["violation_alerts"])
+
+    def test_a_pm_with_full_access_is_an_admin_here(self):
+        full = {**PM, "pm_access": "full", "assigned_projects": []}
+        with _Ctx(db=_world()):
+            self.assertEqual(_run(server.get_project_whatsapp_settings("proj_a", full))["edit"], "all")
+            _run(server.patch_project_whatsapp_alerts("proj_a", {"violation_alerts": False}, full))
+            self.assertFalse(_settings()["violation_alerts"])
+            _run(server.patch_project_whatsapp_alerts("proj_a", {"chase_weekends": True}, full))
+            self.assertTrue(_settings()["chase_weekends"])
 
     def test_another_companys_admin_gets_404(self):
         with _Ctx(db=_world()):

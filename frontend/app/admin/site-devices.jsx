@@ -34,7 +34,7 @@ import FloatingNav from '../../src/components/FloatingNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -88,7 +88,7 @@ export default function SiteDevicesScreen() {
   const [saving, setSaving] = useState(false);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isCompanyAdmin(user);
 
   // Redirect if not authenticated or not admin
   useEffect(() => {

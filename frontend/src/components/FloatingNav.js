@@ -30,7 +30,7 @@ import {
   Check,
 } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
-import { useAuth, isCompanyAdmin } from '../context/AuthContext';
+import { useAuth, isCompanyAdmin, isAccountAdmin } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { authAPI } from '../utils/api';
@@ -200,8 +200,9 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
                     </>}
               </Pressable>
 
-              {/* ── Password (admin / owner only) ─────────────────── */}
-              {isAdmin && (
+              {/* ── Password (admin only: the server's admin-seat route,
+                  which a full-access PM does not hold) ───────────── */}
+              {isAccountAdmin(user) && (
                 <>
                   <Text style={[modalStyles.sectionLabel, { marginTop: spacing.lg, color: colors.text.muted }]}>
                     CHANGE PASSWORD

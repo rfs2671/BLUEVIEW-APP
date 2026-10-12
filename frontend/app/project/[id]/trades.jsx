@@ -24,7 +24,7 @@ import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import { projectsAPI, tradesAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -87,7 +87,9 @@ export default function ProjectTradesScreen() {
   // a cached copy (or nothing) — and that saving is impossible right now.
   const [fetchState, setFetchState] = useState('ok');
 
-  const isAdmin = user?.role === 'admin';
+  // An admin, or a PM: a PM on assigned jobs may change a job's subs (the
+  // server keeps that to his jobs and to the roster).
+  const isAdmin = isCompanyAdmin(user) || String(user?.role || '').trim().toLowerCase() === 'pm';
   const readOnly = fetchState !== 'ok';
   // Soft-deleted rows are kept in state (they must be SENT back marked
   // inactive) but are never shown and never offered for selection.

@@ -31,8 +31,8 @@ import FloatingNav from '../../../src/components/FloatingNav';
 import OfflineNotice from '../../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
-import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
+import { useAuth, isCompanyAdmin, isAccountAdmin } from '../../../src/context/AuthContext';
+import { checklistsAPI, projectsAPI, adminUsersAPI, usersAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -110,7 +110,9 @@ export default function AdminChecklistsScreen() {
     const [checklistsRes, projectsRes, usersRes] = await Promise.all([
       settleFetch(() => checklistsAPI.getAll()),
       settleFetch(() => projectsAPI.getAll()),
-      settleFetch(() => adminUsersAPI.getAll()),
+      // The user list is an admin's (user management); a full-access PM
+      // assigns from the company roster (id, name, email, role).
+      settleFetch(() => (isAccountAdmin(user) ? adminUsersAPI.getAll() : usersAPI.companyRoster())),
     ]);
 
     setFetchState(checklistsRes.status);

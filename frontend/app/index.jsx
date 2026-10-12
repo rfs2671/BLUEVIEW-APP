@@ -27,7 +27,7 @@ import FloatingNav from '../src/components/FloatingNav';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { useToast } from '../src/components/Toast';
-import { useAuth, isCompanyAdmin } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
@@ -50,6 +50,11 @@ import { semantic, chrome, border, surface, text } from '../src/styles/semanticC
 const pmActions = [
   { title: 'Integrations', subtitle: 'Your WhatsApp', path: '/admin/integrations', icon: Cloud },
 ];
+
+// A PM with full access gets the admin tools, less User Mgmt: managing users
+// and admins stays with an admin.
+const adminActionsFor = (user) => (isAccountAdmin(user)
+  ? adminActions : adminActions.filter((a) => a.path !== '/admin/users'));
 
 const isPmUser = (user) => String((user || {}).role || '').trim().toLowerCase() === 'pm';
 
@@ -812,7 +817,7 @@ export default function DashboardScreen() {
           <>
             <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>{isAdmin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
             <View style={deskStyles.adminRow}>
-              {(isAdmin ? adminActions : pmActions).map((action) => (
+              {(isAdmin ? adminActionsFor(user) : pmActions).map((action) => (
                 <AdminRowTile
                   key={action.title}
                   action={action}
@@ -834,7 +839,7 @@ export default function DashboardScreen() {
       <>
         <Text style={[s.sectionLabel, { color: colors.text.muted }]}>{admin ? 'ADMIN TOOLS' : 'TOOLS'}</Text>
         <View style={s.adminGrid}>
-          {(admin ? adminActions : pmActions).map((action) => (
+          {(admin ? adminActionsFor(user) : pmActions).map((action) => (
             <ActionTile
               key={action.title}
               action={action}

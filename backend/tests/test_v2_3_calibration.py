@@ -429,7 +429,8 @@ class TestServerAdminEndpoints(unittest.TestCase):
         )
         e = self.text.find("@api_router", s + 1)
         slice_ = self.text[s:e if e > s else s + 1500]
-        self.assertIn("Depends(get_admin_user)", slice_)
+        # The admin seat: platform-wide weights are not a full-access PM's.
+        self.assertIn("Depends(get_admin_seat_user)", slice_)
         self.assertIn("compute_calibration_stats", slice_)
 
     def test_weights_endpoint_present(self):
@@ -443,7 +444,8 @@ class TestServerAdminEndpoints(unittest.TestCase):
         )
         e = self.text.find("@api_router", s + 1)
         slice_ = self.text[s:e if e > s else s + 1500]
-        self.assertIn("Depends(get_admin_user)", slice_)
+        # The admin seat: platform-wide weights are not a full-access PM's.
+        self.assertIn("Depends(get_admin_seat_user)", slice_)
         self.assertIn("set_trigger_prior", slice_)
 
 

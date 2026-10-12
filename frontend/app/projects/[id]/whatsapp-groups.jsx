@@ -408,7 +408,8 @@ export default function WhatsAppGroupsScreen() {
               ) : null}
 
               {/* ── LEVELOG ASSISTANT (admins) ──────────────────────────── */}
-              {isAdmin && !readOnly ? (
+              {/* A PM on assigned jobs sees the card too: its punch contacts. */}
+              {(isAdmin || role === 'pm') && !readOnly ? (
                 <LevelogAssistantCard projectId={projectId} />
               ) : null}
 
