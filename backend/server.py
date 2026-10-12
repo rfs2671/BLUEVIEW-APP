@@ -51707,6 +51707,17 @@ DM_ACTION_STATE = "dm_action"          # the open question
 DM_ACTION_LAST = "dm_action_last"      # the last change, for undo
 
 
+def _dm_is_approved(ident: dict) -> bool:
+    """As require_approved, which the app's write routes carry and a DM
+    never passes through (Codex review on #768): only an approved account
+    makes changes."""
+    user = ident.get("user") or {}
+    status = user.get("account_status")
+    if status is None and ALLOW_LEGACY_NULL_STATUS:
+        return True
+    return status in APPROVED_ACCOUNT_STATUSES
+
+
 def _dm_is_admin(ident: dict) -> bool:
     return holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
                       COMPANY_ADMIN_ROLES)
@@ -51842,7 +51853,10 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) ->
     if p["action"] == "none":
         return False
     p["lang"] = dm_actions.reply_lang(text)
-    p["said"] = str(text)[:300]
+    p["said"] = dm_actions.redact(text)[:300]
+    if p["action"] not in ("unsupported",) and not _dm_is_approved(ident):
+        await _dm_say(dm_chat, p["lang"], "not_approved")
+        return True
     if p["action"] == "undo":
         await _dm_action_undo(ident, dm_chat, p["lang"])
     elif p["action"] == "unsupported":
@@ -51909,7 +51923,7 @@ async def _dm_action_restart_or(ident: dict, dm_chat: str, text: str, otherwise)
         if p["action"] not in ("none", "undo"):
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             p["lang"] = dm_actions.reply_lang(text)
-            p["said"] = str(text)[:300]
+            p["said"] = dm_actions.redact(text)[:300]
             if p["action"] == "unsupported":
                 await _dm_say(dm_chat, p["lang"], "unsupported")
             else:
@@ -52137,7 +52151,27 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
             await _dm_ask(dm_chat, p, "choose:_project_id", dm_actions.numbered(
                 dm_actions.say(lang, "which_job"), [o["label"] for o in options]), options)
             return
+        if p.get("_row_key"):
+            subs = [(pr, r) for pr, r in subs
+                    if f"{r.get('company')}|{r.get('trade')}" == p["_row_key"]] or subs
+        if len(subs) > 1:
+            # Two rows of that sub on the job (two trades, or two names
+            # alike): which one, never a guess (Codex review on #768).
+            options = [{"label": f"{r.get('company')} ({r.get('trade')})",
+                        "value": f"{r.get('company')}|{r.get('trade')}"} for _pr, r in subs][:6]
+            await _dm_ask(dm_chat, p, "choose:_row_key", dm_actions.numbered(
+                dm_actions.say(lang, "which_sub"), [o["label"] for o in options]), options)
+            return
         project, row = subs[0]
+        if not row.get("id"):
+            # A roster row from before ids were minted: one now, as a roster
+            # save does (Codex review on #768).
+            await _save_roster(project["_id"], _active_assignments(project))
+            project = await db.projects.find_one({"_id": project["_id"]}) or project
+            row = next((r for r in _active_assignments(project)
+                        if _roster_key(r.get("company") or "") == _roster_key(row.get("company") or "")
+                        and _roster_key(r.get("trade") or "") == _roster_key(row.get("trade") or "")),
+                       row)
         p["_project_id"], p["_row_id"] = str(project["_id"]), str(row.get("id") or "")
         p["company"] = row.get("company") or p["company"]
         if not p.get("name"):
@@ -52238,6 +52272,9 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     """Make the change, only as the code confirms it; say what changed."""
     lang = p.get("lang") or "en"
     a = p["action"]
+    if not _dm_is_approved(ident):
+        await _dm_say(dm_chat, lang, "not_approved")
+        return
     if a != "add_person" and not _dm_is_admin(ident):
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -52380,6 +52417,9 @@ async def _dm_restore_person(ident: dict, jid: str, before: Optional[dict]) -> N
                                            if k not in ("company_id", "sender_jid")}})
     else:
         await coll.delete_one(q)
+    # The open items the save re-pointed follow back (Codex review on #768).
+    await _sender_map_apply(str(ident["company_id"]), jid,
+                            await coll.find_one(q) if before else None)
 
 
 async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
@@ -52389,6 +52429,9 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
         await _dm_say(dm_chat, lang, "nothing_to_undo")
         return
     u = last["undo"]
+    if not _dm_is_approved(ident):
+        await _dm_say(dm_chat, lang, "not_approved")
+        return
     if not _dm_is_admin(ident) and u.get("kind") != "person":
         await _dm_say(dm_chat, lang, "admin_only")
         return

@@ -99,6 +99,18 @@ def phone_digits(raw: Any) -> str:
     return d if len(d) == 10 else ""
 
 
+_PHONE_LIKE = re.compile(r"\+?\(?\d[\d\s().\-]{5,}\d")
+
+
+def redact(text: Any) -> str:
+    """What they said, for the audit: every phone-like run of digits as its
+    last 4 only ("718 555 1234" -> "…1234")."""
+    def short(m):
+        d = re.sub(r"\D", "", m.group(0))
+        return f"…{d[-4:]}" if len(d) >= 7 else m.group(0)
+    return _PHONE_LIKE.sub(short, str(text or ""))
+
+
 def last4(phone: Any) -> str:
     d = re.sub(r"\D", "", str(phone or ""))
     return d[-4:] if len(d) >= 4 else ""
@@ -539,6 +551,8 @@ TEXT = {
         "practice_same": "Punch lists at {job} are already in practice mode.",
         "admin_only": "Only a company admin can do that. I can save people for you.",
         "admin_only_live": "Only a company admin can turn that on.",
+        "not_approved": "Your account isn't approved yet, so I can't make changes. Ask your admin.",
+        "which_sub": "Which one?",
         "cancelled": "OK, I won't do it.",
         "nothing_to_undo": "There's nothing to undo.",
         "undo_too_late": "That was too long ago to undo here. You can change it in the app.",
@@ -601,6 +615,8 @@ TEXT = {
         "practice_same": "Las listas de punch de {job} ya están en práctica.",
         "admin_only": "Solo un administrador puede hacer eso. Yo puedo guardar personas.",
         "admin_only_live": "Solo un administrador puede prender eso.",
+        "not_approved": "Su cuenta todavía no está aprobada, así que no puedo hacer cambios. Pregúntele a su administrador.",
+        "which_sub": "¿Cuál?",
         "cancelled": "Está bien, no lo hago.",
         "nothing_to_undo": "No hay nada que deshacer.",
         "undo_too_late": "Ya pasó mucho tiempo para deshacerlo aquí. Puede cambiarlo en la app.",

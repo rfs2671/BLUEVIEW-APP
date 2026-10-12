@@ -180,7 +180,8 @@ GEO = {
 class Chat(unittest.TestCase):
 
     def setUp(self):
-        self.db, self.proj = dry.world(SC)
+        import copy
+        self.db, self.proj = dry.world(copy.deepcopy(SC))      # the fixture's rows are never shared
         self.other = {"_id": "p77", "name": "77 Water", "address": "77 Water St, New York, NY",
                       "company_id": dry.COMPANY, "trade_assignments": [
                           {"id": "u1", "company": "Arkon Drywall", "trade": "Drywall"}]}
@@ -190,8 +191,8 @@ class Chat(unittest.TestCase):
              "sub_company": "GC team", "sender_jid": "17185550301@c.us"},
             {"_id": "m_cl", "company_id": dry.COMPANY, "person_name": "Chris Lopez",
              "sub_company": "Arkon Drywall", "sender_jid": "17185550302@c.us"}])
-        self.ident = {**dry._ident(self.proj, SC), "projects": [self.proj]}
-        self.sent, self.dob, self.dot, self.model = [], [], [], None
+        self.ident = {**dry._ident(self.proj, SC), "projects": [self.p588()]}
+        self.sent, self.dob, self.dot, self.model, self.applied = [], [], [], None, []
         self.now = datetime.now(timezone.utc)
 
     def talk(self, *lines, ident=None):
@@ -230,7 +231,8 @@ class Chat(unittest.TestCase):
         async def nothing(*a, **k):
             return None
 
-        async def quiet(*a, **k):
+        async def quiet(company_id, jid, row):
+            self.applied.append((jid, (row or {}).get("person_name")))
             return 0
 
         who = ident or self.ident
@@ -408,6 +410,52 @@ class Chat(unittest.TestCase):
         # Chris Weiss (GC team) and Chris Lopez (Arkon Drywall): Arkon's is Lopez.
         (ask,) = self.talk("punch contact for arkon is chris")
         self.assertEqual(ask, "Send Arkon Drywall's punch lists at 588 Thomas St to Chris Lopez?")
+
+    # ── Codex review on #768 ─────────────────────────────────────────────
+
+    def test_an_account_not_approved_changes_nothing(self):
+        pending = {**self.ident, "user": {**self.ident["user"], "account_status": "pending"}}
+        n = len(self.db.projects.rows)
+        self.assertEqual(self.talk("add 9 menahan", ident=pending),
+                         ["Your account isn't approved yet, so I can't make changes. Ask your admin."])
+        self.assertEqual(self.talk("chris is our super his number is 718 555 1234", ident=pending),
+                         ["Your account isn't approved yet, so I can't make changes. Ask your admin."])
+        # Approved when asked, not any more at "yes": still nothing.
+        self.talk("add 9 menahan")
+        self.assertEqual(self.talk("yes", ident=pending),
+                         ["Your account isn't approved yet, so I can't make changes. Ask your admin."])
+        self.assertEqual((len(self.db.projects.rows), self.audits()), (n, []))
+
+    def test_the_audit_never_keeps_a_whole_number(self):
+        self.talk("chris is our super, his number is (718) 555-1234", "yes")
+        (a,) = self.audits()
+        self.assertEqual(a["details"]["said"], "chris is our super, his number is …1234")
+        flat = json.dumps(a, default=str)
+        for leak in ("555-1234", "555 1234", "5551234", "(718)"):
+            self.assertNotIn(leak, flat)
+
+    def test_a_roster_row_from_before_ids(self):
+        row = next(r for r in self.p588()["trade_assignments"] if r["company"] == "Quality Plumbing")
+        row.pop("id")
+        self.talk("luis handles punch for quality plumbing", "917 555 0199", "yes")
+        row = next(r for r in self.p588()["trade_assignments"] if r["company"] == "Quality Plumbing")
+        self.assertTrue(row.get("id"))                                   # minted
+        self.assertIn(row["id"], self.settings()["punch_contacts"])
+
+    def test_undo_a_person_puts_their_items_back(self):
+        self.talk("chris is our super his number is 718 555 1234", "yes")
+        self.assertEqual(self.applied, [("17185551234@c.us", "Chris")])
+        self.talk("undo")
+        self.assertEqual(self.applied[-1], ("17185551234@c.us", None))   # re-pointed back
+
+    def test_two_rows_of_one_sub_never_a_guess(self):
+        self.p588()["trade_assignments"].append(
+            {"id": "t8", "company": "Quality Plumbing", "trade": "Sprinkler"})
+        which, ask = self.talk("jose handles punch for quality plumbing", "2")
+        self.assertEqual(which, "Which one?\n1) Quality Plumbing (Plumbing)\n2) Quality Plumbing (Sprinkler)")
+        self.assertEqual(ask, "Send Quality Plumbing's punch lists at 588 Thomas St to Jose Zarate?")
+        self.talk("yes")
+        self.assertEqual(self.settings()["punch_contacts"]["t8"], "m_j")
 
     # ── 5. Settings ──────────────────────────────────────────────────────
 
