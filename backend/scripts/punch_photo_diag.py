@@ -65,11 +65,16 @@ async def main_async(a, db=None, server=None) -> int:
                                 r.get("photo_capture")):
             print(line)
         print(f"    media reference kept: {'yes' if r.get('media_ref') else 'no'}")
+        for i, (k, q) in enumerate(zip(r.get("extra_photos") or [], punch.extra_qualities(r)), 2):
+            for line in photo_lines(server, f"photo {i} (merged in)", k, q, None):
+                print(line)
         comp = r.get("completion") or {}
         if comp:
             for line in photo_lines(server, "done photo", comp.get("photo_key"),
                                     comp.get("photo_quality"), comp.get("photo_capture")):
                 print(line)
+            if comp.get("photo_key"):
+                print(f"    media reference kept: {'yes' if comp.get('media_ref') else 'no'}")
     return 0
 
 

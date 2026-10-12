@@ -191,12 +191,14 @@ document.querySelectorAll('form.done').forEach(function (f) {
 def _card(r: Dict[str, Any], tok: str) -> str:
     pid = _e(r.get("pid"))
     n = int(r.get("photos") or 0)
+    # Each photo's own quality: the first, then any merged in.
+    quals = list(r.get("qualities") or [r.get("photo_quality")] * n)
     photos = "".join(
         f'<a href="{_e(tok)}/photo/{pid}/{i}"><img loading="lazy" alt="Photo {i} of {pid}" '
-        f'src="{_e(tok)}/photo/{pid}/{i}"></a>' for i in range(1, n + 1))
-    if n and r.get("photo_quality") == "preview":
-        photos += f'<p class="meta">{_e(PREVIEW_LABEL)}</p>'
-    elif not n:
+        f'src="{_e(tok)}/photo/{pid}/{i}"></a>'
+        + (f'<p class="meta">{_e(PREVIEW_LABEL)}</p>' if i <= len(quals) and quals[i - 1] == "preview"
+           else "") for i in range(1, n + 1))
+    if not n:
         photos = '<p class="meta">No photo.</p>'
     status = r.get("status")
     head = ""

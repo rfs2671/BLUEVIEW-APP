@@ -903,6 +903,14 @@ def parse_edits(text: str) -> List[Dict[str, Any]]:
     return [e for e in (parse_edit(line) for line in re.split(r"[\n;]+", str(text or ""))) if e]
 
 
+def extra_qualities(it: Dict[str, Any]) -> List[Optional[str]]:
+    """The quality of each of an item's extra photos (merged in), in order;
+    None where none was recorded."""
+    n = len(it.get("extra_photos") or [])
+    q = list(it.get("extra_quality") or [])[:n]
+    return q + [None] * (n - len(q))
+
+
 def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bool, str]:
     """Apply one edit to the draft's items (in place). (done, note)."""
     by_n = {it["n"]: it for it in items if it.get("status", "draft") != "dropped"}
@@ -918,7 +926,10 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
             return False, f"no item {e['a'] if not a else e['b']}"
         a["text"] = f"{a.get('text') or ''} / {b.get('text') or ''}".strip(" /")
         a["merged"] = list(a.get("merged") or []) + [b.get("message_id") or ""]
-        a["extra_photos"] = list(a.get("extra_photos") or []) + [k for k in [b.get("photo_key")] if k]
+        if b.get("photo_key"):
+            # Each extra photo keeps its own quality (Codex review on #765).
+            a["extra_quality"] = extra_qualities(a) + [b.get("photo_quality")]
+            a["extra_photos"] = list(a.get("extra_photos") or []) + [b["photo_key"]]
         for k in ("floor", "area", "trade"):
             if (a.get(k) or UNKNOWN) == UNKNOWN and (b.get(k) or UNKNOWN) != UNKNOWN:
                 a[k] = b[k]
@@ -1041,8 +1052,11 @@ _SHORTCUT = re.compile(
     r"(?:to|for|→|->)\s+(?P<rest>.+?)\s*[.!]*\s*$", re.IGNORECASE)
 _GROUP_TARGET = re.compile(r"^(?:the\s+|this\s+|our\s+)?(?:gc\s+|job\s+|whatsapp\s+)?group(?:\s+chat)?$",
                            re.IGNORECASE)
-_DUE_TAIL = re.compile(r"^(?P<who>.+?)(?:\s*,\s*|\s+)(?P<due>(?:(?:by|due|for|on)\s+)?\S+(?:\s+\S+)?)$",
-                       re.IGNORECASE)
+# The due at the end: one date word, after an optional "by / due / for / on"
+# and "next / this" -- never a word of the name before it (Codex review on
+# #765: "John Smith tomorrow" read as John, due "Smith tomorrow").
+_DUE_TAIL = re.compile(r"^(?P<who>.+?)(?:\s*,\s*|\s+)"
+                       r"(?P<due>(?:(?:by|due|for|on)\s+)?(?:(?:next|this)\s+)?\S+)$", re.IGNORECASE)
 
 
 def send_shortcut(text: Any) -> Optional[Dict[str, Any]]:

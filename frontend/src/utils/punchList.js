@@ -220,7 +220,10 @@ export const PUNCH_CONTACTS_NOTE = 'Only these people are suggested for a sub\'s
 export const PREVIEW_ONLY = 'Original unavailable — preview only';
 
 export function photoNote(it, which) {
+  // 'item:N' is the (N-1)th extra photo, with its own quality.
+  const extra = /^item:(\d+)$/.exec(String(which || ''));
   const q = which === 'done' ? it && it.completion && it.completion.photo_quality
-    : it && it.photo_quality;
+    : extra ? it && (it.extra_quality || [])[Number(extra[1]) - 2]
+      : it && it.photo_quality;
   return q === 'preview' ? PREVIEW_ONLY : null;
 }

@@ -61476,6 +61476,7 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
         # item's "done" carries it (and whether it is only the preview).
         row["photo_key"] = parsed["photo_key"]
         row["photo_quality"] = parsed.get("photo_quality") or PHOTO_ORIGINAL
+        row["photo_meta"] = parsed.get("photo_meta")
     if voice:
         # A voice note: the body is its transcript as said; the language,
         # Whisper's confidence, the duration, the R2 audio key and the
@@ -61912,54 +61913,76 @@ async def punch_photo_repair(rows: List[dict], *, apply: bool, store=None,
         by_key.update({k[:-len("-full.jpg")] + ".jpg": v for k, v in list(by_key.items())
                        if k.endswith("-full.jpg") and k[:-len("-full.jpg")] + ".jpg" not in by_key})
         comp = r.get("completion") or {}
-        for field, key, qfield, q in (("photo_key", r.get("photo_key"), "photo_quality",
-                                       r.get("photo_quality")),
-                                      ("completion.photo_key", comp.get("photo_key"),
-                                       "completion.photo_quality", comp.get("photo_quality"))):
-            if not key or q == PHOTO_ORIGINAL:
-                continue
+
+        async def fix(field: str, key: str, q: Optional[str], mid_: Optional[str]):
+            """One stored photo: (its key now, its quality now), or None when
+            it is left as it is (an upload failed / a dry run)."""
+            if q == PHOTO_ORIGINAL:
+                return key, q
             got = await asyncio.to_thread(_r2_bytes, key)
             px = _image_px(got) if got else (0, 0)
             label = f"{r.get('pid')} {field} ({px[0]}x{px[1]})"
             if got and max(px) >= FULL_PHOTO_MIN_PX:
                 out["original"] += 1
-                if apply:
-                    await d[punch.COLLECTION].update_one({"_id": r["_id"]},
-                                                         {"$set": {qfield: PHOTO_ORIGINAL}})
-                continue
-            src = by_key.get(key) or {}
-            mid = comp.get("message_id") if field.startswith("completion") else src.get("message_id")
+                return key, PHOTO_ORIGINAL
+            src = by_key.get(key) or ({"media_ref": comp.get("media_ref")}
+                                      if field.startswith("completion") else {})
+            mid = mid_ or src.get("message_id")
             ref = src.get("media_ref") or (await _webhook_media_ref(mid, d) if mid else {})
             img = await download_image({"message_id_serialized": mid or "", "message_id": mid or "",
                                         "raw": ref}) if (mid or ref) else None
             if not img:
                 out["preview_only"] += 1
                 say(f"  {label}: original unavailable -> labelled preview only")
-                if apply:
-                    await d[punch.COLLECTION].update_one({"_id": r["_id"]},
-                                                         {"$set": {qfield: PHOTO_PREVIEW}})
-                continue
+                return key, PHOTO_PREVIEW
             new = _full_key(key)
             w, h = _image_px(img)
             say(f"  {label} -> {w}x{h}, {len(img) // 1024} KB at {new}")
             if not apply:
                 out["replaced"] += 1
-                continue
+                return None
             if not await asyncio.to_thread(_upload_to_r2, img, new, "image/jpeg"):
                 out["left"] += 1
                 say("    upload failed -- left")
-                continue
+                return None
             # The walk first, the item last (Codex review on #762).
             if walk:
                 sets = {f"items.{i}.photo_key": new for i, it in enumerate(walk.get("items") or [])
                         if it.get("photo_key") == key}
+                sets.update({f"items.{i}.extra_photos": [new if k == key else k
+                                                         for k in it.get("extra_photos") or []]
+                             for i, it in enumerate(walk.get("items") or [])
+                             if key in (it.get("extra_photos") or [])})
                 sets.update({f"photos.{i}.key": new for i, p in enumerate(walk.get("photos") or [])
                              if p.get("key") == key})
                 if sets:
                     await d[punch.SESSIONS].update_one({"_id": walk["_id"]}, {"$set": sets})
-            await d[punch.COLLECTION].update_one({"_id": r["_id"]},
-                                                 {"$set": {field: new, qfield: PHOTO_ORIGINAL}})
             out["replaced"] += 1
+            return new, PHOTO_ORIGINAL
+
+        for field, key, qfield, q, mid in (
+                ("photo_key", r.get("photo_key"), "photo_quality", r.get("photo_quality"), None),
+                ("completion.photo_key", comp.get("photo_key"), "completion.photo_quality",
+                 comp.get("photo_quality"), comp.get("message_id"))):
+            if not key or q == PHOTO_ORIGINAL:
+                continue
+            got = await fix(field, key, q, mid)
+            if got and apply:
+                await d[punch.COLLECTION].update_one({"_id": r["_id"]},
+                                                     {"$set": {field: got[0], qfield: got[1]}})
+        # The extra photos a merge brought in, each with its own quality
+        # (Codex review on #765): both lists written whole, once.
+        extras = list(r.get("extra_photos") or [])
+        if extras:
+            keys, quals = list(extras), punch.extra_qualities(r)
+            for i, key in enumerate(extras):
+                got = await fix(f"extra_photos[{i}]", key, quals[i], None) if key else None
+                if got:
+                    keys[i], quals[i] = got
+            if apply:
+                await d[punch.COLLECTION].update_one(
+                    {"_id": r["_id"], "extra_photos": extras},
+                    {"$set": {"extra_photos": keys, "extra_quality": quals}})
     return out
 
 
@@ -61972,7 +61995,9 @@ async def _punch_photo_repair_startup() -> None:
             {"$or": [{"photo_key": {"$exists": True, "$nin": [None, ""]},
                       "photo_quality": {"$exists": False}},
                      {"completion.photo_key": {"$exists": True, "$nin": [None, ""]},
-                      "completion.photo_quality": {"$exists": False}}]}).to_list(500)
+                      "completion.photo_quality": {"$exists": False}},
+                     {"extra_photos": {"$exists": True, "$nin": [None, []]},
+                      "extra_quality": {"$exists": False}}]}).to_list(500)
         if rows:
             got = await punch_photo_repair(rows, apply=True, say=logger.info)
             logger.info(f"[punch] photo repair: {got}")
@@ -62000,6 +62025,11 @@ async def _punch_message_photo(parsed: dict, project_id: Any) -> Optional[str]:
     # The completion carries it; its quality rides on the parsed message.
     parsed["_photo_quality"] = quality
     parsed["_photo_record"] = record
+    # How it was captured, and where WhatsApp keeps it, go with the
+    # completion (Codex review on #765): the diag shows it, and a later
+    # repair can fetch the original after the webhook log is gone.
+    parsed["_photo_meta"] = {"photo_capture": record,
+                             "media_ref": wa_media_ref(parsed.get("raw")) or None}
     return key
 
 
@@ -63396,6 +63426,7 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                    "project_id": sess["project_id"], "group_id": group_id,
                    "text": it.get("text") or "", "voice": it.get("voice"),
                    "photo_key": it.get("photo_key"), "extra_photos": it.get("extra_photos") or [],
+                   "extra_quality": punch.extra_qualities(it),
                    "photo_quality": it.get("photo_quality") or (PHOTO_ORIGINAL if it.get("photo_key") else None),
                    "photo_capture": it.get("photo_capture"), "media_ref": it.get("media_ref"),
                    "floor": it.get("floor"), "area": it.get("area"), "room": it.get("room"),
@@ -63836,6 +63867,8 @@ def _punch_link_items(rows: List[dict]) -> List[dict]:
                                        "due", "status", "photo_quality", "reopen_note")},
              "reopened": bool(r.get("reopened_at")),
              "pending_photo": bool((r.get("link_photo_pending") or {}).get("key")),
+             "qualities": [q for k, q in zip([r.get("photo_key"), *(r.get("extra_photos") or [])],
+                                             [r.get("photo_quality"), *punch.extra_qualities(r)]) if k],
              "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k])}
             for r in rows]
 
@@ -63899,7 +63932,8 @@ async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote
                             message_id: str = "", photo_key: Optional[str] = None,
                             only_if: Optional[dict] = None,
                             photo_quality: Optional[str] = None,
-                            note: Optional[str] = None) -> bool:
+                            note: Optional[str] = None,
+                            photo_meta: Optional[dict] = None) -> bool:
     """`only_if`: more conditions the item must still meet, checked in the
     same write (the assignee's link: still open, still theirs). False when
     it no longer does -- nothing changed, the chase is left as it is.
@@ -63910,6 +63944,8 @@ async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote
         sets["completion"] = {"quote": quote, "message_id": message_id, "photo_key": photo_key,
                               "photo_quality": (photo_quality or PHOTO_ORIGINAL) if photo_key else None,
                               "at": now, "by": by}
+        if photo_key and photo_meta:
+            sets["completion"].update({k: photo_meta.get(k) for k in ("photo_capture", "media_ref")})
     if to == "closed":
         sets.update(closed_by=by, closed_at=now)
     if to == "open":
@@ -64022,7 +64058,8 @@ async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str
     await _punch_set_status(row, "ready_to_check", now, by=str(ident.get("user_id")), quote=text,
                             message_id=str(parsed.get("message_id") or ""),
                             photo_key=await _punch_message_photo(parsed, row.get("project_id")),
-                            photo_quality=parsed.get("_photo_quality"))
+                            photo_quality=parsed.get("_photo_quality"),
+                            photo_meta=parsed.get("_photo_meta"))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -64048,7 +64085,8 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
                             quote=_punch_caption(parsed, parsed.get("body") or ""),
                             message_id=str(parsed.get("message_id") or ""),
                             photo_key=await _punch_message_photo(parsed, row.get("project_id")),
-                            photo_quality=parsed.get("_photo_quality"))
+                            photo_quality=parsed.get("_photo_quality"),
+                            photo_meta=parsed.get("_photo_meta"))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -64155,7 +64193,8 @@ async def _punch_group_message(msg: dict, ctx: dict) -> bool:
         await _punch_set_status(row, "ready_to_check", now, by=sender, quote=text,
                                 message_id=str(msg.get("message_id") or ""),
                                 photo_key=msg.get("photo_key"),
-                                photo_quality=msg.get("photo_quality"))
+                                photo_quality=msg.get("photo_quality"),
+                                photo_meta=msg.get("photo_meta"))
         return True
     return False
 
@@ -64636,6 +64675,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                     if await _punch_group_completion_ok(parsed, body, project_id, msg_company_id):
                         parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
                         parsed["photo_quality"] = parsed.get("_photo_quality")
+                        parsed["photo_meta"] = parsed.get("_photo_meta")
                 except Exception as e:
                     logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
@@ -67059,6 +67099,7 @@ def _punch_view(r: dict) -> dict:
             # "Original unavailable — preview only" when the photo is
             # WhatsApp's preview (the original could not be had).
             "photo_quality": (r.get("photo_quality") or PHOTO_ORIGINAL) if r.get("photo_key") else None,
+            "extra_quality": [q or PHOTO_ORIGINAL for q in punch.extra_qualities(r)],
             "assignee_key": _punch_person_key(a),
             "mention_note": (wa_mention.NO_NUMBER_NOTE
                              if (r.get("mention") or {}).get("resolved") is False else None),

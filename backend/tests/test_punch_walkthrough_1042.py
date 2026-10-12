@@ -119,6 +119,14 @@ class SendToShortcuts(_Real):
         self.assertIn("Would DM Chris Weiss (GC team):", sent)
         self.assertEqual(len(self.db[punch.COLLECTION].rows), 2)
 
+    def test_a_full_name_before_the_due_stays_whole(self):
+        # Codex review on #765: "John Smith tomorrow" read as John, due "Smith tomorrow".
+        for text, want in (("send it to John Smith tomorrow", {"name": "John Smith", "due": "tomorrow"}),
+                           ("send to Chris Weiss by Fri", {"name": "Chris Weiss", "due": "Fri"}),
+                           ("everything to Chris next Fri", {"name": "Chris", "due": "next Fri"}),
+                           ("send to Chris Weiss", {"name": "Chris Weiss", "due": None})):
+            self.assertEqual(punch.send_shortcut(text), want, text)
+
     def test_every_form_with_a_due(self):
         for text, due in (("send to Chris", None), ("send it to Chris gc", None),
                           ("send all to chris asap", "ASAP"), ("everything to Chris by Fri", "Fri"),

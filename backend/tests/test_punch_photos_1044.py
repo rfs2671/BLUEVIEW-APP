@@ -205,6 +205,37 @@ class TheTenFortyFourPhoto(unittest.TestCase):
         self.assertEqual((comp["photo_key"], comp["photo_quality"]),
                          ("wa-photos/p588/msg/3EB0D4.jpg", "original"))
         self.assertEqual(up[0][1], FULL)
+        # How it was captured, and where WhatsApp keeps it, are kept with it
+        # (Codex review on #765).
+        self.assertEqual(comp["photo_capture"]["source"], "whatsapp_cdn")
+        self.assertEqual(comp["media_ref"]["directPath"], PATH)
+
+    def test_a_preview_completion_keeps_its_record_and_the_diag_shows_it(self):
+        db = FakeDb()
+        db[punch.COLLECTION].rows.append({
+            "_id": "p588:P-588-4", "pid": "P-588-4", "seq": 4, "project_id": "p588",
+            "company_id": "co", "status": "open", "sent_via": "dm", "history": [],
+            "assignee": {"kind": "sender_map", "id": "m", "name": "Chris", "jid": "17185550199@c.us"}})
+        C, _calls = _net(cdn=_Resp(404, content=b""))
+        _run(lambda: server._punch_dm_done_by_number(
+            "17185550199@c.us", punch.parse_done_ref("done P-588-4"),
+            _webhook_photo(caption="done P-588-4", mid="3EB0D4")), db, C, [])
+        comp = db[punch.COLLECTION].rows[0]["completion"]
+        self.assertEqual(comp["photo_quality"], "preview")
+        self.assertEqual(comp["photo_capture"]["cdn"], "status 404")
+        self.assertEqual(comp["media_ref"]["mediaKey"], KEY)      # to try again after 30 days
+        import scripts.punch_photo_diag as diag
+
+        class R2:
+            def get_object(s, Bucket, Key):
+                return {"Body": io.BytesIO(THUMB)}
+        out = []
+        with patch.object(server, "_r2_client", R2()), patch("builtins.print", out.append):
+            diag.main(["--pid", "P-588-4"], db=db, server=server)
+        text = "\n".join(out)
+        self.assertIn("WhatsApp CDN: status 404", text)
+        self.assertIn("captured from: webhook_preview, 96x72", text)       # the done photo's record
+        self.assertNotIn(KEY, text)
 
 
 class RepairingP588OneToThree(unittest.TestCase):
@@ -254,6 +285,41 @@ class RepairingP588OneToThree(unittest.TestCase):
                          "wa-photos/p588/w831/1-full.jpg")
         again, _ = self.run_startup()                                       # once
         self.assertEqual(again, [])
+
+    def test_a_merged_in_photo_is_repaired_with_its_own_quality(self):
+        # Codex review on #765: P-588-3 took #1's photo in a merge; the extra
+        # photo is a preview the startup repair never looked at.
+        rows = {r["pid"]: r for r in self.db[punch.COLLECTION].rows}
+        rows["P-588-3"]["extra_photos"] = ["wa-photos/p588/w831/1.jpg"]
+        rows["P-588-3"]["photo_quality"] = "original"
+        self.db[punch.COLLECTION].rows.remove(rows["P-588-1"])
+        up, _calls = self.run_startup()
+        r3 = rows["P-588-3"]
+        self.assertEqual(r3["extra_photos"], ["wa-photos/p588/w831/1-full.jpg"])
+        self.assertEqual(r3["extra_quality"], ["original"])
+        self.assertIn(("wa-photos/p588/w831/1-full.jpg", FULL), up)
+        again, _ = self.run_startup()                                       # once
+        self.assertEqual(again, [])
+        view = server._punch_view(r3)
+        self.assertEqual(view["extra_quality"], ["original"])
+
+    def test_a_merged_in_preview_is_labelled_on_its_own(self):
+        rows = {r["pid"]: r for r in self.db[punch.COLLECTION].rows}
+        rows["P-588-3"]["extra_photos"] = ["wa-photos/p588/w831/2.jpg"]     # no original to be had
+        self.run_startup()
+        r3 = rows["P-588-3"]
+        self.assertEqual((r3["photo_quality"], r3["extra_quality"]), ("original", ["preview"]))
+        items = server._punch_link_items([{**r3, "status": "open"}])
+        html = punch_link.page(name="Chris", job="588", tok="t.s", items=items)
+        self.assertEqual(html.count("Original unavailable — preview only"), 1)
+        self.assertLess(html.index("/photo/P-588-3/2"), html.index("preview only"))
+
+    def test_a_merge_carries_each_photos_quality(self):
+        a = {"n": 1, "text": "Tile", "photo_key": "k1", "photo_quality": "original"}
+        b = {"n": 2, "text": "Grout", "photo_key": "k2", "photo_quality": "preview"}
+        ok, _ = punch.apply_edit([a, b], {"op": "merge", "a": 1, "b": 2}, next_n=3)
+        self.assertTrue(ok)
+        self.assertEqual((a["extra_photos"], a["extra_quality"]), (["k2"], ["preview"]))
 
     def test_the_view_labels_the_ones_without_an_original(self):
         self.run_startup()

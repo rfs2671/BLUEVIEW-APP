@@ -153,6 +153,10 @@ ok(M.photoNote({ photo_quality: 'preview' }, 'item') === 'Original unavailable â
   && M.photoNote({ completion: { photo_quality: 'preview' } }, 'done') === M.PREVIEW_ONLY,
   'preview only, labelled');
 ok(/photoNote\(item, p\.which\)/.test(screen), 'under the photo in the detail');
+// Codex review on #765: a merged-in photo has its own quality.
+ok(M.photoNote({ photo_quality: 'original', extra_quality: ['preview'] }, 'item:2') === M.PREVIEW_ONLY
+  && M.photoNote({ photo_quality: 'preview', extra_quality: ['original'] }, 'item:2') === null,
+  'each extra photo its own label');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
