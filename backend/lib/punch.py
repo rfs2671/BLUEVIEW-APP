@@ -701,8 +701,7 @@ def suggest_assignees(trades: Iterable[str], people: List[Dict[str, Any]]) -> Di
 def assign_text(sugg: Dict[str, Optional[dict]]) -> str:
     lines = ["Who gets what?"]
     for t, p in sorted(sugg.items()):
-        lines.append(f"• {t} → {p['name']}{(' (' + p['company'] + ')') if p.get('company') else ''}"
-                     if p else f"• {t} → ?")
+        lines.append(f"• {t} → {who_label(p)}")
     lines.append("Reply 'ok', or fix one: \"electrical → Mike\".")
     return "\n".join(lines)
 
@@ -722,16 +721,81 @@ def parse_assign(text: str) -> List[Tuple[str, str]]:
     return out
 
 
+def split_name(said: str) -> Tuple[str, str]:
+    """"Chris from gc." -> ("chris", "gc"); "Mike (Bright)" -> ("mike", "bright")."""
+    t = multilang.fold(str(said or "")).strip().strip(".!,;")
+    m = re.match(r"^(.*?)\s*(?:\(([^)]*)\)|\s(?:from|of|at|with|de|del)\s+(?:the\s+)?(.+))$", t)
+    if m:
+        return m.group(1).strip(), (m.group(2) or m.group(3) or "").strip()
+    return t, ""
+
+
+def _person_key(p: Dict[str, Any]) -> tuple:
+    return (p.get("kind"), p.get("id") or p.get("jid") or p.get("name"))
+
+
+def name_candidates(name: str, people: List[Dict[str, Any]]) -> List[dict]:
+    """Everyone a name can mean: full name, first name (or its start: "Chris"
+    for "Christopher"), or the company; "Chris from GC" narrows to the
+    Chris whose company says so (the company's users are the GC). This
+    job's people (p["on_job"]) first. Never picks: two or more is a
+    question for the walker (which_text)."""
+    n, co = split_name(name)
+    if not n and not co:
+        return []
+
+    def name_hit(p):
+        full = multilang.fold(p.get("name") or "")
+        first = full.split(" ")[:1]
+        return bool(n) and (n == full or [n] == first
+                            or (len(n) >= 3 and any(w.startswith(n) for w in full.split())))
+    hits = [p for p in people if name_hit(p)]
+    if not hits and n:
+        hits = [p for p in people if n == multilang.fold(p.get("company") or "")]
+    if co:
+        narrowed = [p for p in hits if co in multilang.fold(p.get("company") or "")
+                    or (co in ("gc", "general contractor", "us", "office", "the office")
+                        and p.get("kind") == "user")]
+        hits = narrowed or hits
+    uniq: Dict[tuple, dict] = {}
+    for p in hits:
+        uniq.setdefault(_person_key(p), p)
+    return sorted(uniq.values(), key=lambda p: (not p.get("on_job"),
+                                                multilang.fold(p.get("name") or "")))
+
+
 def pick_person(name: str, people: List[Dict[str, Any]]) -> Optional[dict]:
-    """The one person / company a name means (first name, full name or company)."""
-    n = multilang.fold(name).strip()
-    if not n:
-        return None
-    hits = [p for p in people
-            if n in (multilang.fold(p.get("name") or ""), multilang.fold(p.get("company") or ""))
-            or multilang.fold(p.get("name") or "").split(" ")[:1] == [n]]
-    uniq = {id(p): p for p in hits}
-    return next(iter(uniq.values())) if len(uniq) == 1 else None
+    """The ONE person a name means, or None (none, or more than one)."""
+    c = name_candidates(name, people)
+    return c[0] if len(c) == 1 else None
+
+
+def who_label(p: Optional[dict]) -> str:
+    """"Chris Lopez (Arkon)", "Chris Lopez (Arkon, not on this job)"."""
+    if not p:
+        return "?"
+    name = (p.get("name") or p.get("company") or "?").strip()
+    co = "GC team" if p.get("kind") == "user" else (p.get("company") or "").strip()
+    bits = [co] if co and co.lower() != name.lower() else []
+    if p.get("not_on_job"):
+        bits.append("not on this job")
+    return f"{name} ({', '.join(bits)})" if bits else name
+
+
+def which_text(said: str, options: List[dict]) -> str:
+    """"Which Chris? 1) Chris (GC team) 2) Chris Lopez (Arkon)"."""
+    first = split_name(said)[0] or str(said or "").strip()
+    opts = " ".join(f"{i}) {who_label({**p, 'not_on_job': not p.get('on_job')})}"
+                    for i, p in enumerate(options[:9], 1))
+    return f"Which {first.title()}? {opts}\nReply with the number."
+
+
+def pick_choice(text: str, options: List[dict]) -> Optional[dict]:
+    """"2" (or "2)") to a which_text question."""
+    m = re.fullmatch(r"\s*#?(\d)\s*[.)]?\s*", str(text or ""))
+    if m and 1 <= int(m.group(1)) <= min(len(options), 9):
+        return options[int(m.group(1)) - 1]
+    return None
 
 
 def due_date(words: str, sent_at):
