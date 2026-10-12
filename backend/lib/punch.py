@@ -661,7 +661,9 @@ def merge_location(it: dict, loc: Dict[str, Optional[str]]) -> bool:
     if loc.get("area"):
         if str(loc["area"]).startswith("Apt ") and (it.get("area") in ROOM_LABELS
                                                      or it.get("area") in ("kitchen", "bathroom", "bedroom")):
-            it.setdefault("room", it["area"])           # "kitchen", then "4C": Apt 4C · kitchen
+            it["room"] = it["area"]                     # "kitchen", then "4C": Apt 4C · kitchen
+        elif not loc.get("room"):
+            it.pop("room", None)                        # a new place: its old room is not in it
         it["area"], named = loc["area"], True
     if loc.get("room"):
         it["room"], named = loc["room"], True
@@ -921,6 +923,7 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
         it["floor"] = e["floor"]
     elif e["op"] == "area":
         it["area"] = e["area"]
+        it.pop("room", None)                            # a new place: no old room in it
     return True, f"{e['op']} {e['n']}"
 
 
@@ -1208,7 +1211,7 @@ def due_date(words: str, sent_at):
     from lib import wa_attention
     from datetime import timedelta
     if words == ASAP:
-        return (sent_at + timedelta(days=1)).replace(hour=13, minute=0, second=0, microsecond=0)
+        return (sent_at + timedelta(days=1)).date()        # a day, as the chase reads due_at
     if words == NO_DUE or not words:
         return None
     return wa_attention.parse_due(multilang.normalize_when(words), sent_at)

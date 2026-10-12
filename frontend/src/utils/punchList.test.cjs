@@ -22,6 +22,8 @@ const it = { pid: 'P-588-4', text: 'piso 6 falta pintura', voice: true, floor: '
   trade: 'paint', assignee: { name: 'Ana Ortiz', company: 'Pro Paint' }, due: 'Fri' };
 ok(M.whereLine(it) === 'Floor 6 · hallway · paint', 'where: floor, area, trade');
 ok(M.whereLine({ floor: '?', area: '?', trade: '?' }) === 'trade ?', 'unknowns are not shown as places');
+ok(M.whereLine({ floor: '3', area: 'Apt 3D', room: 'bedroom', trade: 'electrical' })
+  === 'Floor 3 · Apt 3D · bedroom · electrical', 'a room in the unit (11:03 PM)');
 ok(M.whoLine(it) === 'Ana Ortiz (Pro Paint) · due Fri', 'who and due');
 ok(M.whoLine({}) === 'Not assigned', 'nobody yet');
 ok(M.itemWords(it) === '🎤 “piso 6 falta pintura”', 'voice words marked 🎤, verbatim');

@@ -48434,7 +48434,11 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
         items = await db.attention_items.find(
             {"type": {"$in": list(wa_chase.CHASE_TYPES)},
              "status": {"$in": list(wa_chase.CHASE_STATUSES)},
-             "due.due_at": day.isoformat()}).to_list(5000)
+             # Due today -- or ASAP and due by today: chased every day from
+             # its first (Codex review on #759).
+             "$or": [{"due.due_at": day.isoformat()},
+                     {"due.due_text": punch.ASAP, "due.due_at": {"$lte": day.isoformat()}}]}
+        ).to_list(5000)
     except Exception as e:
         logger.warning(f"[chase] items read failed: {type(e).__name__}")
         return report
@@ -63195,6 +63199,30 @@ async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str
     return f"{row['pid']} marked done — ready to check."
 
 
+async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[str]:
+    """"done P-588-1" by DM from the number an item was DM'd to: ready to
+    check. None unless exactly one open DM'd item matches it and that number."""
+    code, seq = ref
+    digits = wa_dm.phone_digits(dm_chat)
+    if not digits:
+        return None
+    try:
+        rows = await db[punch.COLLECTION].find(
+            {"seq": int(seq), "status": "open", "sent_via": "dm"}).to_list(50)
+    except Exception:
+        return None
+    rows = [r for r in rows
+            if wa_dm.phone_digits((r.get("assignee") or {}).get("jid") or "") == digits
+            and (not code or str(r.get("pid") or "").upper().startswith(f"P-{code}-"))]
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    await _punch_set_status(row, "ready_to_check", datetime.now(timezone.utc), by=digits,
+                            quote=str(parsed.get("body") or ""),
+                            message_id=str(parsed.get("message_id") or ""))
+    return f"{row['pid']} marked done — ready to check."
+
+
 async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
     """An open punch item #seq on this job, given to whoever sent `msg`."""
     try:
@@ -64070,7 +64098,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # sender never matched, checked no role, and picked one project.
         ident = await _dm_assistant_identity(dm_chat)
         if ident is None:
-            await send_whatsapp_message(dm_chat, wa_assistant.NOT_FOR_YOU_TEXT)
+            # A punch list DM'd to a sub: their "done P-588-1" is answered
+            # here, only for an open item sent to THIS number (Codex review
+            # on #759: it got the not-for-you line).
+            ref = punch.parse_done_ref(parsed.get("body")) if not parsed.get("has_image") else None
+            reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
+            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
 
         # Transcribe audio if present.
@@ -66102,6 +66135,7 @@ def _punch_view(r: dict) -> dict:
     comp = r.get("completion") or {}
     return {"pid": r.get("pid"), "seq": r.get("seq"), "text": r.get("text") or "",
             "voice": bool(r.get("voice")), "floor": r.get("floor"), "area": r.get("area"),
+            "room": r.get("room"),
             "trade": r.get("trade"), "status": r.get("status"),
             "assignee": {"name": a.get("name") or "", "company": a.get("company") or ""},
             "due": (r.get("due") or {}).get("due_text"), "due_at": (r.get("due") or {}).get("due_at"),

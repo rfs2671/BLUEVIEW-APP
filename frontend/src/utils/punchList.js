@@ -37,6 +37,7 @@ export function whereLine(it) {
   const parts = [];
   if (it.floor && it.floor !== '?') parts.push(floorLabel(it.floor));
   if (it.area && it.area !== '?' && it.area !== it.floor) parts.push(it.area);
+  if (it.room && it.area && it.area !== '?') parts.push(it.room);   // "Apt 3D · bedroom"
   parts.push(it.trade && it.trade !== '?' ? it.trade : 'trade ?');
   return parts.join(' · ');
 }

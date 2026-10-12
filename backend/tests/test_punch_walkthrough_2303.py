@@ -345,3 +345,83 @@ class Sending(_Live):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexOn759(_Live):
+
+    def test_a_sub_dmd_the_whole_list_can_say_done(self):
+        # The whole list DM'd to Dov (People, not a user): his "done P-588-1"
+        # never reaches the admin/PM assistant, so it is answered before it.
+        self._to_assign()
+        self.turn("whole list → Dov")
+        self.turn("ok")
+        row = self.db[punch.COLLECTION].rows[0]
+        self.assertEqual(row["sent_via"], "dm")
+        with patch.object(server, "db", self.db):
+            # Someone else's number: nothing.
+            self.assertIsNone(asyncio.run(server._punch_dm_done_by_number(
+                "17185550333@c.us", ("588", row["seq"]), {"body": "done"})))
+            out = asyncio.run(server._punch_dm_done_by_number(
+                "17185550222@c.us", punch.parse_done_ref(f"done {row['pid']}"),
+                {"body": f"done {row['pid']}", "message_id": "d1"}))
+        self.assertEqual(out, f"{row['pid']} marked done — ready to check.")
+        self.assertEqual(self.db[punch.COLLECTION].rows[0]["status"], "ready_to_check")
+        import inspect
+        src = inspect.getsource(server._process_whatsapp_message)
+        gate = src.index("ident = await _dm_assistant_identity(dm_chat)")
+        self.assertIn("_punch_dm_done_by_number", src[gate:gate + 900])     # before NOT_FOR_YOU
+
+    def test_asap_items_are_in_the_chase_query_every_day(self):
+        from tests._fake_mongo import matches
+        seen = []
+
+        class _Find:
+            def __init__(self, q):
+                seen.append(q)
+
+            async def to_list(self, n=None):
+                return []
+        now = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)            # 11 AM New York
+        with patch.object(server, "db", self.db), \
+                patch.object(self.db.attention_items, "find", lambda q, *a, **k: _Find(q)):
+            asyncio.run(server._chase_tick(now))
+        (q,) = seen
+        base = {"type": "request", "status": "open"}
+        due = lambda text, at: {**base, "due": {"due_text": text, "due_at": at}}   # noqa: E731
+        self.assertTrue(matches(due("Fri", "2026-10-14"), q))                # due today
+        self.assertTrue(matches(due("ASAP", "2026-10-13"), q))               # ASAP, since yesterday
+        self.assertTrue(matches(due("ASAP", "2026-10-14"), q))
+        self.assertFalse(matches(due("ASAP", "2026-10-15"), q))              # not yet
+        self.assertFalse(matches(due("Fri", "2026-10-13"), q))               # a past day: no
+        self.assertFalse(matches(due("", None), q))                          # no due date: never
+
+    def test_asap_due_at_is_a_day(self):
+        self.assertEqual(punch.due_date(punch.ASAP, datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)),
+                         date(2026, 10, 13))
+
+    def test_a_new_place_drops_the_old_room(self):
+        it = punch.new_item(1, "Light fixture broke 3d br", photo_key=None, message_id="m")
+        punch.merge_location(it, punch.read_location("lobby"))
+        self.assertEqual((it["area"], it.get("room")), ("lobby", None))
+        it = punch.new_item(1, "Light fixture broke 3d br", photo_key=None, message_id="m")
+        punch.merge_location(it, punch.read_location("4C"))
+        self.assertEqual((it["area"], it.get("room")), ("Apt 4C", None))
+        it = punch.new_item(1, "Light fixture broke 3d br", photo_key=None, message_id="m")
+        punch.merge_location(it, punch.read_location("4c kitchen"))
+        self.assertEqual((it["area"], it.get("room")), ("Apt 4C", "kitchen"))
+        items = [punch.new_item(1, "Light fixture broke 3d br", photo_key=None, message_id="m")]
+        punch.apply_edit(items, {"op": "area", "n": 1, "area": "hallway"}, next_n=2)
+        self.assertIsNone(items[0].get("room"))
+
+    def test_the_punch_list_shows_the_room(self):
+        self._to_assign()
+        self.turn("whole list → Chris")
+        self.db[punch.COLLECTION].rows.clear()
+        self.db[punch.SESSIONS].rows.clear()
+        self.turn("Light fixture broke 3d br", photo=True)
+        self.turn("done")
+        self.turn("send")
+        self.turn("whole list → Chris")
+        self.turn("ok")
+        row = self.db[punch.COLLECTION].rows[0]
+        self.assertEqual(server._punch_view(row)["room"], "bedroom")
