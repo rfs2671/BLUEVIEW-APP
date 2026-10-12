@@ -30,6 +30,7 @@ item's id only small at the bottom of its card.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import html
@@ -135,7 +136,7 @@ TEXT: Dict[str, Dict[str, str]] = {
         "left_n": "{n} things to fix",
         "left_0": "All done — thank you!",
         "progress": "{done} of {total} done",
-        "fix": "✅ I fixed it",
+        "fix": "✓ I fixed it",
         "fix_hint": "Take a photo of the fix",
         "skip": "Skip photo",
         "send": "Send",
@@ -160,6 +161,7 @@ TEXT: Dict[str, Dict[str, str]] = {
         "next": "Next photo ›",
         "questions": "Questions? Reply on WhatsApp",
         "private": "This page is just for you.",
+        "powered": "Powered by Levelog",
         "thanks_banner": "Thank you! The GC will check it.",
         "error_banner": "{msg}",
         "nothing": "Nothing to fix here right now.",
@@ -175,7 +177,7 @@ TEXT: Dict[str, Dict[str, str]] = {
         "left_n": "{n} cosas por arreglar",
         "left_0": "¡Todo listo — gracias!",
         "progress": "{done} de {total} listas",
-        "fix": "✅ Ya lo arreglé",
+        "fix": "✓ Ya lo arreglé",
         "fix_hint": "Tome una foto del arreglo",
         "skip": "Sin foto",
         "send": "Enviar",
@@ -200,6 +202,7 @@ TEXT: Dict[str, Dict[str, str]] = {
         "next": "Siguiente foto ›",
         "questions": "¿Preguntas? Responda por WhatsApp",
         "private": "Esta página es solo para usted.",
+        "powered": "Con la tecnología de Levelog",
         "thanks_banner": "¡Gracias! El contratista lo revisará.",
         "error_banner": "{msg}",
         "nothing": "No hay nada por arreglar ahora.",
@@ -209,6 +212,18 @@ TEXT: Dict[str, Dict[str, str]] = {
         "lang_name": "Español",
     },
 }
+
+
+@functools.lru_cache(maxsize=1)
+def wordmark() -> str:
+    """The Levelog wordmark as a data: URL (lib/assets/levelog-wordmark.png,
+    made from the app's logo by scripts/make_link_wordmark.py); "" if missing."""
+    from pathlib import Path
+    try:
+        data = (Path(__file__).resolve().parent / "assets" / "levelog-wordmark.png").read_bytes()
+    except OSError:
+        return ""
+    return "data:image/png;base64," + base64.b64encode(data).decode()
 
 
 def lang_of(*choices: Any) -> str:
@@ -287,74 +302,92 @@ def first_name(name: str) -> str:
     return (str(name or "").strip().split() or [""])[0]
 
 
-_CSS = """
+# The app's own look (frontend/src/styles/theme.js, the light palette, and
+# components/HeaderBrand.js): navy text, Levelog blue for everything you can
+# press or that moves, green ONLY for what is finished, the company's name in
+# the header's thin uppercase Montserrat. White page.
+NAVY = "#0A1929"          # theme light text.primary
+BLUE = "#1565C0"          # theme light primary
+GREEN = "#2E7D32"         # theme light success -- done, and nothing else
+RED = "#C62828"           # theme light error
+MUTED = "rgba(10,25,41,0.65)"   # theme light text.muted
+EDGE = "rgba(191,219,254,0.9)"  # theme light border (blue-200)
+BRAND_FONT = ('Montserrat,"Gotham","Futura","Avenir Next","Helvetica Neue",Helvetica,Arial,'
+              'sans-serif')
+
+_CSS = ("""
 :root{color-scheme:light}
 *{box-sizing:border-box}
-body{font-family:-apple-system,system-ui,Roboto,sans-serif;margin:0;background:#f7f7f4;
-color:#111;font-size:18px;line-height:1.4;-webkit-text-size-adjust:100%}
-.top{background:#fff;padding:16px 16px 14px;border-bottom:1px solid #ddd}
-.langs{display:flex;gap:8px;justify-content:flex-end;margin-bottom:6px}
-.langs a{display:inline-flex;align-items:center;min-height:56px;padding:0 14px;border-radius:22px;
-border:2px solid #1b5e20;color:#1b5e20;text-decoration:none;font-size:18px;font-weight:600}
-.langs a.on{background:#1b5e20;color:#fff}
+body{font-family:-apple-system,system-ui,Roboto,sans-serif;margin:0;background:#fff;
+color:NAVY;font-size:18px;line-height:1.4;-webkit-text-size-adjust:100%}
+.top{background:#fff;padding:14px 16px 14px;border-bottom:2px solid EDGE}
+.brand{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.logo{display:block;height:30px;width:auto}
+.gc{font-family:BRAND_FONT;font-weight:300;text-transform:uppercase;letter-spacing:2px;
+font-size:14px;color:MUTED;margin:6px 0 12px;line-height:1.5}
+.langs{display:flex;gap:6px;flex:0 0 auto}
+.langs a{display:inline-flex;align-items:center;min-height:56px;padding:0 12px;border-radius:28px;
+border:2px solid BLUE;color:BLUE;text-decoration:none;font-size:17px;font-weight:600}
+.langs a.on{background:BLUE;color:#fff}
 h1{font-size:28px;margin:0;line-height:1.2}
 .left{font-size:22px;font-weight:700;margin:4px 0 0}
-.addr{font-size:18px;color:#444;margin:4px 0 12px}
-.bar{height:16px;border-radius:8px;background:#e3e3dc;overflow:hidden}
-.bar i{display:block;height:100%;background:#2e7d32;border-radius:8px}
-.count{font-size:18px;margin:6px 0 0;color:#222}
+.addr{font-size:18px;color:MUTED;margin:4px 0 12px}
+.bar{height:16px;border-radius:8px;background:#E3EAF5;overflow:hidden}
+.bar i{display:block;height:100%;background:BLUE;border-radius:8px}
+.count{font-size:18px;margin:6px 0 0}
 main{padding:12px 16px 24px}
-h2{font-size:22px;margin:22px 0 10px}
-.card{background:#fff;border:2px solid #d6d6cf;border-radius:14px;padding:14px;margin-bottom:14px}
+h2{font-size:22px;margin:22px 0 10px;color:NAVY}
+.card{background:#fff;border:2px solid EDGE;border-radius:14px;padding:14px;margin-bottom:14px}
 .row{display:flex;gap:14px;align-items:flex-start}
-.thumb{flex:0 0 72px;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#e3e3dc;
+.thumb{flex:0 0 72px;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#E3EAF5;
 border:0;padding:0;position:relative;display:flex;align-items:center;justify-content:center;
-font-size:14px;color:#555;text-align:center;text-decoration:none}
+font-size:14px;color:MUTED;text-align:center;text-decoration:none}
 .thumb img{width:100%;height:100%;object-fit:cover;display:block}
-.thumb b{position:absolute;right:4px;bottom:4px;background:rgba(0,0,0,.7);color:#fff;font-size:14px;
+.thumb b{position:absolute;right:4px;bottom:4px;background:rgba(10,25,41,.75);color:#fff;font-size:14px;
 padding:0 6px;border-radius:8px}
 .what{font-size:22px;font-weight:700;margin:0;word-break:break-word}
-.where{font-size:18px;color:#555;margin:4px 0 0}
-.due{font-size:18px;color:#b71c1c;font-weight:700;margin:4px 0 0}
-.note{font-size:18px;color:#b71c1c;font-weight:700;background:#fdecea;border-radius:10px;
+.where{font-size:18px;color:MUTED;margin:4px 0 0}
+.due{font-size:18px;color:RED;font-weight:700;margin:4px 0 0}
+.note{font-size:18px;color:RED;font-weight:700;background:#FDECEA;border-radius:10px;
 padding:10px 12px;margin:0 0 12px}
-.small{font-size:16px;color:#555;margin:4px 0 0}
+.small{font-size:16px;color:MUTED;margin:4px 0 0}
 .fix{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;
-min-height:64px;margin-top:14px;border:0;border-radius:14px;background:#2e7d32;color:#fff;
+min-height:64px;margin-top:14px;border:0;border-radius:14px;background:BLUE;color:#fff;
 font-size:22px;font-weight:700;cursor:pointer;padding:8px 12px;text-align:center}
 .fix span{font-size:16px;font-weight:400;opacity:.95}
 .fix input{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .skip{display:block;width:100%;min-height:56px;margin-top:6px;background:none;border:0;
-color:#1b5e20;font-size:18px;text-decoration:underline;cursor:pointer}
+color:BLUE;font-size:18px;text-decoration:underline;cursor:pointer}
 .status{display:none;margin-top:14px;font-size:20px;font-weight:700;text-align:center}
-.prog{height:12px;border-radius:6px;background:#e3e3dc;overflow:hidden;margin-top:8px}
-.prog i{display:block;height:100%;width:0;background:#2e7d32}
-.retry{display:none;width:100%;min-height:64px;margin-top:14px;border:3px solid #b71c1c;
-border-radius:14px;background:#fff;color:#b71c1c;font-size:20px;font-weight:700}
+.prog{height:12px;border-radius:6px;background:#E3EAF5;overflow:hidden;margin-top:8px}
+.prog i{display:block;height:100%;width:0;background:BLUE}
+.retry{display:none;width:100%;min-height:64px;margin-top:14px;border:3px solid RED;
+border-radius:14px;background:#fff;color:RED;font-size:20px;font-weight:700}
 .card[data-ui=sending] .fix,.card[data-ui=sending] .skip,.card[data-ui=failed] .fix,
 .card[data-ui=failed] .skip,.card[data-ui=done] .fix,.card[data-ui=done] .skip{display:none}
-.card[data-ui=sending] .status{display:block;color:#222}
+.card[data-ui=sending] .status{display:block;color:NAVY}
 .card[data-ui=failed] .retry{display:block}
-.card[data-ui=failed] .status{display:block;color:#b71c1c;font-size:18px;font-weight:400}
-.card[data-ui=done]{background:#e8f5e9;border-color:#2e7d32}
-.card[data-ui=done] .status{display:block;color:#1b5e20}
+.card[data-ui=failed] .status{display:block;color:RED;font-size:18px;font-weight:400}
+.card[data-ui=done]{background:#E8F5E9;border-color:GREEN}
+.card[data-ui=done] .status{display:block;color:GREEN}
 .card[data-ui=done] .prog,.card[data-ui=failed] .prog{display:none}
-.pid{font-size:13px;color:#888;margin:10px 0 0}
+.pid{font-size:13px;color:MUTED;margin:10px 0 0}
 details{margin-top:22px}
 summary{font-size:20px;font-weight:700;min-height:56px;display:flex;align-items:center;
-cursor:pointer;color:#1b5e20}
-details.closed summary{color:#444}
-.mini{display:flex;gap:12px;align-items:center;background:#fff;border-radius:12px;padding:10px 12px;
-margin-bottom:8px;border:2px solid #c8e6c9}
-.mini .ok{font-size:26px;color:#2e7d32}
+cursor:pointer;color:GREEN}
+details.closed summary{color:MUTED}
+.mini{display:flex;gap:12px;align-items:center;background:#E8F5E9;border-radius:12px;padding:10px 12px;
+margin-bottom:8px;border:2px solid #C8E6C9}
+.mini .ok{font-size:26px;color:GREEN}
 .mini p{margin:0}
 .banner{font-size:20px;font-weight:700;border-radius:12px;padding:12px 14px;margin:12px 0 0}
-.banner.good{background:#e8f5e9;color:#1b5e20}.banner.bad{background:#fdecea;color:#b71c1c}
-footer{padding:8px 16px 32px}
+.banner.good{background:#E8F5E9;color:GREEN}.banner.bad{background:#FDECEA;color:RED}
+footer{padding:8px 16px 28px}
 .wa{display:flex;align-items:center;justify-content:center;min-height:60px;border-radius:14px;
-background:#fff;border:2px solid #1b5e20;color:#1b5e20;font-size:20px;font-weight:700;
+background:#fff;border:2px solid BLUE;color:BLUE;font-size:20px;font-weight:700;
 text-decoration:none}
-.private{font-size:16px;color:#666;text-align:center;margin:14px 0 0}
+.private{font-size:16px;color:MUTED;text-align:center;margin:14px 0 0}
+.powered{font-size:13px;color:MUTED;text-align:center;margin:18px 0 0;letter-spacing:.5px}
 #viewer{position:fixed;inset:0;background:#000;display:none;z-index:9;touch-action:none}
 #viewer.on{display:block}
 #viewer img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;
@@ -363,7 +396,11 @@ transform-origin:0 0;user-select:none;-webkit-user-drag:none}
 padding:10px;gap:10px}
 #viewer button{min-height:56px;padding:0 18px;border-radius:28px;border:0;background:#fff;
 color:#111;font-size:20px;font-weight:700}
-"""
+""")
+for _k, _v in (("BRAND_FONT", BRAND_FONT), ("NAVY", NAVY), ("BLUE", BLUE), ("GREEN", GREEN),
+               ("RED", RED), ("MUTED", MUTED), ("EDGE", EDGE)):
+    _CSS = _CSS.replace(_k, _v)
+
 
 # The page's own script, no library: the camera button sends the photo at
 # once (made at most 2000 px, JPEG; a phone's HEIC that cannot be redrawn is
@@ -421,6 +458,26 @@ _SCRIPT = r"""
     if (l) l.textContent = n === 0 ? T.left_0 : n === 1 ? T.left_1 : T.left_n.replace('{n}', n);
   }
 
+  // A finished card: green for a moment where it was, then down into
+  // "Done — waiting for the GC to check (N)", folded; its floor heading goes
+  // when nothing is left under it. Open and reopened ones stay on top.
+  function settle(card) {
+    setTimeout(function () {
+      var box = document.querySelector('details.waiting');
+      if (!box) return;
+      var head = card.previousElementSibling;
+      while (head && head.tagName !== 'H2') head = head.previousElementSibling;
+      box.appendChild(card);
+      box.hidden = false;
+      var n = box.querySelectorAll('.card').length;
+      box.querySelector('summary span').textContent = T.waiting.replace('{n}', n);
+      if (head) {
+        var next = head.nextElementSibling;
+        if (!next || !next.classList.contains('card')) head.remove();
+      }
+    }, 1600);
+  }
+
   function ui(card, state, msg) {
     card.setAttribute('data-ui', state);
     var s = card.querySelector('.status');
@@ -449,7 +506,7 @@ _SCRIPT = r"""
         function () { return 0; });
     }).then(function (st) {
       if (st === 200) {
-        bar(card, 100); drop(pid); ui(card, 'done', T.done); tally(); return;
+        bar(card, 100); drop(pid); ui(card, 'done', T.done); tally(); settle(card); return;
       }
       if (st === 422) { drop(pid); ui(card, 'failed', T.bad_photo); card._blob = null; return; }
       if (st === 404 || st === 409) { drop(pid); ui(card, 'sending', T.changed); setTimeout(function () { location.reload(); }, 1500); return; }
@@ -593,8 +650,9 @@ def _mini(r: Dict[str, Any], tok: str, lang: str, mark: str) -> str:
 
 def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
          done: Optional[str] = None, error: Optional[str] = None, lang: str = "en",
-         today: Any = None, wa_url: Optional[str] = None) -> str:
-    """The phone page. Their open items grouped by floor (the reopened ones
+         today: Any = None, wa_url: Optional[str] = None, company: str = "") -> str:
+    """The phone page, a Levelog page: the wordmark and the GC's name at the
+    top, Levelog blue for what you press, green only for what is done. Their open items grouped by floor (the reopened ones
     first, with the GC's note), each one card with one big button; the ones
     done and waiting, then the closed ones, folded at the bottom."""
     lang = lang_of(lang)
@@ -620,9 +678,10 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
         body += [_open_card(r, tok, lang, today) for r in rs]
     if not open_:
         body.append(f'<p class="left">{_e(t(lang, "nothing"))}</p>')
-    if ready:
-        body.append(f'<details class="waiting"><summary>✅&nbsp;{_e(t(lang, "waiting", n=len(ready)))}'
-                    f'</summary>' + "".join(_mini(r, tok, lang, "✓") for r in ready) + "</details>")
+    # Always there (hidden while empty): a card marked done moves into it.
+    body.append(f'<details class="waiting"{"" if ready else " hidden"}><summary>✅&nbsp;'
+                f'<span>{_e(t(lang, "waiting", n=len(ready)))}</span></summary>'
+                + "".join(_mini(r, tok, lang, "✓") for r in ready) + "</details>")
     if closed:
         body.append(f'<details class="closed"><summary>{_e(t(lang, "closed", n=len(closed)))}'
                     f'</summary>' + "".join(_mini(r, tok, lang, "✓") for r in closed) + "</details>")
@@ -638,21 +697,28 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
     hi = t(lang, "hi", name=first_name(name)) if first_name(name) else t(lang, "hi_anon")
     script_text = {k: t(lang, k) for k in ("sending", "finishing", "done", "failed", "offline",
                                              "bad_photo", "changed", "progress", "left_0",
-                                             "left_1", "left_n")}
+                                             "left_1", "left_n", "waiting")}
     foot = (f'<a class="wa" href="{_e(wa_url)}">{_e(t(lang, "questions"))}</a>' if wa_url else "")
+    logo = (f'<img class="logo" src="{wordmark()}" alt="Levelog" width="88" height="30">'
+            if wordmark() else "<b>Levelog</b>")
+    gc = f'<p class="gc">{_e(company)}</p>' if str(company or "").strip() else ""
     return f"""<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#ffffff">
-<title>{_e(job)}</title><style>{_CSS}</style></head>
+<title>{_e(job)} · Levelog</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300&display=swap">
+<style>{_CSS}</style></head>
 <body data-total="{total}">
-<div class="top"><nav class="langs">{langs}</nav>
+<div class="top"><div class="brand">{logo}<nav class="langs">{langs}</nav></div>{gc}
 <h1>{_e(hi)}</h1><p class="left">{_e(left_text)}</p><p class="addr">{_e(job)}</p>
 <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{total}" aria-valuenow="{done_n}">
 <i style="width:{pct}%"></i></div><p class="count">{_e(t(lang, "progress", done=done_n, total=total))}</p>
 {banner}</div>
 <main>{"".join(body)}</main>
-<footer>{foot}<p class="private">{_e(t(lang, "private"))}</p></footer>
+<footer>{foot}<p class="private">{_e(t(lang, "private"))}</p>
+<p class="powered">{_e(t(lang, "powered"))}</p></footer>
 <div id="viewer" role="dialog" aria-modal="true"><img alt="">
 <div class="vbar"><button type="button" class="close">{_e(t(lang, "close"))}</button>
 <button type="button" class="next">{_e(t(lang, "next"))}</button></div></div>

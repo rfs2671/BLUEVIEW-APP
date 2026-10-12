@@ -2,7 +2,7 @@
 is tested in a browser, tests/test_punch_link_page_browser.py).
 
 - "Hi Mike 👋 · 4 things to fix", the job's address, "0 of 4 done"; items
-  grouped by floor; one big "✅ I fixed it" that opens the camera; the id
+  grouped by floor; one big "✓ I fixed it" that opens the camera; the id
   small at the bottom; "Due today" / "Overdue" only.
 - Their language: Spanish when People says so; the switch at the top wins
   and is remembered on their phone.
@@ -77,7 +77,7 @@ class Redesign(unittest.TestCase):
 
     def test_one_big_button_that_opens_the_camera(self):
         h = _body(self.page())
-        self.assertEqual(h.count("✅ I fixed it"), 4)
+        self.assertEqual(h.count("✓ I fixed it"), 4)
         self.assertEqual(h.count('accept="image/*" capture="environment"'), 4)
         # The file control only inside the button's label: never seen as a
         # "Choose File".
@@ -130,7 +130,7 @@ class Redesign(unittest.TestCase):
         self.assertIn('<html lang="es">', h)
         self.assertIn("<h1>Hola Mike 👋</h1>", h)
         self.assertIn("4 cosas por arreglar", h)
-        self.assertIn("✅ Ya lo arreglé", h)
+        self.assertIn("✓ Ya lo arreglé", h)
         self.assertIn("<h2>Piso 3</h2>", h)
         resp = self.page(lang="en")                                      # the switch
         self.assertIn("Hi Mike 👋", _body(resp))
@@ -220,6 +220,29 @@ class Redesign(unittest.TestCase):
             "wa-photos/p/w/1-thumb.jpg", "wa-photos/p/w/2-thumb.jpg",
             "wa-photos/p/msg/9.jpg", "wa-photos/p/link/P-1-5.jpg", "wa-photos/p/w/3.jpg"])
         self.assertIn("_punch_r2_keys(", inspect.getsource(server.hard_delete_project))
+
+    def test_a_levelog_page_with_the_gcs_name(self):
+        self.db.companies.rows.append({"_id": dry.COMPANY, "name": "Blueview",
+                                       "gc_business_name": "Blueview Construction Inc"})
+        h = _body(self.page())
+        self.assertIn('<p class="gc">Blueview Construction Inc</p>', h)     # shown in uppercase
+        self.assertIn('<img class="logo" src="data:image/png;base64,', h)
+        self.assertIn('<p class="powered">Powered by Levelog</p>', h)
+        self.assertIn("<title>588 Thomas St · Levelog</title>", h)
+        self.db.companies.rows[0].pop("gc_business_name")
+        self.assertIn('<p class="gc">Blueview</p>', _body(self.page()))
+
+    def test_green_is_only_for_done_in_the_styles(self):
+        # Every style rule that paints green is a done state.
+        import re
+        css = punch_link._CSS
+        for rule in re.findall(r"([^{}]+)\{([^}]*)\}", css):
+            sel, body = rule[0].strip(), rule[1]
+            if punch_link.GREEN in body or "#E8F5E9" in body or "#C8E6C9" in body:
+                for part in sel.split(","):
+                    self.assertTrue(re.search(r"data-ui=done|\.mini|summary|banner\.good",
+                                              part), part)
+        self.assertIn(f"background:{punch_link.BLUE}", css[css.index(".fix{"):])
 
     # ── Questions ───────────────────────────────────────────────────────
 

@@ -63769,10 +63769,22 @@ async def _punch_link_lang(link: dict, rows: List[dict], asked: str = "",
         return "en"
 
 
-def _punch_link_page(link: dict, rows: List[dict], tok: str, lang: str, now: datetime,
-                     **kw) -> str:
+async def _punch_link_gc_name(company_id: Any) -> str:
+    """The GC's name for the page's header, as the app's header shows it
+    (utils/brandLabel.js): the business name, else the company's name."""
+    try:
+        c = await db.companies.find_one({"_id": to_query_id(str(company_id))},
+                                        {"gc_business_name": 1, "name": 1}) or {}
+    except Exception:
+        return ""
+    return str(c.get("gc_business_name") or c.get("name") or "").strip()
+
+
+async def _punch_link_page(link: dict, rows: List[dict], tok: str, lang: str, now: datetime,
+                           **kw) -> str:
     bot = _wa_bot_digits()
-    return punch_link.page(name=(link.get("assignee") or {}).get("name") or "",
+    company = await _punch_link_gc_name(link.get("company_id"))
+    return punch_link.page(company=company, name=(link.get("assignee") or {}).get("name") or "",
                            job=link["job"], items=_punch_link_items(rows), tok=tok,
                            lang=lang, today=eastern_date(now),
                            wa_url=f"https://wa.me/{bot}" if bot else None, **kw)
@@ -63793,7 +63805,7 @@ async def public_punch_link(tok: str, request: Request, done: str = "", lang: st
     page_lang = await _punch_link_lang(link, rows, asked,
                                        request.cookies.get(PUNCH_LINK_LANG_COOKIE, ""))
     ok_pid = done if any(r.get("pid") == done for r in rows) else None
-    resp = HTMLResponse(_punch_link_page(link, rows, tok, page_lang, now, done=ok_pid),
+    resp = HTMLResponse(await _punch_link_page(link, rows, tok, page_lang, now, done=ok_pid),
                         headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"})
     if asked:
         resp.set_cookie(PUNCH_LINK_LANG_COOKIE, asked, max_age=365 * 86400,
@@ -63928,7 +63940,7 @@ async def public_punch_link_done(tok: str, pid: str, request: Request,
             from fastapi.responses import HTMLResponse
             if js:
                 return JSONResponse({"ok": False, "error": "not_a_photo"}, status_code=422)
-            return HTMLResponse(_punch_link_page(
+            return HTMLResponse(await _punch_link_page(
                 link, got[1], tok, lang, now,
                 error=punch_link.t(lang, "bad_photo")), status_code=422,
                 headers={"Cache-Control": "no-store"})
@@ -63944,7 +63956,7 @@ async def public_punch_link_done(tok: str, pid: str, request: Request,
             from fastapi.responses import HTMLResponse
             if js:
                 return JSONResponse({"ok": False, "error": "not_saved"}, status_code=503)
-            return HTMLResponse(_punch_link_page(
+            return HTMLResponse(await _punch_link_page(
                 link, got[1], tok, lang, now, error=punch_link.t(lang, "failed")),
                 status_code=503, headers={"Cache-Control": "no-store"})
     if key is None:
