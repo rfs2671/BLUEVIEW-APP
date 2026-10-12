@@ -9,8 +9,9 @@ in, stored by the walk before #755.
 2. Stored names and suggestions are checked against who may be messaged every
    time they are shown; one that may not is "?" again. A one-off script clears
    them from open walks.
-3. A caption that starts with its location: "4d tile chipped" is Apt 4D,
-   "Tile chipped".
+3. A caption's location is its own field, wherever it is: "4d tile chipped"
+   and "tile chipped 4d" are Apt 4D, "Tile chipped" (the words as sent kept).
+4. Numbers never change once shown: a new item takes the next free one.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ def _old_walk(status="assign", assign=None, whole=None):
              for i, (t, f, a, tr) in enumerate([("Bulb burnt", "4", "Apt 4F", "electrical"),
                                                 ("Outlet loose", "4", "Apt 4A", "electrical"),
                                                 ("Faucet leaking", "2", "Apt 2D", "plumbing")], 1)]
-    punch.renumber(items)                       # the draft's numbers, as stored
     return {"_id": "walk831", "user_id": "u_roy", "company_id": CO, "project_id": "p588",
             "chat": "17185550100@c.us", "job_name": "588 Thomas St", "job_code": "588",
             "status": status, "items": items, "photos": [],
@@ -107,9 +107,9 @@ class EveryStage(_Walk):
     def test_the_draft(self):
         self._walk(status="draft", assign={})
         (out,) = self.turn("2b paint scuff", photo=True)
-        # Floor 2 comes first: the new item is #1, and the list follows.
-        self.assertTrue(out.startswith("Added #1 'Paint scuff' (Apt 2B). Back to: the draft"), out)
-        self.assertIn("1. 📷 Paint scuff (Apt 2B)", out)
+        # The next free number, shown in its place (Floor 2 first): #4.
+        self.assertTrue(out.startswith("Added #4 'Paint scuff' (Apt 2B). Back to: the draft"), out)
+        self.assertIn("*Floor 2*\n_paint_\n4. 📷 Paint scuff (Apt 2B)", out)
         self.assertEqual(self.sess()["status"], "draft")
 
     def test_the_recap_whole_list_takes_it(self):
@@ -144,6 +144,47 @@ class EveryStage(_Walk):
                         out)
         self.assertIn("needs a trade", out)
         self.assertEqual(self.sess()["status"], "draft")
+
+
+class NumbersNeverChange(_Walk):
+    """A number, once shown, is that item for good: a new one takes the next
+    free number, the draft shows them by floor and trade (#4, #3, #1, #2),
+    and an edit always means the number the walker read."""
+
+    def test_a_floor_2_photo_then_2_to_electrical(self):
+        walk = _old_walk(status="draft", assign={})
+        walk["items"][1].update(text="Stain on wall", trade=punch.UNKNOWN)   # #2, Floor 4
+        self.db[punch.SESSIONS].rows.append(walk)
+        (out,) = self.turn("2b paint scuff", photo=True)
+        self.assertTrue(out.startswith("Added #4 'Paint scuff' (Apt 2B)."), out)
+        import re
+        self.assertEqual([int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", out, re.M)],
+                         [4, 3, 1, 2])                     # by floor, then trade
+        (draft,) = self.turn("2 → electrical")
+        items = {it["n"]: it for it in self.sess()["items"]}
+        self.assertEqual(items[2]["text"], "Stain on wall")
+        self.assertEqual(items[2]["trade"], "electrical")  # the original #2
+        self.assertEqual(items[4]["trade"], "paint")       # not the new Floor 2 item
+        self.assertEqual(items[1]["text"], "Bulb burnt")
+        self.assertIn("2. 📷 Stain on wall (Apt 4A) — electrical", draft)
+
+    def test_drop_and_add_never_reuse_a_number(self):
+        self.db[punch.SESSIONS].rows.append(_old_walk(status="draft", assign={}))
+        self.turn("drop 3")
+        (out,) = self.turn("add: 4c door sticks")
+        self.assertIn("4. Door sticks (Apt 4C)", out)      # never #3 again
+        (out,) = self.turn("4d tile chipped", photo=True)
+        self.assertTrue(out.startswith("Added #5 'Tile chipped' (Apt 4D)."), out)
+        self.assertEqual(sorted(it["n"] for it in self.sess()["items"]), [1, 2, 3, 4, 5])
+
+    def test_the_locations_never_renumber(self):
+        self.turn("Bulb burnt", photo=True)
+        self.turn("Faucet leaking 2D", photo=True)
+        (q,) = self.turn("done")
+        self.assertIn("#1 'Bulb burnt'", q)
+        (draft,) = self.turn("4F")
+        import re
+        self.assertEqual([int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", draft, re.M)], [2, 1])
 
 
 class StoredNamesAreCheckedEachTime(_Walk):
@@ -231,8 +272,10 @@ class Captions(unittest.TestCase):
                 ("4D tile chipped", "Tile chipped", "4", "Apt 4D"),
                 ("Apt 4D tile chipped", "Tile chipped", "4", "Apt 4D"),
                 ("12a outlet loose", "Outlet loose", "12", "Apt 12A"),
-                ("piso 6 falta pintura en el pasillo", "Falta pintura en el pasillo", "6", "hallway"),
-                ("tile chipped 4d", "tile chipped 4d", "4", "Apt 4D"),     # not at the start
+                ("piso 6 falta pintura en el pasillo", "Falta pintura", "6", "hallway"),   # both ends
+                ("tile chipped 4d", "Tile chipped", "4", "Apt 4D"),        # at the end too
+                ("Faucet leaking 2D", "Faucet leaking", "2", "Apt 2D"),
+                ("stain on ceiling 5th fl", "Stain on ceiling", "5", punch.UNKNOWN),
                 ("4d", "4d", "4", "Apt 4D"),                               # nothing after it
                 ("2x4 stud bent", "2x4 stud bent", punch.UNKNOWN, punch.UNKNOWN)]:
             with self.subTest(said):

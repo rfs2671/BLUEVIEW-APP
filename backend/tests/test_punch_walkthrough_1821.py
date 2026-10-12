@@ -192,7 +192,7 @@ class TheJobIsAskedOnce(_Walk):
         self._turn("Loose outlet 3B", photo=True)
         statuses = sorted(r["status"] for r in self.db[punch.SESSIONS].rows)
         self.assertEqual(statuses, ["capturing", "expired"])
-        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Loose outlet 3B"])
+        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Loose outlet"])   # 3B: its place, not its words
 
 
 class TypingDuringAWalk(_Walk):
@@ -241,7 +241,7 @@ class EveryItemNeedsALocation(_Walk):
         self.assertIn(punch.WHERE_HELP, q)
         # A named area needs no floor; a corridor needs one.
         (q,) = self._turn("boiler room")
-        self.assertEqual(q, "Which floor is #3 'Paint touch up corridor' (corridor) on?")
+        self.assertEqual(q, "Which floor is #3 'Paint touch up' (corridor) on?")
         (draft,) = self._turn("3")
         self.assertIn("(draft)", draft)
         self.assertEqual((self.item(3)["floor"], self.item(3)["area"]), ("3", "corridor"))
@@ -270,10 +270,10 @@ class EveryItemNeedsALocation(_Walk):
         self._turn("done")
         # 10:36 PM: a photo at any stage is the next item; then that stage again.
         (q,) = self._turn("Loose outlet 3B", photo=True)
-        self.assertEqual(q, "Added #2 'Loose outlet 3B' (Apt 3B). Back to: the locations. "
+        self.assertEqual(q, "Added #2 'Loose outlet' (Apt 3B). Back to: the locations. "
                             "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
         self.assertEqual(self.sess()["status"], "locating")
-        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt", "Loose outlet 3B"])
+        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt", "Loose outlet"])
         self.assertEqual(self.assistant, [])
 
     def test_an_unknown_number_changes_nothing(self):

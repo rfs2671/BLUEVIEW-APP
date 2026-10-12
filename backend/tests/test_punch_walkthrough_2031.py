@@ -275,7 +275,7 @@ class CaptionCorrections(_Walk):
     def test_typed_right_after_the_caption(self):
         self.turn("Time wrong 4F", photo=True)
         self.turn("*tile")
-        self.assertEqual(self.item(1)["text"], "Tile wrong 4F")
+        self.assertEqual(self.item(1)["text"], "Tile wrong")          # 4F: its place
 
     def test_a_bare_typo_asks(self):
         self.turn("Time wrong 4F", photo=True)
@@ -286,7 +286,7 @@ class CaptionCorrections(_Walk):
         self.turn("Bulb burnt 4F", photo=True)
         (q,) = self.turn("I meant tile", reply_to=999, quoted_body="something else")
         self.assertIn("Which photo is that for?", q)
-        self.assertEqual((self.item(1)["text"], self.item(1)["trade"]), ("Bulb burnt 4F", "electrical"))
+        self.assertEqual((self.item(1)["text"], self.item(1)["trade"]), ("Bulb burnt", "electrical"))   # 4F: its place
         self.assertFalse(self.item(1).get("notes"))
 
 

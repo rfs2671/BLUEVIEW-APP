@@ -96,7 +96,7 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
         self.assertIn("2 need a trade", text)
-        self.assertIn("📷🎤 Falta pintura en el pasillo", text)   # "piso 6": its floor
+        self.assertIn("📷🎤 Falta pintura (hallway)", text)   # "piso 6 … en el pasillo": its place
         self.assertLess(text.index("*Floor 4*"), text.index("*Floor 5*"))
 
 
@@ -318,7 +318,9 @@ class PunchListScreen(unittest.TestCase):
         db = self._db()
         out = self._call(db, server.get_project_punch, "p588", floor="6", trade="", status="",
                          current_user=self.ADMIN)
-        self.assertEqual(len(out["items"]), 3)
+        # A merge keeps the lower (stable) number: the 6B outlet (#1) took the
+        # 5D light (#6), so it stays on floor 6.
+        self.assertEqual(len(out["items"]), 4)
         self.assertEqual(out["floors"], ["3", "4", "5", "6"])
         self.assertIn("electrical", out["trades"])
         self.assertEqual(out["statuses"], ["open", "ready_to_check", "closed"])

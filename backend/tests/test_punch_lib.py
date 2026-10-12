@@ -73,10 +73,12 @@ class TheDraft(unittest.TestCase):
         self.assertIn("📷🎤 Falta pintura", text)            # "piso 6": its floor, taken out
         self.assertIn("1 needs a trade", text)
         self.assertIn("'send'", text)
-        # Numbers follow the draft's order.
+        # Each item keeps its number, shown in the draft's order (floor,
+        # trade): never renumbered once shown (10:36 PM).
         import re
         nums = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", text, re.M)]
-        self.assertEqual(nums, [1, 2, 3, 4, 5])
+        self.assertEqual(nums, [3, 4, 1, 5, 2])
+        self.assertEqual([it["n"] for it in items], [1, 2, 3, 4, 5])
 
 
 class Edits(unittest.TestCase):
@@ -94,7 +96,6 @@ class Edits(unittest.TestCase):
 
     def test_apply(self):
         items = _items(["outlet floor 6", "stain on ceiling", "faucet floor 6"])
-        p.renumber(items)
         n_stain = next(it["n"] for it in items if it["text"] == "stain on ceiling")
         self.assertTrue(p.apply_edit(items, {"op": "trade", "n": n_stain, "trade": "paint"}, next_n=4)[0])
         self.assertEqual(next(it for it in items if it["text"] == "stain on ceiling")["trade"], "paint")

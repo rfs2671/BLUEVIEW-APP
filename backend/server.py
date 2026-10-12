@@ -61643,7 +61643,7 @@ async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False,
         return await _punch_back_to(sess, dm_chat, prior, it,
                                     punch.added_text(it) if it else "")
     if not missing:
-        punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
+        # The numbers the walker was asked about stay: never renumbered.
         await _punch_save(sess, status="draft", items=items, asking=None)
         await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
         return True
@@ -62184,10 +62184,9 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         ok, note = punch.apply_edit(items, e, next_n=nxt)
         if not ok:
             notes.append(note)
-    # Every edit in one message reads the numbers of the draft the walker
-    # had in front of them ("drop 6\n7 → paint": the 7 shown); then the
-    # list is renumbered and the new numbers kept for the next reply.
-    punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
+    # Every edit reads the numbers the walker has in front of them; they
+    # never change once shown ("2 → electrical" is always that #2), and a
+    # new item takes the next free one.
     await _punch_save(sess, items=items)
     reply = punch.draft_text(sess["job_name"], items)
     if notes:
@@ -62338,15 +62337,9 @@ async def _punch_late_photo(sess, dm_chat, parsed, words, voice, msg_id, now) ->
     the stage it came in at -- by way of "where is it?" when its words do
     not say, and "what is it?" when it has none."""
     prior = sess["status"]
-    live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
-    n = max([int(it.get("n") or 0) for it in live] or [0]) + 1
+    # The next free number -- never one shown before (a dropped one too).
+    n = max([int(it.get("n") or 0) for it in sess["items"]] or [0]) + 1
     it = await _punch_photo_item(sess, parsed, words, voice, msg_id, now, n=n)
-    if prior != "locating":
-        # Past the draft the numbers follow the list (floor, trade): the new
-        # one takes its place, and is named by it.
-        punch.renumber([i for i in sess["items"] if i.get("status", "draft") != "dropped"])
-        await _punch_save(sess, items=sess["items"])
-    n = it["n"]
     if not (it.get("text") or "").strip():
         await _punch_save(sess, await_caption=it["captured"])
         await send_whatsapp_message(dm_chat, (
@@ -62365,8 +62358,6 @@ async def _punch_late_caption(sess, dm_chat, words, now) -> bool:
     for k in ("text", "said", "floor", "area", "trade", "trade_guess"):
         if k in fresh:
             it[k] = fresh[k]
-    if sess["status"] != "locating":
-        punch.renumber([i for i in sess["items"] if i.get("status", "draft") != "dropped"])
     await _punch_save(sess, items=sess["items"])
     return await _punch_placed(sess, dm_chat, sess["status"], it)
 

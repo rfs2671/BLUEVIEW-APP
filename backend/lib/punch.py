@@ -319,7 +319,7 @@ def clean_caption(words: str) -> str:
     for rx in (_LOC_UNIT, _LOC_FLOOR):
         t = rx.sub(" ", t)
     t = re.sub(r"(?<![\w#/.-])\d{1,2}\s?[a-z](?![\w/])", " ", t, flags=re.IGNORECASE)
-    tail = re.compile(r"(?:\s+(?:in|at|on|by)?\s*(?:the\s+)?(?:" + "|".join(
+    tail = re.compile(r"(?:\s+(?:in|at|on|by|en|del|de|al)?\s*(?:the\s+|el\s+|la\s+|los\s+|las\s+)?(?:" + "|".join(
         rx for _, rx in _COMMON + _NEEDS_FLOOR) + r"|stair\s*(?:well|case)?\s+[ab]))\s*$", re.IGNORECASE)
     t = tail.sub("", t)
     t = re.sub(r"\s*[,;:-]+\s*$", "", re.sub(r"\s+", " ", t)).strip(" ,;:-")
@@ -649,8 +649,10 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
     tile chipped", 10:36 PM) is the location (Apt 4D) and the rest ("Tile
     chipped"); the words as sent are kept in `said`."""
     w = str(words or "").strip()
-    rest = after_lead_location(w)
-    text = capitalize(rest) if rest else w
+    loc = _loc(w)
+    # The location is its own field: taken out of the words wherever it is
+    # ("4d tile chipped", "tile chipped 4d" -> "Tile chipped"), as "add:".
+    text = clean_caption(w) if (loc["floor"] or loc["area"]) and w else w
     return {
         "n": n,
         "text": text,
@@ -665,25 +667,6 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
         "trade_guess": trade_for(w)[1],
         "at": at,
     }
-
-
-def after_lead_location(words: str) -> str:
-    """The words after a location the caption STARTS with ("4d tile chipped"
-    -> "tile chipped"; also "Apt 4D …", "4th floor 4d …", "piso 6 …"), as
-    written; "" when it does not start with one or has no words after."""
-    t, pos, hit = str(words or ""), 0, False
-    while True:
-        m = re.compile(r"[\s,;:-]*").match(t, pos)
-        pos = m.end()
-        for rx in (_LOC_UNIT, _LOC_FLOOR, _BARE_UNIT):
-            m = rx.match(t, pos)
-            if m:
-                pos, hit = m.end(), True
-                break
-        else:
-            break
-    rest = t[pos:].strip(" ,;:-")
-    return rest if hit and re.search(r"[a-z]{2}", rest, re.IGNORECASE) else ""
 
 
 def added_text(it: dict) -> str:
@@ -727,13 +710,6 @@ def floor_label(f: str) -> str:
     return f.capitalize()
 
 
-def renumber(items: List[dict]) -> List[dict]:
-    """Numbers follow the list: 1, 2, 3 … in the order the draft shows."""
-    for i, it in enumerate(ordered(items), 1):
-        it["n"] = i
-    return items
-
-
 def ordered(items: Iterable[dict]) -> List[dict]:
     """The draft's order -- the numbers follow it: floor, then trade ("?"
     last), then the order the photos came in."""
@@ -765,9 +741,9 @@ def item_line(it: dict) -> str:
 
 
 def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE) -> str:
-    """The draft the walker sees: by floor, then trade, numbered."""
+    """The draft the walker sees: by floor, then trade, each with ITS number
+    -- never renumbered once shown, so they may read #1, #4, #2."""
     live = [it for it in items if it.get("status", "draft") != "dropped"]
-    renumber(live)
     need_trade = [it for it in live if (it.get("trade") or UNKNOWN) == UNKNOWN]
     head = f"{job_name} · walkthrough · {len(live)} item{'s' if len(live) != 1 else ''} (draft)"
     lines = [head]
@@ -1093,7 +1069,7 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
         groups.setdefault(k, {"nums": [], "dues": set()})
         groups[k]["nums"].append(it["n"])
         groups[k]["dues"].add(due.get(it.get("trade") or UNKNOWN) or DEFAULT_DUE)
-    parts = [f"{k}: {', '.join('#' + str(n) for n in g['nums'])}" for k, g in groups.items()]
+    parts = [f"{k}: {', '.join('#' + str(n) for n in sorted(g['nums']))}" for k, g in groups.items()]
     dues = sorted({d for g in groups.values() for d in g["dues"]})
     if len(dues) == 1:
         when = f"due {dues[0]}"
