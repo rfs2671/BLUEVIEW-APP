@@ -1867,20 +1867,25 @@ export const upcomingAPI = {
  * Punch list: Project → Punch list (items from walkthroughs in WhatsApp).
  */
 export const punchAPI = {
-  // filters: { floor?, trade?, status? }
+  // filters: { floor?, trade?, status?, assignee? }
   list: async (projectId, filters = {}) => {
     const params = {};
-    for (const k of ['floor', 'trade', 'status']) if (filters[k]) params[k] = filters[k];
+    for (const k of ['floor', 'trade', 'status', 'assignee']) if (filters[k]) params[k] = filters[k];
     const response = await apiClient.get(`/api/projects/${projectId}/punch`, { params });
     return response.data;
   },
-  // A short-lived photo link: { url }. which: 'item' | 'done'.
+  // Who an item may be given to (Reassign): { people: [{ key, name, company, on_job }] }.
+  people: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/punch-people`);
+    return response.data;
+  },
+  // A short-lived photo link: { url }. which: 'item' (the first), 'item:2', … | 'done'.
   photo: async (projectId, pid, which = 'item') => {
     const response = await apiClient.get(
       `/api/projects/${projectId}/punch/${encodeURIComponent(pid)}/photo`, { params: { which } });
     return response.data;
   },
-  // Admins: { status?, trade?, floor?, area? }
+  // Admins and PMs: { status?, trade?, floor?, area?, assignee? (a key), due? (words) }
   edit: async (projectId, pid, patch) => {
     const response = await apiClient.patch(
       `/api/projects/${projectId}/punch/${encodeURIComponent(pid)}`, patch);

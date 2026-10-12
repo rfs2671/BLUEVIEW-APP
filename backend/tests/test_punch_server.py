@@ -329,22 +329,30 @@ class PunchListScreen(unittest.TestCase):
                          status="", current_user=self.ADMIN)
         self.assertEqual({i["trade"] for i in out["items"]}, {"paint"})
 
-    def test_only_admins_edit_and_the_chase_follows(self):
+    CP = {"id": "u_cp", "_id": "u_cp", "role": "cp", "company_id": dry.COMPANY}
+
+    def test_only_admins_and_pms_edit_and_the_chase_follows(self):
+        # As in WhatsApp ("P23 ok"): only an admin or PM closes (live 588,
+        # Oct 12: the app let admins only).
         db = self._db()
         pid = db[punch.COLLECTION].rows[0]["pid"]
         with self.assertRaises(HTTPException) as e:
             self._call(db, server.patch_project_punch, "p588", pid, {"status": "closed"},
-                       current_user=self.PM)
+                       current_user=self.CP)
         self.assertEqual(e.exception.status_code, 403)
         with self.assertRaises(HTTPException) as e:
             self._call(db, server.patch_project_punch, "p588", pid, {"assignee": "x"},
                        current_user=self.ADMIN)
         self.assertEqual(e.exception.status_code, 422)
         out = self._call(db, server.patch_project_punch, "p588", pid,
-                         {"status": "closed", "floor": "7"}, current_user=self.ADMIN)
+                         {"status": "closed", "floor": "7"}, current_user=self.PM)
         self.assertEqual((out["status"], out["floor"]), ("closed", "7"))
         att = next(a for a in db.attention_items.rows if a["punch_id"] == pid)
         self.assertEqual(att["status"], "done")
+        out = self._call(db, server.patch_project_punch, "p588", pid, {"status": "open"},
+                         current_user=self.PM)                       # reopen
+        self.assertEqual(out["status"], "open")
+        self.assertEqual(att["status"], "open")
 
     def test_photo_link_is_short_lived_and_scoped(self):
         db = self._db()
@@ -358,6 +366,103 @@ class PunchListScreen(unittest.TestCase):
                        current_user=self.PM)
         self.assertEqual(e.exception.status_code, 404)
 
+
+    # ── Live 588, Oct 12: assignee filter, counts, detail actions ─────────
+
+    def _list(self, db, **k):
+        k = {"floor": "", "trade": "", "status": "", "assignee": "", **k}
+        return self._call(db, server.get_project_punch, "p588", current_user=self.PM, **k)
+
+    def test_status_counts_and_the_assignee_filter(self):
+        db = self._db()
+        rows = db[punch.COLLECTION].rows
+        rows[0]["status"] = "ready_to_check"
+        out = self._list(db)
+        self.assertEqual(out["counts"], {"open": len(rows) - 1, "ready_to_check": 1, "closed": 0})
+        self.assertTrue(out["can_act"])
+        mike = next(a for a in out["assignees"] if a["name"] == "Mike Rivera")
+        mine = self._list(db, assignee=mike["key"])
+        want = [r["pid"] for r in rows if r["assignee"]["name"] == "Mike Rivera"]
+        self.assertEqual([i["pid"] for i in mine["items"]], want)
+        # The chips count under the other filters, whatever status is picked.
+        self.assertEqual(sum(mine["counts"].values()), len(want))
+        ready = self._list(db, status="ready_to_check")
+        self.assertEqual([i["pid"] for i in ready["items"]], [rows[0]["pid"]])
+        self.assertEqual(ready["counts"], out["counts"])
+        self.assertNotIn("1718555", json.dumps(out))
+
+    def test_reassign_from_the_list_only_and_the_chase_owner_follows(self):
+        db = self._db()
+        row = db[punch.COLLECTION].rows[0]
+        people = self._call(db, server.get_project_punch_people, "p588", current_user=self.PM)
+        self.assertNotIn("1718555", json.dumps(people))
+        other = next(p for p in people["people"] if p["name"] not in ("", row["assignee"]["name"]))
+        out = self._call(db, server.patch_project_punch, "p588", row["pid"],
+                         {"assignee": other["key"]}, current_user=self.PM)
+        self.assertEqual(out["assignee"]["name"], other["name"])
+        self.assertEqual(out["assignee_key"], other["key"])
+        self.assertEqual(out["history"][-1]["action"], "reassigned")
+        att = next(a for a in db.attention_items.rows if a["punch_id"] == row["pid"])
+        self.assertEqual(f"{att['owner']['kind']}:{att['owner']['id']}", other["key"])
+        with self.assertRaises(HTTPException) as e:          # a checked-in worker / nobody
+            self._call(db, server.patch_project_punch, "p588", row["pid"],
+                       {"assignee": "worker:w1"}, current_user=self.PM)
+        self.assertEqual(e.exception.status_code, 422)
+
+    def test_change_the_due_and_the_chase_follows(self):
+        db = self._db()
+        row = db[punch.COLLECTION].rows[0]
+        now = datetime.now(timezone.utc)
+        out = self._call(db, server.patch_project_punch, "p588", row["pid"], {"due": "tomorrow"},
+                         current_user=self.PM)
+        self.assertEqual(out["due"], "tomorrow")
+        att = next(a for a in db.attention_items.rows if a["punch_id"] == row["pid"])
+        self.assertEqual(att["due"]["due_at"], out["due_at"])
+        self.assertIsNotNone(out["due_at"])
+        out = self._call(db, server.patch_project_punch, "p588", row["pid"], {"due": "no due date"},
+                         current_user=self.PM)
+        self.assertEqual((out["due"], out["due_at"]), ("", None))
+        self.assertIsNone(att["due"]["due_at"])               # never chased
+        with self.assertRaises(HTTPException) as e:
+            self._call(db, server.patch_project_punch, "p588", row["pid"], {"due": "someday"},
+                       current_user=self.PM)
+        self.assertEqual(e.exception.status_code, 422)
+        self.assertTrue(now)
+
+    def test_a_bad_field_saves_nothing_of_the_patch(self):
+        # Codex review on #763: a valid assignee with a bad due was saved,
+        # then the call said 422.
+        db = self._db()
+        row = db[punch.COLLECTION].rows[0]
+        people = self._call(db, server.get_project_punch_people, "p588", current_user=self.PM)
+        other = next(p for p in people["people"] if p["name"] not in ("", row["assignee"]["name"]))
+        before = (dict(row["assignee"]), row.get("floor"), len(row.get("history") or []))
+        for patch_ in ({"assignee": other["key"], "due": "someday"},
+                       {"floor": "9", "assignee": "worker:w1"},
+                       {"floor": "9", "due": "someday", "status": "closed"}):
+            with self.assertRaises(HTTPException) as e:
+                self._call(db, server.patch_project_punch, "p588", row["pid"], patch_,
+                           current_user=self.PM)
+            self.assertEqual(e.exception.status_code, 422, patch_)
+            self.assertEqual((row["assignee"], row.get("floor"), len(row.get("history") or [])),
+                             before, patch_)
+            self.assertEqual(row["status"], "open")
+
+    def test_every_photo_of_an_item(self):
+        db = self._db()
+        row = next(r for r in db[punch.COLLECTION].rows if r.get("photo_key"))
+        row["extra_photos"] = ["wa-photos/p588/x/extra.jpg"]
+        row["completion"] = {"photo_key": "wa-photos/p588/msg/done.jpg", "quote": "done"}
+        out = self._list(db)
+        self.assertEqual(next(i for i in out["items"] if i["pid"] == row["pid"])["photos"], 2)
+        with patch.object(server, "_presign_r2_get", lambda key, ttl: key):
+            get = lambda w: self._call(db, server.get_project_punch_photo, "p588", row["pid"],  # noqa: E731
+                                       which=w, current_user=self.PM)["url"]
+            self.assertEqual(get("item"), row["photo_key"])
+            self.assertEqual(get("item:2"), "wa-photos/p588/x/extra.jpg")
+            self.assertEqual(get("done"), "wa-photos/p588/msg/done.jpg")
+            with self.assertRaises(HTTPException):
+                get("item:3")
 
 if __name__ == "__main__":
     unittest.main()

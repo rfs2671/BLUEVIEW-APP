@@ -46,7 +46,7 @@ const root = path.join(__dirname, '../..');
 const screen = fs.readFileSync(path.join(root, 'app/projects/[id]/punch.jsx'), 'utf8');
 ok(/punchAPI\.list\(/.test(screen) && /punchAPI\.photo\(/.test(screen) && /punchAPI\.edit\(/.test(screen),
   'the screen lists, shows photos and edits');
-ok(/isAdmin && \(/.test(screen), 'status edits are admins only');
+ok(/canAct && \(/.test(screen) && !/isAdmin/.test(screen), 'edits are for admins and PMs (the server says: can_act)');
 const api = fs.readFileSync(path.join(root, 'src/utils/api.js'), 'utf8');
 ok(/export const punchAPI/.test(api) && /\/punch\/\$\{encodeURIComponent\(pid\)\}\/photo/.test(api), 'punchAPI');
 const project = fs.readFileSync(path.join(root, 'app/project/[id].jsx'), 'utf8');
@@ -81,6 +81,46 @@ ok(M.PUNCH_DUE_OPTIONS.map((o) => o.mode).join() === 'asap,tomorrow,fri,none', '
 ok(/Never chased/.test(M.PUNCH_DUE_OPTIONS.find((o) => o.mode === 'none').line), 'no due date: never chased');
 ok(/patch\('punch_due_default', \{ punch_due_default: o\.mode \}\)/.test(card), 'the card sets it');
 ok(/by DM/.test(M.PUNCH_TO_OPTIONS.find((o) => o.mode === 'one_person').line), 'one person: by DM');
+
+// ── Live 588, Mon Oct 12: the Punch list screen ──────────────────────────
+// 5. Layout: AnimatedBackground (flex: 1) holds the screen. As a sibling of
+// the SafeAreaView it took the top half and the header sat mid-screen.
+ok(!/<AnimatedBackground\s*\/>/.test(screen) && /<AnimatedBackground>\s*<SafeAreaView/.test(screen),
+  'the screen is inside AnimatedBackground, not beside it (no empty top half)');
+
+// 6. Status chips with counts, the assignee filter.
+ok(M.statusChips(['open', 'ready_to_check', 'closed'], { open: 3, ready_to_check: 0, closed: 2 })
+  .map((c) => c.label).join('|') === 'All 5|Open 3|Ready to check 0|Closed 2', 'chips: "Open 3", "Ready to check 0"');
+ok(M.statusChips(['open'], null)[1].label === 'Open 0', 'no counts yet: 0');
+const ac = M.assigneeChips([{ key: 'user:u1', name: 'Chris' }, { key: 'none', name: 'Not assigned' }]);
+ok(ac[0].value === '' && ac[0].label === 'Everyone' && ac[1].value === 'user:u1' && ac[2].label === 'Not assigned',
+  'assignee filter: Everyone, then each person');
+ok(/chipRow\('assignee', assigneeChips\(data\.assignees\)\)/.test(screen)
+  && /statusChips\(data\.statuses, data\.counts\)/.test(screen), 'the screen shows both rows');
+
+// 8. The statuses, explained under the chips.
+ok(M.STATUS_EXPLAINER === 'Open = assigned · Ready to check = assignee says fixed · Closed = admin/PM verified',
+  'one line explains the statuses');
+ok(/\{STATUS_EXPLAINER\}/.test(screen), 'shown on the screen');
+
+// 7. Tap an item: its detail -- every photo, history, admin / PM actions.
+ok(M.itemActions({ status: 'open' }, true).map((a) => a.key).join() === 'close,reassign,due',
+  'open: close, reassign, change due');
+ok(M.itemActions({ status: 'ready_to_check' }, true).map((a) => a.key).join() === 'close,reopen,reassign,due',
+  'ready to check: close or reopen');
+ok(M.itemActions({ status: 'closed' }, true).map((a) => a.key).join() === 'reopen,reassign,due', 'closed: reopen');
+ok(M.itemActions({ status: 'open' }, false).length === 0, 'not an admin or PM: no actions (only they close)');
+ok(M.itemActions({ status: 'open' }, true)[0].patch.status === 'closed', 'close sets closed');
+ok(M.photoList({ photos: 2, completion: { has_photo: true } }).map((p) => p.which).join() === 'item,item:2,done',
+  'every photo, then the done photo');
+ok(M.photoList({ has_photo: true }).map((p) => p.label).join() === 'Photo', 'one photo');
+ok(M.photoList({}).length === 0, 'no photo');
+ok(M.DUE_CHOICES.map((d) => d.words).join() === 'ASAP,tomorrow,Mon,Wed,Fri,no due date', 'due choices');
+ok(M.historyLine({ action: 'reassigned', quote: 'Chris Lopez' }) === 'Reassigned to Chris Lopez'
+  && M.historyLine({ action: 'due', quote: 'due Fri' }) === 'Due changed due Fri', 'history: reassigned, due');
+ok(/onPress=\{\(\) => setDetail\(it\)\}/.test(screen) && /<PunchDetail/.test(screen)
+  && /resizeMode="contain"/.test(screen) && /data\.can_act/.test(screen),
+  'tap opens the detail; photos full screen; actions only when the server says so');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

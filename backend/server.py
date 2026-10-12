@@ -66392,6 +66392,9 @@ def _punch_view(r: dict) -> dict:
             "assignee": {"name": a.get("name") or "", "company": a.get("company") or ""},
             "due": (r.get("due") or {}).get("due_text"), "due_at": (r.get("due") or {}).get("due_at"),
             "has_photo": bool(r.get("photo_key")), "send_mode": r.get("send_mode"),
+            # The item's photos in the order taken: the first, then any more.
+            "photos": int(bool(r.get("photo_key"))) + len(r.get("extra_photos") or []),
+            "assignee_key": _punch_person_key(a),
             "mention_note": (wa_mention.NO_NUMBER_NOTE
                              if (r.get("mention") or {}).get("resolved") is False else None),
             "created_at": iso(r.get("created_at")), "closed_at": iso(r.get("closed_at")),
@@ -66401,27 +66404,71 @@ def _punch_view(r: dict) -> dict:
                         for h in (r.get("history") or [])][-20:]}
 
 
+def _punch_person_key(a: Optional[dict]) -> str:
+    """An assignee as the filter knows them: "user:<id>" / "sender_map:<id>";
+    "" for nobody."""
+    a = a or {}
+    return f"{a.get('kind')}:{a.get('id')}" if a.get("kind") and a.get("id") else ""
+
+
 @api_router.get("/projects/{project_id}/punch",
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_punch(project_id: str, floor: str = "", trade: str = "", status: str = "",
-                            current_user=Depends(get_current_user)):
-    """Project → Punch list: the job's punch items, by floor / trade / status.
-    Admins, and PMs on their projects."""
+                            assignee: str = "", current_user=Depends(get_current_user)):
+    """Project → Punch list: the job's punch items, by floor / trade /
+    assignee / status, with how many each status chip holds under the other
+    filters ("Open 3", "Ready to check 0"). Admins, and PMs on their projects.
+    `can_act`: may this person close, reopen, reassign and change dues."""
     company_id = await _memory_project(project_id, current_user)
-    q: dict = {"project_id": str(project_id), "company_id": str(company_id)}
-    if floor:
-        q["floor"] = floor
-    if trade:
-        q["trade"] = trade
-    if status:
-        q["status"] = status
-    rows = await db[punch.COLLECTION].find(q).sort([("seq", 1)]).to_list(2000)
     allrows = await db[punch.COLLECTION].find(
-        {"project_id": str(project_id), "company_id": str(company_id)}).to_list(5000)
-    return {"items": [_punch_view(r) for r in rows],
+        {"project_id": str(project_id), "company_id": str(company_id)}).sort(
+        [("seq", 1)]).to_list(5000)
+    allrows = [r for r in allrows if r.get("status") in punch.STATUSES[1:4]]
+
+    def keep(r, with_status=True):
+        return ((not floor or r.get("floor") == floor) and (not trade or r.get("trade") == trade)
+                and (not assignee or _punch_person_key(r.get("assignee")) == assignee
+                     or (assignee == "none" and not _punch_person_key(r.get("assignee"))))
+                and (not with_status or not status or r.get("status") == status))
+    counts = {st: 0 for st in punch.STATUSES[1:4]}
+    for r in allrows:
+        if keep(r, with_status=False):
+            counts[r["status"]] += 1
+    people: Dict[str, str] = {}
+    for r in allrows:
+        k = _punch_person_key(r.get("assignee"))
+        people[k or "none"] = (r.get("assignee") or {}).get("name") or "Not assigned"
+    return {"items": [_punch_view(r) for r in allrows if keep(r)],
             "floors": sorted({r.get("floor") for r in allrows if r.get("floor")}),
             "trades": sorted({r.get("trade") for r in allrows if r.get("trade")}),
-            "statuses": list(punch.STATUSES[1:4])}
+            "assignees": sorted(({"key": k, "name": n} for k, n in people.items()),
+                                key=lambda x: (x["key"] == "none", x["name"].lower())),
+            "statuses": list(punch.STATUSES[1:4]), "counts": counts,
+            "can_act": _punch_can_act(current_user)}
+
+
+def _punch_can_act(user: Optional[dict]) -> bool:
+    """Close, reopen, reassign, change the due: an admin or PM -- the rule
+    WhatsApp's "P23 ok" follows."""
+    return bool(user) and (is_company_admin(user) or holds_rank(user, PROJECT_ADMIN_ROLES))
+
+
+@api_router.get("/projects/{project_id}/punch-people",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_punch_people(project_id: str, current_user=Depends(get_current_user)):
+    """Who a punch item may be given to (Reassign): the company's users,
+    People and the subs' punch contacts -- the WhatsApp walk's own list,
+    those on this job first. Never a checked-in worker. No phone number."""
+    company_id = await _memory_project(project_id, current_user)
+    pool = await _punch_name_pool({"company_id": str(company_id), "project_id": str(project_id)})
+    seen, out = set(), []
+    for p in sorted(pool, key=lambda p: (not p.get("on_job"), str(p.get("name") or "").lower())):
+        k = _punch_person_key(p)
+        if k and k not in seen:
+            seen.add(k)
+            out.append({"key": k, "name": p.get("name") or "", "company": p.get("company") or "",
+                        "on_job": bool(p.get("on_job"))})
+    return {"people": out}
 
 
 @api_router.get("/projects/{project_id}/punch/{pid}/photo",
@@ -66434,23 +66481,35 @@ async def get_project_punch_photo(project_id: str, pid: str, which: str = "item"
         {"pid": pid, "project_id": str(project_id), "company_id": str(company_id)})
     if not r:
         raise HTTPException(status_code=404, detail="Punch item not found")
-    key = ((r.get("completion") or {}).get("photo_key") if which == "done" else r.get("photo_key"))
+    if which == "done":
+        key = (r.get("completion") or {}).get("photo_key")
+    else:
+        # "item" is the first; "item:2" the second photo of the item, and on.
+        keys = [k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k]
+        try:
+            n = int(which.split(":", 1)[1]) if which.startswith("item:") else 1
+        except ValueError:
+            n = 0
+        key = keys[n - 1] if 1 <= n <= len(keys) else None
     if not key:
         raise HTTPException(status_code=404, detail="No photo")
     return {"url": await asyncio.to_thread(_presign_r2_get, key, 900)}
 
 
-_PUNCH_EDITABLE = ("trade", "floor", "area", "status")
+_PUNCH_EDITABLE = ("trade", "floor", "area", "status", "assignee", "due")
 
 
 @api_router.patch("/projects/{project_id}/punch/{pid}",
                    dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def patch_project_punch(project_id: str, pid: str, body: dict,
                               current_user=Depends(get_current_user)):
-    """Admin only: fix an item's trade / floor / area, or set its status
-    (open / ready_to_check / closed; the chase follows)."""
-    if not is_company_admin(current_user):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    """An admin or PM (as in WhatsApp, only they close): fix an item's trade
+    / floor / area; set its status (close, reopen; the chase follows);
+    reassign it ({"assignee": "<key from /punch-people>"}, by the recipient
+    rules); change its due ({"due": "Fri" | "tomorrow" | "ASAP" | "no due
+    date"}; the chase follows)."""
+    if not _punch_can_act(current_user):
+        raise HTTPException(status_code=403, detail="Only an admin or PM can change punch items")
     company_id = await _memory_project(project_id, current_user)
     r = await db[punch.COLLECTION].find_one(
         {"pid": pid, "project_id": str(project_id), "company_id": str(company_id)})
@@ -66458,18 +66517,80 @@ async def patch_project_punch(project_id: str, pid: str, body: dict,
         raise HTTPException(status_code=404, detail="Punch item not found")
     if (not isinstance(body, dict) or not body or any(k not in _PUNCH_EDITABLE for k in body)
             or ("status" in body and body["status"] not in ("open", "ready_to_check", "closed"))):
-        raise HTTPException(status_code=422, detail="Edit trade, floor, area or status "
-                                                    "(open, ready_to_check, closed).")
+        raise HTTPException(status_code=422, detail="Edit trade, floor, area, status "
+                                                    "(open, ready_to_check, closed), assignee or due.")
     now = datetime.now(timezone.utc)
+    by = actor_id(current_user)
+    # Every field is checked before anything is written (Codex review on
+    # #763): a 422 means nothing of the patch was saved.
+    person = (await _punch_reassign_to(r, str(body["assignee"] or ""), str(company_id))
+              if "assignee" in body else None)
+    due_w = _punch_due_words(body["due"]) if "due" in body else None
     sets = {k: str(body[k])[:60] for k in ("trade", "floor", "area") if k in body}
     if sets:
         await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {
             "$set": sets, "$push": {"history": {"at": now, "action": "edited",
-                                                "by": actor_id(current_user), "quote": str(sets)}}})
+                                                "by": by, "quote": str(sets)}}})
+    if person:
+        await _punch_reassign(r, person, now, by)
+    if due_w:
+        await _punch_change_due(r, due_w, now, by)
     if "status" in body and body["status"] != r.get("status"):
-        await _punch_set_status(r, body["status"], now, by=actor_id(current_user),
-                                quote="(set in the app)")
+        await _punch_set_status(r, body["status"], now, by=by, quote="(set in the app)")
     return _punch_view(await db[punch.COLLECTION].find_one({"_id": r["_id"]}))
+
+
+async def _punch_reassign_to(r: dict, key: str, company_id: str) -> dict:
+    """Who `key` names on the walk's own list (users, People, punch
+    contacts), never a checked-in worker; else 422."""
+    pool = await _punch_name_pool({"company_id": company_id, "project_id": str(r.get("project_id"))})
+    person = next((p for p in pool if _punch_person_key(p) == key), None) if key else None
+    if not person or await _recipient_refusal(company_id, person):
+        raise HTTPException(status_code=422, detail="Pick someone from the list (a user, "
+                                                    "People or a sub's punch contact).")
+    return person
+
+
+def _punch_due_words(words: Any) -> str:
+    """The due as kept ("Fri", "tomorrow", "ASAP", "no due date"); else 422."""
+    w = punch.due_words(words)
+    if not w:
+        raise HTTPException(status_code=422, detail="Due: a day (Fri, tomorrow, 10/15), "
+                                                    "ASAP or no due date.")
+    return w
+
+
+async def _punch_reassign(r: dict, person: dict, now: datetime, by: str) -> None:
+    """Give the item to `person` (checked by _punch_reassign_to); the
+    chase's owner follows. Nothing is sent from here."""
+    a = {k: person.get(k) for k in ("kind", "id", "name", "company", "jid")}
+    await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {
+        "$set": {"assignee": a, "assigned_at": now},
+        "$push": {"history": {"at": now, "action": "reassigned", "by": by,
+                              "quote": a.get("name") or ""}}})
+    if r.get("attention_item_id"):
+        owner = {**{k: a.get(k) for k in ("kind", "id", "name", "jid")},
+                 "status": "resolved", "reason": None, "source": "punch",
+                 "sub_company": a.get("company")}
+        await db.attention_items.update_one({"_id": to_query_id(r["attention_item_id"])}, {
+            "$set": {"owner": owner, "updated_at": now},
+            "$push": {"history": {"id": wa_attention_state.new_event_id(), "kind": "handover",
+                                  "from": None, "to": None, "at": now, "quote": a.get("name") or "",
+                                  "evidence_kind": "punch", "verified": True, "by": "punch"}}})
+
+
+async def _punch_change_due(r: dict, w: str, now: datetime, by: str) -> None:
+    """A new due (words checked by _punch_due_words): the item's and its
+    chase's. Nothing is sent from here."""
+    at = punch.due_date(w, now)
+    due = {"due_text": "" if w == punch.NO_DUE else w, "due_at": at.isoformat() if at else None}
+    await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {
+        "$set": {"due": due},
+        "$push": {"history": {"at": now, "action": "due", "by": by, "quote": punch.due_label(w)}}})
+    if r.get("attention_item_id"):
+        await db.attention_items.update_one({"_id": to_query_id(r["attention_item_id"])}, {
+            "$set": {"due": {**due, "due_source": "parsed" if at else "none"},
+                     "updated_at": now}})
 
 
 def _attention_item_view(it: dict, group_names: dict,

@@ -65,14 +65,67 @@ export function itemWords(it) {
 
 const ACTIONS = {
   sent: 'Sent', open: 'Reopened', ready_to_check: 'Marked done (ready to check)',
-  closed: 'Closed', edited: 'Edited',
+  closed: 'Closed', edited: 'Edited', reassigned: 'Reassigned to', due: 'Due changed',
 };
+
+/** One line under the status chips: what each status means. */
+export const STATUS_EXPLAINER =
+  'Open = assigned · Ready to check = assignee says fixed · Closed = admin/PM verified';
+
+/** The status chips with their counts: "All 4", "Open 3", "Ready to check 0". */
+export function statusChips(statuses, counts) {
+  const c = counts || {};
+  const total = (statuses || []).reduce((n, s) => n + (c[s] || 0), 0);
+  return [{ value: '', label: `All ${total}` }].concat((statuses || []).map((s) => ({
+    value: s, label: `${statusLabel(s)} ${c[s] || 0}` })));
+}
+
+/** The assignee filter: "All" then each person on the list. */
+export function assigneeChips(assignees) {
+  return [{ value: '', label: 'Everyone' }].concat((assignees || []).map((a) => ({
+    value: a.key, label: a.name || 'Not assigned' })));
+}
+
+/** What an admin / PM can do to an item, by its status. Close and reopen
+ *  as in WhatsApp ("P23 ok" / "P23 not done"). */
+export function itemActions(it, canAct) {
+  if (!canAct || !it) return [];
+  const out = [];
+  if (it.status !== 'closed') out.push({ key: 'close', label: 'Close', patch: { status: 'closed' } });
+  if (it.status !== 'open') out.push({ key: 'reopen', label: 'Reopen', patch: { status: 'open' } });
+  out.push({ key: 'reassign', label: 'Reassign' });
+  out.push({ key: 'due', label: 'Change due' });
+  return out;
+}
+
+/** The due choices (the words the server reads). */
+export const DUE_CHOICES = [
+  { words: 'ASAP', label: 'ASAP' },
+  { words: 'tomorrow', label: 'Tomorrow' },
+  { words: 'Mon', label: 'Mon' },
+  { words: 'Wed', label: 'Wed' },
+  { words: 'Fri', label: 'Fri' },
+  { words: 'no due date', label: 'No due date' },
+];
+
+/** The photos an item has, in order: [{ which, label }] -- 'item', 'item:2', …
+ *  then the completion photo ('done'). */
+export function photoList(it) {
+  const n = (it && (it.photos != null ? it.photos : (it.has_photo ? 1 : 0))) || 0;
+  const out = [];
+  for (let i = 1; i <= n; i += 1) {
+    out.push({ which: i === 1 ? 'item' : `item:${i}`, label: n > 1 ? `Photo ${i} of ${n}` : 'Photo' });
+  }
+  if (it && it.completion && it.completion.has_photo) out.push({ which: 'done', label: 'Done photo' });
+  return out;
+}
 
 /** One history line: "Oct 13, 9:05 AM — Closed: “P-588-4 ok”". */
 export function historyLine(h, fmt = (iso) => iso) {
   const what = ACTIONS[h.action] || String(h.action || '');
   const when = h.at ? `${fmt(h.at)} — ` : '';
-  const quote = h.quote && h.action !== 'sent' ? `: “${h.quote}”` : '';
+  const quote = !h.quote || h.action === 'sent' ? ''
+    : (h.action === 'reassigned' || h.action === 'due') ? ` ${h.quote}` : `: “${h.quote}”`;
   return `${when}${what}${quote}`;
 }
 
