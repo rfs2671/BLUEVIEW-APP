@@ -2,6 +2,7 @@
 
 Supports: equality (incl. a scalar against an array field), $in, $nin, $ne,
 $gt, $gte, $lt, $lte, $exists, $regex, $or; updates $set, $setOnInsert, $inc,
+$push, $addToSet (with $each),
 $unset; unique `_id` and optional unique single fields; find / find_one /
 find_one_and_update / insert_one / update_one / update_many / replace_one /
 count_documents / delete_one / create_index (recorded, not enforced except
@@ -41,6 +42,9 @@ def _cmp(val, cond):
                     return False
             elif op == "$ne":
                 if val == arg:
+                    return False
+                # As Mongo: an array field "$ne" x when no element is x.
+                if isinstance(val, list) and not isinstance(arg, list) and arg in val:
                     return False
             elif op == "$regex":
                 import re as _re
@@ -225,8 +229,9 @@ class Coll:
         for k, v in (update.get("$addToSet") or {}).items():
             cur = _get(doc, k)
             cur = list(cur) if isinstance(cur, list) else []
-            if v not in cur:
-                cur.append(v)
+            for one in (v["$each"] if isinstance(v, dict) and "$each" in v else [v]):
+                if one not in cur:
+                    cur.append(one)
             _set(doc, k, cur)
         for k, v in (update.get("$push") or {}).items():
             cur = _get(doc, k)

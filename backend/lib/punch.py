@@ -33,6 +33,9 @@ from lib import multilang
 
 COLLECTION = "punch_items"
 SESSIONS = "punch_sessions"
+#: One row while a walker's turn runs (any container): the next turn waits.
+LEASES = "punch_leases"
+LEASE_SECONDS = 30
 COUNTERS = "punch_counters"
 
 STATUSES = ("draft", "open", "ready_to_check", "closed", "dropped")
