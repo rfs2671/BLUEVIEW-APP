@@ -235,6 +235,58 @@ class ThePage(unittest.TestCase):
         self.assertEqual(self.page().status_code, 404)
 
 
+    # ── Codex review on #764 ─────────────────────────────────────────────
+
+    def _link(self):
+        return next(l for l in self.db[punch_link.COLLECTION].rows
+                    if l["assignee_key"] == punch_link.person_key(self.mike))
+
+    def test_closing_their_last_item_revokes_it_then_and_there(self):
+        now = datetime.now(timezone.utc)
+        for r in self.mine[:-1]:
+            r["status"] = "closed"
+        _call(self.db, server._punch_set_status, self.mine[-1], "closed", now, by="u_pm", quote="ok")
+        self.assertEqual(self._link()["revoked_reason"], "all_closed")   # never opened
+        self.mine[-1]["status"] = "open"                                  # reopened before a visit
+        self.assertEqual(self.page().status_code, 404)
+
+    def test_closing_one_of_several_keeps_it(self):
+        _call(self.db, server._punch_set_status, self.mine[0], "closed",
+              datetime.now(timezone.utc), by="u_pm", quote="ok")
+        self.assertIsNone(self._link()["revoked_at"])
+
+    def test_a_photo_that_cannot_be_stored_marks_nothing(self):
+        r = self.mine[0]
+        up = UploadFile(file=io.BytesIO(_jpeg()), filename="p.jpg",
+                        headers=Headers({"content-type": "image/jpeg"}))
+        with patch.object(server, "_upload_to_r2", lambda b, k, t: None):
+            resp = _call(self.db, server.public_punch_link_done, self.tok, r["pid"], up)
+        self.assertEqual((resp.status_code, r["status"]), (503, "open"))
+        self.assertIn("could not be saved", _body(resp))
+
+    def test_closed_meanwhile_is_never_overwritten(self):
+        r = self.mine[0]
+        r["status"] = "closed"                    # an admin, after the page was read
+        ok = _call(self.db, server._punch_set_status, dict(r, status="open"), "ready_to_check",
+                   datetime.now(timezone.utc), by="link:x", quote="q",
+                   only_if={"status": "open", "assignee.kind": r["assignee"]["kind"],
+                            "assignee.id": r["assignee"]["id"]})
+        self.assertFalse(ok)
+        self.assertEqual(r["status"], "closed")
+        att = next(a for a in self.db.attention_items.rows if a.get("punch_id") == r["pid"])
+        self.assertNotEqual(att["status"], "possibly_done")
+        import inspect
+        self.assertIn('only_if={"status": "open"', inspect.getsource(server.public_punch_link_done))
+
+    def test_a_big_job_never_hides_their_items(self):
+        base = dict(self.theirs[0])
+        for i in range(700):                      # others' open items, first by seq
+            self.db[punch.COLLECTION].rows.insert(0, dict(base, _id=f"x{i}", pid=f"P-X-{i}", seq=-i))
+        html = _body(self.page())
+        for r in self.mine:
+            self.assertIn(f"Mark {r['pid']} done", html)
+
+
 class RetentionAndDelete(unittest.TestCase):
 
     def test_follows_the_project_delete_and_retention_paths(self):

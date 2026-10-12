@@ -63209,13 +63209,10 @@ async def _punch_link_open(tok: str, now: datetime) -> Optional[Tuple[dict, List
              "is_deleted": {"$ne": True}})
         if not project:
             return None
-        rows = await db[punch.COLLECTION].find(
-            {"project_id": str(link["project_id"]), "company_id": str(link["company_id"]),
-             "status": {"$in": list(punch_link.LIVE)}}).sort([("seq", 1)]).to_list(500)
+        rows = await _punch_link_rows(link)
     except Exception as e:
         logger.warning(f"[punch-link] open failed: {type(e).__name__}")
         return None
-    rows = [r for r in rows if punch_link.person_key(r.get("assignee")) == link["assignee_key"]]
     if not rows:
         await db[punch_link.COLLECTION].update_one(
             {"_id": link_id, "revoked_at": None},
@@ -63223,6 +63220,42 @@ async def _punch_link_open(tok: str, now: datetime) -> Optional[Tuple[dict, List
         return None
     link["job"] = wa_assistant.street_label(project)
     return link, rows
+
+
+def _punch_assignee_query(key: str) -> dict:
+    """The items of one assignee ("kind:id"), in the query itself (Codex
+    review on #764: filtered after a limit, a big job lost some)."""
+    kind, _, ident = str(key).partition(":")
+    ids = [ident] + ([to_query_id(ident)] if to_query_id(ident) != ident else [])
+    return {"assignee.kind": kind, "assignee.id": {"$in": ids}}
+
+
+async def _punch_link_rows(link: dict) -> List[dict]:
+    """The link's assignee's open / ready-to-check items on its job."""
+    rows = await db[punch.COLLECTION].find(
+        {"project_id": str(link["project_id"]), "company_id": str(link["company_id"]),
+         "status": {"$in": list(punch_link.LIVE)},
+         **_punch_assignee_query(link["assignee_key"])}).sort([("seq", 1)]).to_list(2000)
+    return [r for r in rows if punch_link.person_key(r.get("assignee")) == link["assignee_key"]]
+
+
+async def _punch_link_revoke_if_done(row: dict, now: datetime) -> None:
+    """After an item closes: when its assignee has nothing open left on the
+    job, their link is revoked for good."""
+    key = punch_link.person_key(row.get("assignee"))
+    if not key:
+        return
+    try:
+        links = await db[punch_link.COLLECTION].find(
+            {"project_id": str(row.get("project_id")), "assignee_key": key,
+             "revoked_at": None}).to_list(20)
+        for link in links:
+            if not await _punch_link_rows(link):
+                await db[punch_link.COLLECTION].update_one(
+                    {"_id": link["_id"], "revoked_at": None},
+                    {"$set": {"revoked_at": now, "revoked_reason": "all_closed"}})
+    except Exception as e:
+        logger.warning(f"[punch-link] revoke failed: {type(e).__name__}")
 
 
 def _punch_link_gone():
@@ -63317,14 +63350,34 @@ async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile]
                 headers={"Cache-Control": "no-store"})
         key = _punch_photo_key(row.get("project_id"), "link", f"{pid}-{int(now.timestamp())}")
         try:
-            if not await asyncio.to_thread(_upload_to_r2, data, key,
-                                           photo.content_type or "image/jpeg"):
-                key = None
+            stored = await asyncio.to_thread(_upload_to_r2, data, key,
+                                             photo.content_type or "image/jpeg")
         except Exception:
-            key = None
+            stored = None
+        if not stored:
+            # Their photo could not be kept: nothing is marked (Codex review
+            # on #764), they are told to try again.
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse(punch_link.page(
+                name=(link.get("assignee") or {}).get("name") or "", job=link["job"],
+                items=_punch_link_items(got[1]), tok=tok,
+                error="Your photo could not be saved. Nothing was changed — please try again."),
+                status_code=503, headers={"Cache-Control": "no-store"})
+    # Only if it is still open and still theirs, in the same write (Codex
+    # review on #764): an admin closing it meanwhile is never overwritten.
+    a = row.get("assignee") or {}
     await _punch_set_status(row, "ready_to_check", now, by=f"link:{link['assignee_key']}",
-                            quote="Marked done on their link", photo_key=key)
+                            quote="Marked done on their link", photo_key=key,
+                            only_if={"status": "open", "assignee.kind": a.get("kind"),
+                                     "assignee.id": a.get("id")})
     return RedirectResponse(f"/api/public/punch/{tok}?done={pid}", status_code=303)
+
+
+def _punch_link_items(rows: List[dict]) -> List[dict]:
+    return [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
+                                       "due", "status")},
+             "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k])}
+            for r in rows]
 
 
 async def _punch_send_photo(group_id: str, key: str, caption: str) -> bool:
@@ -63350,7 +63403,11 @@ async def _punch_find(project_ids: List[str], code: Optional[str], seq: int) -> 
 
 
 async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote: str,
-                            message_id: str = "", photo_key: Optional[str] = None) -> None:
+                            message_id: str = "", photo_key: Optional[str] = None,
+                            only_if: Optional[dict] = None) -> bool:
+    """`only_if`: more conditions the item must still meet, checked in the
+    same write (the assignee's link: still open, still theirs). False when
+    it no longer does -- nothing changed, the chase is left as it is."""
     sets = {"status": to}
     if to == "ready_to_check":
         sets["completion"] = {"quote": quote, "message_id": message_id, "photo_key": photo_key,
@@ -63359,9 +63416,15 @@ async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote
         sets.update(closed_by=by, closed_at=now)
     if to == "open":
         sets.update(closed_by=None, closed_at=None)
-    await db[punch.COLLECTION].update_one({"_id": row["_id"]}, {
+    res = await db[punch.COLLECTION].update_one({"_id": row["_id"], **(only_if or {})}, {
         "$set": sets, "$push": {"history": {"at": now, "action": to, "by": by, "quote": quote,
                                             "message_id": message_id}}})
+    if only_if and not getattr(res, "matched_count", 0):
+        return False
+    if to == "closed":
+        # Their last item on the job closed: their private link stops now
+        # (Codex review on #764), not when it is next opened.
+        await _punch_link_revoke_if_done(row, now)
     # The chase follows: ready to check / closed stop it; reopened resumes it.
     # (Ready to check reads as "possibly done" on the attention item: a
     # status the review screen and the chase already know, and not chased.)
@@ -63373,6 +63436,7 @@ async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote
                                   "from": None, "to": att, "at": now, "message_id": message_id,
                                   "quote": quote, "evidence_kind": "punch", "verified": True,
                                   "by": "punch"}}})
+    return True
 
 
 async def _punch_verdict(ident: dict, text: str, now: datetime) -> Optional[str]:
