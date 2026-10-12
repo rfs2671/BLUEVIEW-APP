@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import html as html_
 import io
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,7 @@ from starlette.datastructures import Headers, UploadFile
 
 import server
 from lib import punch, punch_link
-from tests.test_punch_link import URL, _body, _call, _jpeg, _sent
+from tests.test_punch_link import URL, _Req, _open_card, _body, _call, _jpeg, _sent
 from tests.test_punch_server import dry
 
 
@@ -50,7 +51,7 @@ class Live1047(unittest.TestCase):
                     if l["assignee_key"] == punch_link.person_key(self.mike))
 
     def page(self, tok=None):
-        return _call(self.db, server.public_punch_link, tok or self.tok)
+        return _call(self.db, server.public_punch_link, tok or self.tok, _Req())
 
     def upload(self, pid, data, store=lambda b, k, t: k):
         stored = []
@@ -61,7 +62,7 @@ class Live1047(unittest.TestCase):
 
     def done(self, pid, data=None):
         with patch.object(server, "_upload_to_r2", lambda b, k, t: k):
-            return _call(self.db, server.public_punch_link_done, self.tok, pid,
+            return _call(self.db, server.public_punch_link_done, self.tok, pid, _Req(),
                          _up(data) if data is not None else None)
 
     # ── 9. Progress persists ────────────────────────────────────────────
@@ -73,14 +74,16 @@ class Live1047(unittest.TestCase):
         self.mine[2]["status"] = "closed"                               # a GC closed one
         # Another day, the link opened again.
         html = _body(self.page())
-        self.assertIn(punch_link.READY_TEXT, html)                      # not hidden
-        self.assertIn(f"<h2>{first['pid']}</h2>", html)
-        self.assertNotIn(f"Mark {first['pid']} done", html)
-        self.assertIn(f"Mark {second['pid']} done", html)
-        self.assertLess(html.index(f"<h2>{first['pid']}</h2>"), html.index(f"<h2>{second['pid']}</h2>"))
-        closed = html.index('<details class="closed"><summary>Closed (1)</summary>')
-        self.assertGreater(closed, html.index(f"<h2>{second['pid']}</h2>"))
-        self.assertGreater(html.index(f"<h2>{self.mine[2]['pid']}</h2>"), closed)
+        # Not hidden: under "Done — waiting for the GC to check (1)", below
+        # the open ones (the Oct 12 redesign moved them to the bottom).
+        waiting = html.index(punch_link.t("en", "waiting", n=1))
+        self.assertGreater(html.index(f'data-pid="{first["pid"]}"'), waiting)
+        self.assertNotIn(_open_card(first["pid"]), html)
+        self.assertIn(_open_card(second["pid"]), html)
+        self.assertLess(html.index(_open_card(second["pid"])), waiting)
+        closed = html.index(punch_link.t("en", "closed", n=1))
+        self.assertGreater(closed, waiting)
+        self.assertGreater(html.index(f'data-pid="{self.mine[2]["pid"]}"'), closed)
 
     # ── 10. Upload on pick ──────────────────────────────────────────────
 
@@ -88,8 +91,8 @@ class Live1047(unittest.TestCase):
         r = self.mine[0]
         html = _body(self.page())
         self.assertIn(f'data-up="{self.tok}/upload/{r["pid"]}"', html)  # the page's own upload
-        self.assertIn("<progress", html)
-        self.assertIn("Retry the upload", html)
+        self.assertIn('class="prog"', html)
+        self.assertIn(html_.escape(punch_link.t("en", "failed")), html)
         img = _jpeg()
         resp, stored = self.upload(r["pid"], img)                       # picked
         self.assertEqual(resp.status_code, 200)
@@ -98,7 +101,7 @@ class Live1047(unittest.TestCase):
         key = r["link_photo_pending"]["key"]
         # The tab is closed; later the link is opened again.
         html = _body(self.page())
-        self.assertIn("Photo saved. Tap “Mark done” to confirm", html)
+        self.assertIn(f'data-pid="{r["pid"]}" data-pending="1"', html)      # the page finishes it
         self.assertEqual(self.done(r["pid"]).status_code, 303)          # just confirms
         self.assertEqual(r["status"], "ready_to_check")
         self.assertEqual(r["completion"]["photo_key"], key)
@@ -141,8 +144,8 @@ class Live1047(unittest.TestCase):
         self.assertIn("reopened", said)
         self.assertEqual(r["status"], "open")
         html = _body(self.page())
-        self.assertIn("Reopened: “Still chipped at the corner”", html)
-        self.assertIn(f"Mark {r['pid']} done", html)
+        self.assertIn("Not fixed yet: Still chipped at the corner", html)
+        self.assertIn(_open_card(r['pid']), html)
 
     def test_11_app_reopen_with_a_note(self):
         r = self.mine[0]
@@ -155,7 +158,7 @@ class Live1047(unittest.TestCase):
             out = _call(self.db, server.patch_project_punch, "p588", r["pid"],
                         {"status": "open", "note": "Still chipped at the corner"}, current_user=pm)
             self.assertEqual(out["reopen_note"], "Still chipped at the corner")
-            self.assertIn("Reopened: “Still chipped at the corner”", _body(self.page()))
+            self.assertIn("Not fixed yet: Still chipped at the corner", _body(self.page()))
             with self.assertRaises(server.HTTPException) as e:          # a note goes with a reopen
                 _call(self.db, server.patch_project_punch, "p588", r["pid"],
                       {"status": "closed", "note": "x"}, current_user=pm)
@@ -165,9 +168,9 @@ class Live1047(unittest.TestCase):
 
     def test_12_an_item_given_later_shows_up_on_the_same_link(self):
         other = self.theirs[0]
-        self.assertNotIn(f"<h2>{other['pid']}</h2>", _body(self.page()))
+        self.assertNotIn(f'data-pid="{other["pid"]}"', _body(self.page()))
         _call(self.db, server._punch_reassign, other, self.mike, datetime.now(timezone.utc), "u_pm")
-        self.assertIn(f"Mark {other['pid']} done", _body(self.page()))
+        self.assertIn(_open_card(other['pid']), _body(self.page()))
         again = _call(self.db, server._punch_link_for, dry.COMPANY, "p588", self.mike,
                       datetime.now(timezone.utc))
         self.assertEqual(again, self.url)                               # the next send: same link

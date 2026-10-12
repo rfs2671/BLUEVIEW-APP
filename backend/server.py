@@ -63754,9 +63754,36 @@ def _punch_link_gone():
                         headers={"Cache-Control": "no-store"})
 
 
+#: The page's language switch, remembered on their phone for this link.
+PUNCH_LINK_LANG_COOKIE = "punch_lang"
+
+
+async def _punch_link_lang(link: dict, rows: List[dict], asked: str = "",
+                           cookie: str = "") -> str:
+    """The page's language: the switch they pressed, else their language on
+    People (or their own screen), else English."""
+    if asked or cookie:
+        return punch_link.lang_of(asked, cookie)
+    a = next((r.get("assignee") for r in rows if (r.get("assignee") or {}).get("jid")), None)
+    try:
+        jids = await _sender_language_jids(link.get("company_id"), (a or {}).get("jid") or "")
+        return punch_link.lang_of(await _sender_whisper_language(link.get("company_id"), jids))
+    except Exception:
+        return "en"
+
+
+def _punch_link_page(link: dict, rows: List[dict], tok: str, lang: str, now: datetime,
+                     **kw) -> str:
+    bot = _wa_bot_digits()
+    return punch_link.page(name=(link.get("assignee") or {}).get("name") or "",
+                           job=link["job"], items=_punch_link_items(rows), tok=tok,
+                           lang=lang, today=eastern_date(now),
+                           wa_url=f"https://wa.me/{bot}" if bot else None, **kw)
+
+
 @app.get("/api/public/punch/{tok}")
-async def public_punch_link(tok: str, done: str = ""):
-    """The assignee's phone page (no login): their open items on the job."""
+async def public_punch_link(tok: str, request: Request, done: str = "", lang: str = ""):
+    """The assignee's phone page (no login): their items on the job."""
     from fastapi.responses import HTMLResponse
     now = datetime.now(timezone.utc)
     got = await _punch_link_open(tok, now)
@@ -63765,23 +63792,71 @@ async def public_punch_link(tok: str, done: str = ""):
     link, rows = got
     await db[punch_link.COLLECTION].update_one({"_id": link["_id"]}, {
         "$set": {"last_opened_at": now, **punch_link.touched(now)}})
-    items = _punch_link_items(rows)
+    asked = lang if lang in punch_link.LANGS else ""
+    page_lang = await _punch_link_lang(link, rows, asked,
+                                       request.cookies.get(PUNCH_LINK_LANG_COOKIE, ""))
     ok_pid = done if any(r.get("pid") == done for r in rows) else None
-    body = punch_link.page(name=(link.get("assignee") or {}).get("name") or "",
-                           job=link["job"], items=items, tok=tok, done=ok_pid)
-    return HTMLResponse(body, headers={"Cache-Control": "no-store",
-                                       "X-Robots-Tag": "noindex, nofollow"})
+    resp = HTMLResponse(_punch_link_page(link, rows, tok, page_lang, now, done=ok_pid),
+                        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"})
+    if asked:
+        resp.set_cookie(PUNCH_LINK_LANG_COOKIE, asked, max_age=365 * 86400,
+                        path=f"/api/public/punch/{tok}", samesite="lax", secure=True,
+                        httponly=True)
+    return resp
+
+
+#: The page's thumbnails: this many pixels on the long side (72 px shown,
+#: sharp on a 3x screen).
+PUNCH_LINK_THUMB_PX = 240
+
+
+def _punch_thumb_key(key: str) -> str:
+    return (key[:-4] if key.endswith(".jpg") else key) + "-thumb.jpg"
+
+
+def _punch_thumb_bytes(key: str) -> Optional[bytes]:
+    """A small JPEG of a stored photo, kept beside it in R2 once made; None
+    when the photo cannot be read or drawn (an iPhone HEIC)."""
+    tkey = _punch_thumb_key(key)
+    got = _r2_bytes(tkey)
+    if got:
+        return got
+    raw = _r2_bytes(key)
+    if not raw:
+        return None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((PUNCH_LINK_THUMB_PX, PUNCH_LINK_THUMB_PX))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=80)
+        data = out.getvalue()
+    except Exception:
+        return None
+    try:
+        _upload_to_r2(data, tkey, "image/jpeg")
+    except Exception:
+        pass
+    return data
 
 
 @app.get("/api/public/punch/{tok}/photo/{pid}/{n}")
-async def public_punch_link_photo(tok: str, pid: str, n: int):
-    """One of this assignee's item photos, full size: a short-lived R2 link."""
+async def public_punch_link_photo(tok: str, pid: str, n: int, thumb: int = 0):
+    """One of this assignee's item photos, full size: a short-lived R2 link.
+    `thumb=1`: the small one for the page's list (the full one if it cannot
+    be made)."""
     from fastapi.responses import RedirectResponse
     got = await _punch_link_open(tok, datetime.now(timezone.utc))
     row = next((r for r in got[1] if r.get("pid") == pid), None) if got else None
     keys = [k for k in [(row or {}).get("photo_key"), *((row or {}).get("extra_photos") or [])] if k]
     if not row or not 1 <= n <= len(keys):
         raise HTTPException(status_code=404, detail="Not found")
+    if thumb:
+        small = await asyncio.to_thread(_punch_thumb_bytes, keys[n - 1])
+        if small:
+            return Response(small, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=3600"})
     signed = await asyncio.to_thread(_presign_r2_get, keys[n - 1], 900)
     if not signed:
         raise HTTPException(status_code=404, detail="Not found")
@@ -63808,30 +63883,41 @@ def _punch_link_is_photo(data: bytes) -> bool:
 
 
 @app.post("/api/public/punch/{tok}/done/{pid}")
-async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile] = File(None)):
-    """"Mark done" on the assignee's page: their open item -> ready to check,
+async def public_punch_link_done(tok: str, pid: str, request: Request,
+                                 photo: Optional[UploadFile] = File(None)):
+    """"I fixed it" on the assignee's page: their open item -> ready to check,
     with the photo they attached (kept in full, R2) -- or, with none in the
-    form, the one already uploaded when they picked it. A GC admin or PM
-    still closes it."""
-    from fastapi.responses import RedirectResponse
+    form, the one already sent when they took it. A GC admin or PM still
+    closes it. The page's script asks for JSON (200 done, 404 gone, 409 no
+    longer theirs to mark); a plain form gets the page back."""
+    from fastapi.responses import RedirectResponse, JSONResponse
+    js = "application/json" in (request.headers.get("accept") or "")
     now = datetime.now(timezone.utc)
     got = await _punch_link_open(tok, now)
     row = next((r for r in got[1] if r.get("pid") == pid), None) if got else None
     if not row:
-        return _punch_link_gone()
+        return JSONResponse({"ok": False, "error": "gone"}, status_code=404) if js \
+            else _punch_link_gone()
     link = got[0]
     if row.get("status") != "open":
+        if js:
+            # Pressed twice, or sent again after a lost answer: already done.
+            return JSONResponse({"ok": row.get("status") == "ready_to_check",
+                                 "status": row.get("status")},
+                                status_code=200 if row.get("status") == "ready_to_check" else 409)
         return RedirectResponse(f"/api/public/punch/{tok}", status_code=303)
+    lang = await _punch_link_lang(link, got[1], "",
+                                  request.cookies.get(PUNCH_LINK_LANG_COOKIE, ""))
     key = None
     if photo is not None and (photo.filename or ""):
         data = await photo.read(PUNCH_LINK_PHOTO_MAX + 1)
         if len(data) > PUNCH_LINK_PHOTO_MAX or not _punch_link_is_photo(data):
             from fastapi.responses import HTMLResponse
-            return HTMLResponse(punch_link.page(
-                name=(link.get("assignee") or {}).get("name") or "", job=link["job"],
-                items=_punch_link_items(got[1]),
-                tok=tok, error="That file is not a photo we can use (a JPEG, PNG or HEIC "
-                               "under 15 MB). Nothing was changed."), status_code=422,
+            if js:
+                return JSONResponse({"ok": False, "error": "not_a_photo"}, status_code=422)
+            return HTMLResponse(_punch_link_page(
+                link, got[1], tok, lang, now,
+                error=punch_link.t(lang, "bad_photo")), status_code=422,
                 headers={"Cache-Control": "no-store"})
         key = _punch_photo_key(row.get("project_id"), "link", f"{pid}-{int(now.timestamp())}")
         try:
@@ -63843,10 +63929,10 @@ async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile]
             # Their photo could not be kept: nothing is marked (Codex review
             # on #764), they are told to try again.
             from fastapi.responses import HTMLResponse
-            return HTMLResponse(punch_link.page(
-                name=(link.get("assignee") or {}).get("name") or "", job=link["job"],
-                items=_punch_link_items(got[1]), tok=tok,
-                error="Your photo could not be saved. Nothing was changed — please try again."),
+            if js:
+                return JSONResponse({"ok": False, "error": "not_saved"}, status_code=503)
+            return HTMLResponse(_punch_link_page(
+                link, got[1], tok, lang, now, error=punch_link.t(lang, "failed")),
                 status_code=503, headers={"Cache-Control": "no-store"})
     if key is None:
         # The photo they picked went up already (live 588, Oct 12 #10):
@@ -63855,10 +63941,13 @@ async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile]
     # Only if it is still open and still theirs, in the same write (Codex
     # review on #764): an admin closing it meanwhile is never overwritten.
     a = row.get("assignee") or {}
-    await _punch_set_status(row, "ready_to_check", now, by=f"link:{link['assignee_key']}",
-                            quote="Marked done on their link", photo_key=key,
-                            only_if={"status": "open", "assignee.kind": a.get("kind"),
-                                     "assignee.id": a.get("id")})
+    ok = await _punch_set_status(row, "ready_to_check", now, by=f"link:{link['assignee_key']}",
+                                 quote="Marked done on their link", photo_key=key,
+                                 only_if={"status": "open", "assignee.kind": a.get("kind"),
+                                          "assignee.id": a.get("id")})
+    if js:
+        return JSONResponse({"ok": ok, "status": "ready_to_check" if ok else None},
+                            status_code=200 if ok else 409)
     return RedirectResponse(f"/api/public/punch/{tok}?done={pid}", status_code=303)
 
 

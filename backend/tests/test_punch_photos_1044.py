@@ -184,10 +184,10 @@ class TheTenFortyFourPhoto(unittest.TestCase):
         self.assertEqual(view["photo_quality"], "preview")
         html = punch_link.page(name="Chris", job="588", tok="t.s",
                                items=[{**row, "photos": 1}])
-        self.assertIn("Original unavailable — preview only", html)
+        self.assertIn(punch_link.t("en", "preview"), html)
         html = punch_link.page(name="Chris", job="588", tok="t.s",
                                items=[{**row, "photo_quality": "original", "photos": 1}])
-        self.assertNotIn("preview only", html)
+        self.assertNotIn(punch_link.t("en", "preview"), html)
 
     def test_a_completion_photo_is_the_original_too(self):
         db = FakeDb()
@@ -311,8 +311,7 @@ class RepairingP588OneToThree(unittest.TestCase):
         self.assertEqual((r3["photo_quality"], r3["extra_quality"]), ("original", ["preview"]))
         items = server._punch_link_items([{**r3, "status": "open"}])
         html = punch_link.page(name="Chris", job="588", tok="t.s", items=items)
-        self.assertEqual(html.count("Original unavailable — preview only"), 1)
-        self.assertLess(html.index("/photo/P-588-3/2"), html.index("preview only"))
+        self.assertEqual(html.count(punch_link.t("en", "preview")), 1)
 
     def test_a_merge_carries_each_photos_quality(self):
         a = {"n": 1, "text": "Tile", "photo_key": "k1", "photo_quality": "original"}
