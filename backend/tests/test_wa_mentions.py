@@ -320,6 +320,10 @@ class TheChase(_Base):
         self.assertNotIn(MIKE, str(server._chase_view(r)))
 
     def test_an_owner_with_no_number_is_flagged(self):
+        # In People with only a privacy id (no number): chased, flagged.
+        self.db.whatsapp_sender_map.rows.append(
+            {"_id": "m_none", "company_id": CO_A, "person_name": "Mike Rivera",
+             "sender_jid": "301000000000004@lid"})
         _item(self.db, owner={"jid": "301000000000004@lid", "id": "m_none"})
         self.chase(_et(8, 35))
         (r,) = self.rows()
