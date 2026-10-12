@@ -206,8 +206,8 @@ class TestDashboardEmptyStateAndBanner(unittest.TestCase):
         question the server asks is.
         """
         self.assertIn("isCompanyAdmin(user)", self.text)
-        self.assertIn("isCompanyAdmin } from '../src/context/AuthContext'",
-                      self.text)
+        self.assertRegex(self.text,
+                         r"isCompanyAdmin\b[^}]*\} from '\.\./src/context/AuthContext'")
         self.assertNotIn("'owner'", self.text,
                          "the retired role is compared nowhere on this screen")
         self.assertIn("showProjectsEmptyState", self.text)

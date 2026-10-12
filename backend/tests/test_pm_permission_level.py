@@ -104,6 +104,9 @@ class TheJobs(unittest.TestCase):
         self.assertFalse(server.project_access_ok(theirs, THEIRS, PM_ASSIGNED))
         self.assertFalse(server.project_access_ok(theirs, THEIRS, PM_LEGACY))
         self.assertTrue(server.project_access_ok(theirs, THEIRS, PM_FULL))
+        # The role arrives off a Mongo document: " PM " is a PM.
+        self.assertFalse(server.project_access_ok(theirs, THEIRS, {**PM_ASSIGNED, "role": " PM "}))
+        self.assertTrue(server.project_access_ok(theirs, THEIRS, {**PM_FULL, "role": " PM "}))
         # Never another company's.
         self.assertFalse(server.project_access_ok({"company_id": "co_b"}, "p_b", PM_FULL))
 

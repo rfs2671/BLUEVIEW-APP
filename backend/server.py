@@ -9189,7 +9189,8 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
     # decision from creating a role nobody holds.
     # A PM on "Assigned jobs only" (the default); one with full access
     # ("Same as admin") takes the company branch below.
-    if current_user.get("role") == ROLE_PM and not pm_has_full_access(current_user):
+    if (str(current_user.get("role") or "").strip().lower() == ROLE_PM
+            and not pm_has_full_access(current_user)):
         return str(project_id) in (current_user.get("assigned_projects") or [])
 
     user_company = get_user_company_id(current_user)
@@ -23058,7 +23059,7 @@ def user_can_act_on_project(project: dict, project_id: str, current_user: dict) 
     role = current_user.get("role")
     assigned = current_user.get("assigned_projects", []) or []
     is_company_admin = (
-        _admin_like(current_user)
+        (role in ("admin", "owner") or pm_has_full_access(current_user))
         and project.get("company_id") == current_user.get("company_id")
     )
     return bool(is_company_admin or str(project_id) in assigned)
