@@ -151,6 +151,8 @@ class WhatIsChased(_Base):
         self.assertEqual(len(self.rows()), 1)
 
     def test_a_mapped_sender_is_chased(self):
+        self.db.whatsapp_sender_map.rows.append(
+            {"_id": "sm1", "company_id": CO_A, "person_name": "Jose", "sender_jid": "123@lid"})
         _item(self.db, owner={"kind": "sender_map", "id": "sm1", "name": "Jose",
                               "jid": "123@lid"})
         self.chase(_et(8, 35))
@@ -168,6 +170,12 @@ class WhatIsChased(_Base):
         }.items():
             self.db.attention_items.rows = []
             self.db[wa_chase.COLLECTION].rows = []
+            # Someone the company named: a user, a People entry.
+            self.db.users.rows.append({"_id": "u_kev", "company_id": CO_A, "name": "Kevin Shah",
+                                       "phone": PAT})
+            self.db.whatsapp_sender_map.rows.append(
+                {"_id": "sm9", "company_id": CO_A, "person_name": "Gina Lopez",
+                 "sub_company": "GC team", "sender_jid": "301000000000016@lid"})
             it = _item(self.db, owner=owner)
             self.assertIsNone(wa_chase.skip_reason(it, date.fromisoformat(DAY)), label)
             self.chase(_et(8, 35))
@@ -176,9 +184,29 @@ class WhatIsChased(_Base):
                              ("group", G_A, owner["jid"]), label)
             self.assertTrue(r["text"].startswith(f"@{owner['name']} morning"), label)
 
-    def test_a_checked_in_worker_is_chased_in_the_group(self):
+    def test_a_checked_in_worker_who_did_not_say_it_is_never_chased(self):
+        # 588, Oct 11: a worker known only from a check-in is no one the
+        # company named. Not the item's owner who spoke: refused, reviewed.
+        _item(self.db, owner={"kind": "worker", "id": "w1", "name": "Luis Gomez",
+                              "sub_company": None, "jid": "17185550404@c.us"})
+        self.chase(_et(8, 35))
+        (r,) = self.rows("morning")
+        self.assertEqual((r["kind"], r["refused"]), ("refused", server.RECIPIENT_REFUSED))
+        self.assertNotIn("text", r)
+        (rev,) = [a for a in self.db.attention_items.rows
+                  if a["type"] == server.RECIPIENT_REVIEW_TYPE]
+        self.assertTrue(rev["summary"].startswith("Not sent (chase): Luis Gomez"))
+        self.assertNotIn("17185550404", str(rev))
+        self.chase(_et(8, 40))                               # once, not every tick
+        self.assertEqual(len([a for a in self.db.attention_items.rows
+                              if a["type"] == server.RECIPIENT_REVIEW_TYPE]), 1)
+
+    def test_the_owner_who_said_it_is_chased_in_the_group(self):
+        # The item's own owner, who spoke in the group: chased, whatever
+        # named them (here a check-in).
         it = _item(self.db, owner={"kind": "worker", "id": "w1", "name": "Luis Gomez",
-                                   "sub_company": None, "jid": "17185550404@c.us"})
+                                   "sub_company": None, "jid": "17185550404@c.us"},
+                   evidence={"sender": "17185550404"})
         self.assertIsNone(wa_chase.skip_reason(it, date.fromisoformat(DAY)))
         for h, m in ((8, 35), (12, 35), (15, 5), (16, 5)):
             self.chase(_et(h, m))

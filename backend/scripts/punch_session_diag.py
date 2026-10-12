@@ -9,7 +9,11 @@ its words, floor, area, whether its location is complete, its photo (stored
 under the job, or "unassigned" when the job was not known yet), its notes,
 and the short id of its photo message (what a reply quotes). Then the DM
 assistant's own memory for that chat: the current job and an open "Which
-job?" menu. Words are cut to 80 characters; phone numbers are never printed.
+job?" menu. Then who each trade was assigned to (and how they were named:
+user, People, or "worker" -- a check-in, which no longer happens), the job's
+"Punch sends" switch, and every punch item the walk made (shadow or live,
+mention resolved or not): a live one means a group message went out.
+Words are cut to 80 characters; phone numbers are never printed.
 """
 
 from __future__ import annotations
@@ -76,6 +80,21 @@ async def main_async(a) -> int:
                         f"question {_safe(st.get('question'), 60)!r}")
                 print(f"  assistant {kind}: {what} (until {_t(st.get('expires_at'))})")
         print(f"  chat …{wa_dm.phone_digits(chat)[-4:]}")
+        for t, p in sorted((s.get("assign") or {}).items()):
+            print(f"  assign {t} → " + (f"{_safe(p.get('name'), 40)} ({p.get('company') or ''}) "
+                                        f"[{p.get('kind')}]" if p else "?"))
+        if s.get("due"):
+            print(f"  due {s['due']}")
+        if s.get("project_id"):
+            st = await server._whatsapp_project_settings(s["project_id"])
+            print(f"  job's Punch sends: {st.get('punch_sends')}")
+        made = await db[punch.COLLECTION].find({"walk_id": s["_id"]}).to_list(500)
+        if not made:
+            print("  punch items made: none (nothing sent, shadow or live)")
+        for r in made:
+            a = r.get("assignee") or {}
+            print(f"  punch item {r.get('pid')} → {_safe(a.get('name'), 30)} [{a.get('kind')}] "
+                  f"send_mode {r.get('send_mode')} mention {((r.get('mention') or {}).get('resolved'))}")
     return 0
 
 

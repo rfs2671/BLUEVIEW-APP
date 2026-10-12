@@ -267,7 +267,8 @@ class CaptionCorrections(_Walk):
                 self.turn("", photo=True)
                 self.turn("Time wrong 4F", reply_to=2)              # message 3
                 self.turn(fix, reply_to=3, quoted_body="Time wrong 4F")
-                self.assertEqual(self.item(2)["text"], "Tile wrong 4F")
+                # The reply-caption's place is its own field ("Apt 4F").
+                self.assertEqual((self.item(2)["text"], self.item(2)["area"]), ("Tile wrong", "Apt 4F"))
                 self.assertEqual(self.item(1)["trade"], "electrical")
                 self.assertFalse(self.item(1).get("notes"))
 
