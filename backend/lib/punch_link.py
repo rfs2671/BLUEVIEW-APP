@@ -226,6 +226,23 @@ def wordmark() -> str:
     return "data:image/png;base64," + base64.b64encode(data).decode()
 
 
+#: The GC's name, as the app's header sizes it (utils/brandLabel.js): one
+#: line, the largest size that fits a 360 px phone (the page less its 16 px
+#: sides), never under 10 px; a name too long even then ends in "…" (CSS).
+GC_MAX_PX, GC_MIN_PX, GC_ROOM_PX = 14, 10, 328
+_GC_CHAR_EM = 0.68                 # a light uppercase geometric sans, per point
+
+
+def gc_sizing(name: Any) -> Tuple[int, int]:
+    """(font size, letter spacing) in px for the GC's name."""
+    n = max(1, len(str(name or "").strip()))
+    for size in range(GC_MAX_PX, GC_MIN_PX - 1, -1):
+        spacing = 2 if size >= 13 else 1
+        if n * (size * _GC_CHAR_EM + spacing) <= GC_ROOM_PX:
+            return size, spacing
+    return GC_MIN_PX, 1
+
+
 def lang_of(*choices: Any) -> str:
     """The first of `choices` that is a page language ("en", "es"); else
     English (Yiddish comes later)."""
@@ -324,7 +341,8 @@ color:NAVY;font-size:18px;line-height:1.4;-webkit-text-size-adjust:100%}
 .brand{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .logo{display:block;height:30px;width:auto}
 .gc{font-family:BRAND_FONT;font-weight:300;text-transform:uppercase;letter-spacing:2px;
-font-size:14px;color:MUTED;margin:6px 0 12px;line-height:1.5}
+font-size:14px;color:MUTED;margin:6px 0 12px;line-height:1.5;white-space:nowrap;overflow:hidden;
+text-overflow:ellipsis;max-width:100%}
 .langs{display:flex;gap:6px;flex:0 0 auto}
 .langs a{display:inline-flex;align-items:center;min-height:56px;padding:0 12px;border-radius:28px;
 border:2px solid BLUE;color:BLUE;text-decoration:none;font-size:17px;font-weight:600}
@@ -701,7 +719,11 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
     foot = (f'<a class="wa" href="{_e(wa_url)}">{_e(t(lang, "questions"))}</a>' if wa_url else "")
     logo = (f'<img class="logo" src="{wordmark()}" alt="Levelog" width="88" height="30">'
             if wordmark() else "<b>Levelog</b>")
-    gc = f'<p class="gc">{_e(company)}</p>' if str(company or "").strip() else ""
+    gc = ""
+    if str(company or "").strip():
+        size, spacing = gc_sizing(company)
+        gc = (f'<p class="gc" style="font-size:{size}px;letter-spacing:{spacing}px">'
+              f'{_e(company)}</p>')
     return f"""<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">

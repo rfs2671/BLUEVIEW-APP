@@ -225,12 +225,14 @@ class Redesign(unittest.TestCase):
         self.db.companies.rows.append({"_id": dry.COMPANY, "name": "Blueview",
                                        "gc_business_name": "Blueview Construction Inc"})
         h = _body(self.page())
-        self.assertIn('<p class="gc">Blueview Construction Inc</p>', h)     # shown in uppercase
+        self.assertIn('>Blueview Construction Inc</p>', h)                   # shown in uppercase
+        self.assertIn('style="font-size:14px;letter-spacing:2px"', h)
         self.assertIn('<img class="logo" src="data:image/png;base64,', h)
         self.assertIn('<p class="powered">Powered by Levelog</p>', h)
         self.assertIn("<title>588 Thomas St · Levelog</title>", h)
         self.db.companies.rows[0].pop("gc_business_name")
-        self.assertIn('<p class="gc">Blueview</p>', _body(self.page()))
+        self.assertIn('>Blueview</p>', _body(self.page()))
+        self.assertEqual(punch_link.gc_sizing("B" * 60), (10, 1))         # long: smaller
 
     def test_green_is_only_for_done_in_the_styles(self):
         # Every style rule that paints green is a done state.

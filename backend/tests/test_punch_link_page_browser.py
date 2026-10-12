@@ -68,11 +68,11 @@ def items(reopened=False):
     return rows
 
 
-def html(lang="en", reopened=False, done_items=True):
+def html(lang="en", reopened=False, done_items=True, company="Blueview Construction Inc"):
     rows = [r for r in items(reopened) if done_items or r["status"] != "ready_to_check"]
     return punch_link.page(name="Mike Rivera", job="588 Thomas S Boyland St",
                            items=rows, tok=TOK, lang=lang, today="2026-10-12",
-                           wa_url="https://wa.me/17185550100", company="Blueview Construction Inc")
+                           wa_url="https://wa.me/17185550100", company=company)
 
 
 DEV_CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
@@ -119,6 +119,7 @@ class OnA360PxAndroid(unittest.TestCase):
         self.uploads, self.dones = [], []
         self.fail_uploads = 0
         self.lang, self.reopened, self.done_items = "en", False, True
+        self.company = "Blueview Construction Inc"
         self.ctx.route(f"{ORIGIN}/**", self.serve)
 
     def tearDown(self):
@@ -130,7 +131,7 @@ class OnA360PxAndroid(unittest.TestCase):
         url = req.url.split("?")[0]
         if url == PAGE:
             return route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                                 body=html(self.lang, self.reopened, self.done_items))
+                                 body=html(self.lang, self.reopened, self.done_items, self.company))
         if "/photo/" in url:
             return route.fulfill(status=200, content_type="image/jpeg",
                                  body=_jpeg(240, 180) if "thumb=1" in req.url else _jpeg(1600, 1200))
@@ -238,6 +239,21 @@ class OnA360PxAndroid(unittest.TestCase):
         self.assertEqual(greens, [])
         self.assertEqual(p.locator(".powered").inner_text(), "Powered by Levelog")
         self.assertEqual(style(".powered", "fontSize"), "13px")
+
+    def test_a_long_gc_name_stays_on_one_line(self):
+        # Codex review on #767: as the app's header, one line, smaller for a
+        # long name, "…" only when even that does not fit.
+        for name in ("Blueview Construction and General Contracting Services of New York LLC",
+                     "SUPERLONGCONSTRUCTIONCOMPANYNAMEWITHOUTANYSPACESATALLINC"):
+            self.company = name
+            self.open()
+            gc = self.page.locator(".top .gc")
+            self.assertEqual(gc.evaluate("e => e.getClientRects().length"), 1, name)
+            self.assertLessEqual(gc.bounding_box()["height"], 32, name)
+            self.assertLessEqual(gc.bounding_box()["x"] + gc.bounding_box()["width"], 360 - 15, name)
+            self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), 360, name)
+            self.assertGreaterEqual(float(gc.evaluate("e => getComputedStyle(e).fontSize")[:-2]), 10)
+        self.shot("8-long-gc-name-360-screen.png", full=False)
 
     def test_in_spanish(self):
         self.lang = "es"
