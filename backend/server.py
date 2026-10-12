@@ -59665,6 +59665,9 @@ _AGENT_EXPLICIT_CLAUSE = (
 
 # ==================== SPRINT 6 — INTERACTIVE CHECKLIST CREATION ====================
 
+# TODO: restrict this menu to who may be messaged -- the company's users,
+# People, and a sub's punch contact -- not the workers list (check-ins). It
+# only stores a name today, nothing is sent from it.
 async def _get_checklist_candidates(
     company_id: Optional[str], project_id: str, limit: int = 40
 ) -> list:
@@ -61575,13 +61578,50 @@ async def _punch_next_seq(project_id: str) -> int:
         raise
 
 
+PUNCH_WHO_KEYS = ("kind", "id", "name", "company", "jid", "not_on_job")
+
+
 async def _punch_job_people(sess: dict) -> List[dict]:
-    """The people on the walkthrough's job (its own company only)."""
+    """Everyone the walker may name (its own company only), each marked
+    on_job when active on THIS job: wrote in its WhatsApp groups, or was
+    given one of its punch items before, or a contact of a sub on its
+    roster. Names match this job's people
+    first (with the company's users), then company-wide; one off the job is shown as "(Arkon, not on
+    this job)" before anything is sent."""
     company_id = sess["company_id"]
+    pid = str(sess["project_id"])
     project = await db.projects.find_one(
-        {"_id": to_query_id(sess["project_id"]),
-         "company_id": _company_id_filter(company_id)}) or {}
-    return await _punch_people(project, company_id)
+        {"_id": to_query_id(pid), "company_id": _company_id_filter(company_id)}) or {}
+    people = await _punch_people(project, company_id)
+    spoke, given = set(), set()
+    try:
+        for j in await db.whatsapp_messages.distinct(
+                "sender_jid", {"project_id": pid, "company_id": str(company_id)}):
+            spoke.add(wa_dm.phone_digits(str(j or "")))
+    except Exception:
+        pass
+    try:
+        for r in await db[punch.COLLECTION].find({"project_id": pid}).to_list(2000):
+            a = r.get("assignee") or {}
+            given.add((a.get("kind"), str(a.get("id") or "")))
+            if a.get("jid"):
+                given.add(("jid", wa_dm.phone_digits(str(a["jid"]))))
+    except Exception:
+        pass
+    spoke.discard("")
+    for p in people:
+        d = wa_dm.phone_digits(str(p.get("jid") or ""))
+        # The company's own users (the GC team) run every job.
+        # A sub's contact for a sub on this job's roster is on it too.
+        p["on_job"] = bool(p.get("kind") == "user" or p.get("trades")
+                           or (d and (d in spoke or ("jid", d) in given))
+                           or (p.get("kind"), str(p.get("id") or "")) in given)
+    return people
+
+
+def _punch_who(person: dict) -> dict:
+    """What an assignment keeps: who, and whether they were off this job."""
+    return {k: person.get(k) for k in PUNCH_WHO_KEYS[:-1]} | {"not_on_job": not person.get("on_job")}
 
 
 async def _punch_session(user_id: str) -> Optional[dict]:
@@ -61938,10 +61978,9 @@ async def _punch_draft_turn(sess, dm_chat, text, voice) -> bool:
         people = await _punch_job_people(sess)
         trades = sorted({it["trade"] for it in live})
         sugg = punch.suggest_assignees(trades, people)
-        await _punch_save(sess, status="assign",
-                          assign={t: (p and {k: p.get(k) for k in ("kind", "id", "name", "company", "jid")})
-                                  for t, p in sugg.items()})
-        await send_whatsapp_message(dm_chat, punch.assign_text(sugg))
+        assign = {t: (p and _punch_who(p)) for t, p in sugg.items()}
+        await _punch_save(sess, status="assign", assign=assign, choose=None)
+        await send_whatsapp_message(dm_chat, punch.assign_text(assign))
         return True
     edits = punch.parse_edits(words)
     if not edits:
@@ -61971,22 +62010,47 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
+    choose = sess.get("choose")
+    if choose:
+        # The answer to "Which Chris? 1) … 2) …": a number, never a guess.
+        picked = punch.pick_choice(text, choose["options"])
+        if picked:
+            assign[choose["trade"]] = picked
+            await _punch_save(sess, assign=assign, choose=None)
+            await send_whatsapp_message(dm_chat, punch.assign_text(assign))
+            return True
     fixes = punch.parse_assign(text)
     if fixes:
         people = await _punch_job_people(sess)
-        miss = []
+        miss, ask = [], None
         for t, name in fixes:
-            person = punch.pick_person(name, people)
-            if person:
-                assign[t] = {k: person.get(k) for k in ("kind", "id", "name", "company", "jid")}
+            cands = punch.name_candidates(name, people)
+            if len(cands) == 1:
+                assign[t] = _punch_who(cands[0])
+            elif cands:
+                # A name more than one person answers to: asked, never picked.
+                assign[t] = None
+                ask = ask or (t, name, [_punch_who(c) for c in cands[:9]])
             else:
                 miss.append(name)
-        await _punch_save(sess, assign=assign)
+        await _punch_save(sess, assign=assign,
+                          choose=ask and {"trade": ask[0], "said": ask[1], "options": ask[2]})
+        if ask:
+            opts = [{**o, "on_job": not o.get("not_on_job")} for o in ask[2]]
+            await send_whatsapp_message(dm_chat, punch.which_text(ask[1], opts))
+            return True
         if miss:
             await send_whatsapp_message(dm_chat, (
-                f"I don't know {', '.join(miss)} on this job (they need to be in People or "
-                "checked in). " + punch.assign_text(assign)))
+                f"I don't know {', '.join(miss)} (only your team, People, or a sub's "
+                "contact can get punch items). " + punch.assign_text(assign)))
             return True
+        # Shown again: 'ok' to THIS list is what sends, never the fix itself.
+        await send_whatsapp_message(dm_chat, punch.assign_text(assign))
+        return True
+    elif choose:
+        opts = [{**o, "on_job": not o.get("not_on_job")} for o in choose["options"]]
+        await send_whatsapp_message(dm_chat, punch.which_text(choose["said"], opts))
+        return True
     elif low not in ("ok", "okay", "yes", "si", "sí", "yo", "dale", "👍"):
         return False
     missing = [t for t, p in assign.items() if not p]
