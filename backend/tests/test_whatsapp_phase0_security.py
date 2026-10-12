@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
 from lib import wa_security  # noqa: E402
+from tests import _fake_mongo as _fm  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 
@@ -59,19 +60,30 @@ def _cmp_in(val, options):
     return val in options
 
 
+def _set_all(doc, fields):
+    """$set, a dotted key a path ("items.1.completed"), as in Mongo."""
+    for k, v in fields.items():
+        if "." in k:
+            _fm._set(doc, k, v)
+        else:
+            doc[k] = v
+
+
 def _matches(doc, query):
     for key, cond in (query or {}).items():
         if key == "$or":
             if not any(_matches(doc, c) for c in cond):
                 return False
             continue
-        val = doc.get(key)
+        # A dotted key is a PATH, as in Mongo ("items.1": the second item).
+        got = _fm._get(doc, key) if "." in key else doc.get(key, _fm._MISSING)
+        val = None if got is _fm._MISSING else got
         if isinstance(cond, dict) and any(k.startswith("$") for k in cond):
             if "$in" in cond and not _cmp_in(val, cond["$in"]):
                 return False
             if "$ne" in cond and val == cond["$ne"]:
                 return False
-            if "$exists" in cond and (key in doc) != bool(cond["$exists"]):
+            if "$exists" in cond and (got is not _fm._MISSING) != bool(cond["$exists"]):
                 return False
             if "$gte" in cond and not (val is not None and val >= cond["$gte"]):
                 return False
@@ -150,7 +162,7 @@ class _Coll:
     async def update_one(self, query, update, upsert=False, **k):
         for r in self.rows:
             if _matches(r, query):
-                r.update(update.get("$set", {}))
+                _set_all(r, update.get("$set", {}))
                 return _Res(1, 1)
         if upsert:
             new = {k2: v for k2, v in (query or {}).items()
@@ -165,7 +177,7 @@ class _Coll:
         n = 0
         for r in self.rows:
             if _matches(r, query):
-                r.update(update.get("$set", {}))
+                _set_all(r, update.get("$set", {}))
                 n += 1
         return _Res(n, n)
 
