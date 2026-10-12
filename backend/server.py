@@ -13570,8 +13570,10 @@ async def _apply_prefs_patch(
     def keyed(field: str, patch: dict, base: dict) -> None:
         # Each patched KEY by its own path when the field exists and the keys
         # are plain names: two saves at once (two tabs, two devices) keep
-        # each other's keys. Otherwise the merged dict, as before.
-        if isinstance(existing.get(field), dict) and all(
+        # each other's keys. Otherwise the merged dict, as before -- an EMPTY
+        # stored map too: it gets the defaults, as the merge always gave it
+        # (Codex review on #757: {} plus "warning" lost the "critical" route).
+        if isinstance(existing.get(field), dict) and existing.get(field) and all(
                 re.fullmatch(r"[A-Za-z0-9_]+", str(k)) for k in patch):
             for k, v in patch.items():
                 set_fields[f"{field}.{k}"] = v
@@ -61679,18 +61681,37 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
     lock = _PUNCH_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         # ...and across containers: a lease row in Mongo (the in-process lock
-        # alone holds only when one container gets both webhooks).
-        token = await _punch_lease(str(ident.get("user_id")))
+        # alone holds only when one container gets both webhooks), renewed
+        # while the turn runs (a photo download can take 45 s).
+        uid = str(ident.get("user_id"))
+        try:
+            token = await _punch_lease(uid)
+        except TimeoutError:
+            logger.error("[punch] lease still held after the longest wait; message not run")
+            await send_whatsapp_message(dm_chat, "Still working on your last message. "
+                                                 "Send that one again in a moment, please.")
+            return True
+        beat = asyncio.create_task(_punch_lease_keep(uid, token)) if token else None
         try:
             return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice)
         finally:
-            await _punch_lease_release(str(ident.get("user_id")), token)
+            if beat:
+                beat.cancel()
+            await _punch_lease_release(uid, token)
 
 
-async def _punch_lease(user_id: str, wait: float = 20.0) -> Optional[str]:
-    """Hold the walker's lease (one turn at a time, any container). Waits for
-    another turn's lease; a lease older than LEASE_SECONDS (a crashed turn)
-    is taken over. None when the store fails -- the turn still runs."""
+#: The longest a turn waits for the walker's lease. A live lease is renewed by
+#: its turn, so this is only reached by a turn that hangs.
+PUNCH_LEASE_MAX_WAIT = 300.0
+
+
+async def _punch_lease(user_id: str, wait: float = PUNCH_LEASE_MAX_WAIT) -> Optional[str]:
+    """Hold the walker's lease (one turn at a time, any container). Waits
+    while another turn holds it -- never runs alongside a live lease (Codex
+    review on #757: a 20 s wait let a turn run beside a slow photo turn); a
+    lease past its expiry (a crashed turn: its holder renews it) is taken
+    over. None when the store fails -- the turn still runs. TimeoutError
+    past `wait`: the caller does not run the turn."""
     from pymongo.errors import DuplicateKeyError
     token = uuid.uuid4().hex
     deadline = _time.monotonic() + wait
@@ -61710,9 +61731,21 @@ async def _punch_lease(user_id: str, wait: float = 20.0) -> Optional[str]:
             logger.warning(f"[punch] lease failed: {type(e).__name__}")
             return None
         if _time.monotonic() > deadline:
-            logger.warning("[punch] lease wait timed out; running the turn")
-            return None
+            raise TimeoutError("punch lease")
         await asyncio.sleep(0.2)
+
+
+async def _punch_lease_keep(user_id: str, token: str) -> None:
+    """Renew the lease while its turn runs (a third of its life each time)."""
+    while True:
+        await asyncio.sleep(punch.LEASE_SECONDS / 3)
+        try:
+            await db[punch.LEASES].update_one(
+                {"_id": f"walker:{user_id}", "token": token},
+                {"$set": {"expires_at": datetime.now(timezone.utc)
+                          + timedelta(seconds=punch.LEASE_SECONDS)}})
+        except Exception as e:
+            logger.warning(f"[punch] lease renew failed: {type(e).__name__}")
 
 
 async def _punch_lease_release(user_id: str, token: Optional[str]) -> None:
@@ -65505,14 +65538,20 @@ async def put_project_whatsapp_gc_group(project_id: str, body: dict,
         confirmed = bool(confirmed and gc)
     fields = {"gc_group_id": gc or None,
               "gc_group_confirmed": bool(confirmed and gc)}
-    await _set_whatsapp_project_fields(project_id, company_id, fields,
-                                       actor=actor_id(current_user))
-    # An admin choosing in the app answers any pending DM proposal -- only
-    # while it is still pending (a DM "1" a moment earlier stands).
     prop = current.get("gc_proposal") or {}
     if prop.get("status") == "pending":
-        await _gc_answer({"project_id": project_id}, prop, "answered_in_app",
-                         datetime.now(timezone.utc))
+        # An admin choosing in the app answers the pending DM proposal: the
+        # group AND the answer in one write that lands only while it is
+        # still pending. A DM "1" a moment earlier stands -- never a group
+        # written over the one it confirmed (Codex review on #757).
+        if not await _gc_answer({"project_id": project_id}, prop, "answered_in_app",
+                                datetime.now(timezone.utc), also=fields,
+                                actor=actor_id(current_user)):
+            raise HTTPException(status_code=409, detail=(
+                "The GC group was just answered in WhatsApp. Reload to see it."))
+    else:
+        await _set_whatsapp_project_fields(project_id, company_id, fields,
+                                           actor=actor_id(current_user))
     return {"project_id": project_id,
             **(await _whatsapp_project_settings(project_id))}
 

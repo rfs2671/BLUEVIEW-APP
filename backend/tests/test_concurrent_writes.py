@@ -145,6 +145,54 @@ class PunchWalks(unittest.TestCase):
         self.assertTrue(tok)
         self.assertEqual(db[punch.LEASES].rows[0]["token"], tok)
 
+    def test_a_slow_turn_is_waited_for_never_run_beside(self):
+        # Codex review on #757: past a 20 s wait the next turn ran unlocked
+        # beside a slow photo turn (a download can take 45 s). The holder
+        # renews its lease, so the waiter waits however long it runs.
+        db = FakeDb()
+        log = []
+
+        async def turn(ident, dm_chat, parsed, body, voice=None):
+            log.append(("start", body))
+            await asyncio.sleep(0.5 if body == "slow" else 0)     # > the lease's life
+            log.append(("end", body))
+            return True
+
+        class _Separate(dict):
+            def setdefault(self, k, v):        # two containers: no shared lock
+                return asyncio.Lock()
+
+        async def go():
+            first = asyncio.create_task(server._punch_dm_turn({"user_id": "u"}, "c", {}, "slow"))
+            await asyncio.sleep(0.05)
+            await server._punch_dm_turn({"user_id": "u"}, "c", {}, "next")
+            await first
+        with patch.object(server, "db", db), patch.object(server, "_PUNCH_LOCKS", _Separate()), \
+                patch.object(server, "_punch_dm_turn_locked", turn), \
+                patch.object(punch, "LEASE_SECONDS", 0.15):
+            asyncio.run(go())
+        self.assertEqual(log, [("start", "slow"), ("end", "slow"), ("start", "next"), ("end", "next")])
+        self.assertEqual(db[punch.LEASES].rows, [])
+
+    def test_a_turn_past_the_longest_wait_is_not_run(self):
+        db = FakeDb(**{punch.LEASES: [{"_id": "walker:u", "token": "live",
+                                       "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc)}]})
+        ran, said = [], []
+
+        async def turn(*a, **k):
+            ran.append(1)
+
+        async def send(chat, text, *a, **k):
+            said.append(text)
+        with patch.object(server, "db", db), patch.object(server, "_punch_dm_turn_locked", turn), \
+                patch.object(server, "send_whatsapp_message", send), \
+                patch.object(server, "PUNCH_LEASE_MAX_WAIT", 0.3), \
+                patch.object(server._punch_lease, "__defaults__", (0.3,)):
+            self.assertTrue(asyncio.run(server._punch_dm_turn({"user_id": "u"}, "c", {}, "x")))
+        self.assertEqual(ran, [])
+        self.assertIn("Send that one again", said[0])
+        self.assertEqual(db[punch.LEASES].rows[0]["token"], "live")   # never taken
+
     def test_orphans_asked_are_added_not_replaced(self):
         db = FakeDb(**{punch.SESSIONS: [{"_id": "w", "orphans_asked": ["a"]}]})
 
@@ -221,6 +269,19 @@ class NotificationPreferences(unittest.TestCase):
                   "signal_kind_overrides": {"permit_expired": {"delivery": "digest_weekly"}}}))
         got = db.notification_preferences.rows[0]["signal_kind_overrides"]
         self.assertEqual(sorted(got), ["permit_expired", "permit_issued", "violation_dob"])
+
+
+    def test_an_empty_stored_map_keeps_its_defaults(self):
+        # Codex review on #757: {} plus a "warning" key per path lost the
+        # default "critical" route.
+        db = FakeDb(notification_preferences=[{
+            "_id": "pref", "user_id": "u", "project_id": None,
+            "signal_kind_overrides": {}, "channel_routes_default": {}, "digest_window": {}}])
+        _both(db, server._apply_prefs_patch(user_id="u", project_id=None, body={
+            "channel_routes_default": {"warning": ["email"]}}))
+        got = db.notification_preferences.rows[0]["channel_routes_default"]
+        self.assertEqual(got["critical"], ["email"])
+        self.assertEqual(got["warning"], ["email"])
 
 
 class TradeRoster(unittest.TestCase):
