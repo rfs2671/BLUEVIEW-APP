@@ -75,6 +75,25 @@ class TheMatcher(unittest.TestCase):
             with self.subTest(said):
                 self.assertEqual(wa_assistant.find_jobs(said, _jobs()), [])
 
+    def test_codex_771_a_one_digit_number_with_the_street_decides(self):
+        f = lambda t: wa_assistant.find_jobs(t, _jobs())  # noqa: E731
+        self.assertEqual(f("8 walwroth"), [WALWORTH])
+        self.assertEqual(f("120 walwroth st"), [W120])
+        # Not a number elsewhere in the sentence.
+        self.assertEqual(sorted(f("did 8 workers check in at walwroth")), sorted([WALWORTH, W120]))
+
+    def test_codex_771_a_street_that_is_a_name_needs_a_place(self):
+        jobs = [{"id": "dean", "label": "10 Dean St", "aliases": wa_assistant.job_aliases({"address": "10 Dean St"})},
+                {"id": "berry", "label": "5 Berry St", "aliases": wa_assistant.job_aliases({"address": "5 Berry St"})}]
+        f = lambda t: wa_assistant.find_jobs(t, jobs)  # noqa: E731
+        for said in ("did dean check in?", "berry said hi", "tell dean to call me"):
+            with self.subTest(said):
+                self.assertEqual(f(said), [])
+        for said, want in (("who is at dean st", "dean"), ("at dean", "dean"), ("the berry job", "berry"),
+                           ("berry", "berry"), ("what about dean", "dean")):
+            with self.subTest(said):
+                self.assertEqual(f(said), [want])
+
     def test_the_key_word(self):
         self.assertEqual(wa_assistant.street_key("588 Thomas S Boyland St"), "boyland")
         self.assertEqual(wa_assistant.street_key("8 Walworth St"), "walworth")

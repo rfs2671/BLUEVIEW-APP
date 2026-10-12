@@ -323,25 +323,35 @@ _BARE = [
     ("add_job", re.compile(
         r"\b(?:new|another|nuevo|nueva|otro)\s+(?:job|project|site|building|jobsite|trabajo|proyecto|obra)\b"
         r"|\b(?:trabajo|proyecto|obra)\s+(?:nuevo|nueva)\b"
-        r"|\b(?:add|create|set\s*up|start|open|track|agrega(?:r)?|crea(?:r)?)\s+(?:a|an|un|una|the)?\s*"
+        r"|\b(?:add|adding|create|creating|set\s*up|setting up|start|open|track|agrega(?:r)?|crea(?:r)?)"
+        r"\s+(?:a|an|un|una|the)?\s*"
         r"(?:new\s+)?(?:job|project|site|jobsite|trabajo|proyecto|obra)\b"
         r"|\b(?:got|have|signed|picked up|landed|won)\s+(?:a|another)\s+(?:new\s+)?(?:job|project|site)\b")),
     ("add_sub", re.compile(
-        r"\b(?:add|put|assign|new|set\s*up|agrega(?:r)?|pon(?:er)?)\s+(?:a|an|another|un|otro)?\s*"
-        r"(?:new\s+)?(?:sub|subs|subcontractor|subcontractors|subcontratista|trade)\b")),
+        r"\b(?:add|adding|put|putting|assign|new|set\s*up|setting up|agrega(?:r)?|pon(?:er)?)\s+"
+        r"(?:a|an|another|un|otro)?\s*(?:new\s+)?(?:sub|subs|subcontractor|subcontractors|"
+        r"subcontratista|trade)\b")),
     ("add_person", re.compile(
-        r"\b(?:add|save|new|put in|agrega(?:r)?|guarda(?:r)?)\s+(?:a|an|another|un|una|otro)?\s*"
+        r"\b(?:add|adding|save|saving|new|put in|agrega(?:r)?|guarda(?:r)?)\s+(?:a|an|another|un|una|otro)?\s*"
         r"(?:new\s+)?(?:someone|somebody|person|contact|number|phone number|guy|worker|people|"
         r"alguien|persona|contacto|numero)\b")),
 ]
 
 
+#: A request asked politely is still a request ("Do you mind adding a new
+#: job?", "can you add a sub?" -- Codex review on #771).
+_POLITE = re.compile(r"^(?:hey\s+|hi\s+|so\s+|ok\s+)*(?:do you mind|would you mind|can you|could you|"
+                     r"would you|will you|can we|could we|can i|could i|is it possible to|"
+                     r"please|pls|puedes|podrias|me puedes)\b")
+
+
 def bare_request(text: Any) -> Dict[str, Any]:
     """The request a message makes before any detail is given ("Starting a
     new job I wanna set up", "need to add someone"), else {"action": "none"}.
-    Never a question ("any new jobs this week?")."""
+    Never a question ("any new jobs this week?") -- but a request asked
+    politely is one ("do you mind adding a new job?")."""
     t = _fold(text)
-    if not t or _QUESTION.search(t):
+    if not t or (_QUESTION.search(t) and not _POLITE.match(t)):
         return {"action": "none"}
     for action, rx in _BARE:
         if rx.search(t):

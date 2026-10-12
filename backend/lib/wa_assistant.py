@@ -155,15 +155,27 @@ def _close(a: str, b: str) -> bool:
     return prev[-1] <= limit
 
 
+#: Words around a bare job name that say nothing ("boyland please", "what
+#: about walworth"): a message of only these and the street is the job.
+_FILLER = {"what", "about", "and", "the", "please", "pls", "ok", "okay", "how", "hows", "is",
+           "for", "at", "on", "in", "now", "then", "too", "also", "one", "job", "site"}
+
+
 def _street_named(words: List[str], key: str) -> bool:
+    """The street is named as a PLACE: after "at/on/for/in/...", before
+    "st/street/job/site/...", or alone ("boyland", "what about walworth").
+    A street word anywhere else may be a person ("did Dean check in" is not
+    10 Dean St -- Codex review on #771); an everyday word ("water") never
+    counts alone."""
+    alone = len([w for w in words if w not in _FILLER]) == 1
     for i, w in enumerate(words):
         if not (w == key or (key not in _COMMON_STREET_WORDS and _close(w, key))):
             continue
-        if key not in _COMMON_STREET_WORDS:
-            return True
         before = words[i - 1] if i else ""
         after = words[i + 1] if i + 1 < len(words) else ""
-        if before in _PLACE_BEFORE or after in _PLACE_AFTER:
+        if before in _PLACE_BEFORE or after in _PLACE_AFTER or before.isdigit():
+            return True                 # a house number before it is a place too
+        if alone and key not in _COMMON_STREET_WORDS:
             return True
     return False
 
@@ -193,6 +205,18 @@ def find_jobs(text: Any, jobs: List[Dict[str, Any]]) -> List[str]:
         key = street_key(j.get("label") or "")
         if key and _street_named(words, key):
             out.append(j["id"])
+    if len(out) > 1:
+        # "8 walwroth": a house number -- one digit too -- decides between
+        # jobs the street already matched (Codex review on #771).
+        # Only right before the street ("8 workers ... at walworth" is not 8).
+        labels = {j["id"]: j.get("label") or "" for j in jobs}
+        before_street = {words[k - 1] for k in range(1, len(words))
+                         for i in out if words[k] == street_key(labels.get(i))
+                         or _close(words[k], street_key(labels.get(i)))}
+        pick = [i for i in out if house_number(labels.get(i))
+                and house_number(labels.get(i)) in before_street]
+        if len(pick) == 1:
+            return pick
     return sorted(out, key=lambda i: order.get(i, ("", 0)))
 
 

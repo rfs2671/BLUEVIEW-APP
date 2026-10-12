@@ -50,6 +50,9 @@ NEW_JOB = [
     (None, "Starting a new job I wanna set up"),              # the live message
     (None, "new project coming, need to set it up"),
     (None, "I have another job to add"),
+    # Asked politely is still a request (Codex review on #771).
+    (None, "Do you mind adding a new job?"),
+    (None, "can you set up a new job for me?"),
 ]
 
 # The rest of the spec, each with the job it is about (or everything it needs)
@@ -178,6 +181,13 @@ class EveryOtherRequestFirst(_Dm, unittest.TestCase):
                 with self.subTest(model=model, said=without):
                     r = self.first(without)
                     self.assertTrue(r.startswith(want_without), r)
+
+    def test_codex_771_polite_requests(self):
+        for said, want in (("can you add a sub?", "Which company?"),
+                           ("would you mind adding someone", "What's their name?"),
+                           ("could you set up a punch contact", "Which company?")):
+            with self.subTest(said):
+                self.assertEqual(self.first(said), want)
 
     def test_one_short_question_each(self):
         for said, want in (("I want to add a sub", "Which company?"),
