@@ -395,8 +395,13 @@ def rules(text: Any) -> Dict[str, Any]:
     for rx in _PUNCH_CONTACT:
         m = rx.match(t)
         if m:
+            company, job = _strip_tail(m.group("company")), ""
+            # "for arkon at walworth": the sub, then the job.
+            at = re.match(r"^(?P<company>.+?)\s+(?:at|on|en)\s+(?:the\s+)?(?P<job>.+?)(?:\s+job)?$", company)
+            if at:
+                company, job = at.group("company").strip(), at.group("job").strip()
             return clean({"action": "set_punch_contact", "name": m.group("name"),
-                          "company": _strip_tail(m.group("company"))})
+                          "company": company, "job": job})
     if _WEEKEND.search(t):
         value = False if _STOP.search(t) else (True if _START.search(t) else None)
         if value is not None:
@@ -558,6 +563,7 @@ TEXT = {
         "already_job": "{job} is already one of your jobs.",
         "job_done": "Done — {job} is set up. I'll start watching DOB and DOT for it.",
         "which_job": "Which job?",
+        "which_one": "Which one?",
         "no_job": "I don't see that job. Which one did you mean?",
         "ask_company": "Which company?",
         "ask_trade": "What trade is {company}?",
@@ -622,6 +628,7 @@ TEXT = {
         "already_job": "{job} ya es uno de sus trabajos.",
         "job_done": "Listo — {job} está creado. Voy a vigilar DOB y DOT para ese trabajo.",
         "which_job": "¿Cuál trabajo?",
+        "which_one": "¿Cuál?",
         "no_job": "No veo ese trabajo. ¿Cuál quiso decir?",
         "ask_company": "¿Qué compañía?",
         "ask_trade": "¿Qué oficio tiene {company}?",
