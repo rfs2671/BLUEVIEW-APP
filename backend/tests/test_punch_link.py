@@ -12,6 +12,7 @@ is sent. Company-scoped; follows the retention and project-delete paths.
 from __future__ import annotations
 
 import asyncio
+import html as html_
 import io
 import os
 import re
@@ -56,6 +57,19 @@ def _call(db, fn, *a, **k):
     with patch.object(server, "db", db), \
             patch.object(server, "_presign_r2_get", lambda key, ttl: f"https://r2.invalid/{key}"):
         return asyncio.run(fn(*a, **k))
+
+
+def _open_card(pid):
+    """An open item's card on the page (its one big "I fixed it")."""
+    return f'data-state="open" data-pid="{pid}"'
+
+
+class _Req:
+    """What the endpoints read of a request: its headers and cookies."""
+
+    def __init__(self, accept="", cookies=None):
+        self.headers = {"accept": accept}
+        self.cookies = dict(cookies or {})
 
 
 def _body(resp):
@@ -117,7 +131,7 @@ class ThePage(unittest.TestCase):
         self.theirs = [r for r in self.rows if r["assignee"]["name"] != "Mike Rivera"]
 
     def page(self, tok=None):
-        return _call(self.db, server.public_punch_link, tok or self.tok)
+        return _call(self.db, server.public_punch_link, tok or self.tok, _Req())
 
     def test_only_their_open_items_with_location_due_and_photos(self):
         resp = self.page()
@@ -125,11 +139,11 @@ class ThePage(unittest.TestCase):
         html = _body(resp)
         for r in self.mine:
             self.assertIn(r["pid"], html)
-            self.assertIn(f"Mark {r['pid']} done", html)
+            self.assertIn(_open_card(r['pid']), html)
         for r in self.theirs:
             self.assertNotIn(r["pid"] + "<", html)
-            self.assertNotIn(f"Mark {r['pid']} done", html)
-        self.assertIn("Mike Rivera", html)
+            self.assertNotIn(_open_card(r['pid']), html)
+        self.assertIn("Hi Mike 👋", html)                         # first name only
         self.assertNotRegex(html, r"1718555\d{4}")              # no phone number
         self.assertIn("noindex", html)
         self.assertEqual(resp.headers["cache-control"], "no-store")
@@ -154,7 +168,7 @@ class ThePage(unittest.TestCase):
                             headers=Headers({"content-type": "image/jpeg"}))
         stored = []
         with patch.object(server, "_upload_to_r2", lambda b, k, t: stored.append((k, b)) or k):
-            resp = _call(self.db, server.public_punch_link_done, self.tok, pid, up)
+            resp = _call(self.db, server.public_punch_link_done, self.tok, pid, _Req(), up)
         return resp, stored
 
     def test_mark_done_with_a_photo_is_ready_to_check(self):
@@ -170,9 +184,9 @@ class ThePage(unittest.TestCase):
         self.assertEqual(r["completion"]["by"], f"link:{punch_link.person_key(self.mike)}")
         att = next(a for a in self.db.attention_items.rows if a.get("punch_id") == r["pid"])
         self.assertEqual(att["status"], "possibly_done")         # not chased; a GC closes it
-        html = _body(_call(self.db, server.public_punch_link, self.tok, done=r["pid"]))
-        self.assertIn("marked done — ready to check", html)
-        self.assertIn(punch_link.READY_TEXT, html)
+        html = _body(_call(self.db, server.public_punch_link, self.tok, _Req(), done=r["pid"]))
+        self.assertIn(punch_link.t("en", "thanks_banner"), html)
+        self.assertIn(f'data-state="ready_to_check" data-pid="{r["pid"]}"', html)
 
     def test_mark_done_without_a_photo(self):
         r = self.mine[0]
@@ -184,7 +198,7 @@ class ThePage(unittest.TestCase):
         r = self.mine[0]
         resp, stored = self._done(r["pid"], b"%PDF-1.4 not a photo", "x.pdf")
         self.assertEqual((resp.status_code, stored, r["status"]), (422, [], "open"))
-        self.assertIn("Nothing was changed", _body(resp))
+        self.assertIn(punch_link.t("en", "bad_photo"), _body(resp))
 
     def test_someone_elses_item_cannot_be_marked(self):
         other = self.theirs[0]
@@ -221,7 +235,7 @@ class ThePage(unittest.TestCase):
         r = self.mine[0]
         r["assignee"] = dict(self.theirs[0]["assignee"])
         html = _body(self.page())
-        self.assertNotIn(f"Mark {r['pid']} done", html)
+        self.assertNotIn(_open_card(r['pid']), html)
 
     def test_company_scoped(self):
         link = next(l for l in self.db[punch_link.COLLECTION].rows
@@ -260,9 +274,9 @@ class ThePage(unittest.TestCase):
         up = UploadFile(file=io.BytesIO(_jpeg()), filename="p.jpg",
                         headers=Headers({"content-type": "image/jpeg"}))
         with patch.object(server, "_upload_to_r2", lambda b, k, t: None):
-            resp = _call(self.db, server.public_punch_link_done, self.tok, r["pid"], up)
+            resp = _call(self.db, server.public_punch_link_done, self.tok, r["pid"], _Req(), up)
         self.assertEqual((resp.status_code, r["status"]), (503, "open"))
-        self.assertIn("could not be saved", _body(resp))
+        self.assertIn(html_.escape(punch_link.t("en", "failed")), _body(resp))
 
     def test_closed_meanwhile_is_never_overwritten(self):
         r = self.mine[0]
@@ -284,7 +298,7 @@ class ThePage(unittest.TestCase):
             self.db[punch.COLLECTION].rows.insert(0, dict(base, _id=f"x{i}", pid=f"P-X-{i}", seq=-i))
         html = _body(self.page())
         for r in self.mine:
-            self.assertIn(f"Mark {r['pid']} done", html)
+            self.assertIn(_open_card(r['pid']), html)
 
 
 class RetentionAndDelete(unittest.TestCase):
