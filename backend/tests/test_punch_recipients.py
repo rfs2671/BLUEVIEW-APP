@@ -95,6 +95,12 @@ class TheGuard(unittest.TestCase):
         # A chase: the item's own owner, who said it in the group, may be.
         self.assertIsNone(_run(db, server._recipient_refusal(
             CO, YEYZMAR, group_id=GROUP, spoke="17185550199")))
+        # Having written in the group about something else is not enough
+        # (Codex review on #755).
+        db.whatsapp_messages.rows.append({"_id": "old", "group_id": GROUP, "company_id": CO,
+                                          "sender_jid": "17185550199@c.us", "body": "hi"})
+        self.assertEqual(_run(db, server._recipient_refusal(
+            CO, YEYZMAR, group_id=GROUP, spoke="17185550222")), server.RECIPIENT_REFUSED)
 
     def test_a_punch_send_refuses_and_posts_nothing(self):
         db = _world()
@@ -127,3 +133,28 @@ class TheGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheDiag(unittest.TestCase):
+
+    def test_two_walks_the_first_with_punch_items(self):
+        # Codex review on #755: the first walk's items overwrote the CLI
+        # arguments, and the second walk raised.
+        import argparse
+        from scripts import punch_session_diag as diag
+        db = _world()
+        for i in (1, 2):
+            db[punch.SESSIONS].rows.append({
+                "_id": f"walk{i}", "user_id": "u_chris", "company_id": CO, "project_id": "p588",
+                "chat": "17185550111@c.us", "status": "sent", "items": [],
+                "created_at": NOW + timedelta(minutes=i), "updated_at": NOW})
+        db[punch.COLLECTION].rows.append({"_id": "p588:P-588-1", "walk_id": "walk1", "pid": "P-588-1",
+                                          "assignee": {"name": "Dov", "kind": "sender_map"},
+                                          "send_mode": "shadow"})
+        out = []
+        with patch("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a)))):
+            _run(db, diag.main_async(argparse.Namespace(since=NOW.isoformat(), walker="")))
+        text = "\n".join(out)
+        self.assertIn("punch item P-588-1 → Dov [sender_map] send_mode shadow", text)
+        self.assertIn("job's Punch sends: live", text)
+        self.assertEqual(text.count("punch items made: none"), 1)       # the second walk
