@@ -61,6 +61,10 @@ async def main_async(a, db=None, server=None) -> int:
         for it in walk.get("items") or []:
             if it.get("photo_key") and it.get("message_id"):
                 by_key.setdefault(it["photo_key"], it["message_id"])
+        # A run stopped after the walk was updated: the item's old key is
+        # found through the walk's new (-full) one.
+        by_key.update({k[:-len("-full.jpg")] + ".jpg": m for k, m in list(by_key.items())
+                       if k.endswith("-full.jpg") and k[:-len("-full.jpg")] + ".jpg" not in by_key})
         comp = r.get("completion") or {}
         slots = [("photo_key", r.get("photo_key"))] + \
             [(f"extra_photos.{i}", k) for i, k in enumerate(r.get("extra_photos") or [])] + \
@@ -93,7 +97,9 @@ async def main_async(a, db=None, server=None) -> int:
             if not await asyncio.to_thread(server._upload_to_r2, img, new, "image/jpeg"):
                 print(f"    upload failed -- left")
                 continue
-            await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {field: new}})
+            # The walk first, the item last (Codex review on #762): the item
+            # pointing at the original is what marks this photo done, so a
+            # failure in between leaves it to be redone by the next run.
             if walk:
                 sets = {f"items.{i}.photo_key": new for i, it in enumerate(walk.get("items") or [])
                         if it.get("photo_key") == key}
@@ -101,6 +107,7 @@ async def main_async(a, db=None, server=None) -> int:
                              if p.get("key") == key})
                 if sets:
                     await db[punch.SESSIONS].update_one({"_id": walk["_id"]}, {"$set": sets})
+            await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {field: new}})
     print(f"{len(rows)} item(s): {ok} photo(s) already full size, {fixed} "
           f"{'replaced' if a.apply else 'to replace'}, {missing} without an original"
           + ("" if a.apply else " (dry run: nothing written; --i-know to write)"))

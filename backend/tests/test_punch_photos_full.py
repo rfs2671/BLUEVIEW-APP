@@ -242,6 +242,41 @@ class CompletionPhotos(unittest.TestCase):
                          "wa-photos/proj_a/msg/ABC.jpg")
 
 
+    def test_a_group_photo_is_kept_only_for_its_assignees_done(self):
+        # Codex review on #762: any "photo of P1" was uploaded and never used.
+        def ok(cap, sender="17185550199@c.us", **row):
+            db = _punch_db(sent_via="group", **row)
+            p = _parsed(caption=cap)
+            p["sender"] = sender
+            with patch.object(server, "db", db):
+                return asyncio.run(server._punch_group_completion_ok(p, cap, "proj_a", CO_A))
+        self.assertTrue(ok("done P1"))
+        self.assertTrue(ok("done P-588-1"))
+        self.assertFalse(ok("photo of P1"))                       # not a "done"
+        self.assertFalse(ok("done P2"))                           # no such item
+        self.assertFalse(ok("done P1", sender="19995550000@c.us"))  # not the assignee
+        self.assertFalse(ok("done P1", status="closed"))          # not open
+        self.assertFalse(ok("done P-999-1"))                      # another job's
+
+    def test_a_refused_group_photo_is_never_downloaded(self):
+        db = _punch_db(sent_via="group")
+        calls = []
+
+        async def dl(p):
+            calls.append(p)
+            return FULL
+        p = _parsed(caption="photo of P1")
+        p["sender"] = "17185550199@c.us"
+        with patch.object(server, "db", db), patch.object(server, "download_image", dl):
+            if asyncio.run(server._punch_group_completion_ok(p, "photo of P1", "proj_a", CO_A)):
+                asyncio.run(server._punch_message_photo(p, "proj_a"))
+        self.assertEqual(calls, [])
+        import inspect
+        src = inspect.getsource(server._process_whatsapp_message)
+        i = src.index("_punch_photo_caption_ref(parsed, body)")
+        self.assertLess(src.index("_punch_group_completion_ok", i), src.index("_punch_message_photo", i))
+
+
 class Backfill(unittest.TestCase):
 
     def _run(self, *argv):
@@ -271,6 +306,31 @@ class Backfill(unittest.TestCase):
                 patch.object(server, "_upload_to_r2", lambda b, k, t: up.append(k) or k):
             bf.main(["--pid", "P-588-1", *argv], db=db, server=server)
         return db, fetched, up
+
+    def test_a_run_stopped_after_the_walk_is_finished_by_the_next(self):
+        # Codex review on #762: the walk is written first, the item last; a
+        # failure in between leaves the item on its preview, and a rerun
+        # finds its message through the walk's new key and finishes it.
+        import scripts.punch_photo_backfill as bf
+        db, _f, _u = self._run("--i-know", "--reason", "test", "--session", "s")
+        row = db[punch.COLLECTION].rows[0]
+        row["photo_key"] = "wa-photos/proj_a/w1/1.jpg"       # the item write was lost
+        fetched, up = [], []
+
+        async def dl(p):
+            fetched.append(p["message_id_serialized"])
+            return FULL
+
+        class R2:
+            def get_object(self, Bucket, Key):
+                return {"Body": io.BytesIO(FULL if Key.endswith("-full.jpg") or Key.endswith("2.jpg")
+                                           else THUMB)}
+        with patch.object(server, "download_image", dl), patch.object(server, "_r2_client", R2()), \
+                patch.object(server, "_upload_to_r2", lambda b, k, t: up.append(k) or k):
+            bf.main(["--pid", "P-588-1", "--i-know", "--reason", "t", "--session", "s"],
+                    db=db, server=server)
+        self.assertEqual(fetched, ["false_x_M1@c.us"])
+        self.assertEqual(row["photo_key"], "wa-photos/proj_a/w1/1-full.jpg")
 
     def test_dry_run_reports_and_writes_nothing(self):
         db, fetched, up = self._run()

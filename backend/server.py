@@ -63358,6 +63358,32 @@ async def _checklist_open_today(group_id: str, project_id: Any, company_id: Any,
                 and any(not it.get("completed") for it in (latest.get("items") or [])))
 
 
+async def _punch_group_completion_ok(parsed: dict, body: str, project_id: Any,
+                                     company_id: Any) -> bool:
+    """A group photo captioned "done P1" whose photo will be the item's
+    completion photo: a sub's "done" naming one open item on this job, sent
+    by its assignee -- what _punch_group_message then accepts. Checked before
+    anything is downloaded or kept."""
+    text = _punch_caption(parsed, body)
+    ref = punch.parse_pid(text)
+    if not ref or not punch.sub_done(text) or punch.super_verdict(text):
+        return False
+    try:
+        rows = await db[punch.COLLECTION].find(
+            {"project_id": str(project_id), "seq": int(ref[1]), "status": "open"}).to_list(20)
+    except Exception:
+        return False
+    if ref[0]:
+        rows = [r for r in rows if str(r.get("pid") or "").upper().startswith(f"P-{ref[0].upper()}-")]
+    if len(rows) != 1:
+        return False
+    jid = str(parsed.get("sender") or "")
+    msg = {"sender_jid": jid, "sender": jid.split("@")[0]}
+    who = await _attention_sender(msg, {"company_id": str(company_id), "project_id": str(project_id),
+                                        "cache": {}})
+    return _punch_is_assignee(rows[0], who, msg)
+
+
 async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
     """An open punch item #seq on this job, given to whoever sent `msg`."""
     try:
@@ -63882,9 +63908,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # tell speech from text instead of guessing.
             if _punch_photo_caption_ref(parsed, body):
                 # "done P1" sent as a photo's caption: the photo, in full,
-                # is the item's completion photo.
+                # is the item's completion photo -- kept only when it is the
+                # assignee's "done" on their open item (Codex review on #762:
+                # any "photo of P1" was uploaded and never used).
                 try:
-                    parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
+                    if await _punch_group_completion_ok(parsed, body, project_id, msg_company_id):
+                        parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
                 except Exception as e:
                     logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
