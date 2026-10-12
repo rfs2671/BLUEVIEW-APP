@@ -62280,8 +62280,8 @@ async def _recipient_refusal(company_id: Any, person: Optional[dict], *,
                              group_id: Optional[str] = None,
                              spoke: Optional[str] = None) -> Optional[str]:
     """None when `person` may be messaged or @mentioned for this company;
-    else why not. A chase passes `group_id` and `spoke` (who said the item's
-    message): its owner who spoke in that group may be."""
+    else why not. A chase passes `spoke` (who said the item's own message):
+    the owner who said it may be."""
     p = person or {}
     jid = str(p.get("jid") or "")
     if jid and spoke and wa_dm.phone_digits(jid) and \
@@ -62304,10 +62304,8 @@ async def _recipient_refusal(company_id: Any, person: Optional[dict], *,
         if jid and await db[wa_sender_map.COLLECTION].find_one(
                 {"company_id": str(company_id), "sender_jid": jid}, {"_id": 1}):
             return None
-        if jid and group_id and await db.whatsapp_messages.find_one(
-                {"group_id": group_id, "company_id": _company_id_filter(company_id),
-                 "sender_jid": jid}, {"_id": 1}):
-            return None                     # the owner who spoke in this group
+        # Having written in the group once is NOT enough (Codex review on
+        # #755): only the person who said this item (`spoke`, above) is.
     except Exception as e:
         logger.warning(f"[recipients] check failed: {type(e).__name__}")
         return "the check could not be made"

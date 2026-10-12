@@ -98,8 +98,8 @@ async def main_async(a) -> int:
         if not made:
             print("  punch items made: none (nothing sent, shadow or live)")
         for r in made:
-            a = r.get("assignee") or {}
-            print(f"  punch item {r.get('pid')} → {_safe(a.get('name'), 30)} [{a.get('kind')}] "
+            who = r.get("assignee") or {}            # never `a`: the CLI arguments
+            print(f"  punch item {r.get('pid')} → {_safe(who.get('name'), 30)} [{who.get('kind')}] "
                   f"send_mode {r.get('send_mode')} mention {((r.get('mention') or {}).get('resolved'))}")
     return 0
 
