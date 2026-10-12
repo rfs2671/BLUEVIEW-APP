@@ -23,7 +23,8 @@ WHAT RUNS, AND HOW IT IS ISOLATED
 
 SCENARIO (scripts/dry_run_punch/*.json)
   project {_id, name, address, trade_assignments}, walker {name, phone, role},
-  people [{key, name, company, phone}],
+  people [{key, name, company, phone, punch_contact?}]  (punch_contact: that sub's
+        designated punch contact, the one "Who gets what?" suggests),
   dm    [{text?, photo?: true, voice?: {transcript, lang, confidence?},
           expect?: {draft_items, need_trade, unassigned: [trade],
                     sent: "shadow"|"live", items, group_posts}}]
@@ -99,7 +100,14 @@ def world(sc: dict):
         notification_preferences=[{
             "_id": "np_dry", "user_id": None, "project_id": str(proj["_id"]), "scope": "project",
             "whatsapp_project": {"gc_group_id": GROUP, "gc_group_confirmed": True,
-                                 "punch_sends": sc.get("punch_sends") or "shadow"}}],
+                                 "punch_sends": sc.get("punch_sends") or "shadow",
+                                 # Each sub's punch contact (people[].punch_contact):
+                                 # the only people "Who gets what?" suggests.
+                                 "punch_contacts": {
+                                     r["id"]: f"m_{p['key'].lower()}"
+                                     for p in sc.get("people") or [] if p.get("punch_contact")
+                                     for r in sc["project"].get("trade_assignments") or []
+                                     if r.get("company") == p["company"]}}}],
         attention_items=[],
     )
     # A person writes from their phone (@c.us), or from a WhatsApp privacy id

@@ -1,6 +1,6 @@
 {
  "name": "walkthrough at 588 Thomas: 12 photos -> draft -> edits -> assign -> send -> close",
- "about": "Roy (admin) walks 588 Thomas and DMs 12 photos: typed English and Spanish captions, voice notes in Spanish and English, one photo whose words come as a voice note after it, two items whose trade the words don't name. He fixes the draft (two trades, a merge, a drop, an add, a move), reassigns doors and picks the painter (two paint companies on the job), answers the one due question, and sends. Sends are SHADOW (the default): he sees what would be posted, nothing is. Then in the group Mike says 'done' on his outlet (ready to check) and Roy says it's ok (closed); Jose says 'done' on the faucet and Roy says it's not done (reopened, chased again). Every item needs a location before the draft: six photos name only a floor or a room, so \"done\" asks for each one (\"Where on floor 5 is #4 'door closer broken 5th floor'?\"), and the item added in the draft is asked about at \"send\".",
+ "about": "Roy (admin) walks 588 Thomas and DMs 12 photos: typed English and Spanish captions, voice notes in Spanish and English, one photo whose words come as a voice note after it, two items whose trade the words don't name. He fixes the draft (two trades, a merge, a drop, an add, a move), reassigns doors and picks the painter (two paint companies on the job), answers the one due question on the recap, and says 'ok'. Sends are SHADOW (the default): he sees what would be posted, nothing is. Then in the group Mike says 'done' on his outlet (ready to check) and Roy says it's ok (closed); Jose says 'done' on the faucet and Roy says it's not done (reopened, chased again). Every item needs a location before the draft: six photos name only a floor or a room, so \"done\" asks for each one (\"Where on floor 5 is #4 'door closer broken 5th floor'?\"), and the item added in the draft is asked about at \"send\".",
  "tz": "America/New_York",
  "now": "2026-10-13 09:00:00",
  "project": {
@@ -50,13 +50,15 @@
    "key": "M",
    "name": "Mike Rivera",
    "company": "Bright Electric",
-   "phone": "17185550201"
+   "phone": "17185550201",
+   "punch_contact": true
   },
   {
    "key": "J",
    "name": "Jose Zarate",
    "company": "Quality Plumbing",
-   "phone": "17185550202"
+   "phone": "17185550202",
+   "punch_contact": true
   },
   {
    "key": "A",
@@ -75,14 +77,16 @@
    "key": "D",
    "name": "Dave Kim",
    "company": "Door Pros",
-   "phone": "17185550205"
+   "phone": "17185550205",
+   "punch_contact": true
   },
   {
    "key": "L",
    "name": "Luis Ortega",
    "company": "Arkon Drywall",
    "phone": "17185550206",
-   "lid": "84894491300006"
+   "lid": "84894491300006",
+   "punch_contact": true
   }
  ],
  "dm": [
@@ -216,6 +220,9 @@
   },
   {
    "text": "electrical Mon, everything else Fri"
+  },
+  {
+   "text": "ok"
   },
   {
    "expect": {

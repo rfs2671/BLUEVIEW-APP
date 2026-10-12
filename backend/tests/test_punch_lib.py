@@ -103,7 +103,7 @@ class Edits(unittest.TestCase):
         live = [it for it in items if it.get("status") != "dropped"]
         self.assertEqual(len(live), 2)
         p.apply_edit(items, {"op": "add", "text": "exit sign"}, next_n=4)
-        self.assertEqual(items[-1]["text"], "exit sign")
+        self.assertEqual(items[-1]["text"], "Exit sign")         # first letter capital (8:31 PM, #4)
         self.assertEqual(p.apply_edit(items, {"op": "drop", "n": 99}, next_n=5), (False, "no item 99"))
 
 
@@ -115,12 +115,11 @@ class AssignAndDue(unittest.TestCase):
               {"name": "Ana", "company": "A Paint", "trades": ["paint"]},
               {"name": "Bo", "company": "B Paint", "trades": ["paint"]}]
 
-    def test_one_company_per_trade(self):
-        s = p.suggest_assignees(["electrical", "plumbing", "paint", "?"], self.PEOPLE)
-        self.assertEqual(s["electrical"]["name"], "Mike Rivera")
-        self.assertEqual(s["plumbing"]["company"], "Quality Plumbing")   # one company
-        self.assertIsNone(s["paint"])                                       # two: the walker says
-        self.assertNotIn("?", s)
+    def test_who_gets_what(self):
+        # Suggestions come from the server (punch contacts, past assignees):
+        # tests/test_punch_walkthrough_2031.py. Here, the question.
+        s = {"electrical": {"name": "Mike Rivera", "company": "Bright Electric"}, "paint": None}
+        self.assertIn("electrical → Mike Rivera (Bright Electric)", p.assign_text(s))
         self.assertIn("paint → ?", p.assign_text(s))
 
     def test_fixing_and_picking(self):
