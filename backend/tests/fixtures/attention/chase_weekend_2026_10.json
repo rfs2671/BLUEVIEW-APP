@@ -44,11 +44,13 @@
   },
   "sunday": {
    "date": "2026-10-11",
-   "items": []
+   "items": [8],
+   "slots": ["morning"]
   },
   "monday": {
    "date": "2026-10-12",
-   "items": []
+   "items": [8],
+   "slots": ["morning", "admin_dm"]
   }
  },
  "lines": [

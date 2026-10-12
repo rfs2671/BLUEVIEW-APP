@@ -605,3 +605,113 @@ class Wiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Follow-ups: due today / overdue, open punch (live 588, Mon Oct 12 8:05:
+# "No action needed today." while items were open)
+# ══════════════════════════════════════════════════════════════════════════
+
+MON_8 = datetime(2026, 10, 12, 12, 5, tzinfo=timezone.utc)    # Mon 8:05 AM ET
+MIKE_JID = "17185550101@c.us"
+
+
+def _att(_id, quote, due_at, owner=None, requester=None, sender="17185550101",
+         type_="commitment", status="open", due_text=None, **kw):
+    row = {"_id": _id, "company_id": CO_A, "project_id": THOMAS, "type": type_,
+           "status": status, "summary": f"SUMMARY {quote}",
+           "owner": owner or {"kind": "sender_map", "id": "m1", "name": "Mike Rivera",
+                              "status": "resolved", "jid": MIKE_JID},
+           "requester": requester,
+           "due": {"due_text": due_text or "Sunday", "due_at": due_at},
+           "evidence": {"quote": quote, "sender": sender}, "tags": []}
+    row.update(kw)
+    return row
+
+
+def _punch_row(seq, name, status="open", days_ago=0):
+    return {"_id": f"{THOMAS}:P-588-{seq}", "pid": f"P-588-{seq}", "seq": seq,
+            "company_id": CO_A, "project_id": THOMAS, "status": status,
+            "assignee": {"kind": "sender_map", "id": name, "name": name} if name else None,
+            "assigned_at": MON_8 - timedelta(days=days_ago)}
+
+
+class FollowUps(unittest.TestCase):
+
+    ME = {"user_id": "u_admin", "digits": {ADMIN_PHONE[-10:]}}
+    ADMIN_JID = f"{ADMIN_PHONE}@c.us"
+
+    def test_due_lines_mine_or_asked_by_me_exact_words(self):
+        items = [
+            # asked by me (the requester), owned by Mike, overdue since Sun
+            _att("a1", "Can you send the calcs by Sunday?", "2026-10-11",
+                 requester={"kind": "user", "id": "u_admin", "name": "Ana",
+                            "status": "resolved", "jid": self.ADMIN_JID},
+                 type_="request", sender=ADMIN_PHONE),
+            # owned by me, due today
+            _att("a2", "I'll call the inspector Monday", "2026-10-12", due_text="Monday",
+                 owner={"kind": "user", "id": "u_admin", "name": "Ana Admin",
+                        "status": "resolved", "jid": self.ADMIN_JID}),
+            # neither mine nor asked by me
+            _att("a3", "I'll fix the railing Friday", "2026-10-09"),
+            # mine, but not due yet / done / a punch item
+            _att("a4", "tomorrow's thing", "2026-10-13",
+                 owner={"kind": "user", "id": "u_admin", "name": "Ana Admin", "status": "resolved"}),
+            _att("a5", "done thing", "2026-10-10", status="done",
+                 owner={"kind": "user", "id": "u_admin", "name": "Ana Admin", "status": "resolved"}),
+            _att("a6", "P-588-1 tile", "2026-10-10", tags=["punch"],
+                 owner={"kind": "user", "id": "u_admin", "name": "Ana Admin", "status": "resolved"}),
+        ]
+        self.assertEqual(wa_brief.due_lines(items, date(2026, 10, 12), self.ME), [
+            "Due today / overdue:",
+            "• “Can you send the calcs by Sunday?” — Mike Rivera · overdue since Sun Oct 11",
+            "• “I'll call the inspector Monday” — Ana Admin · due today",
+        ])
+
+    def test_punch_lines(self):
+        rows = [_punch_row(1, "Yeyzmar B Bate", days_ago=2), _punch_row(2, "Yeyzmar B Bate"),
+                _punch_row(3, "Chris Lopez"), _punch_row(4, None, days_ago=1),
+                _punch_row(5, "Chris Lopez", status="ready_to_check"),
+                _punch_row(6, "Chris Lopez", status="closed")]
+        self.assertEqual(wa_brief.punch_lines(rows, date(2026, 10, 12)), [
+            "Open punch: Yeyzmar B Bate 2 (oldest 2 days), Unassigned 1 (oldest 1 day), "
+            "Chris Lopez 1 (oldest today)",
+            "Ready to check: 1"])
+
+    def test_no_action_needed_only_when_all_empty(self):
+        job = {"label": "588 Thomas S Boyland St", "items": [], "due": [],
+               "punch": ["Open punch: Chris Lopez 1 (oldest today)"],
+               "headcount": NO_CI, "uses_checkins": False}
+        self.assertEqual(wa_brief.compose(MON_8, [job]), "\n".join([
+            "Morning — Mon Oct 12", "", "588 Thomas S Boyland St",
+            "Open punch: Chris Lopez 1 (oldest today)"]))
+        job["punch"] = []
+        self.assertEqual(wa_brief.compose(MON_8, [job]), wa_brief.NOTHING_TODAY)
+
+    def test_monday_8_05_on_588(self):
+        db = _db()
+        db.attention_items.rows.extend([
+            _att("a1", "I'll send the calcs Sunday", "2026-10-11",
+                 requester={"kind": "user", "id": "u_admin", "name": "Ana",
+                            "status": "resolved", "jid": self.ADMIN_JID}),
+            _att("ab", "other company's", "2026-10-11", company_id=CO_B,
+                 requester={"kind": "user", "id": "u_admin", "status": "resolved"}),
+        ])
+        db[server.punch.COLLECTION].rows.extend(
+            [_punch_row(1, "Yeyzmar B Bate", days_ago=1), _punch_row(2, "Yeyzmar B Bate"),
+             _punch_row(3, "Chris Lopez")])
+        _optin(db, "u_admin", ADMIN_PHONE)
+        with _Ctx(db) as c:
+            _tick(c, MON_8)
+        text = _sends(c)[0]["message"]
+        self.assertNotIn("No action needed", text)
+        self.assertIn("\n".join([
+            "588 Thomas S Boyland St",
+            "Due today / overdue:",
+            "• “I'll send the calcs Sunday” — Mike Rivera · overdue since Sun Oct 11",
+            "Open punch: Yeyzmar B Bate 2 (oldest 1 day), Chris Lopez 1 (oldest today)"]), text)
+        self.assertNotIn("other company", text)
+        self.assertNotIn("SUMMARY", text)            # the words, never a summary
+
+
+NO_CI = wa_brief.NO_CHECKINS

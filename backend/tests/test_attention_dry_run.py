@@ -340,6 +340,10 @@ class TheThreeGaps(unittest.TestCase):
         m["expect"] = {"kind": "none"}
         sc["chase"]["expect"] += [{"day": "2026-10-15", "slot": s, "owner": "M", "items": [7]}
                                   for s in ("morning", "midday", "eod", "admin_dm")]
+        # Still open Friday: overdue, in Mike's one morning nudge with #25.
+        fri = next(e for e in sc["chase"]["expect"] if e["day"] == "2026-10-16"
+                   and e["slot"] == "morning" and e["owner"] == "M")
+        fri["items"] = [7] + fri["items"]
         _out, r = _run(sc)
         self.assertTrue(_line(r, 28)["hard"])
         self.assertEqual(dry.exit_code(r), 0)
