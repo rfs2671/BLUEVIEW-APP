@@ -166,7 +166,12 @@ def skip_reason(item: Dict[str, Any], day: date,
     due = item.get("due") or {}
     if not due.get("due_text") or not due.get("due_at"):
         return "no_explicit_due"
-    if str(due.get("due_at"))[:10] != day.isoformat():
+    if str(due.get("due_text") or "").strip().upper() == "ASAP":
+        # ASAP: chased every day from its first due day (a punch item sent
+        # "asap" is due tomorrow, then every day it stays open).
+        if str(due.get("due_at"))[:10] > day.isoformat():
+            return "not_due_today"
+    elif str(due.get("due_at"))[:10] != day.isoformat():
         return "not_due_today"
     if not o.get("jid"):
         # Last, so it means "would be chased today, but nobody to @mention".

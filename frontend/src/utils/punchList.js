@@ -99,10 +99,25 @@ export function punchSendsMode(data) {
 // ── "Punch list goes to" (Levelog Assistant) ─────────────────────────────
 export const PUNCH_TO_OPTIONS = [
   { mode: 'per_trade', label: 'Per trade',
-    line: 'One message per trade, to the person picked on "Who gets what?".' },
+    line: 'Posted in the job group, mentioning the person picked for each trade on "Who gets what?".' },
   { mode: 'one_person', label: 'One person',
-    line: 'The whole list to one person. "Who gets what?" is skipped; the recap still asks for ok.' },
+    line: 'The whole list by DM to one person. "Who gets what?" is skipped; the recap still asks for ok.' },
 ];
+
+// ── "Punch items due" (Levelog Assistant): the due a walk's items get
+// unless the walker says. ASAP is chased every day from tomorrow; no due
+// date is never chased.
+export const PUNCH_DUE_OPTIONS = [
+  { mode: 'asap', label: 'ASAP', line: 'Chased every day from tomorrow until done.' },
+  { mode: 'tomorrow', label: 'Tomorrow', line: 'Chased tomorrow.' },
+  { mode: 'fri', label: 'Friday', line: 'Chased on Friday.' },
+  { mode: 'none', label: 'No due date', line: 'Never chased; shown open on the punch list.' },
+];
+
+export function punchDueMode(data) {
+  const v = data && data.punch_due_default;
+  return PUNCH_DUE_OPTIONS.some((o) => o.mode === v) ? v : 'asap';
+}
 
 export function punchToMode(data) {
   return data && data.punch_to === 'one_person' ? 'one_person' : 'per_trade';

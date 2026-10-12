@@ -72,5 +72,13 @@ ok(/patch\('punch_to', \{ punch_to: o\.mode \}\)/.test(card)
   && /punch_to_user: u\.id/.test(card) && /punch_contacts: \{ \[r\.row_id\]/.test(card),
   'the card sets who the list goes to and each punch contact');
 
+// Oct 11 11:06 PM: the default due was a fixed "Fri"; now a setting (ASAP).
+ok(M.punchDueMode(null) === 'asap' && M.punchDueMode({ punch_due_default: 'none' }) === 'none'
+  && M.punchDueMode({ punch_due_default: 'someday' }) === 'asap', 'Punch items due: ASAP unless set');
+ok(M.PUNCH_DUE_OPTIONS.map((o) => o.mode).join() === 'asap,tomorrow,fri,none', 'the four choices');
+ok(/Never chased/.test(M.PUNCH_DUE_OPTIONS.find((o) => o.mode === 'none').line), 'no due date: never chased');
+ok(/patch\('punch_due_default', \{ punch_due_default: o\.mode \}\)/.test(card), 'the card sets it');
+ok(/by DM/.test(M.PUNCH_TO_OPTIONS.find((o) => o.mode === 'one_person').line), 'one person: by DM');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

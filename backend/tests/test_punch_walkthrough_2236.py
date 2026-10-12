@@ -118,7 +118,7 @@ class EveryStage(_Walk):
         self._walk(status="recap", assign={"electrical": chris, "plumbing": chris}, whole=chris)
         (out,) = self.turn("4d tile chipped", photo=True)
         self.assertTrue(out.startswith("Added #4 'Tile chipped' (Apt 4D). Back to: the recap"), out)
-        self.assertIn("Chris Weiss (GC team): #1, #2, #3, #4", out)
+        self.assertIn("Ready to DM the whole list to Chris Weiss (GC team) (shadow mode: nothing will be sent): #1, #2, #3, #4", out)
         self.assertEqual(self.sess()["assign"]["tile"]["name"], "Chris Weiss")
         self.assertEqual(self.sess()["status"], "recap")
 
