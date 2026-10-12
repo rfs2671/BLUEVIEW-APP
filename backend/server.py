@@ -76,6 +76,7 @@ from lib import datefmt  # noqa: E402
 from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import punch_link  # noqa: E402
+from lib import dm_actions  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -46395,7 +46396,10 @@ async def _dot_store(project_id: str, company_id: str, log: dict, how: str,
     return "same"
 
 
-async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
+async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
+                         project_ids: Optional[List[str]] = None) -> dict:
+    """Every job's DOT records; `project_ids`: only those (a job just added
+    by DM starts being watched at once, not at the next sweep)."""
     now = now or datetime.now(timezone.utc)
     fetch = fetch or _dot_fetch
     report = {"projects": 0, "requests": 0, "failed": 0, "records": 0,
@@ -46404,8 +46408,9 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None) -> dict:
     try:
         # Fixture (is_test) companies are left out, as in every unattended
         # sweep; a project with no company is skipped below.
+        only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
-            await unattended_project_filter({"is_deleted": {"$ne": True}}),
+            await unattended_project_filter({"is_deleted": {"$ne": True}, **only}),
             {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
@@ -51681,6 +51686,745 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     return reply
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# DM ACTIONS (lib/dm_actions.py): an admin or PM gets things done in their
+# own words -- add a job, put a sub on a job, add a person, set a sub's punch
+# contact, change a job's settings.
+#
+# One short question at a time, then a plain "Add it?"; "yes", "sí", 👍 do
+# it. Sending punch lists for real needs the job's address typed back, by an
+# admin. "undo" / "never mind" within 10 minutes reverses the last change.
+# Every change is audited ("whatsapp_dm_action": who, what, before, after).
+#
+# NEVER WIDER THAN THE APP. Each action asks what its screen asks: a new job,
+# a sub on a job, a punch contact and a job's settings need a company admin
+# (as POST /projects, PUT /projects/{id} and PATCH .../whatsapp-alerts do);
+# saving a person needs an admin or PM (as PUT .../whatsapp/people). Jobs are
+# only ever theirs (ident["projects"]), people only their company's.
+# ══════════════════════════════════════════════════════════════════════════
+
+DM_ACTION_STATE = "dm_action"          # the open question
+DM_ACTION_LAST = "dm_action_last"      # the last change, for undo
+
+
+def _dm_is_admin(ident: dict) -> bool:
+    return holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
+                      COMPANY_ADMIN_ROLES)
+
+
+async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
+    """The model's reading of a request (lib/dm_actions.MODEL_PROMPT), as it
+    answered -- dm_actions.clean() checks it. None without a key, on any
+    error, or when the answer is not one JSON object."""
+    if not OPENAI_API_KEY:
+        return None
+    system = dm_actions.MODEL_PROMPT + "\n\nTheir jobs: " + ("; ".join(jobs[:40]) or "none yet")
+    try:
+        async with ServerHttpClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 300,
+                      "response_format": {"type": "json_object"},
+                      "messages": [{"role": "system", "content": system},
+                                   {"role": "user", "content": str(text)[:1000]}]})
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+        got = json.loads(content)
+        return got if isinstance(got, dict) else None
+    except Exception as e:
+        logger.warning(f"[dm-action] model read failed: {type(e).__name__}")
+        return None
+
+
+async def _dm_action_read(ident: dict, text: str) -> dict:
+    """What the message asks: the model's reading, every field checked;
+    the patterns when the model cannot be asked."""
+    raw = await _dm_action_model(text, [wa_assistant.street_label(p)
+                                        for p in ident.get("projects") or []])
+    if raw is None:
+        raw = dm_actions.rules(text)
+    return dm_actions.clean(raw)
+
+
+async def _dm_geosearch(text: str, size: int = 5) -> Optional[List[dict]]:
+    """NYC GeoSearch's address matches for `text`: [{label, borough, zip,
+    place}] (place: "9 Menahan St, Brooklyn"), the same place once. None
+    when GeoSearch could not be asked."""
+    for endpoint in ("https://geosearch.planninglabs.nyc/v2/search",
+                     "https://geosearch.planning.nyc.gov/v2/search"):
+        try:
+            async with ServerHttpClient(timeout=10.0) as client:
+                resp = await client.get(endpoint, params={"text": text, "size": str(size)})
+            if resp.status_code != 200:
+                continue
+            feats = (resp.json() or {}).get("features") or []
+        except Exception as e:
+            logger.warning(f"[dm-action] geosearch failed: {type(e).__name__}")
+            continue
+        out, seen = [], set()
+        for f in feats:
+            pr = (f or {}).get("properties") or {}
+            label = str(pr.get("label") or "").strip()
+            if not label or not pr.get("housenumber"):
+                continue
+            place = dm_actions.pretty_address(label)
+            if place.lower() in seen:
+                continue
+            seen.add(place.lower())
+            out.append({"label": label, "place": place,
+                        "borough": str(pr.get("borough") or ""),
+                        "zip": str(pr.get("postalcode") or "")})
+        return out
+    return None
+
+
+def _dm_same_place(a: Any, b: Any) -> bool:
+    """Two addresses name the same building: house number and street."""
+    def key(x):
+        s = dm_actions.pretty_address(x, with_borough=False).lower()
+        s = re.sub(r"\b(st|street|ave|avenue|rd|road|blvd|pl|place)\b\.?", "", s)
+        return " ".join(s.split())
+    return bool(key(a)) and key(a) == key(b)
+
+
+def _dm_job_label(project: dict) -> str:
+    return wa_assistant.street_label(project) or str(project.get("name") or "the job")
+
+
+def _dm_find_jobs(ident: dict, hint: str) -> List[dict]:
+    """Their jobs that `hint` names ("588", "thomas boyland")."""
+    projects = ident.get("projects") or []
+    hint = str(hint or "").strip()
+    if not hint:
+        return []
+    got, why = punch.match_project(hint, projects)
+    if got:
+        return [got]
+    t = multilang.fold(hint)
+    return [p for p in projects
+            if t and (t in multilang.fold(_dm_job_label(p)) or
+                      t in multilang.fold(p.get("name") or "") or
+                      t in multilang.fold(p.get("nickname") or ""))]
+
+
+async def _dm_company_subs(ident: dict) -> List[Tuple[dict, dict]]:
+    """(project, roster row) for every active sub on their jobs."""
+    out = []
+    for p in ident.get("projects") or []:
+        fresh = await db.projects.find_one({"_id": p["_id"]}) or p
+        out += [(fresh, r) for r in _active_assignments(fresh)]
+    return out
+
+
+async def _dm_say(dm_chat: str, lang: str, key: str, **kw) -> None:
+    await send_whatsapp_message(dm_chat, dm_actions.say(lang, key, **kw))
+
+
+async def _dm_ask(dm_chat: str, p: dict, step: str, text: str,
+                  options: Optional[list] = None) -> None:
+    await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                        p=p, step=step, options=options or [], asked=text)
+    await send_whatsapp_message(dm_chat, text)
+
+
+async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) -> bool:
+    """A DM that asks for a change, or answers the open question about one.
+    True when handled. `new`: may start a new request (after the reminders
+    have had their turn); otherwise only an open question is answered."""
+    pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    if pending:
+        await _dm_action_answer(ident, dm_chat, text, pending)
+        return True
+    if not new or not dm_actions.looks_like_request(text):
+        return False
+    p = await _dm_action_read(ident, text)
+    if p["action"] == "none":
+        return False
+    p["lang"] = dm_actions.reply_lang(text)
+    p["said"] = str(text)[:300]
+    if p["action"] == "undo":
+        await _dm_action_undo(ident, dm_chat, p["lang"])
+    elif p["action"] == "unsupported":
+        await _dm_say(dm_chat, p["lang"], "unsupported")
+    else:
+        await _dm_action_step(ident, dm_chat, p)
+    return True
+
+
+async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict) -> None:
+    p, step = dict(pending.get("p") or {}), str(pending.get("step") or "")
+    options = list(pending.get("options") or [])
+    lang = p.get("lang") or "en"
+    yn = dm_actions.yes_no(text)
+    if dm_actions.is_undo(text) or (yn is False and step != "type_address"):
+        await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+        await _dm_say(dm_chat, lang, "cancelled")
+        return
+    if step == "type_address":
+        await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+        if yn is False:
+            await _dm_say(dm_chat, lang, "cancelled")
+        elif _dm_same_place(text, p.get("_job_address")) or _dm_same_place(text, p.get("_job")):
+            await _dm_action_do(ident, dm_chat, p)
+        else:
+            await _dm_say(dm_chat, lang, "live_mismatch")
+        return
+    if step == "confirm":
+        if yn is True:
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_action_do(ident, dm_chat, p)
+            return
+        await _dm_action_restart_or(ident, dm_chat, text, lambda: _dm_say(dm_chat, lang, "yes_or_no"))
+        return
+    if step.startswith("choose:"):
+        i = dm_actions.pick(text, [o.get("label") or "" for o in options])
+        if i is None:
+            await _dm_action_restart_or(ident, dm_chat, text,
+                                        lambda: _dm_say(dm_chat, lang, "pick_again"))
+            return
+        p[step.split(":", 1)[1]] = options[i]["value"]
+        await _dm_action_step(ident, dm_chat, p)
+        return
+    if step.startswith("ask:"):
+        field = step.split(":", 1)[1]
+        if not _dm_fill(p, field, text):
+            if field == "phone":
+                await _dm_ask(dm_chat, p, step, dm_actions.say(lang, "bad_phone"))
+                return
+            # Not an answer: the same question again (or a new request).
+            await _dm_action_restart_or(ident, dm_chat, text, lambda: _dm_ask(
+                dm_chat, p, step, str(pending.get("asked") or dm_actions.say(lang, "pick_again")),
+                options))
+            return
+        await _dm_action_step(ident, dm_chat, p)
+        return
+    await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+
+
+async def _dm_action_restart_or(ident: dict, dm_chat: str, text: str, otherwise) -> None:
+    """A new request instead of an answer starts over; else `otherwise`."""
+    if dm_actions.looks_like_request(text):
+        p = await _dm_action_read(ident, text)
+        if p["action"] not in ("none", "undo"):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            p["lang"] = dm_actions.reply_lang(text)
+            p["said"] = str(text)[:300]
+            if p["action"] == "unsupported":
+                await _dm_say(dm_chat, p["lang"], "unsupported")
+            else:
+                await _dm_action_step(ident, dm_chat, p)
+            return
+    await otherwise()
+
+
+def _dm_fill(p: dict, field: str, text: str) -> bool:
+    """An answer to "What's the address?" / "Which borough?" / ... put in
+    its field. False when the answer is not one."""
+    raw = " ".join(str(text or "").split())
+    if field == "address":
+        if not re.match(r"^\s*\d+[a-zA-Z]?(?:-\d+)?\s+\w", raw):
+            return False
+        p["address"] = raw[:120]
+        p["borough"] = p.get("borough") or dm_actions.find_borough(raw)
+        p["zip"] = p.get("zip") or dm_actions.find_zip(raw)
+        return True
+    if field == "borough":
+        b = dm_actions.borough(raw) or dm_actions.find_borough(raw)
+        z = dm_actions.find_zip(raw)
+        if b:
+            p["borough"] = b
+        if z:
+            p["zip"] = z
+        return bool(b or z)
+    if field == "zip":
+        z = dm_actions.find_zip(raw)
+        if z:
+            p["zip"] = z
+        return bool(z)
+    if field == "phone":
+        d = dm_actions.phone_digits(raw)
+        if d:
+            p["phone"] = d
+        return bool(d)
+    if field == "trade":
+        tr = dm_actions.trade(raw)
+        if tr:
+            p["trade"] = tr
+        return bool(tr)
+    if field in ("name", "company"):
+        v = re.sub(r"^(?:it s|its|it's|they re|they're|he s|he's|she s|she's|with|from|for|de|es)\s+",
+                   "", raw, flags=re.I).strip(" .!")
+        if not v or len(v) > 60 or re.search(r"\d{3}", v):
+            return False
+        if field == "company" and multilang.fold(v) in ("us", "our", "the gc", "gc", "gc team",
+                                                        "the office", "nosotros", "nuestro"):
+            v = dm_actions.GC_TEAM
+        p[field] = v if v == dm_actions.GC_TEAM else dm_actions._title(v)
+        return True
+    if field == "setting":
+        got = dm_actions.clean(dm_actions.rules(raw))
+        if got.get("action") == "set_setting" and got.get("setting"):
+            p["setting"], p["value"] = got["setting"], got["value"]
+            return True
+        return False
+    return False
+
+
+async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
+    """The job `p` is about, or None after asking which (never a guess)."""
+    lang = p.get("lang") or "en"
+    projects = ident.get("projects") or []
+    if p.get("_project_id"):
+        hit = next((x for x in projects if str(x["_id"]) == str(p["_project_id"])), None)
+        if hit:
+            return hit
+    found = _dm_find_jobs(ident, p.get("job") or "") if p.get("job") else []
+    if len(found) == 1:
+        p["_project_id"] = str(found[0]["_id"])
+        return found[0]
+    if not found and not p.get("job") and len(projects) == 1:
+        p["_project_id"] = str(projects[0]["_id"])
+        return projects[0]
+    choices = found or projects
+    options = [{"label": _dm_job_label(x), "value": str(x["_id"])} for x in choices[:6]]
+    question = dm_actions.say(lang, "no_job" if p.get("job") and not found else "which_job")
+    await _dm_ask(dm_chat, p, "choose:_project_id",
+                  dm_actions.numbered(question, [o["label"] for o in options]), options)
+    return None
+
+
+async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
+    """The next thing to ask about the request, or the plain question
+    that confirms it."""
+    lang = p.get("lang") or "en"
+    a = p["action"]
+    admin = _dm_is_admin(ident)
+    if a != "add_person" and not admin:
+        await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+        await _dm_say(dm_chat, lang, "admin_only")
+        return
+
+    if a == "add_job":
+        if not p.get("address") or not re.match(r"^\s*\d", p["address"]):
+            await _dm_ask(dm_chat, p, "ask:address", dm_actions.say(lang, "ask_address"))
+            return
+        if not p.get("_geo"):
+            q = " ".join(x for x in (p["address"], p.get("borough") or "", p.get("zip") or "") if x)
+            found = await _dm_geosearch(q)
+            if found is None:
+                await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+                await _dm_say(dm_chat, lang, "failed")
+                return
+            if p.get("borough"):
+                found = [f for f in found if f["borough"].lower() == p["borough"].lower()] or \
+                    ([] if not p.get("zip") else found)
+            if p.get("zip"):
+                found = [f for f in found if f["zip"] == p["zip"]] or found
+            if not found:
+                if not p.get("borough"):
+                    await _dm_ask(dm_chat, p, "ask:borough", dm_actions.say(lang, "no_match"))
+                elif not p.get("zip"):
+                    await _dm_ask(dm_chat, p, "ask:zip", dm_actions.say(lang, "no_match_again"))
+                else:
+                    await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+                    await _dm_say(dm_chat, lang, "no_match_last")
+                return
+            if len(found) > 1:
+                options = [{"label": f["place"], "value": f} for f in found[:5]]
+                await _dm_ask(dm_chat, p, "choose:_geo", dm_actions.numbered(
+                    dm_actions.say(lang, "which_place"), [o["label"] for o in options]), options)
+                return
+            p["_geo"] = found[0]
+        geo = p["_geo"]
+        mine = await db.projects.find(
+            {"company_id": _company_id_filter(ident["company_id"]), "is_deleted": {"$ne": True}},
+            {"address": 1, "name": 1, "marked_for_deletion": 1}).to_list(2000)
+        same = next((x for x in mine if not x.get("marked_for_deletion") and (
+            _dm_same_place(x.get("address"), geo["label"]) or
+            _dm_same_place(x.get("name"), geo["label"]))), None)
+        if same:
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "already_job",
+                          job=dm_actions.pretty_address(geo["label"], with_borough=False))
+            return
+        await _dm_ask(dm_chat, p, "confirm", dm_actions.say(lang, "found", place=geo["place"]))
+        return
+
+    if a == "add_person":
+        if not p.get("name"):
+            await _dm_ask(dm_chat, p, "ask:name", dm_actions.say(lang, "ask_name"))
+            return
+        first = p["name"].split()[0]
+        if p.pop("bad_phone", False) and not p.get("phone"):
+            await _dm_ask(dm_chat, p, "ask:phone", dm_actions.say(lang, "bad_phone"))
+            return
+        if not p.get("phone"):
+            await _dm_ask(dm_chat, p, "ask:phone", dm_actions.say(lang, "ask_phone", name=first))
+            return
+        if not p.get("company"):
+            await _dm_ask(dm_chat, p, "ask:company", dm_actions.say(lang, "ask_works_for", name=first))
+            return
+        if p["company"] != dm_actions.GC_TEAM:
+            names = {multilang.fold(r.get("company") or ""): r.get("company")
+                     for _p, r in await _dm_company_subs(ident)}
+            hit = names.get(multilang.fold(p["company"])) or next(
+                (v for k, v in names.items() if multilang.fold(p["company"]) in k), None)
+            if not hit:
+                company = p.pop("company")
+                await _dm_ask(dm_chat, p, "ask:company", dm_actions.say(
+                    lang, "unknown_company", company=company, name=first))
+                return
+            p["company"] = hit
+        number = wa_mention.phone(p["phone"])
+        jid = f"{number}@c.us"
+        before = await db[wa_sender_map.COLLECTION].find_one(
+            {"company_id": str(ident["company_id"]), "sender_jid": jid})
+        p["_jid"] = jid
+        key = "person_update" if before else "person_confirm"
+        await _dm_ask(dm_chat, p, "confirm", dm_actions.say(
+            lang, key, name=p["name"], company=dm_actions.company_label(p["company"]),
+            last4=dm_actions.last4(p["phone"])))
+        return
+
+    if a == "add_sub":
+        if not p.get("company"):
+            await _dm_ask(dm_chat, p, "ask:company", dm_actions.say(lang, "ask_company"))
+            return
+        project = await _dm_pick_job(ident, dm_chat, p)
+        if not project:
+            return
+        # The company's spelling as it is already used on their jobs.
+        for _p, r in await _dm_company_subs(ident):
+            if multilang.fold(r.get("company") or "") == multilang.fold(p["company"]):
+                p["company"] = r["company"]
+                break
+        if not p.get("trade"):
+            await _dm_ask(dm_chat, p, "ask:trade", dm_actions.say(lang, "ask_trade",
+                                                                   company=p["company"]))
+            return
+        fresh = await db.projects.find_one({"_id": project["_id"]}) or project
+        job = _dm_job_label(fresh)
+        if any(_roster_key(r.get("company") or "") == _roster_key(p["company"]) and
+               _roster_key(r.get("trade") or "") == _roster_key(p["trade"])
+               for r in _active_assignments(fresh)):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "sub_already", company=p["company"], job=job,
+                          trade=p["trade"])
+            return
+        await _dm_ask(dm_chat, p, "confirm", dm_actions.say(
+            lang, "sub_confirm", company=p["company"], trade=p["trade"], job=job))
+        return
+
+    if a == "set_punch_contact":
+        if not p.get("company"):
+            await _dm_ask(dm_chat, p, "ask:company", dm_actions.say(lang, "ask_company"))
+            return
+        subs = [(pr, r) for pr, r in await _dm_company_subs(ident)
+                if multilang.fold(p["company"]) in multilang.fold(r.get("company") or "")]
+        if p.get("_project_id"):
+            subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(p["_project_id"])]
+        elif p.get("job"):
+            named = {str(x["_id"]) for x in _dm_find_jobs(ident, p["job"])}
+            subs = [(pr, r) for pr, r in subs if str(pr["_id"]) in named]
+        if not subs:
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "sub_not_on_job", company=p["company"],
+                          job=p.get("job") or ("sus trabajos" if lang == "es" else "your jobs"))
+            return
+        if len({str(pr["_id"]) for pr, _r in subs}) > 1:
+            options = [{"label": _dm_job_label(pr), "value": str(pr["_id"])} for pr, _r in subs][:6]
+            await _dm_ask(dm_chat, p, "choose:_project_id", dm_actions.numbered(
+                dm_actions.say(lang, "which_job"), [o["label"] for o in options]), options)
+            return
+        project, row = subs[0]
+        p["_project_id"], p["_row_id"] = str(project["_id"]), str(row.get("id") or "")
+        p["company"] = row.get("company") or p["company"]
+        if not p.get("name"):
+            await _dm_ask(dm_chat, p, "ask:name", dm_actions.say(lang, "ask_name"))
+            return
+        if not p.get("_person_id") and not p.get("phone"):
+            people = await db[wa_sender_map.COLLECTION].find(
+                {"company_id": str(ident["company_id"])}).to_list(2000)
+            want = multilang.fold(p["name"])
+            hits = [m for m in people if m.get("person_name") and (
+                multilang.fold(m["person_name"]) == want or
+                multilang.fold(m["person_name"]).split()[0] == want.split()[0] and
+                (len(want.split()) == 1 or multilang.fold(m["person_name"]).startswith(want)))]
+            # The one with that sub, when they are; someone of that name
+            # with another company is not the one meant (never a guess).
+            same_co = [m for m in hits if multilang.fold(m.get("sub_company") or "") ==
+                       multilang.fold(p["company"])]
+            elsewhere = bool(hits) and not same_co and len(hits) == len(
+                [m for m in hits if m.get("sub_company")])
+            hits = same_co or ([] if elsewhere else hits)
+            if len(hits) > 1:
+                labels = [f"{m['person_name']} ({dm_actions.company_label(m.get('sub_company') or '')})"
+                          for m in hits[:4]]
+                options = [{"label": lab, "value": str(m["_id"])} for lab, m in zip(labels, hits)]
+                await _dm_ask(dm_chat, p, "choose:_person_id", dm_actions.say(
+                    lang, "which_person", first=p["name"].split()[0],
+                    options=dm_actions.or_list(labels, lang)), options)
+                return
+            if not hits:
+                await _dm_ask(dm_chat, p, "ask:phone", dm_actions.say(
+                    lang, "no_person_at" if elsewhere else "no_person",
+                    name=p["name"].split()[0], company=p["company"]))
+                return
+            p["_person_id"] = str(hits[0]["_id"])
+        job = _dm_job_label(project)
+        if p.get("_person_id"):
+            m = await db[wa_sender_map.COLLECTION].find_one(
+                {"_id": to_query_id(p["_person_id"]), "company_id": str(ident["company_id"])}) \
+                or await db[wa_sender_map.COLLECTION].find_one(
+                    {"_id": p["_person_id"], "company_id": str(ident["company_id"])})
+            if not m:
+                p.pop("_person_id", None)
+                await _dm_action_step(ident, dm_chat, p)
+                return
+            p["name"] = m.get("person_name") or p["name"]
+            if multilang.fold(m.get("sub_company") or "") != multilang.fold(p["company"]):
+                await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+                await _dm_say(dm_chat, lang, "contact_wrong_company", name=p["name"],
+                              company=p["company"])
+                return
+        await _dm_ask(dm_chat, p, "confirm", dm_actions.say(
+            lang, "contact_confirm", company=p["company"], job=job, name=p["name"]))
+        return
+
+    if a == "set_setting":
+        project = await _dm_pick_job(ident, dm_chat, p)
+        if not project:
+            return
+        job = _dm_job_label(project)
+        if not p.get("setting"):
+            await _dm_ask(dm_chat, p, "ask:setting", dm_actions.say(lang, "ask_setting", job=job))
+            return
+        now_value = (await _whatsapp_project_settings(project["_id"])).get(p["setting"])
+        if p["setting"] == "chase_weekends":
+            if now_value == p["value"]:
+                await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+                await _dm_say(dm_chat, lang, "weekends_same_on" if p["value"] else "weekends_same_off",
+                              job=job)
+                return
+            await _dm_ask(dm_chat, p, "confirm", dm_actions.say(
+                lang, "weekends_on_confirm" if p["value"] else "weekends_off_confirm", job=job))
+            return
+        if now_value == p["value"]:
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "live_same" if p["value"] == "live" else "practice_same",
+                          job=job)
+            return
+        if p["value"] == "live":
+            # High risk: real messages to subs. The address typed back.
+            p["_job"], p["_job_address"] = job, project.get("address") or job
+            await _dm_ask(dm_chat, p, "type_address", dm_actions.say(lang, "live_confirm", job=job))
+            return
+        await _dm_ask(dm_chat, p, "confirm", dm_actions.say(lang, "practice_confirm", job=job))
+        return
+
+    await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+    await _dm_say(dm_chat, lang, "unsupported")
+
+
+async def _dm_audit(ident: dict, p: dict, resource: str, resource_id: str,
+                    before: Any, after: Any) -> None:
+    await audit_log("whatsapp_dm_action", ident["user_id"], resource, str(resource_id or ""), {
+        "action": p["action"], "before": before, "after": after, "via": "whatsapp_dm",
+        "said": p.get("said") or ""})
+
+
+async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
+    """Make the change, only as the code confirms it; say what changed."""
+    lang = p.get("lang") or "en"
+    a = p["action"]
+    if a != "add_person" and not _dm_is_admin(ident):
+        await _dm_say(dm_chat, lang, "admin_only")
+        return
+    try:
+        undo, done = await _DM_DO[a](ident, p)
+    except Exception as e:
+        logger.warning(f"[dm-action] {a} failed: {type(e).__name__}: {e}")
+        await _dm_say(dm_chat, lang, "failed")
+        return
+    await _dm_state_set(DM_ACTION_LAST, dm_chat, dm_actions.UNDO_MINUTES * 60,
+                        undo=undo, lang=lang)
+    await send_whatsapp_message(dm_chat, done)
+
+
+async def _dm_do_add_job(ident: dict, p: dict):
+    lang, geo = p.get("lang") or "en", p["_geo"]
+    admin = {**(ident.get("user") or {}), "id": ident["user_id"], "role": ident.get("role"),
+             "company_id": ident["company_id"],
+             "company_name": (ident.get("user") or {}).get("company_name")}
+    short = dm_actions.pretty_address(geo["label"], with_borough=False)
+    made = await create_project(ProjectCreate(name=short, address=geo["label"]), admin=admin)
+    pid = str(getattr(made, "id", None) or (made or {}).get("id"))
+    project = await db.projects.find_one({"_id": to_query_id(pid)})
+    if not project:
+        raise RuntimeError("project not stored")
+    await _dm_audit(ident, p, "project", pid, None, {"name": short, "address": project.get("address")})
+    # Watching starts now, not at the next sweep.
+    asyncio.create_task(run_dob_sync_for_project(project))
+    asyncio.create_task(_dot_sync_tick(project_ids=[pid]))
+    return ({"kind": "job", "project_id": pid, "job": short},
+            dm_actions.say(lang, "job_done", job=short))
+
+
+async def _dm_do_add_sub(ident: dict, p: dict):
+    lang = p.get("lang") or "en"
+    project = await db.projects.find_one({"_id": to_query_id(p["_project_id"]),
+                                          "company_id": _company_id_filter(ident["company_id"])})
+    if not project:
+        raise RuntimeError("job gone")
+    before = [dict(r) for r in _active_assignments(project)]
+    await _save_roster(p["_project_id"], before + [{"trade": p["trade"], "company": p["company"]}])
+    job = _dm_job_label(project)
+    await _dm_audit(ident, p, "project", p["_project_id"],
+                    {"subs": len(before)}, {"added": {"trade": p["trade"], "company": p["company"]}})
+    return ({"kind": "roster", "project_id": p["_project_id"], "before": before,
+             "company": p["company"], "job": job},
+            dm_actions.say(lang, "sub_done", company=p["company"], job=job, trade=p["trade"]))
+
+
+async def _dm_save_person(ident: dict, name: str, company: str, phone: str,
+                          role: str = "") -> Tuple[dict, Optional[dict]]:
+    """Save (or update) a person in People by their number; (row, before)."""
+    company_id = str(ident["company_id"])
+    number = wa_mention.phone(phone)
+    jid = f"{number}@c.us"
+    before = await db[wa_sender_map.COLLECTION].find_one({"company_id": company_id, "sender_jid": jid})
+    now = datetime.now(timezone.utc)
+    await db[wa_sender_map.COLLECTION].update_one(
+        {"company_id": company_id, "sender_jid": jid},
+        {"$set": {"person_name": name, "sub_company": company, "phone": number,
+                  **({"role": role} if role else {}), "set_by": ident["user_id"], "set_at": now},
+         "$setOnInsert": {"company_id": company_id, "sender_jid": jid}},
+        upsert=True)
+    row = await db[wa_sender_map.COLLECTION].find_one({"company_id": company_id, "sender_jid": jid})
+    await _sender_map_apply(company_id, jid, row)
+    await _stamp_sender_phone(company_id, jid, number, "people", now)
+    return row, before
+
+
+def _dm_person_view(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {k: row.get(k) for k in ("person_name", "sub_company", "role")} | {
+        "phone_last4": dm_actions.last4(row.get("phone"))}
+
+
+async def _dm_do_add_person(ident: dict, p: dict):
+    lang = p.get("lang") or "en"
+    row, before = await _dm_save_person(ident, p["name"], p["company"], p["phone"], p.get("role") or "")
+    await _dm_audit(ident, p, "whatsapp_sender_map", str(row["_id"]),
+                    _dm_person_view(before), _dm_person_view(row))
+    return ({"kind": "person", "jid": row["sender_jid"], "name": p["name"],
+             "before": {k: v for k, v in (before or {}).items() if k != "_id"} or None},
+            dm_actions.say(lang, "person_done", name=p["name"]))
+
+
+async def _dm_do_set_punch_contact(ident: dict, p: dict):
+    lang = p.get("lang") or "en"
+    project = await db.projects.find_one({"_id": to_query_id(p["_project_id"]),
+                                          "company_id": _company_id_filter(ident["company_id"])})
+    if not project or not any(str(r.get("id")) == p["_row_id"] for r in _active_assignments(project)):
+        raise RuntimeError("sub gone")
+    made = None
+    if not p.get("_person_id"):
+        row, before = await _dm_save_person(ident, p["name"], p["company"], p["phone"])
+        p["_person_id"] = str(row["_id"])
+        made = {"jid": row["sender_jid"],
+                "before": {k: v for k, v in (before or {}).items() if k != "_id"} or None}
+    current = dict((await _whatsapp_project_settings(p["_project_id"])).get("punch_contacts") or {})
+    after = {**current, p["_row_id"]: p["_person_id"]}
+    await _set_whatsapp_project_fields(p["_project_id"], ident["company_id"],
+                                       {"punch_contacts": after}, actor=ident["user_id"])
+    job = _dm_job_label(project)
+    await _dm_audit(ident, p, "project", p["_project_id"], {"punch_contacts": current},
+                    {"punch_contacts": after})
+    return ({"kind": "settings", "project_id": p["_project_id"], "field": "punch_contacts",
+             "before": current, "job": job, "person": made},
+            dm_actions.say(lang, "contact_done", name=p["name"], company=p["company"], job=job))
+
+
+async def _dm_do_set_setting(ident: dict, p: dict):
+    lang = p.get("lang") or "en"
+    project = await db.projects.find_one({"_id": to_query_id(p["_project_id"]),
+                                          "company_id": _company_id_filter(ident["company_id"])})
+    if not project:
+        raise RuntimeError("job gone")
+    before = (await _whatsapp_project_settings(p["_project_id"])).get(p["setting"])
+    await _set_whatsapp_project_fields(p["_project_id"], ident["company_id"],
+                                       {p["setting"]: p["value"]}, actor=ident["user_id"])
+    job = _dm_job_label(project)
+    await _dm_audit(ident, p, "project", p["_project_id"], {p["setting"]: before},
+                    {p["setting"]: p["value"]})
+    key = {("chase_weekends", True): "weekends_on_done", ("chase_weekends", False): "weekends_off_done",
+           ("punch_sends", "live"): "live_done", ("punch_sends", "shadow"): "practice_done"}[
+        (p["setting"], p["value"])]
+    return ({"kind": "settings", "project_id": p["_project_id"], "field": p["setting"],
+             "before": before, "job": job},
+            dm_actions.say(lang, key, job=job))
+
+
+_DM_DO = {"add_job": _dm_do_add_job, "add_sub": _dm_do_add_sub, "add_person": _dm_do_add_person,
+          "set_punch_contact": _dm_do_set_punch_contact, "set_setting": _dm_do_set_setting}
+
+
+async def _dm_restore_person(ident: dict, jid: str, before: Optional[dict]) -> None:
+    coll = db[wa_sender_map.COLLECTION]
+    q = {"company_id": str(ident["company_id"]), "sender_jid": jid}
+    if before:
+        await coll.update_one(q, {"$set": {k: v for k, v in before.items()
+                                           if k not in ("company_id", "sender_jid")}})
+    else:
+        await coll.delete_one(q)
+
+
+async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
+    """"undo" / "never mind": the last change, within 10 minutes, reversed."""
+    last = await _dm_state_get(DM_ACTION_LAST, dm_chat)
+    if not last or not last.get("undo"):
+        await _dm_say(dm_chat, lang, "nothing_to_undo")
+        return
+    u = last["undo"]
+    if not _dm_is_admin(ident) and u.get("kind") != "person":
+        await _dm_say(dm_chat, lang, "admin_only")
+        return
+    try:
+        if u["kind"] == "job":
+            now = datetime.now(timezone.utc)
+            await db.projects.update_one(
+                {"_id": to_query_id(u["project_id"]), "company_id": _company_id_filter(ident["company_id"])},
+                {"$set": {"marked_for_deletion": True, "marked_by": ident["user_id"], "marked_at": now,
+                          "updated_at": now, "delete_batch_id": owner_portal.new_batch_id()}})
+            what = dm_actions.say(lang, "undo_job", job=u["job"])
+        elif u["kind"] == "roster":
+            await _save_roster(u["project_id"], u["before"])
+            what = dm_actions.say(lang, "undo_sub", company=u["company"], job=u["job"])
+        elif u["kind"] == "person":
+            await _dm_restore_person(ident, u["jid"], u.get("before"))
+            what = dm_actions.say(lang, "undo_person_old" if u.get("before") else "undo_person_new",
+                                  name=u["name"])
+        else:
+            await _set_whatsapp_project_fields(u["project_id"], ident["company_id"],
+                                               {u["field"]: u["before"]}, actor=ident["user_id"])
+            if u.get("person"):
+                await _dm_restore_person(ident, u["person"]["jid"], u["person"].get("before"))
+            what = dm_actions.say(lang, "undo_contact" if u["field"] == "punch_contacts"
+                                  else "undo_setting", job=u["job"])
+    except Exception as e:
+        logger.warning(f"[dm-action] undo failed: {type(e).__name__}: {e}")
+        await _dm_say(dm_chat, lang, "failed")
+        return
+    await _dm_state_clear(DM_ACTION_LAST, dm_chat)
+    await audit_log("whatsapp_dm_undo", ident["user_id"], u["kind"],
+                    str(u.get("project_id") or u.get("jid") or ""),
+                    {"undo": {k: v for k, v in u.items() if k != "before"}, "via": "whatsapp_dm"})
+    await _dm_say(dm_chat, lang, "undone", what=what)
+
+
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                               message_id: str, heard: Optional[str] = None,
                               quoted: Optional[dict] = None) -> None:
@@ -51704,6 +52448,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     now = datetime.now(timezone.utc)
     history = await _dm_history(dm_chat, now)
     await _dm_store_inbound(ident, dm_chat, text, message_id)
+    # An open question about a change ("Add it?", "Which borough?"): this
+    # is its answer -- a 👍 too, before it reads as a thank-you.
+    if await _dm_action_turn(ident, dm_chat, text, new=False):
+        return
     social = None if qbody else wa_react.social_reaction(text)
     if social:
         # 🙏 for a thank-you; a compliment gets the same here — a private
@@ -51714,6 +52462,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     # "remind me …", and the YES / NO to one (Upcoming): personal, so
     # before the jobs.
     if await _upcoming_dm_turn(ident, dm_chat, text, now):
+        return
+    # A change asked in their own words (lib/dm_actions.py): add a job, a
+    # sub, a person, a punch contact; a job's settings; undo.
+    if await _dm_action_turn(ident, dm_chat, text, new=True):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
