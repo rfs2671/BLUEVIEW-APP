@@ -29,6 +29,9 @@ export const TYPE_LABELS = {
   // two open): its summary names them; none of them was changed.
   update_review: 'Unclear update',
   voice_review: 'Voice note not processed',
+  // A punch post or chase refused: the person is not in People, a user, or
+  // a sub's punch contact (Oct 11).
+  recipient_review: 'Not sent — check who',
 };
 
 export const VERDICTS = [

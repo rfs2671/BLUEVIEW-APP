@@ -48583,6 +48583,19 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                                                     b["items"], list(b["nudged"].values())))
                 report["admin_dm"] += 1
             else:
+                why = await _recipient_refusal(
+                    b["company_id"], owner, group_id=gid,
+                    spoke=str((first.get("evidence") or {}).get("sender") or ""))
+                if why:
+                    # Not someone the company named, nor the owner who spoke
+                    # here: no nudge, a review row (kind "refused").
+                    row.update(kind="refused", refused=why)
+                    report["refused"] = report.get("refused", 0) + 1
+                    await _recipient_refused(b["company_id"], pid, gid, "chase", rid, owner, why,
+                                             wa_chase.quote(first), now)
+                    await db[wa_chase.COLLECTION].update_one(
+                        {"_id": rid}, {"$setOnInsert": row}, upsert=True)
+                    continue
                 # The post as it would go out: a real @mention when the
                 # owner's number is known (lib/wa_mention), replying to the
                 # message the nudge quotes (WaAPI wants its serialized id).
@@ -61503,10 +61516,12 @@ def _punch_caption(parsed: dict, body: str) -> str:
 
 
 async def _punch_people(project: dict, company_id: str) -> List[dict]:
-    """Who works on this job and in which trade: People mapped to a sub of
-    the job (its trade from the job's trade list), and checked-in workers
-    (their trade as checked in). Each with a WhatsApp id to @mention."""
-    pid = str(project.get("_id") or project.get("id") or "")
+    """Who a punch item may go to: People (the company's WhatsApp senders)
+    mapped to a sub of this job, with that sub's trade on the job -- the only
+    ones "Who gets what?" suggests -- and the company's own users (named by
+    the walker: "paint → Chris"). NEVER a worker who checked in (588, Oct 11
+    8:31 PM: the newest electrician to check in, "Yeyzmar B Bate (Power
+    Direct)", was suggested; a live send would have messaged a stranger)."""
     trade_of_co: Dict[str, List[str]] = {}
     for r in _active_assignments(project):
         t = punch.trade_word(str(r.get("trade") or ""))
@@ -61520,31 +61535,19 @@ async def _punch_people(project: dict, company_id: str) -> List[dict]:
     for m in maps:
         co = m.get("sub_company") or ""
         trades = trade_of_co.get(multilang.fold(co), [])
-        if trades and m.get("sender_jid"):
+        if m.get("sender_jid") and (m.get("person_name") or "").strip():
             out.append({**wa_sender_map.owner_from_map(m), "company": co, "trades": trades,
                         "jid": m.get("sender_jid")})
     try:
-        # The crews on the job lately (14 days), newest first: not everyone
-        # who ever checked in, and the same pick every time.
-        since = datetime.now(timezone.utc) - timedelta(days=14)
-        rows = await db.checkins.find(
-            {"project_id": pid, "company_id": _company_id_filter(company_id),
-             "is_deleted": {"$ne": True}, "check_in_time": {"$gte": since}},
-            {"worker_id": 1, "worker_name": 1, "worker_phone": 1, "company": 1, "trade": 1,
-             "worker_company": 1, "worker_trade": 1}).sort("check_in_time", -1).to_list(5000)
+        users = await db.users.find({"company_id": _company_id_filter(company_id),
+                                     "is_deleted": {"$ne": True}}).to_list(500)
     except Exception:
-        rows = []
-    seen = set()
-    for r in rows:
-        digits = wa_dm.phone_digits(r.get("worker_phone") or "")
-        t = punch.trade_word(str(r.get("trade") or r.get("worker_trade") or ""))
-        if not digits or not t or digits in seen:
-            continue
-        seen.add(digits)
-        out.append({"kind": "worker", "id": str(r.get("worker_id") or digits),
-                    "name": r.get("worker_name") or "", "status": "resolved", "reason": None,
-                    "company": r.get("company") or r.get("worker_company") or "",
-                    "trades": [t], "jid": f"{digits}@c.us"})
+        users = []
+    for u in users:
+        digits = wa_dm.phone_digits(u.get("phone") or "")
+        if (u.get("name") or "").strip() and digits:
+            out.append({"kind": "user", "id": str(u["_id"]), "name": u.get("name"),
+                        "company": "GC", "trades": [], "jid": f"{digits}@c.us"})
     return out
 
 
@@ -62005,6 +62008,88 @@ async def _punch_due_turn(ident, sess, dm_chat, text) -> bool:
     return True
 
 
+# ── WHO MAY BE MESSAGED ──────────────────────────────────────────────────────
+#
+# An outbound punch post or chase @mentions a person on the company's behalf.
+# Only someone the company named may be: a user of the company, a person in
+# People (Project → WhatsApp → People) with that exact WhatsApp id, or -- for
+# a chase -- the item's own owner who spoke in that group. Anyone else (a
+# worker who only checked in) is refused: logged, and a review row in
+# Attention instead of the message.
+
+RECIPIENT_REVIEW_TYPE = "recipient_review"
+RECIPIENT_REFUSED = "not in People, your users, or a sub's punch contact"
+
+
+async def _recipient_refusal(company_id: Any, person: Optional[dict], *,
+                             group_id: Optional[str] = None,
+                             spoke: Optional[str] = None) -> Optional[str]:
+    """None when `person` may be messaged or @mentioned for this company;
+    else why not. A chase passes `group_id` and `spoke` (who said the item's
+    message): its owner who spoke in that group may be."""
+    p = person or {}
+    jid = str(p.get("jid") or "")
+    if jid and spoke and wa_dm.phone_digits(jid) and \
+            wa_dm.phone_digits(jid) == wa_dm.phone_digits(spoke):
+        return None                         # the item's own owner, who said it
+    try:
+        if p.get("kind") == "user" and p.get("id"):
+            u = await db.users.find_one({"_id": to_query_id(str(p["id"])),
+                                         "company_id": _company_id_filter(company_id),
+                                         "is_deleted": {"$ne": True}}, {"phone": 1})
+            if u:
+                return None
+        if p.get("kind") == "sender_map" and p.get("id"):
+            m = await db[wa_sender_map.COLLECTION].find_one(
+                {"_id": to_query_id(str(p["id"])), "company_id": str(company_id)}) \
+                or await db[wa_sender_map.COLLECTION].find_one(
+                    {"_id": str(p["id"]), "company_id": str(company_id)})
+            if m and (not jid or m.get("sender_jid") == jid):
+                return None
+        if jid and await db[wa_sender_map.COLLECTION].find_one(
+                {"company_id": str(company_id), "sender_jid": jid}, {"_id": 1}):
+            return None
+        if jid and group_id and await db.whatsapp_messages.find_one(
+                {"group_id": group_id, "company_id": _company_id_filter(company_id),
+                 "sender_jid": jid}, {"_id": 1}):
+            return None                     # the owner who spoke in this group
+    except Exception as e:
+        logger.warning(f"[recipients] check failed: {type(e).__name__}")
+        return "the check could not be made"
+    return RECIPIENT_REFUSED
+
+
+async def _recipient_refused(company_id: Any, project_id: Any, group_id: Optional[str],
+                             what: str, ref: str, person: Optional[dict], why: str,
+                             quote: str, now: datetime) -> None:
+    """A refused recipient: logged (never their number), and one review row
+    in Attention ("Not sent: …"), once per refusal."""
+    p = person or {}
+    who = p.get("name") or p.get("company") or "someone"
+    logger.warning(f"[recipients] refused {what} ref={ref} kind={p.get('kind')} "
+                   f"jid_last4={wa_dm.phone_digits(p.get('jid') or '')[-4:]}: {why}")
+    key = f"refused:{what}:{ref}:{p.get('kind')}:{p.get('id') or wa_dm.phone_digits(p.get('jid') or '')}"
+    try:
+        if await db.attention_items.find_one({"type": RECIPIENT_REVIEW_TYPE,
+                                              "evidence.message_id": key}, {"_id": 1}):
+            return
+        await db.attention_items.insert_one({
+            "company_id": str(company_id), "project_id": str(project_id), "group_id": group_id,
+            "type": RECIPIENT_REVIEW_TYPE, "status": "open",
+            "summary": f"Not sent ({what}): {who} is {why}."[:200],
+            "owner": {"kind": "none", "id": None, "status": "unresolved", "jid": None},
+            "requester": None, "due": {"due_text": None, "due_at": None, "due_source": "none"},
+            "importance": "high", "tags": ["recipient"],
+            "evidence": {"message_id": key, "message_key": key, "quote": quote[:300],
+                         "verified": True, "sent_at": now, "kind": what},
+            "extraction": {"source": "recipient_guard", "prompt_version": wa_attention.PROMPT_VERSION},
+            "needs_review": True, "excluded_from_metrics": True, "topic": [], "multi": False,
+            "history": [], "parts_done": [], "review": None, "created_at": now, "updated_at": now,
+        })
+    except Exception as e:
+        logger.warning(f"[recipients] review row failed: {type(e).__name__}")
+
+
 async def _punch_send(ident: dict, sess: dict) -> str:
     """Make the punch items (and their attention items: confirmed owner, due
     date, chased by the chase engine), then post one message per assignee --
@@ -62017,6 +62102,24 @@ async def _punch_send(ident: dict, sess: dict) -> str:
     if not group_id:
         return ("This job has no WhatsApp group linked (Project → WhatsApp), so there is "
                 "nowhere to send the punch list. The draft is kept.")
+    # NO ONE THE COMPANY DID NOT NAME: every assignee checked before anything
+    # is made or posted (live or shadow).
+    refused = []
+    for t, person in sorted((sess.get("assign") or {}).items()):
+        why = await _recipient_refusal(sess["company_id"], person) if person else None
+        if why:
+            refused.append((t, person, why))
+            await _recipient_refused(sess["company_id"], sess["project_id"], group_id, "punch",
+                                     f"{sess['_id']}:{t}", person, why,
+                                     f"Punch list ({t}) for {person.get('name') or '?'}", now)
+    if refused:
+        assign = dict(sess.get("assign") or {})
+        for t, _p, _w in refused:
+            assign[t] = None
+        await _punch_save(sess, status="assign", assign=assign)
+        names = "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)
+        return (f"Not sent: {names} — {RECIPIENT_REFUSED}. Nothing was posted.\n\n"
+                + punch.assign_text(assign))
     walker_digits = wa_dm.phone_digits(sess.get("chat") or "")
     by_person: Dict[str, dict] = {}
     for it in punch.ordered([i for i in sess["items"] if i.get("status", "draft") != "dropped"]):
