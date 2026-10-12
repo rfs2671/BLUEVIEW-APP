@@ -66313,29 +66313,48 @@ async def patch_project_punch(project_id: str, pid: str, body: dict,
                                                     "(open, ready_to_check, closed), assignee or due.")
     now = datetime.now(timezone.utc)
     by = actor_id(current_user)
+    # Every field is checked before anything is written (Codex review on
+    # #763): a 422 means nothing of the patch was saved.
+    person = (await _punch_reassign_to(r, str(body["assignee"] or ""), str(company_id))
+              if "assignee" in body else None)
+    due_w = _punch_due_words(body["due"]) if "due" in body else None
     sets = {k: str(body[k])[:60] for k in ("trade", "floor", "area") if k in body}
     if sets:
         await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {
             "$set": sets, "$push": {"history": {"at": now, "action": "edited",
                                                 "by": by, "quote": str(sets)}}})
-    if "assignee" in body:
-        await _punch_reassign(r, str(body["assignee"] or ""), str(company_id), now, by)
-    if "due" in body:
-        await _punch_change_due(r, body["due"], now, by)
+    if person:
+        await _punch_reassign(r, person, now, by)
+    if due_w:
+        await _punch_change_due(r, due_w, now, by)
     if "status" in body and body["status"] != r.get("status"):
         await _punch_set_status(r, body["status"], now, by=by, quote="(set in the app)")
     return _punch_view(await db[punch.COLLECTION].find_one({"_id": r["_id"]}))
 
 
-async def _punch_reassign(r: dict, key: str, company_id: str, now: datetime, by: str) -> None:
-    """Give the item to someone else from the walk's own list (users, People,
-    punch contacts), never a checked-in worker; the chase's owner follows.
-    Nothing is sent from here."""
+async def _punch_reassign_to(r: dict, key: str, company_id: str) -> dict:
+    """Who `key` names on the walk's own list (users, People, punch
+    contacts), never a checked-in worker; else 422."""
     pool = await _punch_name_pool({"company_id": company_id, "project_id": str(r.get("project_id"))})
     person = next((p for p in pool if _punch_person_key(p) == key), None) if key else None
     if not person or await _recipient_refusal(company_id, person):
         raise HTTPException(status_code=422, detail="Pick someone from the list (a user, "
                                                     "People or a sub's punch contact).")
+    return person
+
+
+def _punch_due_words(words: Any) -> str:
+    """The due as kept ("Fri", "tomorrow", "ASAP", "no due date"); else 422."""
+    w = punch.due_words(words)
+    if not w:
+        raise HTTPException(status_code=422, detail="Due: a day (Fri, tomorrow, 10/15), "
+                                                    "ASAP or no due date.")
+    return w
+
+
+async def _punch_reassign(r: dict, person: dict, now: datetime, by: str) -> None:
+    """Give the item to `person` (checked by _punch_reassign_to); the
+    chase's owner follows. Nothing is sent from here."""
     a = {k: person.get(k) for k in ("kind", "id", "name", "company", "jid")}
     await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {
         "$set": {"assignee": a, "assigned_at": now},
@@ -66352,13 +66371,9 @@ async def _punch_reassign(r: dict, key: str, company_id: str, now: datetime, by:
                                   "evidence_kind": "punch", "verified": True, "by": "punch"}}})
 
 
-async def _punch_change_due(r: dict, words: Any, now: datetime, by: str) -> None:
-    """A new due ("Fri", "tomorrow", "ASAP", "no due date"): the item's and
-    its chase's. Nothing is sent from here."""
-    w = punch.due_words(words)
-    if not w:
-        raise HTTPException(status_code=422, detail="Due: a day (Fri, tomorrow, 10/15), "
-                                                    "ASAP or no due date.")
+async def _punch_change_due(r: dict, w: str, now: datetime, by: str) -> None:
+    """A new due (words checked by _punch_due_words): the item's and its
+    chase's. Nothing is sent from here."""
     at = punch.due_date(w, now)
     due = {"due_text": "" if w == punch.NO_DUE else w, "due_at": at.isoformat() if at else None}
     await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {

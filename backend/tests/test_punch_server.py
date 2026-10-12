@@ -429,6 +429,25 @@ class PunchListScreen(unittest.TestCase):
         self.assertEqual(e.exception.status_code, 422)
         self.assertTrue(now)
 
+    def test_a_bad_field_saves_nothing_of_the_patch(self):
+        # Codex review on #763: a valid assignee with a bad due was saved,
+        # then the call said 422.
+        db = self._db()
+        row = db[punch.COLLECTION].rows[0]
+        people = self._call(db, server.get_project_punch_people, "p588", current_user=self.PM)
+        other = next(p for p in people["people"] if p["name"] not in ("", row["assignee"]["name"]))
+        before = (dict(row["assignee"]), row.get("floor"), len(row.get("history") or []))
+        for patch_ in ({"assignee": other["key"], "due": "someday"},
+                       {"floor": "9", "assignee": "worker:w1"},
+                       {"floor": "9", "due": "someday", "status": "closed"}):
+            with self.assertRaises(HTTPException) as e:
+                self._call(db, server.patch_project_punch, "p588", row["pid"], patch_,
+                           current_user=self.PM)
+            self.assertEqual(e.exception.status_code, 422, patch_)
+            self.assertEqual((row["assignee"], row.get("floor"), len(row.get("history") or [])),
+                             before, patch_)
+            self.assertEqual(row["status"], "open")
+
     def test_every_photo_of_an_item(self):
         db = self._db()
         row = next(r for r in db[punch.COLLECTION].rows if r.get("photo_key"))
