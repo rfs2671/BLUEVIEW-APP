@@ -255,7 +255,7 @@ class TheDiag(unittest.TestCase):
                                           "send_mode": "shadow"})
         out = []
         with patch("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a)))):
-            _run(db, diag.main_async(argparse.Namespace(since=NOW.isoformat(), walker="")))
+            _run(db, diag.main_async(argparse.Namespace(since=NOW.isoformat(), walker=""), server))
         text = "\n".join(out)
         self.assertIn("punch item P-588-1 → Dov [sender_map] send_mode shadow", text)
         self.assertIn("job's Punch sends: live", text)
