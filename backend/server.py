@@ -48583,15 +48583,16 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
                                                     b["items"], list(b["nudged"].values())))
                 report["admin_dm"] += 1
             else:
+                owner_co = b["company_id"]
                 why = await _recipient_refusal(
-                    b["company_id"], owner, group_id=gid,
+                    owner_co, owner, group_id=gid,
                     spoke=str((first.get("evidence") or {}).get("sender") or ""))
                 if why:
                     # Not someone the company named, nor the owner who spoke
                     # here: no nudge, a review row (kind "refused").
                     row.update(kind="refused", refused=why)
                     report["refused"] = report.get("refused", 0) + 1
-                    await _recipient_refused(b["company_id"], pid, gid, "chase", rid, owner, why,
+                    await _recipient_refused(owner_co, pid, gid, "chase", rid, owner, why,
                                              wa_chase.quote(first), now)
                     await db[wa_chase.COLLECTION].update_one(
                         {"_id": rid}, {"$setOnInsert": row}, upsert=True)
