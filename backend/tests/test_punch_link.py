@@ -3,8 +3,9 @@
 Every punch DM / post ends with a private no-login link per assignee
 (signed; one per assignee per job). The phone page shows only their open
 items on that job, full photos, location, due, and "Mark done" with a photo
--> ready to check. It stops working when all their items are closed or after
-30 days. Shadow mode makes the link and shows it in the shadow text; nothing
+-> ready to check. It works while any of their items is not closed, until
+30 days after the last activity (live 588, Oct 12 10:47 #12: one stable link,
+tests/test_punch_link_1047.py). Shadow mode makes the link and shows it in the shadow text; nothing
 is sent. Company-scoped; follows the retention and project-delete paths.
 """
 
@@ -171,7 +172,7 @@ class ThePage(unittest.TestCase):
         self.assertEqual(att["status"], "possibly_done")         # not chased; a GC closes it
         html = _body(_call(self.db, server.public_punch_link, self.tok, done=r["pid"]))
         self.assertIn("marked done — ready to check", html)
-        self.assertIn("waiting for the GC to check it", html)
+        self.assertIn(punch_link.READY_TEXT, html)
 
     def test_mark_done_without_a_photo(self):
         r = self.mine[0]
@@ -204,19 +205,17 @@ class ThePage(unittest.TestCase):
         link["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
         self.assertEqual(self.page().status_code, 404)
 
-    def test_when_all_their_items_are_closed_it_stops_for_good(self):
+    def test_when_all_their_items_are_closed_it_stops_until_one_is_not(self):
+        # #764 revoked it for good; live 588 #12: the same link comes back.
         for r in self.mine:
             r["status"] = "closed"
         self.assertEqual(self.page().status_code, 404)
-        link = next(l for l in self.db[punch_link.COLLECTION].rows
-                    if l["assignee_key"] == punch_link.person_key(self.mike))
-        self.assertEqual(link["revoked_reason"], "all_closed")
-        self.mine[0]["status"] = "open"                         # reopened later: a new link
-        self.assertEqual(self.page().status_code, 404)
+        self.assertIsNone(self._link()["revoked_at"])
+        self.mine[0]["status"] = "open"                         # reopened later: the same link
+        self.assertEqual(self.page().status_code, 200)
         url = _call(self.db, server._punch_link_for, dry.COMPANY, "p588", self.mike,
                     datetime.now(timezone.utc))
-        self.assertNotEqual(url, self.url)
-        self.assertEqual(self.page(URL.search(url).group(1)).status_code, 200)
+        self.assertEqual(url, self.url)
 
     def test_a_reassigned_item_leaves_the_old_link(self):
         r = self.mine[0]
@@ -241,14 +240,15 @@ class ThePage(unittest.TestCase):
         return next(l for l in self.db[punch_link.COLLECTION].rows
                     if l["assignee_key"] == punch_link.person_key(self.mike))
 
-    def test_closing_their_last_item_revokes_it_then_and_there(self):
+    def test_closing_their_last_item_revokes_nothing(self):
         now = datetime.now(timezone.utc)
         for r in self.mine[:-1]:
             r["status"] = "closed"
         _call(self.db, server._punch_set_status, self.mine[-1], "closed", now, by="u_pm", quote="ok")
-        self.assertEqual(self._link()["revoked_reason"], "all_closed")   # never opened
-        self.mine[-1]["status"] = "open"                                  # reopened before a visit
-        self.assertEqual(self.page().status_code, 404)
+        self.assertIsNone(self._link()["revoked_at"])
+        self.assertEqual(self.page().status_code, 404)                    # nothing left open
+        self.mine[-1]["status"] = "open"                                  # reopened: back
+        self.assertEqual(self.page().status_code, 200)
 
     def test_closing_one_of_several_keeps_it(self):
         _call(self.db, server._punch_set_status, self.mine[0], "closed",

@@ -8,6 +8,7 @@ import {
   Image,
   ActivityIndicator,
   Modal,
+  TextInput,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -20,7 +21,7 @@ import { punchAPI } from '../../../src/utils/api';
 import {
   statusLabel, floorLabel, filterChips, whereLine, whoLine, itemWords, historyLine,
   emptyText, mentionLine, statusChips, assigneeChips, itemActions, photoList,
-  DUE_CHOICES, STATUS_EXPLAINER, showAssigneeRow, photoNote,
+  DUE_CHOICES, STATUS_EXPLAINER, showAssigneeRow, photoNote, reopenPatch, reopenLine,
 } from '../../../src/utils/punchList';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -167,7 +168,8 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
   const { width, height } = useWindowDimensions();
   const [urls, setUrls] = useState({});            // which -> url | 'none'
   const [full, setFull] = useState(null);          // which shown full screen
-  const [mode, setMode] = useState(null);          // 'reassign' | 'due'
+  const [mode, setMode] = useState(null);          // 'reassign' | 'due' | 'reopen'
+  const [note, setNote] = useState('');
   const [people, setPeople] = useState(null);
   const [busy, setBusy] = useState(false);
   const photos = photoList(item);
@@ -193,6 +195,7 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
     try {
       onSaved(await punchAPI.edit(projectId, item.pid, patch));
       setMode(null);
+      setNote('');
     } catch (e) {
       const why = e && e.response && e.response.data && e.response.data.detail;
       toast?.error?.('Not saved', typeof why === 'string' ? why : 'Try again.');
@@ -256,6 +259,7 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
             <Text style={[styles.line, text]}>{itemWords(item)}</Text>
             <Text style={[styles.small, muted]}>{whereLine(item)}</Text>
             <Text style={[styles.small, muted]}>{whoLine(item)}</Text>
+            {reopenLine(item) ? <Text style={[styles.small, text]}>{reopenLine(item)}</Text> : null}
             {item.completion && item.completion.quote ? (
               <Text style={[styles.small, muted]}>{`Done, said: “${item.completion.quote}”`}</Text>
             ) : null}
@@ -264,7 +268,7 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
               <View style={styles.buttons}>
                 {busy ? <ActivityIndicator size="small" /> : itemActions(item, canAct).map((a) => (
                   button(a.key, a.label, () => (a.patch ? act(a.patch)
-                    : a.key === 'reassign' ? openReassign() : setMode(mode === 'due' ? null : 'due')),
+                    : a.key === 'reassign' ? openReassign() : setMode(mode === a.key ? null : a.key)),
                   mode === a.key)
                 ))}
               </View>
@@ -272,6 +276,17 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
             {canAct && mode === 'due' && (
               <View style={styles.buttons}>
                 {DUE_CHOICES.map((d) => button(d.words, d.label, () => act({ due: d.words })))}
+              </View>
+            )}
+            {canAct && mode === 'reopen' && (
+              <View style={styles.more}>
+                <TextInput value={note} onChangeText={setNote} maxLength={300} multiline
+                           placeholder="What is still wrong? (shown on their page)"
+                           placeholderTextColor={muted.color}
+                           style={[styles.note, text, { borderColor: colors.glass.border }]} />
+                <View style={styles.buttons}>
+                  {button('reopen-confirm', 'Reopen', () => act(reopenPatch(note)))}
+                </View>
               </View>
             )}
             {canAct && mode === 'reassign' && (
@@ -342,6 +357,7 @@ const styles = StyleSheet.create({
   photoStrip: { flexGrow: 0, marginBottom: spacing.md },
   photo: { width: '100%', height: 300, borderRadius: 8 },
   buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.sm },
+  note: { borderWidth: 1, borderRadius: 8, padding: spacing.sm, minHeight: 60, fontSize: 14 },
   person: { borderWidth: 1, borderRadius: 8, padding: spacing.sm, marginBottom: spacing.xs },
   fullBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   fullClose: { position: 'absolute', top: 48, right: 20 },

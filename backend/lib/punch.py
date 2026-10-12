@@ -1503,6 +1503,16 @@ def super_verdict(text: str) -> Optional[str]:
     return None
 
 
+def reopen_note(text: str) -> Optional[str]:
+    """The why after a reopen: "P23 not done — still chipped at the corner"
+    -> "Still chipped at the corner"; None when nothing follows."""
+    m = _SUPER_NOT.match(str(text or ""))
+    if not m:
+        return None
+    rest = str(text)[m.end():].strip().lstrip("-—–:,;.!").strip()
+    return capitalize(rest)[:300] if rest else None
+
+
 # ── QUERIES (DM) ─────────────────────────────────────────────────────────────
 
 _Q_OPEN = re.compile(r"\bwhat'?s\s+open(?:\s+on\s+(?:floor\s+)?(?P<floor>\w+))?(?:\s+(?:at|on|for)\s+(?P<job>.+?))?\s*\??\s*$",

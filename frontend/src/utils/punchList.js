@@ -97,10 +97,23 @@ export function itemActions(it, canAct) {
   if (!canAct || !it) return [];
   const out = [];
   if (it.status !== 'closed') out.push({ key: 'close', label: 'Close', patch: { status: 'closed' } });
-  if (it.status !== 'open') out.push({ key: 'reopen', label: 'Reopen', patch: { status: 'open' } });
+  // Reopen asks for a note first (shown on the assignee's page: "Still
+  // chipped at the corner"), see reopenPatch.
+  if (it.status !== 'open') out.push({ key: 'reopen', label: 'Reopen' });
   out.push({ key: 'reassign', label: 'Reassign' });
   out.push({ key: 'due', label: 'Change due' });
   return out;
+}
+
+/** The reopen patch, with the admin's note when there is one. */
+export function reopenPatch(note) {
+  const n = String(note || '').trim();
+  return n ? { status: 'open', note: n } : { status: 'open' };
+}
+
+/** "Reopened: “Still chipped at the corner”" for an open item with a note. */
+export function reopenLine(it) {
+  return it && it.status === 'open' && it.reopen_note ? `Reopened: “${it.reopen_note}”` : '';
 }
 
 /** The due choices (the words the server reads). */

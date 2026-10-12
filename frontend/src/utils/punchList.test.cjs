@@ -111,6 +111,14 @@ ok(M.itemActions({ status: 'ready_to_check' }, true).map((a) => a.key).join() ==
 ok(M.itemActions({ status: 'closed' }, true).map((a) => a.key).join() === 'reopen,reassign,due', 'closed: reopen');
 ok(M.itemActions({ status: 'open' }, false).length === 0, 'not an admin or PM: no actions (only they close)');
 ok(M.itemActions({ status: 'open' }, true)[0].patch.status === 'closed', 'close sets closed');
+// Live 588, Oct 12 10:47 #11: a reopen carries the admin's note to the assignee's page.
+ok(!M.itemActions({ status: 'closed' }, true)[0].patch, 'reopen asks for a note first');
+ok(JSON.stringify(M.reopenPatch('  Still chipped at the corner ')) === '{"status":"open","note":"Still chipped at the corner"}',
+  'reopen with the note');
+ok(JSON.stringify(M.reopenPatch('')) === '{"status":"open"}', 'reopen without a note');
+ok(M.reopenLine({ status: 'open', reopen_note: 'Still chipped at the corner' }) === 'Reopened: “Still chipped at the corner”',
+  'the reopen note shows');
+ok(M.reopenLine({ status: 'ready_to_check', reopen_note: 'x' }) === '', 'only while open');
 ok(M.photoList({ photos: 2, completion: { has_photo: true } }).map((p) => p.which).join() === 'item,item:2,done',
   'every photo, then the done photo');
 ok(M.photoList({ has_photo: true }).map((p) => p.label).join() === 'Photo', 'one photo');
