@@ -13,7 +13,10 @@ longer side: the WhatsApp message it came from (the walk's photo log), its
 original through WaAPI download-media (server.download_image, which never
 returns a preview), uploaded next to the old one (<key>-full.jpg) and the
 item and its walk pointed at it. The old object is left (swept with the
-project). A photo WaAPI no longer has is reported, never guessed.
+project). A photo whose original is no longer to be had is labelled
+"Original unavailable — preview only", never guessed. The same repair runs
+once at startup for every photo with no quality on record
+(server.punch_photo_repair); this runs it on demand.
 """
 
 from __future__ import annotations
@@ -29,13 +32,6 @@ sys.path.insert(0, str(HERE))
 from prod_guard import add_guard_args, audited, check_guard, refuse_legacy_flag  # noqa: E402
 
 NAME = "punch_photo_backfill"
-
-
-def _r2_bytes(server, key):
-    try:
-        return server._r2_client.get_object(Bucket=server.R2_BUCKET_NAME, Key=key)["Body"].read()
-    except Exception:
-        return None
 
 
 def full_key(key: str) -> str:
@@ -54,62 +50,11 @@ async def main_async(a, db=None, server=None) -> int:
     if a.project:
         q["project_id"] = a.project
     rows = await db[punch.COLLECTION].find(q).to_list(5000)
-    fixed = missing = ok = 0
-    for r in rows:
-        walk = await db[punch.SESSIONS].find_one({"_id": r.get("walk_id")}) or {}
-        by_key = {p.get("key"): p.get("message_id") for p in walk.get("photos") or [] if p.get("key")}
-        for it in walk.get("items") or []:
-            if it.get("photo_key") and it.get("message_id"):
-                by_key.setdefault(it["photo_key"], it["message_id"])
-        # A run stopped after the walk was updated: the item's old key is
-        # found through the walk's new (-full) one.
-        by_key.update({k[:-len("-full.jpg")] + ".jpg": m for k, m in list(by_key.items())
-                       if k.endswith("-full.jpg") and k[:-len("-full.jpg")] + ".jpg" not in by_key})
-        comp = r.get("completion") or {}
-        slots = [("photo_key", r.get("photo_key"))] + \
-            [(f"extra_photos.{i}", k) for i, k in enumerate(r.get("extra_photos") or [])] + \
-            [("completion.photo_key", comp.get("photo_key"))]
-        for field, key in slots:
-            if not key:
-                continue
-            got = await asyncio.to_thread(_r2_bytes, server, key)
-            px = server._image_px(got) if got else (0, 0)
-            if got and max(px) >= server.FULL_PHOTO_MIN_PX:
-                ok += 1
-                continue
-            mid = comp.get("message_id") if field.startswith("completion") else by_key.get(key)
-            label = f"{r.get('pid')} {field} ({px[0]}x{px[1]})"
-            if not mid:
-                missing += 1
-                print(f"  {label}: no source message on record -- left")
-                continue
-            img = await server.download_image({"message_id_serialized": mid, "message_id": mid})
-            if not img:
-                missing += 1
-                print(f"  {label}: WaAPI has no original for {mid} -- left")
-                continue
-            w, h = server._image_px(img)
-            new = full_key(key)
-            fixed += 1
-            print(f"  {label} -> {w}x{h}, {len(img) // 1024} KB at {new}")
-            if not a.apply:
-                continue
-            if not await asyncio.to_thread(server._upload_to_r2, img, new, "image/jpeg"):
-                print(f"    upload failed -- left")
-                continue
-            # The walk first, the item last (Codex review on #762): the item
-            # pointing at the original is what marks this photo done, so a
-            # failure in between leaves it to be redone by the next run.
-            if walk:
-                sets = {f"items.{i}.photo_key": new for i, it in enumerate(walk.get("items") or [])
-                        if it.get("photo_key") == key}
-                sets.update({f"photos.{i}.key": new for i, p in enumerate(walk.get("photos") or [])
-                             if p.get("key") == key})
-                if sets:
-                    await db[punch.SESSIONS].update_one({"_id": walk["_id"]}, {"$set": sets})
-            await db[punch.COLLECTION].update_one({"_id": r["_id"]}, {"$set": {field: new}})
-    print(f"{len(rows)} item(s): {ok} photo(s) already full size, {fixed} "
-          f"{'replaced' if a.apply else 'to replace'}, {missing} without an original"
+    got = await server.punch_photo_repair(rows, apply=a.apply, store=db, say=print)
+    print(f"{len(rows)} item(s): {got['original']} photo(s) already full size, "
+          f"{got['replaced']} {'replaced' if a.apply else 'to replace'}, "
+          f"{got['preview_only']} without an original ({'labelled' if a.apply else 'to label'} "
+          f"\"Original unavailable — preview only\"), {got['left']} left"
           + ("" if a.apply else " (dry run: nothing written; --i-know to write)"))
     return 0
 

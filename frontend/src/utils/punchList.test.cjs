@@ -33,7 +33,7 @@ ok(M.historyLine({ action: 'closed', at: 'x', quote: 'P-588-4 ok' }, () => 'Oct 
   'closed with the words');
 ok(M.historyLine({ action: 'ready_to_check', quote: 'done P-588-4' }) === 'Marked done (ready to check): “done P-588-4”',
   'a sub\'s done is ready to check');
-ok(M.historyLine({ action: 'sent', quote: 'x' }) === 'Sent', 'sent has no quote');
+ok(M.historyLine({ action: 'sent', mode: 'live', quote: 'x' }) === 'Sent', 'sent has no quote');
 ok(/walkthrough/.test(M.emptyText(false)) && /filters/.test(M.emptyText(true)), 'empty text');
 ok(M.ADMIN_STATUSES.join() === 'open,ready_to_check,closed', 'admin statuses');
 
@@ -111,6 +111,14 @@ ok(M.itemActions({ status: 'ready_to_check' }, true).map((a) => a.key).join() ==
 ok(M.itemActions({ status: 'closed' }, true).map((a) => a.key).join() === 'reopen,reassign,due', 'closed: reopen');
 ok(M.itemActions({ status: 'open' }, false).length === 0, 'not an admin or PM: no actions (only they close)');
 ok(M.itemActions({ status: 'open' }, true)[0].patch.status === 'closed', 'close sets closed');
+// Live 588, Oct 12 10:47 #11: a reopen carries the admin's note to the assignee's page.
+ok(!M.itemActions({ status: 'closed' }, true)[0].patch, 'reopen asks for a note first');
+ok(JSON.stringify(M.reopenPatch('  Still chipped at the corner ')) === '{"status":"open","note":"Still chipped at the corner"}',
+  'reopen with the note');
+ok(JSON.stringify(M.reopenPatch('')) === '{"status":"open"}', 'reopen without a note');
+ok(M.reopenLine({ status: 'open', reopen_note: 'Still chipped at the corner' }) === 'Reopened: “Still chipped at the corner”',
+  'the reopen note shows');
+ok(M.reopenLine({ status: 'ready_to_check', reopen_note: 'x' }) === '', 'only while open');
 ok(M.photoList({ photos: 2, completion: { has_photo: true } }).map((p) => p.which).join() === 'item,item:2,done',
   'every photo, then the done photo');
 ok(M.photoList({ has_photo: true }).map((p) => p.label).join() === 'Photo', 'one photo');
@@ -121,6 +129,34 @@ ok(M.historyLine({ action: 'reassigned', quote: 'Chris Lopez' }) === 'Reassigned
 ok(/onPress=\{\(\) => setDetail\(it\)\}/.test(screen) && /<PunchDetail/.test(screen)
   && /resizeMode="contain"/.test(screen) && /data\.can_act/.test(screen),
   'tap opens the detail; photos full screen; actions only when the server says so');
+
+// ── Live 588, Mon Oct 12, 10:42–10:47 AM ─────────────────────────────────
+// 6. A shadow send read "Sent".
+ok(M.historyLine({ action: 'sent', mode: 'shadow', dest: 'DM to Chris Weiss (GC team)' })
+  === 'Would send (shadow) · DM to Chris Weiss (GC team)', 'shadow DM send');
+ok(M.historyLine({ action: 'sent', mode: 'shadow', dest: 'post in 588 Thomas St' })
+  === 'Would send (shadow) · post in 588 Thomas St', 'shadow group post');
+ok(M.historyLine({ action: 'sent', mode: 'live', dest: 'DM to Chris Weiss (GC team)' })
+  === 'Sent · DM to Chris Weiss (GC team)', 'a live send says Sent');
+// 7. The assignee row was missing with one assignee.
+ok(M.showAssigneeRow([{ key: 'user:u_chris', name: 'Chris Weiss' }]) && !M.showAssigneeRow([])
+  && !M.showAssigneeRow(null), 'the assignee row shows with one or more');
+ok(/showAssigneeRow\(data\.assignees\)/.test(screen) && !/assignees\.length > 1/.test(screen),
+  'the screen uses it');
+// 8. Item cards: one inset, not GlassCard's 32px plus the card's own.
+ok((screen.match(/contentStyle=\{styles\.cardContent\}/g) || []).length >= 2
+  && /cardContent: \{ padding: spacing\.md \}/.test(screen)
+  && !/card: \{ padding:/.test(screen), 'cards are padded once');
+// 1. A photo that is only the preview says so.
+ok(M.photoNote({ photo_quality: 'preview' }, 'item') === 'Original unavailable — preview only'
+  && M.photoNote({ photo_quality: 'original' }, 'item') === null
+  && M.photoNote({ completion: { photo_quality: 'preview' } }, 'done') === M.PREVIEW_ONLY,
+  'preview only, labelled');
+ok(/photoNote\(item, p\.which\)/.test(screen), 'under the photo in the detail');
+// Codex review on #765: a merged-in photo has its own quality.
+ok(M.photoNote({ photo_quality: 'original', extra_quality: ['preview'] }, 'item:2') === M.PREVIEW_ONLY
+  && M.photoNote({ photo_quality: 'preview', extra_quality: ['original'] }, 'item:2') === null,
+  'each extra photo its own label');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

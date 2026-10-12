@@ -80,6 +80,11 @@ export function statusChips(statuses, counts) {
     value: s, label: `${statusLabel(s)} ${c[s] || 0}` })));
 }
 
+/** The assignee filter row shows whenever the list has anyone on it. */
+export function showAssigneeRow(assignees) {
+  return (assignees || []).length >= 1;
+}
+
 /** The assignee filter: "All" then each person on the list. */
 export function assigneeChips(assignees) {
   return [{ value: '', label: 'Everyone' }].concat((assignees || []).map((a) => ({
@@ -92,10 +97,23 @@ export function itemActions(it, canAct) {
   if (!canAct || !it) return [];
   const out = [];
   if (it.status !== 'closed') out.push({ key: 'close', label: 'Close', patch: { status: 'closed' } });
-  if (it.status !== 'open') out.push({ key: 'reopen', label: 'Reopen', patch: { status: 'open' } });
+  // Reopen asks for a note first (shown on the assignee's page: "Still
+  // chipped at the corner"), see reopenPatch.
+  if (it.status !== 'open') out.push({ key: 'reopen', label: 'Reopen' });
   out.push({ key: 'reassign', label: 'Reassign' });
   out.push({ key: 'due', label: 'Change due' });
   return out;
+}
+
+/** The reopen patch, with the admin's note when there is one. */
+export function reopenPatch(note) {
+  const n = String(note || '').trim();
+  return n ? { status: 'open', note: n } : { status: 'open' };
+}
+
+/** "Reopened: “Still chipped at the corner”" for an open item with a note. */
+export function reopenLine(it) {
+  return it && it.status === 'open' && it.reopen_note ? `Reopened: “${it.reopen_note}”` : '';
 }
 
 /** The due choices (the words the server reads). */
@@ -122,7 +140,11 @@ export function photoList(it) {
 
 /** One history line: "Oct 13, 9:05 AM — Closed: “P-588-4 ok”". */
 export function historyLine(h, fmt = (iso) => iso) {
-  const what = ACTIONS[h.action] || String(h.action || '');
+  // A send says whether it went, and where (live 588, Oct 12: a shadow send
+  // read "Sent"): "Would send (shadow) · DM to Chris (GC team)".
+  const sent = h.action === 'sent'
+    ? `${h.mode === 'live' ? 'Sent' : 'Would send (shadow)'}${h.dest ? ` · ${h.dest}` : ''}` : null;
+  const what = sent || ACTIONS[h.action] || String(h.action || '');
   const when = h.at ? `${fmt(h.at)} — ` : '';
   const quote = !h.quote || h.action === 'sent' ? ''
     : (h.action === 'reassigned' || h.action === 'due') ? ` ${h.quote}` : `: “${h.quote}”`;
@@ -193,3 +215,15 @@ export function punchContactLine(row) {
 export const PUNCH_CONTACTS_NOTE = 'Only these people are suggested for a sub\'s punch items. '
   + 'Workers who check in are never messaged.';
 
+
+/** Under a photo that is only WhatsApp's preview (the original could not be had). */
+export const PREVIEW_ONLY = 'Original unavailable — preview only';
+
+export function photoNote(it, which) {
+  // 'item:N' is the (N-1)th extra photo, with its own quality.
+  const extra = /^item:(\d+)$/.exec(String(which || ''));
+  const q = which === 'done' ? it && it.completion && it.completion.photo_quality
+    : extra ? it && (it.extra_quality || [])[Number(extra[1]) - 2]
+      : it && it.photo_quality;
+  return q === 'preview' ? PREVIEW_ONLY : null;
+}
