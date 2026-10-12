@@ -405,7 +405,7 @@ class TheDryRuns(unittest.TestCase):
         sc = _json.loads((Path(pdry.__file__).parent / "dry_run_punch"
                           / "walk_588_2026_10.json").read_text(encoding="utf-8"))
         sc["punch_sends"] = "live"
-        i = next(k for k, l in enumerate(sc["dm"]) if l.get("text") == "electrical Mon, everything else Fri")
+        i = next(k for k, l in enumerate(sc["dm"]) if l.get("text") == "ok")   # the recap's ok
         sc["dm"] = [{k: v for k, v in l.items() if k != "expect"} for l in sc["dm"][:i + 1]]
         sc["group"], sc["dm_after"] = [], []
         sc["expect"] = {"mention_resolved": ["Mike Rivera", "Jose Zarate", "Ana Ortiz"],
