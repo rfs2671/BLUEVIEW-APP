@@ -241,6 +241,16 @@ export const AuthProvider = ({ children }) => {
   // Account activation gating: pending accounts get the read-only demo. The
   // server is authoritative (cost-bearing endpoints 403 with account_pending);
   // this flag just routes the UI. Site-mode devices are never "pending".
+  // A change the server already saved to the signed-in user's own account
+  // (e.g. "Gets chase escalation DMs"), kept here and in the device cache so
+  // a screen mounted later reads it, not the value from sign-in.
+  const updateUser = async (patch) => {
+    if (!user) return;
+    const next = { ...user, ...patch };
+    setUser(next);
+    try { await setStoredUser(next); } catch (e) { /* the server has it */ }
+  };
+
   const isPending =
     isAuthenticated && !siteMode && user?.account_status === 'pending';
 
@@ -259,6 +269,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         validateSession,
+        updateUser,
       }}
     >
       {children}

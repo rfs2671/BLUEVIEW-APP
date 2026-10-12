@@ -123,7 +123,7 @@ const formatDate = (dateStr) => {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode } = useAuth();
+  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, updateUser } = useAuth();
   const { isDark, toggleTheme, colors } = useTheme();
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
@@ -1056,7 +1056,8 @@ export default function SettingsScreen() {
             <>
               <Text style={s.sectionLabel}>CHASE</Text>
               <GlassCard style={s.card}>
-                <ChaseEscalationToggle userRow={user} />
+                <ChaseEscalationToggle userRow={user}
+                  onSaved={(on) => updateUser({ chase_escalation_dms: on })} />
               </GlassCard>
             </>
           ) : null}

@@ -178,6 +178,17 @@ class WhoTheEscalationGoesTo(_chase._Base):
         (dm,) = self.rows("admin_dm")
         self.assertEqual(sorted(dm["to_user_ids"]), ["u_ana", "u_pm"])
 
+    def test_the_operator_on_the_retired_owner_role_counts(self):
+        # Codex on #770: the recipient query must carry the operator's flag
+        # (and email), or holds_admin_seat cannot see the seat.
+        self.db.users.rows.append({"_id": "u_op", "company_id": _chase.CO_A, "name": "Ops",
+                                   "role": "owner", "is_platform_operator": True,
+                                   "chase_escalation_dms": True})
+        _chase._item(self.db)
+        self.day()
+        (dm,) = self.rows("admin_dm")
+        self.assertIn("u_op", dm["to_user_ids"])
+
     def test_nobody_on_means_no_dm(self):
         self.user("u_ana")["chase_escalation_dms"] = False
         _chase._item(self.db)

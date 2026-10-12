@@ -11943,7 +11943,7 @@ async def set_user_chase_escalation(user_id: str, body: ChaseEscalationBody,
     """ "Gets chase escalation DMs", for an admin or a PM of the caller's
     company (an admin may set their own). Admins only; audited."""
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
-                                   {"role": 1, "company_id": 1, "pm_access": 1,
+                                   {"role": 1, "company_id": 1, "pm_access": 1, "email": 1,
                                     "is_platform_operator": 1, CHASE_ESCALATION_FIELD: 1})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -48698,7 +48698,10 @@ async def _chase_admins(company_id: str, project_id: Optional[str] = None) -> Li
         users = await db.users.find(
             {"company_id": _company_id_filter(company_id),
              "is_deleted": {"$ne": True}},
+            # The operator's flag and email: holds_admin_seat reads them for
+            # an account still on the retired `owner` role.
             {"name": 1, "role": 1, "pm_access": 1, "assigned_projects": 1,
+             "is_platform_operator": 1, "email": 1,
              CHASE_ESCALATION_FIELD: 1}).to_list(500)
     except Exception:
         return []

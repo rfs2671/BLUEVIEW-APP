@@ -39,7 +39,7 @@ check('the switch is where an admin can reach it', () => {
   const users = read('app', 'admin', 'users.jsx');
   ok(/selectedUser && chaseEscalationEligible\(selectedUser\) \? \(\s*<ChaseEscalationToggle/.test(users),
     'Users edit sheet');
-  ok(/isAccountAdmin\(user\) && \(user\?\.id \|\| user\?\._id\) \? \([\s\S]{0,200}<ChaseEscalationToggle userRow=\{user\} \/>/
+  ok(/isAccountAdmin\(user\) && \(user\?\.id \|\| user\?\._id\) \? \([\s\S]{0,200}<ChaseEscalationToggle userRow=\{user\}\s*onSaved=\{\(on\) => updateUser\(\{ chase_escalation_dms: on \}\)\} \/>/
     .test(read('app', 'settings.jsx')), 'Settings, an admin\'s own');
   ok(/\/chase-escalation`, \{ on: !!on \}/.test(read('src', 'utils', 'api.js')), 'the API call');
 });
