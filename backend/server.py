@@ -63340,10 +63340,12 @@ def _punch_assignee_query(key: str) -> dict:
 
 async def _punch_link_rows(link: dict) -> List[dict]:
     """The link's assignee's open / ready-to-check items on its job."""
+    who = _punch_assignee_query(link["assignee_key"])
     rows = await db[punch.COLLECTION].find(
         {"project_id": str(link["project_id"]), "company_id": str(link["company_id"]),
          "status": {"$in": list(punch_link.LIVE)},
-         **_punch_assignee_query(link["assignee_key"])}).sort([("seq", 1)]).to_list(2000)
+         "assignee.kind": who["assignee.kind"], "assignee.id": who["assignee.id"]}
+    ).sort([("seq", 1)]).to_list(2000)
     return [r for r in rows if punch_link.person_key(r.get("assignee")) == link["assignee_key"]]
 
 
