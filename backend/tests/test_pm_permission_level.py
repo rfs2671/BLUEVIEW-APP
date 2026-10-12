@@ -72,6 +72,8 @@ class TheGates(unittest.TestCase):
     """App: a full PM passes the company-admin gate; never the user-admin one."""
 
     def test_company_admin_gate(self):
+        # get_admin_user admits a full PM; get_admin_seat_user (platform-wide
+        # and unscoped routes) does not -- see NotTheirCompanysToChange.
         self.assertTrue(server.is_company_admin(PM_FULL))
         self.assertFalse(server.is_company_admin(PM_ASSIGNED))
         self.assertFalse(server.is_company_admin(PM_LEGACY))
@@ -200,6 +202,97 @@ class TheUsersScreen(unittest.TestCase):
         import inspect
         self.assertIn('"pm_access": 1', inspect.getsource(server.get_admin_users))   # the list projection
         self.assertIn("pm_access", server.UserResponse.model_fields)
+
+
+class NotTheirCompanysToChange(unittest.TestCase):
+    """Codex on #769 (P1): get_admin_user admits a full PM, so routes that are
+    platform-wide, or that read/write a record by id with no company scope,
+    must not ride on it."""
+
+    SEAT_ROUTES = ("admin_list_feature_flags", "admin_create_feature_flag",
+                   "admin_update_feature_flag", "admin_delete_feature_flag",
+                   "admin_sentry_test", "scan_expiring_certifications",
+                   "get_cs_registration", "delete_cs_registration",
+                   "resolve_compliance_alert",
+                   "list_failed_plan_index_jobs", "register_dropbox_webhook")
+
+    def test_platform_wide_and_unscoped_routes_need_the_admin_seat(self):
+        import inspect
+        for name in self.SEAT_ROUTES:
+            with self.subTest(name):
+                deps = [p.default.dependency for p in inspect.signature(getattr(server, name)).parameters.values()
+                        if hasattr(p.default, "dependency")]
+                self.assertIn(server.get_admin_seat_user, deps)
+        _refused(self, server.get_admin_seat_user(PM_FULL))
+        self.assertEqual(_run(server.get_admin_seat_user(ADMIN)), ADMIN)
+
+    def _world(self):
+        return FakeDb(
+            projects=[{"_id": "p_b", "company_id": "co_b"}],
+            checklists=[{"_id": "cl_b", "company_id": "co_b", "title": "B's", "items": []},
+                        {"_id": "cl_a", "company_id": CO, "title": "Ours", "items": []}],
+            checklist_assignments=[],
+            safety_staff_registrations=[{"_id": "ss_b", "company_id": "co_b", "name": "B"}],
+            site_devices=[{"_id": "sd_b", "company_id": "co_b", "device_name": "B gate"},
+                          {"_id": "sd_old", "project_id": "p_b", "device_name": "legacy"},
+                          {"_id": "sd_a", "company_id": CO, "device_name": "Our gate"}],
+            users=[])
+
+    def test_another_companys_checklist_or_device_is_not_found(self):
+        db = self._world()
+        with patch.object(server, "db", db):
+            for who in (ADMIN, PM_FULL):
+                with self.subTest(who["role"]):
+                    for call in (lambda: server.get_checklist("cl_b", who),
+                                 lambda: server.update_checklist("cl_b", {"title": "x"}, who),
+                                 lambda: server.delete_checklist("cl_b", who),
+                                 lambda: server.get_checklist_assignments("cl_b", who),
+                                 lambda: server.get_site_device("sd_b", who),
+                                 lambda: server.get_site_device("sd_old", who),
+                                 lambda: server.update_site_device("sd_b", {"is_active": False}, who),
+                                 lambda: server.delete_site_device("sd_b", who),
+                                 lambda: server.update_safety_staff("ss_b", {"name": "x"}, who),
+                                 lambda: server.delete_safety_staff("ss_b", who)):
+                        _refused(self, call(), 404)
+            self.assertEqual(_run(server.get_checklist("cl_a", PM_FULL))["title"], "Ours")
+            self.assertEqual(_run(server.get_site_device("sd_a", PM_FULL))["device_name"], "Our gate")
+        b = next(r for r in db.checklists.rows if r["_id"] == "cl_b")
+        self.assertEqual((b["title"], b.get("is_deleted")), ("B's", None))
+        self.assertNotIn("is_active", next(r for r in db.site_devices.rows if r["_id"] == "sd_b"))
+
+
+class EveryRoleWriterKeepsTheLevel(unittest.TestCase):
+    """Codex on #769 (P2): the owner portal changes roles too. A stored level
+    never outlives the PM role, and coming back to PM starts at assigned."""
+
+    def test_the_rule(self):
+        f = server.pm_access_on_role_change
+        self.assertEqual(f({"role": "cp", "pm_access": "full"}, "pm"), ({"pm_access": "assigned"}, {}))
+        self.assertEqual(f({"role": "pm"}, "pm"), ({"pm_access": "assigned"}, {}))
+        self.assertEqual(f(PM_FULL, "pm"), ({}, {}))
+        self.assertEqual(f(PM_FULL, "cp"), ({}, {"pm_access": ""}))
+        self.assertEqual(f({"role": "cp"}, "admin"), ({}, {}))
+
+    def test_owner_portal_pm_to_cp_and_back(self):
+        from bson import ObjectId
+        co, a1, pm = ObjectId(), ObjectId(), ObjectId()
+        op = {"id": "op", "role": "owner", "is_platform_operator": True, "email": "ops@example.com"}
+        db = FakeDb(companies=[{"_id": co, "name": "ACME"}],
+                    users=[{"_id": a1, "role": "admin", "company_id": str(co), "email": "a@example.com"},
+                           {"_id": pm, "role": "pm", "pm_access": "full", "company_id": str(co),
+                            "email": "p@example.com"}],
+                    audit_logs=[])
+        row = lambda: next(u for u in db.users.rows if u["_id"] == pm)
+        changes = lambda: [(a["details"]["before"], a["details"]["after"]) for a in db.audit_logs.rows
+                           if a.get("action") == "user_pm_access_change"]
+        with patch.object(server, "db", db):
+            _run(server.owner_change_user_role(str(co), str(pm), server.OwnerRoleChange(role="cp"),
+                                               operator=op))
+            self.assertNotIn("pm_access", row())
+            _run(server.owner_change_user_role(str(co), str(pm), server.OwnerRoleChange(role="pm"),
+                                               operator=op))
+        self.assertEqual(row()["pm_access"], "assigned")                 # not the old "full"
+        self.assertEqual(changes(), [("full", None), (None, "assigned")])
 
 
 class TheMigration(unittest.TestCase):

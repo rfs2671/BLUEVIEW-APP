@@ -395,7 +395,13 @@ class TheSweptGatesStoppedReadingTheRole(unittest.TestCase):
     def test_the_admin_ones_ask_the_company_admin_question(self):
         for name in self.ADMIN:
             with self.subTest(fn=name):
-                self.assertIn("is_company_admin(", self._body(name))
+                body = self._body(name)
+                if name == "update_password":
+                    # The admin seat: the same rank rule less a PM with full
+                    # access (PM permission level), who does not hold it.
+                    self.assertIn("holds_admin_seat(", body)
+                    continue
+                self.assertIn("is_company_admin(", body)
 
 
 class TheNotificationRecipientQueriesToo(unittest.TestCase):

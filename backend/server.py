@@ -7627,6 +7627,25 @@ async def get_admin_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
+
+async def get_admin_seat_user(current_user = Depends(get_current_user)):
+    """get_admin_user WITHOUT the full-access PM: admin (and the operator's
+    legacy owner row) only.
+
+    For the admin routes a "Same as admin" PM must not reach because they are
+    not their company's to change: platform-wide configuration (feature
+    flags, risk-score weights, the Sentry probe, phase inference, the
+    certification sweep, the plan-index failure list, the Dropbox webhook)
+    and routes that read or write a record BY ID with no company scope (CS
+    registrations, compliance alerts). Where a full PM's screen needs a by-id
+    route (checklists, site devices, safety staff) it is held to the caller's
+    company instead (_company_scoped / _row_of_company_or_404). Widening
+    get_admin_user would otherwise have handed those to the PM too.
+    """
+    if not holds_admin_seat(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
 async def require_operator_404(
     request: Request = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -8867,6 +8886,27 @@ async def admin_approve_user(user_id: str, current_user = Depends(get_user_admin
         raise HTTPException(status_code=404, detail="User not found")
     updated = await db.users.find_one({"_id": to_query_id(user_id)})
     return {"user_id": user_id, "account_status": (updated or {}).get("account_status")}
+
+
+def pm_access_on_role_change(user: dict, new_role) -> Tuple[dict, dict]:
+    """($set, $unset) for `pm_access` when `user` takes `new_role`. EVERY
+    writer of `role` applies it, so a stored level never outlives the PM
+    role: entering PM starts at "assigned" (never a stale "full" coming back),
+    leaving PM drops the field, staying PM keeps it."""
+    if str(new_role or "").strip().lower() == ROLE_PM:
+        if pm_access_level(user) is None or not (user or {}).get("pm_access"):
+            return {"pm_access": PM_ACCESS_ASSIGNED}, {}
+        return {}, {}
+    if (user or {}).get("pm_access") is not None:
+        return {}, {"pm_access": ""}
+    return {}, {}
+
+
+async def audit_pm_access_change(actor: str, user_id: str, before, after) -> None:
+    """One `user_pm_access_change` row when the level actually changed."""
+    if before != after:
+        await audit_log("user_pm_access_change", actor, "user", str(user_id),
+                        {"before": before, "after": after})
 
 
 async def run_pm_access_startup_migration():
@@ -10471,7 +10511,7 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 # ==================== ADMIN — SENTRY HEALTH CHECK ====================
 
 @api_router.get("/admin/_sentry_test")
-async def admin_sentry_test(current_user = Depends(get_admin_user)):
+async def admin_sentry_test(current_user = Depends(get_admin_seat_user)):
     """Phase C1 — intentionally raises so an operator can verify
     Sentry capture end-to-end after a deploy. Admin-only.
 
@@ -10588,7 +10628,7 @@ async def get_my_feature_flags(current_user = Depends(get_current_user)):
 
 
 @api_router.get("/admin/feature-flags")
-async def admin_list_feature_flags(_admin = Depends(get_admin_user)):
+async def admin_list_feature_flags(_admin = Depends(get_admin_seat_user)):
     """List all feature flags with full rollout config. Admin/owner only."""
     docs = await db.feature_flags.find({}).sort("flag", 1).to_list(500)
     return {"flags": [serialize_id(d) for d in docs]}
@@ -10597,7 +10637,7 @@ async def admin_list_feature_flags(_admin = Depends(get_admin_user)):
 @api_router.post("/admin/feature-flags")
 async def admin_create_feature_flag(
     body: FeatureFlagCreate,
-    admin = Depends(get_admin_user),
+    admin = Depends(get_admin_seat_user),
 ):
     """Create a new feature flag. Defaults to disabled (no
     accidental rollout from a typo'd POST). The unique index on
@@ -10640,7 +10680,7 @@ async def admin_create_feature_flag(
 async def admin_update_feature_flag(
     flag: str,
     body: FeatureFlagUpdate,
-    admin = Depends(get_admin_user),
+    admin = Depends(get_admin_seat_user),
 ):
     """Update rollout config. PATCH semantics — only fields
     present in the body are touched. Cache is invalidated on
@@ -10691,7 +10731,7 @@ async def admin_update_feature_flag(
 @api_router.delete("/admin/feature-flags/{flag}")
 async def admin_delete_feature_flag(
     flag: str,
-    admin = Depends(get_admin_user),
+    admin = Depends(get_admin_seat_user),
 ):
     """Hard delete. Audit row records the prior shape so the
     deletion can be reversed by re-creating the flag from the
@@ -11364,7 +11404,7 @@ async def get_project_prediction(
 @api_router.get("/admin/risk-score/calibration")
 async def get_admin_risk_score_calibration(
     model_version: Optional[str] = None,
-    current_user = Depends(get_admin_user),
+    current_user = Depends(get_admin_seat_user),
 ):
     """Per-trigger calibration stats. Counts of hit / miss /
     expired_no_data, accuracy, false_positive_rate. Computed on
@@ -11384,7 +11424,7 @@ class V22WeightTuneRequest(BaseModel):
 @api_router.post("/admin/risk-score/weights")
 async def post_admin_risk_score_weights(
     body: V22WeightTuneRequest,
-    current_user = Depends(get_admin_user),
+    current_user = Depends(get_admin_seat_user),
 ):
     """Manual per-trigger prior tuning. Operator reads
     calibration stats, decides, edits. NO auto-update — the
@@ -11983,8 +12023,8 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     if _resulting_role == ROLE_PM:
         if "pm_access" in update_data:
             update_data["pm_access"] = clean_pm_access(update_data["pm_access"])
-        elif not existing_user.get("pm_access"):
-            update_data["pm_access"] = PM_ACCESS_ASSIGNED
+        else:
+            update_data.update(pm_access_on_role_change(existing_user, ROLE_PM)[0])
     elif "pm_access" in update_data:
         raise HTTPException(status_code=422, detail="Only a PM has a permission level.")
     elif existing_user.get("pm_access") is not None:
@@ -12053,9 +12093,7 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     audit_details = {k: v for k, v in update_data.items() if k != "password" and k != "updated_at"}
     if audit_details:
         await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
-    if _pm_access_before != _pm_access_after:
-        await audit_log("user_pm_access_change", actor_id(admin), "user", user_id,
-                        {"before": _pm_access_before, "after": _pm_access_after})
+    await audit_pm_access_change(actor_id(admin), user_id, _pm_access_before, _pm_access_after)
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
@@ -15634,10 +15672,12 @@ async def owner_add_company_admin(company_id: str, body: OwnerAddAdmin,
                 "message": "That person is already an admin of this company.",
             })
         uid = str(existing["_id"])
-        await db.users.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"role": "admin", "updated_at": now}},
-        )
+        _pm_set, _pm_unset = pm_access_on_role_change(existing, "admin")
+        _promote = {"$set": {"role": "admin", "updated_at": now}}
+        if _pm_unset:
+            _promote["$unset"] = _pm_unset
+        await db.users.update_one({"_id": existing["_id"]}, _promote)
+        await audit_pm_access_change(op, uid, pm_access_level(existing), None)
         await audit_log("owner_admin_add", op, "user", uid, {
             "company_id": company_id, "email": existing.get("email"),
             "mode": "promoted", "from_role": existing.get("role"),
@@ -15703,16 +15743,23 @@ async def owner_change_user_role(company_id: str, user_id: str,
     if owner_portal.leaves_no_admin(users, user_id, role):
         raise _owner_last_admin()
     now = datetime.now(timezone.utc)
-    await db.users.update_one(
-        {"_id": target["_id"]},
-        {"$set": {"role": role, "updated_at": now}},
-    )
+    # The PM permission level follows the role (pm_access_on_role_change).
+    pm_set, pm_unset = pm_access_on_role_change(target, role)
+    write = {"$set": {"role": role, "updated_at": now, **pm_set}}
+    if pm_unset:
+        write["$unset"] = pm_unset
+    await db.users.update_one({"_id": target["_id"]}, write)
     if await _owner_admin_gone(company_id):
-        await db.users.update_one(
-            {"_id": target["_id"]},
-            {"$set": {"role": before, "updated_at": now}},
-        )
+        undo = {"$set": {"role": before, "updated_at": now}}
+        if target.get("pm_access") is not None:
+            undo["$set"]["pm_access"] = target["pm_access"]
+        elif pm_set:
+            undo["$unset"] = {"pm_access": ""}
+        await db.users.update_one({"_id": target["_id"]}, undo)
         raise _owner_last_admin()
+    await audit_pm_access_change(actor_id(operator), str(user_id), pm_access_level(target),
+                                 pm_access_level({**target, "role": role, **pm_set,
+                                                  **({"pm_access": None} if pm_unset else {})}))
     await audit_log("owner_role_change", actor_id(operator), "user",
                     str(user_id), {"company_id": company_id,
                                    "email": target.get("email"),
@@ -22479,7 +22526,7 @@ async def remove_worker_osha_card_image(
 
 
 @api_router.post("/admin/certifications/scan-expiring")
-async def scan_expiring_certifications(admin=Depends(get_admin_user)):
+async def scan_expiring_certifications(admin=Depends(get_admin_seat_user)):
     """Scan all workers for expiring or missing certifications."""
     company_id = get_user_company_id(admin)
     query = {"is_deleted": {"$ne": True}}
@@ -23737,7 +23784,7 @@ async def get_causal_lift(
 # unset — each per-project infer call returns None.
 @api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_approved)])
 async def admin_run_phase_inference(
-    current_user = Depends(get_admin_user),
+    current_user = Depends(get_admin_seat_user),
 ):
     from lib.ai.phase_inference import run_weekly_phase_inference
     result = await run_weekly_phase_inference(db)
@@ -24032,12 +24079,50 @@ async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_
         "message": "Site device created successfully"
     }
 
+def _company_scoped(query: dict, user: dict) -> dict:
+    """`query` held to the caller's company: a record of another company is
+    not found. A caller with no company finds nothing (the platform operator,
+    by his flag, everything) -- the same rule assign_checklist applies.
+
+    The by-id admin routes below read and wrote a record by its id alone, so
+    an admin -- and, with the PM permission level, a "Same as admin" PM --
+    holding another company's id reached it."""
+    company_id = get_user_company_id(user)
+    if company_id:
+        return {**query, "company_id": company_id}
+    if is_platform_operator(user):
+        return query
+    return {**query, "_id": None}
+
+
+async def _row_of_company_or_404(coll, row_id: str, admin: dict, not_found: str) -> dict:
+    """The row, if it belongs to the caller's company (its own `company_id`,
+    or -- for a row from before that stamp -- its project's); else 404."""
+    row = await coll.find_one({"_id": to_query_id(row_id), "is_deleted": {"$ne": True}},
+                              {"password": 0})
+    if not row:
+        raise HTTPException(status_code=404, detail=not_found)
+    if is_platform_operator(admin):
+        return row
+    company_id = row.get("company_id")
+    if not company_id and row.get("project_id"):
+        project = await db.projects.find_one({"_id": to_query_id(row["project_id"])},
+                                             {"company_id": 1})
+        company_id = (project or {}).get("company_id")
+    mine = get_user_company_id(admin)
+    if not mine or str(company_id or "") != str(mine):
+        raise HTTPException(status_code=404, detail=not_found)
+    return row
+
+
+async def _site_device_of_company_or_404(device_id: str, admin: dict) -> dict:
+    return await _row_of_company_or_404(db.site_devices, device_id, admin, "Site device not found")
+
+
 @api_router.get("/admin/site-devices/{device_id}")
 async def get_site_device(device_id: str, admin = Depends(get_admin_user)):
     """Get a specific site device"""
-    device = await db.site_devices.find_one({"_id": to_query_id(device_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not device:
-        raise HTTPException(status_code=404, detail="Site device not found")
+    device = await _site_device_of_company_or_404(device_id, admin)
     
     device_data = serialize_id(device)
     if device.get("project_id"):
@@ -24060,7 +24145,8 @@ async def update_site_device(device_id: str, update_data: dict, admin = Depends(
     
     if not update_fields:
         raise HTTPException(status_code=400, detail="No valid fields to update")
-    
+    await _site_device_of_company_or_404(device_id, admin)
+
     update_fields["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.site_devices.update_one(
@@ -24076,6 +24162,7 @@ async def update_site_device(device_id: str, update_data: dict, admin = Depends(
 @api_router.delete("/admin/site-devices/{device_id}")
 async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     """Delete a site device"""
+    await _site_device_of_company_or_404(device_id, admin)
     # Soft delete
     result = await db.site_devices.update_one(
         {"_id": to_query_id(device_id)},
@@ -25054,7 +25141,7 @@ async def _register_cs_on_project(
 @api_router.post("/admin/cs-registrations")
 async def register_construction_superintendent(
     data: CSRegistrationCreate,
-    admin=Depends(get_admin_user),
+    admin=Depends(get_admin_seat_user),
 ):
     """Register a Construction Superintendent to a project.
     Checks for license conflicts across active projects (one-job rule).
@@ -25136,7 +25223,7 @@ async def register_construction_superintendent(
 @api_router.get("/admin/cs-registrations")
 async def list_cs_registrations(
     project_id: Optional[str] = None,
-    admin=Depends(get_admin_user),
+    admin=Depends(get_admin_seat_user),
 ):
     """List all CS registrations, optionally filtered by project."""
     
@@ -25205,7 +25292,7 @@ async def list_cs_registrations(
  
  
 @api_router.get("/admin/cs-registrations/{registration_id}")
-async def get_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
+async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user)):
     """Get a specific CS registration."""
     reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
     if not reg:
@@ -25378,7 +25465,7 @@ async def _cs_registration_under_admin(registration_id: str, admin: dict) -> dic
 async def update_cs_registration(
     registration_id: str,
     data: CSRegistrationUpdate,
-    admin=Depends(get_admin_user),
+    admin=Depends(get_admin_seat_user),
 ):
     """Update a CS registration.
 
@@ -25505,7 +25592,7 @@ async def update_cs_registration(
  
  
 @api_router.delete("/admin/cs-registrations/{registration_id}")
-async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
+async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user)):
     """End a CS registration (stamp `ended_at`); it is never deleted.
 
     ── IT DID NOT READ THE ROW, SO THERE WAS NOTHING TO SCOPE ──────────────
@@ -25593,7 +25680,7 @@ async def get_project_cs(project_id: str, current_user=Depends(get_current_user)
 @api_router.get("/admin/compliance-alerts")
 async def get_compliance_alerts(
     resolved: Optional[bool] = None,
-    admin=Depends(get_admin_user),
+    admin=Depends(get_admin_seat_user),
     limit: int = Query(50, ge=1, le=200),
     skip: int = Query(0, ge=0),
 ):
@@ -25623,7 +25710,7 @@ async def get_compliance_alerts(
 	
  
 @api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
-async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_user)):
+async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user)):
     """Mark a compliance alert as resolved."""
     now = datetime.now(timezone.utc)
     await db.compliance_alerts.update_one(
@@ -26429,7 +26516,8 @@ async def create_checklist(checklist_data: ChecklistCreate, admin = Depends(get_
 @api_router.get("/admin/checklists/{checklist_id}")
 async def get_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     """Get a single checklist by ID"""
-    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}})
+    checklist = await db.checklists.find_one(_company_scoped(
+        {"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}}, admin))
     if not checklist:
         raise HTTPException(status_code=404, detail="Checklist not found")
     
@@ -26461,7 +26549,7 @@ async def update_checklist(checklist_id: str, checklist_data: dict, admin = Depe
     update_fields["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.checklists.update_one(
-        {"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}},
+        _company_scoped({"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}}, admin),
         {"$set": update_fields}
     )
     if result.matched_count == 0:
@@ -26474,7 +26562,7 @@ async def update_checklist(checklist_id: str, checklist_data: dict, admin = Depe
 async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     """Soft delete a checklist"""
     result = await db.checklists.update_one(
-        {"_id": to_query_id(checklist_id)},
+        _company_scoped({"_id": to_query_id(checklist_id)}, admin),
         {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -26595,6 +26683,9 @@ async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignme
 @api_router.get("/admin/checklists/{checklist_id}/assignments")
 async def get_checklist_assignments(checklist_id: str, admin = Depends(get_admin_user)):
     """Get all assignments for a checklist"""
+    if not await db.checklists.find_one(_company_scoped({"_id": to_query_id(checklist_id)}, admin),
+                                        {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Checklist not found")
     assignments = await db.checklist_assignments.find({
         "checklist_id": checklist_id,
         "is_deleted": {"$ne": True}
@@ -29338,7 +29429,7 @@ async def dropbox_webhook_notify(request: Request):
 
 
 @api_router.post("/dropbox/register-webhook")
-async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_admin_user)):
+async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_admin_seat_user)):
     """Register Dropbox webhook URL (admin one-time setup)."""
     webhook_url = data.get("url", "")
     if not webhook_url:
@@ -34300,7 +34391,9 @@ async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = 
 
 @api_router.put("/safety-staff/{staff_id}")
 async def update_safety_staff(staff_id: str, data: dict, admin = Depends(get_admin_user)):
-    """Update a safety staff registration."""
+    """Update a safety staff registration (of the caller's company)."""
+    await _row_of_company_or_404(db.safety_staff_registrations, staff_id, admin,
+                                 "Safety staff not found")
     ALLOWED_FIELDS = {"name", "license_number", "license_expiration", "phone", "email", "role"}
     update_data = {k: v for k, v in data.items() if v is not None and k in ALLOWED_FIELDS}
     update_data["updated_at"] = datetime.now(timezone.utc)
@@ -34317,7 +34410,9 @@ async def update_safety_staff(staff_id: str, data: dict, admin = Depends(get_adm
 
 @api_router.delete("/safety-staff/{staff_id}")
 async def delete_safety_staff(staff_id: str, admin = Depends(get_admin_user)):
-    """Soft delete a safety staff registration."""
+    """Soft delete a safety staff registration (of the caller's company)."""
+    await _row_of_company_or_404(db.safety_staff_registrations, staff_id, admin,
+                                 "Safety staff not found")
     result = await db.safety_staff_registrations.update_one(
         {"_id": to_query_id(staff_id)},
         {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
@@ -70478,7 +70573,7 @@ async def debug_indexed_pages(
 # Same dependency POST /projects/{project_id}/reindex-document already carries.
 @api_router.get("/admin/plan-index/failed", tags=["Admin"],
                 dependencies=[Depends(require_approved)])
-async def list_failed_plan_index_jobs(current_user=Depends(get_admin_user)):
+async def list_failed_plan_index_jobs(current_user=Depends(get_admin_seat_user)):
     """Every plan-index job that gave up, across this admin's projects.
 
     ── A JOB AT THREE ATTEMPTS IS SILENT ──────────────────────────────────
