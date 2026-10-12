@@ -13566,26 +13566,30 @@ async def _apply_prefs_patch(
         return new_doc
 
     set_fields: Dict[str, Any] = {"updated_at": now}
+
+    def keyed(field: str, patch: dict, base: dict) -> None:
+        # Each patched KEY by its own path when the field exists and the keys
+        # are plain names: two saves at once (two tabs, two devices) keep
+        # each other's keys. Otherwise the merged dict, as before -- an EMPTY
+        # stored map too: it gets the defaults, as the merge always gave it
+        # (Codex review on #757: {} plus "warning" lost the "critical" route).
+        if isinstance(existing.get(field), dict) and existing.get(field) and all(
+                re.fullmatch(r"[A-Za-z0-9_]+", str(k)) for k in patch):
+            for k, v in patch.items():
+                set_fields[f"{field}.{k}"] = v
+        else:
+            set_fields[field] = {**base, **patch}
+
     if overrides_patch is not None:
-        merged = {
-            **(existing.get("signal_kind_overrides") or {}),
-            **overrides_patch,
-        }
-        set_fields["signal_kind_overrides"] = merged
+        keyed("signal_kind_overrides", overrides_patch,
+              existing.get("signal_kind_overrides") or {})
     if routes_patch is not None:
-        merged_routes = {
-            **(existing.get("channel_routes_default")
-               or _nprefs.default_channel_routes_default()),
-            **routes_patch,
-        }
-        set_fields["channel_routes_default"] = merged_routes
+        keyed("channel_routes_default", routes_patch,
+              existing.get("channel_routes_default")
+              or _nprefs.default_channel_routes_default())
     if window_patch is not None:
-        merged_window = {
-            **(existing.get("digest_window")
-               or _nprefs.default_digest_window()),
-            **window_patch,
-        }
-        set_fields["digest_window"] = merged_window
+        keyed("digest_window", window_patch,
+              existing.get("digest_window") or _nprefs.default_digest_window())
 
     await db.notification_preferences.update_one(
         {"_id": existing["_id"]},
@@ -16772,11 +16776,10 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     # 500 the ProjectResponse read-back; _merge_trade_assignments emits
     # strings only.
     if update_data.get("trade_assignments") is not None:
-        _existing_project = await db.projects.find_one({"_id": to_query_id(project_id)})
-        update_data["trade_assignments"] = _merge_trade_assignments(
-            (_existing_project or {}).get("trade_assignments") or [],
-            update_data["trade_assignments"],
-        )
+        # COMPARE-AND-SET: written only while the roster is still the one the
+        # merge read; another admin's save in between -> read again and merge
+        # onto theirs (never their rows dropped by this request's old copy).
+        await _save_roster(project_id, update_data.pop("trade_assignments"))
 
     # Normalize email list to lowercase if present
     if "report_email_list" in update_data and update_data["report_email_list"] is not None:
@@ -20070,6 +20073,28 @@ def _active_assignments(project) -> List[Dict[str, Any]]:
     """
     rows = (project or {}).get("trade_assignments") or []
     return [r for r in rows if not _assignment_is_inactive(r)]
+
+
+async def _save_roster(project_id: Any, submitted: List[Dict[str, Any]]) -> None:
+    """Write a submitted roster merged onto the stored one (see
+    _merge_trade_assignments). COMPARE-AND-SET: written only while the
+    roster is still the one the merge read; another admin's save in between
+    -> read again and merge onto theirs, so neither's rows are dropped by the
+    other's old copy. 409 after three tries."""
+    for _attempt in range(3):
+        doc = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Project not found")
+        read = doc.get("trade_assignments")
+        merged = _merge_trade_assignments(read or [], submitted)
+        res = await db.projects.update_one(
+            {"_id": to_query_id(project_id),
+             "trade_assignments": read if read is not None else {"$exists": False}},
+            {"$set": {"trade_assignments": merged}})
+        if getattr(res, "matched_count", 0):
+            return
+    raise HTTPException(status_code=409,
+                        detail="The trade list changed while saving. Reload and try again.")
 
 
 def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str]]:
@@ -45827,9 +45852,7 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
             if _gc_proposal_open(prop, now):
                 busy_admins.add(str(prop.get("admin_user_id")))
             elif isinstance(prop, dict):
-                await _set_whatsapp_project_fields(
-                    row.get("project_id"), row.get("company_id"),
-                    {"gc_proposal": {**prop, "status": "expired"}})
+                await _gc_answer(row, prop, "expired", now)    # only while still pending
     except Exception as e:
         logger.warning(f"[wa-gc] proposal read failed: {type(e).__name__}")
         return report
@@ -45895,6 +45918,31 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
     return report
 
 
+async def _gc_answer(row: dict, prop: dict, status: str, now: datetime, *,
+                     also: Optional[dict] = None, decline: Optional[str] = None,
+                     actor: Optional[str] = None) -> bool:
+    """Close the PENDING proposal (status, answered_at) and set `also`, in
+    one write that only lands while it is still pending -- never the
+    proposal dict or the declined list read earlier and written back (the
+    propose tick and the in-app pick write them too). False when it was
+    already answered, expired or replaced."""
+    wp = "whatsapp_project"
+    set_ops = {f"{wp}.gc_proposal.status": status, f"{wp}.gc_proposal.answered_at": now,
+               f"{wp}.updated_at": now, "updated_at": now,
+               **{f"{wp}.{k}": v for k, v in (also or {}).items()}}
+    if actor:
+        set_ops[f"{wp}.updated_by"] = actor
+    update: Dict[str, Any] = {"$set": set_ops}
+    if decline:
+        update["$addToSet"] = {f"{wp}.gc_declined": decline}
+    where = {"_id": row["_id"]} if row.get("_id") is not None else {
+        "user_id": None, "project_id": str(row.get("project_id")), "scope": "project"}
+    res = await db.notification_preferences.update_one(
+        {**where, f"{wp}.gc_proposal.status": "pending",
+         f"{wp}.gc_proposal.group_id": prop.get("group_id")}, update)
+    return bool(getattr(res, "matched_count", 0))
+
+
 async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
     """An admin's "1" / "2" to a GC group question. True when it was one
     (and was answered); False sends the message on to normal handling."""
@@ -45928,30 +45976,25 @@ async def _handle_gc_confirm_reply(chat_id: str, answer: str) -> bool:
         _security_event("whatsapp_gc_confirm_refused", user_id=uid,
                         project_id=project_id, company_id=company_id,
                         reason="not_main_admin_or_project")
-        await _set_whatsapp_project_fields(project_id, company_id, {
-            "gc_proposal": {**prop, "status": "void", "answered_at": now}})
+        await _gc_answer(row, prop, "void", now)
         return False
     project_name = wa_groups.project_label(project)
     if not await _gc_group_bound_to(group_id, company_id, project_id):
-        await _set_whatsapp_project_fields(project_id, company_id, {
-            "gc_proposal": {**prop, "status": "void", "answered_at": now}})
+        await _gc_answer(row, prop, "void", now)
         await send_whatsapp_message(
             chat_id, wa_dm.GC_GONE_TEXT.format(project=project_name))
         return True
     if answer == "yes":
-        await _set_whatsapp_project_fields(project_id, company_id, {
-            "gc_group_id": group_id, "gc_group_confirmed": True,
-            "gc_proposal": {**prop, "status": "confirmed", "answered_at": now}},
-            actor=uid)
+        done = await _gc_answer(row, prop, "confirmed", now, actor=uid,
+                                also={"gc_group_id": group_id, "gc_group_confirmed": True})
         text = wa_dm.GC_CONFIRMED_TEXT.format(project=project_name,
                                               group=group_name)
     else:
-        declined = (await _whatsapp_project_settings(project_id))["gc_declined"]
-        await _set_whatsapp_project_fields(project_id, company_id, {
-            "gc_declined": sorted(set(declined) | {group_id}),
-            "gc_proposal": {**prop, "status": "declined", "answered_at": now}},
-            actor=uid)
+        done = await _gc_answer(row, prop, "declined", now, actor=uid, decline=group_id)
         text = wa_dm.GC_DECLINED_TEXT.format(project=project_name)
+    if not done:
+        # Answered in the app (or replaced) a moment ago: that answer stands.
+        return False
     logger.info(f"[wa-gc] proposal {answer} project={project_id}")
     await send_whatsapp_message(chat_id, text)
     return True
@@ -48345,25 +48388,25 @@ async def _chase_no_number(item: dict, day, now: datetime) -> None:
              "due_text": (item.get("due") or {}).get("due_text"),
              "message_id": wa_chase.quoted(item).get("message_id")}
     try:
-        have = await db[wa_chase.COLLECTION].find_one({"_id": rid})
-        if have:
-            if entry["id"] not in (have.get("item_ids") or []):
-                await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$set": {
-                    "item_ids": list(have.get("item_ids") or []) + [entry["id"]],
-                    "items": list(have.get("items") or []) + [entry]}})
-            return
-        g = await db.whatsapp_groups.find_one(
-            {"wa_group_id": str(item.get("group_id")), "project_id": pid},
-            {"group_name": 1}) or {}
-        await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": {
-            "_id": rid, "day": day.isoformat(), "slot": wa_chase.NOT_CHASED, "at": now,
-            "company_id": str(item.get("company_id")), "project_id": pid,
-            "group_id": str(item.get("group_id")), "group_name": g.get("group_name") or "",
-            "owner_key": okey, "owner_name": owner.get("name") or "",
-            "owner_kind": owner.get("kind"), "kind": wa_chase.NOT_CHASED,
-            "not_chased": wa_chase.NO_NUMBER, "item_ids": [entry["id"]], "items": [entry],
-            "text": "", "reason": f"not chased: {wa_chase.NO_NUMBER}",
-            "review": None, "created_at": now, "shadow": True}}, upsert=True)
+        # The day's row once ($setOnInsert), then this item added to it
+        # atomically -- never the lists read and written back, which lost an
+        # item when two were added together.
+        if not await db[wa_chase.COLLECTION].find_one({"_id": rid}, {"_id": 1}):
+            g = await db.whatsapp_groups.find_one(
+                {"wa_group_id": str(item.get("group_id")), "project_id": pid},
+                {"group_name": 1}) or {}
+            await db[wa_chase.COLLECTION].update_one({"_id": rid}, {"$setOnInsert": {
+                "_id": rid, "day": day.isoformat(), "slot": wa_chase.NOT_CHASED, "at": now,
+                "company_id": str(item.get("company_id")), "project_id": pid,
+                "group_id": str(item.get("group_id")), "group_name": g.get("group_name") or "",
+                "owner_key": okey, "owner_name": owner.get("name") or "",
+                "owner_kind": owner.get("kind"), "kind": wa_chase.NOT_CHASED,
+                "not_chased": wa_chase.NO_NUMBER, "item_ids": [], "items": [],
+                "text": "", "reason": f"not chased: {wa_chase.NO_NUMBER}",
+                "review": None, "created_at": now, "shadow": True}}, upsert=True)
+        await db[wa_chase.COLLECTION].update_one(
+            {"_id": rid, "item_ids": {"$ne": entry["id"]}},
+            {"$push": {"item_ids": entry["id"], "items": entry}})
     except Exception as e:
         logger.warning(f"[chase] no-number row failed: {type(e).__name__}")
 
@@ -61646,7 +61689,81 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
     key = (id(asyncio.get_running_loop()), str(ident.get("user_id")))
     lock = _PUNCH_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
-        return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice)
+        # ...and across containers: a lease row in Mongo (the in-process lock
+        # alone holds only when one container gets both webhooks), renewed
+        # while the turn runs (a photo download can take 45 s).
+        uid = str(ident.get("user_id"))
+        try:
+            token = await _punch_lease(uid)
+        except TimeoutError:
+            logger.error("[punch] lease still held after the longest wait; message not run")
+            await send_whatsapp_message(dm_chat, "Still working on your last message. "
+                                                 "Send that one again in a moment, please.")
+            return True
+        beat = asyncio.create_task(_punch_lease_keep(uid, token)) if token else None
+        try:
+            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice)
+        finally:
+            if beat:
+                beat.cancel()
+            await _punch_lease_release(uid, token)
+
+
+#: The longest a turn waits for the walker's lease. A live lease is renewed by
+#: its turn, so this is only reached by a turn that hangs.
+PUNCH_LEASE_MAX_WAIT = 300.0
+
+
+async def _punch_lease(user_id: str, wait: float = PUNCH_LEASE_MAX_WAIT) -> Optional[str]:
+    """Hold the walker's lease (one turn at a time, any container). Waits
+    while another turn holds it -- never runs alongside a live lease (Codex
+    review on #757: a 20 s wait let a turn run beside a slow photo turn); a
+    lease past its expiry (a crashed turn: its holder renews it) is taken
+    over. None when the store fails -- the turn still runs. TimeoutError
+    past `wait`: the caller does not run the turn."""
+    from pymongo.errors import DuplicateKeyError
+    token = uuid.uuid4().hex
+    deadline = _time.monotonic() + wait
+    col = db[punch.LEASES]
+    while True:
+        now = datetime.now(timezone.utc)
+        try:
+            await col.insert_one({"_id": f"walker:{user_id}", "token": token,
+                                  "expires_at": now + timedelta(seconds=punch.LEASE_SECONDS)})
+            return token
+        except DuplicateKeyError:
+            try:
+                await col.delete_one({"_id": f"walker:{user_id}", "expires_at": {"$lt": now}})
+            except Exception:
+                return None
+        except Exception as e:
+            logger.warning(f"[punch] lease failed: {type(e).__name__}")
+            return None
+        if _time.monotonic() > deadline:
+            raise TimeoutError("punch lease")
+        await asyncio.sleep(0.2)
+
+
+async def _punch_lease_keep(user_id: str, token: str) -> None:
+    """Renew the lease while its turn runs (a third of its life each time)."""
+    while True:
+        await asyncio.sleep(punch.LEASE_SECONDS / 3)
+        try:
+            await db[punch.LEASES].update_one(
+                {"_id": f"walker:{user_id}", "token": token},
+                {"$set": {"expires_at": datetime.now(timezone.utc)
+                          + timedelta(seconds=punch.LEASE_SECONDS)}})
+        except Exception as e:
+            logger.warning(f"[punch] lease renew failed: {type(e).__name__}")
+
+
+async def _punch_lease_release(user_id: str, token: Optional[str]) -> None:
+    if not token:
+        return
+    try:
+        await db[punch.LEASES].delete_one({"_id": f"walker:{user_id}", "token": token})
+    except Exception as e:
+        logger.warning(f"[punch] lease release failed: {type(e).__name__}")
 
 
 def _punch_time(at: Any) -> str:
@@ -61833,8 +61950,8 @@ async def _punch_add_photo(sess, dm_chat, parsed, ref, now) -> bool:
     if words:
         it["text"] = punch.clean_caption(words)
     sess["items"].append(it)
-    await db[punch.SESSIONS].update_one({"_id": sess["_id"]}, {"$push": {"items": it}})
-    await _punch_save(sess, items=sess["items"])
+    await db[punch.SESSIONS].update_one({"_id": sess["_id"]},
+                                        {"$push": {"items": it}, "$set": {"updated_at": now}})
     return await _punch_after_item_change(sess, dm_chat, parsed)
 
 
@@ -61926,8 +62043,11 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         orphans = [(i, ph) for i, ph in punch.orphan_photos(sess)
                    if ph.get("message_id") not in (sess.get("orphans_asked") or [])]
         if orphans:
-            await _punch_save(sess, orphans_asked=list(sess.get("orphans_asked") or [])
-                              + [ph.get("message_id") for _, ph in orphans])
+            asked = [ph.get("message_id") for _, ph in orphans]
+            sess["orphans_asked"] = list(sess.get("orphans_asked") or []) + asked
+            await db[punch.SESSIONS].update_one(
+                {"_id": sess["_id"]}, {"$addToSet": {"orphans_asked": {"$each": asked}},
+                                       "$set": {"updated_at": datetime.now(timezone.utc)}})
             await send_whatsapp_message(dm_chat, punch.orphan_text(orphans, _punch_time))
             return True
         # NO DRAFT WITH AN ITEM NOBODY CAN FIND: each one missing a location
@@ -63523,13 +63643,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                             )
                         return
                     idx = n - 1
-                    items_list[idx]["completed"] = True
-                    items_list[idx]["completed_at"] = now
-                    items_list[idx]["completed_by"] = sender
-                    await db.whatsapp_checklists.update_one(
-                        {"_id": latest["_id"]},
-                        {"$set": {"items": items_list}},
-                    )
+                    await _checklist_mark_done(latest["_id"], idx, now, sender)
                     # Which checklist? Show time so multiple checklists per day
                     # are distinguishable.
                     try:
@@ -65571,13 +65685,20 @@ async def put_project_whatsapp_gc_group(project_id: str, body: dict,
         confirmed = bool(confirmed and gc)
     fields = {"gc_group_id": gc or None,
               "gc_group_confirmed": bool(confirmed and gc)}
-    # An admin choosing in the app answers any pending DM proposal.
     prop = current.get("gc_proposal") or {}
     if prop.get("status") == "pending":
-        fields["gc_proposal"] = {**prop, "status": "answered_in_app",
-                                 "answered_at": datetime.now(timezone.utc)}
-    await _set_whatsapp_project_fields(project_id, company_id, fields,
-                                       actor=actor_id(current_user))
+        # An admin choosing in the app answers the pending DM proposal: the
+        # group AND the answer in one write that lands only while it is
+        # still pending. A DM "1" a moment earlier stands -- never a group
+        # written over the one it confirmed (Codex review on #757).
+        if not await _gc_answer({"project_id": project_id}, prop, "answered_in_app",
+                                datetime.now(timezone.utc), also=fields,
+                                actor=actor_id(current_user)):
+            raise HTTPException(status_code=409, detail=(
+                "The GC group was just answered in WhatsApp. Reload to see it."))
+    else:
+        await _set_whatsapp_project_fields(project_id, company_id, fields,
+                                           actor=actor_id(current_user))
     return {"project_id": project_id,
             **(await _whatsapp_project_settings(project_id))}
 
@@ -68303,6 +68424,17 @@ async def list_project_whatsapp_checklists(
     }
 
 
+async def _checklist_mark_done(checklist_id: Any, idx: int, now: datetime, by: str) -> None:
+    """"done N" in the group: THAT ITEM'S FIELDS ONLY, never the list written
+    back -- "done 3" and "done 5" in the same second each tick their own (a
+    whole-list write lost one to the other)."""
+    await db.whatsapp_checklists.update_one(
+        {"_id": checklist_id, f"items.{idx}": {"$exists": True}},
+        {"$set": {f"items.{idx}.completed": True,
+                  f"items.{idx}.completed_at": now,
+                  f"items.{idx}.completed_by": by}})
+
+
 @api_router.put("/whatsapp-checklists/{checklist_id}/items/{item_index}")
 async def update_whatsapp_checklist_item(
     checklist_id: str,
@@ -68329,16 +68461,16 @@ async def update_whatsapp_checklist_item(
         raise HTTPException(status_code=404, detail="item_index out of range")
 
     now = datetime.now(timezone.utc)
-    items[item_index] = {
-        **items[item_index],
-        "completed": body["completed"],
-        "completed_at": now if body["completed"] else None,
-        "completed_by": current_user.get("name") or current_user.get("email") if body["completed"] else None,
-    }
-
+    # That item's fields only: a tick from the group ("done 3") or another
+    # tap at the same moment is never overwritten by this list's old copy.
+    k = f"items.{item_index}"
     await db.whatsapp_checklists.update_one(
-        {"_id": to_query_id(checklist_id)},
-        {"$set": {"items": items, "updated_at": now}},
+        {"_id": to_query_id(checklist_id), k: {"$exists": True}},
+        {"$set": {f"{k}.completed": body["completed"],
+                  f"{k}.completed_at": now if body["completed"] else None,
+                  f"{k}.completed_by": (current_user.get("name") or current_user.get("email"))
+                  if body["completed"] else None,
+                  "updated_at": now}},
     )
     updated = await db.whatsapp_checklists.find_one({"_id": to_query_id(checklist_id)})
     return serialize_id(updated)

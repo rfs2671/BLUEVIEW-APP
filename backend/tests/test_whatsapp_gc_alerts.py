@@ -683,6 +683,37 @@ class TheSettingsEndpoints(unittest.TestCase):
             self.assertEqual(_settings()["gc_group_id"], G_PLUMB)
 
 
+class TheAppPickAndTheDmAnswerAtOnce(unittest.TestCase):
+
+    def test_a_dm_yes_landing_mid_request_stands(self):
+        # Codex review on #757: the DM "yes" confirmed the proposed group
+        # after the app read the settings; the app then wrote its own group
+        # over it while the proposal said the DM had won.
+        with _Ctx(db=_world()):
+            _start(ADMIN_PHONE)
+            # The real clock: the reply is handled at the real time.
+            _run(server._gc_propose_tick(datetime.now(timezone.utc)))
+            proposed = _settings()["gc_proposal"]["group_id"]
+            real = server._whatsapp_project_settings
+            fired = []
+
+            async def read_then_dm(pid):
+                out = await real(pid)
+                if not fired:
+                    fired.append(1)
+                    self.assertTrue(await server._handle_gc_confirm_reply(
+                        f"{ADMIN_PHONE}@c.us", "yes"))
+                return out
+            with patch.object(server, "_whatsapp_project_settings", read_then_dm):
+                with self.assertRaises(HTTPException) as e:
+                    _run(server.put_project_whatsapp_gc_group(
+                        "proj_a", {"gc_group_id": G_PLUMB, "gc_group_confirmed": True}, ADMIN))
+            self.assertEqual(e.exception.status_code, 409)
+            s = _settings()
+            self.assertEqual((s["gc_group_id"], s["gc_group_confirmed"], s["gc_proposal"]["status"]),
+                             (proposed, True, "confirmed"))
+
+
 class TheBotText(unittest.TestCase):
 
     def test_gc_texts_say_levelog_and_name_only_live_features(self):
