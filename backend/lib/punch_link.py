@@ -32,6 +32,8 @@ LIFETIME_DAYS = 30
 #: Statuses the page shows: open (Mark done) and ready to check (waiting).
 LIVE = ("open", "ready_to_check")
 GONE_TEXT = "This link is no longer active."
+#: Shown under a photo that is only WhatsApp's preview (server.PHOTO_PREVIEW_LABEL).
+PREVIEW_LABEL = "Original unavailable — preview only"
 _ID = re.compile(r"^[A-Za-z0-9_-]{12,40}$")
 _SIG = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 
@@ -143,6 +145,11 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
         photos = "".join(
             f'<a href="{_e(tok)}/photo/{pid}/{i}"><img loading="lazy" alt="Photo {i} of {pid}" '
             f'src="{_e(tok)}/photo/{pid}/{i}"></a>' for i in range(1, n + 1))
+        if n and r.get("photo_quality") == "preview":
+            photos += f'<p class="meta">{_e(PREVIEW_LABEL)}</p>'
+        elif not n:
+            photos = '<p class="meta">No photo.</p>'
+
         if r.get("status") == "open":
             act = (f'<form method="post" enctype="multipart/form-data" action="{_e(tok)}/done/{pid}">'
                    f'<label class="pick">Add a photo (optional)'

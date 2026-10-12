@@ -54851,6 +54851,14 @@ async def run_whatsapp_startup_migrations():
     except Exception as e:
         logger.warning(f"whatsapp migration 0 (brief weekend): {e}")
 
+    # Migration 0a — punch photos stored as WhatsApp's preview: the original
+    # fetched again, or labelled "preview only" (P-588-1..3). In the
+    # background: it downloads.
+    try:
+        asyncio.get_event_loop().create_task(_punch_photo_repair_startup())
+    except Exception as e:
+        logger.warning(f"whatsapp migration 0a (punch photos): {e}")
+
     # Migration 0b — sub chasing on weekends is off by default; 588 Thomas
     # gets it on for the weekend test. Only while the project has never had
     # the switch saved, so turning it off in the app sticks.
@@ -61465,8 +61473,9 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
         row["_id"] = row_id
     if parsed.get("photo_key"):
         # A completion photo, downloaded in full and kept (R2): the punch
-        # item's "done" carries it.
+        # item's "done" carries it (and whether it is only the preview).
         row["photo_key"] = parsed["photo_key"]
+        row["photo_quality"] = parsed.get("photo_quality") or PHOTO_ORIGINAL
     if voice:
         # A voice note: the body is its transcript as said; the language,
         # Whisper's confidence, the duration, the R2 audio key and the
@@ -61680,15 +61689,96 @@ def full_photo(answer: Any, parsed_msg: dict) -> Optional[bytes]:
     return None
 
 
+#: The fields of a WhatsApp media message that locate and unlock the
+#: original on WhatsApp's own CDN (the webhook carries them; WaAPI's
+#: download-media is not needed for them).
+_MEDIA_REF_KEYS = ("directPath", "deprecatedMms3Url", "mediaKey", "encFilehash",
+                   "filehash", "mimetype", "size")
+WA_MEDIA_CDN = "https://mmg.whatsapp.net"
+
+
+def wa_media_ref(raw: Any, depth: int = 0, out: Optional[dict] = None) -> dict:
+    """{directPath, deprecatedMms3Url, mediaKey, encFilehash, filehash,
+    mimetype, size} from a webhook message, wherever WaAPI nests them (the
+    first value found for each). Server only: never shown or logged."""
+    out = {} if out is None else out
+    if depth > 8 or raw is None:
+        return out
+    if isinstance(raw, dict):
+        for k in _MEDIA_REF_KEYS:
+            v = raw.get(k)
+            if k not in out and isinstance(v, (str, int)) and v != "":
+                out[k] = v
+        for v in raw.values():
+            if isinstance(v, (dict, list)):
+                wa_media_ref(v, depth + 1, out)
+    elif isinstance(raw, list):
+        for v in raw:
+            wa_media_ref(v, depth + 1, out)
+    return out
+
+
+def _b64_sha(b: bytes) -> str:
+    return base64.b64encode(hashlib.sha256(b).digest()).decode()
+
+
+async def _wa_cdn_photo(ref: dict, note: dict) -> Optional[bytes]:
+    """The original from WhatsApp's CDN: the encrypted file at the message's
+    directPath, checked against its encFilehash, decrypted with its mediaKey,
+    checked against its filehash. None (and why, in `note`) otherwise."""
+    if not ref.get("mediaKey") or not (ref.get("directPath") or ref.get("deprecatedMms3Url")):
+        note["cdn"] = "no media reference in the webhook"
+        return None
+    url = str(ref.get("deprecatedMms3Url") or "")
+    if not url.startswith("https://"):
+        url = WA_MEDIA_CDN + str(ref["directPath"])
+    try:
+        async with ServerHttpClient(timeout=45) as client_http:
+            resp = await client_http.get(url)
+            if not (200 <= resp.status_code < 300):
+                note["cdn"] = f"status {resp.status_code}"
+                return None
+            enc = resp.content or b""
+    except Exception as e:
+        note["cdn"] = f"failed: {type(e).__name__}"
+        return None
+    if ref.get("encFilehash") and _b64_sha(enc) != ref["encFilehash"]:
+        note["cdn"] = "the file did not match its hash"
+        return None
+    try:
+        img = _decrypt_whatsapp_media(enc, str(ref["mediaKey"]), "image")
+    except Exception:
+        img = None
+    if not img or not img.startswith(_IMAGE_MAGIC):
+        note["cdn"] = "could not be decrypted"
+        return None
+    if ref.get("filehash") and _b64_sha(img) != ref["filehash"]:
+        note["cdn"] = "decrypted, but did not match its hash"
+        return None
+    note["cdn"] = "ok"
+    return img
+
+
 async def download_image(parsed_msg: dict) -> Optional[bytes]:
-    """A WhatsApp photo's ORIGINAL bytes, through WaAPI download-media
-    (decrypted with its mediaKey when WaAPI hands back the .enc blob). Live
-    588, Oct 12: the punch photos in the app were the webhook's ~100 px
-    preview, blown up. Only the full photo is returned (`full_photo`); a
-    preview, or nothing yet, is tried again (WaAPI may still be fetching
-    it), then None."""
+    """A WhatsApp photo's ORIGINAL bytes. Live 588, Oct 12: the punch photos
+    were the webhook's ~100 px preview, blown up -- WaAPI's download-media
+    answered with the message (its preview in the body) and no media, and
+    #762, which refuses previews, then kept nothing (P-588-4, 10:44 AM).
+
+    First WhatsApp's own CDN: the encrypted original at the message's
+    directPath, decrypted with its mediaKey, both from the webhook. Then
+    WaAPI's download-media (`full_photo`), tried again while it has only a
+    preview. Never a preview. What happened is left in
+    parsed_msg["_photo_capture"] (kept on the item: the diag shows it)."""
+    note = parsed_msg.setdefault("_photo_capture", {"waapi": []})
+    note.setdefault("waapi", [])
+    ref = wa_media_ref(parsed_msg.get("raw"))
+    img = await _wa_cdn_photo(ref, note)
+    if img and max(_image_px(img)) >= FULL_PHOTO_MIN_PX:
+        return _photo_got(note, img, "whatsapp_cdn")
     message_id = parsed_msg.get("message_id_serialized") or parsed_msg.get("message_id") or ""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
+        note["waapi"].append("not configured")
         return None
     for wait in _PHOTO_TRIES:
         if wait:
@@ -61701,17 +61791,193 @@ async def download_image(parsed_msg: dict) -> Optional[bytes]:
                              "Content-Type": "application/json"},
                     json={"messageId": message_id})
                 if not (200 <= resp.status_code < 300):
-                    logger.info(f"[punch] image download status={resp.status_code}")
+                    note["waapi"].append(f"status {resp.status_code}")
                     continue
                 j = resp.json() if resp.content else {}
         except Exception as e:
-            logger.warning(f"[punch] image download failed: {type(e).__name__}")
+            note["waapi"].append(f"failed: {type(e).__name__}")
             continue
         img = full_photo(j, parsed_msg)
         if img:
-            return img
-        logger.info("[punch] image download: no full-size photo in the answer yet")
+            return _photo_got(note, img, "waapi")
+        blobs = _wa_media_blobs(j)
+        note["waapi"].append("answer had " + (", ".join(
+            f"{'media' if m else 'other'} {len(b) // 1024} KB {'x'.join(map(str, _image_px(b)))}"
+            for m, b in blobs[:4]) or "no file") + ": no full-size photo")
+    logger.warning(f"[punch] photo: no original (cdn: {note.get('cdn')}; waapi: {note['waapi']})")
     return None
+
+
+def _photo_got(note: dict, img: bytes, source: str) -> bytes:
+    w, h = _image_px(img)
+    note.update(source=source, px=[w, h], kb=len(img) // 1024)
+    logger.info(f"[punch] photo: original {w}x{h} {len(img) // 1024} KB from {source}")
+    return img
+
+
+#: What an item's photo is: the original, or WhatsApp's preview when the
+#: original could not be had ("Original unavailable — preview only").
+PHOTO_ORIGINAL, PHOTO_PREVIEW = "original", "preview"
+PHOTO_PREVIEW_LABEL = "Original unavailable — preview only"
+
+
+async def _punch_store_photo(parsed: dict, key: str) -> Tuple[Optional[str], Optional[str], dict]:
+    """A WhatsApp photo kept in R2 at `key`: (key, quality, capture record).
+    The original when it can be had; else the webhook's own preview, labelled
+    so (never nothing when there is a preview); else (None, None, record)."""
+    img = await download_image(parsed)
+    record = dict(parsed.get("_photo_capture") or {})
+    quality = PHOTO_ORIGINAL
+    if not img:
+        img, quality = _webhook_thumbnail(parsed), PHOTO_PREVIEW
+        record["source"] = "webhook_preview" if img else None
+        if img:
+            record["px"] = list(_image_px(img))
+    if not img:
+        return None, None, record
+    try:
+        ok = await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg")
+    except Exception:
+        ok = None
+    record["key"] = key if ok else None
+    if not ok:
+        record["r2"] = "upload failed"
+        return None, None, record
+    return key, quality, record
+
+
+# ── REPAIRING STORED PREVIEWS (P-588-1..3) ──────────────────────────────────
+#
+# Items stored before the original could be had hold WhatsApp's preview.
+# Each photo with no quality on record is looked at once: an image the full
+# size is marked "original"; a preview is fetched again -- WhatsApp's CDN
+# (the media reference kept with the walk, or the webhook log's copy of the
+# message), then WaAPI -- and replaced (<key>-full.jpg, the walk first, the
+# item last); one that cannot be had is marked "preview" (the app and the
+# assignee's page say "Original unavailable — preview only"). Nothing is
+# deleted. At startup (in the background) and by scripts/punch_photo_backfill.py.
+
+def _r2_bytes(key: str) -> Optional[bytes]:
+    try:
+        return _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=key)["Body"].read()
+    except Exception:
+        return None
+
+
+def _full_key(key: str) -> str:
+    return (key[:-4] if key.endswith(".jpg") else key) + "-full.jpg"
+
+
+async def _webhook_media_ref(message_id: str, store=None) -> dict:
+    """The media reference of a message from the webhook log (its raw body,
+    kept 30 days): JSON when it parses, else the fields read out of it."""
+    d = db if store is None else store
+    short = wa_attention_state.short_id(message_id)
+    if not short:
+        return {}
+    try:
+        rows = await d.whatsapp_webhook_log.find(
+            {"raw_body_preview": {"$regex": re.escape(short)}}).to_list(5)
+    except Exception:
+        return {}
+    for r in rows:
+        body = str(r.get("raw_body_preview") or "")
+        try:
+            ref = wa_media_ref(json.loads(body))
+        except Exception:
+            ref = {k: m.group(1) for k in _MEDIA_REF_KEYS
+                   for m in [re.search(rf'"{k}"\s*:\s*"([^"]+)"', body)] if m}
+        if ref.get("mediaKey"):
+            return ref
+    return {}
+
+
+async def punch_photo_repair(rows: List[dict], *, apply: bool, store=None,
+                             say=lambda line: None) -> dict:
+    """See above. `rows`: punch items. Returns the counts."""
+    d = db if store is None else store
+    out = {"original": 0, "replaced": 0, "preview_only": 0, "left": 0}
+    for r in rows:
+        walk = await d[punch.SESSIONS].find_one({"_id": r.get("walk_id")}) or {}
+        by_key = {}
+        for p in walk.get("photos") or []:
+            if p.get("key"):
+                by_key[p["key"]] = p
+        for it in walk.get("items") or []:
+            if it.get("photo_key"):
+                by_key.setdefault(it["photo_key"], {"message_id": it.get("message_id"),
+                                                     "media_ref": it.get("media_ref")})
+        # A run stopped after the walk was written: the item's old key is
+        # found through the walk's new (-full) one.
+        by_key.update({k[:-len("-full.jpg")] + ".jpg": v for k, v in list(by_key.items())
+                       if k.endswith("-full.jpg") and k[:-len("-full.jpg")] + ".jpg" not in by_key})
+        comp = r.get("completion") or {}
+        for field, key, qfield, q in (("photo_key", r.get("photo_key"), "photo_quality",
+                                       r.get("photo_quality")),
+                                      ("completion.photo_key", comp.get("photo_key"),
+                                       "completion.photo_quality", comp.get("photo_quality"))):
+            if not key or q == PHOTO_ORIGINAL:
+                continue
+            got = await asyncio.to_thread(_r2_bytes, key)
+            px = _image_px(got) if got else (0, 0)
+            label = f"{r.get('pid')} {field} ({px[0]}x{px[1]})"
+            if got and max(px) >= FULL_PHOTO_MIN_PX:
+                out["original"] += 1
+                if apply:
+                    await d[punch.COLLECTION].update_one({"_id": r["_id"]},
+                                                         {"$set": {qfield: PHOTO_ORIGINAL}})
+                continue
+            src = by_key.get(key) or {}
+            mid = comp.get("message_id") if field.startswith("completion") else src.get("message_id")
+            ref = src.get("media_ref") or (await _webhook_media_ref(mid, d) if mid else {})
+            img = await download_image({"message_id_serialized": mid or "", "message_id": mid or "",
+                                        "raw": ref}) if (mid or ref) else None
+            if not img:
+                out["preview_only"] += 1
+                say(f"  {label}: original unavailable -> labelled preview only")
+                if apply:
+                    await d[punch.COLLECTION].update_one({"_id": r["_id"]},
+                                                         {"$set": {qfield: PHOTO_PREVIEW}})
+                continue
+            new = _full_key(key)
+            w, h = _image_px(img)
+            say(f"  {label} -> {w}x{h}, {len(img) // 1024} KB at {new}")
+            if not apply:
+                out["replaced"] += 1
+                continue
+            if not await asyncio.to_thread(_upload_to_r2, img, new, "image/jpeg"):
+                out["left"] += 1
+                say("    upload failed -- left")
+                continue
+            # The walk first, the item last (Codex review on #762).
+            if walk:
+                sets = {f"items.{i}.photo_key": new for i, it in enumerate(walk.get("items") or [])
+                        if it.get("photo_key") == key}
+                sets.update({f"photos.{i}.key": new for i, p in enumerate(walk.get("photos") or [])
+                             if p.get("key") == key})
+                if sets:
+                    await d[punch.SESSIONS].update_one({"_id": walk["_id"]}, {"$set": sets})
+            await d[punch.COLLECTION].update_one({"_id": r["_id"]},
+                                                 {"$set": {field: new, qfield: PHOTO_ORIGINAL}})
+            out["replaced"] += 1
+    return out
+
+
+async def _punch_photo_repair_startup() -> None:
+    """Once per item: every punch photo with no quality on record."""
+    if str(os.environ.get("PUNCH_PHOTO_REPAIR_DISABLED", "")).lower() in ("1", "true", "yes", "on"):
+        return
+    try:
+        rows = await db[punch.COLLECTION].find(
+            {"$or": [{"photo_key": {"$exists": True, "$nin": [None, ""]},
+                      "photo_quality": {"$exists": False}},
+                     {"completion.photo_key": {"$exists": True, "$nin": [None, ""]},
+                      "completion.photo_quality": {"$exists": False}}]}).to_list(500)
+        if rows:
+            got = await punch_photo_repair(rows, apply=True, say=logger.info)
+            logger.info(f"[punch] photo repair: {got}")
+    except Exception as e:
+        logger.warning(f"[punch] photo repair failed: {type(e).__name__}: {e}")
 
 
 def _punch_caption(parsed: dict, body: str) -> str:
@@ -61729,14 +61995,12 @@ async def _punch_message_photo(parsed: dict, project_id: Any) -> Optional[str]:
     swept with the project). Its key, or None."""
     if not parsed.get("has_image"):
         return None
-    img = await download_image(parsed)
-    if not img:
-        return None
-    key = _punch_photo_key(project_id or "unassigned", "msg", parsed.get("message_id") or "x")
-    try:
-        return key if await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg") else None
-    except Exception:
-        return None
+    key, quality, record = await _punch_store_photo(
+        parsed, _punch_photo_key(project_id or "unassigned", "msg", parsed.get("message_id") or "x"))
+    # The completion carries it; its quality rides on the parsed message.
+    parsed["_photo_quality"] = quality
+    parsed["_photo_record"] = record
+    return key
 
 
 def _punch_photo_caption_ref(parsed: dict, body: str) -> bool:
@@ -61821,6 +62085,10 @@ async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False,
         it = _punch_item_by_captured(items, sess.get("resume_item"))
         return await _punch_back_to(sess, dm_chat, prior, it,
                                     punch.added_text(it) if it else "")
+    if not missing and sess.get("shortcut"):
+        # "Done, send to Chris": located, now on to Chris.
+        await _punch_save(sess, items=items, asking=None)
+        return await _punch_apply_shortcut(sess, dm_chat)
     if not missing:
         # The numbers the walker was asked about stay: never renumbered.
         await _punch_save(sess, status="draft", items=items, asking=None)
@@ -62056,6 +62324,12 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
             return await _punch_correct(sess, dm_chat, parsed,
                                         _punch_item_by_captured(sess["items"], sess["last_captioned"]),
                                         fix, now)
+    sc = punch.send_shortcut(said) if not parsed.get("has_image") and not replying else None
+    if sc and sess.get("project_id") and [it for it in sess["items"]
+                                          if it.get("status", "draft") != "dropped"]:
+        # "Done, send to Chris" / "send it to the group" -- at any stage
+        # after the photos (10:46 AM: only a 👍).
+        return await _punch_shortcut(sess, dm_chat, sc)
     add_ph = punch.add_photo_ref(said) if not parsed.get("has_image") else None
     if add_ph and sess.get("status") in ("capturing", "locating", "draft"):
         return await _punch_add_photo(sess, dm_chat, parsed, add_ph, now)
@@ -62097,13 +62371,16 @@ def _punch_item_by_captured(items: List[dict], captured: Any) -> Optional[dict]:
                  and it.get("status", "draft") != "dropped"), None)
 
 
-async def _punch_after_item_change(sess, dm_chat, parsed) -> bool:
+async def _punch_after_item_change(sess, dm_chat, parsed, it: Optional[dict] = None) -> bool:
     if sess["status"] == "locating":
         return await _punch_ask_where(sess, dm_chat)
     if sess["status"] == "draft":
         await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], sess["items"]))
         return True
-    await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+    # Words during capture: what was taken, in words -- never only a 👍.
+    it = it or _punch_item_by_captured(sess["items"], sess.get("last_captioned"))
+    await send_whatsapp_message(dm_chat, punch.noted_text(it) if it else
+                                "Got it. Next photo, or 'done'.")
     return True
 
 
@@ -62125,7 +62402,7 @@ async def _punch_correct(sess, dm_chat, parsed, it, fix: str, now) -> bool:
     if parsed.get("message_id_serialized"):
         it.setdefault("caption_ids", []).append(parsed["message_id_serialized"])
     await _punch_save(sess, items=sess["items"], last_captioned=it.get("captured"))
-    return await _punch_after_item_change(sess, dm_chat, parsed)
+    return await _punch_after_item_change(sess, dm_chat, parsed, it)
 
 
 async def _punch_add_photo(sess, dm_chat, parsed, ref, now) -> bool:
@@ -62148,7 +62425,7 @@ async def _punch_add_photo(sess, dm_chat, parsed, ref, now) -> bool:
     sess["items"].append(it)
     await db[punch.SESSIONS].update_one({"_id": sess["_id"]},
                                         {"$push": {"items": it}, "$set": {"updated_at": now}})
-    return await _punch_after_item_change(sess, dm_chat, parsed)
+    return await _punch_after_item_change(sess, dm_chat, parsed, it)
 
 
 async def _punch_item_words(sess, dm_chat, parsed, it, words, now) -> bool:
@@ -62164,7 +62441,7 @@ async def _punch_item_words(sess, dm_chat, parsed, it, words, now) -> bool:
             it.setdefault("caption_ids", []).append(parsed["message_id_serialized"])
         extra["last_captioned"] = it.get("captured")
     await _punch_save(sess, items=items, pending_note=None, **extra)
-    return await _punch_after_item_change(sess, dm_chat, parsed)
+    return await _punch_after_item_change(sess, dm_chat, parsed, it)
 
 
 def _punch_item_no(items: List[dict], n: int) -> Optional[dict]:
@@ -62182,22 +62459,21 @@ async def _punch_photo_item(sess, parsed, words, voice, msg_id, now, *,
     is one); `captured` is always the order the photos came in."""
     items = sess["items"]
     captured = len(items) + 1
-    key = None
-    img = await download_image(parsed)
-    if img:
-        key = _punch_photo_key(sess.get("project_id") or "unassigned", sess["_id"], captured)
-        try:
-            if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
-                key = None
-        except Exception:
-            key = None
+    key, quality, record = await _punch_store_photo(
+        parsed, _punch_photo_key(sess.get("project_id") or "unassigned", sess["_id"], captured))
     it = punch.new_item(n or captured, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
     it["captured"] = captured
-    it["photo_failed"] = img is None
+    it["photo_failed"] = key is None
+    it["photo_quality"] = quality
+    # How it was had (the diag shows it) and where the original lives on
+    # WhatsApp's CDN (to fetch it again later). Server only.
+    it["photo_capture"] = {**record, "at": now}
+    it["media_ref"] = wa_media_ref(parsed.get("raw")) or None
     if words:
         it["caption_ids"] = [msg_id]
     items.append(it)
-    photo = {"message_id": msg_id, "at": now, "key": key}
+    photo = {"message_id": msg_id, "at": now, "key": key, "quality": quality,
+             "media_ref": it["media_ref"]}
     sess.setdefault("photos", []).append(photo)
     await db[punch.SESSIONS].update_one(
         {"_id": sess["_id"]},
@@ -62275,7 +62551,7 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
                                                            "trade_guess")},
                          "caption_ids": list(last.get("caption_ids") or []) + [msg_id]}
             await _punch_save(sess, items=items, last_captioned=last.get("captured"))
-            await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+            await send_whatsapp_message(dm_chat, punch.noted_text(items[-1]))
             return True
         if voice or low.startswith("add"):
             # A spoken item with no photo, or "add: …".
@@ -62286,7 +62562,7 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
                 added["text"] = punch.clean_caption(w)       # "Tile cracked", Apt 4F its own field
             items.append(added)
             await _punch_save(sess, items=items)
-            await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
+            await send_whatsapp_message(dm_chat, punch.noted_text(added))
             return True
         # ANYTHING ELSE TYPED DURING A WALK is about the walk, never a
         # question for the assistant: a note on the photo just sent, or,
@@ -62556,13 +62832,61 @@ async def _punch_assign_to(sess, dm_chat, assign, target, person, miss) -> bool:
     elif target:
         assign[target] = _punch_who(person)
     # Per trade now: a whole list ("all → Chris", or the one-person setting)
-    # gave way to "electrical → Mike" (Codex review on #756).
-    await _punch_save(sess, assign=assign, whole=None, target=None)
+    # gave way to "electrical → Mike" (Codex review on #756) -- unless every
+    # trade went to the same one person ("Chris gc" at "Who gets what?",
+    # 10:45 AM): then the whole list goes to them by DM. The group only on
+    # "to the group".
+    await _punch_save(sess, assign=assign, whole=_punch_one_person(assign), target=None)
     if any(not p for p in assign.values()):
         await send_whatsapp_message(dm_chat, punch.assign_text(assign))
         return True
     await _punch_save(sess, status="recap")
     return await _punch_show_recap(sess, dm_chat)
+
+
+def _punch_one_person(assign: Dict[str, Optional[dict]]) -> Optional[dict]:
+    """Every trade to the same one person: that person (the whole list goes
+    to them by DM); else None."""
+    people = {punch._person_key(p) for p in assign.values() if p}
+    if assign and all(assign.values()) and len(people) == 1:
+        return dict(next(iter(assign.values())))         # already as an assignment keeps it
+    return None
+
+
+async def _punch_shortcut(sess: dict, dm_chat: str, sc: dict) -> bool:
+    """"Done, send to Chris" (any stage after the photos): kept on the walk,
+    the missing locations asked first, then the whole list to Chris by DM
+    (or "to the group": to the job's group) and the recap; 'ok' sends."""
+    await _punch_save(sess, shortcut=sc)
+    if punch.missing_location(sess["items"]):
+        return await _punch_ask_where(sess, dm_chat, intro=True)
+    return await _punch_apply_shortcut(sess, dm_chat)
+
+
+async def _punch_apply_shortcut(sess: dict, dm_chat: str) -> bool:
+    sc = sess.get("shortcut") or {}
+    live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
+    trades = sorted({it.get("trade") or punch.UNKNOWN for it in live})
+    due = {t: sc["due"] for t in trades} if sc.get("due") else dict(sess.get("due") or {})
+    assign = {t: (sess.get("assign") or {}).get(t) for t in trades}
+    if sc.get("group"):
+        await _punch_save(sess, status="recap", target="group", whole=None, choose=None,
+                          shortcut=None, assign=assign, due=due)
+        return await _punch_show_recap(sess, dm_chat)
+    pool = await _punch_name_pool(sess)
+    cands = punch.name_candidates(sc.get("name") or "", pool)
+    await _punch_save(sess, shortcut=None, assign=assign, due=due)
+    if len(cands) == 1:
+        return await _punch_assign_to(sess, dm_chat, assign, "all", cands[0], [])
+    if cands:
+        ask = {"target": "all", "said": sc["name"], "options": cands[:9]}
+        await _punch_save(sess, status="assign", choose=ask)
+        await send_whatsapp_message(dm_chat, punch.which_text(ask["said"], ask["options"]))
+        return True
+    await _punch_save(sess, status="assign")
+    await send_whatsapp_message(dm_chat, _punch_unknown(sc.get("name") or "", pool) + "\n\n"
+                                + punch.assign_text(assign))
+    return True
 
 
 def _punch_unknown(names: str, pool: Optional[List[dict]] = None) -> str:
@@ -63072,13 +63396,18 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                    "project_id": sess["project_id"], "group_id": group_id,
                    "text": it.get("text") or "", "voice": it.get("voice"),
                    "photo_key": it.get("photo_key"), "extra_photos": it.get("extra_photos") or [],
+                   "photo_quality": it.get("photo_quality") or (PHOTO_ORIGINAL if it.get("photo_key") else None),
+                   "photo_capture": it.get("photo_capture"), "media_ref": it.get("media_ref"),
                    "floor": it.get("floor"), "area": it.get("area"), "room": it.get("room"),
                    "trade": it.get("trade"), "n": it.get("n"),
                    "assignee": person, "sent_via": via, "created_by": sess["user_id"],
                    "walk_id": sess["_id"], "created_at": it.get("at") or now, "assigned_at": now,
                    "due": due_doc, "status": "open", "send_mode": mode,
                    "history": [{"at": now, "action": "sent", "to": "open", "by": sess["user_id"],
-                                "mode": mode, "via": via}],
+                                "mode": mode, "via": via,
+                                # "DM to Chris Weiss (GC team)" / "post in 588 Thomas St"
+                                "dest": (f"DM to {punch.who_label(person)}" if via == "dm" and person
+                                         else f"post in {group_name or 'the job group'}")}],
                    "completion": None, "closed_by": None, "closed_at": None}
             ev_id = f"punch:{pid}"
             owner = ({k: person.get(k) for k in ("kind", "id", "name", "jid")}
@@ -63143,6 +63472,16 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                 batch.update(via="group", grouped=False,
                              text=punch.group_text(name, rows, b["due_words"], handle=tgt["handle"]))
         await _punch_add_links(batch, sess["company_id"], sess["project_id"], now)
+        # What the admin reads (the shadow text): "@Chris (GC team)", never
+        # the number (10:45 AM: "@17187559520"). The number stays in the
+        # send text and the mention payload only.
+        shown = []
+        for r in rows:
+            p = r.get("assignee")
+            t = tgts.get(f"{p['kind']}:{p['id']}") if p else None
+            if t:
+                shown.append({**t, "name": punch.who_label(p)})
+        batch["display"] = punch.no_numbers(wa_mention.display(batch.get("text") or "", shown))
         batches.append(batch)
     await _punch_save(sess, status="sent", sent_at=now, send_mode=mode)
     logger.info(f"[punch] sent walk={sess['_id']} mode={mode} items="
@@ -63386,7 +63725,7 @@ async def public_punch_link(tok: str, done: str = ""):
     await db[punch_link.COLLECTION].update_one({"_id": link["_id"]},
                                                {"$set": {"last_opened_at": now}})
     items = [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
-                                         "due", "status")},
+                                         "due", "status", "photo_quality")},
               "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k])}
              for r in rows]
     ok_pid = done if any(r.get("pid") == done for r in rows) else None
@@ -63450,7 +63789,7 @@ async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile]
         if len(data) > PUNCH_LINK_PHOTO_MAX or not _punch_link_is_photo(data):
             from fastapi.responses import HTMLResponse
             items = [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
-                                                 "due", "status")},
+                                                 "due", "status", "photo_quality")},
                       "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])]
                                      if k])} for r in got[1]]
             return HTMLResponse(punch_link.page(
@@ -63485,7 +63824,7 @@ async def public_punch_link_done(tok: str, pid: str, photo: Optional[UploadFile]
 
 def _punch_link_items(rows: List[dict]) -> List[dict]:
     return [{**{k: r.get(k) for k in ("pid", "text", "floor", "area", "room", "trade",
-                                       "due", "status")},
+                                       "due", "status", "photo_quality")},
              "photos": len([k for k in [r.get("photo_key"), *(r.get("extra_photos") or [])] if k])}
             for r in rows]
 
@@ -63514,13 +63853,15 @@ async def _punch_find(project_ids: List[str], code: Optional[str], seq: int) -> 
 
 async def _punch_set_status(row: dict, to: str, now: datetime, *, by: str, quote: str,
                             message_id: str = "", photo_key: Optional[str] = None,
-                            only_if: Optional[dict] = None) -> bool:
+                            only_if: Optional[dict] = None,
+                            photo_quality: Optional[str] = None) -> bool:
     """`only_if`: more conditions the item must still meet, checked in the
     same write (the assignee's link: still open, still theirs). False when
     it no longer does -- nothing changed, the chase is left as it is."""
     sets = {"status": to}
     if to == "ready_to_check":
         sets["completion"] = {"quote": quote, "message_id": message_id, "photo_key": photo_key,
+                              "photo_quality": (photo_quality or PHOTO_ORIGINAL) if photo_key else None,
                               "at": now, "by": by}
     if to == "closed":
         sets.update(closed_by=by, closed_at=now)
@@ -63626,7 +63967,8 @@ async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str
         return None
     await _punch_set_status(row, "ready_to_check", now, by=str(ident.get("user_id")), quote=text,
                             message_id=str(parsed.get("message_id") or ""),
-                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")),
+                            photo_quality=parsed.get("_photo_quality"))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63651,7 +63993,8 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
     await _punch_set_status(row, "ready_to_check", datetime.now(timezone.utc), by=digits,
                             quote=_punch_caption(parsed, parsed.get("body") or ""),
                             message_id=str(parsed.get("message_id") or ""),
-                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")),
+                            photo_quality=parsed.get("_photo_quality"))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63756,7 +64099,8 @@ async def _punch_group_message(msg: dict, ctx: dict) -> bool:
     if punch.sub_done(text) and row.get("status") == "open" and _punch_is_assignee(row, who, msg):
         await _punch_set_status(row, "ready_to_check", now, by=sender, quote=text,
                                 message_id=str(msg.get("message_id") or ""),
-                                photo_key=msg.get("photo_key"))
+                                photo_key=msg.get("photo_key"),
+                                photo_quality=msg.get("photo_quality"))
         return True
     return False
 
@@ -64236,6 +64580,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 try:
                     if await _punch_group_completion_ok(parsed, body, project_id, msg_company_id):
                         parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
+                        parsed["photo_quality"] = parsed.get("_photo_quality")
                 except Exception as e:
                     logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
@@ -66656,14 +67001,31 @@ def _punch_view(r: dict) -> dict:
             "has_photo": bool(r.get("photo_key")), "send_mode": r.get("send_mode"),
             # The item's photos in the order taken: the first, then any more.
             "photos": int(bool(r.get("photo_key"))) + len(r.get("extra_photos") or []),
+            # "Original unavailable — preview only" when the photo is
+            # WhatsApp's preview (the original could not be had).
+            "photo_quality": (r.get("photo_quality") or PHOTO_ORIGINAL) if r.get("photo_key") else None,
             "assignee_key": _punch_person_key(a),
             "mention_note": (wa_mention.NO_NUMBER_NOTE
                              if (r.get("mention") or {}).get("resolved") is False else None),
             "created_at": iso(r.get("created_at")), "closed_at": iso(r.get("closed_at")),
             "completion": ({"quote": comp.get("quote"), "at": iso(comp.get("at")),
-                            "has_photo": bool(comp.get("photo_key"))} if comp else None),
-            "history": [{"at": iso(h.get("at")), "action": h.get("action"), "quote": h.get("quote")}
+                            "has_photo": bool(comp.get("photo_key")),
+                            "photo_quality": (comp.get("photo_quality") or PHOTO_ORIGINAL)
+                            if comp.get("photo_key") else None} if comp else None),
+            "history": [{"at": iso(h.get("at")), "action": h.get("action"), "quote": h.get("quote"),
+                         # A send: shadow or live, and where ("Would send (shadow) · DM
+                         # to Chris (GC team)"). Older sends: worked out from the row.
+                         **({"mode": h.get("mode") or r.get("send_mode") or "shadow",
+                             "dest": h.get("dest") or _punch_dest_of(r)}
+                            if h.get("action") == "sent" else {})}
                         for h in (r.get("history") or [])][-20:]}
+
+
+def _punch_dest_of(r: dict) -> str:
+    a = r.get("assignee") or {}
+    if r.get("sent_via") == "dm" and a:
+        return f"DM to {punch.who_label(a)}"
+    return "post in the job group"
 
 
 def _punch_person_key(a: Optional[dict]) -> str:

@@ -183,7 +183,8 @@ class The2031Sequence(_Walk):
         self.turn("Bulb burnt", reply_to=3)                       # message 6
         # "I meant tile", a reply to "Time wrong": THAT caption (2).
         out = self.turn("I meant tile", reply_to=5, quoted_body="Time wrong")
-        self.assertEqual(out, [])
+        self.assertEqual(len(out), 1)                             # in words, never only 👍
+        self.assertTrue(out[0].startswith("#2 'Tile wrong'"))
         self.assertEqual(self.item(2)["text"], "Tile wrong")
         self.assertEqual((self.item(2)["trade"], self.item(2)["trade_guess"]), ("tile", True))
         self.assertEqual(self.item(1)["text"], "Table cracked")   # nothing on the others
@@ -212,9 +213,11 @@ class The2031Sequence(_Walk):
         self.assertNotIn("Yeyzmar", who)                           # (11) a checked-in worker: never
         self.assertIn("electrical → ?", who)
         # "Chris from gc." (8): Chris, the GC's user, gets every "?" trade.
+        # Every trade to ONE person: the whole list to Chris by DM (live 588,
+        # Oct 12, 10:45 AM: "Would post in 588 group, mentioning each one").
         (recap,) = self.turn("Chris from gc.")
-        self.assertTrue(recap.startswith("Ready to post in the job group (shadow mode"), recap)  # (12)
-        self.assertIn("Chris Weiss (GC team): #1, #2, #3, #4", recap)
+        self.assertTrue(recap.startswith("Ready to DM the whole list to Chris Weiss (GC team) "
+                                         "(shadow mode: nothing will be sent): #1, #2, #3, #4"), recap)
         self.assertEqual(self.db[punch.COLLECTION].rows, [])       # nothing before 'ok'
         (sent,) = self.turn("ok")
         self.assertIn("shadow mode: nothing was sent", sent)

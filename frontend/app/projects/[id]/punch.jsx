@@ -20,7 +20,7 @@ import { punchAPI } from '../../../src/utils/api';
 import {
   statusLabel, floorLabel, filterChips, whereLine, whoLine, itemWords, historyLine,
   emptyText, mentionLine, statusChips, assigneeChips, itemActions, photoList,
-  DUE_CHOICES, STATUS_EXPLAINER,
+  DUE_CHOICES, STATUS_EXPLAINER, showAssigneeRow, photoNote,
 } from '../../../src/utils/punchList';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -108,7 +108,7 @@ export default function ProjectPunchScreen() {
             <>
               {chipRow('status', statusChips(data.statuses, data.counts))}
               <Text style={[styles.explain, muted]}>{STATUS_EXPLAINER}</Text>
-              {data.assignees && data.assignees.length > 1
+              {showAssigneeRow(data.assignees)
                 && chipRow('assignee', assigneeChips(data.assignees))}
               {data.floors && data.floors.length > 1 && chipRow('floor', filterChips(data.floors, floorLabel))}
               {data.trades && data.trades.length > 1 && chipRow('trade', filterChips(data.trades))}
@@ -122,13 +122,13 @@ export default function ProjectPunchScreen() {
             </Pressable>
           )}
           {data && !data.error && items.length === 0 && (
-            <GlassCard style={styles.card}>
+            <GlassCard style={styles.card} contentStyle={styles.cardContent}>
               <Text style={[styles.line, muted]}>{emptyText(filtered)}</Text>
             </GlassCard>
           )}
 
           {items.map((it) => (
-            <GlassCard key={it.pid} style={styles.card}>
+            <GlassCard key={it.pid} style={styles.card} contentStyle={styles.cardContent}>
               <Pressable onPress={() => setDetail(it)} accessibilityRole="button"
                          accessibilityLabel={`${it.pid}, ${statusLabel(it.status)}. Open details`}>
                 <View style={styles.row}>
@@ -245,6 +245,9 @@ function PunchDetail({ projectId, item, canAct, onClose, onSaved, toast }) {
                       <Text style={[styles.small, muted]}>The photo is not available.</Text>
                     ) : <ActivityIndicator style={styles.spinner} />}
                     <Text style={[styles.small, muted]}>{p.label}</Text>
+                    {photoNote(item, p.which) ? (
+                      <Text style={[styles.small, muted]}>{photoNote(item, p.which)}</Text>
+                    ) : null}
                   </Pressable>
                 ))}
               </ScrollView>
@@ -324,7 +327,10 @@ const styles = StyleSheet.create({
   chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1,
           marginRight: spacing.xs },
   chipText: { fontSize: 13, fontWeight: '600' },
-  card: { padding: spacing.md, marginBottom: spacing.md, borderRadius: borderRadius.lg },
+  card: { marginBottom: spacing.md, borderRadius: borderRadius.lg },
+  // GlassCard pads its content 32px; with the card's own padding the item
+  // cards sat far below their top edge (live 588, Oct 12). One inset.
+  cardContent: { padding: spacing.md },
   spinner: { marginVertical: spacing.md },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   pid: { fontWeight: '700', fontSize: 15 },

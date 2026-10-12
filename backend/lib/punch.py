@@ -758,6 +758,18 @@ def added_text(it: dict) -> str:
             + (f" ({where})" if where else "") + ".")
 
 
+def noted_text(it: dict) -> str:
+    """The reply to words typed during capture (never only a 👍, live 588,
+    Oct 12): "#3 'Tile chipped' (Apt 4D) — got it. Next photo, or 'done'."."""
+    words = (it.get("text") or "").strip()
+    if len(words) > 60:
+        words = words[:57].rstrip() + "…"
+    where = location_label(it)
+    return (f"#{it.get('n')}" + (f" '{words}'" if words else "")
+            + (f" ({where})" if where else " (where? floor and unit)")
+            + " — got it. Next photo, or 'done' (or \"done, send to Chris\").")
+
+
 def _loc(words: str) -> Dict[str, Optional[str]]:
     loc = read_location(words)
     if not loc["floor"]:
@@ -1009,6 +1021,51 @@ def parse_assign_reply(text: str) -> Dict[str, Any]:
             and not re.search(r"\?$", name):
         return {"fill": name}
     return {}
+
+
+# ── "Done, send to Chris" (live 588, Oct 12, 10:46 AM: only a 👍) ──────────
+#
+# At any stage after the photos: "send to X", "send it / all / everything /
+# the list to X", "everything to X", "done, send to X", with an optional due
+# ("asap", "by Fri", "due tomorrow"). The whole list goes to X by DM (the
+# missing locations asked first, then the recap; 'ok' sends). "send to the
+# group" / "post in group": the same, to the job's group.
+
+_SHORTCUT_LEAD = (r"^\s*(?:(?:ok(?:ay)?|done|finished|listo|that'?s\s+(?:it|all))\s*[,.!:;-]*\s*)?"
+                  r"(?:(?:and|then|now)\s+)?(?:please\s+|pls\s+)?")
+_SHORTCUT = re.compile(
+    _SHORTCUT_LEAD
+    + r"(?:(?:send|post|give|forward)\s+(?:it\s+|them\s+|all\s+(?:of\s+(?:it|them)\s+)?|everything\s+"
+      r"|the\s+(?:whole\s+)?(?:list|punch\s+list|thing)\s+|whole\s+list\s+)?(?:all\s+)?"
+      r"|(?:everything|all\s+of\s+it|the\s+whole\s+list|whole\s+list)\s+)"
+    r"(?:to|for|→|->)\s+(?P<rest>.+?)\s*[.!]*\s*$", re.IGNORECASE)
+_GROUP_TARGET = re.compile(r"^(?:the\s+|this\s+|our\s+)?(?:gc\s+|job\s+|whatsapp\s+)?group(?:\s+chat)?$",
+                           re.IGNORECASE)
+_DUE_TAIL = re.compile(r"^(?P<who>.+?)(?:\s*,\s*|\s+)(?P<due>(?:(?:by|due|for|on)\s+)?\S+(?:\s+\S+)?)$",
+                       re.IGNORECASE)
+
+
+def send_shortcut(text: Any) -> Optional[Dict[str, Any]]:
+    """{"group": True, "due": words|None} or {"name": "chris", "due": words|None};
+    None when the text is not a "send to …"."""
+    t0 = re.sub(_SHORTCUT_LEAD, "", str(text or ""), count=1, flags=re.IGNORECASE)
+    if _GROUP.match(t0) and re.search(r"\b(?:send|post|put|to|in)\b", t0, re.IGNORECASE):
+        return {"group": True, "due": None}                  # "post in group", "to the group"
+    m = _SHORTCUT.match(str(text or ""))
+    if not m:
+        return None
+    rest = m.group("rest").strip().strip(".!,")
+    due = None
+    t = _DUE_TAIL.match(rest)
+    if t and due_words(t.group("due")):
+        rest, due = t.group("who").strip().strip(","), due_words(t.group("due"))
+    if not rest or "?" in rest:
+        return None
+    if _GROUP_TARGET.match(rest):
+        return {"group": True, "due": due}
+    if len(rest.split()) > 6:
+        return None
+    return {"name": rest, "due": due}
 
 
 #: Words that say WHICH side someone is on: the GC (the company's own users).
@@ -1386,6 +1443,13 @@ def destination(b: Dict[str, Any], group_name: str = "", live: bool = False) -> 
     return f"{'Posted' if live else 'Would post'} in {group_name or 'the job group'}{tail}"
 
 
+def no_numbers(text: Any) -> str:
+    """No phone number in anything an admin reads: an "@<number>" mention
+    token left in a preview reads "@(WhatsApp contact)". Numbers belong in
+    the mention payload only."""
+    return re.sub(r"(?<![\w@])@\d{7,15}(?!\d)", "@(WhatsApp contact)", str(text or ""))
+
+
 def shadow_text(batches: List[Dict[str, Any]], group_name: str = "") -> str:
     """What the walker sees while sends are in shadow: where each message
     WOULD go, and what it would say."""
@@ -1393,8 +1457,8 @@ def shadow_text(batches: List[Dict[str, Any]], group_name: str = "") -> str:
     for b in batches:
         lines.append("")
         lines.append(destination(b, group_name) + ":")
-        lines.append(b.get("text") or group_text(b["name"], b["items"], b["due_words"],
-                                                 grouped=bool(b.get("grouped"))))
+        lines.append(no_numbers(b.get("display") or b.get("text") or group_text(
+            b["name"], b["items"], b["due_words"], grouped=bool(b.get("grouped")))))
         if b.get("mention_resolved") is False:
             lines.append(f"(@{b['name']}: {NO_NUMBER_NOTE})")
         if b.get("photos"):

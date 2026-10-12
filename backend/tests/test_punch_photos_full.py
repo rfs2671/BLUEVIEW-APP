@@ -315,6 +315,7 @@ class Backfill(unittest.TestCase):
         db, _f, _u = self._run("--i-know", "--reason", "test", "--session", "s")
         row = db[punch.COLLECTION].rows[0]
         row["photo_key"] = "wa-photos/proj_a/w1/1.jpg"       # the item write was lost
+        row.pop("photo_quality", None)                        # (one write: key and quality)
         fetched, up = [], []
 
         async def dl(p):

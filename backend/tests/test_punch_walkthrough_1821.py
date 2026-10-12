@@ -127,14 +127,17 @@ class The1821Sequence(_Walk):
         self.assertEqual(out2, [])
         # Reply to photo 1: its location. Not the assistant, no "Which job?".
         out = self._turn("2nd floor Apt 2D", reply_to=1)
-        self.assertEqual(out, [])
-        self.assertEqual(self.reacts[-1], (3, "👍"))
+        # Answered in words, never only a 👍 (live 588, Oct 12, 10:46 AM).
+        self.assertEqual(out, ["#1 'Bulb burnt' (Floor 2 · Apt 2D) — got it. Next photo, or 'done' "
+                               "(or \"done, send to Chris\")."])
+        self.assertEqual(len(self.reacts), 2)
         # "588": the walk's job.
         out = self._turn("588")
         self.assertEqual(out, ["Walkthrough at 588 Thomas St. Keep going; 'done' when finished."])
         # Reply to photo 2: ITS location (not photo 1's), no job question.
         out = self._turn("4th floor Apt 4F", reply_to=2)
-        self.assertEqual(out, [])
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("#2 'Missing screw by table' (Floor 4 · Apt 4F) — got it."))
         # "588... Same walkthrough": yes, this one -- never the assistant.
         out = self._turn("588... Same walkthrough")
         self.assertEqual(out, ["Still the walkthrough at 588 Thomas St. Keep going; 'done' when finished."])
@@ -201,7 +204,8 @@ class TypingDuringAWalk(_Walk):
 
     def test_a_note_on_the_photo_just_sent(self):
         self._turn("Bulb burnt 2D", photo=True)
-        self.assertEqual(self._turn("also the fixture is loose"), [])
+        (said,) = self._turn("also the fixture is loose")
+        self.assertTrue(said.startswith("#1 'Bulb burnt' (Floor 2 · Apt 2D) — got it."))
         self.assertEqual(self.item(1)["notes"][0]["text"], "also the fixture is loose")
         self.assertEqual(self.assistant, [])
 
@@ -210,7 +214,8 @@ class TypingDuringAWalk(_Walk):
         self._turn("Missing screw 4F", photo=True)
         self.sess()["items"][-1]["at"] = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.assertEqual(self._turn("hinge is loose too"), [punch.WHICH_PHOTO])
-        self.assertEqual(self._turn("1"), [])
+        (said,) = self._turn("1")
+        self.assertTrue(said.startswith("#1 'Bulb burnt'"))
         self.assertEqual(self.item(1)["notes"][0]["text"], "hinge is loose too")
         self.assertEqual(self.assistant, [])
 

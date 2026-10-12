@@ -171,7 +171,7 @@ class NamesAreNeverGuessed(unittest.TestCase):
         reply, sess = self._say(db, sess, "2")
         self.assertEqual(sess["assign"]["electrical"]["name"], "Chris Lopez")
         # The recap, marked; 'ok' to it is still what sends.
-        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertIn("Ready to DM the whole list to Chris Lopez (Arkon, not on this job): #1", reply)
         self.assertIn("Reply 'ok' to send", reply)
         self.assertIsNone(sess.get("choose"))
         self.assertEqual(sess["status"], "recap")
@@ -183,7 +183,7 @@ class NamesAreNeverGuessed(unittest.TestCase):
                                           "group_id": GROUP, "sender_jid": "17185550444@c.us"})
         sess = self._walk(db)
         reply, _ = self._say(db, sess, "electrical → Chris from Arkon")
-        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)   # narrowed: one
+        self.assertIn("Ready to DM the whole list to Chris Lopez (Arkon, not on this job): #1", reply)   # narrowed: one
         db[punch.SESSIONS].rows.clear()
         sess = self._walk(db)
         reply, _ = self._say(db, sess, "electrical → Chris")
@@ -220,7 +220,7 @@ class NamesAreNeverGuessed(unittest.TestCase):
         self.assertTrue(reply.startswith("Which Chris?"), reply)
         self.assertIsNone(sess["assign"]["electrical"])
         reply, sess = self._say(db, sess, "2")
-        self.assertIn("Chris Lopez (Arkon, not on this job): #1", reply)
+        self.assertIn("Ready to DM the whole list to Chris Lopez (Arkon, not on this job): #1", reply)
         self.assertTrue(sess["assign"]["electrical"]["not_on_job"])
 
     def test_a_worker_who_only_checked_in_is_unknown(self):

@@ -33,7 +33,7 @@ ok(M.historyLine({ action: 'closed', at: 'x', quote: 'P-588-4 ok' }, () => 'Oct 
   'closed with the words');
 ok(M.historyLine({ action: 'ready_to_check', quote: 'done P-588-4' }) === 'Marked done (ready to check): “done P-588-4”',
   'a sub\'s done is ready to check');
-ok(M.historyLine({ action: 'sent', quote: 'x' }) === 'Sent', 'sent has no quote');
+ok(M.historyLine({ action: 'sent', mode: 'live', quote: 'x' }) === 'Sent', 'sent has no quote');
 ok(/walkthrough/.test(M.emptyText(false)) && /filters/.test(M.emptyText(true)), 'empty text');
 ok(M.ADMIN_STATUSES.join() === 'open,ready_to_check,closed', 'admin statuses');
 
@@ -121,6 +121,30 @@ ok(M.historyLine({ action: 'reassigned', quote: 'Chris Lopez' }) === 'Reassigned
 ok(/onPress=\{\(\) => setDetail\(it\)\}/.test(screen) && /<PunchDetail/.test(screen)
   && /resizeMode="contain"/.test(screen) && /data\.can_act/.test(screen),
   'tap opens the detail; photos full screen; actions only when the server says so');
+
+// ── Live 588, Mon Oct 12, 10:42–10:47 AM ─────────────────────────────────
+// 6. A shadow send read "Sent".
+ok(M.historyLine({ action: 'sent', mode: 'shadow', dest: 'DM to Chris Weiss (GC team)' })
+  === 'Would send (shadow) · DM to Chris Weiss (GC team)', 'shadow DM send');
+ok(M.historyLine({ action: 'sent', mode: 'shadow', dest: 'post in 588 Thomas St' })
+  === 'Would send (shadow) · post in 588 Thomas St', 'shadow group post');
+ok(M.historyLine({ action: 'sent', mode: 'live', dest: 'DM to Chris Weiss (GC team)' })
+  === 'Sent · DM to Chris Weiss (GC team)', 'a live send says Sent');
+// 7. The assignee row was missing with one assignee.
+ok(M.showAssigneeRow([{ key: 'user:u_chris', name: 'Chris Weiss' }]) && !M.showAssigneeRow([])
+  && !M.showAssigneeRow(null), 'the assignee row shows with one or more');
+ok(/showAssigneeRow\(data\.assignees\)/.test(screen) && !/assignees\.length > 1/.test(screen),
+  'the screen uses it');
+// 8. Item cards: one inset, not GlassCard's 32px plus the card's own.
+ok((screen.match(/contentStyle=\{styles\.cardContent\}/g) || []).length >= 2
+  && /cardContent: \{ padding: spacing\.md \}/.test(screen)
+  && !/card: \{ padding:/.test(screen), 'cards are padded once');
+// 1. A photo that is only the preview says so.
+ok(M.photoNote({ photo_quality: 'preview' }, 'item') === 'Original unavailable — preview only'
+  && M.photoNote({ photo_quality: 'original' }, 'item') === null
+  && M.photoNote({ completion: { photo_quality: 'preview' } }, 'done') === M.PREVIEW_ONLY,
+  'preview only, labelled');
+ok(/photoNote\(item, p\.which\)/.test(screen), 'under the photo in the detail');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

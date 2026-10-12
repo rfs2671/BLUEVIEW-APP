@@ -78,7 +78,9 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
 
     def test_capture_is_one_thumbs_up_per_item_and_no_words(self):
         res = _run(_upto(_sc(), "4C"))           # the last location answer
-        self.assertEqual(res["reacts"], ["👍"] * 13)       # 12 photos + the voice after one
+        self.assertEqual(res["reacts"], ["👍"] * 12)       # the 12 photos; words are answered in words
+        said_all = "\n".join(res["transcript"])
+        self.assertIn("— got it. Next photo", said_all)    # the voice after one (10:46 AM: never only 👍)
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
         # Only the start, one location question per photo with none, and the draft.
