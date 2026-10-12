@@ -63223,6 +63223,31 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
     return f"{row['pid']} marked done — ready to check."
 
 
+async def _checklist_open_today(group_id: str, project_id: Any, company_id: Any,
+                                now: Optional[datetime] = None) -> bool:
+    """The checklist "done N" would tick -- this group's latest, as the
+    handler picks it -- was made today (New York) and has an item not yet
+    done. While it is open, a group's bare "done 1" is the checklist's."""
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(timezone.utc)
+    ny = ZoneInfo("America/New_York")
+    start = now.astimezone(ny).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    try:
+        latest = await db.whatsapp_checklists.find_one(
+            {"group_id": group_id, "company_id": _company_id_filter(company_id),
+             "project_id": str(project_id), "is_deleted": {"$ne": True}},
+            sort=[("generated_at", -1)])
+    except Exception:
+        return True                 # cannot tell: the checklist keeps "done N"
+    if not latest:
+        return False
+    at = latest.get("generated_at")
+    if isinstance(at, datetime) and not at.tzinfo:
+        at = at.replace(tzinfo=timezone.utc)
+    return bool(isinstance(at, datetime) and at >= start
+                and any(not it.get("completed") for it in (latest.get("items") or [])))
+
+
 async def _punch_done_is_theirs(project_id: Any, seq: int, msg: dict) -> bool:
     """An open punch item #seq on this job, given to whoever sent `msg`."""
     try:
@@ -63238,7 +63263,17 @@ async def _punch_group_message(msg: dict, ctx: dict) -> bool:
     replying to the punch message) -> ready to check; an admin or PM's
     "P23 ok" / "P23 not done" -> closed / reopened. True when handled."""
     text = str(msg.get("body") or "")
-    pid = punch.parse_pid(text) or punch.parse_done_ref(text)      # "done 1", "done P1", "done P-588-1"
+    # "done P1" / "done P-588-1" name a punch item. A bare "done 1" is the
+    # checklist's in a group -- unless no checklist is open for the job
+    # today; then it may close punch #1 (for its assignee, below).
+    pid = punch.parse_pid(text)
+    if not pid and msg.get("done_for") == "punch":
+        # Decided once, when it came in (Codex review on #760): the live
+        # handler found no checklist open and the sender owning punch #N, and
+        # marked the stored message. Never recomputed from the checklist as
+        # it is now -- the "done N" that ticked its last item is the
+        # checklist's.
+        pid = punch.parse_done_ref(text)
     if not pid:
         return False
     row = await _punch_find([str(ctx["project_id"])], pid[0], pid[1])
@@ -63857,12 +63892,21 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # reaction is not the bot speaking); any TEXT reply does.
             if body and not spoken:
                 done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
-                if done_match and await _punch_done_is_theirs(
-                        project_id, int(done_match.group(1)),
-                        {"sender_jid": parsed.get("sender") or "", "sender": sender}):
-                    # "done 1" from the owner of punch item P-…-1: the punch
-                    # item (closed by the attention run on the stored
-                    # message), never checklist item 1.
+                if done_match and not await _checklist_open_today(
+                        group_id, project_id, msg_company_id, now) \
+                        and await _punch_done_is_theirs(
+                            project_id, int(done_match.group(1)),
+                            {"sender_jid": parsed.get("sender") or "", "sender": sender}):
+                    # "done 1" stays the checklist's while one is open today;
+                    # with none open, from the owner of punch item P-…-1 it
+                    # is that punch item: the stored message says so, and the
+                    # attention run closes it.
+                    try:
+                        await db.whatsapp_messages.update_one(
+                            {"group_id": group_id, "message_id": parsed.get("message_id")},
+                            {"$set": {"done_for": "punch"}})
+                    except Exception as e:
+                        logger.warning(f"[punch] done mark failed: {type(e).__name__}")
                     return
                 if done_match:
                     try:
