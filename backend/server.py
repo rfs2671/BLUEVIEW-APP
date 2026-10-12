@@ -61398,6 +61398,10 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
     }
     if row_id is not None:
         row["_id"] = row_id
+    if parsed.get("photo_key"):
+        # A completion photo, downloaded in full and kept (R2): the punch
+        # item's "done" carries it.
+        row["photo_key"] = parsed["photo_key"]
     if voice:
         # A voice note: the body is its transcript as said; the language,
         # Whisper's confidence, the duration, the R2 audio key and the
@@ -61532,39 +61536,116 @@ def _wa_media_key(node: Any, depth: int = 0) -> Optional[str]:
 _IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG", b"RIFF", b"GIF8")
 
 
+#: WhatsApp's webhook carries a tiny preview of every photo (jpegThumbnail,
+#: ~100 px; the body of an uncaptioned image). It is never what we keep:
+#: the original is WaAPI's download-media, and anything this small is not it.
+FULL_PHOTO_MIN_PX = 400
+_PHOTO_TRIES = (0.0, 2.0, 5.0)
+
+
+def _image_px(b: bytes) -> Tuple[int, int]:
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(b)) as im:
+            return im.size
+    except Exception:
+        return (0, 0)
+
+
+def _wa_media_blobs(node: Any, depth: int = 0, media: bool = False) -> List[Tuple[bool, bytes]]:
+    """Every base64 blob in a WaAPI answer: (is it the `media` node's data,
+    bytes). The media node ({mimetype, data}) is the file itself; anything
+    else (a message's body, its preview) is not."""
+    out: List[Tuple[bool, bytes]] = []
+    if depth > 10 or node is None:
+        return out
+    if isinstance(node, str):
+        b = _wa_media_bytes(node)
+        return [(media, b)] if b else out
+    if isinstance(node, dict):
+        here = media or bool(node.get("mimetype") and "data" in node)
+        for k, v in node.items():
+            out += _wa_media_blobs(v, depth + 1, here and k == "data")
+    elif isinstance(node, list):
+        for v in node:
+            out += _wa_media_blobs(v, depth + 1, media)
+    return out
+
+
+def _webhook_thumbnail(parsed_msg: dict) -> Optional[bytes]:
+    """The preview the webhook itself carried (to tell it apart)."""
+    raw = parsed_msg.get("raw") or {}
+    for node in (raw, raw.get("_data") or {}, (raw.get("message") or {}),
+                 ((raw.get("message") or {}).get("_data") or {})):
+        if not isinstance(node, dict):
+            continue
+        for k in ("jpegThumbnail", "body"):
+            v = node.get(k)
+            if isinstance(v, str) and len(v) > 200 and " " not in v:
+                try:
+                    return base64.b64decode(v, validate=False)
+                except Exception:
+                    continue
+    return None
+
+
+def full_photo(answer: Any, parsed_msg: dict) -> Optional[bytes]:
+    """The original photo in a download-media answer: the media node's bytes
+    first, then the largest other blob; decrypted with the mediaKey (from
+    the answer, else the webhook) when it is still the .enc file. Never the
+    preview: an image under FULL_PHOTO_MIN_PX on its longer side, or the
+    webhook's own thumbnail, is not the photo."""
+    thumb = _webhook_thumbnail(parsed_msg)
+    keys = [k for k in (_wa_media_key(answer), _wa_media_key(parsed_msg.get("raw"))) if k]
+    blobs = sorted(_wa_media_blobs(answer), key=lambda mb: (not mb[0], -len(mb[1])))
+    for _media, raw in blobs:
+        cands = [raw] if raw.startswith(_IMAGE_MAGIC) else []
+        for key in keys:
+            try:
+                dec = _decrypt_whatsapp_media(raw, key, "image")
+            except Exception:
+                dec = None
+            if dec and dec.startswith(_IMAGE_MAGIC):
+                cands.append(dec)
+        for img in cands:
+            if thumb and img == thumb:
+                continue
+            if max(_image_px(img)) >= FULL_PHOTO_MIN_PX:
+                return img
+    return None
+
+
 async def download_image(parsed_msg: dict) -> Optional[bytes]:
-    """A WhatsApp photo's bytes, through WaAPI download-media (decrypted with
-    its mediaKey when WaAPI hands back the .enc blob). None on failure."""
+    """A WhatsApp photo's ORIGINAL bytes, through WaAPI download-media
+    (decrypted with its mediaKey when WaAPI hands back the .enc blob). Live
+    588, Oct 12: the punch photos in the app were the webhook's ~100 px
+    preview, blown up. Only the full photo is returned (`full_photo`); a
+    preview, or nothing yet, is tried again (WaAPI may still be fetching
+    it), then None."""
     message_id = parsed_msg.get("message_id_serialized") or parsed_msg.get("message_id") or ""
     if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id):
         return None
-    try:
-        async with ServerHttpClient(timeout=45) as client_http:
-            resp = await client_http.post(
-                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
-                headers={"Authorization": f"Bearer {WAAPI_TOKEN}",
-                         "Content-Type": "application/json"},
-                json={"messageId": message_id})
-            if not (200 <= resp.status_code < 300):
-                logger.info(f"[punch] image download status={resp.status_code}")
-                return None
-            j = resp.json() if resp.content else {}
-    except Exception as e:
-        logger.warning(f"[punch] image download failed: {type(e).__name__}")
-        return None
-    raw = _wa_media_bytes(j)
-    if not raw:
-        return None
-    if raw.startswith(_IMAGE_MAGIC):
-        return raw
-    key = _wa_media_key(j)
-    if key:
+    for wait in _PHOTO_TRIES:
+        if wait:
+            await asyncio.sleep(wait)
         try:
-            dec = _decrypt_whatsapp_media(raw, key, "image")
-            if dec and dec.startswith(_IMAGE_MAGIC):
-                return dec
-        except Exception:
-            return None
+            async with ServerHttpClient(timeout=45) as client_http:
+                resp = await client_http.post(
+                    f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/download-media",
+                    headers={"Authorization": f"Bearer {WAAPI_TOKEN}",
+                             "Content-Type": "application/json"},
+                    json={"messageId": message_id})
+                if not (200 <= resp.status_code < 300):
+                    logger.info(f"[punch] image download status={resp.status_code}")
+                    continue
+                j = resp.json() if resp.content else {}
+        except Exception as e:
+            logger.warning(f"[punch] image download failed: {type(e).__name__}")
+            continue
+        img = full_photo(j, parsed_msg)
+        if img:
+            return img
+        logger.info("[punch] image download: no full-size photo in the answer yet")
     return None
 
 
@@ -61575,6 +61656,31 @@ def _punch_caption(parsed: dict, body: str) -> str:
     if parsed.get("has_image") and len(b) > 200 and " " not in b:
         return ""
     return b
+
+
+async def _punch_message_photo(parsed: dict, project_id: Any) -> Optional[str]:
+    """A completion photo ("done P-588-1" as a photo's caption): the original
+    downloaded and kept in R2 under the job (wa-photos/<project>/msg/<id>.jpg,
+    swept with the project). Its key, or None."""
+    if not parsed.get("has_image"):
+        return None
+    img = await download_image(parsed)
+    if not img:
+        return None
+    key = _punch_photo_key(project_id or "unassigned", "msg", parsed.get("message_id") or "x")
+    try:
+        return key if await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg") else None
+    except Exception:
+        return None
+
+
+def _punch_photo_caption_ref(parsed: dict, body: str) -> bool:
+    """A photo whose caption names a punch item ("done P1", "done P-588-1",
+    "done 1"): its photo is the completion photo."""
+    if not parsed.get("has_image"):
+        return False
+    text = _punch_caption(parsed, body)
+    return bool(text and (punch.parse_pid(text) or punch.parse_done_ref(text)))
 
 
 async def _punch_next_seq(project_id: str) -> int:
@@ -61792,14 +61898,16 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     sess = await _punch_session(ident["user_id"])
 
     # Questions and verdicts work with or without a walkthrough.
-    if not parsed.get("has_image") and not voice:
+    if not voice and (not parsed.get("has_image") or _punch_photo_caption_ref(parsed, body)):
         ref = punch.parse_done_ref(text)
         if ref:
-            # A whole list DM'd to someone: their "done P-588-1" comes here.
+            # A whole list DM'd to someone: their "done P-588-1" comes here
+            # (as a photo's caption: with that photo).
             reply = await _punch_dm_done(ident, dm_chat, ref, text, parsed, now)
             if reply:
                 await send_whatsapp_message(dm_chat, reply)
                 return True
+    if not parsed.get("has_image") and not voice:
         q = punch.parse_query(text)
         if q:
             await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
@@ -63195,7 +63303,8 @@ async def _punch_dm_done(ident, dm_chat, ref, text, parsed, now) -> Optional[str
     if not mine:
         return None
     await _punch_set_status(row, "ready_to_check", now, by=str(ident.get("user_id")), quote=text,
-                            message_id=str(parsed.get("message_id") or ""))
+                            message_id=str(parsed.get("message_id") or ""),
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63218,8 +63327,9 @@ async def _punch_dm_done_by_number(dm_chat: str, ref, parsed: dict) -> Optional[
         return None
     row = rows[0]
     await _punch_set_status(row, "ready_to_check", datetime.now(timezone.utc), by=digits,
-                            quote=str(parsed.get("body") or ""),
-                            message_id=str(parsed.get("message_id") or ""))
+                            quote=_punch_caption(parsed, parsed.get("body") or ""),
+                            message_id=str(parsed.get("message_id") or ""),
+                            photo_key=await _punch_message_photo(parsed, row.get("project_id")))
     return f"{row['pid']} marked done — ready to check."
 
 
@@ -63770,6 +63880,13 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # `transcribed` marks a row whose body is Whisper's words rather
             # than the sender's typing, so anyone reading the corpus later can
             # tell speech from text instead of guessing.
+            if _punch_photo_caption_ref(parsed, body):
+                # "done P1" sent as a photo's caption: the photo, in full,
+                # is the item's completion photo.
+                try:
+                    parsed["photo_key"] = await _punch_message_photo(parsed, project_id)
+                except Exception as e:
+                    logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
             await _store_group_message(parsed, group_id, project_id, msg_company_id,
                                        stored_body if voice_block else body, now,
                                        voice=voice_block)
@@ -64145,7 +64262,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             # A punch list DM'd to a sub: their "done P-588-1" is answered
             # here, only for an open item sent to THIS number (Codex review
             # on #759: it got the not-for-you line).
-            ref = punch.parse_done_ref(parsed.get("body")) if not parsed.get("has_image") else None
+            ref = punch.parse_done_ref(_punch_caption(parsed, parsed.get("body") or "")) \
+                if not parsed.get("has_image") or _punch_photo_caption_ref(
+                    parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
@@ -66885,6 +67004,13 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
                        "langs": sorted(langs)}}
 
 
+#: Punch items ride attention_items so the chase engine reads them, but they
+#: are explicit (a walkthrough sent them), not the model's guesses: never in
+#: the Attention review queue or its precision. Filtered, never deleted; they
+#: live in the Punch list (live 588, Oct 12: "Request" cards with Correct/Wrong).
+ATTENTION_NOT_PUNCH = {"extraction.source": {"$ne": "punch"}, "tags": {"$ne": "punch"}}
+
+
 @api_router.get("/projects/{project_id}/attention",
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_attention(project_id: str, status: str = "open",
@@ -66906,12 +67032,13 @@ async def get_project_attention(project_id: str, status: str = "open",
                             detail="status: open, closed, reviewed or all")
     q = {"project_id": str(project_id),
          "company_id": _company_id_filter(company_id),
-         "status": status_cond, "review": review_cond}
+         "status": status_cond, "review": review_cond,
+         **ATTENTION_NOT_PUNCH}
     items = await db.attention_items.find(q).sort(
         [("created_at", -1)]).to_list(200)
     stats_rows = await db.attention_items.find(
         {"project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)},
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH},
         {"type": 1, "review.verdict": 1, "history": 1,
          "evidence.message_row_id": 1,          # the voice flag's own item
          "excluded_from_metrics": 1}).to_list(10000)
@@ -66973,7 +67100,7 @@ async def review_project_attention(project_id: str, item_id: str, body: dict,
         fields["status"] = "dismissed"
     it = await db.attention_items.find_one_and_update(
         {"_id": oid, "project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)},
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH},
         {"$set": fields}, return_document=_canary_return_after())
     if not it:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -66999,7 +67126,7 @@ async def review_project_attention_event(project_id: str, item_id: str, event_id
     if not oid:
         raise HTTPException(status_code=404, detail="Item not found")
     q = {"_id": oid, "project_id": str(project_id),
-         "company_id": _company_id_filter(company_id)}
+         "company_id": _company_id_filter(company_id), **ATTENTION_NOT_PUNCH}
     it = await db.attention_items.find_one(q)
     history = list((it or {}).get("history") or [])
     idx = next((i for i, e in enumerate(history) if isinstance(e, dict)
