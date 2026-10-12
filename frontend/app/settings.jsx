@@ -50,7 +50,7 @@ import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
-import { useAuth, isCompanyAdmin, isPlatformOperator } from '../src/context/AuthContext';
+import { useAuth, isCompanyAdmin, isAccountAdmin, isPlatformOperator } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
@@ -1049,7 +1049,8 @@ export default function SettingsScreen() {
           )}
 
           {/* ── SECURITY (admin only) ──────────────────────────────────── */}
-          {isAdmin && (
+          {/* The admin-seat password route: not a full-access PM's. */}
+          {isAccountAdmin(user) && (
             <>
               <Text style={s.sectionLabel}>SECURITY</Text>
               <GlassCard style={s.card}>

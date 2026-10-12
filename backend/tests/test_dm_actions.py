@@ -321,7 +321,7 @@ class Chat(unittest.TestCase):
     def test_a_pm_cannot_add_a_job(self):
         pm = {**self.ident, "role": "pm"}
         self.assertEqual(self.talk("add 9 menahan", ident=pm),
-                         ["Only a company admin can do that. I can save people for you."])
+                         ["Only a company admin can do that. I can add people, subs and punch contacts for you."])
 
     # ── 2. A sub on a job ────────────────────────────────────────────────
 
@@ -491,7 +491,7 @@ class Chat(unittest.TestCase):
     def test_only_an_admin_turns_it_live(self):
         pm = {**self.ident, "role": "pm"}
         self.assertEqual(self.talk("start sending punch lists for real at 588", ident=pm),
-                         ["Only a company admin can do that. I can save people for you."])
+                         ["Only a company admin can do that. I can add people, subs and punch contacts for you."])
 
     # ── What it cannot do ────────────────────────────────────────────────
 

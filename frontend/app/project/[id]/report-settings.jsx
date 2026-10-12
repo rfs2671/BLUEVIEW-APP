@@ -28,7 +28,7 @@ import { GlassCard, IconPod } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import { useToast } from '../../../src/components/Toast';
-import { useAuth } from '../../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import { projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -63,7 +63,7 @@ export default function ReportSettingsScreen() {
   // screen is a cached copy (or nothing), and that saving is impossible.
   const [fetchState, setFetchState] = useState('ok');
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isCompanyAdmin(user);
   const readOnly = fetchState !== 'ok';
 
   // NEW: Refetch whenever screen comes into focus to catch any backend updates

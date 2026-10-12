@@ -312,6 +312,24 @@ export function isPlatformOperator(user) {
  * gate on the endpoint, and a client that ignores this still gets 403s.
  */
 export function isCompanyAdmin(user) {
+  return isAccountAdmin(user) || isFullAccessPm(user);
+}
+
+/**
+ * A PM whose permission level is "Same as admin" (`pm_access: "full"`): an
+ * admin everywhere except user/admin management (and billing), which stay
+ * with `isAccountAdmin`. Mirrors the server's pm_has_full_access.
+ */
+export function isFullAccessPm(user) {
+  const u = user || {};
+  return String(u.role || '').trim().toLowerCase() === 'pm' && u.pm_access === 'full';
+}
+
+/**
+ * The admin seat itself: managing users and admins, an admin's own password
+ * route. A full-access PM is NOT this. Mirrors the server's holds_admin_seat.
+ */
+export function isAccountAdmin(user) {
   const role = String((user || {}).role || '').trim().toLowerCase();
   return role === 'admin' || isPlatformOperator(user);
 }

@@ -1,5 +1,7 @@
 /**
- * Project → WhatsApp → Levelog Assistant (admins only).
+ * Project → WhatsApp → Levelog Assistant: an admin (or a PM with full
+ * access) sees all of it; a PM on "Assigned jobs only" sees and sets the
+ * job's punch contacts and nothing else (the server says which: `edit`).
  *
  *   GC group: <name>  [Change]
  *   New DOB violations → GC group           on / off
@@ -100,6 +102,8 @@ export default function LevelogAssistantCard({ projectId }) {
   };
 
   const view = assistantView(data);
+  // A PM on "Assigned jobs only": the punch contacts, nothing else.
+  const punchOnly = !!data && data.edit === 'punch_contacts';
   return (
     <>
       <Text style={s.heading}>Levelog Assistant</Text>
@@ -112,6 +116,7 @@ export default function LevelogAssistantCard({ projectId }) {
           </Pressable>
         ) : (
           <>
+            {punchOnly ? null : (<>
             {/* GC group */}
             <View style={s.row}>
               <View style={{ flex: 1 }}>
@@ -287,6 +292,7 @@ export default function LevelogAssistantCard({ projectId }) {
                   : punchDueMode(data) === o.mode ? <Check size={18} color={colors.primary} /> : null}
               </Pressable>
             ))}
+            </>)}
 
             {/* Each sub's punch contact: the only person suggested for it */}
             {((data && data.punch_contacts) || []).length ? (
@@ -316,6 +322,8 @@ export default function LevelogAssistantCard({ projectId }) {
                   </View>
                 ))}
               </>
+            ) : punchOnly ? (
+              <Text style={s.muted}>No subs on this job yet. Add them under Trades, then pick their punch contacts here.</Text>
             ) : null}
           </>
         )}

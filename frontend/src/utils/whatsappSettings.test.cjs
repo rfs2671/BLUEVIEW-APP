@@ -120,7 +120,13 @@ ok(!/Plan Query Index|getIndexStatus|Requires Qwen/.test(all), 'no plan-index ca
 ok(!/group_name \|\| group\.name|row\.group_name \|\| row\.group_id|\|\| gid/.test(all
    + read('app/admin/whatsapp-groups.jsx') + read('app/projects/[id]/whatsapp-checklists.jsx')),
    'no fallback that could show a raw id');
-ok(/isAdmin && !readOnly \? \(\s*<LevelogAssistantCard/.test(tab), 'Levelog Assistant: admins only');
+// An admin (or full-access PM) sees all of it; a PM on assigned jobs sees the
+// card for its punch contacts only (the server's `edit`).
+ok(/\(isAdmin \|\| role === 'pm'\) && !readOnly \? \([\s\S]{0,40}<LevelogAssistantCard/.test(tab),
+   'Levelog Assistant: admins, and a PM for punch contacts');
+ok(/const punchOnly = !!data && data\.edit === 'punch_contacts'/.test(read('src/components/whatsapp/LevelogAssistantCard.jsx'))
+   && /\{punchOnly \? null : \(<>/.test(read('src/components/whatsapp/LevelogAssistantCard.jsx')),
+   'a PM on assigned jobs sees punch contacts only');
 ok(/What the bot does in groups/.test(tab) && /isAdmin && !readOnly && groups.length > 0/.test(tab),
    'What the bot does: admins only');
 ok(/BOT_SETTINGS\.map/.test(panel), 'the group panel renders exactly BOT_SETTINGS');

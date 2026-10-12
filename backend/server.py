@@ -3195,6 +3195,9 @@ class UserCreate(BaseModel):
     company_id: Optional[str] = None
     phone: Optional[str] = None
     trade: Optional[str] = None
+    # A PM's permission level: "assigned" (default) or "full" (same as admin).
+    # Refused for any other role -- see create_admin_user.
+    pm_access: Optional[str] = None
     # ── The superintendent's DOB registration ───────────────────────────────
     # Accepted on create for a `superintendent` and REFUSED for every other
     # role — see create_admin_user. `dob_card_image` is a base64 data URL and
@@ -3213,6 +3216,8 @@ class UserResponse(BaseModel):
     email: str
     name: str
     role: str
+    # A PM's permission level ("assigned" / "full"); None for other roles.
+    pm_access: Optional[str] = None
     company_name: Optional[str] = None
     company_id: Optional[str] = None
     phone: Optional[str] = None
@@ -7615,7 +7620,10 @@ async def get_admin_user(current_user = Depends(get_current_user)):
     route carries, and user administration can never acquire a new role by
     somebody editing a list that also governs a hundred other things.
     """
-    if not holds_rank(current_user, COMPANY_ADMIN_ROLES):
+    # A PM set to "Same as admin" passes too (see PM_ACCESS_FULL): every route
+    # here is a company admin power, and the account table is not here --
+    # it is get_user_admin's, which a PM never passes.
+    if not (holds_rank(current_user, COMPANY_ADMIN_ROLES) or pm_has_full_access(current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
@@ -8286,7 +8294,8 @@ def refuse_if_logbooks_are_read_only(current_user) -> None:
     Site Manager ruling asks for. Adding this refusal there would take away the
     one write the ruling grants him.
     """
-    if str((current_user or {}).get("role") or "").strip().lower() in ROLES_WITH_READ_ONLY_LOGBOOKS:
+    if (str((current_user or {}).get("role") or "").strip().lower() in ROLES_WITH_READ_ONLY_LOGBOOKS
+            and not pm_has_full_access(current_user)):
         raise HTTPException(
             status_code=403,
             detail="A Site Manager may read a log and add photographs to it, "
@@ -8826,7 +8835,7 @@ async def get_demo_project(current_user = Depends(get_current_user)):
     "/admin/users/{user_id}/approve",
     dependencies=[Depends(require_approved)],
 )
-async def admin_approve_user(user_id: str, current_user = Depends(get_admin_user)):
+async def admin_approve_user(user_id: str, current_user = Depends(get_user_admin)):
     """Flip a user pending -> approved. Admin/owner only, and the caller must
     themselves be approved (require_approved on the route) so a pending
     self-signup admin cannot self-approve. Upsert-style update; never drops.
@@ -8858,6 +8867,20 @@ async def admin_approve_user(user_id: str, current_user = Depends(get_admin_user
         raise HTTPException(status_code=404, detail="User not found")
     updated = await db.users.find_one({"_id": to_query_id(user_id)})
     return {"user_id": user_id, "account_status": (updated or {}).get("account_status")}
+
+
+async def run_pm_access_startup_migration():
+    """Every PM without a permission level gets "assigned jobs only" -- what
+    they could do before the level existed. Idempotent; only field-less PMs."""
+    try:
+        res = await db.users.update_many(
+            {"role": ROLE_PM, "pm_access": {"$exists": False}},
+            {"$set": {"pm_access": PM_ACCESS_ASSIGNED}})
+        n = getattr(res, "modified_count", 0) or 0
+        if n:
+            logger.info(f"[pm-access] {n} PM(s) set to assigned jobs only")
+    except Exception as e:
+        logger.warning(f"run_pm_access_startup_migration failed: {e}")
 
 
 async def run_account_status_startup_migration():
@@ -8988,6 +9011,66 @@ def holds_rank(user, roles) -> bool:
     return str((user or {}).get("role") or "").strip().lower() in roles
 
 
+# ── A PM'S PERMISSION LEVEL ─────────────────────────────────────────────────
+#
+# Set by a company admin when creating a PM, changed later on the user's card
+# (PUT /admin/users/{id}, audited "user_pm_access_change"; admins only):
+#
+#   "assigned" (the default, and every PM before this field existed): the PM
+#       acts only on the jobs they are assigned to -- there they may also put
+#       subs on the job and set punch contacts (the roster and the punch
+#       contacts, nothing else of the job's settings).
+#   "full": the PM may do everything a company admin can, on every job of
+#       the company -- EXCEPT manage users and admins (get_user_admin, the
+#       approve route, the admin password route stay with the admin seat) and
+#       billing (none exists yet; it would sit with the admin seat too).
+#
+# So: get_admin_user and is_company_admin admit a full-access PM;
+# get_user_admin and holds_admin_seat never do; project_access_ok scopes a PM
+# to assigned jobs only while their level is "assigned".
+
+PM_ACCESS_ASSIGNED = "assigned"
+PM_ACCESS_FULL = "full"
+PM_ACCESS_LEVELS = (PM_ACCESS_ASSIGNED, PM_ACCESS_FULL)
+
+
+def pm_access_level(user) -> Optional[str]:
+    """A PM's level ("assigned" unless set to "full"); None for any other role."""
+    if str((user or {}).get("role") or "").strip().lower() != ROLE_PM:
+        return None
+    return PM_ACCESS_FULL if (user or {}).get("pm_access") == PM_ACCESS_FULL else PM_ACCESS_ASSIGNED
+
+
+def pm_has_full_access(user) -> bool:
+    return pm_access_level(user) == PM_ACCESS_FULL
+
+
+def pm_scoped_to_assigned(user) -> bool:
+    """A PM who acts on their assigned jobs only (the default level)."""
+    return pm_access_level(user) == PM_ACCESS_ASSIGNED
+
+
+def holds_admin_seat(user) -> bool:
+    """The admin seat itself: what a full-access PM is still refused --
+    managing users and admins (and billing)."""
+    return holds_rank(user, COMPANY_ADMIN_ROLES)
+
+
+def clean_pm_access(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    if v not in PM_ACCESS_LEVELS:
+        raise HTTPException(status_code=422, detail=(
+            'PM permission level: "assigned" (assigned jobs only) or "full" (same as admin).'))
+    return v
+
+
+def _admin_like(user) -> bool:
+    """The legacy inline `role in ("admin", "owner")` checks, kept as they
+    were and now admitting a full-access PM too."""
+    return (str((user or {}).get("role") or "").strip().lower() in ("admin", "owner")
+            or pm_has_full_access(user))
+
+
 def is_company_admin(user) -> bool:
     """THE COMPANY-WIDE ADMIN QUESTION, asked in one place.
 
@@ -9000,8 +9083,11 @@ def is_company_admin(user) -> bool:
     project or a tenant, and a route that carries only this is only as scoped
     as the separate check it also carries. That is the same warning
     `get_project_admin_user` prints, for the same reason.
+
+    A PM with full access ("Same as admin") passes; account administration
+    asks holds_admin_seat instead.
     """
-    return holds_rank(user, COMPANY_ADMIN_ROLES)
+    return holds_rank(user, COMPANY_ADMIN_ROLES) or pm_has_full_access(user)
 
 
 def _same_company(actor: dict, target: dict) -> bool:
@@ -9101,7 +9187,9 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
     # write gates that name ROLES_SCOPED_TO_ASSIGNED_PROJECTS. Moving them here
     # would be a real behaviour change on live accounts, and it is a separate
     # decision from creating a role nobody holds.
-    if str(current_user.get("role") or "").strip().lower() == ROLE_PM:
+    # A PM on "Assigned jobs only" (the default); one with full access
+    # ("Same as admin") takes the company branch below.
+    if current_user.get("role") == ROLE_PM and not pm_has_full_access(current_user):
         return str(project_id) in (current_user.get("assigned_projects") or [])
 
     user_company = get_user_company_id(current_user)
@@ -10344,7 +10432,7 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
     # Rank guard. This read ("admin", "owner") and the second member was not a
     # rank: every self-serve signup carried it. A company admin power, so it is
     # `is_company_admin`, which admits the operator on the flag.
-    if not is_company_admin(current_user):
+    if not holds_admin_seat(current_user):
         raise HTTPException(
             status_code=403,
             detail="Only admins can change passwords through this endpoint"
@@ -11453,7 +11541,7 @@ async def get_admin_users(
     # until someone puts it there, so the next secret to land on db.users does
     # not ship to an admin console by default.
     USER_LIST_FIELDS = {
-        "name": 1, "full_name": 1, "email": 1, "phone": 1, "role": 1,
+        "name": 1, "full_name": 1, "email": 1, "phone": 1, "role": 1, "pm_access": 1,
         "company_id": 1, "company_name": 1, "assigned_projects": 1,
         "deletion_requested_at": 1, "client_version": 1,
         "is_active": 1, "status": 1, "is_deleted": 1,
@@ -11602,6 +11690,14 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_user_admi
     # An admin creating a user is the opposite of self-registration, and the
     # same act that approves them. 5.1.1(v) does not reach this account.
     user_dict["registration_source"] = REG_ADMIN
+    # A PM's permission level, "assigned" unless the admin chose "full"; no
+    # other role carries one.
+    if str(user_dict.get("role") or "").strip().lower() == ROLE_PM:
+        user_dict["pm_access"] = clean_pm_access(user_dict.get("pm_access") or PM_ACCESS_ASSIGNED)
+    elif user_dict.get("pm_access") is not None:
+        raise HTTPException(status_code=422, detail="Only a PM has a permission level.")
+    else:
+        user_dict.pop("pm_access", None)
 
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -11761,7 +11857,7 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     # the body separately below and is deliberately absent from this set — a
     # field in this set is a field that gets $set verbatim.
     ALLOWED_USER_FIELDS = {"name", "full_name", "email", "role", "phone", "assigned_projects", "password",
-                           "dob_superintendent_number", "dob_registration_expiry"}
+                           "dob_superintendent_number", "dob_registration_expiry", "pm_access"}
     update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
@@ -11877,6 +11973,24 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     old_phone = existing_user.get("phone", "")
     company_id = existing_user.get("company_id")
 
+    # ── A PM'S PERMISSION LEVEL ─────────────────────────────────────────────
+    # Only a PM has one ("assigned" unless "full"); a role change away from PM
+    # drops it, a change to PM starts at "assigned". Only admins reach this
+    # route (get_user_admin), so only admins change it; each change is audited
+    # on its own below.
+    _pm_access_before = pm_access_level(existing_user)
+    if _resulting_role == ROLE_PM:
+        if "pm_access" in update_data:
+            update_data["pm_access"] = clean_pm_access(update_data["pm_access"])
+        elif not existing_user.get("pm_access"):
+            update_data["pm_access"] = PM_ACCESS_ASSIGNED
+    elif "pm_access" in update_data:
+        raise HTTPException(status_code=422, detail="Only a PM has a permission level.")
+    elif existing_user.get("pm_access") is not None:
+        _unset_licence = {**_unset_licence, "pm_access": ""}
+    _pm_access_after = (update_data.get("pm_access") or existing_user.get("pm_access")
+                        or PM_ACCESS_ASSIGNED) if _resulting_role == ROLE_PM else None
+
     _write = {"$set": update_data}
     if _unset_licence:
         _write["$unset"] = _unset_licence
@@ -11938,6 +12052,9 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     audit_details = {k: v for k, v in update_data.items() if k != "password" and k != "updated_at"}
     if audit_details:
         await audit_log("user_update", actor_id(admin), "user", user_id, audit_details)
+    if _pm_access_before != _pm_access_after:
+        await audit_log("user_pm_access_change", actor_id(admin), "user", user_id,
+                        {"before": _pm_access_before, "after": _pm_access_after})
 
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
@@ -13475,7 +13592,7 @@ async def _can_caller_modify_user_in_project(
     if caller_id and caller_id == str(target_user_id):
         return True
     role = current_user.get("role")
-    if role not in ("admin", "owner"):
+    if not _admin_like(current_user):
         return False
     caller_company = get_user_company_id(current_user)
     if not caller_company:
@@ -16570,8 +16687,15 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     return ProjectResponse(**serialize_id(project))
 
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_access)])
-async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
+async def update_project(project_id: str, project_data: ProjectUpdate,
+                         admin = Depends(get_project_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
+    # A PM on assigned jobs only (require_project_access has held them to
+    # their own jobs) may put subs on the job: the roster, and nothing else.
+    # An admin, or a PM with full access, may change all of it.
+    if not is_company_admin(admin) and set(update_data) - {"trade_assignments"}:
+        raise HTTPException(status_code=403, detail=(
+            "Admin access required. A PM on assigned jobs can change the job's subs only."))
     update_data["updated_at"] = datetime.now(timezone.utc)
 
     # ── COMPLETION AND LEGAL HOLD ───────────────────────────────────────────
@@ -22394,7 +22518,7 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
     # ROLE restriction stays: this endpoint is for an admin console and the
     # kiosk, not for every authenticated principal.
     user_role = current_user.get("role")
-    if user_role not in ["admin", "site_device"]:
+    if user_role not in ["admin", "site_device"] and not pm_has_full_access(current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # TENANCY is now the shared gate. The check that stood here compared
@@ -22934,7 +23058,7 @@ def user_can_act_on_project(project: dict, project_id: str, current_user: dict) 
     role = current_user.get("role")
     assigned = current_user.get("assigned_projects", []) or []
     is_company_admin = (
-        role in ("admin", "owner")
+        _admin_like(current_user)
         and project.get("company_id") == current_user.get("company_id")
     )
     return bool(is_company_admin or str(project_id) in assigned)
@@ -24495,7 +24619,8 @@ async def record_signature_event(
     # ON THE SERVER, NOT ON THE SCREEN. The editors would not offer him the
     # button, but this is the one endpoint that writes the ledger, and a signed
     # record produced by a caller with no capacity is the failure this refuses.
-    if str(current_user.get("role") or "").strip().lower() in ROLES_WITHOUT_SIGNING_AUTHORITY:
+    if (str(current_user.get("role") or "").strip().lower() in ROLES_WITHOUT_SIGNING_AUTHORITY
+            and not pm_has_full_access(current_user)):
         raise HTTPException(
             status_code=403,
             detail="A Site Manager has no signing capacity on this record.",
@@ -28989,7 +29114,7 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     """
     # Permission check: only company owner / admin may hard-delete files.
     role = str(current_user.get("role") or "").lower()
-    if role not in ("owner", "admin"):
+    if not _admin_like(current_user):
         raise HTTPException(status_code=403, detail="Only company owners or admins can delete files")
 
     try:
@@ -30690,7 +30815,7 @@ def _visible_activations(activations, filing, current_user) -> list:
     withheld = _withheld_log_types(filing)
     if not withheld:
         return list(activations or [])
-    may_set_admin_logs = (current_user or {}).get("role") in ("admin", "owner")
+    may_set_admin_logs = _admin_like(current_user)
     out = []
     for act in (activations or []):
         if not isinstance(act, dict) or act.get("log_type") not in withheld:
@@ -33961,7 +34086,7 @@ async def set_logbook_activation(
         )
     owner = (entry.get("dated_activated_by") if scope == "day"
              else entry.get("activated_by"))
-    if owner == "admin" and current_user.get("role") not in ("admin", "owner"):
+    if owner == "admin" and not _admin_like(current_user):
         raise HTTPException(
             status_code=403,
             detail={"code": "ACTIVATION_REQUIRES_ADMIN", "log_type": log_type},
@@ -38663,7 +38788,7 @@ async def get_combined_report(project_id: str, date: str, token: Optional[str] =
     # ADMIN PREVIEW ONLY. The scheduled send calls this with the default False.
     html = await generate_combined_report(
         project_id, date,
-        diagnostics=current_user.get("role") in ("admin", "owner"),
+        diagnostics=_admin_like(current_user),
     )
     return HTMLResponse(content=html)
 @api_router.get("/reports/project/{project_id}/date/{date}/pdf")
@@ -38672,7 +38797,7 @@ async def get_combined_report_pdf(project_id: str, date: str, token: Optional[st
     from fastapi.responses import Response
     html = await generate_combined_report(
         project_id, date,
-        diagnostics=current_user.get("role") in ("admin", "owner"),
+        diagnostics=_admin_like(current_user),
     )
     try:
         from weasyprint import HTML
@@ -38734,7 +38859,7 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
     """Get report preview metadata for a date — shows what has been filled so far (midday check).
     Returns summary of logbooks, checkins, daily log status without full HTML."""
     role = current_user.get("role")
-    if role not in ["admin", "owner"]:
+    if not _admin_like(current_user):
         raise HTTPException(status_code=403, detail="Only admins can preview reports")
 
     project_id_obj = to_query_id(project_id)
@@ -39807,7 +39932,7 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
     """Update report email list + send time with validation."""
     # Verify user is admin
     user_role = current_user.get("role")
-    if user_role not in ["admin", "owner"]:
+    if not _admin_like(current_user):
         raise HTTPException(status_code=403, detail="Only admins can modify report settings")
     
     # Validate project exists
@@ -39817,7 +39942,7 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
         raise HTTPException(status_code=404, detail="Project not found")
     
     # Check multi-tenancy: admin must be in same company as project
-    if user_role == "admin":
+    if user_role == "admin" or pm_has_full_access(current_user):
         company_id = current_user.get("company_id")
         if project.get("company_id") != company_id:
             raise HTTPException(status_code=403, detail="Cannot modify projects outside your company")
@@ -39858,7 +39983,7 @@ async def get_report_history(
     """Get report send history for a project (admin view)."""
     # Verify admin/owner
     role = current_user.get("role")
-    if role not in ["admin", "owner"]:
+    if not _admin_like(current_user):
         raise HTTPException(status_code=403, detail="Only admins can view report history")
     
     # Verify project exists and user has access
@@ -39898,7 +40023,7 @@ async def get_submitted_logs(
     """Get submitted logbook entries for a project (admin view)."""
     # Verify admin
     role = current_user.get("role")
-    if role not in ["admin", "owner"]:
+    if not _admin_like(current_user):
         raise HTTPException(status_code=403, detail="Only admins can view logs")
     
     # Verify project
@@ -45008,7 +45133,7 @@ async def get_annotations_for_document(project_id: str, document_path: str, curr
     }
 
     # Non-admins only see their own annotations or where they are recipients
-    if user_role not in ["admin", "owner"]:
+    if not _admin_like(current_user):
         query["$or"] = [
             {"created_by": user_id},
             {"recipients": user_id},
@@ -45075,7 +45200,7 @@ async def resolve_annotation(annotation_id: str, current_user=Depends(get_curren
 
     is_creator = annotation.get("created_by") == user_id
     is_recipient = user_id in (annotation.get("recipients") or [])
-    is_admin = user_role in ["admin", "owner"]
+    is_admin = _admin_like(current_user)
 
     if not (is_creator or is_recipient or is_admin):
         raise HTTPException(status_code=403, detail="Not authorized to resolve this annotation")
@@ -45100,7 +45225,7 @@ async def delete_annotation(annotation_id: str, current_user=Depends(get_current
     annotation = await _annotation_for_user(annotation_id, current_user)
 
     is_creator = annotation.get("created_by") == user_id
-    is_admin = user_role in ["admin", "owner"]
+    is_admin = _admin_like(current_user)
 
     if not (is_creator or is_admin):
         raise HTTPException(status_code=403, detail="Not authorized to delete this annotation")
@@ -45633,7 +45758,7 @@ async def send_whatsapp_dm(user_id: Any, message: str, *, kind: str,
     if project_id is not None:
         if not await _bot_project_scope(company_id, project_id):
             return None
-        if (wa_dm.norm_role(user.get("role")) == ROLE_PM
+        if (pm_scoped_to_assigned(user)
                 and str(project_id) not in {str(p) for p in
                                             user.get("assigned_projects") or []}):
             return None
@@ -48380,7 +48505,7 @@ async def _chase_admins(company_id: str) -> List[dict]:
     except Exception:
         return []
     return [{"id": str(u.get("_id")), "name": u.get("name") or ""}
-            for u in users if is_company_admin(u)]
+            for u in users if holds_admin_seat(u)]
 
 
 async def _chase_no_number(item: dict, day, now: datetime) -> None:
@@ -49504,7 +49629,7 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
     """The jobs this person may ask about, each re-proven to be the company's."""
     out = []
     try:
-        if role == ROLE_PM:
+        if role == ROLE_PM and not pm_has_full_access(user):
             for pid in user.get("assigned_projects") or []:
                 p = await _bot_project_scope(company_id, pid)
                 if p:
@@ -51719,8 +51844,15 @@ def _dm_is_approved(ident: dict) -> bool:
 
 
 def _dm_is_admin(ident: dict) -> bool:
-    return holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
-                      COMPANY_ADMIN_ROLES)
+    """An admin, or a PM with full access ("Same as admin")."""
+    return is_company_admin({**(ident.get("user") or {}), "role": ident.get("role")})
+
+
+#: What a PM on assigned jobs only may do by DM, on those jobs (their
+#: ident["projects"] are those jobs): save people, put subs on a job, set a
+#: sub's punch contact. A new job and a job's settings need an admin (or a
+#: PM with full access).
+_DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact")
 
 
 async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
@@ -52014,7 +52146,7 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
     lang = p.get("lang") or "en"
     a = p["action"]
     admin = _dm_is_admin(ident)
-    if a != "add_person" and not admin:
+    if a not in _DM_PM_ACTIONS and not admin:
         await _dm_state_clear(DM_ACTION_STATE, dm_chat)
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -52275,7 +52407,7 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
-    if a != "add_person" and not _dm_is_admin(ident):
+    if a not in _DM_PM_ACTIONS and not _dm_is_admin(ident):
         await _dm_say(dm_chat, lang, "admin_only")
         return
     try:
@@ -52432,7 +52564,9 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
-    if not _dm_is_admin(ident) and u.get("kind") != "person":
+    if not _dm_is_admin(ident) and not (
+            u.get("kind") in ("person", "roster")
+            or (u.get("kind") == "settings" and u.get("field") == "punch_contacts")):
         await _dm_say(dm_chat, lang, "admin_only")
         return
     try:
@@ -67710,7 +67844,7 @@ async def _wa_prefs_project_or_403(project_id: str, current_user: dict) -> dict:
     project = await _bot_project_scope(company_id, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if (wa_dm.norm_role(current_user.get("role")) == ROLE_PM
+    if (pm_scoped_to_assigned(current_user)
             and str(project_id) not in {str(p) for p in
                                         current_user.get("assigned_projects") or []}):
         raise HTTPException(status_code=403, detail="Not assigned to this project")
@@ -67902,13 +68036,17 @@ async def _punch_settings_view(project_id: Any, company_id: Any, settings: dict)
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_whatsapp_settings(project_id: str,
                                         current_user=Depends(get_current_user)):
-    """Admin only: the project's WhatsApp settings."""
-    if not is_company_admin(current_user):
+    """The project's WhatsApp settings: an admin (or a full-access PM), or a
+    PM on a job they are assigned to (require_project_access), who may change
+    its punch contacts only -- `edit` says which."""
+    admin = is_company_admin(current_user)
+    if not admin and pm_access_level(current_user) is None:
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    return await _wa_settings_view(project_id, str(company_id))
+    return {**await _wa_settings_view(project_id, str(company_id)),
+            "edit": "all" if admin else "punch_contacts"}
 
 
 @api_router.patch("/projects/{project_id}/whatsapp-alerts",
@@ -67916,8 +68054,12 @@ async def get_project_whatsapp_settings(project_id: str,
 async def patch_project_whatsapp_alerts(project_id: str, body: dict,
                                         current_user=Depends(get_current_user)):
     """Admin only: turn each kind of GC-group alert on or off
-    (wa_alerts.SWITCHES, each true or false) and/or set the send window."""
-    if not is_company_admin(current_user):
+    (wa_alerts.SWITCHES, each true or false) and/or set the send window.
+    A PM on a job they are assigned to may set its punch contacts (and only
+    those); a full-access PM is an admin here."""
+    if not is_company_admin(current_user) and not (
+            pm_access_level(current_user) is not None and isinstance(body, dict)
+            and body and set(body) <= {"punch_contacts"}):
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
@@ -70834,7 +70976,7 @@ async def get_material_requests(project_id: str, status: str = None, current_use
 @api_router.put("/material-requests/{request_id}/cancel")
 async def cancel_material_request(request_id: str, current_user=Depends(get_current_user)):
     """Cancel a material request (admin only)."""
-    if current_user.get("role") not in ("admin", "owner"):
+    if not _admin_like(current_user):
         raise HTTPException(403, "Only admins can cancel material requests")
     result = await db.material_requests.update_one(
         {"_id": to_query_id(request_id), "company_id": current_user.get("company_id")},
@@ -74299,6 +74441,7 @@ async def startup_event():
     # Account activation gating — backfill existing users to "approved" so the
     # new pending-by-default gate never locks out current accounts.
     await run_account_status_startup_migration()
+    await run_pm_access_startup_migration()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])

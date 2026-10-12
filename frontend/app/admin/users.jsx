@@ -44,7 +44,8 @@ import { retentionSentence, drainWarning, accessRemovedSentence } from '../../sr
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import {
-  ROLE_SUPERINTENDENT, roleLabel, roleHasLicence,
+  ROLE_SUPERINTENDENT, ROLE_PM, roleHasLicence, userCardRoleLabel,
+  PM_ACCESS_ASSIGNED, PM_ACCESS_LEVELS, pmAccessLevel,
   licenceSentence, rolesAssignableBy, canBecomeSuperintendent,
 } from '../../src/utils/roleVocabulary';
 import { promoteToSuperintendentBody } from '../../src/utils/superintendentPromotionCopy';
@@ -113,6 +114,8 @@ export default function AdminUsersScreen() {
   const [formEmail, setFormEmail] = useState('');
   const [formPhone, setFormPhone] = useState('');
   const [formRole, setFormRole] = useState('cp');
+  // A PM's permission level (PM_ACCESS_LEVELS); sent only while the role is pm.
+  const [formPmAccess, setFormPmAccess] = useState(PM_ACCESS_ASSIGNED);
   const [formPassword, setFormPassword] = useState('');
   const [assignedProjects, setAssignedProjects] = useState([]);
   // THE SUPERINTENDENT'S DOB REGISTRATION, on his own account rather than
@@ -249,6 +252,7 @@ export default function AdminUsersScreen() {
         role: formRole,
         password: formPassword,
       };
+      if (formRole === ROLE_PM) payload.pm_access = formPmAccess;
       if (formPhone.trim()) payload.phone = formPhone.trim();
       // ONLY FOR THE ROLE THAT HOLDS ONE. The server drops them for every
       // other role anyway; not sending them keeps the request honest about
@@ -310,6 +314,7 @@ export default function AdminUsersScreen() {
         email: formEmail,
         role: formRole,
       };
+      if (formRole === ROLE_PM) updatePayload.pm_access = formPmAccess;
       if (formPhone.trim()) updatePayload.phone = formPhone.trim();
       if (roleHasLicence(formRole)) {
         if (formDobNumber.trim()) updatePayload.dob_superintendent_number = formDobNumber.trim();
@@ -478,6 +483,7 @@ export default function AdminUsersScreen() {
     setFormEmail(userItem.email);
     setFormPhone(userItem.phone || '');
     setFormRole(userItem.role);
+    setFormPmAccess(pmAccessLevel(userItem) || PM_ACCESS_ASSIGNED);
     setFormDobNumber(userItem.dob_superintendent_number || '');
     setFormDobExpiry(userItem.dob_registration_expiry || '');
     setShowEditModal(true);
@@ -654,6 +660,7 @@ export default function AdminUsersScreen() {
     setFormEmail('');
     setFormPhone('');
     setFormRole('cp');
+    setFormPmAccess(PM_ACCESS_ASSIGNED);
     setFormPassword('');
     setFormDobNumber('');
     setFormDobExpiry('');
@@ -707,7 +714,34 @@ export default function AdminUsersScreen() {
             three-letter words, and an admin picking between four of them from
             the words alone is guessing at a permission grant. */}
         {chosen ? <Text style={s.roleBlurb}>{chosen.blurb}</Text> : null}
+        {formRole === ROLE_PM ? renderPmAccessPicker() : null}
       </View>
+    );
+  };
+
+  // THE PM'S PERMISSION LEVEL, under the role while it says PM. Only an admin
+  // sees this screen, and the server refuses the field from anyone else.
+  const renderPmAccessPicker = () => {
+    const chosen = PM_ACCESS_LEVELS.find((l) => l.value === formPmAccess);
+    return (
+      <>
+        <Text style={[s.roleSelectorLabel, { marginTop: spacing.md }]}>Permission level:</Text>
+        <View style={s.roleSelector}>
+          {PM_ACCESS_LEVELS.map((level) => (
+            <Pressable
+              key={level.value}
+              testID={`pm-access-${level.value}`}
+              onPress={() => setFormPmAccess(level.value)}
+              style={[s.roleOption, formPmAccess === level.value && s.roleOptionActive]}
+            >
+              <Text style={[s.roleOptionText, formPmAccess === level.value && s.roleOptionTextActive]}>
+                {level.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {chosen ? <Text style={s.roleBlurb}>{chosen.blurb}</Text> : null}
+      </>
     );
   };
 
@@ -918,7 +952,7 @@ export default function AdminUsersScreen() {
                       </View>
                       <View style={[s.roleBadge, { backgroundColor: roleStyle.bg }]}>
                         <Text style={[s.roleText, { color: roleStyle.color }]}>
-                          {roleLabel(userItem.role)}
+                          {userCardRoleLabel(userItem)}
                         </Text>
                       </View>
                     </View>

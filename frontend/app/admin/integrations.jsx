@@ -30,7 +30,7 @@ import GlassButton from '../../src/components/GlassButton';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
-import { useAuth } from '../../src/context/AuthContext';
+import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -64,7 +64,7 @@ export default function AdminIntegrationsScreen() {
   const [fetchState, setFetchState] = useState('ok');
 
   // Check if user is admin
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isCompanyAdmin(user);
   // A PM (Site Manager) sees this screen for ONE thing: their own WhatsApp
   // alerts. Dropbox and WhatsApp groups stay admin-only, and none of their
   // reads are made for a PM.
