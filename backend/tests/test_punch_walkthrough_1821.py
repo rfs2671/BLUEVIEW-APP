@@ -268,11 +268,12 @@ class EveryItemNeedsALocation(_Walk):
         # Codex review on #754: it was dropped.
         self._turn("Bulb burnt", photo=True)
         self._turn("done")
-        self.assertEqual(self._turn("Loose outlet 3B", photo=True), [])
-        self.assertEqual(self.sess()["status"], "capturing")
+        # 10:36 PM: a photo at any stage is the next item; then that stage again.
+        (q,) = self._turn("Loose outlet 3B", photo=True)
+        self.assertEqual(q, "Added #2 'Loose outlet 3B' (Apt 3B). Back to: the locations. "
+                            "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
+        self.assertEqual(self.sess()["status"], "locating")
         self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt", "Loose outlet 3B"])
-        (q,) = self._turn("done")
-        self.assertIn("Where is #1 'Bulb burnt'?", q)
         self.assertEqual(self.assistant, [])
 
     def test_an_unknown_number_changes_nothing(self):

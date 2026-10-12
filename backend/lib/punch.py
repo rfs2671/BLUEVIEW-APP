@@ -641,12 +641,17 @@ def missing_location(items: List[dict]) -> List[dict]:
 
 def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
              voice: Optional[dict] = None, at: Any = None) -> Dict[str, Any]:
-    """One captured item: the photo, its words EXACTLY as written or said,
-    and what the words name (or "?")."""
+    """One captured item: the photo, its words as written or said, and what
+    the words name (or "?"). A caption that STARTS with its location ("4d
+    tile chipped", 10:36 PM) is the location (Apt 4D) and the rest ("Tile
+    chipped"); the words as sent are kept in `said`."""
     w = str(words or "").strip()
+    rest = after_lead_location(w)
+    text = capitalize(rest) if rest else w
     return {
         "n": n,
-        "text": w,
+        "text": text,
+        **({"said": w} if text != w else {}),
         "photo_key": photo_key,
         "message_id": message_id,
         "voice": voice or None,
@@ -657,6 +662,37 @@ def new_item(n: int, words: str, *, photo_key: Optional[str], message_id: str,
         "trade_guess": trade_for(w)[1],
         "at": at,
     }
+
+
+def after_lead_location(words: str) -> str:
+    """The words after a location the caption STARTS with ("4d tile chipped"
+    -> "tile chipped"; also "Apt 4D …", "4th floor 4d …", "piso 6 …"), as
+    written; "" when it does not start with one or has no words after."""
+    t, pos, hit = str(words or ""), 0, False
+    while True:
+        m = re.compile(r"[\s,;:-]*").match(t, pos)
+        pos = m.end()
+        for rx in (_LOC_UNIT, _LOC_FLOOR, _BARE_UNIT):
+            m = rx.match(t, pos)
+            if m:
+                pos, hit = m.end(), True
+                break
+        else:
+            break
+    rest = t[pos:].strip(" ,;:-")
+    return rest if hit and re.search(r"[a-z]{2}", rest, re.IGNORECASE) else ""
+
+
+def added_text(it: dict) -> str:
+    """"Added #4 'Tile chipped' (Apt 4D)." -- a photo sent after the walk's
+    capture, put on the walk."""
+    words = (it.get("text") or "").strip()
+    if len(words) > 60:
+        words = words[:57].rstrip() + "…"
+    a = it.get("area") or UNKNOWN
+    where = a if a != UNKNOWN and re.match(r"(?i)apt\b", a) else location_label(it)
+    return (f"Added #{it.get('n')}" + (f" '{words}'" if words else " (photo)")
+            + (f" ({where})" if where else "") + ".")
 
 
 def _loc(words: str) -> Dict[str, Optional[str]]:

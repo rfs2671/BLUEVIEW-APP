@@ -70,7 +70,7 @@ class TheDraft(unittest.TestCase):
         text = p.draft_text("588 Thomas", items)
         self.assertTrue(text.startswith("588 Thomas · walkthrough · 5 items (draft)"))
         self.assertLess(text.index("*Floor 5*"), text.index("*Floor 6*"))
-        self.assertIn("📷🎤 piso 6 falta pintura", text)
+        self.assertIn("📷🎤 Falta pintura", text)            # "piso 6": its floor, taken out
         self.assertIn("1 needs a trade", text)
         self.assertIn("'send'", text)
         # Numbers follow the draft's order.

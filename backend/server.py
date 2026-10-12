@@ -61586,11 +61586,19 @@ async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
                         project_id=sess["project_id"])
 
 
-async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False) -> bool:
+async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False,
+                           head: str = "") -> bool:
     """Every item needs a location before the draft: ask for the first one
     missing (one question per photo), or show the draft when none is."""
     items = sess["items"]
     missing = punch.missing_location(items)
+    if not missing and sess.get("resume"):
+        # A photo sent at a later stage, now located: back to that stage.
+        prior = sess["resume"]
+        await _punch_save(sess, resume=None, asking=None, items=items)
+        it = _punch_item_by_captured(items, sess.get("resume_item"))
+        return await _punch_back_to(sess, dm_chat, prior, it,
+                                    punch.added_text(it) if it else "")
     if not missing:
         punch.renumber([it for it in items if it.get("status", "draft") != "dropped"])
         await _punch_save(sess, status="draft", items=items, asking=None)
@@ -61598,12 +61606,13 @@ async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False) -> boo
         return True
     first = missing[0]
     await _punch_save(sess, status="locating", items=items, asking=first.get("n"))
-    head = ""
+    lead, head = head, ""
     if intro:
         n = len(missing)
         head = (f"{n} item{'s' if n != 1 else ''} need{'s' if n == 1 else ''} a location "
                 "before the draft. ")
-    await send_whatsapp_message(dm_chat, head + punch.where_question(first))
+    await send_whatsapp_message(dm_chat, (lead + " " if lead else "") + head
+                                + punch.where_question(first))
     return True
 
 
@@ -61741,10 +61750,22 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     if add_ph and sess.get("status") in ("capturing", "locating", "draft"):
         return await _punch_add_photo(sess, dm_chat, parsed, add_ph, now)
 
-    if sess["status"] == "locating" and parsed.get("has_image"):
-        # One more photo while locations are asked: back to capturing, this
-        # photo is an item, and "done" asks again (Codex review on #754).
-        await _punch_save(sess, status="capturing", asking=None)
+    if parsed.get("has_image") and sess["status"] in PUNCH_LATER_STAGES:
+        # A PHOTO AT ANY LATER STAGE is one more item on this walk, never
+        # words for that stage (10:36 PM: "4d tile chipped" under "Who gets
+        # what?" was read as a name).
+        return await _punch_late_photo(sess, dm_chat, parsed, said, voice, msg_id, now)
+    if sess.get("await_caption") and not parsed.get("has_image") and said.strip() \
+            and sess["status"] in PUNCH_LATER_STAGES:
+        return await _punch_late_caption(sess, dm_chat, said, now)
+    if sess["status"] in ("assign", "recap", "due"):
+        # Stored names are checked against who may be messaged EVERY time
+        # (a walk from before #755 kept a checked-in worker).
+        note = await _punch_recheck_assign(sess)
+        if note:
+            await send_whatsapp_message(dm_chat, note + "\n\n"
+                                        + punch.assign_text(sess.get("assign") or {}))
+            return True
     if sess["status"] == "capturing":
         return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
     if sess["status"] == "locating":
@@ -61840,6 +61861,38 @@ def _punch_item_no(items: List[dict], n: int) -> Optional[dict]:
     return next((it for it in live if it.get("n") == n), None)
 
 
+async def _punch_photo_item(sess, parsed, words, voice, msg_id, now, *,
+                            n: Optional[int] = None) -> dict:
+    """A photo, its item: uploaded, then $push-ed (never the whole list
+    written back: a photo is never lost to another turn's copy of it). `n`
+    is the number the walker sees (the next after the draft's, once there
+    is one); `captured` is always the order the photos came in."""
+    items = sess["items"]
+    captured = len(items) + 1
+    key = None
+    img = await download_image(parsed)
+    if img:
+        key = _punch_photo_key(sess.get("project_id") or "unassigned", sess["_id"], captured)
+        try:
+            if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
+                key = None
+        except Exception:
+            key = None
+    it = punch.new_item(n or captured, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
+    it["captured"] = captured
+    it["photo_failed"] = img is None
+    if words:
+        it["caption_ids"] = [msg_id]
+    items.append(it)
+    photo = {"message_id": msg_id, "at": now, "key": key}
+    sess.setdefault("photos", []).append(photo)
+    await db[punch.SESSIONS].update_one(
+        {"_id": sess["_id"]},
+        {"$push": {"items": it, "photos": photo},
+         "$set": {"updated_at": now, **({"last_captioned": it["captured"]} if words else {})}})
+    return it
+
+
 async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now) -> bool:
     items = sess["items"]
     low = text.strip().lower()
@@ -61882,36 +61935,7 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         return await _punch_ask_where(sess, dm_chat, intro=True)
     words = (voice or {}).get("transcript") or text
     if parsed.get("has_image"):
-        n = len(items) + 1
-        key = None
-        img = await download_image(parsed)
-        if img and sess.get("project_id"):
-            key = _punch_photo_key(sess["project_id"], sess["_id"], n)
-            try:
-                if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
-                    key = None
-            except Exception:
-                key = None
-        elif img:
-            key = _punch_photo_key("unassigned", sess["_id"], n)
-            try:
-                if not await asyncio.to_thread(_upload_to_r2, img, key, "image/jpeg"):
-                    key = None
-            except Exception:
-                key = None
-        it = punch.new_item(n, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
-        it["photo_failed"] = img is None
-        if words:
-            it["caption_ids"] = [msg_id]
-        items.append(it)
-        # $push, never the whole list written back: a photo is never lost to
-        # another turn's copy of the list.
-        photo = {"message_id": msg_id, "at": now, "key": key}
-        sess.setdefault("photos", []).append(photo)
-        await db[punch.SESSIONS].update_one(
-            {"_id": sess["_id"]},
-            {"$push": {"items": it, "photos": photo},
-             "$set": {"updated_at": now, **({"last_captioned": it["captured"]} if words else {})}})
+        await _punch_photo_item(sess, parsed, words, voice, msg_id, now)
         await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
         return True
     if voice or text:
@@ -62183,11 +62207,129 @@ def _punch_unknown(names: str) -> str:
             "your company, or a sub's punch contact (Project → WhatsApp).")
 
 
-async def _punch_show_recap(sess, dm_chat) -> bool:
+#: Stages after the photos are in: a photo sent then is one more item.
+PUNCH_LATER_STAGES = ("locating", "draft", "assign", "recap", "due")
+PUNCH_STAGE_NAMES = {"locating": "the locations", "draft": "the draft",
+                     "assign": "Who gets what?", "recap": "the recap", "due": "the recap"}
+
+
+async def _punch_late_photo(sess, dm_chat, parsed, words, voice, msg_id, now) -> bool:
+    """A photo after capture: the next number, on this walk; then back to
+    the stage it came in at -- by way of "where is it?" when its words do
+    not say, and "what is it?" when it has none."""
+    prior = sess["status"]
+    live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
+    n = max([int(it.get("n") or 0) for it in live] or [0]) + 1
+    it = await _punch_photo_item(sess, parsed, words, voice, msg_id, now, n=n)
+    if prior != "locating":
+        # Past the draft the numbers follow the list (floor, trade): the new
+        # one takes its place, and is named by it.
+        punch.renumber([i for i in sess["items"] if i.get("status", "draft") != "dropped"])
+        await _punch_save(sess, items=sess["items"])
+    n = it["n"]
+    if not (it.get("text") or "").strip():
+        await _punch_save(sess, await_caption=it["captured"])
+        await send_whatsapp_message(dm_chat, (
+            f"Added #{n} (photo). What is it, and where? (e.g. \"4D tile chipped\")"))
+        return True
+    return await _punch_placed(sess, dm_chat, prior, it)
+
+
+async def _punch_late_caption(sess, dm_chat, words, now) -> bool:
+    """The words for a late photo sent without any."""
+    it = _punch_item_by_captured(sess["items"], sess.get("await_caption"))
+    await _punch_save(sess, await_caption=None)
+    if it is None:
+        return await _punch_back_to(sess, dm_chat, sess["status"], None, "")
+    fresh = punch.new_item(it["n"], words, photo_key=None, message_id="")
+    for k in ("text", "said", "floor", "area", "trade", "trade_guess"):
+        if k in fresh:
+            it[k] = fresh[k]
+    if sess["status"] != "locating":
+        punch.renumber([i for i in sess["items"] if i.get("status", "draft") != "dropped"])
+    await _punch_save(sess, items=sess["items"])
+    return await _punch_placed(sess, dm_chat, sess["status"], it)
+
+
+async def _punch_placed(sess, dm_chat, prior, it) -> bool:
+    """The late item has words: its location asked first if they do not
+    give it, else back to `prior`."""
+    if prior != "locating" and not punch.location_ok(it):
+        await _punch_save(sess, status="locating", asking=it.get("n"),
+                          resume=prior, resume_item=it.get("captured"))
+        await send_whatsapp_message(dm_chat, punch.added_text(it) + " " + punch.where_question(it))
+        return True
+    return await _punch_back_to(sess, dm_chat, prior, it, punch.added_text(it))
+
+
+async def _punch_back_to(sess, dm_chat, prior, it, head) -> bool:
+    """"Added #4 'Tile chipped' (Apt 4D). Back to: Who gets what?" -- the
+    stage again, with the new item's trade in it."""
+    back = f"{head} Back to: {PUNCH_STAGE_NAMES.get(prior, 'the walk')}".strip()
+    if prior == "locating":
+        await _punch_save(sess, status="locating")
+        return await _punch_ask_where(sess, dm_chat, head=back + ".")
+    trade = (it or {}).get("trade") or punch.UNKNOWN
+    if prior == "draft" or trade == punch.UNKNOWN:
+        # No trade yet: the draft, where a trade is given ("4 → tile").
+        await _punch_save(sess, status="draft")
+        await send_whatsapp_message(dm_chat, (f"{head} Back to: the draft." if prior != "draft"
+                                              else back) + "\n\n"
+                                    + punch.draft_text(sess["job_name"], sess["items"]))
+        return True
+    assign = dict(sess.get("assign") or {})
+    if sess.get("whole"):
+        assign[trade] = sess["whole"]                    # the whole list: one person
+    elif trade not in assign:
+        assign[trade] = _punch_who((await _punch_suggest(sess, [trade])).get(trade))
+    await _punch_save(sess, assign=assign)
+    if prior in ("recap", "due") and assign.get(trade):
+        await _punch_save(sess, status=prior)
+        return await _punch_show_recap(sess, dm_chat, back)
+    await _punch_save(sess, status="assign")
+    note = await _punch_recheck_assign(sess)
+    await send_whatsapp_message(dm_chat, "\n\n".join(x for x in (
+        f"{head} Back to: {PUNCH_STAGE_NAMES['assign']}".strip(), note,
+        punch.assign_text(sess.get("assign") or {})) if x))
+    return True
+
+
+async def _punch_recheck_assign(sess) -> str:
+    """Every stored name (and the whole-list person) checked against who may
+    be messaged, each time the list is shown: one no longer allowed -- a
+    worker kept by a walk from before #755 -- is "?" again. Returns the line
+    that tells the walker ("" when nothing was taken off)."""
+    assign = dict(sess.get("assign") or {})
+    gone = []
+    for t, p in assign.items():
+        # Only a real refusal takes a name off -- never a failed check.
+        if p and await _recipient_refusal(sess["company_id"], p) == RECIPIENT_REFUSED:
+            gone.append(f"{t} → {p.get('name') or p.get('company') or '?'}")
+            assign[t] = None
+    whole = sess.get("whole")
+    if whole and await _recipient_refusal(sess["company_id"], whole) == RECIPIENT_REFUSED:
+        gone.append(f"all → {whole.get('name') or '?'}")
+        whole = None
+    if not gone:
+        return ""
+    logger.info(f"[punch] walk={sess['_id']} names taken off: {len(gone)}")
+    await _punch_save(sess, assign=assign, whole=whole,
+                      **({"status": "assign"} if sess.get("status") in ("recap", "due") else {}))
+    return f"Taken off: {'; '.join(gone)} ({RECIPIENT_REFUSED})."
+
+
+async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
+    note = await _punch_recheck_assign(sess)
+    if note:
+        # A name taken off: "Who gets what?" again, never a recap with a hole.
+        await _punch_save(sess, status="assign")
+        await send_whatsapp_message(dm_chat, "\n\n".join(
+            x for x in (head, note, punch.assign_text(sess.get("assign") or {})) if x))
+        return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
         else punch.DEFAULT_SEND_MODE
-    await send_whatsapp_message(dm_chat, punch.recap_text(
+    await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "") + punch.recap_text(
         sess["items"], sess.get("assign") or {}, sess.get("due") or {}, mode, sess.get("whole")))
     return True
 
@@ -62349,7 +62491,11 @@ async def _punch_suggest(sess: dict, trades: List[str]) -> Dict[str, Optional[di
         except Exception:
             prev = []
         a = (prev[0].get("assignee") if prev else None) or None
-        out[t] = a if a and (a.get("name") or a.get("company")) else None
+        # Only someone who may still be messaged: an assignee from before
+        # #755 can be a worker who only checked in.
+        ok = a and (a.get("name") or a.get("company")) \
+            and not await _recipient_refusal(company_id, a)
+        out[t] = a if ok else None
     return out
 
 
@@ -62368,10 +62514,11 @@ RECIPIENT_REFUSED = "not in People, your users, or a sub's punch contact"
 
 async def _recipient_refusal(company_id: Any, person: Optional[dict], *,
                              group_id: Optional[str] = None,
-                             spoke: Optional[str] = None) -> Optional[str]:
+                             spoke: Optional[str] = None, store=None) -> Optional[str]:
     """None when `person` may be messaged or @mentioned for this company;
     else why not. A chase passes `spoke` (who said the item's own message):
-    the owner who said it may be."""
+    the owner who said it may be. `store`: a script's own database."""
+    d = db if store is None else store
     p = person or {}
     jid = str(p.get("jid") or "")
     if jid and spoke and wa_dm.phone_digits(jid) and \
@@ -62379,19 +62526,19 @@ async def _recipient_refusal(company_id: Any, person: Optional[dict], *,
         return None                         # the item's own owner, who said it
     try:
         if p.get("kind") == "user" and p.get("id"):
-            u = await db.users.find_one({"_id": to_query_id(str(p["id"])),
+            u = await d.users.find_one({"_id": to_query_id(str(p["id"])),
                                          "company_id": _company_id_filter(company_id),
                                          "is_deleted": {"$ne": True}}, {"phone": 1})
             if u:
                 return None
         if p.get("kind") == "sender_map" and p.get("id"):
-            m = await db[wa_sender_map.COLLECTION].find_one(
+            m = await d[wa_sender_map.COLLECTION].find_one(
                 {"_id": to_query_id(str(p["id"])), "company_id": str(company_id)}) \
-                or await db[wa_sender_map.COLLECTION].find_one(
+                or await d[wa_sender_map.COLLECTION].find_one(
                     {"_id": str(p["id"]), "company_id": str(company_id)})
             if m and (not jid or m.get("sender_jid") == jid):
                 return None
-        if jid and await db[wa_sender_map.COLLECTION].find_one(
+        if jid and await d[wa_sender_map.COLLECTION].find_one(
                 {"company_id": str(company_id), "sender_jid": jid}, {"_id": 1}):
             return None
         # Having written in the group once is NOT enough (Codex review on
