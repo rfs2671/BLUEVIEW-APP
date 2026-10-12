@@ -95,3 +95,32 @@ export const PUNCH_SENDS_OPTIONS = [
 export function punchSendsMode(data) {
   return data && data.punch_sends === 'live' ? 'live' : 'shadow';
 }
+
+// ── "Punch list goes to" (Levelog Assistant) ─────────────────────────────
+export const PUNCH_TO_OPTIONS = [
+  { mode: 'per_trade', label: 'Per trade',
+    line: 'One message per trade, to the person picked on "Who gets what?".' },
+  { mode: 'one_person', label: 'One person',
+    line: 'The whole list to one person. "Who gets what?" is skipped; the recap still asks for ok.' },
+];
+
+export function punchToMode(data) {
+  return data && data.punch_to === 'one_person' ? 'one_person' : 'per_trade';
+}
+
+/** "Electrical · Power Direct" and who its punch contact is. */
+export function punchContactLine(row) {
+  const r = row || {};
+  return {
+    title: [r.trade, r.company].filter(Boolean).join(' · '),
+    line: r.contact_name
+      ? `Punch contact: ${r.contact_name}`
+      : (r.options || []).length
+        ? 'No punch contact: "Who gets what?" asks.'
+        : 'No one from this sub in People yet.',
+  };
+}
+
+export const PUNCH_CONTACTS_NOTE = 'Only these people are suggested for a sub\'s punch items. '
+  + 'Workers who check in are never messaged.';
+
