@@ -458,6 +458,12 @@ def _strip_tail(s: str) -> str:
     return s.strip(" ,.")
 
 
+#: A "company" that is a question word: the message asks, it does not tell
+#: (Tue Oct 13: "who are the subs on 588?" read as adding a sub "Who").
+_QUESTION_WORD = re.compile(
+    r"^(?:who|whos|what|whats|which|where|when|why|how|is|are|do|does|any|quien|que|cual)$")
+
+
 def rules(text: Any) -> Dict[str, Any]:
     """What the message asks, read by pattern (the model's fallback); the
     result goes through clean() like the model's."""
@@ -512,6 +518,8 @@ def rules(text: Any) -> Dict[str, Any]:
             company = _strip_tail(m.group("company"))
             if re.fullmatch(_HOUSE + r"(?:\s+\w+)*", company):
                 continue                       # "add 9 menahan": a job, not a sub
+            if _QUESTION_WORD.match(company):
+                continue                       # "who are the subs on 588?": a question
             return clean({"action": "add_sub", "company": company,
                           "job": _strip_tail(m.group("job")),
                           "trade": (m.groupdict().get("trade") or "").strip()})

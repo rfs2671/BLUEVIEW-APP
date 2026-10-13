@@ -97,6 +97,7 @@ from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
 from lib import wa_assistant  # noqa: E402
+from lib import wa_subs  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
@@ -51426,6 +51427,155 @@ async def _dm_answer_all(ident: dict, body: str) -> str:
     return reply or wa_assistant.ALL_JOBS_FAILED_TEXT
 
 
+# ── THE COMPANY'S SUBS (DM): list_subs, find_sub ───────────────────────────
+#
+# Tue Oct 13, 10:52 AM: "Is there low voltage company in subs list?" ->
+# "Which job?" -> 588 -> "I can't check the full list of subcontractors
+# here. Please use the app." The subs list is every job's roster
+# (lib/wa_subs.py): a question about it is answered for the company, with the
+# jobs each sub is on -- never "Which job?", never "use the app". An admin's
+# list is every live company job's; a PM's, their own jobs'.
+
+async def _dm_subs_rows(ident: dict, projects: Optional[list] = None) -> list:
+    """The subs rows of these jobs (default: every job they may see), each
+    with its punch contact's name there (never a number)."""
+    projects = ident["projects"] if projects is None else projects
+    company_id = str(ident["company_id"])
+    picked: Dict[str, Dict[str, str]] = {}
+    for p in projects:
+        try:
+            pc = (await _whatsapp_project_settings(p.get("_id"))).get("punch_contacts") or {}
+        except Exception:
+            pc = {}
+        picked[str(p.get("_id"))] = {str(k): str(v) for k, v in pc.items() if v}
+    ids = {v for pc in picked.values() for v in pc.values()}
+    names: Dict[str, str] = {}
+    if ids:
+        try:
+            for m in await db[wa_sender_map.COLLECTION].find(
+                    {"company_id": company_id,
+                     "_id": {"$in": sorted(ids) + [to_query_id(i) for i in sorted(ids)]}}
+                    ).to_list(1000):
+                if m.get("person_name"):
+                    names[str(m["_id"])] = str(m["person_name"])
+        except Exception as e:
+            logger.warning(f"[wa-subs] people read failed: {type(e).__name__}")
+    contacts = {pid: {rid: names[per] for rid, per in pc.items() if per in names}
+                for pid, pc in picked.items()}
+    return wa_subs.rows(projects, wa_assistant.street_label, contacts=contacts,
+                        active=_active_assignments)
+
+
+def _dm_sub_names(ident: dict) -> List[str]:
+    """The subs' company names on this person's jobs ("do we use Arkon?")."""
+    return sorted({str(r.get("company") or "").strip() for p in ident.get("projects") or []
+                   for r in _active_assignments(p) if str(r.get("company") or "").strip()})
+
+
+async def _dm_subs_tool(ident: dict, name: str, args: dict,
+                        project: Optional[dict] = None) -> str:
+    """find_sub / list_subs, for this person's jobs only -- for `project`
+    only when the question is about one job (the job agent: Codex on #780,
+    "an electrician on 588?" never answered from another job)."""
+    args = args or {}
+    if name == "find_sub":
+        if project is not None:
+            return wa_subs.render_find(args.get("trade_or_name"),
+                                       await _dm_subs_rows(ident, [project]),
+                                       job=wa_assistant.street_label(project))
+        return wa_subs.render_find(args.get("trade_or_name"), await _dm_subs_rows(ident))
+    said = str(args.get("job") or "").strip()
+    if said:
+        jobs = await _dm_jobs(ident)
+        ids = wa_assistant.find_jobs(said, jobs)
+        if not ids:
+            jid = wa_assistant.job_named(said, jobs, in_sentence=True)
+            ids = [jid] if jid else []
+        if len(ids) == 1:
+            job = next(j for j in jobs if j["id"] == ids[0])
+            return wa_subs.render_list(await _dm_subs_rows(ident, [job["project"]]),
+                                       job=job["label"])
+        return (f"No one job matches {said!r}; the whole subs list:\n"
+                + wa_subs.render_list(await _dm_subs_rows(ident)))
+    if project is not None:
+        return wa_subs.render_list(await _dm_subs_rows(ident, [project]),
+                                   job=wa_assistant.street_label(project))
+    return wa_subs.render_list(await _dm_subs_rows(ident))
+
+
+async def _dm_subs_fallback(ident: dict, question: str, projects: Optional[list] = None,
+                            job: Optional[str] = None) -> str:
+    """The subs answer without the model: the match for what was asked, or
+    the list."""
+    rows = await _dm_subs_rows(ident, projects)
+    if wa_subs.names_a_trade(question) or wa_subs.find(question, rows):
+        return wa_subs.render_find(question, rows, job=job)
+    return wa_subs.render_list(rows, job=job)
+
+
+async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
+    """One chat-completions turn with the subs tools; the message, or None."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=30) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
+                      "tools": wa_subs.TOOLS, "tool_choice": tool_choice,
+                      "messages": messages},
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"})
+            resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]
+    except Exception as e:
+        logger.warning(f"[wa-subs] model call failed: {type(e).__name__}")
+        return None
+
+
+async def _dm_answer_subs(ident: dict, question: str, trace: Optional[list] = None) -> str:
+    """A question about the company's subs list, answered for the company
+    through find_sub / list_subs (a tool call is required first). The reply
+    must not deny the subs or send them to the app, and every number in it
+    must be in the tools' results; else the tool's own words go out."""
+    trace = trace if trace is not None else []
+    messages = [{"role": "system", "content": wa_subs.SYSTEM_PROMPT},
+                {"role": "user", "content": question}]
+    reply = ""
+    for turn in range(3):
+        msg = await _dm_subs_model(messages, "required" if turn == 0 else "auto")
+        if not msg:
+            break
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            reply = str(msg.get("content") or "").strip()
+            break
+        messages.append({"role": "assistant", "content": msg.get("content") or "",
+                         "tool_calls": calls})
+        for tc in calls:
+            fn = (tc.get("function") or {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                args = {}
+            name = fn.get("name") or ""
+            result = await _dm_subs_tool(ident, name, args) \
+                if name in ("find_sub", "list_subs") else "Unknown tool."
+            trace.append({"tool": name, "args": args, "result": result})
+            messages.append({"role": "tool", "tool_call_id": tc.get("id") or "",
+                             "content": result})
+    results = " ".join([question] + [str(t["result"]) for t in trace])
+    stray = set(re.findall(r"\d+", reply)) - set(re.findall(r"\d+", results))
+    if reply and not wa_subs.denies_subs(reply) and not stray:
+        return reply
+    if reply:
+        logger.info("[wa-subs] reply denied the subs or had numbers not in the "
+                    "results; sent the tool's words")
+    if trace:
+        return str(trace[-1]["result"])
+    return await _dm_subs_fallback(ident, question)
+
+
 async def _dm_answer_general(body: str) -> str:
     reply = await _dm_llm(wa_assistant.GENERAL_SYSTEM_PROMPT, body)
     return reply or wa_assistant.GENERAL_FAILED_TEXT
@@ -51465,6 +51615,12 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # transcribed and stored. The notes themselves go out instead.
         logger.info("[wa-assistant] reply denied voice access; sending the notes")
         return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
+    if reply and wa_subs.about_subs(body) and wa_subs.denies_subs(reply):
+        # NEVER "I can't check the subs list here, use the app" (Tue Oct 13,
+        # 10:52 AM): the subs are every job's roster.
+        logger.info("[wa-assistant] reply denied the subs list; sending it")
+        return await _dm_subs_fallback(ident, body, [project],
+                                       job=wa_assistant.street_label(project))
     if reply and wa_assistant.quoted_context(body) and wa_assistant.denies_quoted_access(reply):
         # NEVER "I can't access the message you replied to" (588, Oct 11
         # 6:22 PM): what it replied to is in the question.
@@ -53589,6 +53745,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await send_whatsapp_message(dm_chat, refusal)
                 await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
+        if not named and wa_subs.company_question(core, _dm_sub_names(ident)):
+            # The company's subs list: answered for the company, with the
+            # jobs each sub is on -- never "Which job?" (Tue Oct 13). After
+            # a PM's "not on that job" (Codex on #780).
+            subs_trace: list = []
+            await _dm_send_answer(dm_chat, message_id,
+                                  _dm_answer_subs(ident, question, subs_trace), heard,
+                                  log=(ident, None, question, "subs", subs_trace))
+            return
         if len(named) == 1:
             job = named[0]
         elif len(named) > 1:
@@ -61384,6 +61549,8 @@ _AGENT_TOOLS = [
         },
     },
 ]
+# The company's subs list (DM only; see _run_group_agent's filter).
+_AGENT_TOOLS += wa_subs.TOOLS
 
 
 # ── THE STANCE COMES FIRST, BECAUSE IT DECIDES THE OTHER RULES ─────────────
@@ -62453,6 +62620,9 @@ async def _run_group_agent(
         # Voice notes are read in a DM only, like project history.
         if name == "recent_voice_notes" and not dm:
             continue
+        # The company's subs list: a DM only (it spans the person's jobs).
+        if name in ("find_sub", "list_subs") and not dm:
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -62698,6 +62868,19 @@ async def _dispatch_agent_tool(
                         reason=f"tool:{name}")
         return wa_security.BOT_SCOPE_REFUSAL
     try:
+        if name in ("find_sub", "list_subs"):
+            # DM only, as the person writing: an admin's every job, a PM's own.
+            if not group_id or str(group_id).endswith("@g.us"):
+                return "The subs list is read in a direct message only."
+            ident = await _dm_assistant_identity(group_id)
+            if not ident or str(ident.get("company_id")) != str(company_id):
+                return wa_security.BOT_SCOPE_REFUSAL
+            # The job agent answers about ITS job: the tools see that job only.
+            project = next((p for p in ident.get("projects") or []
+                            if str(p.get("_id")) == str(project_id)), None)
+            if project is None:
+                return wa_security.BOT_SCOPE_REFUSAL
+            return await _dm_subs_tool(ident, name, args, project)
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."
