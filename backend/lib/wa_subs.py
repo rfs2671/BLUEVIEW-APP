@@ -44,9 +44,6 @@ _GENERIC = {"sub", "subs", "subcontractor", "subcontractors", "company", "compan
             "all", "my", "please", "check", "if", "know", "whats", "need", "has",
             "us", "here", "it", "they", "them", "with", "type", "kind", "one", "ones"}
 
-MAX_LIST = 30
-
-
 def _fold(text: Any) -> str:
     return lib_trades.fold(text)
 
@@ -157,30 +154,37 @@ def render_list(rs: Sequence[Dict[str, Any]], job: Optional[str] = None) -> str:
     if not groups:
         return f"No subs {where} yet."
     head = f"{len(groups)} sub{'s' if len(groups) != 1 else ''} {where}:"
-    lines = [_line(e) for e in groups[:MAX_LIST]]
-    if len(groups) > MAX_LIST:
-        lines.append(f"+{len(groups) - MAX_LIST} more in the Levelog app")
+    # Every sub: the point is the whole list here, never "see the app"
+    # (Codex on #780).
+    lines = [_line(e) for e in groups]
     return "\n".join([head] + lines)
 
 
-def render_find(query: Any, rs: Sequence[Dict[str, Any]]) -> str:
-    """Yes with who and where, or no with the list's trades."""
+def render_find(query: Any, rs: Sequence[Dict[str, Any]], job: Optional[str] = None) -> str:
+    """Yes with who and where, or no with the list's trades (one job's,
+    when `job` is named)."""
+    where = f"on {job}" if job else "in your subs list"
     what = " ".join(w for w in _words(query) if w not in _GENERIC) or str(query or "").strip()
     hits = find(query, rs)
     if hits:
         groups = by_company(hits)
         n = len(groups)
-        head = f"Yes — {n} {'match' if n == 1 else 'matches'} for {what} in your subs list:"
-        return "\n".join([head] + [_line(e) for e in groups[:MAX_LIST]])
+        head = f"Yes — {n} {'match' if n == 1 else 'matches'} for {what} {where}:"
+        return "\n".join([head] + [_line(e) for e in groups])
     have = sorted({r["trade"] for r in rs if r["trade"]}, key=str.lower)
-    tail = f" Trades on the list: {', '.join(have)}." if have else " The subs list is empty."
-    return f"No {what} sub in your subs list.{tail}"
+    tail = (f" Trades {'there' if job else 'on the list'}: {', '.join(have)}." if have
+            else (" No subs there yet." if job else " The subs list is empty."))
+    return f"No {what} sub {where}.{tail}"
 
 
 # ── Is this a question about the subs list? ─────────────────────────────────
 
+#: "what is a subcontractor?", "what does a sub do": general, not the list.
+_GENERAL = re.compile(r"^\s*(?:what(?:'s| is| are| does| do)\s+(?:an?\s+)?(?:sub(?:contractor)?s?\b)|"
+                      r"how (?:do|does|to)\b|explain\b|define\b|what does .* mean)", re.I)
 _LIST_WORDS = re.compile(
-    r"\bsubs?\s*(?:list|contractors?)\b|\bsubcontractors?\b|\bour subs\b|\bsub list\b"
+    r"\bsubs?\s*list\b|\bsubcontractors?\s+list\b|\b(?:our|my|all|which|what|list|the)\s+"
+    r"(?:the\s+)?(?:subs|subcontractors)\b|\bsub list\b"
     r"|\bmy subs\b|\ball (?:the |our |my )?subs\b|\bwhich subs\b|\bwhat subs\b", re.I)
 _ASKS = re.compile(
     r"\b(?:do we (?:have|use|got)|have we got|is there|are there|any|who(?:'s| is| are)?|"
@@ -202,16 +206,23 @@ def names_a_trade(text: Any) -> bool:
     return any(_has(t, k) for k in lib_trades.SYNONYMS if len(k) > 2)
 
 
-def company_question(text: Any) -> bool:
+def company_question(text: Any, names: Iterable[str] = ()) -> bool:
     """A question about the company's subs list: "Is there low voltage
     company in subs list?", "do we have a plumber?", "who's our
-    electrician?", "list our subs". Not one about who is on site."""
+    electrician?", "list our subs", "do we use Arkon?" (`names`: the subs'
+    company names). Not one about who is on site, nor a general one ("what
+    is a subcontractor?")."""
     t = str(text or "")
-    if _ON_SITE.search(t):
+    if _ON_SITE.search(t) or _GENERAL.search(t):
         return False
     if _LIST_WORDS.search(t):
         return True
-    return bool(_ASKS.search(t) and _WHO_WORDS.search(t) and names_a_trade(t))
+    if not _ASKS.search(t):
+        return False
+    if _WHO_WORDS.search(t) and names_a_trade(t):
+        return True
+    folded = _fold(t)
+    return any(len(_fold(n)) >= 3 and _has(folded, _fold(n)) for n in names)
 
 
 _SUB_WORDS = re.compile(r"\bsubs?\b|\bsubcontractor|\bcompan(?:y|ies)\b|\bcontractors?\b", re.I)

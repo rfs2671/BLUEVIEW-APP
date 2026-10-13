@@ -210,6 +210,48 @@ class TheLiveDm(_Dm, unittest.TestCase):
                                    "Trades on the list: Electrical, Low Voltage."])
 
 
+class CodexOn780(_Dm, unittest.TestCase):
+
+    def test_a_general_question_is_not_the_list(self):
+        for said in ("what is a subcontractor?", "what does a subcontractor do?",
+                     "how do subs get paid?"):
+            with self.subTest(said):
+                self.assertFalse(wa_subs.company_question(said))
+        self.assertTrue(wa_subs.company_question("who are our subcontractors?"))
+
+    def test_a_company_by_name(self):
+        names = ["Arkon", "Power Direct"]
+        for said in ("do we use Arkon?", "do we have power direct?"):
+            with self.subTest(said):
+                self.assertTrue(wa_subs.company_question(said, names))
+        self.assertFalse(wa_subs.company_question("is Arkon working today?", names))
+        replies, _db_ = TheLiveDm.ask(self, _model(None), "do we use Arkon?")
+        self.assertTrue(replies[0].startswith("Yes — 1 match for arkon"), replies)
+
+    def test_every_sub_never_cut(self):
+        rows = [{"company": f"Sub {i:03d}", "trade": "Electrical", "job": "588", "job_id": "p",
+                 "contact": None} for i in range(45)]
+        text = wa_subs.render_list(rows)
+        self.assertEqual(text.count("\n• "), 45)
+        self.assertNotIn("app", text)
+
+    def test_a_pm_naming_a_job_they_are_not_on(self):
+        db = _world(pm=True)
+        with _Ctx(db=db) as c, patch.object(server, "_dm_subs_model", _model(None)):
+            self._send(c, f"{PM_PHONE}@c.us", "which subs do we have on 8 walworth?", mid="S1")
+            reply = [p["message"] for p in c.wire.calls if "message" in p][-1]
+        self.assertTrue(reply.startswith("You're not on 8 Walworth St"), reply)
+
+    def test_the_job_agent_tools_see_its_job_only(self):
+        db = _world()
+        with _Ctx(db=db):
+            out = _run(server._dispatch_agent_tool(
+                "find_sub", {"trade_or_name": "drywall"}, project_id=THOMAS,
+                group_id=f"{ADMIN_PHONE}@c.us", company_id=CO_A, sender="x"))
+        # Arkon (drywall) is on 8 Walworth only: never a yes for 588.
+        self.assertTrue(out.startswith("No drywall sub on 588 Thomas S Boyland St."), out)
+
+
 # ── 3. The job agent: the tools, and the backstop ───────────────────────────
 
 class TheJobAgent(_Dm, unittest.TestCase):

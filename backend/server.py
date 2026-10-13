@@ -51466,10 +51466,23 @@ async def _dm_subs_rows(ident: dict, projects: Optional[list] = None) -> list:
                         active=_active_assignments)
 
 
-async def _dm_subs_tool(ident: dict, name: str, args: dict) -> str:
-    """find_sub / list_subs, for this person's jobs only."""
+def _dm_sub_names(ident: dict) -> List[str]:
+    """The subs' company names on this person's jobs ("do we use Arkon?")."""
+    return sorted({str(r.get("company") or "").strip() for p in ident.get("projects") or []
+                   for r in _active_assignments(p) if str(r.get("company") or "").strip()})
+
+
+async def _dm_subs_tool(ident: dict, name: str, args: dict,
+                        project: Optional[dict] = None) -> str:
+    """find_sub / list_subs, for this person's jobs only -- for `project`
+    only when the question is about one job (the job agent: Codex on #780,
+    "an electrician on 588?" never answered from another job)."""
     args = args or {}
     if name == "find_sub":
+        if project is not None:
+            return wa_subs.render_find(args.get("trade_or_name"),
+                                       await _dm_subs_rows(ident, [project]),
+                                       job=wa_assistant.street_label(project))
         return wa_subs.render_find(args.get("trade_or_name"), await _dm_subs_rows(ident))
     said = str(args.get("job") or "").strip()
     if said:
@@ -51484,6 +51497,9 @@ async def _dm_subs_tool(ident: dict, name: str, args: dict) -> str:
                                        job=job["label"])
         return (f"No one job matches {said!r}; the whole subs list:\n"
                 + wa_subs.render_list(await _dm_subs_rows(ident)))
+    if project is not None:
+        return wa_subs.render_list(await _dm_subs_rows(ident, [project]),
+                                   job=wa_assistant.street_label(project))
     return wa_subs.render_list(await _dm_subs_rows(ident))
 
 
@@ -51493,7 +51509,7 @@ async def _dm_subs_fallback(ident: dict, question: str, projects: Optional[list]
     the list."""
     rows = await _dm_subs_rows(ident, projects)
     if wa_subs.names_a_trade(question) or wa_subs.find(question, rows):
-        return wa_subs.render_find(question, rows)
+        return wa_subs.render_find(question, rows, job=job)
     return wa_subs.render_list(rows, job=job)
 
 
@@ -53718,14 +53734,6 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         if not named:
             jid = wa_assistant.job_named(core, jobs, in_sentence=True)
             named = [by_id[jid]] if jid else []
-        if not named and wa_subs.company_question(core):
-            # The company's subs list: answered for the company, with the
-            # jobs each sub is on -- never "Which job?" (Tue Oct 13).
-            subs_trace: list = []
-            await _dm_send_answer(dm_chat, message_id,
-                                  _dm_answer_subs(ident, question, subs_trace), heard,
-                                  log=(ident, None, question, "subs", subs_trace))
-            return
         if not named and ident["role"] == ROLE_PM:
             # A PM naming one of the company's OTHER jobs gets told so, not an
             # answer about their own job. Only their own company is looked at.
@@ -53737,6 +53745,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await send_whatsapp_message(dm_chat, refusal)
                 await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
+        if not named and wa_subs.company_question(core, _dm_sub_names(ident)):
+            # The company's subs list: answered for the company, with the
+            # jobs each sub is on -- never "Which job?" (Tue Oct 13). After
+            # a PM's "not on that job" (Codex on #780).
+            subs_trace: list = []
+            await _dm_send_answer(dm_chat, message_id,
+                                  _dm_answer_subs(ident, question, subs_trace), heard,
+                                  log=(ident, None, question, "subs", subs_trace))
+            return
         if len(named) == 1:
             job = named[0]
         elif len(named) > 1:
@@ -62858,7 +62875,12 @@ async def _dispatch_agent_tool(
             ident = await _dm_assistant_identity(group_id)
             if not ident or str(ident.get("company_id")) != str(company_id):
                 return wa_security.BOT_SCOPE_REFUSAL
-            return await _dm_subs_tool(ident, name, args)
+            # The job agent answers about ITS job: the tools see that job only.
+            project = next((p for p in ident.get("projects") or []
+                            if str(p.get("_id")) == str(project_id)), None)
+            if project is None:
+                return wa_security.BOT_SCOPE_REFUSAL
+            return await _dm_subs_tool(ident, name, args, project)
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."
