@@ -617,7 +617,9 @@ class TheSettingsEndpoints(unittest.TestCase):
         self.assertEqual((out["violation_alerts"], out["permit_reminders"]),
                          (True, True))
         self.assertEqual(set(out), {"project_id", "gc_group", "gc_pending_question",
-                                    "groups", "send_window", "chase_weekends", "punch_sends",
+                                    "groups", "send_window", "punch_sends",
+                                    # Chasing's rest days (the old weekend switch).
+                                    "chase_shabbos_off", "chase_sundays_off",
                                     # Who a punch list goes to, each sub's punch contact.
                                     "punch_to", "punch_to_user", "punch_to_options",
                                     "punch_contacts",
@@ -643,6 +645,8 @@ class TheSettingsEndpoints(unittest.TestCase):
                          lambda: server.patch_project_whatsapp_alerts(
                              "proj_a", {"chase_weekends": True}, PM),
                          lambda: server.patch_project_whatsapp_alerts(
+                             "proj_a", {"chase_shabbos_off": False}, PM),
+                         lambda: server.patch_project_whatsapp_alerts(
                              "proj_a", {"punch_sends": "live"}, PM),
                          lambda: server.put_project_whatsapp_gc_group(
                              "proj_a", {"gc_group_id": G_GC,
@@ -658,8 +662,8 @@ class TheSettingsEndpoints(unittest.TestCase):
             self.assertEqual(_run(server.get_project_whatsapp_settings("proj_a", full))["edit"], "all")
             _run(server.patch_project_whatsapp_alerts("proj_a", {"violation_alerts": False}, full))
             self.assertFalse(_settings()["violation_alerts"])
-            _run(server.patch_project_whatsapp_alerts("proj_a", {"chase_weekends": True}, full))
-            self.assertTrue(_settings()["chase_weekends"])
+            _run(server.patch_project_whatsapp_alerts("proj_a", {"chase_sundays_off": False}, full))
+            self.assertIs(_settings()["chase_sundays_off"], False)
 
     def test_another_companys_admin_gets_404(self):
         with _Ctx(db=_world()):

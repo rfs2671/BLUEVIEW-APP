@@ -7,7 +7,8 @@
  *   New DOB violations → GC group           on / off
  *   Permit expiry reminders → GC group      on / off
  *   Send alerts: Anytime / Work hours (7 AM–7 PM) / Custom hours
- *   Chase on weekends                       on / off (default off)
+ *   Shabbos / Yom Tov off                   on / off (default on)
+ *   Sundays off                             on / off (default on)
  *   Punch sends: Shadow / Live              (default shadow)
  *
  * Copy and state for each case: src/utils/whatsappSettings.js.
@@ -204,21 +205,24 @@ export default function LevelogAssistantCard({ projectId }) {
             )}
             <Text style={s.muted}>The GC-group question to the main admin follows the same hours.</Text>
 
-            {/* Sub chasing on Saturday and Sunday */}
-            <View style={s.switchRow}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={s.value}>{view.chaseWeekends.label}</Text>
-                <Text style={s.muted}>{view.chaseWeekends.line}</Text>
+            {/* Sub chasing's rest days: Shabbos / Yom Tov, and Sundays */}
+            {view.restDays.map((sw) => (
+              <View key={sw.key} style={s.switchRow}>
+                <View style={{ flex: 1, marginRight: spacing.sm }}>
+                  <Text style={s.value}>{sw.label}</Text>
+                  <Text style={s.muted}>{sw.line}</Text>
+                </View>
+                <Switch
+                  testID={`switch-${sw.key}`}
+                  value={sw.value}
+                  disabled={!!busy}
+                  onValueChange={(v) => patch(sw.key, { [sw.key]: v })}
+                  accessibilityLabel={sw.label}
+                  trackColor={{ false: colors.glass.border, true: colors.primary }}
+                  thumbColor={colors.white}
+                />
               </View>
-              <Switch
-                value={view.chaseWeekends.value}
-                disabled={!!busy}
-                onValueChange={(v) => patch('chase_weekends', { chase_weekends: v })}
-                accessibilityLabel={view.chaseWeekends.label}
-                trackColor={{ false: colors.glass.border, true: colors.primary }}
-                thumbColor={colors.white}
-              />
-            </View>
+            ))}
 
             {/* Punch list sends: shadow (the walker sees what would be posted) or live */}
             <Text style={s.sub}>Punch sends</Text>
