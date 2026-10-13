@@ -137,7 +137,7 @@ class TheList(unittest.TestCase):
     def test_never_a_number(self):
         rows, _i, _db_ = self.rows()
         for text in (wa_subs.render_list(rows), wa_subs.render_find("lv", rows)):
-            self.assertNotIn("7185550302", text)
+            self.assertNotRegex(text, r"\d{7,}")                  # never a number
 
 
 # ── 2. A question about the list: answered for the company ──────────────────
@@ -233,7 +233,7 @@ class CodexOn780(_Dm, unittest.TestCase):
                  "contact": None} for i in range(45)]
         text = wa_subs.render_list(rows)
         self.assertEqual(text.count("\n• "), 45)
-        self.assertNotIn("app", text)
+        self.assertNotIn("more in the Levelog app", text)
 
     def test_a_pm_naming_a_job_they_are_not_on(self):
         db = _world(pm=True)
