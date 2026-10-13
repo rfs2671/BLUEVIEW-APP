@@ -1846,9 +1846,31 @@ def repair_group_locations(items: List[dict], undo: Optional[List[dict]] = None
     pending: List[dict] = []
     for it in sorted((i for i in items if i.get("status", "draft") != "dropped"),
                      key=lambda i: i.get("captured") or 0):
-        own = _loc(it.get("said") or it.get("text") or "")
+        # The old rule kept a location message's words beyond what it could
+        # read as a NOTE on that photo ("all 2nd floor interior": floor 2,
+        # and the note): the note is the message -- read whole, then gone.
+        for note in list(it.get("notes") or []):
+            g = read_group_location(note.get("text") if isinstance(note, dict) else note)
+            if g and g["scope"] == "group":
+                for k in ("floor", "area", "room"):
+                    it.pop(k, None)
+                merge_location(it, g["location"])
+                it["notes"].remove(note)
+                if not it["notes"]:
+                    it.pop("notes")
+                break
+        said = it.get("said") or it.get("text") or ""
+        own = _loc(said)
         from_message = location_ok(it) and not (own.get("floor") or own.get("area")) \
             and it.get("loc_src") != "group"
+        as_caption = read_group_location(said)
+        if as_caption and as_caption["scope"] == "group" and _GROUP_WORDS.match(str(said)):
+            # "all 2nd floor interior" taken as a wordless photo's caption by
+            # the old rule: the place for the group, read whole.
+            for k in ("floor", "area", "room"):
+                it.pop(k, None)
+            merge_location(it, as_caption["location"])
+            from_message = True
         if not location_ok(it):
             pending.append(it)
             continue

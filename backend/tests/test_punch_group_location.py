@@ -135,6 +135,34 @@ class AWalkFromBefore(_Walk):
         self.assertIn("(draft)", out[1])
         self.assertTrue(self.sess()["group_loc_v2"])
 
+    def test_the_old_rules_note_is_read_whole(self):
+        # The old rule, "all 2nd floor interior" after photo 4: floor 2 on #4,
+        # and the words kept as a note on it.
+        self.photos = GroupLocations.photos.__get__(self)
+        self.photos("a", "b", "c", "d", "e")
+        s = self.sess()
+        s.pop("group_loc_v2", None)
+        s["items"][3].update(floor="2", notes=[{"text": "all 2nd floor interior", "at": None}])
+        out = self._turn("f", photo=True)
+        self.assertEqual(out[0], "\n".join([
+            "Your location messages, applied to the photos before them:",
+            "Set 2nd floor (interior) for #1–#4 (4 photos).", "Reply 'undo' to take it back."]))
+        self.assertEqual([(self.item(n)["floor"], self.item(n)["area"]) for n in range(1, 5)],
+                         [("2", "interior")] * 4)
+        self.assertNotIn("notes", self.item(4))
+        self.assertEqual(self.item(5).get("area"), punch.UNKNOWN)       # after it: not touched
+
+    def test_the_old_rules_caption_is_read_whole(self):
+        # A wordless photo, then "all 2nd floor interior": the old rule made
+        # it that photo's caption.
+        self.photos = GroupLocations.photos.__get__(self)
+        self.photos("a", "b", "")
+        s = self.sess()
+        s.pop("group_loc_v2", None)
+        s["items"][2].update(text="All interior", said="all 2nd floor interior", floor="2")
+        out = self._turn("d", photo=True)
+        self.assertIn("Set 2nd floor (interior) for #1–#3 (3 photos).", out[0])
+
     def test_a_new_walk_is_never_re_read(self):
         self._turn("a", photo=True)
         self.assertTrue(self.sess()["group_loc_v2"])
