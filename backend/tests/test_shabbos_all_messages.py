@@ -43,9 +43,8 @@ YK_NOON, YK_TUE = _ny(2026, 9, 21, 12), _ny(2026, 9, 22, 12)
 
 
 def _company(db, **wa):
-    db.notification_preferences.rows.append({
-        "_id": f"np_co_{len(db.notification_preferences.rows)}", "user_id": None, "project_id": None,
-        "scope": "company", "company_id": G.CO_A, "whatsapp_company": wa})
+    db[server.WA_COMPANY_SETTINGS].rows.append({"_id": G.CO_A, "company_id": G.CO_A,
+                                                "whatsapp_company": wa})
 
 
 def _queue(db):

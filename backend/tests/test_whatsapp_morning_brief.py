@@ -517,9 +517,8 @@ class TimeAndOnce(unittest.TestCase):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
         self._set(db, "u_admin", brief_weekend=True)
-        db.notification_preferences.rows.append({
-            "_id": "np_co", "user_id": None, "project_id": None, "scope": "company",
-            "company_id": CO_A, "whatsapp_company": {"shabbos_off": False}})
+        db[server.WA_COMPANY_SETTINGS].rows.append({
+            "_id": CO_A, "company_id": CO_A, "whatsapp_company": {"shabbos_off": False}})
         with _Ctx(db) as c:
             _tick(c, SAT_7)
             _tick(c, SUN_7)
