@@ -24,9 +24,13 @@ from PIL import Image
 from starlette.datastructures import Headers, UploadFile
 
 import server
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, punch_link, wa_voice
 from tests.test_punch_link import URL, _Req, _body, _call, _jpeg, _open_card, _sent
 from tests.test_punch_server import dry
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class Redesign(unittest.TestCase):

@@ -26,6 +26,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, wa_sender_map  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 
@@ -59,6 +60,9 @@ def _run(db, coro):
         return asyncio.run(coro)
 
 
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
+
+
 class CheckInsAreNeverAssignees(unittest.TestCase):
 
     SESS = {"_id": "walk1", "company_id": CO, "project_id": "p588"}
@@ -67,7 +71,7 @@ class CheckInsAreNeverAssignees(unittest.TestCase):
         db = _world()
         self.assertEqual(_run(db, server._punch_suggest(dict(self.SESS), ["electrical"])),
                          {"electrical": None})
-        self.assertIn("electrical → ?", punch.assign_text({"electrical": None}))
+        self.assertIn("electrical → who?", punch.assign_text({"electrical": None}))
         # Nor can the walker name him: he is no one the company named.
         pool = _run(db, server._punch_name_pool(dict(self.SESS)))
         self.assertNotIn("Yeyzmar B Bate", [p["name"] for p in pool])
@@ -122,7 +126,7 @@ class TheGuard(unittest.TestCase):
             reply = _run(db, server._punch_send({"user_id": "u_roy"}, sess))
         self.assertTrue(reply.startswith("Not sent: electrical → Yeyzmar B Bate"), reply)
         self.assertIn("Nothing was posted", reply)
-        self.assertIn("electrical → ?", reply)                     # asked again
+        self.assertIn("electrical → who?", reply)                     # asked again
         self.assertEqual(posted, [])
         self.assertEqual(db[punch.COLLECTION].rows, [])             # nothing made
         self.assertEqual(db[punch.SESSIONS].rows[0]["status"], "assign")
@@ -172,7 +176,7 @@ class NamesAreNeverGuessed(unittest.TestCase):
         self.assertEqual(sess["assign"]["electrical"]["name"], "Chris Lopez")
         # The recap, marked; 'ok' to it is still what sends.
         self.assertIn("Ready to DM the whole list to Chris Lopez (Arkon, not on this job): #1", reply)
-        self.assertIn("Reply 'ok' to send", reply)
+        self.assertIn("Say ok to send", reply)
         self.assertIsNone(sess.get("choose"))
         self.assertEqual(sess["status"], "recap")
 

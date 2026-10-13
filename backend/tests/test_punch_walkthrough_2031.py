@@ -47,6 +47,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, wa_sender_map  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 
@@ -83,6 +84,9 @@ def _world():
              "sub_company": "Power Direct", "sender_jid": "17185550222@c.us"},
             {"_id": "m_sam", "company_id": CO, "person_name": "Sam Gold",
              "sub_company": "Good Plumbing", "sender_jid": "17185550333@c.us"}]})
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Walk(unittest.TestCase):
@@ -190,15 +194,20 @@ class The2031Sequence(_Walk):
         self.assertEqual(self.item(1)["text"], "Table cracked")   # nothing on the others
         self.assertEqual(self.item(3)["text"], "Bulb burnt")
         self.assertFalse(self.item(1).get("notes") or self.item(3).get("notes"))
-        self.assertEqual((self.item(1)["trade"], self.item(3)["trade"]), ("carpentry", "electrical"))
+        # A table is not sure to be carpentry: blank, never a guess to undo
+        # (Tue Oct 13, 1:43 PM); a bulb is electrical.
+        self.assertEqual((self.item(1)["trade"], self.item(3)["trade"]), (punch.UNKNOWN, "electrical"))
         # "Done": every photo needs a place.
         (q,) = self.turn("Done")
         self.assertTrue(q.startswith("3 have no location."), q)     # one question for all
         (draft,) = self.turn("1 2D, 2 4f, 3 4F")
         self.assertIn("3 items (draft)", draft)
-        self.assertIn("Tile wrong (Apt 4F) — tile?", draft)       # (5) a guess, shown so
-        self.assertIn("Bulb burnt (Apt 4F) — electrical?", draft)
-        self.assertIn("Table cracked (Apt 2D) — carpentry?", draft)
+        # (5) Sure guesses shown plainly; an unsure one left blank -- never
+        # a "carpentry?" (Tue Oct 13, 1:43 PM).
+        self.assertIn("Tile wrong (Apt 4F) — tile", draft)
+        self.assertIn("Bulb burnt (Apt 4F) — electrical", draft)
+        self.assertIn("1. 📷 Table cracked (Apt 2D)\n", draft)
+        self.assertNotIn("?", draft.split("(draft)")[1])
         # The same edit message as at 8:35 PM.
         (draft,) = self.turn("1 → electrical\n2 → carpentry\nadd: tile cracked 4F")
         added = next(it for it in self.sess()["items"] if it.get("added"))
@@ -209,7 +218,7 @@ class The2031Sequence(_Walk):
         (who,) = self.turn("Done")
         self.assertTrue(who.startswith("Who gets what?"), who)
         self.assertNotIn("Yeyzmar", who)                           # (11) a checked-in worker: never
-        self.assertIn("electrical → ?", who)
+        self.assertIn("electrical → who?", who)
         # "Chris from gc." (8): Chris, the GC's user, gets every "?" trade.
         # Every trade to ONE person: the whole list to Chris by DM (live 588,
         # Oct 12, 10:45 AM: "Would post in 588 group, mentioning each one").
@@ -347,7 +356,7 @@ class Assigning(_Walk):
             "r_el": "m_dov"}
         who = self._to_assign()
         self.assertIn("electrical → Dov Klein (Power Direct)", who)
-        self.assertIn("plumbing → ?", who)
+        self.assertIn("plumbing → who?", who)
 
     def test_the_last_assignee_of_the_trade_on_this_job(self):
         self.db[punch.COLLECTION].rows.append({
@@ -357,7 +366,7 @@ class Assigning(_Walk):
                          "company": "Good Plumbing", "jid": "17185550333@c.us"}})
         who = self._to_assign()
         self.assertIn("plumbing → Sam Gold (Good Plumbing)", who)
-        self.assertIn("electrical → ?", who)                         # Yeyzmar checked in: no
+        self.assertIn("electrical → who?", who)                         # Yeyzmar checked in: no
 
     def test_pairs_and_unknown_names(self):
         self._to_assign()
@@ -416,7 +425,7 @@ class Assigning(_Walk):
         self.db.notification_preferences.rows[0]["whatsapp_project"]["punch_contacts"] = {
             "r_el": "m_sam"}
         who = self._to_assign()
-        self.assertIn("electrical → ?", who)
+        self.assertIn("electrical → who?", who)
         self.assertNotIn("Sam Gold", who)
 
     def test_due_days_change_the_recap(self):
@@ -475,13 +484,17 @@ class TheRules(unittest.TestCase):
     def test_trade_guesses(self):
         for words, trade in {"Bulb burnt": "electrical", "outlet loose": "electrical",
                              "switch plate missing": "electrical", "Tile wrong": "tile",
-                             "grout missing": "tile", "Table cracked": "carpentry",
-                             "cabinet door off": "carpentry", "trim gap": "carpentry",
+                             "grout missing": "tile", "trim gap": "carpentry",
                              "paint touch-up": "paint", "faucet leak": "plumbing",
                              "sheetrock patch": "drywall"}.items():
             with self.subTest(words):
                 self.assertEqual(punch.trade_for(words), (trade, True))
         self.assertEqual(punch.trade_for("Time wrong"), (punch.UNKNOWN, False))
+        # Only when sure (1:43 PM): a table, a cabinet door, scuff marks --
+        # blank, never a "carpentry?" to undo.
+        for words in ("Table cracked", "cabinet door off", "scuff marks on wall", "hole by the stair"):
+            with self.subTest(words):
+                self.assertEqual(punch.trade_for(words), (punch.UNKNOWN, False))
 
     def test_add_text(self):
         self.assertEqual(punch.clean_caption("tile cracked 4F"), "Tile cracked")

@@ -1305,11 +1305,15 @@ def validate_whatsapp_prefs_patch(patch: Any) -> Tuple[Dict[str, Any], List[str]
 #: nightfall; a job's messages follow the job's own "Shabbos / Yom Tov off".
 #: "shabbos_critical_alerts": a Stop Work Order or Vacate still posts then.
 COMPANY_SWITCHES = ("chase_sundays_default", "shabbos_off", "shabbos_critical_alerts")
+#: Company settings that are one of a few words. "punch_detail": what a
+#: walkthrough asks and shows -- "simple" (floor + description) or
+#: "detailed" (trades and locations too); a walk can switch in plain words.
+COMPANY_CHOICES = {"punch_detail": ("simple", "detailed")}
 
 
 def default_whatsapp_company_settings() -> Dict[str, Any]:
     return {"chase_sundays_default": True, "shabbos_off": True,
-            "shabbos_critical_alerts": False}
+            "shabbos_critical_alerts": False, "punch_detail": "simple"}
 
 
 def default_whatsapp_project_settings() -> Dict[str, Any]:

@@ -5,12 +5,12 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Switch, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Switch, ActivityIndicator, Pressable } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { GlassCard } from '../GlassCard';
 import { useToast } from '../Toast';
 import { whatsappAPI } from '../../utils/api';
-import { companyView } from '../../utils/whatsappCompany';
+import { companyView, choiceView } from '../../utils/whatsappCompany';
 import { useTheme } from '../../context/ThemeContext';
 import { spacing } from '../../styles/theme';
 
@@ -66,6 +66,30 @@ export default function CompanyWhatsAppPanel() {
           />
         </View>
       ))}
+      {choiceView(data).map((c) => (
+        <View key={c.key} style={s.choice}>
+          <Text style={s.label}>{c.label}</Text>
+          <View style={s.segment} accessibilityRole="radiogroup" accessibilityLabel={c.label}>
+            {c.options.map((o) => {
+              const on = c.value === o.value;
+              return (
+                <Pressable
+                  key={o.value}
+                  testID={`company-choice-${c.key}-${o.value}`}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on, disabled: !!busy }}
+                  disabled={!!busy || on}
+                  onPress={() => change(c, o.value)}
+                  style={[s.option, on && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                >
+                  <Text style={[s.optionText, on && { color: colors.white }]}>{o.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={s.note}>{c.options.find((o) => o.value === c.value)?.line}</Text>
+        </View>
+      ))}
     </GlassCard>
   );
 }
@@ -76,5 +100,12 @@ function buildStyles(colors) {
     row: { flexDirection: 'row', alignItems: 'center', minHeight: 44, paddingVertical: spacing.sm },
     label: { color: colors.text.primary, fontSize: 15, fontWeight: '600' },
     note: { color: colors.text.muted, fontSize: 13, marginTop: 2 },
+    choice: { paddingVertical: spacing.sm },
+    segment: { flexDirection: 'row', marginTop: spacing.xs },
+    option: {
+      flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: colors.glass.border, marginRight: 8, borderRadius: 10,
+    },
+    optionText: { color: colors.text.primary, fontSize: 15, fontWeight: '600' },
   });
 }

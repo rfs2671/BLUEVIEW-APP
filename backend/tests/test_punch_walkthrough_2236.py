@@ -23,6 +23,7 @@ from unittest.mock import patch
 from tests.test_punch_walkthrough_2031 import CO, NOW, P588, _Walk, _world  # noqa: F401
 from tests._fake_mongo import FakeDb
 import server
+from tests import _punch_detailed  # noqa: E402
 from lib import punch
 
 YEYZMAR = {"kind": "worker", "id": "w1", "name": "Yeyzmar B Bate", "company": "Power Direct",
@@ -47,6 +48,9 @@ def _old_walk(status="assign", assign=None, whole=None):
             "updated_at": NOW - timedelta(minutes=30)}
 
 
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
+
+
 class The1036Photo(_Walk):
 
     def setUp(self):
@@ -60,8 +64,8 @@ class The1036Photo(_Walk):
         self.assertNotIn("I don't know", out)
         # The stored worker is taken off, and the walker is told.
         self.assertIn("Taken off: electrical → Yeyzmar B Bate", out)
-        self.assertIn("• electrical → ?", out)
-        self.assertIn("• tile → ?", out)                 # the new item's trade, asked
+        self.assertIn("• electrical → who?", out)
+        self.assertIn("• tile → who?", out)                 # the new item's trade, asked
         s = self.sess()
         self.assertEqual(s["status"], "assign")
         it = next(i for i in s["items"] if i["captured"] == 4)
@@ -92,8 +96,7 @@ class The1036Photo(_Walk):
 
     def test_no_words_asks_what_then_back(self):
         (q,) = self.turn("", photo=True)
-        self.assertEqual(q, 'Added #4 (photo). What is it, and where? (e.g. "4D tile chipped"; '
-                            'or reply to a photo with its words)')
+        self.assertEqual(q, 'Added #4. What is it, and where?')     # short, no syntax (1:43 PM)
         (out,) = self.turn("4d tile chipped")
         self.assertTrue(out.startswith("Added #4 'Tile chipped' (Apt 4D). Back to: Who gets what?"),
                         out)
@@ -134,7 +137,7 @@ class EveryStage(_Walk):
         (out,) = self.turn("4d tile chipped", photo=True)
         self.assertTrue(out.startswith("Added #4 'Tile chipped' (Apt 4D). Back to: Who gets what?"),
                         out)
-        self.assertIn("• tile → ?", out)
+        self.assertIn("• tile → who?", out)
         self.assertEqual(self.sess()["status"], "assign")
 
     def test_no_trade_goes_to_the_draft(self):
@@ -142,7 +145,7 @@ class EveryStage(_Walk):
         (out,) = self.turn("4d stain on the wall", photo=True)
         self.assertTrue(out.startswith("Added #4 'Stain on the wall' (Apt 4D). Back to: the draft."),
                         out)
-        self.assertIn("needs a trade", out)
+        self.assertIn("1 has no trade — fine to send as is.", out)
         self.assertEqual(self.sess()["status"], "draft")
 
 
@@ -195,7 +198,7 @@ class StoredNamesAreCheckedEachTime(_Walk):
         (out,) = self.turn("ok")
         self.assertTrue(out.startswith("Taken off: electrical → Yeyzmar B Bate (not in People, "
                                        "your users, or a sub's punch contact)."), out)
-        self.assertIn("• electrical → ?", out)
+        self.assertIn("• electrical → who?", out)
         self.assertEqual(self.sess()["status"], "assign")
         self.assertEqual(self.db[punch.COLLECTION].rows, [])
 
@@ -222,7 +225,7 @@ class StoredNamesAreCheckedEachTime(_Walk):
         self.turn("Bulb burnt 4F", photo=True)
         self.turn("done")
         (who,) = self.turn("send")
-        self.assertIn("electrical → ?", who)
+        self.assertIn("electrical → who?", who)
         self.assertNotIn("Yeyzmar", who)
 
 
@@ -298,9 +301,9 @@ class CodexOn758(_Walk):
     def test_two_wordless_photos_both_get_their_words(self):
         self.db[punch.SESSIONS].rows.append(_old_walk())
         (q,) = self.turn("", photo=True)
-        self.assertTrue(q.startswith("Added #4 (photo). What is it, and where?"), q)
+        self.assertTrue(q.startswith("Added #4. What is it, and where?"), q)
         (q,) = self.turn("", photo=True)
-        self.assertTrue(q.startswith("Added #5 (photo). What is #4, and where?"), q)
+        self.assertTrue(q.startswith("Added #5. What is #4, and where?"), q)
         (q,) = self.turn("4d tile chipped")
         self.assertEqual(q, "Added #4 'Tile chipped' (Apt 4D). What is #5, and where?")
         (out,) = self.turn("tile cracked")                         # no location: asked

@@ -40,6 +40,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, wa_assistant  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 
@@ -54,6 +55,9 @@ THUMB = "/9j/4AAQSkZJRgABAQAAAQABAAD" + "A" * 400          # a photo's base64 th
 
 def _mid(i):
     return f"false_{CHAT}_3EB0{i:04d}"
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Walk(unittest.TestCase):
@@ -128,8 +132,7 @@ class The1821Sequence(_Walk):
         # Reply to photo 1: its location. Not the assistant, no "Which job?".
         out = self._turn("2nd floor Apt 2D", reply_to=1)
         # Answered in words, never only a 👍 (live 588, Oct 12, 10:46 AM).
-        self.assertEqual(out, ["#1 'Bulb burnt' (Floor 2 · Apt 2D) — got it. Next photo, or 'done' "
-                               "(or \"done, send to Chris\")."])
+        self.assertEqual(out, ["#1 'Bulb burnt' (Floor 2 · Apt 2D) — got it."])
         self.assertEqual(len(self.reacts), 2)
         # "588": the walk's job.
         out = self._turn("588")

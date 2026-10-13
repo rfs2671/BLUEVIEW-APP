@@ -32,6 +32,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 from PIL import Image  # noqa: E402
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, punch_link  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 
@@ -82,6 +83,9 @@ def _webhook_photo(caption="tile cracked 4D", mid="3EB0P4"):
     return {"has_image": True, "message_id": mid,
             "message_id_serialized": f"false_17185550100@c.us_{mid}", "body": caption,
             "raw": {"id": {"id": mid}, "type": "image", "_data": data}}
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Resp:
