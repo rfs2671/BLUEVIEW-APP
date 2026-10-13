@@ -74,6 +74,24 @@ class TheList(unittest.TestCase):
         self.assertEqual(len(db.company_trades.rows), 1)
         self.assertEqual(len([a for a in db.audit_logs.rows if a["action"] == "company_trade_add"]), 1)
 
+    def test_codex_773_one_row_when_two_add_it_at_once(self):
+        # Both read the list before either wrote: the unique index on
+        # (company_id, key) refuses the second insert; it is not an error,
+        # and only the add that happened is audited.
+        import inspect
+        from pymongo.errors import DuplicateKeyError
+        src = inspect.getsource(server.startup_event)
+        self.assertIn('keys=[("company_id", 1), ("key", 1)]', src)
+        self.assertIn('name="company_trade_key", unique=True', src)
+        db = FakeDb(company_trades=[], audit_logs=[])
+
+        async def raced(*a, **k):
+            raise DuplicateKeyError("E11000 duplicate key error collection: company_trades")
+        with patch.object(server, "db", db), \
+                patch.object(db.company_trades, "update_one", raced):
+            self.assertEqual(_run(server._company_trade_add(CO_A, "dance", "u2", "test")), "Dance")
+        self.assertEqual(db.audit_logs.rows, [])
+
 
 class InTheDm(_Dm, unittest.TestCase):
 

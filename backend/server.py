@@ -20071,12 +20071,20 @@ async def _company_trade_add(company_id, raw: str, actor: str, via: str) -> str:
     label = lib_trades.new_label(raw)
     if not label:
         raise ValueError("empty trade")
+    from pymongo.errors import DuplicateKeyError
     now = datetime.now(timezone.utc)
-    await db[lib_trades.COLLECTION].update_one(
-        {"company_id": str(company_id), "key": _roster_key(label)},
-        {"$setOnInsert": {"company_id": str(company_id), "key": _roster_key(label),
-                          "label": label, "created_at": now, "created_by": actor, "via": via}},
-        upsert=True)
+    try:
+        res = await db[lib_trades.COLLECTION].update_one(
+            {"company_id": str(company_id), "key": _roster_key(label)},
+            {"$setOnInsert": {"company_id": str(company_id), "key": _roster_key(label),
+                              "label": label, "created_at": now, "created_by": actor, "via": via}},
+            upsert=True)
+    except DuplicateKeyError:
+        # Added by someone else a moment ago (the unique company_trade_key
+        # index): on the list either way, and their add was the audited one.
+        return label
+    if getattr(res, "upserted_id", None) is None:
+        return label                               # already there: nothing added
     await audit_log("company_trade_add", actor, "company", str(company_id),
                     {"trade": label, "via": via})
     return label
@@ -73009,6 +73017,11 @@ async def startup_event():
     )
     await _ensure_index_resilient(
         db.companies, keys=[("name", 1)], name="name_1", unique=True,
+    )
+    # One row per company and trade, even when two people add it at once.
+    await _ensure_index_resilient(
+        db[lib_trades.COLLECTION], keys=[("company_id", 1), ("key", 1)],
+        name="company_trade_key", unique=True,
     )
     await db.checklists.create_index("company_id")
     await db.checklist_assignments.create_index("checklist_id")
