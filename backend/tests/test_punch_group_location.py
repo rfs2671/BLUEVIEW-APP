@@ -115,7 +115,7 @@ class AWalkFromBefore(_Walk):
 
     projects = (P588,)
 
-    def test_re_read_once_then_asked(self):
+    def test_read_again_once_then_asked(self):
         self.photos = GroupLocations.photos.__get__(self)
         self.photos("a", "b", "c", "d", "e")
         s = self.sess()
