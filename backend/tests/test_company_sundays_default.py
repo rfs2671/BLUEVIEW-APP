@@ -52,6 +52,21 @@ class TheSetting(unittest.TestCase):
         self.assertEqual((a["details"]["before"], a["details"]["after"]),
                          ({"chase_sundays_default": True}, {"chase_sundays_default": False}))
 
+    def test_codex_775_every_company_keeps_its_own_row(self):
+        # notification_preferences is unique on (user_id, project_id): company
+        # settings live in their own collection, one document per company.
+        from tests._fake_mongo import FakeDb
+        db = FakeDb(unique={"notification_preferences": ("user_id", "project_id")},
+                    users=list(self.db.users.rows), audit_logs=[])
+        with patch.object(server, "db", db):
+            _run(server.patch_company_whatsapp_settings({"chase_sundays_default": False}, ADMIN))
+            _run(server.patch_company_whatsapp_settings({"chase_sundays_default": False}, ADMIN_B))
+            self.assertIs(_run(server.get_company_whatsapp_settings(ADMIN))["chase_sundays_default"], False)
+            self.assertIs(_run(server.get_company_whatsapp_settings(ADMIN_B))["chase_sundays_default"], False)
+        self.assertEqual(sorted(r["_id"] for r in db[server.WA_COMPANY_SETTINGS].rows),
+                         sorted([CO_A, ADMIN_B["company_id"]]))
+        self.assertEqual(db.notification_preferences.rows, [])
+
     def test_admins_only_and_bools_only(self):
         with patch.object(server, "db", self.db):
             for call in (lambda: server.get_company_whatsapp_settings(PM),
@@ -164,6 +179,13 @@ class ExistingJobsKeepTheirValue(unittest.TestCase):
         self.assertEqual(self.migrate(), 0)
         self.assertIsNone(_row(self.db, "p_new"))
         self.assertIs(self.sundays_off("p_new"), False)
+
+    def test_codex_775_every_job_however_many(self):
+        import inspect
+        src = inspect.getsource(server._chase_sundays_pin_migration)
+        self.assertIn(".to_list(None)", src)
+        self.db.projects.rows = [{"_id": f"p{i}", "company_id": CO_A} for i in range(250)]
+        self.assertEqual(self.migrate(), 250)
 
     def test_it_runs_at_startup_after_0c(self):
         import inspect

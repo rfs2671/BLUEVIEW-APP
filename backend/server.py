@@ -46063,17 +46063,21 @@ async def get_whatsapp_prefs(user_id: Any, project_id: Any = None) -> dict:
     return _nprefs.effective_whatsapp_prefs(project_row, global_row)
 
 
+#: Company-wide WhatsApp settings, one document per company (_id = the
+#: company id). Its own collection: notification_preferences is unique on
+#: (user_id, project_id), which a row per company could not satisfy.
+WA_COMPANY_SETTINGS = "whatsapp_company_settings"
+
+
 async def _whatsapp_company_settings(company_id: Any) -> dict:
-    """The company's WhatsApp settings (one row, scope "company") over the
-    defaults (lib/notification_preferences)."""
+    """The company's WhatsApp settings over the defaults
+    (lib/notification_preferences)."""
     from lib import notification_preferences as _nprefs
     out = _nprefs.default_whatsapp_company_settings()
     if not company_id:
         return out
     try:
-        row = await db.notification_preferences.find_one(
-            {"user_id": None, "project_id": None, "scope": "company",
-             "company_id": str(company_id)})
+        row = await db[WA_COMPANY_SETTINGS].find_one({"_id": str(company_id)})
     except Exception:
         row = None
     stored = (row or {}).get("whatsapp_company") or {}
@@ -46090,11 +46094,9 @@ async def _set_whatsapp_company_fields(company_id: Any, fields: dict, actor: str
     set_ops = {f"whatsapp_company.{k}": v for k, v in fields.items()}
     set_ops.update({"whatsapp_company.updated_at": now, "whatsapp_company.updated_by": actor,
                     "updated_at": now})
-    await db.notification_preferences.update_one(
-        {"user_id": None, "project_id": None, "scope": "company", "company_id": str(company_id)},
-        {"$set": set_ops,
-         "$setOnInsert": {"user_id": None, "project_id": None, "scope": "company",
-                          "company_id": str(company_id), "created_at": now}},
+    await db[WA_COMPANY_SETTINGS].update_one(
+        {"_id": str(company_id)},
+        {"$set": set_ops, "$setOnInsert": {"company_id": str(company_id), "created_at": now}},
         upsert=True)
     after = await _whatsapp_company_settings(company_id)
     await audit_log("whatsapp_company_settings", actor, "company", str(company_id),
@@ -56318,8 +56320,9 @@ async def _chase_sundays_pin_migration() -> int:
     if await db.app_migrations.find_one({"_id": _SUNDAYS_PIN_MARKER}):
         return 0
     n = 0
+    # Every live job, however many: the marker below is written only after.
     projects = await db.projects.find(
-        {"is_deleted": {"$ne": True}}, {"company_id": 1}).to_list(20000)
+        {"is_deleted": {"$ne": True}}, {"company_id": 1}).to_list(None)
     for p in projects:
         pid = str(p["_id"])
         row = await db.notification_preferences.find_one(

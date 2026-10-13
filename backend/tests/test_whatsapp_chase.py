@@ -771,9 +771,8 @@ class Weekends(_Base):
 
     def test_sunday_too(self):
         # A company that does not chase on Sundays by default.
-        self.db.notification_preferences.rows.append({
-            "_id": "npc", "user_id": None, "project_id": None, "scope": "company",
-            "company_id": CO_A, "whatsapp_company": {"chase_sundays_default": False}})
+        self.db[server.WA_COMPANY_SETTINGS].rows.append({
+            "_id": CO_A, "company_id": CO_A, "whatsapp_company": {"chase_sundays_default": False}})
         _item(self.db, due={"due_text": "Sunday", "due_at": "2026-10-11"},
               evidence={"sent_at": _et(7, 0, day=11)})
         self.chase(_et(8, 35, day=11))
