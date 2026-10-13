@@ -64143,6 +64143,10 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
                 await send_whatsapp_message(dm_chat, reply)
                 return True
 
+    if sess and not sess.get("group_loc_v2") and sess.get("status") in ("capturing", "locating", "draft"):
+        # A walk from before group locations: its location messages re-read
+        # under the new rule first (Tue Oct 13, 588), then this message.
+        await _punch_repair_groups(sess, dm_chat)
     if sess and sess["status"] == "resend":
         if not parsed.get("has_image") and not voice \
                 and text.strip().lower() in ("resend", "retry", "try again", "send again"):
@@ -64167,7 +64171,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
                 "job_name": wa_assistant.street_label(project) if project else "",
                 "job_code": punch.job_code(project) if project else "",
                 "status": "capturing", "items": [], "created_at": now, "updated_at": now,
-                "reminded_at": None}
+                "reminded_at": None, "group_loc_v2": True}
         # Its own lists: the stored walk never shares one with this turn's copy.
         await db[punch.SESSIONS].insert_one({**sess, "items": [], "photos": []})
         if project:
@@ -64252,6 +64256,9 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
             return True
     if sess["status"] == "capturing":
         return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
+    if sess["status"] in ("locating", "draft") and sess.get("loc_undo") and not parsed.get("has_image") \
+            and said.strip().lower().strip(".!") in ("undo", "undo that", "undo it"):
+        return await _punch_undo_group(sess, dm_chat)
     if sess["status"] == "locating":
         return await _punch_locate_turn(sess, dm_chat, parsed, text, voice, now)
     if sess["status"] == "draft":
@@ -64456,6 +64463,11 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         return True
     if voice or text:
         last = items[-1] if items else None
+        if low in ("undo", "undo that", "undo it") and sess.get("loc_undo"):
+            return await _punch_undo_group(sess, dm_chat)
+        group = await _punch_read_group(words) if items and not low.startswith("add") else None
+        if group and group["scope"] != "last":
+            return await _punch_apply_group(sess, dm_chat, group)
         ref = punch.target_ref(text) if not voice else None
         if ref and _punch_item_no(items, ref[0]):
             # "#2 4th floor Apt 4F": about that photo.
@@ -64504,6 +64516,102 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         await send_whatsapp_message(dm_chat, punch.WHICH_PHOTO)
         return True
     return False
+
+
+# ── A LOCATION FOR A GROUP OF PHOTOS (during the walk) ────────────────────
+#
+# Tue Oct 13: "all 2nd floor interior", "these are all roof", "rest are
+# lobby", or just "roof", typed between photos, is for every photo since the
+# previous location message -- never the last photo alone. A reply to one
+# photo is that photo; "#12-20 roof" those numbers. Patterns first, then the
+# model (EN / ES / YI) for loose words; the code applies it, never over a
+# place the walker gave one photo; one line says what was set; 'undo'.
+
+async def _punch_loc_model(text: str) -> Optional[dict]:
+    """The model's reading of a message between photos (LOC_MODEL_PROMPT);
+    None without a key, on any error, or when it is not one JSON object."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 150,
+                      "response_format": {"type": "json_object"},
+                      "messages": [{"role": "system", "content": punch.LOC_MODEL_PROMPT},
+                                   {"role": "user", "content": str(text)[:500]}]})
+            resp.raise_for_status()
+            got = json.loads(resp.json()["choices"][0]["message"]["content"])
+        return got if isinstance(got, dict) else None
+    except Exception as e:
+        logger.warning(f"[punch] location read failed: {type(e).__name__}")
+        return None
+
+
+async def _punch_read_group(words: str) -> Optional[dict]:
+    """A message that is only a place, and for which photos; else None."""
+    t = str(words or "").strip()
+    if not t or len(t.split()) > 12:
+        return None
+    got = punch.read_group_location(t)
+    if got:
+        return got
+    return punch.clean_loc_model(await _punch_loc_model(t))
+
+
+async def _punch_apply_group(sess: dict, dm_chat: str, group: dict) -> bool:
+    items = sess["items"]
+    loc = group["location"]
+    if group["scope"] == "numbers":
+        targets = [it for it in (_punch_item_no(items, n) for n in group["numbers"]) if it]
+        mark = sess.get("loc_mark") or 0
+    else:
+        targets = punch.group_targets(items, sess.get("loc_mark") or 0)
+        mark = max([it.get("captured") or 0 for it in items] or [0])
+    if not targets:
+        await send_whatsapp_message(dm_chat, "Those photos already have their places. "
+                                             "Reply to a photo to change one.")
+        return True
+    undo = [punch.set_group_location(it, loc) for it in targets]
+    await _punch_save(sess, items=items, loc_undo={"items": undo, "mark": sess.get("loc_mark") or 0},
+                      loc_mark=mark)
+    await send_whatsapp_message(dm_chat, punch.group_confirm(loc, [it["n"] for it in targets]))
+    return True
+
+
+async def _punch_undo_group(sess: dict, dm_chat: str) -> bool:
+    items = sess["items"]
+    u = sess.get("loc_undo") or {}
+    ns = []
+    for before in u.get("items") or []:
+        it = _punch_item_by_captured(items, before.get("captured"))
+        if not it:
+            continue
+        for k in ("floor", "area", "room", "loc_src"):
+            if before.get(k) is None:
+                it.pop(k, None)
+            else:
+                it[k] = before[k]
+        ns.append(it["n"])
+    await _punch_save(sess, items=items, loc_undo=None, loc_mark=u.get("mark") or 0)
+    await send_whatsapp_message(dm_chat, f"Undone — {punch.numbers_text(ns)} back as they were."
+                                if ns else "Nothing to undo.")
+    return True
+
+
+async def _punch_repair_groups(sess: dict, dm_chat: str) -> None:
+    """A walk taken before group locations (once): each location typed
+    between photos is applied to the photos before it that have none."""
+    undo: List[dict] = []
+    changes = punch.repair_group_locations(sess["items"], undo)
+    await _punch_save(sess, items=sess["items"], group_loc_v2=True,
+                      **({"loc_undo": {"items": undo, "mark": sess.get("loc_mark") or 0}}
+                         if undo else {}))
+    if changes:
+        await send_whatsapp_message(dm_chat, "\n".join(
+            ["Your location messages, applied to the photos before them:"]
+            + [punch.group_confirm(loc, ns) for loc, ns in changes] + ["Reply 'undo' to take it back."]))
 
 
 async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:

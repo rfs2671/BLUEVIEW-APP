@@ -1705,3 +1705,163 @@ def open_text(job_name: str, items: List[dict], floor: Optional[str]) -> str:
         who = f" — {it['assignee']['name']}" if (it.get("assignee") or {}).get("name") else ""
         lines.append(f"• {it['pid']} {it.get('text') or ''}{who}{st}")
     return "\n".join(lines)
+
+
+# ── A LOCATION FOR A GROUP OF PHOTOS (during the walk) ─────────────────────
+#
+# Tue Oct 13: a location typed between photos ("all 2nd floor interior",
+# "these are all roof", "everything above is cellar", "rest are lobby", or
+# just "roof") is for the photos since the previous location message -- not
+# the last photo alone. A reply to one photo is that photo; "#12-20 roof" is
+# those numbers. The model reads scope and place from loose words (EN / ES /
+# YI); the code applies them, never over a place the walker gave one photo.
+
+_GROUP_WORDS = re.compile(
+    r"^\s*(?:(?:these|those|they)\s+(?:are|were)\s+(?:all\s+)?|all\s+(?:of\s+)?(?:these|those|them|the above)\s+(?:are\s+)?"
+    r"|everything\s+(?:above\s+)?(?:is\s+|was\s+)?|all\s+(?:the\s+)?(?:above\s+)?(?:are\s+|is\s+)?|the\s+rest\s+(?:are\s+|is\s+)?"
+    r"|rest\s+(?:are\s+|is\s+)?|above\s+(?:are\s+|is\s+)?|todos?\s+(?:son\s+|en\s+)?|todas?\s+(?:son\s+|en\s+)?"
+    r"|estos\s+(?:son\s+)?(?:todos\s+)?|estas\s+(?:son\s+)?(?:todas\s+)?|alle\s+|di\s+alle\s+|אַלע\s+|אלע\s+)"
+    r"(?:(?:on|in|at|en|el|la|the)\s+)*", re.IGNORECASE)
+
+LOC_MODEL_PROMPT = (
+    "A construction super is sending punch-list photos in WhatsApp, one by one. "
+    "Between photos they type or say short messages. Read ONE such message and "
+    "answer with a JSON object only: {\"kind\": \"location\" | \"other\", "
+    "\"scope\": \"group\" | \"numbers\" | \"last\", \"numbers\": [ints], "
+    "\"location\": \"the place, in the words they used\"}. kind is \"location\" "
+    "ONLY when the whole message says WHERE (a floor, unit, room or any area: "
+    "\"2nd floor interior\", \"roof\", \"rear yard\", \"cellar\", \"piso 3\", "
+    "\"אויפן דאך\") and says nothing else about a defect; a defect, a note, a "
+    "question or anything else is \"other\". scope: \"numbers\" when it names "
+    "photo numbers (\"#12-20 roof\": numbers 12..20); \"last\" only when it "
+    "says this one / the last one / this photo; otherwise \"group\" (\"all\", "
+    "\"these\", \"everything above\", \"rest\", or a bare place). location: "
+    "copy their words for the place, without \"all\", \"these are\", "
+    "\"everything above is\"; never translate, never add words."
+)
+
+
+def read_group_location(text: Any) -> Optional[Dict[str, Any]]:
+    """The patterns' reading (no model): {"scope": "group" | "numbers",
+    "numbers": [...], "location": {...}} for a message that is only a place,
+    else None."""
+    t = " ".join(str(text or "").split()).strip(" .!")
+    if not t:
+        return None
+    nums = parse_batch_where(t, [])
+    if nums and nums.get("set"):
+        groups: Dict[str, Any] = {}
+        for n, loc in nums["set"].items():
+            groups.setdefault("numbers", []).append(n)
+            groups["location"] = loc
+        return {"scope": "numbers", "numbers": sorted(groups["numbers"]), "location": groups["location"]}
+    m = _GROUP_WORDS.match(t)
+    if m and m.end() < len(t):
+        loc = free_location(t[m.end():])
+        if loc.get("floor") or loc.get("area"):
+            return {"scope": "group", "numbers": [], "location": loc}
+        return None
+    # A bare place: a floor, a unit or a named area, and no other words.
+    loc = read_location(t)
+    if not (loc.get("floor") or loc.get("area")) or len(t.split()) > 5:
+        return None
+    rest = _LOC_FLOOR.sub(" ", t)
+    for _label, rx in _COMMON_RX + _NEEDS_FLOOR_RX:
+        rest = rx.sub(" ", rest)
+    rest = re.sub(r"(?i)\b(?:on|in|at|the|en|el|la|de|interior|exterior)\b", " ", rest)
+    if re.search(r"[^\W\d_]{3,}", rest):
+        return None                                  # words beyond the place: a caption / note
+    return {"scope": "group", "numbers": [], "location": free_location(t)}
+
+
+def clean_loc_model(got: Any) -> Optional[Dict[str, Any]]:
+    """The model's reading, checked: None unless it is a location with a
+    place that reads as one."""
+    if not isinstance(got, dict) or got.get("kind") != "location":
+        return None
+    loc = free_location(got.get("location"))
+    if not (loc.get("floor") or loc.get("area")):
+        return None
+    scope = got.get("scope") if got.get("scope") in ("group", "numbers", "last") else "group"
+    nums = [int(n) for n in (got.get("numbers") or []) if isinstance(n, (int, float)) or str(n).isdigit()]
+    if scope == "numbers" and not nums:
+        scope = "group"
+    return {"scope": scope, "numbers": sorted(set(nums)), "location": loc}
+
+
+def _ordinal(n: str) -> str:
+    i = int(n)
+    suf = "th" if 10 <= i % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(i % 10, "th")
+    return f"{i}{suf}"
+
+
+def loc_phrase(loc: Dict[str, Optional[str]]) -> str:
+    """"2nd floor (interior)", "roof", "2nd floor", "Apt 4F"."""
+    f, a = loc.get("floor"), loc.get("area")
+    fl = (f"{_ordinal(f)} floor" if f and str(f).isdigit() else (str(f) if f and f != a else ""))
+    if fl and a:
+        return f"{fl} ({a})"
+    return fl or str(a or "")
+
+
+def numbers_text(ns: List[int]) -> str:
+    """"#5–#16", "#3, #5, #7"."""
+    ns = sorted(ns)
+    if len(ns) > 2 and ns == list(range(ns[0], ns[-1] + 1)):
+        return f"#{ns[0]}–#{ns[-1]}"
+    return ", ".join(f"#{n}" for n in ns)
+
+
+def group_confirm(loc: Dict[str, Optional[str]], ns: List[int]) -> str:
+    n = len(ns)
+    return f"Set {loc_phrase(loc)} for {numbers_text(ns)} ({n} photo{'s' if n != 1 else ''})."
+
+
+def group_targets(items: List[dict], since_captured: int) -> List[dict]:
+    """The photos a group location is for: every live item captured after
+    the previous location message, except one whose place the walker gave
+    for it (its own caption, a reply, "#n")."""
+    return [it for it in items if it.get("status", "draft") != "dropped"
+            and (it.get("captured") or 0) > since_captured
+            and not (location_ok(it) and it.get("loc_src") != "group")]
+
+
+def set_group_location(it: dict, loc: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    """Set it (from a group message); what it was, for undo."""
+    before = {k: it.get(k) for k in ("floor", "area", "room", "loc_src")}
+    for k in ("floor", "area", "room"):
+        it.pop(k, None)
+    merge_location(it, loc)
+    it["loc_src"] = "group"
+    return {"captured": it.get("captured"), **before}
+
+
+def repair_group_locations(items: List[dict], undo: Optional[List[dict]] = None
+                           ) -> List[Tuple[Dict[str, Optional[str]], List[int]]]:
+    """A walk taken before group locations: each location typed between
+    photos was put on the photo just before it. Under the rule it is for
+    every photo since the previous one: here it is applied to those that
+    have none (never over a place). Returns [(location, numbers set)]."""
+    out = []
+    pending: List[dict] = []
+    for it in sorted((i for i in items if i.get("status", "draft") != "dropped"),
+                     key=lambda i: i.get("captured") or 0):
+        own = _loc(it.get("said") or it.get("text") or "")
+        from_message = location_ok(it) and not (own.get("floor") or own.get("area")) \
+            and it.get("loc_src") != "group"
+        if not location_ok(it):
+            pending.append(it)
+            continue
+        if from_message and pending:
+            loc = {k: it.get(k) for k in ("floor", "area", "room") if it.get(k) not in (None, UNKNOWN)}
+            ns = []
+            for p in pending:
+                before = set_group_location(p, loc)
+                if undo is not None:
+                    undo.append(before)
+                ns.append(p["n"])
+            out.append((loc, sorted(ns + [it["n"]])))
+            pending = []
+        elif from_message:
+            pending = []
+    return out
