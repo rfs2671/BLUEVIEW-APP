@@ -432,7 +432,6 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     ("test_cs_attribution.py", "daily_jobsite"),
     ("test_cs_attribution.py", "activities"),
     ("test_osha_cert_type_is_stored.py", "class_by_key"),
-    ("test_public_signature_guard.py", "LOGBOOK_SIGNATURE_REQUIRES_AUTH"),
     ("test_superintendent_log.py", "unsafe_conditions"),
     ("test_superintendent_log.py", "cs_applicable_items"),
 

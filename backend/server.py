@@ -24910,19 +24910,37 @@ async def record_signature_event(
     # fields a gap is reconciled by. Without them a failure line names a Mongo
     # id and an auditor still has to go back to the database to learn which
     # jobsite and which day he is looking at.
-    _log_type = None
-    _project_id = None
-    _date = None
-    if str(data.document_type or "") == "logbook" and data.document_id:
-        try:
-            _doc = await db.logbooks.find_one(
-                {"_id": to_query_id(data.document_id)},
-                {"log_type": 1, "project_id": 1, "date": 1})
-            _log_type = (_doc or {}).get("log_type")
-            _project_id = (_doc or {}).get("project_id")
-            _date = (_doc or {}).get("date")
-        except Exception as _e:  # pragma: no cover
-            logger.warning(f"[signature] log type lookup failed: {_e!r}")
+    #
+    # ── AND THE SAME READ IS THE TENANT CHECK ───────────────────────────────
+    #
+    # THIS ROUTE ONCE TOOK ANY document_type AND ANY document_id FROM ANY
+    # SIGNED-IN ACCOUNT (security audit B2, 2026-10-13). The logbook was read
+    # for its log type and never checked for existence, project or company, so
+    # an account in company B could append a row to company A's ledger -- and
+    # a row on a logbook satisfies sweep_signature_ledger_gaps, so a stranger's
+    # row could hide a real gap. Every app caller (13 editors, via
+    # signatureAudit.js) sends 'logbook', so that is the only type accepted;
+    # the pre-shift affirmation ledger is written by the gate server-side and
+    # by nothing else. FAILS CLOSED: a lookup that errors is a refusal, not a
+    # write with no log type.
+    if str(data.document_type or "") != "logbook" or not data.document_id:
+        raise HTTPException(status_code=400, detail="Unsupported document type.")
+    _doc = await db.logbooks.find_one(
+        {"_id": to_query_id(data.document_id)},
+        {"log_type": 1, "project_id": 1, "date": 1})
+    if not _doc:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    _log_type = _doc.get("log_type")
+    _project_id = _doc.get("project_id")
+    _date = _doc.get("date")
+    # NOT _assert_project_access: like create_logbook, no ACTIVE_PROJECT_FILTER,
+    # so a log on a project that is not active can still record its signature.
+    _project = await db.projects.find_one({"_id": to_query_id(_project_id)}) \
+        if _project_id else None
+    if not _project:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    if not project_access_ok(_project, str(_project_id), current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
     _snapshot = attach_attestation(data.content_snapshot, _log_type)
 
     # ── THE ACTOR IS KNOWN HERE AND NOWHERE BELOW ───────────────────────────
@@ -24976,103 +24994,20 @@ async def record_signature_event(
     return {"event_id": event_id, "message": "Signature event recorded"}
  
  
-@api_router.post("/signature-events/public")
-async def record_public_signature_event(data: dict, request: Request):
-    """Record a signature event from public endpoints (NFC check-in).
-    No auth required — used by checkin.html worker registration."""
-    
-    ip_address = request.client.host if request.client else None
-    
-    required = ["document_type", "document_id", "event_type", "signer_name", "signature_data", "content_snapshot"]
-    for field in required:
-        if field not in data:
-            raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+# ── POST /signature-events/public WAS HERE, AND IS GONE ON PURPOSE ─────────
+#
+# REMOVED 2026-10-13 (security audit B2). It took NO AUTH and wrote any
+# document_type but 'logbook' with any document_id and any `worker_id`, and
+# stamped the row written_by="gate" -- the marker a real turnstile
+# affirmation carries. The pre-shift sheet prints a count of distinct signer
+# ids under (project_id, date), so anyone holding a project id could raise
+# that number on another company's filed sheet. Nothing called it: the gate
+# writes its affirmation rows server-side (create_signature_event at the
+# affirm step). A signature from an unauthenticated surface must be written
+# by the server route that authenticates that surface, never by a generic
+# public ledger write. tests/test_signature_ledger_tenant_scope.py.
 
-    # ── A LOGBOOK MAY NOT BE SIGNED THROUGH THIS ENDPOINT ───────────────────
-    #
-    # THE AUTHENTICATED ENDPOINT INJECTS THE ATTESTATION; THIS ONE CANNOT.
-    # POST /signature-events resolves the log type off the document and stores
-    # the sentence printed above the signature, so a signer's record says what
-    # they were shown. This endpoint takes `content_snapshot` from the request
-    # body and stores it verbatim -- correct for its callers today, which are
-    # the NFC gate paths, where the affirmation writes its own event with its
-    # own server-held wording.
-    #
-    # THE FAILURE MODE IS SILENCE, WHICH IS WHY THIS REFUSES RATHER THAN WARNS.
-    # A logbook signed here would write cleanly: no error, a computed hash, a
-    # ledger that looks complete -- and a snapshot with no attestation key,
-    # which attestation_of reads as PREDATES_CAPTURE. That state is reserved
-    # for events written BEFORE capture existed. A 2027 signature would be
-    # indistinguishable from a 2026 one, and the marker built to be honest
-    # about old records would be quietly lying about new ones.
-    #
-    # FOUR THINGS WOULD OTHERWISE ROUTE A LOGBOOK HERE, and none is far-fetched:
-    #
-    #   1. a worker signing the pre-shift SHEET rather than affirming a stored
-    #      stroke;
-    #   2. a site-device flow pointed at this endpoint for convenience, because
-    #      it needs no auth;
-    #   3. a fourth log type gaining an attestation -- three of twelve carry one
-    #      today, and test_attestation_capture.py asserts that count so a fourth
-    #      is noticed;
-    #   4. the superintendent log's alternate-signer work, where item 8's
-    #      competent person and item 9's incoming CS each need a signature from
-    #      someone who is not the document's author.
-    #
-    # THE FULL FIX IS DELIBERATELY NOT BUILT. Injecting here would mean a
-    # public, unauthenticated endpoint reading db.logbooks on every gate
-    # check-in to answer a question nothing currently asks. This costs nothing,
-    # because nothing legitimate sends a logbook here.
-    #
-    # THE DETAIL CARRIES PROSE, WHICH IS A DEPARTURE FROM THE gateCopy RULE AND
-    # DELIBERATE. That rule exists because a CP must not read the server's
-    # English; this refusal has no CP and no screen. Its reader is whoever is
-    # building scenario 1 to 4 in a year's time, and they should land on the
-    # reason rather than on a bare 400.
-    if str(data.get("document_type") or "").strip().lower() == "logbook":
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "LOGBOOK_SIGNATURE_REQUIRES_AUTH",
-                "reason": (
-                    "A logbook signature must go through the authenticated "
-                    "endpoint POST /api/signature-events, which resolves the "
-                    "log type from the document and stores the attestation "
-                    "printed above the signature. This endpoint stores the "
-                    "snapshot the caller sends, so a logbook signed here would "
-                    "record no attestation and would be indistinguishable from "
-                    "an event written before attestation capture existed. See "
-                    "lib/logbook/attestations.py and the followups entry "
-                    "'POST /signature-events/public gets no attestation "
-                    "injection'."
-                ),
-            },
-        )
-    
-    event_id = await create_signature_event(
-        document_type=data["document_type"],
-        document_id=data["document_id"],
-        event_type=data["event_type"],
-        signer_name=data["signer_name"],
-        signer_role=data.get("signer_role", "worker"),
-        signer_user_id=data.get("worker_id", "anonymous"),
-        signature_data=data["signature_data"],
-        content_snapshot=data["content_snapshot"],
-        device_info=data.get("device_info"),
-        ip_address=ip_address,
-        # The gate's own device and IP, at the turnstile, at the moment the
-        # worker affirmed. Contemporaneous by construction — this endpoint has
-        # no offline path and no derivation can reach it (a logbook is refused
-        # above), so the marker is not a claim it has to earn.
-        signature_key=signature_ledger_key(
-            data["document_type"], data["document_id"], data["event_type"],
-            data["signature_data"]),
-        provenance=contemporaneous_provenance(written_by="gate"),
-    )
 
-    return {"event_id": event_id}
- 
- 
 @api_router.get("/signature-events/document/{document_type}/{document_id}")
 async def get_signature_events_for_document(
     document_type: str,

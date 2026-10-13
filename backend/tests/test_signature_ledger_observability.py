@@ -144,9 +144,12 @@ class _LogbooksColl:
 
 
 class _DB:
-    def __init__(self, events=None, logs=None):
+    def __init__(self, events=None, logs=None, projects=None):
         self.signature_events = events or _EventsColl()
         self.logbooks = _LogbooksColl(logs)
+        # The endpoint now checks the caller may touch the logbook's project
+        # (test_signature_ledger_tenant_scope.py); find_one by _id suffices.
+        self.projects = _LogbooksColl(projects)
 
 
 # ── 1. the insert fails ─────────────────────────────────────────────────────
@@ -228,12 +231,14 @@ class TheEndpointFailureNamesTheActor(unittest.TestCase):
             _EventsColl(insert_raises=RuntimeError("mongo down")),
             [{"_id": "LB777", "log_type": "preshift_signin",
               "project_id": "PRJ42", "date": "2026-08-17"}],
+            projects=[{"_id": "PRJ42", "company_id": "CO1"}],
         )
         with patch.object(S, "db", db), patch.object(S.logger, "error") as err:
             with self.assertRaises(Exception):
                 asyncio.run(S.record_signature_event(
                     payload, _Req(),
-                    {"id": "u9", "role": "cp", "full_name": "R. Ruiz"},
+                    {"id": "u9", "role": "cp", "full_name": "R. Ruiz",
+                     "company_id": "CO1"},
                 ))
             return _errors(err)
 
