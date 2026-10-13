@@ -21,7 +21,7 @@ NO_JOBS_TEXT = "Levelog Assistant here. You don't have any jobs in Levelog yet."
 MENU_EXPIRED_TEXT = "Which job did you mean? Name the address and I'll answer."
 
 JOB_MEMORY_SECONDS = 30 * 60      # the last job used in this DM
-MENU_SECONDS = 10 * 60            # how long a "Which job?" menu stays open
+MENU_SECONDS = 30 * 60            # a "Which job?" menu: 30 min from FIRST asked
 MENU_MAX = 9
 # Up to this many jobs, an all-jobs answer gets message excerpts too; above
 # it, counts only — but always every job.
@@ -243,7 +243,9 @@ def parse_menu_choice(body: Any, count: int) -> Optional[int]:
     return n - 1 if 1 <= n <= min(count, MENU_MAX) else None
 
 
-MENU_AGAIN_TEXT = "Reply with the number or the address."
+#: A message that asks nothing and names no job (not "Which job?").
+NOT_A_QUESTION_TEXT = "Not sure what you need. Ask me about a job, e.g. \"what's open at 588?\""
+MENU_AGAIN_TEXT = "Reply with the number or the address — or \"never mind\"."
 NUDGE_TEXT = "I'm here. Ask about a job and I'll check it."
 
 # Answers that are not what was asked for: the model failed or its wording
