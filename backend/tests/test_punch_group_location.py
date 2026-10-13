@@ -69,6 +69,14 @@ class GroupLocations(_Walk):
         self.assertEqual((self.item(1)["area"], self.item(2)["area"], self.item(3)["area"]),
                          ("Apt 4F", "lobby", "roof"))
 
+    def test_a_numbered_place_is_that_photos(self):
+        # Codex on #783: "#2 lobby", then "all roof": #2 stays the lobby.
+        self.photos("a", "b", "c")
+        self._turn("#2 lobby")
+        (out,) = self._turn("all roof")
+        self.assertEqual(out, "Set roof for #1, #3 (2 photos).")
+        self.assertEqual(self.item(2)["area"], "lobby")
+
     def test_numbers(self):
         self.photos(*[f"x{i}" for i in range(1, 6)])
         (out,) = self._turn("#2-4 roof")
@@ -115,25 +123,38 @@ class AWalkFromBefore(_Walk):
 
     projects = (P588,)
 
-    def test_read_again_once_then_asked(self):
+    def test_a_bare_word_on_one_photo_stays_that_photos(self):
+        # Codex on #783: "roof" on #3 may have been a reply to #3 -- never
+        # spread to #1 and #2 by the repair.
         self.photos = GroupLocations.photos.__get__(self)
         self.photos("a", "b", "c", "d", "e")
         s = self.sess()
         s.pop("group_loc_v2", None)
-        # The old rule put "roof" on #3 only, "cellar" on #5 only.
         s["items"][2].update(floor="roof", area="roof")
-        s["items"][4].update(floor="cellar", area="cellar")
-        s["status"] = "locating"
-        s["asking"] = 1
+        s["status"], s["asking"] = "locating", 1
         out = self._turn("skip")
-        self.assertEqual(out[0], "\n".join([
-            "Your location messages, applied to the photos before them:",
-            "Set roof for #1–#3 (3 photos).", "Set cellar for #4, #5 (2 photos).",
-            "Reply 'undo' to take it back."]))
-        self.assertEqual([self.item(n)["area"] for n in range(1, 6)],
-                         ["roof", "roof", "roof", "cellar", "cellar"])
-        self.assertIn("(draft)", out[1])
+        self.assertEqual(len(out), 1)                                   # no repair message
+        self.assertIn("(draft)", out[0])
+        self.assertEqual([self.item(n).get("area") for n in (1, 2, 3)],
+                         [punch.UNKNOWN, punch.UNKNOWN, "roof"])
         self.assertTrue(self.sess()["group_loc_v2"])
+
+    def test_the_group_ends_at_a_place_from_a_message(self):
+        # "roof" on #2 (a message, maybe a reply), then "all cellar" kept on #4:
+        # cellar is for #3 and #4 only.
+        self.photos = GroupLocations.photos.__get__(self)
+        self.photos("a", "b", "c", "d")
+        s = self.sess()
+        s.pop("group_loc_v2", None)
+        s["items"][1].update(floor="roof", area="roof")
+        s["items"][3]["notes"] = [{"text": "all cellar", "at": None}]
+        out = self._turn("e", photo=True)
+        self.assertIn("Set cellar for #3, #4 (2 photos).", out[0])
+        self.assertEqual(self.item(1).get("area"), punch.UNKNOWN)
+        # The next group starts after #4 (Codex on #783): "roof" now is #5 only.
+        (said,) = self._turn("all roof")
+        self.assertEqual(said, "Set roof for #5 (1 photo).")
+        self.assertEqual(self.item(4)["area"], "cellar")
 
     def test_the_old_rules_note_is_read_whole(self):
         # The old rule, "all 2nd floor interior" after photo 4: floor 2 on #4,

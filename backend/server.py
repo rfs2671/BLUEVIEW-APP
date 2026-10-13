@@ -64573,7 +64573,8 @@ async def _punch_apply_group(sess: dict, dm_chat: str, group: dict) -> bool:
         await send_whatsapp_message(dm_chat, "Those photos already have their places. "
                                              "Reply to a photo to change one.")
         return True
-    undo = [punch.set_group_location(it, loc) for it in targets]
+    undo = [punch.set_group_location(it, loc, "photo" if group["scope"] == "numbers" else "group")
+            for it in targets]
     await _punch_save(sess, items=items, loc_undo={"items": undo, "mark": sess.get("loc_mark") or 0},
                       loc_mark=mark)
     await send_whatsapp_message(dm_chat, punch.group_confirm(loc, [it["n"] for it in targets]))
@@ -64604,10 +64605,15 @@ async def _punch_repair_groups(sess: dict, dm_chat: str) -> None:
     """A walk taken before group locations (once): each location typed
     between photos is applied to the photos before it that have none."""
     undo: List[dict] = []
-    changes = punch.repair_group_locations(sess["items"], undo)
-    await _punch_save(sess, items=sess["items"], group_loc_v2=True,
-                      **({"loc_undo": {"items": undo, "mark": sess.get("loc_mark") or 0}}
+    changes, mark = punch.repair_group_locations(sess["items"], undo)
+    # The next group starts after the last one repaired (Codex on #783).
+    # A copy: the stored list is never this turn's list (a photo $push-ed
+    # later in this turn must not be counted twice).
+    await _punch_save(sess, items=[dict(i) for i in sess["items"]], group_loc_v2=True,
+                      **({"loc_undo": {"items": undo, "mark": sess.get("loc_mark") or 0},
+                          "loc_mark": max(mark, sess.get("loc_mark") or 0)}
                          if undo else {}))
+    sess["items"] = [dict(i) for i in sess["items"]]
     if changes:
         await send_whatsapp_message(dm_chat, "\n".join(
             ["Your location messages, applied to the photos before them:"]

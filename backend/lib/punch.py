@@ -1826,64 +1826,74 @@ def group_targets(items: List[dict], since_captured: int) -> List[dict]:
             and not (location_ok(it) and it.get("loc_src") != "group")]
 
 
-def set_group_location(it: dict, loc: Dict[str, Optional[str]]) -> Dict[str, Any]:
-    """Set it (from a group message); what it was, for undo."""
+def set_group_location(it: dict, loc: Dict[str, Optional[str]],
+                       src: str = "group") -> Dict[str, Any]:
+    """Set it; what it was, for undo. `src` "group" (a group message: a
+    later group may set it again) or "photo" ("#2 lobby": that photo's own,
+    never overwritten by a group -- Codex on #783)."""
     before = {k: it.get(k) for k in ("floor", "area", "room", "loc_src")}
     for k in ("floor", "area", "room"):
         it.pop(k, None)
     merge_location(it, loc)
-    it["loc_src"] = "group"
+    it["loc_src"] = src
     return {"captured": it.get("captured"), **before}
 
 
+def _group_words_location(text: Any) -> Optional[Dict[str, Optional[str]]]:
+    """The place of a message that SAYS it is for a group ("all 2nd floor
+    interior", "these are all roof"), else None."""
+    t = str(text or "")
+    g = read_group_location(t)
+    if g and g["scope"] == "group" and _GROUP_WORDS.match(t.strip()):
+        return g["location"]
+    return None
+
+
 def repair_group_locations(items: List[dict], undo: Optional[List[dict]] = None
-                           ) -> List[Tuple[Dict[str, Optional[str]], List[int]]]:
-    """A walk taken before group locations: each location typed between
-    photos was put on the photo just before it. Under the rule it is for
-    every photo since the previous one: here it is applied to those that
-    have none (never over a place). Returns [(location, numbers set)]."""
+                           ) -> Tuple[List[Tuple[Dict[str, Optional[str]], List[int]]], int]:
+    """A walk taken before group locations. Only a message that SAYS it is
+    for a group is applied to the photos before it ("all 2nd floor
+    interior", kept by the old rule as a note on the last photo, or as a
+    wordless photo's caption): to those since the previous location
+    message that have none, never over a place. A place put on one photo by
+    a bare word ("roof") could have been a reply to that photo, so it stays
+    that photo's (Codex on #783) -- and ends the group before it. Returns
+    ([(location, numbers set)], the last such message's photo: the
+    boundary for the next group)."""
     out = []
+    mark = 0
     pending: List[dict] = []
     for it in sorted((i for i in items if i.get("status", "draft") != "dropped"),
                      key=lambda i: i.get("captured") or 0):
-        # The old rule kept a location message's words beyond what it could
-        # read as a NOTE on that photo ("all 2nd floor interior": floor 2,
-        # and the note): the note is the message -- read whole, then gone.
+        loc = None
         for note in list(it.get("notes") or []):
-            g = read_group_location(note.get("text") if isinstance(note, dict) else note)
-            if g and g["scope"] == "group":
-                for k in ("floor", "area", "room"):
-                    it.pop(k, None)
-                merge_location(it, g["location"])
+            loc = _group_words_location(note.get("text") if isinstance(note, dict) else note)
+            if loc:
                 it["notes"].remove(note)
                 if not it["notes"]:
                     it.pop("notes")
                 break
         said = it.get("said") or it.get("text") or ""
-        own = _loc(said)
-        from_message = location_ok(it) and not (own.get("floor") or own.get("area")) \
-            and it.get("loc_src") != "group"
-        as_caption = read_group_location(said)
-        if as_caption and as_caption["scope"] == "group" and _GROUP_WORDS.match(str(said)):
-            # "all 2nd floor interior" taken as a wordless photo's caption by
-            # the old rule: the place for the group, read whole.
-            for k in ("floor", "area", "room"):
-                it.pop(k, None)
-            merge_location(it, as_caption["location"])
-            from_message = True
-        if not location_ok(it):
-            pending.append(it)
-            continue
-        if from_message and pending:
-            loc = {k: it.get(k) for k in ("floor", "area", "room") if it.get(k) not in (None, UNKNOWN)}
-            ns = []
+        if loc is None:
+            loc = _group_words_location(said)
+        if loc:
+            before = set_group_location(it, loc)
+            if undo is not None:
+                undo.append(before)
+            ns = [it["n"]]
             for p in pending:
                 before = set_group_location(p, loc)
                 if undo is not None:
                     undo.append(before)
                 ns.append(p["n"])
-            out.append((loc, sorted(ns + [it["n"]])))
+            out.append((loc, sorted(ns)))
+            pending, mark = [], it.get("captured") or 0
+            continue
+        if not location_ok(it):
+            pending.append(it)
+            continue
+        own = _loc(said)
+        if not (own.get("floor") or own.get("area")) and it.get("loc_src") != "group":
+            # A place from a later message, not its caption: a boundary.
             pending = []
-        elif from_message:
-            pending = []
-    return out
+    return out, mark
