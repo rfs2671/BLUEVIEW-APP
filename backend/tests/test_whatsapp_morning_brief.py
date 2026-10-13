@@ -887,3 +887,29 @@ class TargetLayout(unittest.TestCase):
         self.assertTrue(text.startswith("*Tue Oct 13*"), text)
         self.assertIn("📅 *Today*\n• 7am Concrete pour", text)
         self.assertNotIn("Later this week", text)
+
+
+class Budgets(unittest.TestCase):
+
+    def test_later_this_week_is_capped_across_the_whole_brief(self):
+        events = [{"project_id": f"p{j}", "date": f"2026-10-{14 + i}", "time": "09:00",
+                   "title": f"J{j} event {i}"} for j in range(10) for i in range(3)]
+        events += [{"project_id": None, "date": "2026-10-16", "time": None, "title": "call"},
+                   {"project_id": "p9", "date": "2026-10-13", "time": "07:00", "title": "pour"}]
+        by = wa_brief.events_by_job(events, TUE)
+        shown = [l for _t, later in by.values() for l in later if "more in" not in l]
+        self.assertEqual(len(shown), wa_brief.MAX_LATER)
+        # the five soonest: Wednesday's, one from each of jobs 0-4
+        self.assertEqual(by["p0"][1], ["• Wed 9am J0 event 0", "• +2 more in the Levelog app"])
+        self.assertEqual(by["p4"][1], ["• Wed 9am J4 event 0", "• +2 more in the Levelog app"])
+        self.assertEqual(by["p9"][0], ["• 7am pour"])                 # today never cut
+        self.assertEqual(by["p9"][1], ["• +3 more in the Levelog app"])
+        self.assertEqual(by[None][1], ["• +1 more in the Levelog app"])
+        total_more = sum(int(l.split("+")[1].split()[0]) for _t, later in by.values()
+                         for l in later if "more in" in l)
+        self.assertEqual(total_more + len(shown), 31)
+
+    def test_companies_that_shorten_alike_keep_their_names(self):
+        line = wa_brief.headcount_line(_ci(2, "ABC Plumbing") + _ci(1, "ABC Electrical")
+                                       + _ci(1, "Arkon Construction LLC"))
+        self.assertEqual(line, "👷 4 on site · ABC Plumbing 2 · ABC Electrical 1 · Arkon 1")

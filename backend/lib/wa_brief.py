@@ -532,7 +532,13 @@ def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
     for c in by_worker.values():
         counts[c] = counts.get(c, 0) + 1
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-    parts = [f"{short_company(name)} {n}" for name, n in ordered[:MAX_COMPANIES]]
+    shown = ordered[:MAX_COMPANIES]
+    short = [short_company(name) for name, _n in shown]
+    # Two companies that shorten alike ('ABC Plumbing', 'ABC Electrical')
+    # keep their full names.
+    clash = {x for x in short if short.count(x) > 1}
+    parts = [f"{name if s in clash else s} {n}"
+             for (name, n), s in zip(shown, short)]
     more = len(ordered) - MAX_COMPANIES
     if more > 0:
         parts.append(f"+{more} more")
@@ -554,28 +560,53 @@ def _time(t: Optional[str]) -> str:
     return f"{h % 12 or 12}{':%02d' % m if m else ''}{'am' if h < 12 else 'pm'}"
 
 
-def event_sections(events: Iterable[Dict[str, Any]], today: date
-                   ) -> Tuple[List[str], List[str]]:
+def _event_key(e: Dict[str, Any]) -> Tuple[str, str, str]:
+    return (str(e.get("date") or ""), str(e.get("time") or "99:99"), str(e.get("title") or ""))
+
+
+def _event_day(e: Dict[str, Any]) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(e.get("date"))[:10])
+    except ValueError:
+        return None
+
+
+def event_sections(events: Iterable[Dict[str, Any]], today: date,
+                   keep: Optional[set] = None) -> Tuple[List[str], List[str]]:
     """Today: ['• 7am Concrete pour']; Later this week: ['• Thu 9am
-    Electrical inspection']. Events in date and time order."""
-    def key(e):
-        return (str(e.get("date") or ""), str(e.get("time") or "99:99"), str(e.get("title") or ""))
-    now_, later = [], []
-    for e in sorted(events, key=key):
-        try:
-            d = date.fromisoformat(str(e.get("date"))[:10])
-        except ValueError:
-            continue
+    Electrical inspection']. Events in date and time order. Later events
+    are capped at MAX_LATER, or, given `keep` (ids of the later events the
+    whole brief has room for), limited to those; the rest are '+N more'."""
+    now_, later, extra = [], [], 0
+    for e in sorted(events, key=_event_key):
+        d = _event_day(e)
         title = " ".join(str(e.get("title") or "").split())
-        if not title or d < today:
+        if d is None or not title or d < today:
             continue
         t = _time(e.get("time"))
         if d == today:
             now_.append(" ".join(x for x in ("•", t, title) if x))
-        else:
+        elif (len(later) < MAX_LATER) if keep is None else (id(e) in keep):
             later.append(" ".join(x for x in ("•", d.strftime("%a"), t, title) if x))
-    extra = len(later) - MAX_LATER
-    return now_, later[:MAX_LATER] + ([f"• +{extra} more in the Levelog app"] if extra > 0 else [])
+        else:
+            extra += 1
+    return now_, later + ([f"• +{extra} more in the Levelog app"] if extra > 0 else [])
+
+
+def events_by_job(events: Iterable[Dict[str, Any]], today: date
+                  ) -> Dict[Optional[str], Tuple[List[str], List[str]]]:
+    """{project_id (None for one's own reminders): (today, later)}. Later
+    this week holds at most MAX_LATER events across the whole brief, the
+    soonest first; a job with events cut says '+N more'."""
+    events = list(events)
+    later = sorted((e for e in events if (_event_day(e) or today) > today
+                    and str(e.get("title") or "").strip()), key=_event_key)
+    keep = {id(e) for e in later[:MAX_LATER]}
+    groups: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for e in events:
+        pid = e.get("project_id")
+        groups.setdefault(str(pid) if pid else None, []).append(e)
+    return {k: event_sections(v, today, keep) for k, v in groups.items()}
 
 
 # ── The message: a fixed template ───────────────────────────────────────────

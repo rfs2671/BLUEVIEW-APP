@@ -50388,12 +50388,10 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     except Exception as e:
         logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
         events = []
-    today = wa_brief.local_now(now).date()
+    by_job = wa_brief.events_by_job(events, wa_brief.local_now(now).date())
     for p, job in zip(projects, jobs):
-        job["today"], job["later"] = wa_brief.event_sections(
-            [e for e in events if str(e.get("project_id")) == str(p.get("_id"))], today)
-    own_today, own_later = wa_brief.event_sections(
-        [e for e in events if not e.get("project_id")], today)
+        job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
+    own_today, own_later = by_job.get(None, ([], []))
     return wa_brief.compose(now, jobs, {"today": own_today, "later": own_later})
 
 
