@@ -784,11 +784,12 @@ class Weekends(_Base):
         self.assertEqual(len(self.rows()), 1)
 
     def test_the_rule(self):
-        from datetime import date
-        self.assertTrue(wa_chase.chases_on(date(2026, 10, 9), {}))
-        self.assertFalse(wa_chase.chases_on(date(2026, 10, 10), {}))
-        self.assertFalse(wa_chase.chases_on(date(2026, 10, 11), {"chase_weekends": False}))
-        self.assertTrue(wa_chase.chases_on(date(2026, 10, 11), {"chase_weekends": True}))
+        # Fri Oct 9 at noon: chasing. Sat noon: Shabbos. Sun noon: Sunday.
+        fri, sat, sun = _et(12, 0, day=9), _et(12, 0, day=10), _et(12, 0, day=11)
+        self.assertIsNone(wa_chase.quiet(fri, {}))
+        self.assertEqual(wa_chase.quiet(sat, {}), "shabbos")
+        self.assertEqual(wa_chase.quiet(sun, {"chase_weekends": False}), "sunday")
+        self.assertIsNone(wa_chase.quiet(sun, {"chase_weekends": True}))   # the old switch on
 
 
 class TheWeekendSwitch(_Base):
@@ -796,11 +797,16 @@ class TheWeekendSwitch(_Base):
     def test_admin_sets_it_and_the_view_shows_it(self):
         with patch.object(server, "db", self.db):
             v = _run(server.get_project_whatsapp_settings("proj_a", current_user=ADMIN))
-            self.assertIs(v["chase_weekends"], False)
+            self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (True, True))
+            v = _run(server.patch_project_whatsapp_alerts(
+                "proj_a", {"chase_sundays_off": False}, current_user=ADMIN))
+            self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (True, False))
+            # An app from before the two switches sends the old one: both.
             v = _run(server.patch_project_whatsapp_alerts(
                 "proj_a", {"chase_weekends": True}, current_user=ADMIN))
-            self.assertIs(v["chase_weekends"], True)
-            for bad in ({"chase_weekends": "yes"}, {"chase_weekend": True}):
+            self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (False, False))
+            for bad in ({"chase_weekends": "yes"}, {"chase_weekend": True},
+                        {"chase_shabbos_off": "no"}):
                 with self.assertRaises(HTTPException) as e:
                     _run(server.patch_project_whatsapp_alerts("proj_a", bad,
                                                               current_user=ADMIN))
@@ -810,7 +816,8 @@ class TheWeekendSwitch(_Base):
                     "proj_a", {"chase_weekends": False}, current_user=PM))
             self.assertEqual(e.exception.status_code, 403)
         settings = self.db.notification_preferences.rows[0]["whatsapp_project"]
-        self.assertIs(settings["chase_weekends"], True)
+        self.assertEqual((settings["chase_shabbos_off"], settings["chase_sundays_off"]), (False, False))
+        self.assertNotIn("chase_weekends", settings)
 
 
 class The588Migration(_Base):

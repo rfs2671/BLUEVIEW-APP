@@ -32,7 +32,11 @@ from lib import multilang
 ACTIONS = ("add_job", "add_sub", "add_person", "set_punch_contact", "set_setting",
            "undo", "unsupported", "none")
 #: Settings a DM can change: what it is, and the values it takes.
-SETTINGS = {"chase_weekends": (True, False), "punch_sends": ("shadow", "live")}
+SETTINGS = {"punch_sends": ("shadow", "live")}
+#: Chasing's rest days (a job's two switches, lib/wa_chase): which ones a
+#: request is about. "ask": Shabbos or "weekends" without saying whether
+#: Sunday is included -- asked once.
+REST_DAYS = ("shabbos", "sunday", "both", "ask")
 BOROUGHS = ("Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island")
 GC_TEAM = "GC team"
 UNDO_MINUTES = 10
@@ -61,9 +65,12 @@ Reply with ONE JSON object, nothing else:
  "name": a person's name,
  "role": the person's role if said ("super", "foreman", "pm"),
  "phone": the phone number exactly as written,
- "setting": "chase_weekends" (reminding subs on Saturday/Sunday) or "punch_sends" (punch lists
-            really sent, or only shown to them as practice),
- "value": for chase_weekends true/false; for punch_sends "live" (for real) or "shadow" (practice),
+ "setting": "rest" (no reminding subs over Shabbos / Yom Tov and/or Sundays) or "punch_sends"
+            (punch lists really sent, or only shown to them as practice),
+ "days": for rest: "shabbos" (Shabbos / Yom Tov only), "sunday", "both", or "ask" when they did
+         not say whether Sunday is included ("stop chasing on shabbos", "no chasing weekends"),
+ "off": for rest: true = no reminders then, false = reminders allowed then,
+ "value": for punch_sends "live" (for real) or "shadow" (practice),
  "what": for "unsupported", the thing they asked in 2-4 words}
 Leave out keys you do not know. Never invent a value they did not say.
 
@@ -72,7 +79,8 @@ Leave out keys you do not know. Never invent a value they did not say.
 - add_sub: a company working on a job. "put power direct on 588 they're the electrician".
 - add_person: someone's name and number. "chris is our super his number is 718 555 1234".
 - set_punch_contact: who gets a sub's punch lists. "dov handles punch for power direct".
-- set_setting: "stop bugging people on weekends at 588" -> chase_weekends false at job 588;
+- set_setting: "stop bugging people on weekends at 588" -> rest, days ask, off true, job 588;
+  "shabbos only" -> days shabbos; "sundays too" / "whole weekend" -> days both;
   "start sending punch lists for real at 588" -> punch_sends live.
 - undo: "undo that", "never mind", "wait no", "cancel", "olvídalo".
 - unsupported: anything else they want CHANGED (delete a job, remove a user, rename...).
@@ -214,13 +222,18 @@ def clean(raw: Any) -> Dict[str, Any]:
             out["phone"] = p
         else:
             out["bad_phone"] = True
-    if action == "set_setting":
+    if action == "set_setting" and str(raw.get("setting") or "").strip() in ("rest", "chase_weekends"):
+        if str(raw.get("setting")).strip() == "rest":
+            days, off = raw.get("days"), raw.get("off")
+        else:                          # the model's "chase on weekends" true / false
+            v = {"true": True, "false": False, "on": True, "off": False}.get(str(raw.get("value")).strip().lower(), raw.get("value"))
+            days, off = ("both", False) if v is True else ("ask", True) if v is False else (None, None)
+        if days in REST_DAYS and isinstance(off, bool):
+            out["setting"], out["days"], out["off"] = "rest", days, off
+    elif action == "set_setting":
         s = str(raw.get("setting") or "").strip()
         if s in SETTINGS:
             v = raw.get("value")
-            if s == "chase_weekends":
-                v = {"true": True, "false": False, "on": True, "off": False}.get(
-                    str(v).strip().lower(), v)
             if v in SETTINGS[s]:
                 out["setting"], out["value"] = s, v
     if action == "add_job" and out.get("address"):
@@ -292,8 +305,66 @@ _PUNCH_CONTACT = [
 ]
 _JOB_TAIL = re.compile(r"\b(?:at|on|for|en|in|de|para)\s+(?P<job>" + _HOUSE +
                        r"(?:\s+[a-z]+){0,3}|[a-z]+(?:\s+[a-z]+){0,2})\s*$")
-_WEEKEND = re.compile(r"weekend|saturday|sunday|sat and sun|fin(?:es)? de semana|sabado|domingo"
-                      r"|shabbos|shabbat|shabes")
+_SHABBOS = re.compile(r"\b(?:shabbos|shabbat|shabes|shabbas|shobbos|sabbath|saturdays?|friday nights?|"
+                      r"yom ?tovs?|yontif|yuntif|chag|chagim|jewish holidays?|sabados?)\b")
+_SUNDAY = re.compile(r"\b(?:sundays?|domingos?)\b")
+_WEEKEND_WORD = re.compile(r"\bweekends?\b|sat and sun|fin(?:es)? de semana")
+_WHOLE = re.compile(r"\b(?:whole|all|entire|full|both days|todo el)\b[^.]{0,12}(?:weekend|fin de semana)"
+                    r"|\bsat(?:urday)?s? and sun(?:day)?s?\b|\bboth\b")
+# The days themselves, so "on shabbos" is not read as the job.
+_REST_WORDS = re.compile(r"\b(?:on|over|during|for|in|los|el|the|whole|all|entire)?\s*(?:"
+                         + _SHABBOS.pattern + "|" + _SUNDAY.pattern + "|" + _WEEKEND_WORD.pattern
+                         + r")(?:\s+(?:only|too|also|is fine|are fine|off))*")
+_ONLY = re.compile(r"\b(?:only|just|solo|nomas|nada mas)\b")
+_TOO = re.compile(r"\b(?:too|also|as well|tambien|and)\b")
+
+
+def rest_request(t: str) -> Optional[tuple]:
+    """(days, off) a message asks of chasing's rest days, else None.
+    days: "shabbos" | "sunday" | "both" | "ask"; off: no chasing then.
+
+    Clear: "shabbos only" -> shabbos; "sundays too", "whole weekend",
+    "saturday and sunday" -> both; "no chasing on sundays" -> sunday.
+    Not clear: "stop chasing on shabbos", "no chasing weekends" -> ask once.
+    Back on ("ok to chase on weekends") -> the days said, else both."""
+    shab, sun, wkend = bool(_SHABBOS.search(t)), bool(_SUNDAY.search(t)), bool(_WEEKEND_WORD.search(t))
+    if not (shab or sun or wkend):
+        return None
+    off = True if _STOP.search(t) else (False if _START.search(t) else None)
+    if off is None:
+        return None
+    if not off:
+        if shab and not sun:
+            return ("shabbos", False)
+        if sun and not shab and not wkend:
+            return ("sunday", False)
+        return ("both", False)
+    if _WHOLE.search(t) or (shab and sun) or (sun and _TOO.search(t) and (shab or wkend)):
+        return ("both", True)
+    if sun and not shab and not wkend:
+        return ("sunday", True)
+    if shab and _ONLY.search(t):
+        return ("shabbos", True)
+    return ("ask", True)
+
+
+_REST_SHABBOS = re.compile(r"^(?:\W*1\W*|(?:just|only|solo)\s+(?:shabbos|shabbat|saturday|sabado)|"
+                           r"(?:shabbos|shabbat|saturday|sabado)(?:\s+(?:only|just|solo))?|no sunday|"
+                           r"not sunday|sunday is fine|sundays are fine|sundays ok)\W*$")
+_REST_BOTH = re.compile(r"^(?:\W*2\W*|(?:yes\s+)?sundays?\s+too|(?:and\s+)?sundays?(?:\s+(?:too|also))?|"
+                        r"both|both days|whole weekend|all weekend|the whole weekend|weekend|"
+                        r"(?:shabbos|shabbat|saturday)\s+and\s+sundays?|domingo tambien|los dos)\W*$")
+
+
+def rest_choice(text: Any) -> Optional[str]:
+    """The answer to "Just Shabbos (Fri evening to Sat night), or Sunday
+    too?": "shabbos", "both", or None."""
+    t = _fold(text)
+    if _REST_SHABBOS.match(t):
+        return "shabbos"
+    if _REST_BOTH.match(t):
+        return "both"
+    return None
 _STOP = re.compile(r"\b(?:stop|no|no more|dont|do not|turn off|off|quit|quiet|leave .* alone"
                    r"|deja de|para de|sin|nada|never)\b")
 _START = re.compile(r"\b(?:start|turn on|on|ok to|okay to|go ahead and|resume|empieza|activa|si)\b")
@@ -412,11 +483,10 @@ def rules(text: Any) -> Dict[str, Any]:
                 company, job = at.group("company").strip(), at.group("job").strip()
             return clean({"action": "set_punch_contact", "name": m.group("name"),
                           "company": company, "job": job})
-    if _WEEKEND.search(t):
-        value = False if _STOP.search(t) else (True if _START.search(t) else None)
-        if value is not None:
-            return clean({"action": "set_setting", "setting": "chase_weekends", "value": value,
-                          "job": _job_hint(t)})
+    rest = rest_request(t)
+    if rest:
+        return clean({"action": "set_setting", "setting": "rest", "days": rest[0],
+                      "off": rest[1], "job": _job_hint(_REST_WORDS.sub(" ", t))})
     if "punch" in t and _PUNCH_PRACTICE.search(t):
         return clean({"action": "set_setting", "setting": "punch_sends", "value": "shadow",
                       "job": _job_hint(t)})
@@ -596,12 +666,13 @@ TEXT = {
         "contact_done": "Done — {name} gets {company}'s punch lists at {job}.",
         "sub_not_on_job": "{company} isn't on {job}. Add them first, then I can set their punch contact.",
         "ask_setting": "What should I change at {job}?",
-        "weekends_off_confirm": "Stop reminding people on weekends at {job}?",
-        "weekends_on_confirm": "Remind people on weekends too at {job}?",
-        "weekends_off_done": "Done — no weekend reminders at {job}.",
-        "weekends_on_done": "Done — weekend reminders are on at {job}.",
-        "weekends_same_off": "Weekend reminders are already off at {job}.",
-        "weekends_same_on": "Weekend reminders are already on at {job}.",
+        "rest_ask": "Just Shabbos (Fri evening to Sat night), or Sunday too?",
+        "rest_done": "Done — at {job}, {state}.",
+        "rest_same": "Already set — at {job}, {state}.",
+        "rest_both_off": "no chasing over Shabbos, Yom Tov or Sundays",
+        "rest_shabbos_off": "no chasing over Shabbos and Yom Tov; Sundays are on",
+        "rest_sunday_off": "no chasing on Sundays; Shabbos and Yom Tov are on",
+        "rest_none_off": "chasing runs every day, Shabbos and Sundays too",
         "live_confirm": "This makes punch lists really go out to the subs at {job}. To confirm, type the job's address.",
         "live_done": "Done — punch lists at {job} now really go out.",
         "live_mismatch": "That didn't match the address, so nothing changed.",
@@ -661,12 +732,13 @@ TEXT = {
         "contact_done": "Listo — {name} recibe las listas de punch de {company} en {job}.",
         "sub_not_on_job": "{company} no está en {job}. Agréguelo primero y luego pongo su contacto.",
         "ask_setting": "¿Qué cambio en {job}?",
-        "weekends_off_confirm": "¿Dejo de mandar recordatorios los fines de semana en {job}?",
-        "weekends_on_confirm": "¿Mando recordatorios también los fines de semana en {job}?",
-        "weekends_off_done": "Listo — no hay recordatorios los fines de semana en {job}.",
-        "weekends_on_done": "Listo — hay recordatorios los fines de semana en {job}.",
-        "weekends_same_off": "Los recordatorios de fin de semana ya están apagados en {job}.",
-        "weekends_same_on": "Los recordatorios de fin de semana ya están prendidos en {job}.",
+        "rest_ask": "¿Solo Shabbos (viernes en la tarde a sábado en la noche), o también el domingo?",
+        "rest_done": "Listo — en {job}, {state}.",
+        "rest_same": "Ya estaba así — en {job}, {state}.",
+        "rest_both_off": "no hay recordatorios en Shabbos, Yom Tov ni domingos",
+        "rest_shabbos_off": "no hay recordatorios en Shabbos ni Yom Tov; los domingos sí",
+        "rest_sunday_off": "no hay recordatorios los domingos; Shabbos y Yom Tov sí",
+        "rest_none_off": "hay recordatorios todos los días, Shabbos y domingos también",
         "live_confirm": "Así las listas de punch de {job} se mandan de verdad a los subs. Para confirmar, escriba la dirección.",
         "live_done": "Listo — las listas de punch de {job} ahora se mandan de verdad.",
         "live_mismatch": "No coincide con la dirección, así que no cambié nada.",

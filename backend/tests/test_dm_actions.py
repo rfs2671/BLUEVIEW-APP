@@ -72,11 +72,15 @@ PHRASINGS = [
     ("give arkon's punch list to chris", "set_punch_contact", {"company": "Arkon"}),
     ("dov maneja el punch de power direct", "set_punch_contact", {"name": "Dov"}),
     ("stop bugging people on weekends at 588", "set_setting",
-     {"setting": "chase_weekends", "value": False, "job": "588"}),
-    ("no weekend reminders at 588", "set_setting", {"setting": "chase_weekends", "value": False}),
-    ("turn off weekends 588", "set_setting", {"value": False}),
-    ("ok to chase on weekends at 9 menahan", "set_setting", {"value": True, "job": "9 menahan"}),
-    ("no molestar los fines de semana en 588", "set_setting", {"value": False, "job": "588"}),
+     {"setting": "rest", "days": "ask", "off": True, "job": "588"}),
+    ("no weekend reminders at 588", "set_setting", {"setting": "rest", "days": "ask", "off": True}),
+    ("turn off weekends 588", "set_setting", {"days": "ask", "off": True}),
+    ("ok to chase on weekends at 9 menahan", "set_setting",
+     {"days": "both", "off": False, "job": "9 menahan"}),
+    ("no molestar los fines de semana en 588", "set_setting", {"days": "ask", "off": True, "job": "588"}),
+    ("no chasing on shabbos only at 588", "set_setting", {"days": "shabbos", "off": True, "job": "588"}),
+    ("no chasing sundays at 588", "set_setting", {"days": "sunday", "off": True, "job": "588"}),
+    ("no chasing the whole weekend at 588", "set_setting", {"days": "both", "off": True, "job": "588"}),
     ("start sending punch lists for real at 588", "set_setting",
      {"setting": "punch_sends", "value": "live", "job": "588"}),
     ("punch at 588 for real", "set_setting", {"value": "live", "job": "588"}),
@@ -143,7 +147,8 @@ class Reading(unittest.TestCase):
         sample = {"place": "9 Menahan St, Brooklyn", "job": "588 Thomas St",
                   "company": "Power Direct", "trade": "Electrical", "name": "Chris Weiss",
                   "first": "Chris", "options": "Chris Weiss (GC) or Chris Lopez (Arkon)",
-                  "last4": "1234", "what": "9 Menahan St is removed"}
+                  "last4": "1234", "what": "9 Menahan St is removed",
+                  "state": "no chasing over Shabbos, Yom Tov or Sundays"}
         for lang, table in dm_actions.TEXT.items():
             for key in table:
                 with self.subTest(lang=lang, key=key):
@@ -339,9 +344,9 @@ class Chat(unittest.TestCase):
 
     def test_which_job_never_a_guess(self):
         self.ident["projects"] = [self.proj, self.other]
-        which, ask = self.talk("stop bugging people on weekends", "2")
+        which, ask = self.talk("no chasing the whole weekend", "2")
         self.assertEqual(which, "Which job?\n1) 588 Thomas St\n2) 77 Water St")
-        self.assertEqual(ask, "Weekend reminders are already off at 77 Water St.")
+        self.assertEqual(ask, "Already set — at 77 Water St, no chasing over Shabbos, Yom Tov or Sundays.")
         self.assertEqual(self.talk("put power direct on thomas they're plumbers"),
                          ["Add Power Direct (Plumbing) to 588 Thomas St?"])
 
@@ -460,20 +465,24 @@ class Chat(unittest.TestCase):
     # ── 5. Settings ──────────────────────────────────────────────────────
 
     def test_weekends_off_then_undo(self):
-        self.settings()["chase_weekends"] = True
-        ask, done = self.talk("stop bugging people on weekends at 588", "yes")
-        self.assertEqual(ask, "Stop reminding people on weekends at 588 Thomas St?")
-        self.assertEqual(done, "Done — no weekend reminders at 588 Thomas St.")
-        self.assertIs(self.settings()["chase_weekends"], False)
+        self.settings()["chase_weekends"] = True            # an old "chase on weekends" on
+        ask, done = self.talk("stop bugging people on weekends at 588", "sunday too")
+        self.assertEqual(ask, "Just Shabbos (Fri evening to Sat night), or Sunday too?")
+        self.assertEqual(done, "Done — at 588 Thomas St, no chasing over Shabbos, Yom Tov or Sundays.")
+        self.assertIs(self.settings()["chase_shabbos_off"], True)
+        self.assertIs(self.settings()["chase_sundays_off"], True)
         (a,) = self.audits()
         self.assertEqual((a["details"]["before"], a["details"]["after"]),
-                         ({"chase_weekends": True}, {"chase_weekends": False}))
+                         ({"chase_shabbos_off": False, "chase_sundays_off": False},
+                          {"chase_shabbos_off": True, "chase_sundays_off": True}))
         self.assertEqual(self.talk("undo"), ["Undone — 588 Thomas St is back the way it was."])
-        self.assertIs(self.settings()["chase_weekends"], True)
+        self.assertIs(self.settings()["chase_shabbos_off"], False)
+        self.assertIs(self.settings()["chase_sundays_off"], False)
 
     def test_already_so(self):
-        self.assertEqual(self.talk("no weekend reminders at 588"),
-                         ["Weekend reminders are already off at 588 Thomas St."])
+        self.assertEqual(self.talk("no weekend reminders at 588", "both"),
+                         ["Just Shabbos (Fri evening to Sat night), or Sunday too?",
+                          "Already set — at 588 Thomas St, no chasing over Shabbos, Yom Tov or Sundays."])
 
     def test_punch_for_real_needs_the_address_typed(self):
         ask, done = self.talk("start sending punch lists for real at 588", "588 thomas st")

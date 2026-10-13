@@ -55,11 +55,15 @@ export const ALERT_SWITCHES = [
     line: 'Posts 30, 14, 7 and 1 days before a DOT permit expires, and when it expires.' },
 ];
 
-// Sub chasing (shadow mode) on Saturday and Sunday. Off unless switched on.
-export const CHASE_WEEKENDS_SWITCH = {
-  key: 'chase_weekends', label: 'Chase on weekends',
-  line: 'Sub chasing also runs on Saturday and Sunday (all four times).',
-};
+// Sub chasing's rest days: two switches, both on (no chasing) by default.
+// They replace the old "Chase on weekends" (the server carries it over).
+export const CHASE_REST_SWITCHES = [
+  { key: 'chase_shabbos_off', label: 'Shabbos / Yom Tov off',
+    line: 'No chasing from an hour before candle-lighting Friday (or before Yom Tov) '
+      + 'until an hour after nightfall. New York times.' },
+  { key: 'chase_sundays_off', label: 'Sundays off',
+    line: 'No chasing on Sunday.' },
+];
 
 export const SEND_WINDOW_OPTIONS = [
   { mode: 'anytime', label: 'Anytime' },
@@ -125,7 +129,7 @@ export function assistantView(data) {
       current: !!gc && gc.wa_group_id === g.wa_group_id,
     })),
     switches: ALERT_SWITCHES.map((s) => ({ ...s, value: data[s.key] !== false })),
-    chaseWeekends: { ...CHASE_WEEKENDS_SWITCH, value: data.chase_weekends === true },
+    restDays: CHASE_REST_SWITCHES.map((s) => ({ ...s, value: data[s.key] !== false })),
     sendWindow: data.send_window && data.send_window.mode ? data.send_window : DEFAULT_SEND_WINDOW,
   };
 }
