@@ -136,13 +136,13 @@ class EveryDmAction(_Dm, unittest.TestCase):
     def test_a_setting_by_street(self):
         with _Ctx(db=_streets()) as c:
             (r,) = self.dm(c, "ok to chase on weekends at menahan")
-        self.assertEqual(r, ["Remind people on weekends too at 9 Menahan St?"])
+        self.assertEqual(r, ["Done — at 9 Menahan St, chasing runs every day, Shabbos and Sundays too."])
 
     def test_a_setting_on_a_shared_street_asks_which_one(self):
         with _Ctx(db=_streets()) as c:
             which, ask = self.dm(c, "ok to chase on weekends at walworth", "2")
         self.assertEqual(which, ["Which one?\n1) 8 Walworth St\n2) 120 Walworth St"])
-        self.assertEqual(ask, ["Remind people on weekends too at 120 Walworth St?"])
+        self.assertEqual(ask, ["Done — at 120 Walworth St, chasing runs every day, Shabbos and Sundays too."])
 
     def test_a_sub_by_street_with_a_typo(self):
         with _Ctx(db=_streets()) as c:

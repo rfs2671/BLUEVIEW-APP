@@ -52,7 +52,7 @@ since Sun Oct 11"), by the same skip rules -- an answer since its last nudge,
 on any earlier day, skips that morning. From its second overdue day, the 4:00
 admin DM too (the owner excluded), after that day's morning nudge.
 
-WEEKENDS: Saturday and Sunday only for a project with "Chase on weekends" on
+SHABBOS / SUNDAYS: quiet over Shabbos and Yom Tov and on Sunday, by the job's two switches (quiet())
 (Project → WhatsApp → Levelog Assistant; default off). All four slots.
 """
 
@@ -135,10 +135,32 @@ def current_slot(now: datetime) -> Optional[str]:
     return hit
 
 
-def chases_on(day: date, settings: Dict[str, Any]) -> bool:
-    """Saturday and Sunday only when the project's "Chase on weekends" is
-    on (default off). All four slots."""
-    return day.weekday() < 5 or bool((settings or {}).get("chase_weekends"))
+#: A job's two rest-day switches (both on by default): no chasing or nudges
+#: over Shabbos / Yom Tov (lib/shabbos: one hour before candle-lighting
+#: through one hour after nightfall), and none on Sunday. They replace the
+#: single "Chase on weekends" switch; a job that still has only that one reads
+#: it as both (weekends on -> both off).
+SHABBOS_OFF, SUNDAYS_OFF = "chase_shabbos_off", "chase_sundays_off"
+
+
+def rest_days(settings: Dict[str, Any]) -> Dict[str, bool]:
+    """{chase_shabbos_off, chase_sundays_off} of a job's settings."""
+    s = settings or {}
+    legacy_off = s.get("chase_weekends") is not True
+    return {k: (s[k] if isinstance(s.get(k), bool) else legacy_off)
+            for k in (SHABBOS_OFF, SUNDAYS_OFF)}
+
+
+def quiet(now: datetime, settings: Dict[str, Any]) -> Optional[str]:
+    """Why nobody is chased right now: "shabbos" (Shabbos / Yom Tov), "sunday",
+    or None."""
+    from lib import shabbos
+    rd = rest_days(settings)
+    if rd[SHABBOS_OFF] and shabbos.is_quiet(now):
+        return "shabbos"
+    if rd[SUNDAYS_OFF] and shabbos.is_sunday(now):
+        return "sunday"
+    return None
 
 
 def owner_key(item: Dict[str, Any]) -> str:

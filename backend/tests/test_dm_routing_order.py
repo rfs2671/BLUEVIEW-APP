@@ -74,7 +74,7 @@ OTHER = [
      ("set up punch contact", "Which company?")),
     (("punch contact for arkon is chris", None),
      ("change the punch contact", "Which company?")),
-    (("stop bugging people on weekends at 588", "Weekend reminders are already off at 588"),
+    (("stop bugging people on weekends at 588", "Just Shabbos (Fri evening to Sat night), or Sunday too?"),
      ("stop bugging people on weekends", "Which job?")),
     (("start sending punch lists for real at 588", "This makes punch lists really go out"),
      ("start sending punch lists for real", "Which job?")),
@@ -249,8 +249,8 @@ class ActiveFlowsFirst(_Dm, unittest.TestCase):
 
     def test_a_pending_confirm_takes_the_yes(self):
         with _Ctx(db=_world()) as c:
-            ask, done = self.dm(c, "ok to chase on weekends at 588", "yes")
-        self.assertIn("588", ask[0])
+            ask, done = self.dm(c, "add 9 menahan", "yes")
+        self.assertTrue(ask[0].startswith("Found it: 9 Menahan"), ask)
         self.assertTrue(done[0].startswith("Done"), done)
 
     def test_the_which_job_menu_still_answers_a_question(self):

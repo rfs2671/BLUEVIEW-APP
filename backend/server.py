@@ -46013,7 +46013,9 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
         out["gc_declined"] = [str(x) for x in stored["gc_declined"]]
     out["send_window"] = (wa_gc.clean_send_window(stored.get("send_window"))
                           or wa_gc.default_send_window())
-    out["chase_weekends"] = stored.get("chase_weekends") is True
+    # Shabbos / Yom Tov and Sundays (lib/wa_chase.rest_days; a job with only
+    # the old "Chase on weekends" reads it as both).
+    out.update(wa_chase.rest_days(stored))
     # Punch sends: "shadow" (default: the walker sees what WOULD be posted,
     # nothing is) or "live".
     out["punch_sends"] = stored.get("punch_sends") if stored.get("punch_sends") in punch.SEND_MODES \
@@ -48758,7 +48760,7 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"items": 0, "eligible": 0, "would_chase": 0, "admin_dm": 0,
               "admin_self": 0, "no_number": 0, "stopped": 0, "outside_hours": 0, "after_slot": 0,
-              "already": 0, "group_off": 0, "weekend_off": 0, "skipped": {}}
+              "already": 0, "group_off": 0, "shabbos_off": 0, "sunday_off": 0, "skipped": {}}
     if wa_chase.disabled():
         report["disabled"] = True
         return report
@@ -48853,8 +48855,11 @@ async def _chase_tick(now: Optional[datetime] = None) -> dict:
             continue
         if pid not in settings_cache:
             settings_cache[pid] = await _whatsapp_project_settings(pid)
-        if not wa_chase.chases_on(day, settings_cache[pid]):
-            report["weekend_off"] += 1          # all four slots, Sat and Sun
+        quiet = wa_chase.quiet(now, settings_cache[pid])
+        if quiet:
+            # Shabbos / Yom Tov (an hour before candle-lighting to an hour
+            # after nightfall) or Sunday, by the job's switches.
+            report[f"{quiet}_off"] = report.get(f"{quiet}_off", 0) + 1
             continue
         if not wa_gc.in_send_window(now, settings_cache[pid].get("send_window")):
             report["outside_hours"] += 1
@@ -52128,6 +52133,12 @@ async def _dm_action_read(ident: dict, text: str) -> dict:
         # wanna set up", Mon 7:17 PM) -- never the questions assistant's
         # "Which job?".
         got = dm_actions.clean(dm_actions.rules(text))
+    elif got["action"] == "set_setting" and got.get("setting") == "rest":
+        # Shabbos / Sunday: the patterns read which days ("shabbos only",
+        # "sundays too") more surely than the model's one weekend switch.
+        mine = dm_actions.clean(dm_actions.rules(text))
+        if mine.get("setting") == "rest":
+            got = {**got, "days": mine["days"], "off": mine["off"]}
     return got
 
 
@@ -52253,7 +52264,7 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
     options = list(pending.get("options") or [])
     lang = p.get("lang") or "en"
     yn = dm_actions.yes_no(text)
-    if dm_actions.is_undo(text) or (yn is False and step != "type_address"):
+    if dm_actions.is_undo(text) or (yn is False and step not in ("type_address", "ask:days")):
         await _dm_state_clear(DM_ACTION_STATE, dm_chat)
         await _dm_say(dm_chat, lang, "cancelled")
         return True
@@ -52386,9 +52397,19 @@ def _dm_fill(p: dict, field: str, text: str) -> bool:
     if field == "setting":
         got = dm_actions.clean(dm_actions.rules(raw))
         if got.get("action") == "set_setting" and got.get("setting"):
-            p["setting"], p["value"] = got["setting"], got["value"]
+            p["setting"] = got["setting"]
+            for k in ("value", "days", "off"):
+                if k in got:
+                    p[k] = got[k]
             return True
         return False
+    if field == "days":
+        # "Just Shabbos (Fri evening to Sat night), or Sunday too?"
+        yn = dm_actions.yes_no(raw)
+        got = dm_actions.rest_choice(raw) or {True: "both", False: "shabbos"}.get(yn)
+        if got:
+            p["days"] = got
+        return bool(got)
     return False
 
 
@@ -52678,16 +52699,24 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
         if not p.get("setting"):
             await _dm_ask(dm_chat, p, "ask:setting", dm_actions.say(lang, "ask_setting", job=job))
             return
-        now_value = (await _whatsapp_project_settings(project["_id"])).get(p["setting"])
-        if p["setting"] == "chase_weekends":
-            if now_value == p["value"]:
-                await _dm_state_clear(DM_ACTION_STATE, dm_chat)
-                await _dm_say(dm_chat, lang, "weekends_same_on" if p["value"] else "weekends_same_off",
-                              job=job)
+        if p["setting"] == "rest":
+            if p.get("days") == "ask":
+                await _dm_ask(dm_chat, p, "ask:days", dm_actions.say(lang, "rest_ask"))
                 return
-            await _dm_ask(dm_chat, p, "confirm", dm_actions.say(
-                lang, "weekends_on_confirm" if p["value"] else "weekends_off_confirm", job=job))
+            now = wa_chase.rest_days(await _whatsapp_project_settings(project["_id"]))
+            after = {**now, **_dm_rest_fields(p)}
+            p["_job"] = job
+            if after == now:
+                await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+                await _dm_say(dm_chat, lang, "rest_same", job=job, state=_dm_rest_state(lang, now))
+                return
+            # Asked for plainly (or just answered): no "are you sure?" -- the
+            # reply says what is now on, and "undo" puts it back.
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            p["_project_id"] = str(project["_id"])
+            await _dm_action_do(ident, dm_chat, p)
             return
+        now_value = (await _whatsapp_project_settings(project["_id"])).get(p["setting"])
         if now_value == p["value"]:
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             await _dm_say(dm_chat, lang, "live_same" if p["value"] == "live" else "practice_same",
@@ -52829,20 +52858,44 @@ async def _dm_do_set_punch_contact(ident: dict, p: dict):
             dm_actions.say(lang, "contact_done", name=p["name"], company=p["company"], job=job))
 
 
+def _dm_rest_fields(p: dict) -> dict:
+    """The rest-day switches a request sets: {chase_shabbos_off: ..}."""
+    keys = {"shabbos": (wa_chase.SHABBOS_OFF,), "sunday": (wa_chase.SUNDAYS_OFF,),
+            "both": (wa_chase.SHABBOS_OFF, wa_chase.SUNDAYS_OFF)}[p["days"]]
+    return {k: bool(p["off"]) for k in keys}
+
+
+def _dm_rest_state(lang: str, rest: dict) -> str:
+    shab, sun = rest.get(wa_chase.SHABBOS_OFF), rest.get(wa_chase.SUNDAYS_OFF)
+    key = ("rest_both_off" if shab and sun else "rest_shabbos_off" if shab
+           else "rest_sunday_off" if sun else "rest_none_off")
+    return dm_actions.say(lang, key)
+
+
 async def _dm_do_set_setting(ident: dict, p: dict):
     lang = p.get("lang") or "en"
     project = await db.projects.find_one({"_id": to_query_id(p["_project_id"]),
                                           "company_id": _company_id_filter(ident["company_id"])})
     if not project:
         raise RuntimeError("job gone")
+    if p["setting"] == "rest":
+        before = wa_chase.rest_days(await _whatsapp_project_settings(p["_project_id"]))
+        fields = _dm_rest_fields(p)
+        await _set_whatsapp_project_fields(p["_project_id"], ident["company_id"], fields,
+                                           actor=ident["user_id"])
+        job = _dm_job_label(project)
+        after = {**before, **fields}
+        await _dm_audit(ident, p, "project", p["_project_id"], before, after)
+        return ({"kind": "settings", "project_id": p["_project_id"], "field": "rest",
+                 "before": before, "job": job},
+                dm_actions.say(lang, "rest_done", job=job, state=_dm_rest_state(lang, after)))
     before = (await _whatsapp_project_settings(p["_project_id"])).get(p["setting"])
     await _set_whatsapp_project_fields(p["_project_id"], ident["company_id"],
                                        {p["setting"]: p["value"]}, actor=ident["user_id"])
     job = _dm_job_label(project)
     await _dm_audit(ident, p, "project", p["_project_id"], {p["setting"]: before},
                     {p["setting"]: p["value"]})
-    key = {("chase_weekends", True): "weekends_on_done", ("chase_weekends", False): "weekends_off_done",
-           ("punch_sends", "live"): "live_done", ("punch_sends", "shadow"): "practice_done"}[
+    key = {("punch_sends", "live"): "live_done", ("punch_sends", "shadow"): "practice_done"}[
         (p["setting"], p["value"])]
     return ({"kind": "settings", "project_id": p["_project_id"], "field": p["setting"],
              "before": before, "job": job},
@@ -52897,8 +52950,10 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
             what = dm_actions.say(lang, "undo_person_old" if u.get("before") else "undo_person_new",
                                   name=u["name"])
         else:
-            await _set_whatsapp_project_fields(u["project_id"], ident["company_id"],
-                                               {u["field"]: u["before"]}, actor=ident["user_id"])
+            await _set_whatsapp_project_fields(
+                u["project_id"], ident["company_id"],
+                dict(u["before"]) if u["field"] == "rest" else {u["field"]: u["before"]},
+                actor=ident["user_id"])
             if u.get("person"):
                 await _dm_restore_person(ident, u["person"]["jid"], u["person"].get("before"))
             what = dm_actions.say(lang, "undo_contact" if u["field"] == "punch_contacts"
@@ -56074,6 +56129,27 @@ async def ensure_whatsapp_phase1_indexes():
 _THOMAS_588 = re.compile(r"^\s*588\s+thomas\s+s(?:\.|outh)?\s+boyland\b", re.IGNORECASE)
 
 
+async def _chase_rest_days_migration() -> int:
+    """Every job with the old "Chase on weekends" and not the two new
+    switches: both set from it (on -> chasing allowed -> both off).
+    Idempotent: a job with the new switches is never touched."""
+    n = 0
+    rows = await db.notification_preferences.find(
+        {"scope": "project", "user_id": None,
+         "whatsapp_project.chase_weekends": {"$exists": True},
+         f"whatsapp_project.{wa_chase.SHABBOS_OFF}": {"$exists": False}}).to_list(5000)
+    for r in rows:
+        off = (r.get("whatsapp_project") or {}).get("chase_weekends") is not True
+        res = await db.notification_preferences.update_one(
+            {"_id": r["_id"], f"whatsapp_project.{wa_chase.SHABBOS_OFF}": {"$exists": False}},
+            {"$set": {f"whatsapp_project.{wa_chase.SHABBOS_OFF}": off,
+                      f"whatsapp_project.{wa_chase.SUNDAYS_OFF}": off}})
+        n += getattr(res, "modified_count", 0) or 0
+    if n:
+        logger.info(f"WhatsApp migration: chase rest-day switches set on {n} job(s)")
+    return n
+
+
 async def _chase_weekends_for_588_thomas() -> Optional[str]:
     """Turn "Chase on weekends" on for 588 Thomas S Boyland St, once. Only
     when exactly one live project is that address, and only if its switch
@@ -56171,6 +56247,13 @@ async def run_whatsapp_startup_migrations():
         await _chase_weekends_for_588_thomas()
     except Exception as e:
         logger.warning(f"whatsapp migration 0b (chase weekends 588): {e}")
+    # Migration 0c — the single "Chase on weekends" becomes two switches,
+    # Shabbos / Yom Tov off and Sundays off: weekends on -> both off,
+    # otherwise both on. After 0b (which turns 588's weekends on).
+    try:
+        await _chase_rest_days_migration()
+    except Exception as e:
+        logger.warning(f"whatsapp migration 0c (chase rest days): {e}")
 
     # Migration 1 — backfill bot_config on legacy group docs
     try:
@@ -68373,7 +68456,7 @@ async def _wa_settings_view(project_id: str, company_id: str) -> dict:
         "groups": groups,
         **{k: bool(settings[k]) for k in wa_alerts.SWITCHES},
         "send_window": settings["send_window"],
-        "chase_weekends": bool(settings.get("chase_weekends")),
+        **wa_chase.rest_days(settings),
         "punch_sends": settings.get("punch_sends") or punch.DEFAULT_SEND_MODE,
         **(await _punch_settings_view(project_id, company_id, settings)),
     }
@@ -68449,8 +68532,13 @@ async def patch_project_whatsapp_alerts(project_id: str, body: dict,
     company_id = get_user_company_id(current_user)
     if not await _bot_project_scope(company_id, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    # The alert switches, and chase_weekends (sub chasing on Sat/Sun).
-    switches = wa_alerts.SWITCHES + ("chase_weekends",)
+    # The alert switches, and sub chasing's two rest-day switches. An app
+    # from before them sends "chase_weekends": it sets both (on = chase).
+    if isinstance(body, dict) and isinstance(body.get("chase_weekends"), bool):
+        body = {**{k: v for k, v in body.items() if k != "chase_weekends"},
+                wa_chase.SHABBOS_OFF: not body["chase_weekends"],
+                wa_chase.SUNDAYS_OFF: not body["chase_weekends"]}
+    switches = wa_alerts.SWITCHES + (wa_chase.SHABBOS_OFF, wa_chase.SUNDAYS_OFF)
     punch_keys = ("punch_sends", "punch_to", "punch_to_user", "punch_contacts", "punch_due_default")
     if (not isinstance(body, dict) or not body
             or any(k not in switches + ("send_window",) + punch_keys for k in body)

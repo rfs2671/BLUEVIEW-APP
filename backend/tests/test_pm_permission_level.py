@@ -349,8 +349,8 @@ class TheWhatsAppDm(unittest.TestCase):
         found, done = self.talk("add 9 menahan", "yes", ident=pm)
         self.assertEqual(done, "Done — 9 Menahan St is set up. I'll start watching DOB and DOT for it.")
         self.settings()["chase_weekends"] = True
-        ask, done = self.talk("stop bugging people on weekends at 588", "yes", ident=pm)
-        self.assertEqual(done, "Done — no weekend reminders at 588 Thomas St.")
+        ask, done = self.talk("stop bugging people on weekends at 588", "both", ident=pm)
+        self.assertEqual(done, "Done — at 588 Thomas St, no chasing over Shabbos, Yom Tov or Sundays.")
         ask, done = self.talk("start sending punch lists for real at 588", "588 thomas st", ident=pm)
         self.assertEqual(done, "Done — punch lists at 588 Thomas St now really go out.")
 

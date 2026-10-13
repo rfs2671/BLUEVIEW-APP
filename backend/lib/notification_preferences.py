@@ -1310,5 +1310,6 @@ def default_whatsapp_project_settings() -> Dict[str, Any]:
             "gc_proposal": None, "gc_declined": [],
             # When alerts and the GC-group question may go out (lib/wa_gc).
             "send_window": {"mode": "anytime", "start": "07:00", "end": "19:00"},
-            # Sub chasing (lib/wa_chase.py) on Saturday and Sunday. Off.
-            "chase_weekends": False}
+            # Sub chasing (lib/wa_chase.py): quiet over Shabbos / Yom Tov
+            # and on Sunday, both by default.
+            "chase_shabbos_off": True, "chase_sundays_off": True}

@@ -69,15 +69,21 @@ console.log('\nwhen to send');
 ok(W.SEND_WINDOW_OPTIONS.map((o) => o.label).join('|')
    === 'Anytime|Work hours (7 AM–7 PM)|Custom hours', 'the three choices, word for word');
 ok(W.assistantView({ ...base, send_window: undefined }).sendWindow.mode === 'anytime', 'default Anytime');
-console.log('\nchase on weekends');
-ok(W.assistantView(base).chaseWeekends.value === false, 'chase on weekends: off by default');
-ok(W.assistantView({ ...base, chase_weekends: true }).chaseWeekends.value === true, 'on when saved on');
-ok(W.CHASE_WEEKENDS_SWITCH.key === 'chase_weekends'
-   && W.CHASE_WEEKENDS_SWITCH.label === 'Chase on weekends', 'switch key and label');
+console.log('\nchasing rest days');
 {
+  const rd = (d) => W.assistantView({ ...base, ...d }).restDays.map((x) => [x.key, x.value]);
+  ok(JSON.stringify(rd({})) === JSON.stringify([['chase_shabbos_off', true], ['chase_sundays_off', true]]),
+     'both on (no chasing) by default');
+  ok(JSON.stringify(rd({ chase_shabbos_off: true, chase_sundays_off: false }))
+     === JSON.stringify([['chase_shabbos_off', true], ['chase_sundays_off', false]]), 'each its own');
+  ok(W.CHASE_REST_SWITCHES.map((x) => x.label).join('|') === 'Shabbos / Yom Tov off|Sundays off',
+     'the two labels, word for word');
+  ok(!('chaseWeekends' in W.assistantView(base)) && !W.CHASE_WEEKENDS_SWITCH, 'the weekend switch is gone');
   const card = require('fs').readFileSync(
     require('path').join(__dirname, '..', 'components', 'whatsapp', 'LevelogAssistantCard.jsx'), 'utf8');
-  ok(/patch\('chase_weekends', \{ chase_weekends: v \}\)/.test(card), 'the switch saves chase_weekends');
+  ok(/view\.restDays\.map/.test(card) && /patch\(sw\.key, \{ \[sw\.key\]: v \}\)/.test(card),
+     'the card shows both and saves each');
+  ok(!/chase_weekends/.test(card), 'the card no longer saves chase_weekends');
 }
 ok(/as soon as/.test(W.sendWindowLine({ mode: 'anytime' })), 'anytime line');
 ok(/7 AM to 7 PM.*goes out at 7 AM/.test(W.sendWindowLine({ mode: 'work_hours' })), 'work hours: held to 7 AM');
