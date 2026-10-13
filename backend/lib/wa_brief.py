@@ -18,13 +18,21 @@ record without the value a line needs is left out, never filled in.
 
 Sort: DOB/regulatory, then permits. At most 7 items in all.
 
-Then, per job, the follow-ups (not counted in the 7):
-  Due today / overdue: open Attention items due today or before that the
-      recipient owns or asked for, in their exact words, with the owner and
-      "overdue since <day>" (punch items are under Open punch instead)
-  Open punch: open punch items per assignee, with the oldest one's age
+THE LAYOUT is a fixed template (compose, at the bottom): per job, in this
+order, WhatsApp *bold* headers, one line per item, a blank line between
+sections, an empty section left out --
 
-"No action needed today." only when every one of these is empty.
+  📅 Today · 🏛 DOB / DOT · ✅ You · ⏳ Waiting on others · 🔍 Check ·
+  👷 who is on site · 📆 Later this week
+
+  You: open items due today / late / ASAP that the recipient owns, as the
+      item's stored summary ("Send calcs — ⚠️ 2 days late"); the quote is
+      for search and the app
+  Waiting on others: what they asked someone else for, and open punch per
+      assignee ("Chris: 4 punch items (oldest 2 days)")
+  Today / Later this week: Upcoming events, today's under Today
+
+"No action needed today." only when no job has anything to say.
 """
 
 from __future__ import annotations
@@ -82,11 +90,6 @@ def clean_settings(stored: Any) -> Dict[str, Any]:
                else s.get("brief_saturday") is True)
     return {"brief_time": t if t in BRIEF_TIMES else DEFAULT_TIME,
             "brief_weekend": weekend, "brief_saturday": weekend}
-
-
-def header(now_utc: datetime) -> str:
-    now = local_now(now_utc)
-    return f"Morning — {now.strftime('%a %b')} {now.day}"
 
 
 # ── What ────────────────────────────────────────────────────────────────────
@@ -315,11 +318,11 @@ def job_items(rows: Iterable[Dict[str, Any]], since: datetime,
     return items
 
 
-# ── Follow-ups: due today / overdue, open punch ─────────────────────────────
+# ── Follow-ups: You / Waiting on others / Check ─────────────────────────────
 
-DUE_HEAD = "Due today / overdue:"
-MAX_DUE = 10
 _LIVE = ("open", "rescheduled")
+MAX_TASKS = 6          # per section, per job; the rest are "+N more in the app"
+TASK_CHARS = 60
 
 
 def _last10(v: Any) -> str:
@@ -358,20 +361,59 @@ def _due_day(item: Dict[str, Any]) -> Optional[date]:
         return None
 
 
+def _clip(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+
+
 def _words(item: Dict[str, Any]) -> str:
-    """The item's own words: the quote it was read from (never a summary)."""
+    """The item's own words: the quote it was read from."""
     q = item.get("chase_quote") or {}
     text = q.get("quote") if q.get("quote") else (item.get("evidence") or {}).get("quote")
-    text = " ".join(str(text or "").split())
-    return text if len(text) <= 160 else text[:159].rstrip() + "…"
+    return " ".join(str(text or "").split())
 
 
-def due_lines(items: Iterable[Dict[str, Any]], today: date,
-              me: Dict[str, Any]) -> List[str]:
-    """'Due today / overdue:' then one line per item the recipient owns or
-    asked for: “words” — Owner · overdue since Sun Oct 11 | due today | ASAP.
-    Empty when there is none."""
-    rows = []
+def task_text(item: Dict[str, Any]) -> str:
+    """What to do, short: the item's stored summary ("Send calcs"). The
+    quote is for search and the app; only an item stored without a summary
+    shows a short piece of it, in quotes."""
+    summary = " ".join(str(item.get("summary") or "").split()).rstrip(" .")
+    if summary:
+        return _clip(summary[0].upper() + summary[1:], TASK_CHARS)
+    words = _words(item)
+    return f"“{_clip(words, TASK_CHARS - 12)}”" if words else ""
+
+
+def lateness(d: date, today: date, asap: bool = False) -> str:
+    """' — ⚠️ 2 days late' / ' · today' / ' · ASAP'."""
+    if asap:
+        return " · ASAP"
+    late = (today - d).days
+    if late <= 0:
+        return " · today"
+    return f" — ⚠️ {late} day{'s' if late != 1 else ''} late"
+
+
+def first_names(names: Iterable[str]) -> Dict[str, str]:
+    """Each full name as its first name, unless two share one."""
+    names = [n for n in dict.fromkeys(names) if n]
+    firsts: Dict[str, int] = {}
+    for n in names:
+        firsts[n.split()[0].lower()] = firsts.get(n.split()[0].lower(), 0) + 1
+    return {n: (n.split()[0] if firsts[n.split()[0].lower()] == 1 else n) for n in names}
+
+
+def _more(lines: List[str], n: int) -> List[str]:
+    return lines[:MAX_TASKS] + ([f"• +{n - MAX_TASKS} more in the Levelog app"]
+                                if n > MAX_TASKS else [])
+
+
+def task_sections(items: Iterable[Dict[str, Any]], today: date,
+                  me: Dict[str, Any]) -> Tuple[List[str], List[Tuple[Tuple, str, str]]]:
+    """Open items due today, overdue or ASAP that the recipient owns (You)
+    or asked someone else for (Waiting on others). You: ['• Send calcs —
+    ⚠️ 2 days late']; waiting: [(sort key, who, '<task><when>')] for
+    waiting_lines to name. Punch items are not here (punch_sections)."""
+    you, waiting = [], []
     for it in items:
         if it.get("status") not in _LIVE or "punch" in (it.get("tags") or []):
             continue
@@ -379,26 +421,21 @@ def due_lines(items: Iterable[Dict[str, Any]], today: date,
                 "wrong", "dismissed"):
             continue
         d = _due_day(it)
-        words = _words(it)
-        if not d or d > today or not words:
-            continue
-        if not (is_me(it.get("owner"), me) or _asked_by(it, me)):
+        task = task_text(it)
+        if not d or d > today or not task:
             continue
         asap = str((it.get("due") or {}).get("due_text") or "").strip().upper() == "ASAP"
-        when = "ASAP" if asap else (
-            "due today" if d == today else f"overdue since {_day_label(d)}")
-        owner = it.get("owner") or {}
-        who = owner.get("name") if owner.get("status") == "resolved" and owner.get("name") \
-            else "no owner yet"
-        rows.append(((0 if d < today and not asap else 1, d.toordinal(), words),
-                     f"• “{words}” — {who} · {when}"))
-    if not rows:
-        return []
-    rows.sort(key=lambda r: r[0])
-    out = [DUE_HEAD] + [r[1] for r in rows[:MAX_DUE]]
-    if len(rows) > MAX_DUE:
-        out.append(f"+{len(rows) - MAX_DUE} more in the Levelog app.")
-    return out
+        key = (0 if d < today and not asap else 1, d.toordinal(), task.lower())
+        line = task + lateness(d, today, asap)
+        if is_me(it.get("owner"), me):
+            you.append((key, f"• {line}"))
+        elif _asked_by(it, me):
+            owner = it.get("owner") or {}
+            who = owner.get("name") if owner.get("status") == "resolved" and owner.get("name") \
+                else ""
+            waiting.append((key, who, line))
+    you.sort(key=lambda r: r[0])
+    return _more([r[1] for r in you], len(you)), waiting
 
 
 def _age(d: date, today: date) -> str:
@@ -406,9 +443,10 @@ def _age(d: date, today: date) -> str:
     return "today" if n <= 0 else f"{n} day{'s' if n != 1 else ''}"
 
 
-def punch_lines(rows: Iterable[Dict[str, Any]], today: date) -> List[str]:
-    """'Open punch: Yeyzmar B Bate 3 (oldest 2 days), Chris Lopez 1 (oldest
-    today)'; then 'Ready to check: 1' when any. Empty when none."""
+def punch_sections(rows: Iterable[Dict[str, Any]], today: date
+                   ) -> Tuple[Dict[str, List[date]], List[str]]:
+    """Open punch per assignee ({name: [assigned days]}), and the Check
+    line: '• 1 punch item ready to check'."""
     by: Dict[str, List[date]] = {}
     ready = 0
     for r in rows:
@@ -425,13 +463,24 @@ def punch_lines(rows: Iterable[Dict[str, Any]], today: date) -> List[str]:
         else:
             d = today
         by.setdefault(who, []).append(d)
+    check = [f"• {ready} punch item{'s' if ready != 1 else ''} ready to check"] if ready else []
+    return by, check
+
+
+def waiting_lines(tasks: List[Tuple[Tuple, str, str]], punch: Dict[str, List[date]],
+                  today: date) -> List[str]:
+    """'• Mike: Send calcs — ⚠️ 2 days late', then '• Chris: 4 punch items
+    (oldest 2 days)'. People by first name unless two share it."""
+    short = first_names([w for _k, w, _l in tasks] + [w for w in punch if w != "Unassigned"])
     out = []
-    if by:
-        parts = sorted(by.items(), key=lambda kv: (min(kv[1]), kv[0].lower()))
-        out.append("Open punch: " + ", ".join(
-            f"{who} {len(ds)} (oldest {_age(min(ds), today)})" for who, ds in parts))
-    if ready:
-        out.append(f"Ready to check: {ready}")
+    for _k, who, line in sorted(tasks, key=lambda t: t[0]):
+        out.append(f"• {short.get(who, who) or 'No owner yet'}: {line}")
+    out = _more(out, len(out))
+    for who, days in sorted(punch.items(), key=lambda kv: (min(kv[1]), kv[0].lower())):
+        n = len(days)
+        age = _age(min(days), today)
+        out.append(f"• {short.get(who, who)}: {n} punch item{'s' if n != 1 else ''} "
+                   + (f"(oldest {age})" if n > 1 else f"({age})"))
     return out
 
 
@@ -440,11 +489,24 @@ def punch_lines(rows: Iterable[Dict[str, Any]], today: date) -> List[str]:
 MAX_COMPANIES = 5
 NO_COMPANY = "No company"
 NO_CHECKINS = "No check-ins yet."
+_COMPANY_TAIL = {"inc", "llc", "corp", "corporation", "co", "company", "ltd", "group",
+                 "construction", "contracting", "contractors", "contractor", "builders",
+                 "services", "plumbing", "electric", "electrical", "mechanical",
+                 "enterprises", "nyc", "ny"}
 
 
-def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
-    """'On site so far: 12 — ABC Concrete 6, XYZ Plumbing 4, GC 2'. Each
-    worker counted once, under the company of their first check-in today."""
+def short_company(name: str) -> str:
+    """'Quality Plumbing Corp.' -> 'Quality'; never down to nothing."""
+    if name == NO_COMPANY:
+        return name
+    words = [w for w in str(name or "").replace(",", " ").split()]
+    while len(words) > 1 and words[-1].strip(".").lower() in _COMPANY_TAIL:
+        words.pop()
+    return " ".join(words) or str(name or "")
+
+
+def _on_site(checkins: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    """{worker: company}: each worker once, under their first check-in's company."""
     by_worker: Dict[str, str] = {}
     for ci in sorted(checkins, key=lambda c: str(c.get("check_in_time") or "")):
         wid = _text(ci.get("worker_id")) or _text(ci.get("worker_phone")) \
@@ -457,33 +519,123 @@ def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
                 company = _text(ci.get(k))
                 break
         by_worker[wid] = company or NO_COMPANY
+    return by_worker
+
+
+def headcount_line(checkins: Iterable[Dict[str, Any]]) -> str:
+    """'👷 24 on site · Arkon 11 · Quality 6 · Power Direct 5 · MQ 2', or
+    NO_CHECKINS. Each worker counted once."""
+    by_worker = _on_site(checkins)
     if not by_worker:
         return NO_CHECKINS
     counts: Dict[str, int] = {}
     for c in by_worker.values():
         counts[c] = counts.get(c, 0) + 1
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-    shown = ", ".join(f"{name} {n}" for name, n in ordered[:MAX_COMPANIES])
+    parts = [f"{short_company(name)} {n}" for name, n in ordered[:MAX_COMPANIES]]
     more = len(ordered) - MAX_COMPANIES
-    tail = f", +{more} more" if more > 0 else ""
-    return f"On site so far: {len(by_worker)} — {shown}{tail}"
+    if more > 0:
+        parts.append(f"+{more} more")
+    return " · ".join([f"👷 {len(by_worker)} on site"] + parts)
 
 
-# ── The message ─────────────────────────────────────────────────────────────
+# ── Events (Upcoming): Today / Later this week ──────────────────────────────
 
-NOTHING_TODAY = "Good morning. No action needed today."
+MAX_LATER = 5
 
 
-def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
-    """jobs: [{label, items, headcount, uses_checkins}] in display order. At
-    most MAX_ITEMS items across all jobs, the most pressing first.
+def _time(t: Optional[str]) -> str:
+    if not t:
+        return ""
+    try:
+        h, m = (int(x) for x in str(t).split(":")[:2])
+    except ValueError:
+        return ""
+    return f"{h % 12 or 12}{':%02d' % m if m else ''}{'am' if h < 12 else 'pm'}"
 
-    A job with items, or with someone on site, gets its own block (address,
-    items, and the headcount line only if the job uses check-ins). A job that
-    uses check-ins with neither is named in "No check-ins yet: 8 Walworth,
-    8 Prescott." A job that does not use check-ins and has nothing to do is
-    left out; if that leaves nothing, the brief is the one line
-    "Good morning. No action needed today." """
+
+def event_sections(events: Iterable[Dict[str, Any]], today: date
+                   ) -> Tuple[List[str], List[str]]:
+    """Today: ['• 7am Concrete pour']; Later this week: ['• Thu 9am
+    Electrical inspection']. Events in date and time order."""
+    def key(e):
+        return (str(e.get("date") or ""), str(e.get("time") or "99:99"), str(e.get("title") or ""))
+    now_, later = [], []
+    for e in sorted(events, key=key):
+        try:
+            d = date.fromisoformat(str(e.get("date"))[:10])
+        except ValueError:
+            continue
+        title = " ".join(str(e.get("title") or "").split())
+        if not title or d < today:
+            continue
+        t = _time(e.get("time"))
+        if d == today:
+            now_.append(" ".join(x for x in ("•", t, title) if x))
+        else:
+            later.append(" ".join(x for x in ("•", d.strftime("%a"), t, title) if x))
+    extra = len(later) - MAX_LATER
+    return now_, later[:MAX_LATER] + ([f"• +{extra} more in the Levelog app"] if extra > 0 else [])
+
+
+# ── The message: a fixed template ───────────────────────────────────────────
+#
+#   *Tue Oct 13*
+#
+#   *588 Thomas S Boyland*
+#   📅 *Today*            events today
+#   🏛 *DOB / DOT*        new violations, status changes, permits, hearings
+#   ✅ *You*              your items due today / late
+#   ⏳ *Waiting on others* what you asked for, and open punch per person
+#   🔍 *Check*            punch items ready to check
+#   👷 24 on site · …     who checked in
+#   📆 *Later this week*  events after today
+#
+# One line per item, a blank line between sections, an empty section left
+# out. Every line is a stored record's own values; nothing is written by a
+# model here.
+
+NOTHING_TODAY = "No action needed today."
+H_TODAY, H_DOB, H_YOU = "📅 *Today*", "🏛 *DOB / DOT*", "✅ *You*"
+H_WAITING, H_CHECK, H_LATER = "⏳ *Waiting on others*", "🔍 *Check*", "📆 *Later this week*"
+
+
+def header(now_utc: datetime) -> str:
+    now = local_now(now_utc)
+    return f"*{now.strftime('%a %b')} {now.day}*"
+
+
+def job_block(job: Dict[str, Any], dob: List[str]) -> List[str]:
+    """One job's lines: '*label*' then its non-empty sections; [] when it has
+    nothing to say."""
+    sections = [
+        [H_TODAY] + list(job.get("today") or []) if job.get("today") else [],
+        [H_DOB] + dob if dob else [],
+        [H_YOU] + list(job.get("you") or []) if job.get("you") else [],
+        [H_WAITING] + list(job.get("waiting") or []) if job.get("waiting") else [],
+        [H_CHECK] + list(job.get("check") or []) if job.get("check") else [],
+        [job["headcount"]] if job.get("headcount") and job["headcount"] != NO_CHECKINS else [],
+        [H_LATER] + list(job.get("later") or []) if job.get("later") else [],
+    ]
+    sections = [sec for sec in sections if sec]
+    if not sections:
+        return []
+    out = [f"*{job['label']}*"]
+    for i, sec in enumerate(sections):
+        out += ([] if i == 0 else [""]) + sec
+    return out
+
+
+def compose(now_utc: datetime, jobs: List[Dict[str, Any]],
+            own: Optional[Dict[str, List[str]]] = None) -> str:
+    """jobs: [{label, items, today, you, waiting, check, headcount,
+    uses_checkins, later}] in display order; `own`: {today, later} for the
+    recipient's own reminders (no job). At most MAX_ITEMS DOB / DOT lines
+    across all jobs, the most pressing first.
+
+    A job with something to say gets its block; a job that uses check-ins
+    with nothing at all is named in 'No check-ins yet: A, B.'; any other job
+    is left out."""
     ranked: List[Tuple[Tuple, int, str]] = []
     for j_idx, job in enumerate(jobs):
         for it in job.get("items") or []:
@@ -491,39 +643,33 @@ def compose(now_utc: datetime, jobs: List[Dict[str, Any]]) -> str:
     ranked.sort(key=lambda t: t[0])
     kept = ranked[:MAX_ITEMS]
     extra = len(ranked) - len(kept)
-    per_job: Dict[int, List[str]] = {}
+    dob: Dict[int, List[str]] = {}
     for _k, j_idx, text in kept:
-        per_job.setdefault(j_idx, []).append(text)
+        dob.setdefault(j_idx, []).append(text)
 
-    # A job that does not use check-ins (no active tag or site device, no
-    # check-in in 14 days) has no headcount line, and with nothing to do it
-    # is left out entirely. A job that does use them, with nothing to do and
-    # nobody on site, is named in one line at the end.
-    def uses(j):
-        return jobs[j].get("uses_checkins", True)
+    blocks: List[Tuple[Tuple, List[str]]] = []
+    quiet = []
+    for j, job in enumerate(jobs):
+        block = job_block(job, dob.get(j, []))
+        if block:
+            first = min((r[0] for r in kept if r[1] == j), default=(9,))
+            blocks.append(((0, first) if j in dob else (1, (j,)), block))
+        elif job.get("uses_checkins", True):
+            quiet.append(job["label"])
+    blocks.sort(key=lambda b: b[0])
+    mine = job_block({"label": "Your reminders", "today": (own or {}).get("today"),
+                      "later": (own or {}).get("later")}, [])
 
-    def follow(j):
-        return list(jobs[j].get("due") or []) + list(jobs[j].get("punch") or [])
-    acting = [j for j in range(len(jobs)) if follow(j)]
-    quiet = [j for j in range(len(jobs))
-             if j not in per_job and j not in acting and uses(j)
-             and jobs[j]["headcount"] == NO_CHECKINS]
-    with_items = sorted(per_job, key=lambda j: min(
-        r[0] for r in kept if r[1] == j))
-    with_follow = [j for j in acting if j not in per_job]
-    others = [j for j in range(len(jobs))
-              if j not in per_job and j not in acting and uses(j) and j not in quiet]
-    if not kept and not acting and not others and not quiet:
-        return NOTHING_TODAY
-    # "No action needed" only when there are no items and no follow-ups.
-    lines = [header(now_utc) if kept or acting else NOTHING_TODAY]
-    for j in with_items + with_follow + others:
-        lines += ["", jobs[j]["label"]] + per_job.get(j, []) + follow(j)
-        if uses(j):
-            lines.append(jobs[j]["headcount"])
+    # Anything to act on (a headcount alone is not); else the line says so.
+    acting = bool(dob or mine) or any(
+        job.get(k) for job in jobs for k in ("today", "you", "waiting", "check", "later"))
+    lines = [header(now_utc)] + ([] if acting else [NOTHING_TODAY])
+    for _key, block in blocks:
+        lines += [""] + block
+    if mine:
+        lines += [""] + mine
     if quiet:
-        lines += ["", "No check-ins yet: "
-                  + ", ".join(jobs[j]["label"] for j in quiet) + "."]
+        lines += ["", "No check-ins yet: " + ", ".join(quiet) + "."]
     if extra > 0:
-        lines += ["", f"+{extra} more in the Levelog app."]
+        lines += ["", f"+{extra} more DOB / DOT in the Levelog app."]
     return "\n".join(lines)

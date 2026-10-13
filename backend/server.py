@@ -50272,27 +50272,29 @@ async def _brief_since(user_id: str, now: datetime) -> datetime:
 
 async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
                             me: Optional[dict]) -> dict:
-    """The job's Due today / overdue lines (items `me` owns or asked for)
-    and its Open punch line. A read that fails leaves its lines out."""
+    """The job's You / Waiting on others / Check lines: items due today,
+    late or ASAP that `me` owns or asked for, and its punch. A read that
+    fails leaves its lines out."""
     today = wa_brief.local_now(now).date()
-    out = {"due": [], "punch": []}
+    you, tasks, by_person, check = [], [], {}, []
     if me:
         try:
             items = await db.attention_items.find({
                 "project_id": pid, "company_id": _company_id_filter(company_id),
                 "status": {"$in": ["open", "rescheduled"]},
                 "due.due_at": {"$lte": today.isoformat() + "\uffff"}}).to_list(2000)
-            out["due"] = wa_brief.due_lines(items, today, me)
+            you, tasks = wa_brief.task_sections(items, today, me)
         except Exception as e:
             logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
     try:
         rows = await db[punch.COLLECTION].find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
             "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
-        out["punch"] = wa_brief.punch_lines(rows, today)
+        by_person, check = wa_brief.punch_sections(rows, today)
     except Exception as e:
         logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
-    return out
+    return {"you": you, "waiting": wa_brief.waiting_lines(tasks, by_person, today),
+            "check": check}
 
 
 async def _brief_me(user: dict) -> dict:
@@ -50379,13 +50381,20 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     since = await _brief_since(str(user.get("_id")), now)
     me = await _brief_me(user)
     jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
-    text = wa_brief.compose(now, jobs)
+    # Upcoming events: today's under each job's Today, the rest of the week
+    # under its Later this week; a reminder of their own (no job) at the end.
     try:
-        coming = await _upcoming_brief_lines(user, company_id, role, now)
+        events = await _upcoming_brief_events(user, company_id, role, now)
     except Exception as e:
         logger.warning(f"[wa-brief] upcoming failed: {type(e).__name__}")
-        coming = []
-    return text + ("\n\n" + "\n".join(coming) if coming else "")
+        events = []
+    today = wa_brief.local_now(now).date()
+    for p, job in zip(projects, jobs):
+        job["today"], job["later"] = wa_brief.event_sections(
+            [e for e in events if str(e.get("project_id")) == str(p.get("_id"))], today)
+    own_today, own_later = wa_brief.event_sections(
+        [e for e in events if not e.get("project_id")], today)
+    return wa_brief.compose(now, jobs, {"today": own_today, "later": own_later})
 
 
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
@@ -51022,19 +51031,18 @@ async def _upcoming_for(user: dict, company_id: str, role: str, start: _Date, en
     return sorted(out, key=upcoming.sort_key)
 
 
-async def _upcoming_brief_lines(user: dict, company_id: str, role: str,
-                                now: datetime) -> List[str]:
-    """The brief's "Upcoming this week". DOT OATH hearings and permit
-    expirations are already the brief's own lines (lib/wa_brief.py); they
-    are not said twice."""
+async def _upcoming_brief_events(user: dict, company_id: str, role: str,
+                                 now: datetime) -> List[dict]:
+    """The brief's events, today through a week out. DOT OATH hearings and
+    permit expirations are already the brief's DOB / DOT lines
+    (lib/wa_brief.py); they are not said twice."""
     if _upcoming_disabled():
         return []
     today = _upcoming_today(now)
     rows = await _upcoming_for(user, company_id, role, today,
                                today + timedelta(days=upcoming.BRIEF_DAYS))
-    rows = [r for r in rows if not (r["source"] == "city" and (
+    return [r for r in rows if not (r["source"] == "city" and (
         r["kind"] == "permit_expiration" or r["agency"] == "OATH"))]
-    return upcoming.brief_section(rows, today)
 
 
 # ── The day-before DM, and a reminder on its day ──

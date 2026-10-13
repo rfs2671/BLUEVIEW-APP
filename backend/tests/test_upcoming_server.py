@@ -561,11 +561,12 @@ class OutToPeople(unittest.TestCase):
         self.db.users.rows.append(self.admin)
 
     def test_brief_section_this_week_without_what_the_brief_already_says(self):
-        lines, _ = _with(self.db, lambda: _run(server._upcoming_brief_lines(
+        events, _ = _with(self.db, lambda: _run(server._upcoming_brief_events(
             self.admin, CO_A, "admin", T0)))
-        self.assertEqual(lines[0], "Upcoming this week")
-        self.assertEqual(lines[1:], [
-            "• Fri Oct 9, 9am — Con Ed meter set · Main St (from chat)"])
+        self.assertEqual([(e["date"], e["title"]) for e in events],
+                         [("2026-10-09", "Con Ed meter set")])
+        today, later = server.wa_brief.event_sections(events, T0.date())
+        self.assertEqual((today, later), ([], ["• Fri 9am Con Ed meter set"]))
         # The DOB ECB hearing on Oct 22 is past the week; DOT's OATH hearing
         # and the permit expirations are the brief's own lines already.
 
