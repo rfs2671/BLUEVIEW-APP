@@ -106,6 +106,21 @@ class MeIsTheWalker(_Brain):
         self.assertIn("*Floor 2*", out)
         self.assertIn("Stucco work", out)
 
+    def test_the_name_is_the_walkers_user_record(self):
+        # Whatever the walker's user record says -- never a name from the
+        # chat or the session ("Roy Fishman" is only this file's fixture).
+        u = next(r for r in self.db["users"].rows if r["_id"] == "u_roy")
+        u["name"] = "Meilich Friedman"
+        self.ident["user"] = {"_id": "u_roy", "name": "someone else"}
+        self.start("Stucco work 2nd floor")
+        (recap,) = self.turn("Send to me")
+        self.assertTrue(recap.startswith("Ready to DM the whole list to Meilich Friedman (GC team)"), recap)
+        self.assertNotIn("Roy", recap)
+        self.assertEqual(self.sess()["whole"]["name"], u["name"])
+        (out,) = self.turn("ok")
+        self.assertIn("Would DM Meilich Friedman (GC team)", out)
+        self.assertEqual({r["assignee"]["name"] for r in self.db["punch_items"].rows}, {u["name"]})
+
     def test_is_me(self):
         for yes in ("me", "Me", "to me", "myself", "my self", "mine", "me!"):
             self.assertTrue(punch.is_me(yes), yes)
