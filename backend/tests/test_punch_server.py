@@ -88,7 +88,10 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         res = _run(_upto(_sc(), LOCS))           # the locations, in the draft
         self.assertEqual(res["reacts"], ["👍"] * 12)       # the 12 photos; words are answered in words
         said_all = "\n".join(res["transcript"])
-        self.assertIn("— got it.", said_all)    # the voice after one (10:46 AM: never only 👍)
+        # The voice note after the wordless 12th photo: its words, for that
+        # photo only (the photos since the previous text with no own words).
+        self.assertIn("Got it — #12 (1 photo): 4th floor (kitchen) — Falta un enchufe", said_all)
+        self.assertIn("12. 📷 Falta un enchufe en la cocina", said_all)    # the voice after one (10:46 AM: never only 👍)
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
         # Every item has a floor at least: no location question at all (Tue

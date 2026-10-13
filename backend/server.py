@@ -78,6 +78,7 @@ from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import punch_link  # noqa: E402
 from lib import punch_brain  # noqa: E402
+from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
 from lib import wa_voice  # noqa: E402
@@ -3819,6 +3820,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
     VISION_REFUSAL_CHECK,
+    VISION_PUNCH_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
@@ -64564,7 +64566,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
 # applies it. Fixed commands stay a fast path (_punch_fast).
 
 #: Stages where free text is read by the model.
-PUNCH_THINK_STAGES = ("capturing", "locating", "draft", "assign", "recap", "due")
+PUNCH_THINK_STAGES = ("locating", "draft", "assign", "recap", "due")
 
 
 async def _punch_fast(sess: dict, said: str, text: str, voice: Optional[dict]) -> bool:
@@ -64604,7 +64606,8 @@ async def _punch_fast(sess: dict, said: str, text: str, voice: Optional[dict]) -
         return bool(r.get("ok") or r.get("group") or r.get("who") or r.get("pairs") or r.get("all"))
     if st in ("recap", "due"):
         trades = {it.get("trade") or punch.UNKNOWN for it in items}
-        return bool(punch.parse_due_answer(said, trades) or punch.parse_assign_reply(said).get("ok"))
+        return bool(punch.parse_due_answer(said, trades) or punch.parse_assign_reply(said).get("ok")
+                    or punch.is_go(said))
     return True
 
 
@@ -65056,8 +65059,9 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
                                        "$set": {"updated_at": datetime.now(timezone.utc)}})
             await send_whatsapp_message(dm_chat, punch.orphan_text(orphans, _punch_time))
             return True
-        # NO DRAFT WITH AN ITEM NOBODY CAN FIND: each one missing a location
-        # is asked about first, one at a time.
+        # NEVER A BLANK ITEM (3:37 PM): a photo with no words of its own or
+        # from its batch gets a short description of what it shows, "(auto)".
+        await _punch_describe_blanks(sess, dm_chat)
         return await _punch_ask_where(sess, dm_chat, intro=True)
     words = (voice or {}).get("transcript") or text
     if parsed.get("has_image"):
@@ -65065,12 +65069,12 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
         await _react_to_message(dm_chat, parsed.get("message_id_serialized"), "👍")
         return True
     if voice or text:
-        last = items[-1] if items else None
         if low in ("undo", "undo that", "undo it") and sess.get("loc_undo"):
             return await _punch_undo_group(sess, dm_chat)
-        group = await _punch_read_group(words) if items and not low.startswith("add") else None
-        if group and group["scope"] != "last":
-            return await _punch_apply_group(sess, dm_chat, group)
+        grp = punch.read_group_location(words) if items else None
+        if grp and grp["scope"] == "numbers":
+            # "#12-20 roof": those numbers.
+            return await _punch_apply_group(sess, dm_chat, grp)
         ref = punch.target_ref(text) if not voice else None
         if ref and _punch_item_no(items, ref[0]):
             # "#2 4th floor Apt 4F": about that photo.
@@ -65082,43 +65086,341 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
             # The answer to "Add to which photo?".
             return await _punch_item_words(sess, dm_chat, parsed,
                                            _punch_item_no(items, int(bare.group(1))), pending, now)
-        if last and not last.get("text"):
-            # The words for the photo just sent (a caption typed or spoken after it).
-            fresh = punch.new_item(last["n"], words, photo_key=last.get("photo_key"),
-                                   message_id=last.get("message_id"), voice=voice, at=last.get("at"))
-            items[-1] = {**last, **{k: fresh[k] for k in ("text", "voice", "floor", "area", "trade",
-                                                           "trade_guess")},
-                         "caption_ids": list(last.get("caption_ids") or []) + [msg_id]}
-            await _punch_save(sess, items=items, last_captioned=last.get("captured"))
-            await send_whatsapp_message(dm_chat, punch.noted_text(items[-1]))
-            return True
-        if voice or low.startswith("add"):
-            # A spoken item with no photo, or "add: …".
-            w = re.sub(r"^\s*add\s*[:\-]?\s*", "", words, flags=re.IGNORECASE) if not voice else words
-            added = punch.new_item(len(items) + 1, w, photo_key=None, message_id=msg_id,
-                                   voice=voice, at=now)
-            if not voice:
-                added["text"] = punch.clean_caption(w)       # "Tile cracked", Apt 4F its own field
+        add = re.match(r"^\s*add\s*[:\-–]\s*(?P<w>\S.*)$", words or "", re.IGNORECASE | re.DOTALL)
+        if add:
+            # "add: …" -- the ONE way words alone make an item (Tue Oct 13,
+            # 3:37 PM): never a text, never a voice note.
+            w = add.group("w")
+            added = punch.new_item(max([i.get("n") or 0 for i in items] or [0]) + 1, w,
+                                   photo_key=None, message_id=msg_id, at=now)
+            added["text"] = punch.clean_caption(w)           # "Tile cracked", Apt 4F its own field
+            added["captured"] = max([i.get("captured") or 0 for i in items] or [0]) + 1
             items.append(added)
             await _punch_save(sess, items=items)
-            await send_whatsapp_message(dm_chat, punch.noted_text(added))
+            await send_whatsapp_message(dm_chat, punch.added_text(added))
             return True
-        # ANYTHING ELSE TYPED DURING A WALK is about the walk, never a
-        # question for the assistant: a note on the photo just sent, or,
-        # when the last photo is not recent, which photo?
-        if not items:
-            await send_whatsapp_message(dm_chat, (
-                "Send each photo with a caption or a voice note; 'done' when you're finished."))
-            return True
-        at = last.get("at")
-        if isinstance(at, datetime) and not at.tzinfo:
-            at = at.replace(tzinfo=timezone.utc)
-        if isinstance(at, datetime) and now - at <= timedelta(minutes=punch.NOTE_LAST_MINUTES):
-            return await _punch_item_words(sess, dm_chat, parsed, last, text, now)
-        await _punch_save(sess, pending_note=text)
-        await send_whatsapp_message(dm_chat, punch.WHICH_PHOTO)
-        return True
+        if low.strip(".!") in ("send", "send it", "send it now", "send now", "go ahead", "finish"):
+            # "send" while taking photos: finished (never words for a photo).
+            return await _punch_capture(ident, sess, dm_chat, parsed, "done", None, msg_id, now)
+        return await _punch_batch_text(ident, sess, dm_chat, parsed, words, now)
     return False
+
+
+# ── A TEXT ABOUT THE PHOTOS BEFORE IT (lib/punch_batch.py) ──────────────────
+#
+# Tue Oct 13, 3:37 PM, 588: "Last 8 pics all interior" became photo #13's
+# words and the 7 before it stayed blank. Only photos make items; a text
+# describes its batch: the photos since the previous text, or "last N pics".
+
+async def _punch_batch_model(text: str) -> Optional[dict]:
+    """The model's reading of a text about a batch (punch_batch.BATCH_PROMPT);
+    None without a key, on any error, or when it is not one JSON object."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 200,
+                      "response_format": {"type": "json_object"},
+                      "messages": [{"role": "system", "content": punch_batch.BATCH_PROMPT},
+                                   {"role": "user", "content": str(text)[:600]}]})
+            resp.raise_for_status()
+            got = json.loads(resp.json()["choices"][0]["message"]["content"])
+        return got if isinstance(got, dict) else None
+    except Exception as e:
+        logger.warning(f"[punch] batch read failed: {type(e).__name__}")
+        return None
+
+
+async def _punch_read_batch(text: str) -> dict:
+    """What a text says about its photos: the model's reading, checked;
+    else (or when it found nothing) the words read here. {"kind": "command"}
+    when it tells the walk to do something."""
+    if punch_brain.wants_simple(text) or punch_brain.wants_detailed(text) or punch_batch.is_ask(text):
+        return {"kind": "command"}
+    got = punch_batch.clean_batch_model(await _punch_batch_model(text), text)
+    if got and got.get("kind") == "command":
+        return got
+    if not got or punch_batch.is_empty(got):
+        got = {"kind": "annotation", **punch_batch.read_batch(text)}
+    return got
+
+
+async def _punch_batch_text(ident, sess, dm_chat, parsed, words, now) -> bool:
+    """A text (or a voice note) during the photos: what it says, applied to
+    its batch -- one line back. Never an item; never one photo's words when
+    it was about the burst."""
+    items = sess["items"]
+    if not punch_batch.photo_items(items):
+        await send_whatsapp_message(dm_chat, "Send the photos first, then one text about "
+                                             "them (where, and what's wrong).")
+        return True
+    if punch_batch.is_trivial(words):
+        await send_whatsapp_message(dm_chat, "👍 Keep going — say done when you're finished.")
+        return True
+    ann = await _punch_read_batch(words)
+    if ann.get("kind") == "command":
+        done = await _punch_think(ident, sess, dm_chat, parsed, words, now)
+        if done is not None:
+            return done
+        ann = {"kind": "annotation", **punch_batch.read_batch(words)}
+    if punch_batch.is_empty(ann):
+        ann["description"] = punch.capitalize(" ".join(str(words or "").split()))[:120]
+    # The previous text's end: a batch text, or a location message (#783).
+    mark = max(int(sess.get("batch_mark") or 0), int(sess.get("loc_mark") or 0))
+    batch = punch_batch.targets(items, mark, ann.get("last_n"), sess.get("batch_prev"))
+    undo, changed = punch_batch.apply_batch(batch, ann, now)
+    photos = punch_batch.photo_items(items)
+    await _punch_save(sess, items=items,
+                      batch_mark=max([it.get("captured") or 0 for it in photos] or [0]),
+                      batch_prev=[it.get("captured") for it in batch],
+                      loc_undo={"items": undo, "mark": sess.get("loc_mark") or 0,
+                                "batch": {"mark": sess.get("batch_mark") or 0,
+                                          "prev": sess.get("batch_prev")}})
+    await send_whatsapp_message(dm_chat, punch_batch.confirm(ann, changed) if changed else
+                                "Those photos already have that. Reply to a photo to change one.")
+    return True
+
+
+# ── A WALK TAKEN UNDER THE OLD RULE, PUT RIGHT (scripts/repair_punch_walk.py) ─
+#
+# Tue Oct 13, 3:37 PM, 588 (47 items, shadow): each text became the last
+# photo's words (or an item of its own) and 33 photos went out blank. The
+# walk's messages are read back from the webhook log (kept 30 days) in the
+# order they came, each text applied to its batch under the rules above;
+# the items a text made are removed; every photo keeps its number and its
+# P-id; the shadow rows it made are deleted; the walk is a draft again.
+
+_LOG_MID = re.compile(r'"_serialized"\s*:\s*"([^"]+)"')
+_LOG_TYPE = re.compile(r'"type"\s*:\s*"(\w+)"')
+_LOG_FROM = re.compile(r'"from"\s*:\s*"([^"]+)"')
+_LOG_ME = re.compile(r'"fromMe"\s*:\s*true')
+
+
+def _wa_log_event(row: dict) -> Optional[dict]:
+    """One webhook-log row as a walk event: {"chat", "from_me", "kind":
+    photo|text|voice|other, "message_id", "text", "quoted", "at"}; None
+    when it is not a message. An image's body is cut at 4 KB, so it is read
+    for its id, type and sender when it does not parse."""
+    body = str(row.get("raw_body_preview") or "")
+    at = row.get("received_at")
+    try:
+        p = parse_inbound_message(json.loads(body), vendor=WHATSAPP_VENDOR)
+        if p.get("event") and p.get("event") not in ("message", "message_create"):
+            return None
+        kind = "photo" if p.get("has_image") else "voice" if p.get("has_audio") else \
+            "text" if (p.get("body") or "").strip() else "other"
+        return {"chat": p.get("from") or p.get("sender") or "", "from_me": bool(p.get("from_me")),
+                "kind": kind, "message_id": p.get("message_id_serialized") or p.get("message_id") or "",
+                "text": (p.get("body") or "").strip() if kind == "text" else "",
+                "quoted": p.get("quoted_message_id") or "", "at": at}
+    except Exception:
+        mid, typ, frm = _LOG_MID.search(body), _LOG_TYPE.search(body), _LOG_FROM.search(body)
+        if not mid or not frm:
+            return None
+        t = typ.group(1) if typ else ""
+        return {"chat": frm.group(1), "from_me": bool(_LOG_ME.search(body)),
+                "kind": "photo" if t == "image" else "voice" if t in ("ptt", "audio") else "other",
+                "message_id": mid.group(1), "text": "", "quoted": "", "at": at}
+
+
+async def _punch_walk_events(sess: dict, store=None) -> List[dict]:
+    """The walker's own DM messages during the walk, oldest first."""
+    d = db if store is None else store
+    start = sess.get("created_at")
+    end = sess.get("sent_at") or sess.get("updated_at") or datetime.now(timezone.utc)
+    if not isinstance(start, datetime):
+        return []
+    q = {"received_at": {"$gte": start - timedelta(minutes=2), "$lte": end + timedelta(minutes=2)}}
+    # The walk's window only (the TTL index on received_at serves the range);
+    # put in order here.
+    rows = sorted(await d.whatsapp_webhook_log.find(q).to_list(20000),
+                  key=lambda r: r.get("received_at") or start)
+    want = wa_dm.phone_digits(sess.get("chat") or "")
+    out, seen = [], set()
+    for r in rows:
+        e = _wa_log_event(r)
+        if not e or e["from_me"] or e["kind"] == "other":
+            continue
+        if e["chat"] != sess.get("chat") and (not want or wa_dm.phone_digits(e["chat"]) != want):
+            continue
+        key = punch.short_message_id(e["message_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
+def _punch_text_is_command(text: str) -> bool:
+    """A text that ran the walk ("done", "send to me", "go ahead"), never
+    words about photos."""
+    t = " ".join(str(text or "").split())
+    low = t.lower().strip(".!")
+    return bool(low in punch.SEND_WORDS or low in punch.DONE_WORDS or low in punch.CANCEL_WORDS
+                or low in ("undo", "undo that", "undo it") or punch.is_escape(t) or punch.is_go(t)
+                or punch.send_shortcut(t) or punch.start_request(t) or punch.parse_edits(t)
+                or re.fullmatch(r"#?\s*\d{1,3}", low) or punch_brain.wants_simple(t)
+                or punch_brain.wants_detailed(t) or punch_batch.is_ask(t) or punch_batch.is_trivial(t))
+
+
+async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool = False,
+                             events: Optional[List[dict]] = None,
+                             say=lambda line: None) -> dict:
+    """Put one walk right (see above). Dry run unless `apply`. `events`:
+    the walk's messages (else read from the webhook log). Returns
+    {"ok", "why", "applied", "removed", "kept", "described", "draft"}."""
+    d = db if store is None else store
+    sess = await d[punch.SESSIONS].find_one({"_id": walk_id})
+    if not sess:
+        return {"ok": False, "why": "no such walk"}
+    rows = await d[punch.COLLECTION].find({"walk_id": walk_id}).to_list(5000)
+    if any(r.get("send_mode") == "live" for r in rows):
+        return {"ok": False, "why": "this walk went out LIVE -- not reopened (its items were sent)"}
+    events = events if events is not None else await _punch_walk_events(sess, d)
+    readings: Dict[int, dict] = {}
+    for i, e in enumerate(events):
+        if e.get("kind") != "text":
+            continue
+        if _punch_text_is_command(e.get("text") or ""):
+            readings[i] = {"kind": "command"}
+            continue
+        readings[i] = await _punch_read_batch(e["text"])
+    items = [dict(it) for it in sess.get("items") or []]
+    plan = punch_batch.replay(items, events, readings)
+    by_n = {r.get("n"): r for r in rows}
+    for it in plan["items"]:
+        r = by_n.get(it.get("n"))
+        if r and r.get("pid"):
+            it["pid"] = r["pid"]                         # its P-id, kept
+    for e in events:
+        say(f"  {_punch_time(e.get('at'))}  {e['kind']:<5} "
+            + (repr((e.get('text') or '')[:70]) if e["kind"] == "text" else ""))
+    for text, ns in plan["applied"]:
+        say(f"  text {text[:60]!r} -> {punch.numbers_text(ns) if ns else 'nothing'}")
+    for it in plan["removed"]:
+        say(f"  removed (a text made it): #{it.get('n')} {str(it.get('text') or '')[:60]!r}")
+    if plan["unmatched"]:
+        say(f"  photos in the log with no item: {len(plan['unmatched'])}")
+    blanks = punch_batch.blank(plan["items"])
+    out = {"ok": True, "why": "", "applied": plan["applied"], "removed": len(plan["removed"]),
+           "kept": len(plan["items"]), "described": len(blanks), "rows": len(rows)}
+    if not apply:
+        say(f"  would describe {len(blanks)} photo(s) with no words; would delete "
+            f"{len(rows)} shadow row(s); the walk would be a draft again")
+        out["draft"] = punch.draft_text(sess.get("job_name") or "", plan["items"],
+                                        simple=(sess.get("detail") or punch.DEFAULT_DETAIL)
+                                        == punch.DETAIL_SIMPLE)
+        return out
+    now = datetime.now(timezone.utc)
+    att_ids = [r.get("attention_item_id") for r in rows if r.get("attention_item_id")]
+    if rows:
+        await d[punch.COLLECTION].delete_many({"walk_id": walk_id, "send_mode": {"$ne": "live"}})
+    for a in att_ids:
+        try:
+            await d.attention_items.delete_one({"_id": to_query_id(a)})
+        except Exception:
+            pass
+    sess["items"] = plan["items"]
+    photos = punch_batch.photo_items(plan["items"])
+    fields = {"items": plan["items"], "status": "draft", "where_asked": True, "asking": None,
+              "assign": {}, "whole": None, "target": None, "due": {}, "choose": None,
+              "shortcut": None, "sent_at": None, "nudge": {}, "loc_undo": None,
+              "batch_mark": max([it.get("captured") or 0 for it in photos] or [0]),
+              "batch_prev": None, "group_loc_v2": True, "trade_asked": False,
+              "rebatched_at": now, "updated_at": now}
+    await d[punch.SESSIONS].update_one({"_id": walk_id}, {"$set": fields})
+    sess.update(fields)
+    out["described"] = await _punch_describe_blanks(sess)
+    out["draft"] = _punch_draft(sess)
+    logger.info(f"[punch] walk={walk_id} re-read: kept={out['kept']} removed={out['removed']} "
+                f"described={out['described']} rows_deleted={len(rows)}")
+    if dm and sess.get("chat"):
+        await send_whatsapp_message(sess["chat"], (
+            f"I re-read your walkthrough at {sess.get('job_name') or 'the job'}: each text now "
+            "describes the photos before it, and photos with no words have a short description "
+            "marked (auto). Nothing was sent.\n\n") + out["draft"])
+    return out
+
+
+# ── A PHOTO WITH NO WORDS: what it shows (vision model, "(auto)") ──────────
+
+def _punch_vision_jpeg(key: str) -> Optional[bytes]:
+    """The stored photo as a JPEG at most 1024 px (what the vision model is
+    sent); None when it cannot be read or drawn."""
+    raw = _r2_bytes(key)
+    if not raw:
+        return None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1024, 1024))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+async def _punch_describe_photo(key: str, project_id: Any = None) -> Optional[str]:
+    """At most 8 words for the visible issue in a punch photo; None without
+    a vision key, a readable photo, or an answer."""
+    if not QWEN_API_KEY or not key:
+        return None
+    data = await asyncio.to_thread(_punch_vision_jpeg, key)
+    if not data:
+        return None
+    await record_vision_call(db, endpoint=VISION_PUNCH_PHOTO,
+                             project_id=str(project_id) if project_id else None)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 40, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": punch_batch.PHOTO_PROMPT}]}]})
+            resp.raise_for_status()
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[punch] photo description failed: {type(e).__name__}")
+        return None
+    return punch_batch.clean_description(said)
+
+
+#: How many photos are described at once.
+PUNCH_DESCRIBE_AT_ONCE = 4
+
+
+async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
+                                 trades: bool = True) -> int:
+    """Every live item with no words gets the vision model's (or "See
+    photo"), marked "(auto)" -- never a blank item (3:37 PM: 33 went out
+    blank). Returns how many."""
+    todo = punch_batch.blank(sess["items"])
+    if not todo:
+        return 0
+    if dm_chat and len(todo) > 3:
+        await send_whatsapp_message(dm_chat, f"Writing a short description for the {len(todo)} "
+                                             "photos with none — one moment.")
+    gate = asyncio.Semaphore(PUNCH_DESCRIBE_AT_ONCE)
+
+    async def one(it):
+        async with gate:
+            words = await _punch_describe_photo(it.get("photo_key"), sess.get("project_id")) \
+                if it.get("photo_key") else None
+        punch_batch.set_auto(it, words)
+        if trades and words and ((it.get("trade") or punch.UNKNOWN) == punch.UNKNOWN or it.get("trade_guess")):
+            it["trade"], it["trade_guess"] = punch.trade_for(words)
+    await asyncio.gather(*(one(it) for it in todo))
+    await _punch_save(sess, items=sess["items"])
+    return len(todo)
 
 
 # ── A LOCATION FOR A GROUP OF PHOTOS (during the walk) ────────────────────
@@ -65187,6 +65489,14 @@ async def _punch_apply_group(sess: dict, dm_chat: str, group: dict) -> bool:
 async def _punch_undo_group(sess: dict, dm_chat: str) -> bool:
     items = sess["items"]
     u = sess.get("loc_undo") or {}
+    if u.get("batch") is not None:
+        # A text about a batch: its words, place and note taken back off.
+        ns = punch_batch.restore(items, u.get("items") or [])
+        await _punch_save(sess, items=items, loc_undo=None, batch_mark=u["batch"].get("mark") or 0,
+                          batch_prev=u["batch"].get("prev"))
+        await send_whatsapp_message(dm_chat, f"Undone — {punch.numbers_text(ns)} back as they were."
+                                    if ns else "Nothing to undo.")
+        return True
     ns = []
     for before in u.get("items") or []:
         it = _punch_item_by_captured(items, before.get("captured"))
@@ -65787,7 +66097,9 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
     if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok") \
-            or punch.is_escape(text):
+            or punch.is_escape(text) or punch.is_go(text):
+        # "go ahead" / "do it" / "yes send" / "send it" are ok (3:37 PM: the
+        # recap again).
         return await _punch_send_now(ident, sess, dm_chat)
     live_trades = {it["trade"] for it in sess["items"] if it.get("status", "draft") != "dropped"}
     trades = sorted(set((sess.get("assign") or {}).keys()) | live_trades)
@@ -65815,6 +66127,9 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
 async def _punch_send_now(ident, sess, dm_chat) -> bool:
     """'ok' at the recap: each trade's due (the job's default where none was
     said), then the send."""
+    # Never a blank item out (3:37 PM) -- words only: a trade named now
+    # would not be in "Who gets what?".
+    await _punch_describe_blanks(sess, trades=False)
     live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
     assign = dict(sess.get("assign") or {})
     if not sess.get("whole") and sess.get("target") != "group":
@@ -66138,8 +66453,14 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         rows = []
         for it in b["items"]:
             person = owner_of(it)
-            seq = await _punch_next_seq(sess["project_id"])
-            pid = punch.punch_id(sess["job_code"] or "JOB", seq)
+            if it.get("pid"):
+                # A walk sent before (in shadow) and reopened: its photos keep
+                # their P-ids (3:37 PM repair).
+                pid = it["pid"]
+                seq = int(str(pid).rsplit("-", 1)[-1]) if str(pid).rsplit("-", 1)[-1].isdigit() else 0
+            else:
+                seq = await _punch_next_seq(sess["project_id"])
+                pid = punch.punch_id(sess["job_code"] or "JOB", seq)
             item_due = b["dues"].get(it["trade"]) or default_due
             due_at = punch.due_date(item_due, now)
             due_doc = {"due_text": "" if item_due == punch.NO_DUE else item_due,

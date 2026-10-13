@@ -239,7 +239,11 @@ def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
         rest = re.sub(r"[\s,.;:-]+", " ", rest).strip()
         if read_location(rest)["area"] == loc.get("area"):
             rest = re.sub(r"(?i)\b" + re.escape(str(loc.get("area") or "")) + r"\b", " ", rest).strip()
-    if not it.get("text"):
+    own = clean_caption(w) if loc.get("floor") or loc.get("area") else w
+    if not it.get("text") or (it.get("text_auto") and own.strip()):
+        # No words yet, or only the vision model's guess: these are its words.
+        it.pop("text_auto", None)
+        it["text_src"] = "walker"
         it["text"] = clean_caption(w) if loc.get("floor") or loc.get("area") else w
         if (it.get("trade") or UNKNOWN) == UNKNOWN or it.get("trade_guess"):
             it["trade"], it["trade_guess"] = trade_for(w)
@@ -777,6 +781,21 @@ _ESCAPE = re.compile(
     r"|none|n/?a|without|leave (?:it|them) blank|blank|salta(?:r)?|sigue|siguiente|ninguno)\W*$|^\W*$")
 
 
+#: Go on and send, at the recap (3:37 PM: "go ahead" got the recap again).
+_GO = re.compile(
+    r"^(?:(?:ok(?:ay)?|yes|yeah|yep|yup|sure|alright|great|perfect|good)[,.! ]*)*"
+    r"(?:go\s+ahead|do\s+it|yes\s+send|send\s+it(?:\s+out)?|send(?:\s+(?:now|out|them|it\s+now))?"
+    r"|ship\s+it|go\s+for\s+it|let'?s\s+go|confirm(?:ed)?|approved?|that'?s\s+(?:fine|good|right|correct)"
+    r"|looks?\s+(?:good|right|fine)(?:\s+send)?|dale|env[ií]a(?:lo)?|m[aá]ndalo)?"
+    r"(?:[,.! ]*(?:please|pls|thanks?|thank\s+you))?[.!\s]*$", re.IGNORECASE)
+
+
+def is_go(text: Any) -> bool:
+    """'go ahead', 'do it', 'yes send', 'send it', 'ok go ahead'."""
+    t = " ".join(str(text or "").split())
+    return bool(t) and bool(re.search(r"[a-z]", t, re.IGNORECASE)) and bool(_GO.match(t))
+
+
 def is_escape(text: Any) -> bool:
     """'just finish', 'skip', 'ignore that', 'send as is', 'move on', '.'"""
     t = " ".join(str(text or "").lower().split())
@@ -1001,7 +1020,9 @@ def item_line(it: dict, simple: bool = False) -> str:
     """"3. 📷 Outlet cover missing — electrical" (area shown when known).
     No trade: no trade shown -- never a "?" or a "roofing?" (1:43 PM).
     Simple: the words only (the floor is the heading)."""
-    words = it.get("text") or "(no words)"
+    words = (it.get("text") or "").strip() or "See photo"
+    if it.get("text_auto"):
+        words += " (auto)"                  # the vision model's words: a guess, editable
     if simple:
         return f"{it['n']}. {marker(it)} {words}".replace("  ", " ")
     trade = it.get("trade") or UNKNOWN
@@ -1611,7 +1632,11 @@ def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
                 lines.append(f"_no trade_ {who}")
             for it in by_floor[f][t]:
                 u = "" if simple else unit_label(it)
-                lines.append(f"• {it['pid']} {it.get('text') or ''}"
+                # Never a bullet with no words (3:37 PM: 33 blank ones).
+                words = (it.get("text") or "").strip() or "See photo"
+                if it.get("text_auto"):
+                    words += " (auto)"
+                lines.append(f"• {it['pid']} {words}"
                              f"{(' (' + u + ')') if u and u != f else ''}")
     return lines
 
@@ -1629,7 +1654,10 @@ def group_text(name: str, items: List[dict], due_words: str,
         for it in items:
             where = (floor_label(place_key(it)) if place_key(it) != UNKNOWN else "") if simple \
                 else _where(it)
-            lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
+            words = (it.get("text") or "").strip() or "See photo"
+            if it.get("text_auto"):
+                words += " (auto)"
+            lines.append(f"• {it['pid']} {words}{(' (' + where + ')') if where else ''}")
     lines.append(done_hint(items))
     return "\n".join(lines)
 
