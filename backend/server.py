@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
+import itertools
 import uuid
 from datetime import datetime, timezone, timedelta
 from datetime import date as _Date  # noqa: E402  (Upcoming: a calendar day)
@@ -46186,6 +46187,153 @@ async def _set_whatsapp_project_fields(project_id: Any, company_id: Any,
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# SHABBOS / YOM TOV: every bot message waits (lib/shabbos.py is the clock)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# From one hour before New York candle-lighting to one hour after nightfall
+# (Shabbos and Yom Tov), nothing the bot sends on its own goes out for a job
+# with "Shabbos / Yom Tov off", or -- for what belongs to no job: the morning
+# brief, Upcoming DMs -- a company with it. Such messages are QUEUED here and
+# delivered in the order they were made once the stretch is over
+# (_quiet_queue_tick). The morning brief is skipped, not queued; a day-before
+# DM for an event inside the stretch is skipped. A Stop Work Order or Vacate
+# alert still posts when the company turned on "Still send critical DOB
+# alerts on Shabbos". Replies to someone who writes to the bot are answered:
+# they chose to write.
+
+WA_QUIET_QUEUE = "wa_quiet_queue"
+_quiet_counter = itertools.count()
+
+
+async def _shabbos_applies(company_id: Any, project_id: Any = None) -> bool:
+    if project_id:
+        return bool((await _whatsapp_project_settings(project_id)).get(wa_chase.SHABBOS_OFF))
+    return bool((await _whatsapp_company_settings(company_id)).get("shabbos_off"))
+
+
+async def _shabbos_quiet(company_id: Any, project_id: Any = None,
+                         now: Optional[datetime] = None) -> Optional[datetime]:
+    """When the quiet stretch ends, if this job's (or company's) bot
+    messages must wait right now; else None."""
+    from lib import shabbos as _shabbos
+    until = _shabbos.quiet_until(now or datetime.now(timezone.utc))
+    if until is None or not await _shabbos_applies(company_id, project_id):
+        return None
+    return until
+
+
+async def _quiet_enqueue(spec: dict, *, company_id: Any, project_id: Any, kind: str,
+                         until: datetime, now: Optional[datetime] = None) -> str:
+    qid = str(uuid.uuid4())
+    await db[WA_QUIET_QUEUE].insert_one({
+        "_id": qid, "company_id": str(company_id or ""), "project_id": str(project_id or "") or None,
+        "kind": kind, "send": spec, "status": "queued",
+        "queued_at": now or datetime.now(timezone.utc),
+        # The order made in: across every kind, delivered in this order.
+        "seq": _time.time_ns() * 1000 + next(_quiet_counter) % 1000,
+        "deliver_after": until})
+    return qid
+
+
+async def _quiet_deliver(spec: dict):
+    """Send one queued message the way it would have gone out."""
+    via = spec.get("via")
+    if via == "dm":
+        return await send_whatsapp_dm(spec["user_id"], spec["message"], kind=spec["kind"],
+                                      window=spec["window"], project_id=spec.get("project_id"))
+    if via == "chat":
+        return await send_whatsapp_message(spec["chat_id"], spec["message"])
+    if via == "group_post":
+        return await _group_post(spec["group_id"], spec["message"], spec.get("targets") or [])
+    if via == "photo":
+        return await _punch_send_photo(spec["chat_id"], spec["key"], spec.get("caption") or "")
+    raise ValueError(f"unknown via {via!r}")
+
+
+async def _quiet_or_send(spec: dict, *, company_id: Any, project_id: Any = None, kind: str,
+                         now: Optional[datetime] = None):
+    """Send now, or -- over Shabbos / Yom Tov -- queue it: "queued"."""
+    until = await _shabbos_quiet(company_id, project_id, now)
+    if until:
+        await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
+                             until=until, now=now)
+        return "queued"
+    return await _quiet_deliver(spec)
+
+
+async def _ledger_hold(key: str, status: str, *, user_id: Any, company_id: Any, kind: str,
+                       window: str) -> None:
+    """Record a proactive DM as queued / skipped for Shabbos, so its tick
+    does not make it again."""
+    now = datetime.now(timezone.utc)
+    try:
+        await db[WA_LEDGER].insert_one({
+            "_id": key, "user_id": str(user_id or ""), "company_id": str(company_id or ""),
+            "project_id": None, "kind": kind, "window": window, "status": status,
+            "created_at": now, "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)})
+    except Exception:
+        pass
+
+
+async def _quiet_dm(user_id: Any, message: str, *, company_id: Any, kind: str, window: str,
+                    until: datetime, now: Optional[datetime] = None) -> None:
+    """A proactive DM (no job) queued for after Shabbos."""
+    key = wa_dm.ledger_key(str(user_id), None, kind, window)
+    await _quiet_enqueue({"via": "dm", "user_id": str(user_id), "message": message, "kind": kind,
+                          "window": window, "project_id": None, "ledger_id": key},
+                         company_id=company_id, project_id=None, kind=kind, until=until, now=now)
+    await _ledger_hold(key, "queued_shabbos", user_id=user_id, company_id=company_id,
+                       kind=kind, window=window)
+
+
+async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
+    """Deliver what waited, in the order it was made, once its stretch is
+    over."""
+    now = now or datetime.now(timezone.utc)
+    report = {"due": 0, "sent": 0, "failed": 0}
+    try:
+        rows = await db[WA_QUIET_QUEUE].find(
+            {"status": "queued", "deliver_after": {"$lte": now}}).to_list(2000)
+    except Exception as e:
+        logger.warning(f"[shabbos-queue] read failed: {type(e).__name__}")
+        return report
+    for r in sorted(rows, key=lambda r: r.get("seq") or 0):
+        report["due"] += 1
+        res = await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"], "status": "queued"},
+                                                  {"$set": {"status": "sending"}})
+        if not getattr(res, "modified_count", 0):
+            continue
+        spec = r.get("send") or {}
+        if spec.get("ledger_id"):      # the hold, so the DM's own claim can be taken
+            await db[WA_LEDGER].delete_one({"_id": spec["ledger_id"], "status": "queued_shabbos"})
+        try:
+            sent = await _quiet_deliver(spec)
+        except Exception as e:
+            logger.warning(f"[shabbos-queue] send failed: {type(e).__name__}")
+            sent = None
+        ok = sent not in (None, False)
+        if spec.get("gc_ledger_id"):
+            if ok:
+                await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                               {"$set": {"status": "sent", "sent_at": now}})
+            else:      # not posted: the next alerts run tries it again
+                await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
+        await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+            "status": "sent" if ok else "failed", "delivered_at": now}})
+        report["sent" if ok else "failed"] += 1
+    if report["due"]:
+        logger.info(f"[shabbos-queue] {report}")
+    return report
+
+
+async def _quiet_queue_job() -> None:
+    try:
+        await _quiet_queue_tick()
+    except Exception as e:
+        logger.warning(f"[shabbos-queue] tick failed: {type(e).__name__}: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # GC GROUP: pick, confirm by DM, post DOB alerts  (lib/wa_gc.py is the logic)
 # ══════════════════════════════════════════════════════════════════════════
 #
@@ -46315,6 +46463,9 @@ async def _gc_propose_tick(now: Optional[datetime] = None) -> dict:
             continue
         if not wa_gc.in_send_window(now, settings.get("send_window")):
             report["held"] += 1   # asked at the start of the project's window
+            continue
+        if await _shabbos_quiet(company_id, project_id, now):
+            report["held"] += 1   # asked after Shabbos / Yom Tov
             continue
         prop = settings.get("gc_proposal")
         if isinstance(prop, dict) and prop.get("status") in (
@@ -46720,12 +46871,28 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             report["held"] += 1
             continue
 
+        # Shabbos / Yom Tov: queued for after it, in order -- a Stop Work
+        # Order or Vacate posts now if the company said so.
+        quiet_until = await _shabbos_quiet(company_id, project_id, now)
+        critical_ok = quiet_until is not None and (
+            await _whatsapp_company_settings(company_id))["shabbos_critical_alerts"]
         posts = 0
         for it, _enabled in todo:
             if posts >= GC_MAX_POSTS_PER_PROJECT_RUN:
                 break   # the rest go on the next run
             kind = it["kind"]
             lid = wa_gc.ledger_id(project_id, kind, it["item"])
+            if quiet_until and not (critical_ok and wa_alerts.is_critical(it)):
+                if await _gc_ledger_claim(lid, kind=f"gc_{kind}", project_id=project_id,
+                                          company_id=company_id, group_id=group_id,
+                                          status="queued_shabbos"):
+                    await _quiet_enqueue(
+                        {"via": "chat", "chat_id": group_id,
+                         "message": await _gc_alert_text(it, address, today), "gc_ledger_id": lid},
+                        company_id=company_id, project_id=project_id, kind=f"gc_{kind}",
+                        until=quiet_until, now=now)
+                    report["shabbos_queued"] = report.get("shabbos_queued", 0) + 1
+                continue
             if not await _gc_ledger_claim(lid, kind=f"gc_{kind}",
                                           project_id=project_id,
                                           company_id=company_id,
@@ -50166,7 +50333,7 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"optins": 0, "due": 0, "sent": 0, "refused": 0, "skipped": 0,
-              "already": 0}
+              "already": 0, "shabbos_skipped": 0}
     today = wa_brief.local_now(now).date().isoformat()
     try:
         optins = await db[WA_OPTINS].find({"status": "active"}).to_list(5000)
@@ -50194,6 +50361,14 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
             if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
                     uid, None, MORNING_BRIEF_KIND, today)}, {"_id": 1}):
                 report["already"] += 1
+                continue
+            if await _shabbos_quiet(user.get("company_id"), None, now):
+                # Shabbos / Yom Tov: today's brief is skipped, not queued.
+                await _ledger_hold(wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today),
+                                   "skipped_shabbos", user_id=uid,
+                                   company_id=user.get("company_id"),
+                                   kind=MORNING_BRIEF_KIND, window=today)
+                report["shabbos_skipped"] += 1
                 continue
             text = await _brief_for_user(user, now)
             if not text:
@@ -50812,7 +50987,7 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
     the person who asked. Once each (the ledger claim in send_whatsapp_dm)."""
     now = now or datetime.now(timezone.utc)
     report = {"optins": 0, "day_before_sent": 0, "reminders_sent": 0, "refused": 0,
-              "pref_off": 0}
+              "pref_off": 0, "shabbos_queued": 0, "shabbos_skipped": 0}
     if _upcoming_disabled():
         report["disabled"] = True
         return report
@@ -50847,6 +51022,22 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                 text = upcoming.day_before_dm(rows, tomorrow)
                 if not text:
                     continue
+                until = await _shabbos_quiet(cid, None, now)
+                if until:
+                    from lib import shabbos as _shabbos
+                    if tomorrow <= until.astimezone(_shabbos.NY).date():
+                        # Friday 5 PM for a Saturday / Yom Tov event: by the
+                        # time it could go out, the day is over -- skipped.
+                        await _ledger_hold(wa_dm.ledger_key(
+                            uid, None, UPCOMING_DAY_BEFORE_KIND, tomorrow.isoformat()),
+                            "skipped_shabbos", user_id=uid, company_id=cid,
+                            kind=UPCOMING_DAY_BEFORE_KIND, window=tomorrow.isoformat())
+                        report["shabbos_skipped"] += 1
+                    else:
+                        await _quiet_dm(uid, text, company_id=cid, kind=UPCOMING_DAY_BEFORE_KIND,
+                                        window=tomorrow.isoformat(), until=until, now=now)
+                        report["shabbos_queued"] += 1
+                    continue
                 sent = await send_whatsapp_dm(uid, text, kind=UPCOMING_DAY_BEFORE_KIND,
                                               window=tomorrow.isoformat())
                 report["day_before_sent" if sent else "refused"] += 1
@@ -50865,6 +51056,17 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                     uid, None, UPCOMING_REMINDER_KIND, str(r["_id"]))}, {"_id": 1}):
                 continue
             t = f" ({upcoming.time_label(r.get('time'))})" if r.get("time") else ""
+            cid = r.get("company_id")
+            if not cid:
+                owner = await db.users.find_one({"_id": to_query_id(uid)}, {"company_id": 1})
+                cid = (owner or {}).get("company_id")
+            until = await _shabbos_quiet(cid, None, now)
+            if until:
+                await _quiet_dm(uid, f"Reminder{t}: {r.get('title')}", company_id=cid,
+                                kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]),
+                                until=until, now=now)
+                report["shabbos_queued"] += 1
+                continue
             sent = await send_whatsapp_dm(uid, f"Reminder{t}: {r.get('title')}",
                                           kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]))
             report["reminders_sent" if sent else "refused"] += 1
@@ -65112,21 +65314,33 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
     Success is only said for what WaAPI accepted."""
     failed, photo_fail, done = [], 0, []
     group_name = await _punch_group_name(group_id)
+    # Shabbos / Yom Tov: each message (and its photos) waits, in order, until
+    # after it; the walker -- who wrote -- is told when.
+    co, pid = sess.get("company_id"), sess.get("project_id")
+    quiet = await _shabbos_quiet(co, pid)
+
+    async def out(spec):
+        if quiet:
+            await _quiet_enqueue(spec, company_id=co, project_id=pid, kind="punch_list", until=quiet)
+            return True
+        return await _quiet_deliver(spec)
     for b in batches:
         if b.get("via") == "dm":
             chat = b.get("jid")
-            ok = bool(chat) and bool(await send_whatsapp_message(chat, b["text"]))
+            ok = bool(chat) and bool(await out({"via": "chat", "chat_id": chat, "message": b["text"]}))
         else:
             chat = group_id
-            ok = await _group_post(group_id, b["text"], b.get("targets") or
-                                   [b.get("target") or wa_mention.target(b["name"], None)])
+            ok = bool(await out({"via": "group_post", "group_id": group_id, "message": b["text"],
+                                 "targets": b.get("targets") or
+                                 [b.get("target") or wa_mention.target(b["name"], None)]}))
         if not ok:
             failed.append(b)
             continue
         done.append(b)
         for r in b["items"]:
             for key in [r.get("photo_key"), *(r.get("extra_photos") or [])]:
-                if key and not await _punch_send_photo(chat, key, r["pid"]):
+                if key and not await out({"via": "photo", "chat_id": chat, "key": key,
+                                          "caption": r["pid"]}):
                     photo_fail += 1
     lines = []
     for b in done:
@@ -65135,6 +65349,10 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
     if photo_fail:
         lines.append(f"{photo_fail} photo{'s' if photo_fail != 1 else ''} could not be sent "
                      "(the items are kept with them; ask \"show P23 photo\").")
+    if quiet and done:
+        from lib import shabbos as _shabbos
+        lines.append(f"It's Shabbos / Yom Tov: these go out after it ends "
+                     f"({quiet.astimezone(_shabbos.NY):%a %-I:%M %p}).")
     if failed:
         await _punch_save(sess, status="resend",
                           undelivered=[r["pid"] for b in failed for r in b["items"]])
@@ -65913,9 +66131,11 @@ async def _punch_remind_tick(now: Optional[datetime] = None) -> int:
         return 0
     for s in rows:
         try:
-            await send_whatsapp_message(s["chat"], (
+            await _quiet_or_send({"via": "chat", "chat_id": s["chat"], "message": (
                 f"Your walkthrough draft at {s.get('job_name') or 'the job'} isn't sent yet. "
-                "Reply 'send' to finish it, or 'cancel walkthrough'."))
+                "Reply 'send' to finish it, or 'cancel walkthrough'.")},
+                company_id=s.get("company_id"), project_id=s.get("project_id"),
+                kind="punch_remind", now=now)
             await db[punch.SESSIONS].update_one({"_id": s["_id"]}, {"$set": {"reminded_at": now}})
             n += 1
         except Exception as e:
@@ -71785,7 +72005,9 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
             resp.raise_for_status()
             summary = resp.json()["choices"][0]["message"]["content"].strip()
         header = f"*Daily Summary - {project_name}*\n_{datetime.now(timezone.utc).strftime('%B %d, %Y')}_\n"
-        await send_whatsapp_message(group_id, header + "\n" + summary)
+        await _quiet_or_send({"via": "chat", "chat_id": group_id, "message": header + "\n" + summary},
+                             company_id=binding.get("company_id"), project_id=project_id,
+                             kind="daily_summary")
     except Exception as e:
         logger.error(f"Daily summary GPT failed for {project_name}: {e}")
 
@@ -72243,7 +72465,8 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
     # Format + send to group
     try:
         message = _format_checklist_message(project_name, items)
-        await send_whatsapp_message(group_id, message)
+        await _quiet_or_send({"via": "chat", "chat_id": group_id, "message": message},
+                             company_id=company_id, project_id=project_id, kind="checklist")
     except Exception as e:
         logger.error(
             f"checklist send failed (project={project_id}, group={group_id}): {e}"
@@ -75094,6 +75317,16 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # What waited over Shabbos / Yom Tov, delivered in order once it ends.
+    scheduler.add_job(
+        _quiet_queue_job,
+        IntervalTrigger(minutes=5),
+        id='shabbos_queue',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
     )
     # DOT sync: OATH summonses issued by DOT and DOT street permits, matched
     # to projects by BIN / BBL / exact address (lib/dot_sync.py). Every 2 h.

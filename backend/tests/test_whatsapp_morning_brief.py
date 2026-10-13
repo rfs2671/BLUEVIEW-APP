@@ -511,6 +511,18 @@ class TimeAndOnce(unittest.TestCase):
         with _Ctx(db) as c:
             _tick(c, SAT_7)
             _tick(c, SUN_7)
+        # Sunday only: Saturday 7 AM is Shabbos (the company's "Shabbos /
+        # Yom Tov off" is on by default) and the brief is skipped then.
+        self.assertEqual(len(_sends(c)), 1)
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        self._set(db, "u_admin", brief_weekend=True)
+        db.notification_preferences.rows.append({
+            "_id": "np_co", "user_id": None, "project_id": None, "scope": "company",
+            "company_id": CO_A, "whatsapp_company": {"shabbos_off": False}})
+        with _Ctx(db) as c:
+            _tick(c, SAT_7)
+            _tick(c, SUN_7)
         self.assertEqual(len(_sends(c)), 2)         # Saturday AND Sunday
 
     def test_saturday_on_is_migrated_to_weekend(self):

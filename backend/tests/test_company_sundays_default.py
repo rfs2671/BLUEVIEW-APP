@@ -39,15 +39,12 @@ class TheSetting(unittest.TestCase):
 
     def test_on_by_default_and_admin_changes_it_audited(self):
         with patch.object(server, "db", self.db):
-            self.assertEqual(_run(server.get_company_whatsapp_settings(ADMIN)),
-                             {"chase_sundays_default": True})
+            self.assertIs(_run(server.get_company_whatsapp_settings(ADMIN))["chase_sundays_default"], True)
             out = _run(server.patch_company_whatsapp_settings({"chase_sundays_default": False}, ADMIN))
-            self.assertEqual(out, {"chase_sundays_default": False})
-            self.assertEqual(_run(server.get_company_whatsapp_settings(ADMIN)),
-                             {"chase_sundays_default": False})
+            self.assertIs(out["chase_sundays_default"], False)
+            self.assertIs(_run(server.get_company_whatsapp_settings(ADMIN))["chase_sundays_default"], False)
             # Another company's admin sees its own default, not ours.
-            self.assertEqual(_run(server.get_company_whatsapp_settings(ADMIN_B)),
-                             {"chase_sundays_default": True})
+            self.assertIs(_run(server.get_company_whatsapp_settings(ADMIN_B))["chase_sundays_default"], True)
         (a,) = [a for a in self.db.audit_logs.rows if a["action"] == "whatsapp_company_settings"]
         self.assertEqual((a["details"]["before"], a["details"]["after"]),
                          ({"chase_sundays_default": True}, {"chase_sundays_default": False}))
