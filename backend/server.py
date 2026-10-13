@@ -65165,7 +65165,11 @@ async def _punch_batch_text(ident, sess, dm_chat, parsed, words, now) -> bool:
         done = await _punch_think(ident, sess, dm_chat, parsed, words, now)
         if done is not None:
             return done
-        ann = {"kind": "annotation", **punch_batch.read_batch(words)}
+        # A question or an ask the walk could not act on just now: never
+        # words for the photos (Codex on #785).
+        await send_whatsapp_message(dm_chat, "I can't do that right now — your photos are as they "
+                                             "were. Keep going, or say done when you're finished.")
+        return True
     if punch_batch.is_empty(ann):
         ann["description"] = punch.capitalize(" ".join(str(words or "").split()))[:120]
     # The previous text's end: a batch text, or a location message (#783).
@@ -65280,6 +65284,20 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
     if any(r.get("send_mode") == "live" for r in rows):
         return {"ok": False, "why": "this walk went out LIVE -- not reopened (its items were sent)"}
     events = events if events is not None else await _punch_walk_events(sess, d)
+    # A voice note's words are not in the log: its transcript is on the item
+    # the old rule put it on (a photo's caption, or an item of its own) --
+    # replayed as the text it was (Codex on #785).
+    spoken = {}
+    for it in sess.get("items") or []:
+        tr = ((it.get("voice") or {}).get("transcript") or "").strip()
+        if tr:
+            for mid in [it.get("message_id")] + list(it.get("caption_ids") or []):
+                if mid:
+                    spoken.setdefault(punch.short_message_id(mid), tr)
+    events = [({**e, "kind": "text", "text": spoken[punch.short_message_id(e.get("message_id"))],
+                "voice": True}
+               if e.get("kind") == "voice" and punch.short_message_id(e.get("message_id")) in spoken
+               else e) for e in events]
     readings: Dict[int, dict] = {}
     for i, e in enumerate(events):
         if e.get("kind") != "text":

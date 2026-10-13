@@ -327,13 +327,31 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
     for it in items:
         if it.get("message_id"):
             by_mid[punch.short_message_id(it["message_id"])] = it
+    # The texts by message id, and their words: an item is removed only when
+    # a text (or a voice note) that was NOT "add: ..." is shown to have made
+    # it -- never an explicit add (Codex on #785).
+    said_by_id, said_words = {}, {}
+    for e in events:
+        if e.get("kind") == "text":
+            t = " ".join(str(e.get("text") or "").split())
+            said_by_id[punch.short_message_id(e.get("message_id"))] = t
+            if not _ADD.match(t):
+                said_words[t.lower()] = t
     removed, keep = [], []
     for it in items:
-        if it.get("photo_key") is None and not it.get("photo_failed") and not it.get("voice"):
-            removed.append(it)                  # a text made it: never an item
+        if it.get("photo_key") is None and not it.get("photo_failed"):
+            t = said_by_id.get(punch.short_message_id(it.get("message_id")))
+            words = " ".join(str(it.get("said") or it.get("text") or "").split()).lower()
+            made_by_text = (t is not None and not _ADD.match(t)) or (
+                t is None and not it.get("added_from") and words in said_words)
+            if made_by_text:
+                removed.append(it)              # a text made it: never an item
+                continue
+            keep.append(it)                     # "add: ...", or a reply's add: kept
             continue
         if words_came_later(it):
             # Its words were a text sent after it: off the photo, replayed below.
+            it.pop("voice", None)
             for k in ("text", "said", "text_src", "text_auto"):
                 it.pop(k, None)
             own = punch.short_message_id(it.get("message_id"))
@@ -375,6 +393,9 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
         previous = [it.get("captured") for it in batch]
         mark = max([it.get("captured") or 0 for it in seen_photos] or [mark])
     return {"items": keep, "removed": removed, "applied": applied, "unmatched": unmatched}
+
+
+_ADD = re.compile(r"^\s*add\b", re.IGNORECASE)
 
 
 def words_came_later(it: dict) -> bool:

@@ -192,6 +192,14 @@ class OnlyPhotosMakeItems(_Batch):
             self.assertEqual(self.turn(said), ["👍 Keep going — say done when you're finished."])
         self.assertEqual(self.item(1).get("text"), "")
 
+    def test_a_question_when_the_model_is_down_changes_nothing(self):
+        # Codex on #785: never words for the photos.
+        self.turn("starting walkthrough at 588")
+        self.turn("", photo=True)
+        (out,) = self.turn("how many do I have so far?")
+        self.assertTrue(out.startswith("I can't do that right now"), out)
+        self.assertEqual(self.item(1).get("text"), "")
+
     def test_a_reply_to_one_photo_is_that_photo(self):
         self.turn("starting walkthrough at 588")
         self.turn("", photo=True)
@@ -360,6 +368,38 @@ class ThisWalkPutRight(_Batch):
         self.assertTrue(sent.startswith("Punch sends are in shadow mode"), sent)
         self.assertEqual(sorted(r["pid"] for r in self.db[punch.COLLECTION].rows),
                          sorted(r["pid"] for r in rows if r["n"] != 99))
+
+    def test_an_explicit_add_is_kept(self):
+        # Codex on #785: "add: ..." is still an item under the new rule.
+        events, rows = self._load()
+        s = self.sess()
+        mid = f"false_{CHAT}_ADD1"
+        s["items"].append({"n": 48, "captured": 47.5, "text": "Missing access ladder", "photo_key": None,
+                           "message_id": mid, "added": True, "floor": punch.UNKNOWN,
+                           "area": punch.UNKNOWN, "trade": punch.UNKNOWN})
+        events.insert(-3, {"kind": "text", "message_id": mid, "text": "add: missing access ladder",
+                           "quoted": "", "at": T0 + timedelta(minutes=30)})
+        out = self._run(server.punch_walk_rebatch("w588", apply=True, events=events))
+        self.assertEqual((out["kept"], out["removed"]), (48, 1))
+        self.assertIn("Missing access ladder", [it["text"] for it in self.sess()["items"]])
+
+    def test_a_voice_note_is_replayed_as_its_words(self):
+        # Codex on #785: the log has no transcript; the item the old rule put
+        # it on does.
+        events, rows = self._load()
+        s = self.sess()
+        last = next(it for it in s["items"] if it["n"] == 47)
+        vid = f"false_{CHAT}_VO1"
+        last.update(text="Paint scuffs in hallway", caption_ids=[vid],
+                    voice={"transcript": "paint scuffs in hallway", "lang": "en"})
+        events.insert(-3, {"kind": "voice", "message_id": vid, "text": "", "quoted": "",
+                           "at": T0 + timedelta(minutes=31)})
+        out = self._run(server.punch_walk_rebatch("w588", apply=True, events=events))
+        self.assertTrue(out["ok"])
+        by_n = {it["n"]: it for it in self.sess()["items"]}
+        for n in range(33, 48):                      # the 15 photos it was about
+            self.assertEqual((by_n[n]["text"], by_n[n]["area"], by_n[n].get("text_auto")),
+                             ("Paint scuffs", "hallway", None), n)
 
     def test_a_live_walk_is_never_touched(self):
         events, rows = self._load()
