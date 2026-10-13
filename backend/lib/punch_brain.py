@@ -200,12 +200,16 @@ def clean_plan(got: Any, state: Dict[str, Any], said: str) -> Optional[Dict[str,
             if not to:
                 continue
             trade = punch.trade_word(str(a.get("trade") or "")) if a.get("trade") else None
+            if a.get("trade") and not trade:
+                continue                            # a trade it named but we don't know: never "all"
             out.append({"do": "assign", "to": to, "trade": trade})
         elif do == "due":
             when = punch.due_words(a.get("when"))
             if not when:
                 continue
             trade = punch.trade_word(str(a.get("trade") or "")) if a.get("trade") else None
+            if a.get("trade") and not trade:
+                continue
             out.append({"do": "due", "when": when, "trade": trade})
         elif do == "trade":
             ns, trade = _nums(a.get("items"), known), punch.trade_word(str(a.get("trade") or ""))

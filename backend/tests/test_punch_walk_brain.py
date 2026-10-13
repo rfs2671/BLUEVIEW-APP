@@ -293,12 +293,23 @@ class SureTradesOnly(unittest.TestCase):
     def test_an_open_walk_is_read_again_once(self):
         items = [{"n": 1, "captured": 1, "text": "Stucco work", "trade": "roofing", "trade_guess": True},
                  {"n": 2, "captured": 2, "text": "Elevator beam pockets", "trade": "roofing",
-                  "trade_guess": False},
+                  "trade_guess": False, "notes": [{"text": "roof"}]},          # from a "roof" note
                  {"n": 3, "captured": 3, "text": "Table cracked", "trade": "carpentry", "trade_guess": True},
                  {"n": 4, "captured": 4, "text": "Patch hole", "trade": "paint", "trade_guess": False,
                   "trade_src": "walker"}]
         self.assertEqual(punch.reguess_trades(items), 3)
         self.assertEqual([it["trade"] for it in items], ["masonry", "concrete", punch.UNKNOWN, "paint"])
+
+    def test_a_roofing_the_walker_gave_stays(self):
+        # Codex on #784: an old walk cannot say who set a trade; roofing is
+        # only re-read when a bare "roof" note (a place) is what made it.
+        items = [{"n": 1, "captured": 1, "text": "loose shingles", "trade": "roofing", "trade_guess": False},
+                 {"n": 2, "captured": 2, "text": "Elevator beam pockets", "trade": "roofing",
+                  "trade_guess": False, "notes": [{"text": "roof"}]},
+                 {"n": 3, "captured": 3, "text": "roof leak by drain", "trade": "roofing",
+                  "trade_guess": False, "notes": [{"text": "roof"}]}]
+        self.assertEqual(punch.reguess_trades(items), 1)
+        self.assertEqual([it["trade"] for it in items], ["roofing", "concrete", "roofing"])
 
     def test_no_question_marks_in_the_draft(self):
         items = [punch.new_item(1, "Table cracked 2nd floor", photo_key="k", message_id="m"),
@@ -348,6 +359,14 @@ class TheModelIsChecked(unittest.TestCase):
                             {"do": "assign", "to": "17185550100"}], "reply": ""}
         got = punch_brain.clean_plan(plan, self.STATE, "send it")["actions"]
         self.assertEqual(got, [{"do": "send", "to": "me"}, {"do": "assign", "to": "group", "trade": None}])
+
+    def test_a_trade_it_does_not_know_is_never_the_whole_list(self):
+        # Codex on #784: "landscaping to Mike" must not give Mike everything.
+        plan = {"actions": [{"do": "assign", "to": "Mike", "trade": "landscaping"},
+                            {"do": "due", "when": "friday", "trade": "landscaping"},
+                            {"do": "assign", "to": "Mike", "trade": None}], "reply": ""}
+        got = punch_brain.clean_plan(plan, self.STATE, "landscaping to Mike friday")["actions"]
+        self.assertEqual(got, [{"do": "assign", "to": "Mike", "trade": None}])
 
     def test_a_reply_is_two_lines_at_most(self):
         self.assertEqual(punch_brain.clean_reply("a\n\nb\nc\nd"), "a\nb")
@@ -417,6 +436,51 @@ class FreeTextGoesToTheModel(_Brain):
         self.assertEqual(out, "Sorry, I didn't catch that. " + punch.DRAFT_HELP)   # stuck: examples
 
 
+class NoItemIsLeftOut(_Brain):
+    """Codex on #784: an item whose trade nobody has is asked about --
+    never skipped by the send while the walk is called sent."""
+
+    detail = "detailed"
+
+    def test_an_item_added_at_the_recap_through_the_model(self):
+        self.start("outlet cover missing 2nd floor", "faucet leaking 2nd floor")
+        self.turn("done")
+        self.turn("send")
+        self.turn("electrical to chris; plumbing to sam")
+        self.assertEqual(self.sess()["status"], "recap")
+        self.plans["oh and the door closer is broken in 2B"] = {
+            "actions": [{"do": "add", "text": "door closer broken 2B"}], "reply": ""}
+        (out,) = self.turn("oh and the door closer is broken in 2B")
+        self.assertTrue(out.startswith("Added #3 'Door closer broken' (Apt 2B)"), out)
+        self.assertEqual(self.sess()["status"], "assign")
+        self.assertIn("doors → who?", out)
+        self.assertEqual(self.db["punch_items"].rows, [])
+
+    def test_with_one_person_for_the_whole_list_it_goes_to_them(self):
+        self.start("outlet cover missing 2nd floor")
+        self.turn("done")
+        self.turn("send")
+        self.turn("electrical to chris")
+        self.plans["oh and the faucet is leaking in 2B"] = {
+            "actions": [{"do": "add", "text": "faucet leaking 2B"}], "reply": ""}
+        (out,) = self.turn("oh and the faucet is leaking in 2B")
+        self.assertIn("Ready to DM the whole list to Chris Weiss", out)
+        self.assertIn("#1, #2", out)
+
+    def test_the_send_asks_for_a_trade_nobody_has(self):
+        self.start("outlet cover missing 2nd floor", "faucet leaking 2nd floor")
+        self.turn("done")
+        self.turn("send")
+        self.turn("electrical to chris; plumbing to chris")
+        s = self.sess()
+        s["assign"].pop("plumbing")                     # a map missing a trade, however it came
+        s["whole"] = None
+        (out,) = self.turn("ok")
+        self.assertEqual(out, 'Who should get the plumbing items? A name, or "me".')
+        self.assertEqual(self.db["punch_items"].rows, [])
+        self.assertEqual(self.sess()["status"], "assign")
+
+
 # ── 6. Tone ──────────────────────────────────────────────────────────────────
 
 class Tone(unittest.TestCase):
@@ -470,7 +534,8 @@ class The588WalkReplayed(_Brain):
             if i < 6:
                 it.update(floor="2", area="interior")
             if i in (0, 1):
-                it.update(trade="roofing", trade_guess=i == 0)      # the old "roof" note
+                # The old rule: a "roof" note on the photo, and roofing from it.
+                it.update(trade="roofing", trade_guess=i == 0, notes=[{"text": "roof"}])
         s.pop("detail", None)                        # from before "Punch list detail"
         s.pop("group_loc_v2", None)
         s.update(status="locating", asking=7, where_asked=False)

@@ -461,17 +461,25 @@ def trade_for(text: str) -> Tuple[str, bool]:
     return (t, True) if t else (UNKNOWN, False)
 
 
+_BARE_ROOF = re.compile(r"(?<!\w)roof(?!\w)", re.IGNORECASE)
+
+
 def reguess_trades(items: List[dict]) -> int:
     """A walk from before the sure-only rule (1:43 PM): a trade the old
-    rules guessed, or a "roofing" read from a "roof" location note, is read
-    again from the item's own words -- blank unless sure. A trade the walker
-    gave (trade_src "walker") stays. Returns how many changed."""
+    rules guessed, or a "roofing" read from a "roof" LOCATION note (the
+    bare word in a note or the words as sent, never in its own caption),
+    is read again from the item's own words -- blank unless sure. A trade
+    the walker gave (trade_src "walker"), or a roofing with no such note (it
+    may have been typed "3 → roofing"), stays. Returns how many changed."""
     changed = 0
     for it in items:
         t = it.get("trade") or UNKNOWN
         if t == UNKNOWN or it.get("trade_src") == "walker":
             continue
-        if it.get("trade_guess") or t == "roofing":
+        from_note = t == "roofing" and not _BARE_ROOF.search(str(it.get("text") or "")) and any(
+            _BARE_ROOF.search(str(x)) for x in [it.get("said") or ""]
+            + [(n or {}).get("text") or "" for n in it.get("notes") or []])
+        if it.get("trade_guess") or from_note:
             new, guessed = trade_for(it.get("text") or "")
             if new != t:
                 it["trade"], it["trade_guess"] = new, guessed

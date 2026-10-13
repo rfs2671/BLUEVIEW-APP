@@ -64404,7 +64404,9 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
         # A walk from before "Punch list detail": the company's (Simple
         # unless set) -- and its trades re-read under the sure-only rule
         # (1:43 PM: "Stucco work" -> roofing? from a "roof" note).
-        punch.reguess_trades(sess["items"])
+        if sess["status"] in ("capturing", "locating", "draft"):
+            # Before anyone is named only: a recap's names follow its trades.
+            punch.reguess_trades(sess["items"])
         await _punch_save(sess, detail=await _punch_company_detail(sess["company_id"]),
                           items=[dict(i) for i in sess["items"]])
         sess["items"] = [dict(i) for i in sess["items"]]
@@ -64672,6 +64674,7 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
     next: the list, who gets it, the recap, or the send."""
     items = sess["items"]
     lines: List[str] = []
+    late: List[dict] = []
     changed = False
     nxt: Optional[Tuple[str, dict]] = None
     for a in plan["actions"]:
@@ -64740,7 +64743,10 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
             it.update(text=punch.clean_caption(a["text"]), captured=cap, added=True)
             items.append(it)
             changed = True
-            lines.append(punch.added_text(it))
+            if sess["status"] in ("assign", "recap", "due"):
+                late.append(it)                  # who gets it: settled below (Codex on #784)
+            else:
+                lines.append(punch.added_text(it))
         elif do == "undo":
             if sess.get("loc_undo"):
                 if changed:
@@ -64750,7 +64756,10 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
         elif do == "due":
             live_trades = {it.get("trade") or punch.UNKNOWN for it in items
                            if it.get("status", "draft") != "dropped"}
-            keys = [a["trade"]] if a["trade"] and a["trade"] in live_trades else sorted(live_trades)
+            if a["trade"] and a["trade"] not in live_trades:
+                lines.append(f"There's no {a['trade']} on this list.")    # never widened to all
+                continue
+            keys = [a["trade"]] if a["trade"] else sorted(live_trades)
             await _punch_save(sess, due={**(sess.get("due") or {}), **{t: a["when"] for t in keys}})
             lines.append(f"Got it — {punch.due_label(a['when'])}.")
             if sess["status"] in ("recap", "due"):
@@ -64761,6 +64770,20 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
             nxt = nxt or ("show", {})
     if changed:
         await _punch_save(sess, items=items)
+    if late:
+        # An item added at "Who gets it?" or the recap: each one's trade has
+        # someone (the whole-list person) or is asked -- never skipped by
+        # the send (Codex on #784).
+        assign = dict(sess.get("assign") or {})
+        for it in late[:-1]:
+            t = it.get("trade") or punch.UNKNOWN
+            if t not in assign:
+                assign[t] = sess.get("whole")
+        await _punch_save(sess, assign=assign)
+        if lines:
+            await send_whatsapp_message(dm_chat, "\n".join(lines))
+        return await _punch_back_to(sess, dm_chat, sess["status"], late[-1],
+                                    punch.added_text(late[-1]))
     head = "\n".join(lines) if lines else plan["reply"]
     if not nxt:
         await send_whatsapp_message(dm_chat, head or "Got it.")
@@ -65793,6 +65816,18 @@ async def _punch_send_now(ident, sess, dm_chat) -> bool:
     """'ok' at the recap: each trade's due (the job's default where none was
     said), then the send."""
     live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
+    assign = dict(sess.get("assign") or {})
+    if not sess.get("whole") and sess.get("target") != "group":
+        # NO ITEM LEFT OUT: one whose trade nobody has is asked about, never
+        # skipped while the walk is called sent (Codex on #784).
+        orphan = sorted({it.get("trade") or punch.UNKNOWN for it in live}
+                        - {t for t, p in assign.items() if p})
+        if orphan:
+            for t in orphan:
+                assign[t] = None
+            await _punch_save(sess, status="assign", assign=assign, choose=None)
+            await send_whatsapp_message(dm_chat, punch.open_trades_question(orphan))
+            return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     default = punch.due_default(settings.get("punch_due_default"))
     due = {t: (sess.get("due") or {}).get(t) or default
