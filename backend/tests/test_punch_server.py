@@ -36,6 +36,10 @@ def _sc():
     return json.loads(WALK.read_text(encoding="utf-8"))
 
 
+LOCS = ("{n:faucet} Apt 6C, {n:door closer} 5A, {n:stain on ceiling} 5B, "
+        "{n:bathroom no light} 5D, {n:lavamanos} 4B, {n:enchufe} 4C")
+
+
 def _upto(sc, text):
     """The scenario cut right after the DM line `text` (no group, no asks)."""
     i = next(k for k, l in enumerate(sc["dm"]) if l.get("text") == text)
@@ -77,15 +81,16 @@ class ShippedScenarios(unittest.TestCase):
 class TheDraftStaysWithTheWalker(unittest.TestCase):
 
     def test_capture_is_one_thumbs_up_per_item_and_no_words(self):
-        res = _run(_upto(_sc(), "4C"))           # the last location answer
+        res = _run(_upto(_sc(), LOCS))           # the locations, in the draft
         self.assertEqual(res["reacts"], ["👍"] * 12)       # the 12 photos; words are answered in words
         said_all = "\n".join(res["transcript"])
         self.assertIn("— got it. Next photo", said_all)    # the voice after one (10:46 AM: never only 👍)
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
-        # Only the start, one location question per photo with none, and the draft.
+        # Every item has a floor at least: no location question at all (Tue
+        # Oct 13: a location is never a blocker); the draft.
         said = [l for l in res["transcript"] if l.startswith("  ") and l.strip()]
-        self.assertEqual(sum("Where " in l for l in said), 6)
+        self.assertEqual(sum("no location" in l or "Where " in l for l in said), 0)
         self.assertTrue(any("(draft)" in l for l in said))
 
     def test_nothing_is_made_or_posted_before_send(self):
@@ -94,7 +99,7 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         self.assertEqual(res["group_posts"], [])
 
     def test_the_draft_is_marked_and_grouped(self):
-        res = _run(_upto(_sc(), "4C"))
+        res = _run(_upto(_sc(), LOCS))
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
         self.assertIn("2 need a trade", text)

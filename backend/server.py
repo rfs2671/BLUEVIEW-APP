@@ -63953,38 +63953,49 @@ async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
                         project_id=sess["project_id"])
 
 
+def _punch_needs_where(sess: dict) -> List[dict]:
+    """The items still to be asked a location: none once the walk was asked
+    (ONE question for all of them, Tue Oct 13 12:02 PM). After that an item
+    with no location goes out as "Location: not given"."""
+    return [] if sess.get("where_asked") else punch.missing_location(sess["items"])
+
+
 async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False,
                            head: str = "") -> bool:
-    """Every item needs a location before the draft: ask for the first one
-    missing (one question per photo), or show the draft when none is."""
+    """Missing locations: asked ONCE, all of them in one short numbered
+    list; then the draft (or the stage a late photo came in at). A location
+    is never a blocker."""
     items = sess["items"]
-    missing = punch.missing_location(items)
-    if not missing and sess.get("resume"):
-        # A photo sent at a later stage, now located: back to that stage.
+    missing = _punch_needs_where(sess)
+    if missing:
+        await _punch_save(sess, status="locating", items=items, asking=None,
+                          where_asked=True, nudge={})
+        await send_whatsapp_message(dm_chat, (head + "\n" if head else "")
+                                    + punch.batch_where_question(missing))
+        return True
+    if sess.get("resume"):
+        # A photo sent at a later stage: back to that stage.
         prior = sess["resume"]
         await _punch_save(sess, resume=None, asking=None, items=items)
         it = _punch_item_by_captured(items, sess.get("resume_item"))
         return await _punch_back_to(sess, dm_chat, prior, it,
                                     punch.added_text(it) if it else "")
-    if not missing and sess.get("shortcut"):
-        # "Done, send to Chris": located, now on to Chris.
+    if sess.get("shortcut"):
+        # "Done, send to Chris": on to Chris.
         await _punch_save(sess, items=items, asking=None)
         return await _punch_apply_shortcut(sess, dm_chat)
-    if not missing:
-        # The numbers the walker was asked about stay: never renumbered.
-        await _punch_save(sess, status="draft", items=items, asking=None)
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
-        return True
-    first = missing[0]
-    await _punch_save(sess, status="locating", items=items, asking=first.get("n"))
-    lead, head = head, ""
-    if intro:
-        n = len(missing)
-        head = (f"{n} item{'s' if n != 1 else ''} need{'s' if n == 1 else ''} a location "
-                "before the draft. ")
-    await send_whatsapp_message(dm_chat, (lead + " " if lead else "") + head
-                                + punch.where_question(first))
+    # The numbers the walker was asked about stay: never renumbered.
+    await _punch_save(sess, status="draft", items=items, asking=None, nudge={})
+    await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "")
+                                + punch.draft_text(sess["job_name"], items))
     return True
+
+
+async def _punch_nudge(sess: dict) -> int:
+    """One more non-answer at this stage: how many in a row now."""
+    n = int((sess.get("nudge") or {}).get(sess["status"]) or 0) + 1
+    await _punch_save(sess, nudge={sess["status"]: n})
+    return n
 
 
 async def _punch_save(sess: dict, **fields) -> None:
@@ -64190,6 +64201,11 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
             # "I meant tile" under "Time wrong": THAT caption, corrected --
             # never a trade or a note on another item (8:31 PM).
             return await _punch_correct(sess, dm_chat, parsed, it, fix, now)
+        add = punch.add_item_words(said) if it else None
+        if add:
+            # "Add missing access ladder" under the stucco photo: its own
+            # item at that photo's place, never a note on it (12:02 PM).
+            return await _punch_add_words_item(sess, dm_chat, parsed, it, add, now)
         if it:
             if it.get("captured") in _punch_awaiting(sess):
                 # Its words came as a reply to the photo: no longer awaited
@@ -64323,6 +64339,33 @@ async def _punch_item_words(sess, dm_chat, parsed, it, words, now) -> bool:
         extra["last_captioned"] = it.get("captured")
     await _punch_save(sess, items=items, pending_note=None, **extra)
     return await _punch_after_item_change(sess, dm_chat, parsed, it)
+
+
+async def _punch_add_words_item(sess, dm_chat, parsed, ref, words, now) -> bool:
+    """A new item from words alone (no photo), at the replied photo's place
+    unless the words name one; pushed, never the list written back."""
+    items = sess["items"]
+    # Above every number ever shown, a dropped one too (Codex on #781).
+    it = punch.new_item(max([i.get("n") or 0 for i in items] or [0]) + 1, punch.capitalize(words),
+                        photo_key=None,
+                        message_id=parsed.get("message_id_serialized") or "", at=now)
+    it["captured"] = len(items) + 1
+    if not punch.location_ok(it):
+        for k in ("floor", "area", "room"):
+            if ref.get(k):
+                it[k] = ref[k]
+    it["added_from"] = ref.get("captured")
+    await db[punch.SESSIONS].update_one({"_id": sess["_id"]},
+                                        {"$push": {"items": it}, "$set": {"updated_at": now}})
+    items.append(it)
+    sess["updated_at"] = now
+    if sess["status"] == "draft":
+        await send_whatsapp_message(dm_chat, punch.added_text(it) + "\n\n"
+                                    + punch.draft_text(sess["job_name"], items))
+        return True
+    await send_whatsapp_message(dm_chat, punch.added_text(it) + (
+        " Next photo, or 'done'." if sess["status"] == "capturing" else ""))
+    return True
 
 
 def _punch_item_no(items: List[dict], n: int) -> Optional[dict]:
@@ -64464,8 +64507,10 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
 
 
 async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
-    """Before the draft: the answer to "Where is #2 …?" (a reply to another
-    photo is handled before this, for that photo)."""
+    """The answer to the ONE location question: "3 rear yard, 5-9 roof",
+    "all roof", "rest lobby", or 'skip' / 'just finish' / 'ignore that' --
+    then the draft. Any words are a location, as typed; a floor alone is
+    one. Never the same question twice in a row (12:02 PM: 5 times)."""
     words = (voice or {}).get("transcript") or text
     low = words.strip().lower()
     items = sess["items"]
@@ -64473,35 +64518,58 @@ async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    ref = punch.target_ref(words)
-    it = _punch_item_no(items, ref[0]) if ref else None
-    if ref and it is None:
-        # "#99 lobby": no such item -- never put it on the one being asked.
-        asked = _punch_item_no(items, sess.get("asking") or 0)
-        await send_whatsapp_message(dm_chat, f"There's no #{ref[0]} in this walkthrough."
-                                    + (" " + punch.where_question(asked) if asked else ""))
-        return True
-    if it is not None:
-        words = ref[1]
-    else:
-        it = _punch_item_no(items, sess.get("asking") or 0) or (punch.missing_location(items) or [None])[0]
-    if it is None:
-        return await _punch_ask_where(sess, dm_chat)
-    drop = re.fullmatch(r"\s*(?:drop|delete|remove|borra|quita)(?:\s+(?:it|this))?\s*", low)
+    live_ns = [it["n"] for it in items if it.get("status", "draft") != "dropped"]
+    missing_ns = [it["n"] for it in punch.missing_location(items)]
+    drop = re.fullmatch(r"\s*(?:drop|delete|remove|borra|quita)\s+#?(\d{1,3})\s*", low)
     if drop:
-        it["status"] = "dropped"
-        await _punch_save(sess, items=items)
-        return await _punch_ask_where(sess, dm_chat)
-    loc = punch.read_location(words)
-    bare = re.fullmatch(r"\s*(\d{1,3})\s*", words or "")
-    if bare and punch.location_state(it.get("floor"), it.get("area")) == "needs_floor":
-        loc = {"floor": bare.group(1).lstrip("0") or "0", "area": None}   # "Which floor?" "3"
-    if not (loc.get("floor") or loc.get("area")):
-        await send_whatsapp_message(dm_chat, punch.where_question(it) + "\n" + punch.WHERE_HELP)
+        it = _punch_item_no(items, int(drop.group(1)))
+        if it:
+            it["status"] = "dropped"
+            await _punch_save(sess, items=items)
+        return await _punch_ask_where(sess, dm_chat, head=f"Dropped #{drop.group(1)}." if it else "")
+    ans = punch.parse_batch_where(words, missing_ns)
+    legacy = False
+    if ans is None and not sess.get("where_asked") and sess.get("asking"):
+        # A walk asked the old way ("Where on floor 1 is #3?"): the words are
+        # #3's place, as typed; then the one question for the rest.
+        loc = punch.free_location(words)
+        if loc.get("floor") or loc.get("area"):
+            ans, legacy = {"set": {int(sess["asking"]): loc}}, True
+    if ans is None and len(missing_ns) == 1:
+        # One item asked: the words are its place, no number needed ("4D").
+        loc = punch.free_location(words)
+        if loc.get("floor") or loc.get("area"):
+            ans = {"set": {missing_ns[0]: loc}}
+    if ans is None:
+        n = await _punch_nudge(sess)
+        if n >= 3:
+            # Asked twice already: on to the draft, the rest without one.
+            await _punch_save(sess, where_asked=True)
+            return await _punch_ask_where(sess, dm_chat, head="Moving on — those go out with "
+                                          "no location.")
+        await send_whatsapp_message(dm_chat, punch.BATCH_SHORT
+                                    + (" " + punch.SKIP_HINT if n >= 2 else ""))
         return True
-    punch.merge_location(it, loc)
-    await _punch_save(sess, items=items)
-    return await _punch_ask_where(sess, dm_chat)
+    head, set_ns, unknown = "", [], []
+    for n, loc in sorted((ans.get("set") or {}).items()):
+        it = _punch_item_no(items, n)
+        if it is None:
+            unknown.append(n)
+            continue
+        if punch.merge_location(it, loc):
+            set_ns.append(n)
+    if set_ns:
+        await _punch_save(sess, items=items)
+        head = f"Set {len(set_ns)} location{'s' if len(set_ns) != 1 else ''}."
+    if unknown:
+        head += f" No #{', #'.join(map(str, unknown))} in this walkthrough."
+    del live_ns
+    # One question, then the draft: whatever is still missing goes out
+    # with "Location: not given". (An old-style answer: the rest are asked
+    # the one question first.)
+    if not legacy or ans.get("skip"):
+        await _punch_save(sess, where_asked=True)
+    return await _punch_ask_where(sess, dm_chat, head=head.strip())
 
 
 async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
@@ -64515,21 +64583,42 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    if low in punch.SEND_WORDS:
-        if punch.missing_location(items):
-            # An item added in the draft with no location: asked first.
+    escape = punch.is_escape(words)
+    if low in punch.SEND_WORDS or escape:
+        if _punch_needs_where(sess):
             return await _punch_ask_where(sess, dm_chat, intro=True)
         live = [it for it in items if it.get("status", "draft") != "dropped"]
         need = [it["n"] for it in punch.ordered(live) if it.get("trade") == punch.UNKNOWN]
-        if need:
+        if need and not escape and not sess.get("trade_asked"):
+            # Said once; a second 'send' (or 'send as is') goes on: who
+            # gets the "?" ones is asked next.
+            await _punch_save(sess, trade_asked=True)
             await send_whatsapp_message(dm_chat, (
                 f"{len(need)} still need a trade ({', '.join(map(str, need))}). "
-                "Reply e.g. \"3 → paint\", then 'send'."))
+                "Reply e.g. \"3 → paint\", or 'send' to go on without."))
             return True
+        await _punch_save(sess, nudge={})
         return await _punch_to_assign(ident, sess, dm_chat)
     edits = punch.parse_edits(words)
+    where = None if edits else punch.parse_batch_where(
+        words, [it["n"] for it in punch.missing_location(items)])
+    if where and where.get("set"):
+        # Locations in the draft too: "3 rear yard, 5-9 roof", "all roof"
+        # (the ones with none), "#4 Apt 5A".
+        set_ns = [n for n, loc in sorted(where["set"].items())
+                  if _punch_item_no(items, n) and punch.merge_location(_punch_item_no(items, n), loc)]
+        await _punch_save(sess, items=items, nudge={})
+        await send_whatsapp_message(dm_chat, (f"Set {len(set_ns)} location"
+                                              f"{'s' if len(set_ns) != 1 else ''}.\n\n"
+                                              if set_ns else "")
+                                    + punch.draft_text(sess["job_name"], items))
+        return True
     if not edits:
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
+        # Never the whole draft again for words it cannot read: short.
+        n = await _punch_nudge(sess)
+        await send_whatsapp_message(dm_chat, "Reply to fix (\"2 → electrical\", \"drop 6\", "
+                                    "\"move 3 to floor 6\"), or 'send'."
+                                    + (" " + punch.SKIP_HINT if n >= 2 else ""))
         return True
     notes = []
     for e in edits:
@@ -64540,7 +64629,7 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
     # Every edit reads the numbers the walker has in front of them; they
     # never change once shown ("2 → electrical" is always that #2), and a
     # new item takes the next free one.
-    await _punch_save(sess, items=items)
+    await _punch_save(sess, items=items, nudge={})
     reply = punch.draft_text(sess["job_name"], items)
     if notes:
         reply = "Couldn't: " + "; ".join(notes) + "\n\n" + reply
@@ -64652,8 +64741,12 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
                                         + punch.assign_text(assign))
             return True
-    elif not r.get("ok"):
-        await send_whatsapp_message(dm_chat, punch.assign_text(assign))
+    elif not r.get("ok") and not punch.is_escape(text):
+        # Never the whole list again for words it cannot read: short.
+        n = await _punch_nudge(sess)
+        await send_whatsapp_message(dm_chat, punch.ASSIGN_SHORT
+                                    + (" " + punch.SKIP_HINT if n >= 2 and all(assign.values())
+                                       else ""))
         return True
     if asks:
         ask = asks[0]
@@ -64739,7 +64832,7 @@ async def _punch_shortcut(sess: dict, dm_chat: str, sc: dict) -> bool:
     the missing locations asked first, then the whole list to Chris by DM
     (or "to the group": to the job's group) and the recap; 'ok' sends."""
     await _punch_save(sess, shortcut=sc)
-    if punch.missing_location(sess["items"]):
+    if _punch_needs_where(sess):
         return await _punch_ask_where(sess, dm_chat, intro=True)
     return await _punch_apply_shortcut(sess, dm_chat)
 
@@ -64843,14 +64936,10 @@ async def _punch_late_caption(sess, dm_chat, words, now, quoted=None) -> bool:
 async def _punch_placed(sess, dm_chat, prior, it) -> bool:
     """The late item has words: its location asked first if they do not
     give it, else back to `prior`."""
-    missing = punch.missing_location(sess["items"]) if prior != "locating" else []
-    if missing:
-        # Its location -- or an earlier late photo's -- asked first.
-        ask = it if it in missing else missing[0]
-        await _punch_save(sess, status="locating", asking=ask.get("n"),
-                          resume=prior, resume_item=it.get("captured"))
-        await send_whatsapp_message(dm_chat, punch.added_text(it) + " " + punch.where_question(ask))
-        return True
+    if prior != "locating" and _punch_needs_where(sess):
+        # Locations not asked yet: the one question, then back to `prior`.
+        await _punch_save(sess, resume=prior, resume_item=it.get("captured"))
+        return await _punch_ask_where(sess, dm_chat, head=punch.added_text(it))
     return await _punch_back_to(sess, dm_chat, prior, it, punch.added_text(it))
 
 
@@ -64936,7 +65025,8 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok"):
+    if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok") \
+            or punch.is_escape(text):
         live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
         settings = await _whatsapp_project_settings(sess["project_id"])
         default = punch.due_default(settings.get("punch_due_default"))
@@ -64959,7 +65049,11 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         # not be read is asked, never dropped.
         await send_whatsapp_message(dm_chat, punch.DUE_ASK)
         return True
-    return await _punch_show_recap(sess, dm_chat)
+    # Never the whole recap again for words it cannot read: short.
+    n = await _punch_nudge(sess)
+    await send_whatsapp_message(dm_chat, "Reply 'ok' to send, a due (\"electrical friday\"), "
+                                "or 'cancel'." + (" Or 'send as is'." if n >= 2 else ""))
+    return True
 
 
 async def _punch_user_person(company_id: str, user_id: Any) -> Optional[dict]:
