@@ -25,6 +25,8 @@ reverses the last change; every change is audited (server.py).
 from __future__ import annotations
 
 import re
+
+from lib import trades as lib_trades
 from typing import Any, Dict, List, Optional
 
 from lib import multilang
@@ -159,23 +161,8 @@ def find_zip(text: Any) -> str:
     return m.group(1) if m else ""
 
 
-_TRADES = {
-    "electric": "Electrical", "electrical": "Electrical", "electrician": "Electrical",
-    "electricians": "Electrical", "electricista": "Electrical", "electricistas": "Electrical",
-    "plumber": "Plumbing", "plumbers": "Plumbing", "plumbing": "Plumbing", "plomero": "Plumbing",
-    "plomeros": "Plumbing", "plomeria": "Plumbing",
-    "painter": "Paint", "painters": "Paint", "painting": "Paint", "paint": "Paint",
-    "pintor": "Paint", "pintores": "Paint",
-    "drywall": "Drywall", "sheetrock": "Drywall", "taper": "Drywall", "tapers": "Drywall",
-    "hvac": "HVAC", "mechanical": "HVAC", "sprinkler": "Sprinkler", "sprinklers": "Sprinkler",
-    "fire protection": "Sprinkler", "carpenter": "Carpentry", "carpenters": "Carpentry",
-    "carpentry": "Carpentry", "carpintero": "Carpentry", "concrete": "Concrete",
-    "mason": "Masonry", "masons": "Masonry", "masonry": "Masonry", "roofer": "Roofing",
-    "roofers": "Roofing", "roofing": "Roofing", "tile": "Tile", "tiler": "Tile",
-    "flooring": "Flooring", "floors": "Flooring", "doors": "Doors", "windows": "Windows",
-    "demo": "Demolition", "demolition": "Demolition", "steel": "Steel", "iron": "Steel",
-    "elevator": "Elevator", "elevators": "Elevator", "excavation": "Excavation",
-}
+# The trade words: lib/trades.SYNONYMS (one list, mapped to the published
+# labels -- "electrician" -> "Electrical", "sheetrock" -> "Drywall").
 
 
 def trade(raw: Any) -> str:
@@ -187,11 +174,14 @@ def trade(raw: Any) -> str:
     t = re.sub(r"\s+(?:guys?|company|sub|contractor|trade)$", "", t).strip()
     if not t:
         return ""
-    if t in _TRADES:
-        return _TRADES[t]
+    syn = lib_trades.SYNONYMS
+    for cand in (t, t.rstrip("s")):
+        if cand in syn:
+            return syn[cand]
     for w in t.split():
-        if w in _TRADES:
-            return _TRADES[w]
+        for cand in (w, w.rstrip("s")):
+            if cand in syn:
+                return syn[cand]
     return " ".join(w.capitalize() for w in t.split())[:_MAX["trade"]]
 
 
@@ -665,6 +655,8 @@ TEXT = {
         "no_job": "I don't see that job. Which one did you mean?",
         "ask_company": "Which company?",
         "ask_trade": "What trade is {company}?",
+        "trade_unknown": "{trade} isn't on your trade list — did you mean: {options}? "
+                         "Or add '{trade}' as a new trade?",
         "sub_confirm": "Add {company} ({trade}) to {job}?",
         "sub_already": "{company} is already on {job} for {trade}.",
         "sub_done": "Done — {company} is on {job} for {trade}.",
@@ -734,6 +726,8 @@ TEXT = {
         "no_job": "No veo ese trabajo. ¿Cuál quiso decir?",
         "ask_company": "¿Qué compañía?",
         "ask_trade": "¿Qué oficio tiene {company}?",
+        "trade_unknown": "{trade} no está en su lista de oficios — ¿quiso decir: {options}? "
+                         "¿O agrego '{trade}' como oficio nuevo?",
         "sub_confirm": "¿Agrego a {company} ({trade}) en {job}?",
         "sub_already": "{company} ya está en {job} para {trade}.",
         "sub_done": "Listo — {company} está en {job} para {trade}.",

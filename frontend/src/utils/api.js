@@ -482,8 +482,13 @@ export const tradesAPI = {
   getVocabulary: async () => {
     const response = await apiClient.get('/api/trades/vocabulary');
     const data = response.data || {};
+    const vocab = Array.isArray(data.trades) ? data.trades : [];
+    // The trades this company added (e.g. "add it" in a WhatsApp DM) are on
+    // its list too: the server's vocabulary, then the company's own.
+    const company = Array.isArray(data.company) ? data.company : [];
     return {
-      trades: Array.isArray(data.trades) ? data.trades : [],
+      trades: [...vocab, ...company.filter((t) => !vocab.includes(t))],
+      company,
       deprecated: data.deprecated && typeof data.deprecated === 'object'
         ? data.deprecated : {},
     };
