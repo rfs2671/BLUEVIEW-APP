@@ -79,3 +79,22 @@ jobs:
             echo "Use ServerHttpClient from backend/lib/server_http.py instead."
             exit 1
           fi
+
+  backend-compiles-on-python-3-11:
+    # Production runs Python 3.12, but scripts are also run on 3.11 (a
+    # Windows machine). 3.12 accepts f-string syntax 3.11 rejects -- a
+    # backslash or a comment in an f-string expression, the same quote
+    # nested inside -- and `type X = ...` / `def f[T]` generics. Compiling
+    # every file under 3.11 catches all of them before merge.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile backend/ under Python 3.11
+        run: |
+          set -e
+          python --version
+          # -q: list only the files that fail; any failure exits non-zero.
+          python -m compileall -q -x '(node_modules|\.venv|venv)' backend

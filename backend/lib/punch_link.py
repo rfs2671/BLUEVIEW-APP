@@ -716,6 +716,10 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
     script_text = {k: t(lang, k) for k in ("sending", "finishing", "done", "failed", "offline",
                                              "bad_photo", "changed", "progress", "left_0",
                                              "left_1", "left_n", "waiting")}
+    # "</" escaped so no string closes the <script> it sits in. Built here,
+    # not inside the f-string: a backslash in an f-string expression is a
+    # SyntaxError before Python 3.12.
+    script_json = json.dumps(script_text).replace("</", "<\\/")
     foot = (f'<a class="wa" href="{_e(wa_url)}">{_e(t(lang, "questions"))}</a>' if wa_url else "")
     logo = (f'<img class="logo" src="{wordmark()}" alt="Levelog" width="88" height="30">'
             if wordmark() else "<b>Levelog</b>")
@@ -744,7 +748,7 @@ def page(*, name: str, job: str, items: Iterable[Dict[str, Any]], tok: str,
 <div id="viewer" role="dialog" aria-modal="true"><img alt="">
 <div class="vbar"><button type="button" class="close">{_e(t(lang, "close"))}</button>
 <button type="button" class="next">{_e(t(lang, "next"))}</button></div></div>
-<script type="application/json" id="t">{json.dumps(script_text).replace("</", "<\\/")}</script>
+<script type="application/json" id="t">{script_json}</script>
 <script>{_SCRIPT}</script></body></html>"""
 
 
