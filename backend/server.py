@@ -64345,8 +64345,8 @@ async def _punch_add_words_item(sess, dm_chat, parsed, ref, words, now) -> bool:
     """A new item from words alone (no photo), at the replied photo's place
     unless the words name one; pushed, never the list written back."""
     items = sess["items"]
-    live = [i for i in items if i.get("status", "draft") != "dropped"]
-    it = punch.new_item(max([i["n"] for i in live] or [0]) + 1, punch.capitalize(words),
+    # Above every number ever shown, a dropped one too (Codex on #781).
+    it = punch.new_item(max([i.get("n") or 0 for i in items] or [0]) + 1, punch.capitalize(words),
                         photo_key=None,
                         message_id=parsed.get("message_id_serialized") or "", at=now)
     it["captured"] = len(items) + 1

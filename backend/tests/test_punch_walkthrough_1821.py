@@ -358,6 +358,15 @@ class ALocationIsNeverABlocker(_Walk):
                          ("Missing access ladder", "2", None))
         self.assertNotIn("notes", self.item(1))
 
+    def test_an_added_item_never_reuses_a_dropped_number(self):
+        # Codex on #781: after dropping #2, "Add …" under #1 made a new #2.
+        self._turn("Stucco cracked 2nd floor", photo=True)
+        self._turn("Tile chipped 2nd floor", photo=True)
+        self._turn("done")
+        self._turn("drop 2")
+        (out,) = self._turn("Add missing access ladder", reply_to=1)
+        self.assertIn("Added #3 'Missing access ladder'", out)
+
 
 class WhereWordsAreRead(unittest.TestCase):
 
