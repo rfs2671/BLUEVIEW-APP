@@ -330,6 +330,20 @@ class Chat(unittest.TestCase):
             with self.subTest(i):
                 self.assertTrue(asyncio.run(go()))
                 self.assertEqual(out, [wa_voice.DM_CANT_HEAR])
+        # Codex on #782: a flagged note keeps why it was rejected.
+        self.db.whatsapp_voice_events.rows.append({"message_id": "m9", "where": "dm"})
+        flagged = voice_ingest.VoiceIngestResult(ok=True, english_transcript="nine menahan",
+                                                 duration_sec=3.0, unreliable=["avg_logprob -1.4"])
+
+        async def again():
+            async def send(chat, text, *a, **k):
+                return {"ok": True}
+            with patch.object(server, "db", self.db), \
+                    patch.object(server, "send_whatsapp_message", send):
+                return await server._dm_voice_unheard(CHAT, flagged, "m9")
+        asyncio.run(again())
+        ev = next(r for r in self.db.whatsapp_voice_events.rows if r["message_id"] == "m9")
+        self.assertEqual((ev["error_kind"], ev["unreliable"]), ("unreliable", ["avg_logprob -1.4"]))
         after = next(r for r in self.db[server._DM_STATE].rows
                      if r.get("kind") == server.DM_ACTION_STATE)
         self.assertEqual(after, before)                     # untouched: still open

@@ -52648,7 +52648,10 @@ async def _dm_voice_unheard(dm_chat: str, vresult: Any, voice_message_id: str) -
     try:
         await db.whatsapp_voice_events.update_one(
             {"message_id": voice_message_id, "where": "dm"},
-            {"$set": {"error_kind": vresult.error_kind or "heard_nothing",
+            {"$set": {"error_kind": vresult.error_kind or (
+                          "unreliable" if getattr(vresult, "unreliable", None) else "heard_nothing"),
+                      **({"unreliable": list(vresult.unreliable)}
+                         if getattr(vresult, "unreliable", None) else {}),
                       "rejected_transcript": vresult.english_transcript or "",
                       "english_transcript": "",
                       "user_reply": wa_voice.DM_CANT_HEAR}})
