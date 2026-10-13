@@ -1213,16 +1213,14 @@ def upload_card_photo_to_r2(
 # ROUTERS
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Two routers:
+# Routers:
 #   `gate_router` — unprefixed, serves HTML at /checkin/... and
 #       /enrollment/... — these are the URLs printed on NFC stickers
 #       and posted to by the server-rendered forms. No /api prefix,
 #       because workers see these URLs.
-#   `admin_router` — /api-prefixed, JSON, admin-authenticated.
-#       Consumed by the LeveLog admin dashboard.
+#   (an `admin_router` existed too; removed 2026-10-13, see ADMIN ENDPOINTS)
 
 gate_router = APIRouter(tags=["card_audit_gate"])
-admin_router = APIRouter(prefix="/api", tags=["card_audit_admin"])
 
 
 def _pick_lang(request: Request) -> str:
@@ -2105,107 +2103,15 @@ async def enrollment_complete(request: Request):
     return resp
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# ADMIN ENDPOINTS
-# ═══════════════════════════════════════════════════════════════════════
-
-@admin_router.get("/admin/projects/{project_id}/card-queue")
-async def card_queue(project_id: str, request: Request):
-    """Unified queue for the admin dashboard: pending enrollments,
-    unacknowledged fraud flags, expired/expiring cards.
-
-    Auth is enforced by an include_router dependency at mount time in
-    server.py — this endpoint assumes the request has already been
-    admin-gated by the time it runs.
-    """
-    db = _require_db()
-    now = datetime.now(timezone.utc)
-    warn_cutoff = now + timedelta(days=EXPIRATION_WARN_DAYS)
-
-    pending = await db.worker_enrollments.find({
-        "project_id": project_id,
-        "status": EnrollmentStatus.PENDING_APPROVAL.value,
-        "is_deleted": {"$ne": True},
-    }).to_list(200)
-
-    flags = await db.card_fraud_flags.find({
-        "project_id": project_id,
-        "acknowledged_at": None,
-        "is_deleted": {"$ne": True},
-    }).sort("raised_at", -1).to_list(500)
-
-    expiring = await db.worker_enrollments.find({
-        "project_id": project_id,
-        "status": EnrollmentStatus.ACTIVE.value,
-        "card_expiration_date": {"$lte": warn_cutoff},
-        "is_deleted": {"$ne": True},
-    }).to_list(500)
-
-    return {
-        "project_id": project_id,
-        "column_header": CARD_CONFIRMATION_HEADER,
-        "pending_enrollments": [_serialize_enrollment(e) for e in pending],
-        "fraud_flags": [_serialize_flag(f) for f in flags],
-        "expiring_cards": [_serialize_enrollment(e) for e in expiring],
-    }
-
-
-@admin_router.post("/admin/card-flags/{flag_id}/action")
-async def card_flag_action(flag_id: str, body: Dict[str, Any], request: Request):
-    """Acknowledge / investigate / revoke a flag. All three paths write
-    to the audit log. Auth via include_router dep at mount time."""
-    db = _require_db()
-    action = str(body.get("action") or "").strip().lower()
-    if action not in {a.value for a in FraudActionType}:
-        raise HTTPException(status_code=400, detail="Invalid action")
-
-    from bson import ObjectId
-    try:
-        oid = ObjectId(flag_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid flag id")
-
-    flag = await db.card_fraud_flags.find_one({"_id": oid})
-    if not flag:
-        raise HTTPException(status_code=404, detail="Flag not found")
-
-    # server.py's admin dep stores the resolved user on request.state;
-    # we read it here rather than declaring it as a param, because the
-    # dep is injected at mount time (include_router dependencies=),
-    # not per-endpoint.
-    actor_user = getattr(request.state, "current_user", None) or {}
-    actor_id = actor_user.get("id") if isinstance(actor_user, dict) else None
-    now = datetime.now(timezone.utc)
-    await db.card_fraud_flags.update_one(
-        {"_id": oid},
-        {"$set": {
-            "action_taken": action,
-            "acknowledged_by_user_id": actor_id,
-            "acknowledged_at": now,
-        }},
-    )
-
-    attestation_map = {
-        FraudActionType.ACKNOWLEDGED.value: AttestationType.ADMIN_ACKNOWLEDGED_FLAG.value,
-        FraudActionType.INVESTIGATED.value: AttestationType.ADMIN_INVESTIGATED_FLAG.value,
-        FraudActionType.REVOKED.value: AttestationType.ADMIN_REVOKED_ENROLLMENT.value,
-        FraudActionType.FALSE_POSITIVE.value: AttestationType.ADMIN_ACKNOWLEDGED_FLAG.value,
-    }
-    if action == FraudActionType.REVOKED.value and flag.get("worker_enrollment_id"):
-        await db.worker_enrollments.update_one(
-            {"_id": _to_id(flag["worker_enrollment_id"])},
-            {"$set": {"status": EnrollmentStatus.REVOKED.value}},
-        )
-
-    await write_audit_log(
-        attestation_type=attestation_map[action],
-        project_id=flag.get("project_id"),
-        worker_enrollment_id=flag.get("worker_enrollment_id"),
-        actor_user_id=actor_id,
-        details={"flag_id": flag_id, "flag_type": flag.get("flag_type"), "action": action},
-    )
-    return {"ok": True, "action": action}
-
+# ── THE ADMIN ENDPOINTS WERE HERE, AND ARE GONE ON PURPOSE ───────────────
+#
+# GET /api/admin/projects/{project_id}/card-queue and
+# POST /api/admin/card-flags/{flag_id}/action were removed 2026-10-13
+# (security audit P1). Both read or wrote by id with no company scope -- the
+# action route could revoke any company's worker enrollments -- and both were
+# dead: no caller in the app, and zero rows in card_fraud_flags,
+# worker_enrollments, card_audit_log and unexpected_ndef_hosts in production.
+# A future admin surface for this data must scope to the caller's company.
 
 # ═══════════════════════════════════════════════════════════════════════
 # NIGHTLY JOBS
