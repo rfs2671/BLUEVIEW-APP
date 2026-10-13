@@ -297,6 +297,59 @@ class Chat(unittest.TestCase):
         self.assertEqual(len(self.audits("whatsapp_dm_undo")), 1)
         self.assertEqual(self.talk("undo"), ["There's nothing to undo."])
 
+    def test_a_voice_note_with_nothing_in_it_keeps_the_question_open(self):
+        """Tue Oct 13: a 1-second voice note answering "what's the address?"
+        got "I couldn't find that address. Which borough?". Nothing heard
+        (empty, flagged, or Whisper's words for silence): "I couldn't hear
+        that voice note — can you type it?", and the question stays open."""
+        from lib import voice_ingest, wa_voice
+        self.assertEqual(self.talk("starting a new job i wanna set up"),
+                         ["Sure — what's the address?"])
+        before = dict(next(r for r in self.db[server._DM_STATE].rows
+                           if r.get("kind") == server.DM_ACTION_STATE))
+        notes = [
+            voice_ingest.VoiceIngestResult(ok=True, english_transcript="Thank you.",
+                                           original_transcript="Thank you.", duration_sec=1.0),
+            voice_ingest.VoiceIngestResult(ok=True, english_transcript=" … ", duration_sec=1.0),
+            voice_ingest.VoiceIngestResult(ok=False, user_reply="resend", error_kind="no_speech",
+                                           duration_sec=1.0),
+            voice_ingest.VoiceIngestResult(ok=True, english_transcript="nine menahan",
+                                           duration_sec=3.0, unreliable=["avg_logprob -1.4 < -1.0"]),
+        ]
+        for i, v in enumerate(notes):
+            out = []
+
+            async def send(chat, text, *a, **k):
+                out.append(text)
+                return {"ok": True}
+
+            async def go():
+                with patch.object(server, "db", self.db), \
+                        patch.object(server, "send_whatsapp_message", send):
+                    return await server._dm_voice_unheard(CHAT, v, f"m{i}")
+            with self.subTest(i):
+                self.assertTrue(asyncio.run(go()))
+                self.assertEqual(out, [wa_voice.DM_CANT_HEAR])
+        after = next(r for r in self.db[server._DM_STATE].rows
+                     if r.get("kind") == server.DM_ACTION_STATE)
+        self.assertEqual(after, before)                     # untouched: still open
+        # The typed answer is still the answer to it.
+        self.assertEqual(self.talk("9 menahan"),
+                         ["Found it: 9 Menahan St, Brooklyn. Add it as a new job?"])
+
+    def test_a_voice_note_that_says_something_goes_on_as_before(self):
+        from lib import voice_ingest
+
+        async def go(v):
+            with patch.object(server, "db", self.db):
+                return await server._dm_voice_unheard(CHAT, v, "m1")
+        said = voice_ingest.VoiceIngestResult(ok=True, english_transcript="9 Menahan Street",
+                                              duration_sec=2.5)
+        self.assertFalse(asyncio.run(go(said)))
+        # A failed note with no question open keeps its own reply.
+        failed = voice_ingest.VoiceIngestResult(ok=False, user_reply="resend", duration_sec=1.0)
+        self.assertFalse(asyncio.run(go(failed)))
+
     def test_several_matches_a_short_numbered_list(self):
         which, found = self.talk("we got a new job on 45 main st", "2")
         self.assertEqual(which, "I found a few. Which one?\n1) 45 Main St, Brooklyn\n"

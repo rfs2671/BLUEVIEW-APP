@@ -52619,6 +52619,45 @@ async def _dm_ask(dm_chat: str, p: dict, step: str, text: str,
     await send_whatsapp_message(dm_chat, text)
 
 
+#: Where the DM keeps a question it asked: a change's open question, a
+#: remind-me's, "Did you mean…?", the "Which job?" menu.
+DM_OPEN_QUESTIONS = (DM_ACTION_STATE, UPCOMING_REMIND_STATE, "dm_clarify", "dm_menu")
+
+
+async def _dm_open_question(dm_chat: str) -> bool:
+    for kind in DM_OPEN_QUESTIONS:
+        if await _dm_state_get(kind, dm_chat):
+            return True
+    return False
+
+
+async def _dm_voice_unheard(dm_chat: str, vresult: Any, voice_message_id: str) -> bool:
+    """A DM voice note with nothing usable in it: not transcribed, flagged,
+    or words Whisper writes for silence. True when it was answered here:
+    "I couldn't hear that voice note — can you type it?", with the open
+    question left exactly as it was (not a non-answer, not an answer). A
+    note that is merely silence-words with no question open is answered the
+    same way, never passed on as something said. False: carry on as before
+    (a failed or flagged note with no question open keeps its own reply)."""
+    failed = not vresult.ok or bool(getattr(vresult, "unreliable", None))
+    silent = wa_voice.heard_nothing(vresult.english_transcript, vresult.duration_sec)
+    if not (failed or silent):
+        return False
+    if failed and not await _dm_open_question(dm_chat):
+        return False
+    try:
+        await db.whatsapp_voice_events.update_one(
+            {"message_id": voice_message_id, "where": "dm"},
+            {"$set": {"error_kind": vresult.error_kind or "heard_nothing",
+                      "rejected_transcript": vresult.english_transcript or "",
+                      "english_transcript": "",
+                      "user_reply": wa_voice.DM_CANT_HEAR}})
+    except Exception:
+        pass
+    await send_whatsapp_message(dm_chat, wa_voice.DM_CANT_HEAR)
+    return True
+
+
 async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) -> bool:
     """A DM that asks for a change, or answers the open question about one.
     True when handled. `new`: may start a new request (after the reminders
@@ -67199,6 +67238,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         f"voice event insert skipped: {_e}",
                     )
 
+                if await _dm_voice_unheard(dm_chat, vresult, voice_message_id):
+                    return
                 if not vresult.ok:
                     # Short-circuit (low confidence / Whisper failure).
                     # Reply with the user-facing copy and skip extraction.

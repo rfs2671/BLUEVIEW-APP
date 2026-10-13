@@ -515,6 +515,25 @@ def needs_direct_translation(lang: Optional[str], sender_hint: Optional[str]) ->
 
 
 UNRELIABLE_TEXT = "Not reliably transcribed — play it."
+#: A DM voice note that says nothing usable while a question is open: the
+#: question stays open (Tue Oct 13, 11:3x AM: a 1-second note answering
+#: "What's the address?" got "I couldn't find that address. Which borough?").
+DM_CANT_HEAR = "I couldn't hear that voice note — can you type it?"
+
+#: What Whisper writes for a second of silence or breath: never an answer.
+SILENCE_WORDS = {"you", "thank you", "thanks", "thank you so much", "bye", "bye bye",
+                 "so", "uh", "um", "hmm", "mm", "oh", "the", "thanks for watching",
+                 "thank you for watching"}
+
+
+def heard_nothing(transcript: Any, duration_sec: Any = None) -> bool:
+    """No words in the transcript; or, from a note under MIN_SECONDS, only
+    what Whisper writes for silence ("Thank you.", "you")."""
+    words = " ".join(re.sub(r"[^\w\s']", " ", str(transcript or "")).lower().split())
+    if not words:
+        return True
+    short = isinstance(duration_sec, (int, float)) and duration_sec < MIN_SECONDS
+    return short and words in SILENCE_WORDS
 DM_UNRELIABLE_REPLY = ("I couldn't reliably make out that voice note. "
                        "Please send it again, or type it.")
 
