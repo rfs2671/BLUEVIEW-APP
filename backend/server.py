@@ -77,6 +77,7 @@ from lib import multilang  # noqa: E402
 from lib import punch  # noqa: E402
 from lib import punch_link  # noqa: E402
 from lib import dm_actions  # noqa: E402
+from lib import trades as lib_trades  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -20024,7 +20025,61 @@ async def get_trade_vocabulary(current_user=Depends(get_current_user)):
     return {
         "trades": list(TRADE_VOCABULARY),
         "deprecated": dict(DEPRECATED_TRADES),
+        # The trades this company added (a DM's "add it"): on its list too.
+        "company": await _company_custom_trades(get_user_company_id(current_user)),
     }
+
+
+# ── A COMPANY'S TRADE LIST ──────────────────────────────────────────────
+#
+# TRADE_VOCABULARY plus the trades the company added (lib/trades.COLLECTION,
+# one row per company + key). This is the list a trade said in a DM resolves
+# against, and the list the app's trade picker offers; it is the table the
+# daily-work -> next-day prediction is to read (a trade it has never seen is
+# a trade it cannot predict). A known trade is never added twice: anything
+# lib/trades.resolve maps to a label already on the list is that label.
+
+async def _company_custom_trades(company_id) -> List[str]:
+    if not company_id:
+        return []
+    try:
+        rows = await db[lib_trades.COLLECTION].find(
+            {"company_id": str(company_id)}, {"label": 1}).sort("created_at", 1).to_list(500)
+    except Exception:
+        return []
+    return [str(r.get("label")) for r in rows if r.get("label")]
+
+
+async def _company_trade_list(company_id) -> List[str]:
+    """The company's trades: the vocabulary, then the ones it added."""
+    out = list(TRADE_VOCABULARY)
+    keys = {_roster_key(t) for t in out}
+    for t in await _company_custom_trades(company_id):
+        if _roster_key(t) not in keys:
+            out.append(t)
+            keys.add(_roster_key(t))
+    return out
+
+
+async def _company_trade_add(company_id, raw: str, actor: str, via: str) -> str:
+    """Add a trade to the company's list (or the label it already is);
+    audited. Returns the label."""
+    known = await _company_trade_list(company_id)
+    hit = lib_trades.resolve(raw, known)
+    if hit:
+        return hit
+    label = lib_trades.new_label(raw)
+    if not label:
+        raise ValueError("empty trade")
+    now = datetime.now(timezone.utc)
+    await db[lib_trades.COLLECTION].update_one(
+        {"company_id": str(company_id), "key": _roster_key(label)},
+        {"$setOnInsert": {"company_id": str(company_id), "key": _roster_key(label),
+                          "label": label, "created_at": now, "created_by": actor, "via": via}},
+        upsert=True)
+    await audit_log("company_trade_add", actor, "company", str(company_id),
+                    {"trade": label, "via": via})
+    return label
 
 
 # ── GET /checkin/{project_id}/companies IS GONE ─────────────────────────
@@ -52239,6 +52294,10 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
             return
         await _dm_action_restart_or(ident, dm_chat, text, lambda: _dm_say(dm_chat, lang, "yes_or_no"))
         return
+    if step == "choose:_trade_pick" and lib_trades.is_add(text):
+        p["_trade_pick"] = "__add__"
+        await _dm_action_step(ident, dm_chat, p)
+        return
     if step.startswith("choose:"):
         i = dm_actions.pick(text, [o.get("label") or "" for o in options])
         if i is None:
@@ -52483,10 +52542,36 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
             if multilang.fold(r.get("company") or "") == multilang.fold(p["company"]):
                 p["company"] = r["company"]
                 break
+        if p.get("_trade_pick") and not p.get("_trade_ok"):
+            # The answer to "Did you mean ...? Or add it?".
+            pick = p.pop("_trade_pick")
+            if pick == "__add__":
+                p["trade"] = await _company_trade_add(
+                    ident["company_id"], p["trade"], ident["user_id"], "whatsapp_dm")
+            else:
+                p["trade"] = pick
+            p["_trade_ok"] = True
         if not p.get("trade"):
             await _dm_ask(dm_chat, p, "ask:trade", dm_actions.say(lang, "ask_trade",
                                                                    company=p["company"]))
             return
+        if not p.get("_trade_ok"):
+            # The company's trade list -- it feeds the next-day prediction, so
+            # a trade not on it is offered the closest, or added.
+            known = await _company_trade_list(ident["company_id"])
+            hit = lib_trades.resolve(p["trade"], known)
+            if hit:
+                p["trade"], p["_trade_ok"] = hit, True
+            else:
+                said = lib_trades.new_label(p["trade"]) or p["trade"]
+                near = lib_trades.closest(p["trade"], known)
+                options = [{"label": n, "value": n} for n in near] + \
+                    [{"label": said, "value": "__add__"}]
+                p["trade"] = said
+                await _dm_ask(dm_chat, p, "choose:_trade_pick", dm_actions.say(
+                    lang, "trade_unknown", trade=said,
+                    options=dm_actions.or_list(near, lang)), options)
+                return
         fresh = await db.projects.find_one({"_id": project["_id"]}) or project
         job = _dm_job_label(fresh)
         if any(_roster_key(r.get("company") or "") == _roster_key(p["company"]) and
