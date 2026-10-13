@@ -563,7 +563,11 @@ class Chat(unittest.TestCase):
     def test_a_bad_model_answer_never_acts(self):
         self.model = lambda text: {"action": "delete_company", "company": "all"}
         n = len(self.db.projects.rows)
-        self.assertEqual(self.talk("add 9 menahan"), [None])           # read as nothing: no change
+        # The model's garbage is dropped; the patterns' own reading asks
+        # first (Mon 7:17 PM fix: a model miss never falls to "Which job?").
+        self.assertEqual(self.talk("add 9 menahan"),
+                         ["Found it: 9 Menahan St, Brooklyn. Add it as a new job?"])
+        self.talk("no")
         self.assertEqual((len(self.db.projects.rows), self.audits()), (n, []))
         self.model = lambda text: {"action": "add_person", "name": "Dov", "phone": "917 555 019",
                                    "company": "Bright Electric"}

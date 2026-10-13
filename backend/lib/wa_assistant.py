@@ -100,10 +100,138 @@ def match_jobs(text: str, jobs: List[Dict[str, Any]]) -> List[str]:
     return [jid for s, jid in scored if s == best]
 
 
-def menu_text(jobs: List[Dict[str, Any]]) -> str:
-    """'Which job? 1) 588 Thomas S Boyland St 2) 8 Walworth St'"""
+# ── A JOB BY ITS STREET NAME ALONE ───────────────────────────────────────────
+#
+# "at walworth", "the menahan job", "boyland", "walwroth st": the street's key
+# word (the last word of its name: "thomas s boyland st" -> "boyland"), with
+# no house number, typos allowed. ONE matcher for the questions assistant and
+# every DM action (find_jobs). A key word that is also an everyday word
+# ("water", "main", "park") counts only when it is plainly a place ("at
+# water", "water st", "the water job") -- "is the water leak fixed" is not
+# 77 Water St.
+_COMMON_STREET_WORDS = {
+    "water", "main", "park", "church", "broad", "front", "high", "bay", "union", "grand",
+    "market", "state", "court", "spring", "river", "lake", "hill", "ocean", "beach", "center",
+    "central", "bridge", "mill", "pearl", "wall", "gold", "pine", "oak", "elm", "maple",
+    "cedar", "walnut", "cherry", "willow", "west", "east", "north", "south", "first", "second",
+    "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "college",
+    "school", "station", "garden", "green", "lincoln", "washington", "franklin", "madison",
+    "jackson", "jefferson", "king", "queen", "prince", "york", "liberty", "plaza", "rock",
+}
+_PLACE_BEFORE = {"at", "on", "for", "in", "to", "from", "en", "de", "over"}
+_PLACE_AFTER = {"st", "street", "ave", "avenue", "rd", "road", "blvd", "pl", "place", "job",
+                "site", "project", "building", "jobsite", "ct", "court", "dr", "ln", "way"}
+
+
+def street_key(label: Any) -> str:
+    """The word a person calls a job's street by: '588 Thomas S Boyland St'
+    -> 'boyland'; '8 Walworth St' -> 'walworth'; '' when the street has none
+    (a numbered street: '852 E 176 St')."""
+    words = _norm(label).split()
+    if words and re.fullmatch(r"\d+[a-z]?(?:-\d+)?", words[0]):
+        words = words[1:]
+    while words and words[-1] in _SUFFIXES:
+        words.pop()
+    key = words[-1] if words else ""
+    return key if len(key) >= 4 and not key.isdigit() else ""
+
+
+def _close(a: str, b: str) -> bool:
+    """`a` is `b` with a typo or two: one edit for a word of up to 7
+    letters, two above (a transposition is two)."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 5 or abs(len(a) - len(b)) > 2:
+        return False
+    limit = 1 if len(b) <= 7 else 2
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > limit:
+            return False
+        prev = cur
+    return prev[-1] <= limit
+
+
+#: Words around a bare job name that say nothing ("boyland please", "what
+#: about walworth"): a message of only these and the street is the job.
+_FILLER = {"what", "about", "and", "the", "please", "pls", "ok", "okay", "how", "hows", "is",
+           "for", "at", "on", "in", "now", "then", "too", "also", "one", "job", "site"}
+
+
+def _street_named(words: List[str], key: str) -> bool:
+    """The street is named as a PLACE: after "at/on/for/in/...", before
+    "st/street/job/site/...", or alone ("boyland", "what about walworth").
+    A street word anywhere else may be a person ("did Dean check in" is not
+    10 Dean St -- Codex review on #771); an everyday word ("water") never
+    counts alone."""
+    alone = len([w for w in words if w not in _FILLER]) == 1
+    for i, w in enumerate(words):
+        if not (w == key or (key not in _COMMON_STREET_WORDS and _close(w, key))):
+            continue
+        before = words[i - 1] if i else ""
+        after = words[i + 1] if i + 1 < len(words) else ""
+        if before in _PLACE_BEFORE or after in _PLACE_AFTER or before.isdigit():
+            return True                 # a house number before it is a place too
+        if alone and key not in _COMMON_STREET_WORDS:
+            return True
+    return False
+
+
+def find_jobs(text: Any, jobs: List[Dict[str, Any]]) -> List[str]:
+    """Ids of the jobs a message names (each job: {id, label, aliases}).
+
+    Its exact names first (house number + street, the project's name, its
+    groups -- match_jobs); else its street's key word alone, fuzzy ("at
+    walworth", "the menahan job", "boyland", "walwroth"). Several ids when
+    several jobs share the street: the caller asks "Which one?"."""
+    order = {j["id"]: menu_order(j) for j in jobs}
+    exact = match_jobs(str(text or ""), jobs)
+    if exact:
+        return sorted(exact, key=lambda i: order.get(i, ("", 0)))
+    words = _norm(text).split()
+    if not words:
+        return []
+    # A house number of 2+ digits alone ("588"): one digit is too common
+    # ("since 8:07" is not 8 Walworth).
+    by_number = [j["id"] for j in jobs if len(house_number(j.get("label"))) >= 2
+                 and house_number(j.get("label")) in words]
+    if by_number:
+        return sorted(by_number, key=lambda i: order.get(i, ("", 0)))
+    out = []
+    for j in jobs:
+        key = street_key(j.get("label") or "")
+        if key and _street_named(words, key):
+            out.append(j["id"])
+    if len(out) > 1:
+        # "8 walwroth": a house number -- one digit too -- decides between
+        # jobs the street already matched (Codex review on #771).
+        # Only right before the street ("8 workers ... at walworth" is not 8).
+        labels = {j["id"]: j.get("label") or "" for j in jobs}
+        before_street = {words[k - 1] for k in range(1, len(words))
+                         for i in out if words[k] == street_key(labels.get(i))
+                         or _close(words[k], street_key(labels.get(i)))}
+        pick = [i for i in out if house_number(labels.get(i))
+                and house_number(labels.get(i)) in before_street]
+        if len(pick) == 1:
+            return pick
+    return sorted(out, key=lambda i: order.get(i, ("", 0)))
+
+
+def menu_order(job: Dict[str, Any]) -> tuple:
+    """By street, then house number: 8 Walworth St before 120 Walworth St."""
+    label = str(job.get("label") or "")
+    num = house_number(label)
+    return (re.sub(r"^\d+\s*", "", label).lower(), int(num) if num else 0)
+
+
+def menu_text(jobs: List[Dict[str, Any]], header: str = "Which job?") -> str:
+    """'Which job? 1) 588 Thomas S Boyland St 2) 8 Walworth St' -- or, when a
+    street matched several, 'Which one? 1) 8 Walworth St 2) 120 Walworth St'."""
     parts = [f"{i}) {j['label']}" for i, j in enumerate(jobs[:MENU_MAX], 1)]
-    return "Which job? " + " ".join(parts)
+    return header + " " + " ".join(parts)
 
 
 def parse_menu_choice(body: Any, count: int) -> Optional[int]:
@@ -321,7 +449,7 @@ def job_named(text: Any, jobs: List[Dict[str, Any]], *, in_sentence: bool = Fals
                  and f" {house_number(o.get('label'))} " in t]
     if len(by_number) == 1:
         return str(by_number[0]["id"])
-    hit = match_jobs(str(text or ""), jobs)
+    hit = find_jobs(text, jobs)
     return str(hit[0]) if len(hit) == 1 else None
 
 

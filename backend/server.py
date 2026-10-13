@@ -52094,9 +52094,14 @@ async def _dm_action_read(ident: dict, text: str) -> dict:
     the patterns when the model cannot be asked."""
     raw = await _dm_action_model(text, [wa_assistant.street_label(p)
                                         for p in ident.get("projects") or []])
-    if raw is None:
-        raw = dm_actions.rules(text)
-    return dm_actions.clean(raw)
+    got = dm_actions.clean(raw) if raw is not None else {"action": "none"}
+    if got["action"] == "none":
+        # The model missed it (or could not be asked): the patterns' reading,
+        # which includes a request with no details yet ("Starting a new job I
+        # wanna set up", Mon 7:17 PM) -- never the questions assistant's
+        # "Which job?".
+        got = dm_actions.clean(dm_actions.rules(text))
+    return got
 
 
 async def _dm_geosearch(text: str, size: int = 5) -> Optional[List[dict]]:
@@ -52145,7 +52150,9 @@ def _dm_job_label(project: dict) -> str:
 
 
 def _dm_find_jobs(ident: dict, hint: str) -> List[dict]:
-    """Their jobs that `hint` names ("588", "thomas boyland")."""
+    """Their jobs that `hint` names ("588", "thomas boyland", "at walworth",
+    "the menahan job", "walwroth") -- wa_assistant.find_jobs, the one
+    matcher the questions assistant uses too."""
     projects = ident.get("projects") or []
     hint = str(hint or "").strip()
     if not hint:
@@ -52153,11 +52160,11 @@ def _dm_find_jobs(ident: dict, hint: str) -> List[dict]:
     got, why = punch.match_project(hint, projects)
     if got:
         return [got]
-    t = multilang.fold(hint)
-    return [p for p in projects
-            if t and (t in multilang.fold(_dm_job_label(p)) or
-                      t in multilang.fold(p.get("name") or "") or
-                      t in multilang.fold(p.get("nickname") or ""))]
+    jobs = [{"id": str(p["_id"]), "label": wa_assistant.street_label(p),
+             "aliases": wa_assistant.job_aliases(p)} for p in projects]
+    ids = wa_assistant.find_jobs(hint, jobs)
+    by_id = {str(p["_id"]): p for p in projects}
+    return [by_id[i] for i in ids if i in by_id]
 
 
 async def _dm_company_subs(ident: dict) -> List[Tuple[dict, dict]]:
@@ -52326,8 +52333,21 @@ def _dm_fill(p: dict, field: str, text: str) -> bool:
     return False
 
 
+async def _dm_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
+    """The job picked in this chat in the last 30 minutes (the assistant's
+    `dm_job`), if it is still one of theirs."""
+    remembered = await _dm_state_get("dm_job", dm_chat)
+    pid = str((remembered or {}).get("project_id") or "")
+    return next((x for x in ident.get("projects") or [] if str(x["_id"]) == pid), None) \
+        if pid else None
+
+
 async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
-    """The job `p` is about, or None after asking which (never a guess)."""
+    """The job `p` is about, or None after asking which (never a guess).
+
+    "Which job?" is asked ONLY when it cannot be inferred: the job named in
+    the message, else their only job, else the job picked in this chat in the
+    last 30 minutes."""
     lang = p.get("lang") or "en"
     projects = ident.get("projects") or []
     if p.get("_project_id"):
@@ -52335,15 +52355,24 @@ async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
         if hit:
             return hit
     found = _dm_find_jobs(ident, p.get("job") or "") if p.get("job") else []
+    if not p.get("job") and p.get("said"):
+        # No job read out of the request ("stop bugging people on weekends
+        # at walworth"): the job the whole message names, by the one matcher.
+        found = _dm_find_jobs(ident, p["said"])
     if len(found) == 1:
         p["_project_id"] = str(found[0]["_id"])
         return found[0]
     if not found and not p.get("job") and len(projects) == 1:
         p["_project_id"] = str(projects[0]["_id"])
         return projects[0]
+    recent = await _dm_recent_job(ident, dm_chat) if not p.get("job") and not found else None
+    if recent:
+        p["_project_id"] = str(recent["_id"])
+        return recent
     choices = found or projects
     options = [{"label": _dm_job_label(x), "value": str(x["_id"])} for x in choices[:6]]
-    question = dm_actions.say(lang, "no_job" if p.get("job") and not found else "which_job")
+    question = dm_actions.say(lang, "no_job" if p.get("job") and not found else
+                              "which_one" if len(found) > 1 else "which_job")
     await _dm_ask(dm_chat, p, "choose:_project_id",
                   dm_actions.numbered(question, [o["label"] for o in options]), options)
     return None
@@ -52482,15 +52511,30 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
         elif p.get("job"):
             named = {str(x["_id"]) for x in _dm_find_jobs(ident, p["job"])}
             subs = [(pr, r) for pr, r in subs if str(pr["_id"]) in named]
+        elif len({str(pr["_id"]) for pr, _r in subs}) > 1 and p.get("said") and \
+                {str(x["_id"]) for x in _dm_find_jobs(ident, p["said"])} & {str(pr["_id"]) for pr, _r in subs}:
+            # The job the whole message names ("... at walworth").
+            named = {str(x["_id"]) for x in _dm_find_jobs(ident, p["said"])}
+            subs = [(pr, r) for pr, r in subs if str(pr["_id"]) in named]
+        elif len({str(pr["_id"]) for pr, _r in subs}) > 1:
+            # The sub is on several jobs: the job picked here in the last 30
+            # minutes, when the sub is on it, before asking which.
+            recent = await _dm_recent_job(ident, dm_chat)
+            if recent and any(str(pr["_id"]) == str(recent["_id"]) for pr, _r in subs):
+                subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(recent["_id"])]
         if not subs:
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             await _dm_say(dm_chat, lang, "sub_not_on_job", company=p["company"],
                           job=p.get("job") or ("sus trabajos" if lang == "es" else "your jobs"))
             return
         if len({str(pr["_id"]) for pr, _r in subs}) > 1:
-            options = [{"label": _dm_job_label(pr), "value": str(pr["_id"])} for pr, _r in subs][:6]
+            options = sorted(
+                ({"label": _dm_job_label(pr), "value": str(pr["_id"])} for pr, _r in subs),
+                key=lambda o: wa_assistant.menu_order(o))[:6]
+            # Narrowed by a street two of its jobs share: "Which one?".
+            header = "which_one" if p.get("job") else "which_job"
             await _dm_ask(dm_chat, p, "choose:_project_id", dm_actions.numbered(
-                dm_actions.say(lang, "which_job"), [o["label"] for o in options]), options)
+                dm_actions.say(lang, header), [o["label"] for o in options]), options)
             return
         if p.get("_row_key"):
             subs = [(pr, r) for pr, r in subs
@@ -52820,7 +52864,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     chat (4 h, both sides, the brief included) are the context; the current
     job holds for 30 minutes; a "Which job?" menu, a "Since 8:07 or since
     7am?" question and a reply-to all carry the question that was asked.
-    Numbers and names only ever come from this turn's tools."""
+    Numbers and names only ever come from this turn's tools.
+
+    THE ORDER (Mon 7:17 PM: "Starting a new job I wanna set up" got "Which
+    job?"): 1. active flows -- a walkthrough (the caller, _punch_dm_turn), an
+    open question about a change; 2. what they want -- a change (any request,
+    with or without its details) before a question; 3. "Which job?" only when
+    the request or question needs an existing job and none can be inferred
+    (their only job, one named, or the one picked in the last 30 minutes). A
+    new job never asks it."""
     text = (body or "").strip()
     if not text:
         return
@@ -52934,7 +52986,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             or (hc is None and (ref or wa_headcount.refers_back(core)))):
         # A job named in the message wins over the last one counted ("the
         # count at 8 Walworth is wrong").
-        named_now = wa_assistant.match_jobs(core, jobs) or (
+        named_now = wa_assistant.find_jobs(core, jobs) or (
             [wa_assistant.job_named(core, jobs, in_sentence=True)]
             if wa_assistant.job_named(core, jobs, in_sentence=True) else [])
         if len(named_now) == 1 and named_now[0] != str(last_hc["project_id"]):
@@ -52956,8 +53008,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         hc = None
 
     if job is None:
-        named = [by_id[i] for i in wa_assistant.match_jobs(core, jobs)] or \
-            [by_id[i] for i in wa_assistant.match_jobs(question, jobs)]
+        # The one matcher (wa_assistant.find_jobs): house number, address,
+        # name, or the street alone, typos allowed ("at walworth", "boyland").
+        named = [by_id[i] for i in wa_assistant.find_jobs(core, jobs)] or \
+            [by_id[i] for i in wa_assistant.find_jobs(question, jobs)]
         if not named:
             jid = wa_assistant.job_named(core, jobs, in_sentence=True)
             named = [by_id[jid]] if jid else []
@@ -52975,7 +53029,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         if len(named) == 1:
             job = named[0]
         elif len(named) > 1:
-            await _dm_ask_which(dm_chat, named, question)
+            # A street two jobs share: "Which one? 1) 8 Walworth St 2) 120 Walworth St".
+            await _dm_ask_which(dm_chat, named, question, header="Which one?")
             return
         else:
             if hc and wa_assistant.question_scope(core) == wa_assistant.SCOPE_ALL:
@@ -53081,11 +53136,11 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
 
 
 async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
-                        again: bool = False) -> None:
+                        again: bool = False, header: str = "Which job?") -> None:
     shown = jobs[:wa_assistant.MENU_MAX]
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
                         options=[j["id"] for j in shown], question=question)
-    text = wa_assistant.menu_text(shown)
+    text = wa_assistant.menu_text(shown, header)
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
     await send_whatsapp_message(dm_chat, text)
