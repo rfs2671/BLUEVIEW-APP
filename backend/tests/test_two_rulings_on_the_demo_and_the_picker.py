@@ -97,8 +97,16 @@ class ADemoGetLeavesNoStamp(unittest.TestCase):
             with patch.object(server, "_record_client_version",
                               new=AsyncMock()) as stamp:
                 async def _drive():
-                    await server.get_current_user(
-                        request=request, credentials=None, token=token)
+                    # A DEMO IS NOW REFUSED HERE outside /auth/me (security
+                    # audit finding 1, test_demo_token_query_chain.py). The
+                    # claim under test is unchanged: refused or not, nothing
+                    # may be written for it.
+                    try:
+                        await server.get_current_user(
+                            request=request, credentials=None, token=token)
+                    except server.HTTPException:
+                        if role != server.ROLE_DEMO:
+                            raise
                     # SAME LOOP, deliberately: the stamp is scheduled with
                     # `create_task`, so it only ever starts on the loop that
                     # scheduled it. Yielding from a second `asyncio.run` would

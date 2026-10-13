@@ -7561,6 +7561,11 @@ async def get_current_user(
         user_data = serialize_id(user)
         user_data["site_mode"] = False
 
+        # A DEMO OR PENDING ACCOUNT REACHES NO HANDLER BUT ITS OWN /auth/me.
+        # See _refuse_unapproved_principal; raised here, before anything below
+        # (or any route) treats this principal as a member of anything.
+        _refuse_unapproved_principal(user_data, request)
+
         # WHICH INSTALL IS ON THE OTHER END. The admin surface answers "whose
         # phone is stranded" from this, because the person who can act on a
         # stale install is not the person holding the phone. Fire-and-forget so
@@ -8649,6 +8654,55 @@ ALLOW_LEGACY_NULL_STATUS = True
 # nobody audited) must fail CLOSED rather than sail through because it happens
 # not to equal "pending".
 APPROVED_ACCOUNT_STATUSES = frozenset({"approved"})
+
+
+# ── WHAT A DEMO OR PENDING ACCOUNT MAY REACH THROUGH get_current_user ──────
+#
+# WHAT WAS OPEN (security audit finding 1, 2026-10-13). Self-serve signup makes
+# a pending `demo` account with no company, and /auth/login hands it a real
+# JWT. Both demo middlewares read the token off the Authorization header only,
+# so the same token sent as `?token=` passed them as "no token" -- and
+# get_current_user, which reads `?token=` too, authenticated it. Every route
+# without its own tenant check then answered with another company's records,
+# and POST /checkins/{id}/checkout wrote. tests/test_demo_token_query_chain.py
+# is the request-level proof.
+#
+# BOTH LAYERS NOW REFUSE, NOT EITHER. demo_guard.bearer_token reads `?token=`,
+# so the middlewares see the demo and answer it (fiction for a read, 403 for a
+# write); and this refuses it here, so a fourth way to carry a token -- or a
+# middleware that failed to install -- is not a fourth hole.
+#
+# THE ALLOW-LIST IS THE ACCOUNT'S OWN DOCUMENT AND ITS OWN ERASURE REQUEST.
+# AuthContext reads account_status off /auth/me to route a pending user to the
+# waiting screen; everything else a demo sees is the provider's fiction and
+# never reaches a handler. A call with no request (a route calling
+# get_current_user(token=...) by hand) has no path to allow, and is refused.
+UNAPPROVED_PRINCIPAL_PATHS = frozenset({
+    "/api/auth/me",
+    "/api/auth/me/deletion-request",
+})
+
+
+def _refuse_unapproved_principal(user: dict, request) -> None:
+    """Raise unless `user` is approved, or is asking for an allow-listed path.
+
+    Unapproved means: a demo account (whatever its status -- approving a demo
+    leaves it a demo), or a status that require_approved would refuse. Legacy
+    null status passes on the same flag require_approved reads."""
+    demo = is_demo(user)
+    status = (user or {}).get("account_status")
+    unapproved = demo or not (
+        status in APPROVED_ACCOUNT_STATUSES
+        or (status is None and ALLOW_LEGACY_NULL_STATUS))
+    if not unapproved:
+        return
+    path = str(getattr(getattr(request, "url", None), "path", "") or "")
+    if path in UNAPPROVED_PRINCIPAL_PATHS:
+        return
+    if demo:
+        raise HTTPException(status_code=403, detail=demo_guard.refusal_body(
+            getattr(request, "method", ""), path))
+    raise HTTPException(status_code=403, detail={"error": "account_pending"})
 
 
 async def require_approved(current_user = Depends(get_current_user)):
@@ -10845,7 +10899,7 @@ async def get_logbook_audit(
     project_id: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Calendar grid view: per-day completeness summary across
     all logbook categories. Frontend renders this as
@@ -10909,7 +10963,7 @@ async def get_logbook_audit(
 @api_router.get("/projects/{project_id}/logbook/missing")
 async def get_logbook_missing(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -10923,7 +10977,7 @@ async def get_logbook_missing(
 @api_router.get("/projects/{project_id}/logbook/deficiencies")
 async def get_logbook_deficiencies(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -10937,7 +10991,7 @@ async def get_logbook_deficiencies(
 @api_router.get("/projects/{project_id}/logbook/attestations")
 async def get_logbook_attestations(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -10989,7 +11043,7 @@ async def export_logbook(
     format: str = "pdf",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Render the full audit window as a single PDF for download
     by compliance staff / inspectors. Streamed inline; no R2
@@ -11095,7 +11149,7 @@ async def export_logbook(
 @api_router.get("/projects/{project_id}/risk-score")
 async def get_project_risk_score(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return the latest risk score for a project. 404 if no
     score has been calculated yet — frontend renders the
@@ -11143,7 +11197,7 @@ async def get_project_risk_score(
 async def get_project_risk_score_history(
     project_id: str,
     days: int = Query(30, ge=1, le=365),
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return the time series of risk scores for charting. Capped
     at 365 days of history; default 30.
@@ -11190,7 +11244,7 @@ async def calculate_project_risk_score(
 )
 async def get_project_peer_cohort(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11211,7 +11265,7 @@ async def get_project_peer_cohort(
 )
 async def get_project_defcon_status(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11232,7 +11286,7 @@ async def get_project_defcon_status(
 )
 async def get_project_recent_complaint_buckets(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11887,7 +11941,7 @@ async def _with_licence_resolved(doc: dict) -> dict:
 
 
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
-async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin)):
+async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin), _approved=Depends(require_approved)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -12186,7 +12240,7 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
 @api_router.delete("/admin/users/{user_id}")
-async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
+async def delete_admin_user(user_id: str, admin = Depends(get_user_admin), _approved=Depends(require_approved)):
     # Fetch user before delete to get phone for whatsapp_contacts cleanup
     user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
 
@@ -13899,7 +13953,7 @@ async def patch_my_notification_preferences(
 async def get_project_notification_preferences(
     project_id: str,
     user_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return project-scoped preferences for a user. Auth: caller
     must be the user_id themselves OR an admin/owner of the company
@@ -14039,7 +14093,7 @@ async def patch_project_notification_preferences(
     project_id: str,
     user_id: str,
     body: dict,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Partial update of project-scoped preferences. Auth: same as
     GET. Creates a project-scoped record from defaults if none
@@ -14065,7 +14119,7 @@ async def patch_project_notification_preferences(
 async def delete_project_notification_preferences(
     project_id: str,
     user_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Reset-to-user-global. Removes the project-scoped preferences
     record so the user falls back to their user-global settings for
@@ -23254,7 +23308,7 @@ async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
     }
 
 @api_router.post("/checkins/{checkin_id}/checkout")
-async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user)):
+async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     now = datetime.now(timezone.utc)
     result = await db.checkins.update_one(
         {"_id": to_query_id(checkin_id)},
@@ -24116,7 +24170,7 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     return serialize_id(log)
 
 @api_router.get("/daily-logs/{log_id}", response_model=DailyLogResponse)
-async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
+async def get_daily_log(log_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
@@ -24865,7 +24919,7 @@ async def ensure_signature_ledger_row(logbook, written_by: str) -> str:
 async def record_signature_event(
     data: SignatureEventCreate,
     request: Request,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Record a signature event from any frontend signature capture.
     Returns the event_id to be stored as a reference on the parent document."""
@@ -25012,7 +25066,7 @@ async def record_signature_event(
 async def get_signature_events_for_document(
     document_type: str,
     document_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Get all signature events for a specific document (audit trail view).
     Returns events in chronological order with hashes for verification."""
@@ -25041,7 +25095,7 @@ async def get_signature_events_for_document(
  
  
 @api_router.get("/signature-events/{event_id}")
-async def get_signature_event_detail(event_id: str, current_user=Depends(get_current_user)):
+async def get_signature_event_detail(event_id: str, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Get full detail of a single signature event including snapshot and signature data."""
     
     event = await db.signature_events.find_one({"_id": to_query_id(event_id)})
@@ -25055,7 +25109,7 @@ async def get_signature_event_detail(event_id: str, current_user=Depends(get_cur
 async def verify_signature_integrity(
     document_type: str,
     document_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Verify that no signature events have been tampered with.
     Re-computes content_hash from stored snapshot and compares."""
@@ -25403,7 +25457,7 @@ async def list_cs_registrations(
  
  
 @api_router.get("/admin/cs-registrations/{registration_id}")
-async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user)):
+async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Get a specific CS registration."""
     reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
     if not reg:
@@ -25821,7 +25875,7 @@ async def get_compliance_alerts(
 	
  
 @api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
-async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user)):
+async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Mark a compliance alert as resolved."""
     now = datetime.now(timezone.utc)
     await db.compliance_alerts.update_one(
@@ -25834,7 +25888,7 @@ async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_u
 # ==================== PER-LOG-TYPE PDF ENDPOINT ====================
  
 @api_router.get("/reports/logbook/{logbook_id}/pdf")
-async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, current_user=Depends(get_current_user)):
+async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Generate PDF for a single logbook entry (per-type PDF).
     Reuses the combined report HTML generator but filters to one log type."""
     from fastapi.responses import Response
@@ -29568,7 +29622,7 @@ async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_a
 # ==================== DAILY LOG PDF EXPORT ====================
 
 @api_router.get("/daily-logs/{log_id}/pdf")
-async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user)):
+async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     """Generate PDF for a daily log"""
     from fastapi.responses import Response
     import io
@@ -72769,7 +72823,7 @@ async def whatsapp_contact_vcard(current_user=Depends(get_current_user)):
 # ---------- material request endpoints (auth required) ----------
 
 @api_router.get("/projects/{project_id}/material-requests")
-async def get_material_requests(project_id: str, status: str = None, current_user=Depends(get_current_user)):
+async def get_material_requests(project_id: str, status: str = None, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Get material requests for a project."""
     query = {"project_id": project_id, "company_id": current_user.get("company_id"), "is_deleted": {"$ne": True}}
     if status:
@@ -72781,7 +72835,7 @@ async def get_material_requests(project_id: str, status: str = None, current_use
 
 
 @api_router.put("/material-requests/{request_id}/cancel")
-async def cancel_material_request(request_id: str, current_user=Depends(get_current_user)):
+async def cancel_material_request(request_id: str, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Cancel a material request (admin only)."""
     if not _admin_like(current_user):
         raise HTTPException(403, "Only admins can cancel material requests")

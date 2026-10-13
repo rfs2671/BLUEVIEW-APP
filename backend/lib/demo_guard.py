@@ -224,11 +224,22 @@ def bearer_token(request) -> Optional[str]:
     """
     auth = request.headers.get("authorization") or request.headers.get(
         "Authorization")
-    if not auth:
-        return None
-    if not auth.lower().startswith("bearer "):
-        return None
-    return auth[7:].strip() or None
+    if auth and auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    # ── AND `?token=`, BECAUSE get_current_user READS IT ────────────────────
+    #
+    # The two must read the same places, in the same order. When this read the
+    # header only, a demo's token sent as `?token=` was "no_token" here --
+    # passed through -- and an authenticated demo in get_current_user, which
+    # reaches every handler (security audit finding 1, 2026-10-13). Header
+    # first, as get_current_user does: HTTPBearer credentials win over the
+    # query parameter there too.
+    query = getattr(request, "query_params", None)
+    if query is not None:
+        tok = query.get("token")
+        if tok:
+            return str(tok).strip() or None
+    return None
 
 
 def decode_principal(
