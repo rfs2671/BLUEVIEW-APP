@@ -97,6 +97,7 @@ from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
 from lib import wa_assistant  # noqa: E402
+from lib import wa_subs  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
@@ -45583,7 +45584,7 @@ async def _bot_project_scope(company_id: Any, project_id: Any) -> Optional[dict]
         return await db.projects.find_one({
             "_id": to_query_id(pid),
             "company_id": _company_id_filter(cid),
-            "is_deleted": {"$ne": True},
+            **ACTIVE_PROJECT_FILTER,
         })
     except Exception as e:
         logger.warning(f"bot project scope read failed: {type(e).__name__}")
@@ -47083,7 +47084,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         # sweep; a project with no company is skipped below.
         only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
-            await unattended_project_filter({"is_deleted": {"$ne": True}, **only}),
+            await unattended_project_filter({**ACTIVE_PROJECT_FILTER, **only}),
             {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
@@ -50204,7 +50205,7 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
         else:
             out = await db.projects.find(
                 {"company_id": _company_id_filter(company_id),
-                 "is_deleted": {"$ne": True}}).to_list(200)
+                 **ACTIVE_PROJECT_FILTER}).to_list(200)
     except Exception as e:
         logger.warning(f"[wa-assistant] project read failed: {type(e).__name__}")
         return []
@@ -50959,7 +50960,7 @@ async def _upcoming_city_tick(now: Optional[datetime] = None) -> dict:
     today = _upcoming_today(now)
     try:
         projects = await db.projects.find(
-            await unattended_project_filter({"is_deleted": {"$ne": True}}),
+            await unattended_project_filter(dict(ACTIVE_PROJECT_FILTER)),
             {"company_id": 1}).to_list(5000)
     except Exception as e:
         logger.warning(f"[upcoming] project read failed: {type(e).__name__}")
@@ -51426,6 +51427,155 @@ async def _dm_answer_all(ident: dict, body: str) -> str:
     return reply or wa_assistant.ALL_JOBS_FAILED_TEXT
 
 
+# ── THE COMPANY'S SUBS (DM): list_subs, find_sub ───────────────────────────
+#
+# Tue Oct 13, 10:52 AM: "Is there low voltage company in subs list?" ->
+# "Which job?" -> 588 -> "I can't check the full list of subcontractors
+# here. Please use the app." The subs list is every job's roster
+# (lib/wa_subs.py): a question about it is answered for the company, with the
+# jobs each sub is on -- never "Which job?", never "use the app". An admin's
+# list is every live company job's; a PM's, their own jobs'.
+
+async def _dm_subs_rows(ident: dict, projects: Optional[list] = None) -> list:
+    """The subs rows of these jobs (default: every job they may see), each
+    with its punch contact's name there (never a number)."""
+    projects = ident["projects"] if projects is None else projects
+    company_id = str(ident["company_id"])
+    picked: Dict[str, Dict[str, str]] = {}
+    for p in projects:
+        try:
+            pc = (await _whatsapp_project_settings(p.get("_id"))).get("punch_contacts") or {}
+        except Exception:
+            pc = {}
+        picked[str(p.get("_id"))] = {str(k): str(v) for k, v in pc.items() if v}
+    ids = {v for pc in picked.values() for v in pc.values()}
+    names: Dict[str, str] = {}
+    if ids:
+        try:
+            for m in await db[wa_sender_map.COLLECTION].find(
+                    {"company_id": company_id,
+                     "_id": {"$in": sorted(ids) + [to_query_id(i) for i in sorted(ids)]}}
+                    ).to_list(1000):
+                if m.get("person_name"):
+                    names[str(m["_id"])] = str(m["person_name"])
+        except Exception as e:
+            logger.warning(f"[wa-subs] people read failed: {type(e).__name__}")
+    contacts = {pid: {rid: names[per] for rid, per in pc.items() if per in names}
+                for pid, pc in picked.items()}
+    return wa_subs.rows(projects, wa_assistant.street_label, contacts=contacts,
+                        active=_active_assignments)
+
+
+def _dm_sub_names(ident: dict) -> List[str]:
+    """The subs' company names on this person's jobs ("do we use Arkon?")."""
+    return sorted({str(r.get("company") or "").strip() for p in ident.get("projects") or []
+                   for r in _active_assignments(p) if str(r.get("company") or "").strip()})
+
+
+async def _dm_subs_tool(ident: dict, name: str, args: dict,
+                        project: Optional[dict] = None) -> str:
+    """find_sub / list_subs, for this person's jobs only -- for `project`
+    only when the question is about one job (the job agent: Codex on #780,
+    "an electrician on 588?" never answered from another job)."""
+    args = args or {}
+    if name == "find_sub":
+        if project is not None:
+            return wa_subs.render_find(args.get("trade_or_name"),
+                                       await _dm_subs_rows(ident, [project]),
+                                       job=wa_assistant.street_label(project))
+        return wa_subs.render_find(args.get("trade_or_name"), await _dm_subs_rows(ident))
+    said = str(args.get("job") or "").strip()
+    if said:
+        jobs = await _dm_jobs(ident)
+        ids = wa_assistant.find_jobs(said, jobs)
+        if not ids:
+            jid = wa_assistant.job_named(said, jobs, in_sentence=True)
+            ids = [jid] if jid else []
+        if len(ids) == 1:
+            job = next(j for j in jobs if j["id"] == ids[0])
+            return wa_subs.render_list(await _dm_subs_rows(ident, [job["project"]]),
+                                       job=job["label"])
+        return (f"No one job matches {said!r}; the whole subs list:\n"
+                + wa_subs.render_list(await _dm_subs_rows(ident)))
+    if project is not None:
+        return wa_subs.render_list(await _dm_subs_rows(ident, [project]),
+                                   job=wa_assistant.street_label(project))
+    return wa_subs.render_list(await _dm_subs_rows(ident))
+
+
+async def _dm_subs_fallback(ident: dict, question: str, projects: Optional[list] = None,
+                            job: Optional[str] = None) -> str:
+    """The subs answer without the model: the match for what was asked, or
+    the list."""
+    rows = await _dm_subs_rows(ident, projects)
+    if wa_subs.names_a_trade(question) or wa_subs.find(question, rows):
+        return wa_subs.render_find(question, rows, job=job)
+    return wa_subs.render_list(rows, job=job)
+
+
+async def _dm_subs_model(messages: list, tool_choice: Any) -> Optional[dict]:
+    """One chat-completions turn with the subs tools; the message, or None."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        async with ServerHttpClient(timeout=30) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 400,
+                      "tools": wa_subs.TOOLS, "tool_choice": tool_choice,
+                      "messages": messages},
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"})
+            resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]
+    except Exception as e:
+        logger.warning(f"[wa-subs] model call failed: {type(e).__name__}")
+        return None
+
+
+async def _dm_answer_subs(ident: dict, question: str, trace: Optional[list] = None) -> str:
+    """A question about the company's subs list, answered for the company
+    through find_sub / list_subs (a tool call is required first). The reply
+    must not deny the subs or send them to the app, and every number in it
+    must be in the tools' results; else the tool's own words go out."""
+    trace = trace if trace is not None else []
+    messages = [{"role": "system", "content": wa_subs.SYSTEM_PROMPT},
+                {"role": "user", "content": question}]
+    reply = ""
+    for turn in range(3):
+        msg = await _dm_subs_model(messages, "required" if turn == 0 else "auto")
+        if not msg:
+            break
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            reply = str(msg.get("content") or "").strip()
+            break
+        messages.append({"role": "assistant", "content": msg.get("content") or "",
+                         "tool_calls": calls})
+        for tc in calls:
+            fn = (tc.get("function") or {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                args = {}
+            name = fn.get("name") or ""
+            result = await _dm_subs_tool(ident, name, args) \
+                if name in ("find_sub", "list_subs") else "Unknown tool."
+            trace.append({"tool": name, "args": args, "result": result})
+            messages.append({"role": "tool", "tool_call_id": tc.get("id") or "",
+                             "content": result})
+    results = " ".join([question] + [str(t["result"]) for t in trace])
+    stray = set(re.findall(r"\d+", reply)) - set(re.findall(r"\d+", results))
+    if reply and not wa_subs.denies_subs(reply) and not stray:
+        return reply
+    if reply:
+        logger.info("[wa-subs] reply denied the subs or had numbers not in the "
+                    "results; sent the tool's words")
+    if trace:
+        return str(trace[-1]["result"])
+    return await _dm_subs_fallback(ident, question)
+
+
 async def _dm_answer_general(body: str) -> str:
     reply = await _dm_llm(wa_assistant.GENERAL_SYSTEM_PROMPT, body)
     return reply or wa_assistant.GENERAL_FAILED_TEXT
@@ -51465,6 +51615,12 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # transcribed and stored. The notes themselves go out instead.
         logger.info("[wa-assistant] reply denied voice access; sending the notes")
         return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
+    if reply and wa_subs.about_subs(body) and wa_subs.denies_subs(reply):
+        # NEVER "I can't check the subs list here, use the app" (Tue Oct 13,
+        # 10:52 AM): the subs are every job's roster.
+        logger.info("[wa-assistant] reply denied the subs list; sending it")
+        return await _dm_subs_fallback(ident, body, [project],
+                                       job=wa_assistant.street_label(project))
     if reply and wa_assistant.quoted_context(body) and wa_assistant.denies_quoted_access(reply):
         # NEVER "I can't access the message you replied to" (588, Oct 11
         # 6:22 PM): what it replied to is in the question.
@@ -53631,6 +53787,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await send_whatsapp_message(dm_chat, refusal)
                 await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
+        if not named and wa_subs.company_question(core, _dm_sub_names(ident)):
+            # The company's subs list: answered for the company, with the
+            # jobs each sub is on -- never "Which job?" (Tue Oct 13). After
+            # a PM's "not on that job" (Codex on #780).
+            subs_trace: list = []
+            await _dm_send_answer(dm_chat, message_id,
+                                  _dm_answer_subs(ident, question, subs_trace), heard,
+                                  log=(ident, None, question, "subs", subs_trace))
+            return
         if len(named) == 1:
             job = named[0]
         elif len(named) > 1:
@@ -53760,7 +53925,7 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
     try:
         rows = await db.projects.find(
             {"company_id": _company_id_filter(ident["company_id"]),
-             "is_deleted": {"$ne": True}}).to_list(200)
+             **ACTIVE_PROJECT_FILTER}).to_list(200)
     except Exception:
         return None
     others = [{"id": str(p.get("_id")), "label": wa_assistant.street_label(p),
@@ -56288,7 +56453,7 @@ async def _find_project_for_contact(contact: dict) -> Optional[Tuple[str, str]]:
     # Fallback: first active project in company
     proj = await db.projects.find_one({
         "company_id": _company_id_filter(company_id),
-        "is_deleted": {"$ne": True}})
+        **ACTIVE_PROJECT_FILTER})
     if proj:
         return company_id, str(proj["_id"])
     return None
@@ -61426,6 +61591,8 @@ _AGENT_TOOLS = [
         },
     },
 ]
+# The company's subs list (DM only; see _run_group_agent's filter).
+_AGENT_TOOLS += wa_subs.TOOLS
 
 
 # ── THE STANCE COMES FIRST, BECAUSE IT DECIDES THE OTHER RULES ─────────────
@@ -62495,6 +62662,9 @@ async def _run_group_agent(
         # Voice notes are read in a DM only, like project history.
         if name == "recent_voice_notes" and not dm:
             continue
+        # The company's subs list: a DM only (it spans the person's jobs).
+        if name in ("find_sub", "list_subs") and not dm:
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -62740,6 +62910,19 @@ async def _dispatch_agent_tool(
                         reason=f"tool:{name}")
         return wa_security.BOT_SCOPE_REFUSAL
     try:
+        if name in ("find_sub", "list_subs"):
+            # DM only, as the person writing: an admin's every job, a PM's own.
+            if not group_id or str(group_id).endswith("@g.us"):
+                return "The subs list is read in a direct message only."
+            ident = await _dm_assistant_identity(group_id)
+            if not ident or str(ident.get("company_id")) != str(company_id):
+                return wa_security.BOT_SCOPE_REFUSAL
+            # The job agent answers about ITS job: the tools see that job only.
+            project = next((p for p in ident.get("projects") or []
+                            if str(p.get("_id")) == str(project_id)), None)
+            if project is None:
+                return wa_security.BOT_SCOPE_REFUSAL
+            return await _dm_subs_tool(ident, name, args, project)
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."
@@ -63995,38 +64178,49 @@ async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
                         project_id=sess["project_id"])
 
 
+def _punch_needs_where(sess: dict) -> List[dict]:
+    """The items still to be asked a location: none once the walk was asked
+    (ONE question for all of them, Tue Oct 13 12:02 PM). After that an item
+    with no location goes out as "Location: not given"."""
+    return [] if sess.get("where_asked") else punch.missing_location(sess["items"])
+
+
 async def _punch_ask_where(sess: dict, dm_chat: str, intro: bool = False,
                            head: str = "") -> bool:
-    """Every item needs a location before the draft: ask for the first one
-    missing (one question per photo), or show the draft when none is."""
+    """Missing locations: asked ONCE, all of them in one short numbered
+    list; then the draft (or the stage a late photo came in at). A location
+    is never a blocker."""
     items = sess["items"]
-    missing = punch.missing_location(items)
-    if not missing and sess.get("resume"):
-        # A photo sent at a later stage, now located: back to that stage.
+    missing = _punch_needs_where(sess)
+    if missing:
+        await _punch_save(sess, status="locating", items=items, asking=None,
+                          where_asked=True, nudge={})
+        await send_whatsapp_message(dm_chat, (head + "\n" if head else "")
+                                    + punch.batch_where_question(missing))
+        return True
+    if sess.get("resume"):
+        # A photo sent at a later stage: back to that stage.
         prior = sess["resume"]
         await _punch_save(sess, resume=None, asking=None, items=items)
         it = _punch_item_by_captured(items, sess.get("resume_item"))
         return await _punch_back_to(sess, dm_chat, prior, it,
                                     punch.added_text(it) if it else "")
-    if not missing and sess.get("shortcut"):
-        # "Done, send to Chris": located, now on to Chris.
+    if sess.get("shortcut"):
+        # "Done, send to Chris": on to Chris.
         await _punch_save(sess, items=items, asking=None)
         return await _punch_apply_shortcut(sess, dm_chat)
-    if not missing:
-        # The numbers the walker was asked about stay: never renumbered.
-        await _punch_save(sess, status="draft", items=items, asking=None)
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
-        return True
-    first = missing[0]
-    await _punch_save(sess, status="locating", items=items, asking=first.get("n"))
-    lead, head = head, ""
-    if intro:
-        n = len(missing)
-        head = (f"{n} item{'s' if n != 1 else ''} need{'s' if n == 1 else ''} a location "
-                "before the draft. ")
-    await send_whatsapp_message(dm_chat, (lead + " " if lead else "") + head
-                                + punch.where_question(first))
+    # The numbers the walker was asked about stay: never renumbered.
+    await _punch_save(sess, status="draft", items=items, asking=None, nudge={})
+    await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "")
+                                + punch.draft_text(sess["job_name"], items))
     return True
+
+
+async def _punch_nudge(sess: dict) -> int:
+    """One more non-answer at this stage: how many in a row now."""
+    n = int((sess.get("nudge") or {}).get(sess["status"]) or 0) + 1
+    await _punch_save(sess, nudge={sess["status"]: n})
+    return n
 
 
 async def _punch_save(sess: dict, **fields) -> None:
@@ -64232,6 +64426,11 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
             # "I meant tile" under "Time wrong": THAT caption, corrected --
             # never a trade or a note on another item (8:31 PM).
             return await _punch_correct(sess, dm_chat, parsed, it, fix, now)
+        add = punch.add_item_words(said) if it else None
+        if add:
+            # "Add missing access ladder" under the stucco photo: its own
+            # item at that photo's place, never a note on it (12:02 PM).
+            return await _punch_add_words_item(sess, dm_chat, parsed, it, add, now)
         if it:
             if it.get("captured") in _punch_awaiting(sess):
                 # Its words came as a reply to the photo: no longer awaited
@@ -64365,6 +64564,33 @@ async def _punch_item_words(sess, dm_chat, parsed, it, words, now) -> bool:
         extra["last_captioned"] = it.get("captured")
     await _punch_save(sess, items=items, pending_note=None, **extra)
     return await _punch_after_item_change(sess, dm_chat, parsed, it)
+
+
+async def _punch_add_words_item(sess, dm_chat, parsed, ref, words, now) -> bool:
+    """A new item from words alone (no photo), at the replied photo's place
+    unless the words name one; pushed, never the list written back."""
+    items = sess["items"]
+    # Above every number ever shown, a dropped one too (Codex on #781).
+    it = punch.new_item(max([i.get("n") or 0 for i in items] or [0]) + 1, punch.capitalize(words),
+                        photo_key=None,
+                        message_id=parsed.get("message_id_serialized") or "", at=now)
+    it["captured"] = len(items) + 1
+    if not punch.location_ok(it):
+        for k in ("floor", "area", "room"):
+            if ref.get(k):
+                it[k] = ref[k]
+    it["added_from"] = ref.get("captured")
+    await db[punch.SESSIONS].update_one({"_id": sess["_id"]},
+                                        {"$push": {"items": it}, "$set": {"updated_at": now}})
+    items.append(it)
+    sess["updated_at"] = now
+    if sess["status"] == "draft":
+        await send_whatsapp_message(dm_chat, punch.added_text(it) + "\n\n"
+                                    + punch.draft_text(sess["job_name"], items))
+        return True
+    await send_whatsapp_message(dm_chat, punch.added_text(it) + (
+        " Next photo, or 'done'." if sess["status"] == "capturing" else ""))
+    return True
 
 
 def _punch_item_no(items: List[dict], n: int) -> Optional[dict]:
@@ -64506,8 +64732,10 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
 
 
 async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
-    """Before the draft: the answer to "Where is #2 …?" (a reply to another
-    photo is handled before this, for that photo)."""
+    """The answer to the ONE location question: "3 rear yard, 5-9 roof",
+    "all roof", "rest lobby", or 'skip' / 'just finish' / 'ignore that' --
+    then the draft. Any words are a location, as typed; a floor alone is
+    one. Never the same question twice in a row (12:02 PM: 5 times)."""
     words = (voice or {}).get("transcript") or text
     low = words.strip().lower()
     items = sess["items"]
@@ -64515,35 +64743,58 @@ async def _punch_locate_turn(sess, dm_chat, parsed, text, voice, now) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    ref = punch.target_ref(words)
-    it = _punch_item_no(items, ref[0]) if ref else None
-    if ref and it is None:
-        # "#99 lobby": no such item -- never put it on the one being asked.
-        asked = _punch_item_no(items, sess.get("asking") or 0)
-        await send_whatsapp_message(dm_chat, f"There's no #{ref[0]} in this walkthrough."
-                                    + (" " + punch.where_question(asked) if asked else ""))
-        return True
-    if it is not None:
-        words = ref[1]
-    else:
-        it = _punch_item_no(items, sess.get("asking") or 0) or (punch.missing_location(items) or [None])[0]
-    if it is None:
-        return await _punch_ask_where(sess, dm_chat)
-    drop = re.fullmatch(r"\s*(?:drop|delete|remove|borra|quita)(?:\s+(?:it|this))?\s*", low)
+    live_ns = [it["n"] for it in items if it.get("status", "draft") != "dropped"]
+    missing_ns = [it["n"] for it in punch.missing_location(items)]
+    drop = re.fullmatch(r"\s*(?:drop|delete|remove|borra|quita)\s+#?(\d{1,3})\s*", low)
     if drop:
-        it["status"] = "dropped"
-        await _punch_save(sess, items=items)
-        return await _punch_ask_where(sess, dm_chat)
-    loc = punch.read_location(words)
-    bare = re.fullmatch(r"\s*(\d{1,3})\s*", words or "")
-    if bare and punch.location_state(it.get("floor"), it.get("area")) == "needs_floor":
-        loc = {"floor": bare.group(1).lstrip("0") or "0", "area": None}   # "Which floor?" "3"
-    if not (loc.get("floor") or loc.get("area")):
-        await send_whatsapp_message(dm_chat, punch.where_question(it) + "\n" + punch.WHERE_HELP)
+        it = _punch_item_no(items, int(drop.group(1)))
+        if it:
+            it["status"] = "dropped"
+            await _punch_save(sess, items=items)
+        return await _punch_ask_where(sess, dm_chat, head=f"Dropped #{drop.group(1)}." if it else "")
+    ans = punch.parse_batch_where(words, missing_ns)
+    legacy = False
+    if ans is None and not sess.get("where_asked") and sess.get("asking"):
+        # A walk asked the old way ("Where on floor 1 is #3?"): the words are
+        # #3's place, as typed; then the one question for the rest.
+        loc = punch.free_location(words)
+        if loc.get("floor") or loc.get("area"):
+            ans, legacy = {"set": {int(sess["asking"]): loc}}, True
+    if ans is None and len(missing_ns) == 1:
+        # One item asked: the words are its place, no number needed ("4D").
+        loc = punch.free_location(words)
+        if loc.get("floor") or loc.get("area"):
+            ans = {"set": {missing_ns[0]: loc}}
+    if ans is None:
+        n = await _punch_nudge(sess)
+        if n >= 3:
+            # Asked twice already: on to the draft, the rest without one.
+            await _punch_save(sess, where_asked=True)
+            return await _punch_ask_where(sess, dm_chat, head="Moving on — those go out with "
+                                          "no location.")
+        await send_whatsapp_message(dm_chat, punch.BATCH_SHORT
+                                    + (" " + punch.SKIP_HINT if n >= 2 else ""))
         return True
-    punch.merge_location(it, loc)
-    await _punch_save(sess, items=items)
-    return await _punch_ask_where(sess, dm_chat)
+    head, set_ns, unknown = "", [], []
+    for n, loc in sorted((ans.get("set") or {}).items()):
+        it = _punch_item_no(items, n)
+        if it is None:
+            unknown.append(n)
+            continue
+        if punch.merge_location(it, loc):
+            set_ns.append(n)
+    if set_ns:
+        await _punch_save(sess, items=items)
+        head = f"Set {len(set_ns)} location{'s' if len(set_ns) != 1 else ''}."
+    if unknown:
+        head += f" No #{', #'.join(map(str, unknown))} in this walkthrough."
+    del live_ns
+    # One question, then the draft: whatever is still missing goes out
+    # with "Location: not given". (An old-style answer: the rest are asked
+    # the one question first.)
+    if not legacy or ans.get("skip"):
+        await _punch_save(sess, where_asked=True)
+    return await _punch_ask_where(sess, dm_chat, head=head.strip())
 
 
 async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
@@ -64557,21 +64808,42 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    if low in punch.SEND_WORDS:
-        if punch.missing_location(items):
-            # An item added in the draft with no location: asked first.
+    escape = punch.is_escape(words)
+    if low in punch.SEND_WORDS or escape:
+        if _punch_needs_where(sess):
             return await _punch_ask_where(sess, dm_chat, intro=True)
         live = [it for it in items if it.get("status", "draft") != "dropped"]
         need = [it["n"] for it in punch.ordered(live) if it.get("trade") == punch.UNKNOWN]
-        if need:
+        if need and not escape and not sess.get("trade_asked"):
+            # Said once; a second 'send' (or 'send as is') goes on: who
+            # gets the "?" ones is asked next.
+            await _punch_save(sess, trade_asked=True)
             await send_whatsapp_message(dm_chat, (
                 f"{len(need)} still need a trade ({', '.join(map(str, need))}). "
-                "Reply e.g. \"3 → paint\", then 'send'."))
+                "Reply e.g. \"3 → paint\", or 'send' to go on without."))
             return True
+        await _punch_save(sess, nudge={})
         return await _punch_to_assign(ident, sess, dm_chat)
     edits = punch.parse_edits(words)
+    where = None if edits else punch.parse_batch_where(
+        words, [it["n"] for it in punch.missing_location(items)])
+    if where and where.get("set"):
+        # Locations in the draft too: "3 rear yard, 5-9 roof", "all roof"
+        # (the ones with none), "#4 Apt 5A".
+        set_ns = [n for n, loc in sorted(where["set"].items())
+                  if _punch_item_no(items, n) and punch.merge_location(_punch_item_no(items, n), loc)]
+        await _punch_save(sess, items=items, nudge={})
+        await send_whatsapp_message(dm_chat, (f"Set {len(set_ns)} location"
+                                              f"{'s' if len(set_ns) != 1 else ''}.\n\n"
+                                              if set_ns else "")
+                                    + punch.draft_text(sess["job_name"], items))
+        return True
     if not edits:
-        await send_whatsapp_message(dm_chat, punch.draft_text(sess["job_name"], items))
+        # Never the whole draft again for words it cannot read: short.
+        n = await _punch_nudge(sess)
+        await send_whatsapp_message(dm_chat, "Reply to fix (\"2 → electrical\", \"drop 6\", "
+                                    "\"move 3 to floor 6\"), or 'send'."
+                                    + (" " + punch.SKIP_HINT if n >= 2 else ""))
         return True
     notes = []
     for e in edits:
@@ -64582,7 +64854,7 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
     # Every edit reads the numbers the walker has in front of them; they
     # never change once shown ("2 → electrical" is always that #2), and a
     # new item takes the next free one.
-    await _punch_save(sess, items=items)
+    await _punch_save(sess, items=items, nudge={})
     reply = punch.draft_text(sess["job_name"], items)
     if notes:
         reply = "Couldn't: " + "; ".join(notes) + "\n\n" + reply
@@ -64694,8 +64966,12 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
                                         + punch.assign_text(assign))
             return True
-    elif not r.get("ok"):
-        await send_whatsapp_message(dm_chat, punch.assign_text(assign))
+    elif not r.get("ok") and not punch.is_escape(text):
+        # Never the whole list again for words it cannot read: short.
+        n = await _punch_nudge(sess)
+        await send_whatsapp_message(dm_chat, punch.ASSIGN_SHORT
+                                    + (" " + punch.SKIP_HINT if n >= 2 and all(assign.values())
+                                       else ""))
         return True
     if asks:
         ask = asks[0]
@@ -64781,7 +65057,7 @@ async def _punch_shortcut(sess: dict, dm_chat: str, sc: dict) -> bool:
     the missing locations asked first, then the whole list to Chris by DM
     (or "to the group": to the job's group) and the recap; 'ok' sends."""
     await _punch_save(sess, shortcut=sc)
-    if punch.missing_location(sess["items"]):
+    if _punch_needs_where(sess):
         return await _punch_ask_where(sess, dm_chat, intro=True)
     return await _punch_apply_shortcut(sess, dm_chat)
 
@@ -64885,14 +65161,10 @@ async def _punch_late_caption(sess, dm_chat, words, now, quoted=None) -> bool:
 async def _punch_placed(sess, dm_chat, prior, it) -> bool:
     """The late item has words: its location asked first if they do not
     give it, else back to `prior`."""
-    missing = punch.missing_location(sess["items"]) if prior != "locating" else []
-    if missing:
-        # Its location -- or an earlier late photo's -- asked first.
-        ask = it if it in missing else missing[0]
-        await _punch_save(sess, status="locating", asking=ask.get("n"),
-                          resume=prior, resume_item=it.get("captured"))
-        await send_whatsapp_message(dm_chat, punch.added_text(it) + " " + punch.where_question(ask))
-        return True
+    if prior != "locating" and _punch_needs_where(sess):
+        # Locations not asked yet: the one question, then back to `prior`.
+        await _punch_save(sess, resume=prior, resume_item=it.get("captured"))
+        return await _punch_ask_where(sess, dm_chat, head=punch.added_text(it))
     return await _punch_back_to(sess, dm_chat, prior, it, punch.added_text(it))
 
 
@@ -64978,7 +65250,8 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
-    if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok"):
+    if low in punch.SEND_WORDS or punch.parse_assign_reply(text).get("ok") \
+            or punch.is_escape(text):
         live = [it for it in sess["items"] if it.get("status", "draft") != "dropped"]
         settings = await _whatsapp_project_settings(sess["project_id"])
         default = punch.due_default(settings.get("punch_due_default"))
@@ -65001,7 +65274,11 @@ async def _punch_recap_turn(ident, sess, dm_chat, text) -> bool:
         # not be read is asked, never dropped.
         await send_whatsapp_message(dm_chat, punch.DUE_ASK)
         return True
-    return await _punch_show_recap(sess, dm_chat)
+    # Never the whole recap again for words it cannot read: short.
+    n = await _punch_nudge(sess)
+    await send_whatsapp_message(dm_chat, "Reply 'ok' to send, a due (\"electrical friday\"), "
+                                "or 'cancel'." + (" Or 'send as is'." if n >= 2 else ""))
+    return True
 
 
 async def _punch_user_person(company_id: str, user_id: Any) -> Optional[dict]:
@@ -65614,7 +65891,7 @@ async def _punch_link_open(tok: str, now: datetime) -> Optional[Tuple[dict, List
         project = await db.projects.find_one(
             {"_id": to_query_id(link["project_id"]),
              "company_id": _company_id_filter(link["company_id"]),
-             "is_deleted": {"$ne": True}})
+             **ACTIVE_PROJECT_FILTER})
         if not project:
             return None
         rows = await _punch_link_rows(link)
@@ -67671,7 +67948,7 @@ async def _assert_link_project_owned(project_id: Any, current_user: dict,
         try:
             project = await db.projects.find_one({
                 "_id": to_query_id(str(project_id)),
-                "is_deleted": {"$ne": True},
+                **ACTIVE_PROJECT_FILTER,
             })
         except Exception:
             project = None
@@ -68267,7 +68544,7 @@ async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
     await _ensure_group_names(rows, coll=PENDING_GROUPS, key="group_id")
 
     projects = await db.projects.find(
-        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"company_id": company_id, **ACTIVE_PROJECT_FILTER},
         {"name": 1, "address": 1, "location": 1, "nickname": 1,
          "nyc_bin": 1, "bbl": 1},
     ).to_list(500)
@@ -68344,7 +68621,7 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
     if pids:
         for p in await db.projects.find(
                 {"_id": {"$in": [to_query_id(x) for x in pids]},
-                 "company_id": company_id, "is_deleted": {"$ne": True}},
+                 "company_id": company_id, **ACTIVE_PROJECT_FILTER},
                 {"name": 1, "address": 1, "location": 1}).to_list(500):
             projects[str(p["_id"])] = p
 
@@ -68586,7 +68863,7 @@ async def whatsapp_pending_group_by_token(
         raise HTTPException(status_code=404, detail="Link expired or invalid")
 
     projects = await db.projects.find(
-        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"company_id": company_id, **ACTIVE_PROJECT_FILTER},
         {"name": 1, "address": 1, "location": 1, "nickname": 1,
          "nyc_bin": 1, "bbl": 1},
     ).to_list(500)

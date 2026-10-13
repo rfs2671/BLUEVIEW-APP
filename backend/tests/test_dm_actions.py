@@ -363,6 +363,34 @@ class Chat(unittest.TestCase):
         # A failed note with no question open keeps its own reply.
         failed = voice_ingest.VoiceIngestResult(ok=False, user_reply="resend", duration_sec=1.0)
         self.assertFalse(asyncio.run(go(failed)))
+    def test_an_undone_job_is_gone_from_every_job_list(self):
+        """Tue 10:52 AM: '9 MENAHAN STREET' in the Which-job list, a job undone
+        Mon 8:30 PM. Undo marks it for deletion; every WhatsApp list and
+        lookup leaves a job marked for deletion out, as the app does."""
+        self.talk("add 9 menahan", "yeah")
+        made = next(p for p in self.db.projects.rows if p.get("name") == "9 Menahan St")
+        pid = str(made["_id"])
+        user = {"_id": dry.WALKER_ID, "company_id": dry.COMPANY, "role": "admin"}
+
+        def jobs():
+            async def go():
+                with patch.object(server, "db", self.db):
+                    return ([str(p["_id"]) for p in await server._dm_assistant_projects(
+                        user, dry.COMPANY, "admin")],
+                            await server._bot_project_scope(dry.COMPANY, pid))
+            return asyncio.run(go())
+
+        listed, scoped = jobs()
+        self.assertIn(pid, listed)
+        self.assertIsNotNone(scoped)
+        self.talk("undo that")
+        listed, scoped = jobs()
+        self.assertNotIn(pid, listed)                   # not in Which job?, the brief, ...
+        self.assertIn("p588", listed)
+        self.assertIsNone(scoped)                       # nor readable by id from WhatsApp
+        # Added again later, it is a new job, not "you already have it".
+        found, _done = self.talk("add 9 menahan", "yes")
+        self.assertEqual(found, "Found it: 9 Menahan St, Brooklyn. Add it as a new job?")
 
     def test_several_matches_a_short_numbered_list(self):
         which, found = self.talk("we got a new job on 45 main st", "2")

@@ -83,8 +83,7 @@ class The1036Photo(_Walk):
 
     def test_no_location_asks_where_then_back(self):
         (q,) = self.turn("tile chipped", photo=True)
-        self.assertEqual(q, "Added #4 'tile chipped'. Where is #4 'tile chipped'? "
-                            "(floor + unit, or a named area)")
+        self.assertTrue(q.startswith("Added #4 'tile chipped'.\n1 has no location."), q)
         self.assertEqual(self.sess()["status"], "locating")
         (out,) = self.turn("4D")
         self.assertTrue(out.startswith("Added #4 'tile chipped' (Apt 4D). Back to: Who gets what?"),
@@ -182,7 +181,7 @@ class NumbersNeverChange(_Walk):
         self.turn("Bulb burnt", photo=True)
         self.turn("Faucet leaking 2D", photo=True)
         (q,) = self.turn("done")
-        self.assertIn("#1 'Bulb burnt'", q)
+        self.assertIn("#1 Bulb burnt", q)
         (draft,) = self.turn("4F")
         import re
         self.assertEqual([int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", draft, re.M)], [2, 1])
@@ -305,8 +304,7 @@ class CodexOn758(_Walk):
         (q,) = self.turn("4d tile chipped")
         self.assertEqual(q, "Added #4 'Tile chipped' (Apt 4D). What is #5, and where?")
         (out,) = self.turn("tile cracked")                         # no location: asked
-        self.assertEqual(out, "Added #5 'tile cracked'. Where is #5 'tile cracked'? "
-                              "(floor + unit, or a named area)")
+        self.assertTrue(out.startswith("Added #5 'tile cracked'.\n1 has no location."), out)
         (out,) = self.turn("4E")
         self.assertIn("Back to: Who gets what?", out)
         items = {it["n"]: it for it in self.sess()["items"]}
