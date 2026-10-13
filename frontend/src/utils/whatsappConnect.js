@@ -201,5 +201,7 @@ export function whatsappCardView({ me, status, isAdmin = false, canFeed = false 
     assistantButton: assistant
       ? { label: 'Personal assistant', path: '/whatsapp/assistant', chip: assistant.chip }
       : canFeed ? { label: 'Personal assistant', path: '/whatsapp/assistant', chip: null } : null,
+    // Company-wide settings (Admins): e.g. "Default: chase on Sundays".
+    companyButton: isAdmin ? { label: 'Company settings', path: '/whatsapp/company' } : null,
   };
 }

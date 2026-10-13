@@ -47,8 +47,10 @@ console.log('the card');
     status: { platform_configured: true, company_active: false }, isAdmin: true });
   ok(notSetUp.header.chip.label === 'Not set up' && !notSetUp.header.contactUrl,
      'company not set up: chip says so, no Save to Contacts');
-  ok(Object.keys(v).sort().join() === 'assistantButton,groupsButton,header,visible',
-     'nothing else on the card: header and the two buttons');
+  ok(Object.keys(v).sort().join() === 'assistantButton,companyButton,groupsButton,header,visible',
+     'nothing else on the card: header and the buttons');
+  ok(v.companyButton.label === 'Company settings' && v.companyButton.path === '/whatsapp/company',
+     'Company settings button (Admins)');
   ok(v.groupsButton.label === 'Project groups' && v.groupsButton.path === '/whatsapp/groups',
      'Project groups button');
   ok(v.assistantButton.label === 'Personal assistant'
@@ -107,6 +109,7 @@ console.log('\nwho sees what');
 {
   const pm = card(me('not_connected'), { isAdmin: false });
   ok(pm.visible && pm.groupsButton && pm.assistantButton, 'PM: both buttons (groups read-only)');
+  ok(pm.companyButton === null, 'PM: no Company settings');
   const admin = card(me('not_connected'), { isAdmin: true });
   ok(admin.groupsButton && admin.assistantButton, 'Admin: both buttons');
   const notForMe = card(me('not_eligible'), { isAdmin: true });

@@ -57,7 +57,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
   const { user } = useAuth();
   const view = whatsappCardView({ me, status, isAdmin, canFeed: canSeeUpcoming(user) });
   if (!view.visible) return null;
-  const { header, groupsButton, assistantButton } = view;
+  const { header, groupsButton, assistantButton, companyButton } = view;
 
   const Chip = ({ c }) => (c ? (
     <View style={[s.chip, c.tone === 'ok' && s.chipOk, c.tone === 'warn' && s.chipWarn]}>
@@ -112,6 +112,7 @@ export default function WhatsAppCard({ isAdmin = false }) {
       <View style={s.buttons}>
         <NavButton b={groupsButton} />
         {assistantButton ? <NavButton b={assistantButton} /> : null}
+        {companyButton ? <NavButton b={companyButton} /> : null}
       </View>
     </GlassCard>
   );

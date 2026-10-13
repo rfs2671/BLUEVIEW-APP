@@ -346,7 +346,7 @@ class Chat(unittest.TestCase):
         self.ident["projects"] = [self.proj, self.other]
         which, ask = self.talk("no chasing the whole weekend", "2")
         self.assertEqual(which, "Which job?\n1) 588 Thomas St\n2) 77 Water St")
-        self.assertEqual(ask, "Already set — at 77 Water St, no chasing over Shabbos, Yom Tov or Sundays.")
+        self.assertEqual(ask, "Done — at 77 Water St, no chasing over Shabbos, Yom Tov or Sundays.")
         self.assertEqual(self.talk("put power direct on thomas they're plumbers"),
                          ["Add Power Direct (Plumbing) to 588 Thomas St?"])
 
@@ -480,9 +480,10 @@ class Chat(unittest.TestCase):
         self.assertIs(self.settings()["chase_sundays_off"], False)
 
     def test_already_so(self):
-        self.assertEqual(self.talk("no weekend reminders at 588", "both"),
+        self.assertEqual(self.talk("no weekend reminders at 588", "just shabbos"),
                          ["Just Shabbos (Fri evening to Sat night), or Sunday too?",
-                          "Already set — at 588 Thomas St, no chasing over Shabbos, Yom Tov or Sundays."])
+                          "Already set — at 588 Thomas St, no chasing over Shabbos and Yom Tov; "
+                          "Sundays are on."])
 
     def test_punch_for_real_needs_the_address_typed(self):
         ask, done = self.talk("start sending punch lists for real at 588", "588 thomas st")

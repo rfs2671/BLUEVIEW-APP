@@ -487,13 +487,14 @@ class Overdue(_Base):
             self.run_day(13)
             self.assertEqual(self.on(13), [], change)
 
-    def test_weekends_off_still_skip_saturday_and_sunday(self):
+    def test_shabbos_skipped_sunday_chased_by_default(self):
+        # Shabbos / Yom Tov off by default; Sundays chased (the company's
+        # "Default: chase on Sundays" is on by default).
         self.calcs(due={"due_at": "2026-10-09", "due_text": "Friday"})
-        self.run_day(10)                                       # Sat: off by default
-        self.run_day(11)
+        self.run_day(10)                                       # Sat: Shabbos
         self.assertEqual(self.rows(), [])
-        self.run_day(12)
-        self.assertEqual(self.on(12), [("morning", "group"), ("admin_dm", "admin_dm")])
+        self.run_day(11)                                       # Sun: chased
+        self.assertEqual(self.on(11), [("morning", "group"), ("admin_dm", "admin_dm")])
         self.assertIn("overdue since Fri Oct 9", self.rows("morning")[0]["text"])
 
     def test_with_one_due_today_one_message(self):
@@ -769,6 +770,9 @@ class Weekends(_Base):
         self.assertEqual(self._day(), ["morning", "midday", "eod", "admin_dm"])
 
     def test_sunday_too(self):
+        # A company that does not chase on Sundays by default.
+        self.db[server.WA_COMPANY_SETTINGS].rows.append({
+            "_id": CO_A, "company_id": CO_A, "whatsapp_company": {"chase_sundays_default": False}})
         _item(self.db, due={"due_text": "Sunday", "due_at": "2026-10-11"},
               evidence={"sent_at": _et(7, 0, day=11)})
         self.chase(_et(8, 35, day=11))
@@ -797,10 +801,10 @@ class TheWeekendSwitch(_Base):
     def test_admin_sets_it_and_the_view_shows_it(self):
         with patch.object(server, "db", self.db):
             v = _run(server.get_project_whatsapp_settings("proj_a", current_user=ADMIN))
-            self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (True, True))
-            v = _run(server.patch_project_whatsapp_alerts(
-                "proj_a", {"chase_sundays_off": False}, current_user=ADMIN))
             self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (True, False))
+            v = _run(server.patch_project_whatsapp_alerts(
+                "proj_a", {"chase_sundays_off": True}, current_user=ADMIN))
+            self.assertEqual((v["chase_shabbos_off"], v["chase_sundays_off"]), (True, True))
             # An app from before the two switches sends the old one: both.
             v = _run(server.patch_project_whatsapp_alerts(
                 "proj_a", {"chase_weekends": True}, current_user=ADMIN))

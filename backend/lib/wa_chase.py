@@ -143,12 +143,25 @@ def current_slot(now: datetime) -> Optional[str]:
 SHABBOS_OFF, SUNDAYS_OFF = "chase_shabbos_off", "chase_sundays_off"
 
 
-def rest_days(settings: Dict[str, Any]) -> Dict[str, bool]:
-    """{chase_shabbos_off, chase_sundays_off} of a job's settings."""
+def rest_days(settings: Dict[str, Any],
+              sundays_off_default: Optional[bool] = None) -> Dict[str, bool]:
+    """{chase_shabbos_off, chase_sundays_off} of a job's settings.
+
+    A switch never saved: from the old "Chase on weekends" when the job has
+    it; else Shabbos off, and Sundays per `sundays_off_default` (the
+    company's "Default: chase on Sundays", inverted) -- off when unknown."""
     s = settings or {}
-    legacy_off = s.get("chase_weekends") is not True
-    return {k: (s[k] if isinstance(s.get(k), bool) else legacy_off)
-            for k in (SHABBOS_OFF, SUNDAYS_OFF)}
+    out = {}
+    for k in (SHABBOS_OFF, SUNDAYS_OFF):
+        if isinstance(s.get(k), bool):
+            out[k] = s[k]
+        elif isinstance(s.get("chase_weekends"), bool):
+            out[k] = not s["chase_weekends"]
+        elif k == SUNDAYS_OFF and sundays_off_default is not None:
+            out[k] = bool(sundays_off_default)
+        else:
+            out[k] = True
+    return out
 
 
 def quiet(now: datetime, settings: Dict[str, Any]) -> Optional[str]:

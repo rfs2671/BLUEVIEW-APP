@@ -1951,6 +1951,17 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // Company-wide WhatsApp settings (admins): { chase_sundays_default }.
+  getCompanySettings: async () => {
+    const response = await apiClient.get('/api/company/whatsapp-settings');
+    return response.data;
+  },
+
+  setCompanySettings: async (patch) => {
+    const response = await apiClient.patch('/api/company/whatsapp-settings', patch);
+    return response.data;
+  },
+
   // Pick (and confirm) the project's GC group.
   setGcGroup: async (projectId, waGroupId) => {
     const response = await apiClient.put(`/api/projects/${projectId}/whatsapp-gc-group`,
