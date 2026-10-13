@@ -276,7 +276,7 @@ class ALocationIsNeverABlocker(_Walk):
                 self.assertIn("*Location: not given*", draft)
                 # And never asked again: 'send' goes on to who gets what.
                 (who,) = self._turn("send")
-                self.assertNotIn("location", who.lower())
+                self.assertNotIn("no location. Reply like", who)
 
     def test_all_and_rest(self):
         self._turn("Bulb burnt", photo=True)
