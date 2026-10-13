@@ -444,12 +444,13 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
                          "LeasedAsyncIOScheduler")
 
     def test_the_server_registers_its_jobs_through_add_job(self):
-        """Every registration (including the attention, brief and chase jobs)
-        goes through scheduler.add_job with an id, so every one is wrapped."""
+        """Every registration (including the attention, brief, chase and
+        Shabbos-queue jobs) goes through scheduler.add_job with an id, so
+        every one is wrapped."""
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 38)
+        self.assertEqual(body.count("scheduler.add_job("), 39)
 
 
 # ══════════════════════════════════════════════════════════════════════════
