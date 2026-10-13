@@ -17,9 +17,15 @@ ok(W.companyView({}).map((s) => s.value).join() === 'true,true,false',
 ok(W.companyView({ chase_sundays_default: false })[0].value === false, 'off when saved off');
 ok(W.companyView({ shabbos_critical_alerts: true })[2].value === true, 'on when saved on');
 ok(W.companyView(null)[0].key === 'chase_sundays_default', 'keyed for the PATCH');
+console.log('\npunch list detail');
+ok(W.choiceView({})[0].key === 'punch_detail' && W.choiceView({})[0].value === 'simple', 'Simple unless set');
+ok(W.choiceView({ punch_detail: 'detailed' })[0].value === 'detailed', 'Detailed when saved');
+ok(W.choiceView({ punch_detail: 'bogus' })[0].value === 'simple', 'an unknown value reads as the default');
+ok(W.COMPANY_CHOICES[0].options.map((o) => o.label).join('|') === 'Simple|Detailed', 'the two options, word for word');
 {
   const panel = fs.readFileSync(path.join(__dirname, '..', 'components', 'whatsapp', 'CompanyWhatsAppPanel.jsx'), 'utf8');
   ok(/whatsappAPI\.setCompanySettings\(\{ \[sw\.key\]: v \}\)/.test(panel), 'the panel saves each switch');
+  ok(/onPress=\{\(\) => change\(c, o\.value\)\}/.test(panel), 'the panel saves the detail choice');
   ok(fs.existsSync(path.join(__dirname, '..', '..', 'app', 'whatsapp', 'company.jsx')), 'the screen exists');
 }
 

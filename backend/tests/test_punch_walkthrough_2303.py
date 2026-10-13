@@ -29,9 +29,13 @@ from unittest.mock import patch
 
 from tests.test_punch_walkthrough_2031 import CO, GROUP, NOW, P588, _Walk, _world  # noqa: F401
 import server
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, wa_chase
 
 GROUP_NAME = "588 Thomas s boyland - tets"
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Live(_Walk):
@@ -158,8 +162,9 @@ class Names(_Live):
 
     def test_6_the_hint_says_whole_list(self):
         who = self._to_assign()
-        self.assertIn("Reply 'ok', fix one (\"electrical → Mike\"), or send the whole list to one "
-                      "person (\"whole list → Chris\").", who)
+        # Plain words, no syntax until the walker seems stuck (1:43 PM).
+        self.assertIn("Look right? Say ok, or tell me who should get what — or the whole list to "
+                      "one person.", who)
         self.assertNotIn('"all → Chris"', who)
 
 

@@ -25,6 +25,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch  # noqa: E402
 from scripts import punch_dry_run as dry  # noqa: E402
 
@@ -50,6 +51,9 @@ def _upto(sc, text):
 
 def _run(sc):
     return asyncio.run(dry.run(sc))
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class ShippedScenarios(unittest.TestCase):
@@ -84,7 +88,7 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         res = _run(_upto(_sc(), LOCS))           # the locations, in the draft
         self.assertEqual(res["reacts"], ["👍"] * 12)       # the 12 photos; words are answered in words
         said_all = "\n".join(res["transcript"])
-        self.assertIn("— got it. Next photo", said_all)    # the voice after one (10:46 AM: never only 👍)
+        self.assertIn("— got it.", said_all)    # the voice after one (10:46 AM: never only 👍)
         self.assertEqual(len(res["uploads"]), 12)
         self.assertTrue(all(k.startswith("wa-photos/p588/") for k in res["uploads"]))
         # Every item has a floor at least: no location question at all (Tue
@@ -102,7 +106,7 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         res = _run(_upto(_sc(), LOCS))
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
-        self.assertIn("2 need a trade", text)
+        self.assertIn("2 have no trade — fine to send as is.", text)
         self.assertIn("📷🎤 Falta pintura (hallway)", text)   # "piso 6 … en el pasillo": its place
         self.assertLess(text.index("*Floor 4*"), text.index("*Floor 5*"))
 

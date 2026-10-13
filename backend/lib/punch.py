@@ -389,14 +389,24 @@ _TRADES = [
     ("tile", r"\btile|grout|backsplash|azulejos?|lechada"),
     ("glazing", r"windows?|glass|glazing|storefront|ventanas?|vidrios?"),
     ("fire protection", r"sprinkler\w*|fire alarm|smoke detector|rociadores?|alarma de incendio"),
-    ("masonry", r"mason\w*|brick\w*|block|cmu|pointing|ladrillos?|bloques?"),
-    ("roofing", r"roof\w*|flashing|techo|impermeabiliz\w*"),
+    ("masonry", r"mason\w*|brick\w*|block|cmu|pointing|stucco|parg(?:e|ing)|ladrillos?|bloques?|estuco"),
+    # Never the bare word "roof": that is where, not who (1:43 PM, 588:
+    # "Stucco work" under the "roof" group read as roofing).
+    ("roofing", r"roofing|roofers?|roof\s+(?:leak\w*|membrane|drain|hatch|repair|patch)|flashing|coping"
+                r"|impermeabiliz\w*"),
     ("concrete", r"concrete|slab|curb|sidewalk|concreto|hormig[oó]n|losa"),
     ("elevator", r"elevator|ascensor|elevador"),
     ("cleaning", r"clean\w*|debris|garbage|limpi\w*|basura|escombros?"),
 ]
 _TRADES_RX = [(t, re.compile(r"(?<!\w)(?:" + p + r")(?!\w)", re.IGNORECASE)) for t, p in _TRADES]
 TRADES = tuple(t for t, _ in _TRADES)
+#: Words that name ONE trade even beside another trade's word ("Elevator
+#: beam pockets" is concrete work, never the elevator sub; 1:43 PM).
+_SPECIFIC = [
+    ("concrete", r"beam\s+pockets?|core\s+drill\w*|housekeeping\s+pads?"),
+    ("masonry", r"stucco|parg(?:e|ing)|repoint\w*"),
+]
+_SPECIFIC_RX = [(t, re.compile(r"(?<!\w)(?:" + p + r")(?!\w)", re.IGNORECASE)) for t, p in _SPECIFIC]
 _TRADE_ALIASES = {
     "electric": "electrical", "electrician": "electrical", "elec": "electrical",
     "electricista": "electrical", "plumber": "plumbing", "plomero": "plumbing",
@@ -421,15 +431,16 @@ _AREA = re.compile(
     r"|cocina|ba[ñn]o|pasillo|escalera|habitaci[oó]n|dormitorio))(?!\w)", re.IGNORECASE)
 
 
-#: A trade GUESSED from what a caption is about (shown "electrical?", the
-#: walker overrides it): checked when the words name no trade outright.
+#: A trade GUESSED from what a caption is about, ONLY where the thing says
+#: who without a doubt (a bulb: electrical; a toilet: plumbing). Anything
+#: less sure is left blank -- never a "roofing?" for the walker to undo
+#: (1:43 PM: "Stucco work" -> roofing?, "Elevator beam pockets" -> roofing).
 _GUESS = [
-    ("electrical", r"bulbs?|lamps?|outlets?|switch(?:es)?|fixtures?|receptacles?|sockets?|bombillos?|focos?"),
+    ("electrical", r"bulbs?|lamps?|outlets?|switch(?:es)?|receptacles?|sockets?|bombillos?|focos?"),
     ("tile", r"tiles?|grout|backsplash"),
-    ("carpentry", r"tables?|cabinets?|doors?|trim|counters?|shel(?:f|ves)|drawers?|base ?boards?|mesas?"),
-    ("paint", r"paint\w*|touch[- ]?ups?|scuffs?|marks?"),
-    ("plumbing", r"leak\w*|faucets?|drips?|toilets?|sinks?|showers?"),
-    ("drywall", r"sheetrock|patch(?:es|ing)?|holes?|cracks? in (?:the )?wall|nail pops?"),
+    ("paint", r"paint\w*|touch[- ]?ups?"),
+    ("plumbing", r"faucets?|toilets?|sinks?|showers?"),
+    ("drywall", r"sheetrock|nail pops?"),
 ]
 _GUESS_RX = [(t, re.compile(r"(?<!\w)(?:" + p + r")(?!\w)", re.IGNORECASE)) for t, p in _GUESS]
 
@@ -444,12 +455,35 @@ def guess_trade(text: str) -> Optional[str]:
 def trade_for(text: str) -> Tuple[str, bool]:
     """(trade, guessed) for an item's words: every trade read from a caption
     is a guess the walker can override ("electrical?"); UNKNOWN when none."""
-    t = read_trade(text) or guess_trade(text)
+    t = read_trade(text)
+    if not t and len({tr for tr, rx in _TRADES_RX if rx.search(str(text or ""))}) < 2:
+        t = guess_trade(text)                # never a guess where two trades are named
     return (t, True) if t else (UNKNOWN, False)
+
+
+def reguess_trades(items: List[dict]) -> int:
+    """A walk from before the sure-only rule (1:43 PM): a trade the old
+    rules guessed, or a "roofing" read from a "roof" location note, is read
+    again from the item's own words -- blank unless sure. A trade the walker
+    gave (trade_src "walker") stays. Returns how many changed."""
+    changed = 0
+    for it in items:
+        t = it.get("trade") or UNKNOWN
+        if t == UNKNOWN or it.get("trade_src") == "walker":
+            continue
+        if it.get("trade_guess") or t == "roofing":
+            new, guessed = trade_for(it.get("text") or "")
+            if new != t:
+                it["trade"], it["trade_guess"] = new, guessed
+                changed += 1
+    return changed
 
 
 def read_trade(text: str) -> Optional[str]:
     """The one trade the words name, or None (none, or two different)."""
+    specific = {t for t, rx in _SPECIFIC_RX if rx.search(str(text or ""))}
+    if len(specific) == 1:
+        return specific.pop()
     hits = {t for t, rx in _TRADES_RX if rx.search(str(text or ""))}
     if len(hits) == 1:
         return hits.pop()
@@ -884,14 +918,14 @@ def added_text(it: dict) -> str:
 
 def noted_text(it: dict) -> str:
     """The reply to words typed during capture (never only a 👍, live 588,
-    Oct 12): "#3 'Tile chipped' (Apt 4D) — got it. Next photo, or 'done'."."""
+    Oct 12): "#3 'Tile chipped' (Apt 4D) — got it." Short: the walk start
+    said how to finish (1:43 PM: replies read like a form)."""
     words = (it.get("text") or "").strip()
     if len(words) > 60:
         words = words[:57].rstrip() + "…"
     where = location_label(it)
     return (f"#{it.get('n')}" + (f" '{words}'" if words else "")
-            + (f" ({where})" if where else " (where? floor and unit)")
-            + " — got it. Next photo, or 'done' (or \"done, send to Chris\").")
+            + (f" ({where})" if where else "") + " — got it.")
 
 
 def _loc(words: str) -> Dict[str, Optional[str]]:
@@ -936,11 +970,11 @@ def place_key(it: dict) -> str:
     return a if a != UNKNOWN else UNKNOWN
 
 
-def ordered(items: Iterable[dict]) -> List[dict]:
+def ordered(items: Iterable[dict], simple: bool = False) -> List[dict]:
     """The draft's order -- the numbers follow it: floor, then trade ("?"
-    last), then the order the photos came in."""
+    last), then the order the photos came in. Simple: floor, then order."""
     def key(it):
-        t = it.get("trade") or UNKNOWN
+        t = "" if simple else (it.get("trade") or UNKNOWN)
         return (_floor_key(place_key(it)), t == UNKNOWN, t,
                 it.get("captured") or 0)
     return sorted(items, key=key)
@@ -955,42 +989,72 @@ def marker(it: dict) -> str:
     return "".join(m)
 
 
-def item_line(it: dict) -> str:
-    """"3. 📷 Outlet cover missing — electrical" (area shown when known)."""
+def item_line(it: dict, simple: bool = False) -> str:
+    """"3. 📷 Outlet cover missing — electrical" (area shown when known).
+    No trade: no trade shown -- never a "?" or a "roofing?" (1:43 PM).
+    Simple: the words only (the floor is the heading)."""
     words = it.get("text") or "(no words)"
+    if simple:
+        return f"{it['n']}. {marker(it)} {words}".replace("  ", " ")
     trade = it.get("trade") or UNKNOWN
-    if trade != UNKNOWN and it.get("trade_guess"):
-        trade += "?"                       # a guess from the caption: say if wrong
     area = it.get("area")
     where = f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor") else ""
-    return f"{it['n']}. {marker(it)} {words}{where} — {trade}".replace("  ", " ")
+    tail = f" — {trade}" if trade != UNKNOWN else ""
+    return f"{it['n']}. {marker(it)} {words}{where}{tail}".replace("  ", " ")
 
 
-def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE) -> str:
+#: Simple: a walk's list is the floor and the words, nothing else asked or
+#: shown (company setting "Punch list detail", default Simple; a walk
+#: switches with plain words). Detailed: trades and locations too.
+DETAIL_SIMPLE = "simple"
+DETAIL_DETAILED = "detailed"
+DETAILS = (DETAIL_SIMPLE, DETAIL_DETAILED)
+DEFAULT_DETAIL = DETAIL_SIMPLE
+
+#: What the draft says last: never command syntax (1:43 PM).
+DRAFT_FOOT = "Say send when it looks right, or tell me what to change."
+#: ...unless the walker seems stuck (2 tries): then examples.
+DRAFT_HELP = ("For example: \"2 is electrical\", \"drop 6\", \"add: missing ladder\", "
+              "\"move 3 to floor 6\" — or 'send'.")
+
+
+def no_trade_line(n: int) -> str:
+    """At most ONE soft line about trades, never the numbers (1:43 PM: "43
+    still need a trade (5, 2, 3, 8, 19 ...)")."""
+    return f"{n} {'has' if n == 1 else 'have'} no trade — fine to send as is."
+
+
+def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE,
+               simple: bool = False) -> str:
     """The draft the walker sees: by floor, then trade, each with ITS number
-    -- never renumbered once shown, so they may read #1, #4, #2."""
+    -- never renumbered once shown, so they may read #1, #4, #2. Simple: by
+    floor, the words only."""
     live = [it for it in items if it.get("status", "draft") != "dropped"]
     need_trade = [it for it in live if (it.get("trade") or UNKNOWN) == UNKNOWN]
     head = f"{job_name} · walkthrough · {len(live)} item{'s' if len(live) != 1 else ''} (draft)"
     lines = [head]
     by_floor: Dict[str, List[dict]] = {}
-    for it in ordered(live):
+    for it in ordered(live, simple=simple):
         by_floor.setdefault(place_key(it), []).append(it)
     for f in sorted(by_floor, key=_floor_key):
         lines.append("")
         lines.append(f"*{floor_label(f)}*")
+        if simple:
+            lines.extend(item_line(it, simple=True) for it in by_floor[f])
+            continue
         by_trade: Dict[str, List[dict]] = {}
         for it in by_floor[f]:
             by_trade.setdefault(it.get("trade") or UNKNOWN, []).append(it)
         for t in sorted(by_trade, key=lambda x: (x == UNKNOWN, x)):
-            lines.append(f"_{t if t != UNKNOWN else 'trade ?'}_")
+            if t != UNKNOWN:
+                lines.append(f"_{t}_")
+            elif len(by_trade) > 1:
+                lines.append("_no trade_")
             lines.extend(item_line(it) for it in by_trade[t])
     lines.append("")
-    if need_trade:
-        nums = ", ".join(str(it["n"]) for it in need_trade)
-        lines.append(f"{len(need_trade)} need{'s' if len(need_trade) == 1 else ''} a trade ({nums}).")
-    lines.append("Reply to fix (\"2 → electrical\", \"drop 6\", \"merge 4 and 5\", "
-                 "\"add: …\", \"move 3 to floor 6\"), or 'send'.")
+    if need_trade and not simple and len(need_trade) < len(live):
+        lines.append(no_trade_line(len(need_trade)))
+    lines.append(DRAFT_FOOT)
     return "\n".join(lines)
 
 
@@ -1076,7 +1140,7 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
     if not it:
         return False, f"no item {e['n']}"
     if e["op"] == "trade":
-        it["trade"], it["trade_guess"] = e["trade"], False
+        it["trade"], it["trade_guess"], it["trade_src"] = e["trade"], False, "walker"
     elif e["op"] == "drop":
         it["status"] = "dropped"
     elif e["op"] == "floor":
@@ -1089,23 +1153,51 @@ def apply_edit(items: List[dict], e: Dict[str, Any], *, next_n: int) -> Tuple[bo
 
 # ── ASSIGNING ────────────────────────────────────────────────────────────────
 
-def assign_text(sugg: Dict[str, Optional[dict]]) -> str:
+def trade_name(t: str) -> str:
+    """A trade as shown: the items with none are "No trade", never "?"."""
+    return "No trade" if (t or UNKNOWN) == UNKNOWN else t
+
+
+def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False) -> str:
+    """"Who gets what?" -- one row per trade; the items with no trade are a
+    "No trade" row (never "? → ?", 1:43 PM). Examples only when stuck."""
     lines = ["Who gets what?"]
-    for t, p in sorted(sugg.items()):
-        lines.append(f"• {t} → {who_label(p)}")
-    lines.append(ASSIGN_HINT)
+    for t, p in sorted(sugg.items(), key=lambda kv: (kv[0] == UNKNOWN, kv[0])):
+        lines.append(f"• {trade_name(t)} → {who_label(p) if p else 'who?'}")
+    lines.append(ASSIGN_STUCK if stuck else ASSIGN_HINT)
     return "\n".join(lines)
 
 
-#: "all → Chris" read like "send to everyone" (11:05 PM).
-ASSIGN_HINT = ("Reply 'ok', fix one (\"electrical → Mike\"), or send the whole list to one "
-               "person (\"whole list → Chris\").")
+#: "all → Chris" read like "send to everyone" (11:05 PM). Plain words; the
+#: syntax only once the walker seems stuck (1:43 PM).
+ASSIGN_HINT = "Look right? Say ok, or tell me who should get what — or the whole list to one person."
+ASSIGN_STUCK = ("For example: \"electrical to Mike\", \"whole list to Chris\", \"to me\", "
+                "or \"to the group\".")
 
 
 _ASSIGN = re.compile(r"^\s*([a-z /áéíóúñ]+?)\s*(?:→|->|=>|>|:|=|to)\s*(.+?)\s*$", re.IGNORECASE)
 
 
-ASSIGN_SHORT = "Reply like 'electrical → Mike', 'all → Chris', or 'to the group'."
+ASSIGN_SHORT = "Sorry, who should get it? A name, \"me\", or \"the group\" works."
+#: Simple mode's one question: the whole list to whom.
+WHO_GETS_IT = "Who should get it — you, someone on the job, or the job group?"
+def open_trades_question(trades: List[str], stuck: bool = False) -> str:
+    """'ok' with trades nobody has yet: who, in one line."""
+    names = [trade_name(t).lower() if t == UNKNOWN else t for t in sorted(trades)]
+    what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"Who should get the {what} items? A name, or \"me\"."
+            + (" Or \"the rest to me\"." if stuck else ""))
+
+
+WHO_STUCK = "Say \"me\" and I'll send it to you — or a name, or \"the group\"."
+
+#: "Me / myself / to me" is the walker (1:43 PM: "I don't know me on this job").
+_ME = re.compile(r"^\s*(?:to\s+)?(?:me|myself|my\s*self|mine|yo|a\s+m[ií]|mi|mir)\s*[.!]*\s*$",
+                 re.IGNORECASE)
+
+
+def is_me(name: Any) -> bool:
+    return bool(_ME.match(str(name or "")))
 
 
 def parse_assign(text: str) -> List[Tuple[str, str]]:
@@ -1440,7 +1532,8 @@ def parse_due_answer(text: str, trades: Iterable[str]) -> Optional[Dict[str, str
     Mon, paint Fri" -> per trade; "no due date" -> none for all. Each part
     in order, a later one winning ("No due date. Asap on all" -> ASAP).
     Returns {trade: due words} or None when nothing in it reads as a due."""
-    ts = [t for t in trades if t != UNKNOWN]
+    # Every trade, the items with none too (a simple walk has only those).
+    ts = list(trades)
     out: Dict[str, str] = {}
     named: set = set()
     for part in re.split(r"[\n;,]+|\.\s+|\.$", str(text or "")):
@@ -1490,54 +1583,61 @@ def done_hint(items: List[dict]) -> str:
     return f"Reply \"done {pid}\" (a photo helps) when each one is finished."
 
 
-def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None) -> List[str]:
+def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
+                simple: bool = False) -> List[str]:
     """Items under their floor, then trade; a trade's owner @mentioned
-    beside it when `mentions` names one."""
+    beside it when `mentions` names one. No trade: no "_?_" heading. Simple:
+    the floor and the words only."""
     lines: List[str] = []
     by_floor: Dict[str, Dict[str, List[dict]]] = {}
     for it in items:
         by_floor.setdefault(place_key(it), {}).setdefault(
-            it.get("trade") or UNKNOWN, []).append(it)
+            UNKNOWN if simple else (it.get("trade") or UNKNOWN), []).append(it)
     for f in sorted(by_floor, key=_floor_key):
         lines.append(f"*{floor_label(f)}*")
         for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
             who = (mentions or {}).get(t)
-            lines.append(f"_{t}_" + (f" {who}" if who else ""))
+            if t != UNKNOWN:
+                lines.append(f"_{t}_" + (f" {who}" if who else ""))
+            elif who:
+                lines.append(f"_no trade_ {who}")
             for it in by_floor[f][t]:
-                u = unit_label(it)
+                u = "" if simple else unit_label(it)
                 lines.append(f"• {it['pid']} {it.get('text') or ''}"
                              f"{(' (' + u + ')') if u and u != f else ''}")
     return lines
 
 
 def group_text(name: str, items: List[dict], due_words: str,
-               handle: Optional[str] = None, grouped: bool = False) -> str:
+               handle: Optional[str] = None, grouped: bool = False, simple: bool = False) -> str:
     """One message per assignee: @them, their items, the due. `handle` is
     their token from lib/wa_mention ("@15551234567" mentions them for real);
-    without it, "@Name". `grouped`: the items under their floor, then trade."""
+    without it, "@Name". `grouped`: the items under their floor, then trade.
+    Simple: the floor and the words only."""
     lines = [f"{handle or '@' + name} punch list — {due_label(due_words)}:"]
     if grouped:
-        lines.extend(_list_lines(items))
+        lines.extend(_list_lines(items, simple=simple))
     else:
         for it in items:
-            where = _where(it)
+            where = (floor_label(place_key(it)) if place_key(it) != UNKNOWN else "") if simple \
+                else _where(it)
             lines.append(f"• {it['pid']} {it.get('text') or ''}{(' (' + where + ')') if where else ''}")
     lines.append(done_hint(items))
     return "\n".join(lines)
 
 
-def dm_text(job_name: str, items: List[dict], due_words: str) -> str:
+def dm_text(job_name: str, items: List[dict], due_words: str, simple: bool = False) -> str:
     """The whole list, by DM to one person."""
-    return "\n".join([f"{job_name} punch list — {due_label(due_words)}:", *_list_lines(items),
-                      done_hint(items)])
+    return "\n".join([f"{job_name} punch list — {due_label(due_words)}:",
+                      *_list_lines(items, simple=simple), done_hint(items)])
 
 
 def full_list_text(job_name: str, items: List[dict], due_words: str,
-                   mentions: Dict[str, str]) -> str:
+                   mentions: Dict[str, str], simple: bool = False) -> str:
     """The whole list posted in the job's group, each trade's owner
     @mentioned beside it where known."""
     return "\n".join([f"{job_name} punch list — {due_label(due_words)}:",
-                      *_list_lines(items, mentions), done_hint(items)])
+                      *_list_lines(items, mentions, simple=simple), done_hint(items)])
 
 
 def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
@@ -1551,13 +1651,17 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
     group = group_name or "the job group"
 
     def nums(ns):
-        return ", ".join("#" + str(n) for n in sorted(ns))
+        # A count, never the numbers in bulk (1:43 PM); a few are named.
+        ns = sorted(ns)
+        if len(ns) > 6:
+            return f"{len(ns)} items"
+        return ", ".join("#" + str(n) for n in ns)
     if target == "group":
-        owners = sorted({f"{who_label(assign.get(t))} ({t})"
-                         for t in {it.get("trade") for it in live} if assign.get(t)})
-        head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}",
-                ("Mentioning " + "; ".join(owners)) if owners
-                else "No one to mention (no trade has a name)."]
+        owners = sorted({f"{who_label(assign.get(t))} ({trade_name(t)})"
+                         for t in {it.get("trade") or UNKNOWN for it in live} if assign.get(t)})
+        head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}"]
+        if owners:
+            head.append("Mentioning " + "; ".join(owners))
     elif whole:
         head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
                 f"{nums(it['n'] for it in live)}"]
@@ -1579,12 +1683,16 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
             counts[d] = counts.get(d, 0) + 1
         rest = max(sorted(counts), key=lambda d: counts[d])     # the one most trades share
         short = lambda d: "no date" if d == NO_DUE else d        # noqa: E731
-        when = "due " + ", ".join([f"{t} {short(d)}" for t, d in sorted(by_t.items()) if d != rest]
+        when = "due " + ", ".join([f"{trade_name(t)} {short(d)}" for t, d in sorted(by_t.items())
+                                   if d != rest]
                                   + [f"the rest {short(rest)}"])
-    return "\n".join(head + [capitalize(when), "",
-                             "Reply 'ok' to send. Or change it: \"electrical → Mike\", "
-                             "\"whole list → Chris\", \"to the group\", \"asap\" / \"electrical Mon\", "
-                             "or 'cancel'."])
+    return "\n".join(head + [capitalize(when), "", RECAP_FOOT])
+
+
+#: Plain words; examples only when stuck (1:43 PM).
+RECAP_FOOT = "Say ok to send, or tell me what to change (who, or when it's due)."
+RECAP_STUCK = ("For example: \"ok\", \"whole list to Chris\", \"to the group\", \"due Friday\", "
+               "or 'cancel'.")
 
 
 def destination(b: Dict[str, Any], group_name: str = "", live: bool = False) -> str:

@@ -71,8 +71,11 @@ class TheDraft(unittest.TestCase):
         self.assertTrue(text.startswith("588 Thomas · walkthrough · 5 items (draft)"))
         self.assertLess(text.index("*Floor 5*"), text.index("*Floor 6*"))
         self.assertIn("📷🎤 Falta pintura", text)            # "piso 6": its floor, taken out
-        self.assertIn("1 needs a trade", text)
-        self.assertIn("'send'", text)
+        # One soft line, never the numbers; no command syntax (1:43 PM).
+        self.assertIn("1 has no trade — fine to send as is.", text)
+        self.assertTrue(text.endswith("Say send when it looks right, or tell me what to change."))
+        self.assertNotIn("→", text)
+        self.assertNotIn("trade ?", text)
         # Each item keeps its number, shown in the draft's order (floor,
         # trade): never renumbered once shown (10:36 PM).
         import re
@@ -121,7 +124,9 @@ class AssignAndDue(unittest.TestCase):
         # tests/test_punch_walkthrough_2031.py. Here, the question.
         s = {"electrical": {"name": "Mike Rivera", "company": "Bright Electric"}, "paint": None}
         self.assertIn("electrical → Mike Rivera (Bright Electric)", p.assign_text(s))
-        self.assertIn("paint → ?", p.assign_text(s))
+        self.assertIn("paint → who?", p.assign_text(s))      # never "? → ?" (1:43 PM)
+        self.assertIn("• No trade → Roy", p.assign_text({"?": {"name": "Roy", "kind": "user",
+                                                                  "company": "GC"}}))
 
     def test_fixing_and_picking(self):
         self.assertEqual(p.parse_assign("paint → Bo"), [("paint", "Bo")])

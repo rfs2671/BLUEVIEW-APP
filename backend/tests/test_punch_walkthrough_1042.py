@@ -21,8 +21,12 @@ import unittest
 from unittest.mock import patch
 
 import server  # noqa: F401
+from tests import _punch_detailed  # noqa: E402
 from lib import punch
 from tests.test_punch_walkthrough_2031 import _Walk
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Real(_Walk):
@@ -140,12 +144,11 @@ class SendToShortcuts(_Real):
                     self.assertEqual(set(self.sess()["due"].values()), {due})
                     self.assertIn(punch.capitalize(punch.due_label(due)), recap)
 
-    def test_missing_locations_are_asked_first(self):
+    def test_missing_locations_never_stop_a_send(self):
+        # Tue Oct 13, 1:43 PM: nothing optional stops a send -- the recap.
         self.turn("starting walkthrough at 588")
         self.turn("tile cracked", photo=True)                  # no location
-        (q,) = self.turn("done, send to chris")
-        self.assertTrue(q.startswith("1 has no location."), q)       # asked once
-        (recap,) = self.turn("4D")
+        (recap,) = self.turn("done, send to chris")
         self.assertTrue(recap.startswith("Ready to DM the whole list to Chris Weiss"), recap)
 
     def test_send_to_the_group(self):

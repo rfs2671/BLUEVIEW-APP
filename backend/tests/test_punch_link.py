@@ -32,6 +32,7 @@ from PIL import Image  # noqa: E402
 from starlette.datastructures import Headers, UploadFile  # noqa: E402
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, punch_link, wa_retention  # noqa: E402
 from tests.test_punch_server import _run, _sc, _upto, dry  # noqa: E402
 
@@ -62,6 +63,9 @@ def _call(db, fn, *a, **k):
 def _open_card(pid):
     """An open item's card on the page (its one big "I fixed it")."""
     return f'data-state="open" data-pid="{pid}"'
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Req:

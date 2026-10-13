@@ -20,8 +20,12 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch  # noqa: E402
 from tests.test_punch_walkthrough_1821 import P588, _Walk  # noqa: E402
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class GroupLocations(_Walk):

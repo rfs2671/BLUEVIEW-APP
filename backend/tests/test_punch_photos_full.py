@@ -31,6 +31,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 from PIL import Image  # noqa: E402
 
 import server  # noqa: E402
+from tests import _punch_detailed  # noqa: E402
 from lib import punch  # noqa: E402
 from tests._fake_mongo import FakeDb  # noqa: E402
 from tests.test_whatsapp_attention import ADMIN, CO_A, G_A  # noqa: E402
@@ -71,6 +72,9 @@ def _parsed(caption="", thumb=THUMB, key=None, mid="false_g_ABC_1@c.us"):
         data["mediaKey"] = key
     return {"has_image": True, "message_id": "ABC", "message_id_serialized": mid,
             "body": caption or (_b64(thumb) if thumb else ""), "raw": {"_data": data}}
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class _Resp:

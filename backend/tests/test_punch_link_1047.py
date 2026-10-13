@@ -23,6 +23,7 @@ from unittest.mock import patch
 from starlette.datastructures import Headers, UploadFile
 
 import server
+from tests import _punch_detailed  # noqa: E402
 from lib import punch, punch_link
 from tests.test_punch_link import URL, _Req, _open_card, _body, _call, _jpeg, _sent
 from tests.test_punch_server import dry
@@ -31,6 +32,9 @@ from tests.test_punch_server import dry
 def _up(data, name="p.jpg"):
     return UploadFile(file=io.BytesIO(data), filename=name,
                       headers=Headers({"content-type": "image/jpeg"}))
+
+
+setUpModule, tearDownModule = _punch_detailed.module_hooks()
 
 
 class Live1047(unittest.TestCase):

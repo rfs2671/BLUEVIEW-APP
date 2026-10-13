@@ -23,6 +23,7 @@ WHAT RUNS, AND HOW IT IS ISOLATED
 
 SCENARIO (scripts/dry_run_punch/*.json)
   project {_id, name, address, trade_assignments}, walker {name, phone, role},
+  detail "simple" (default) | "detailed"   the company's "Punch list detail",
   people [{key, name, company, phone, punch_contact?}]  (punch_contact: that sub's
         designated punch contact, the one "Who gets what?" suggests),
   dm    [{text?, photo?: true, voice?: {transcript, lang, confidence?},
@@ -94,6 +95,9 @@ def world(sc: dict):
     w = sc["walker"]
     db = FakeDb(
         projects=[proj],
+        # "Punch list detail" (Simple unless the scenario says "detailed").
+        whatsapp_company_settings=[{"_id": COMPANY, "whatsapp_company": {
+            "punch_detail": sc.get("detail") or "simple"}}],
         users=[{"_id": WALKER_ID, "company_id": COMPANY, "name": w["name"], "phone": w["phone"],
                 "role": w.get("role", "admin"), "account_status": "approved"}],
         checkins=[],
@@ -231,14 +235,14 @@ async def run(sc: dict) -> dict:
                 if said and said[-1].startswith("Who gets what?"):
                     draft_assign = said[-1]
                     for t in exp.get("unassigned") or []:
-                        checks.append((f"• {t} → ?" in draft_assign,
+                        checks.append((f"• {t} → who?" in draft_assign,
                                        f"dm {i}: {t} has no suggested assignee"))
             if "draft_items" in exp:
                 m = re.search(r"· (\d+) items? \(draft\)", draft)
                 checks.append((bool(m) and int(m.group(1)) == exp["draft_items"],
                                f"dm {i}: draft has {exp['draft_items']} items"))
             if "need_trade" in exp:
-                m = re.search(r"(\d+) needs? a trade", draft)
+                m = re.search(r"(\d+) (?:has|have) no trade", draft)
                 got = int(m.group(1)) if m else 0
                 checks.append((got == exp["need_trade"], f"dm {i}: {exp['need_trade']} need a trade (got {got})"))
             if "sent" in exp:

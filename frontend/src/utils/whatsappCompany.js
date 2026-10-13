@@ -26,6 +26,33 @@ export const COMPANY_SWITCHES = [
   },
 ];
 
+/**
+ * Company settings that are one of a few choices.
+ * "Punch list detail": what a walkthrough asks and shows. Simple (default):
+ * floor and description. Detailed: trades and locations too. A walk can
+ * switch in plain words ("keep it simple", "add trades").
+ */
+export const COMPANY_CHOICES = [
+  {
+    key: 'punch_detail',
+    label: 'Punch list detail',
+    options: [
+      { value: 'simple', label: 'Simple', line: 'Floor and description only. Nothing else is asked.' },
+      { value: 'detailed', label: 'Detailed', line: 'Trades and locations too, each asked at most once.' },
+    ],
+    byDefault: 'simple',
+  },
+];
+
+/** Each choice with its value (its default unless a known one is saved). */
+export function choiceView(data) {
+  const d = data || {};
+  return COMPANY_CHOICES.map((c) => ({
+    ...c,
+    value: c.options.some((o) => o.value === d[c.key]) ? d[c.key] : c.byDefault,
+  }));
+}
+
 /** The switches with their values (each its default unless saved). */
 export function companyView(data) {
   const d = data || {};
