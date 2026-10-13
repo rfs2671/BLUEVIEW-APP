@@ -50861,6 +50861,33 @@ async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
         logger.warning(f"[wa-assistant] state write failed: {type(e).__name__}")
 
 
+async def _dm_state_bump(kind: str, chat: str, **fields) -> None:
+    """Update an open question WITHOUT moving its expiry: asking it again
+    does not keep it alive (it expires 30 min after it was first asked)."""
+    try:
+        await db[_DM_STATE].update_one(
+            {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
+            {"$set": {**fields, "updated_at": datetime.now(timezone.utc)}})
+    except Exception as e:
+        logger.warning(f"[wa-assistant] state write failed: {type(e).__name__}")
+
+
+#: Every kind of open question in a DM: a change's ("Add it?", "Which
+#: borough?"), the "Which job?" menu, "Since 8:07 or since 7am?", a
+#: reminder's "Save it? YES / NO".
+_DM_QUESTION_KINDS = ("dm_action", "dm_menu", "dm_clarify", UPCOMING_REMIND_STATE)
+
+
+async def _dm_drop_pending(chat: str) -> bool:
+    """Drop every open question in this chat. True when one was open."""
+    had = False
+    for kind in _DM_QUESTION_KINDS:
+        if await _dm_state_get(kind, chat):
+            had = True
+            await _dm_state_clear(kind, chat)
+    return had
+
+
 async def _dm_state_clear(kind: str, chat: str) -> None:
     try:
         await db[_DM_STATE].delete_one(
@@ -52194,7 +52221,7 @@ async def _dm_say(dm_chat: str, lang: str, key: str, **kw) -> None:
 async def _dm_ask(dm_chat: str, p: dict, step: str, text: str,
                   options: Optional[list] = None) -> None:
     await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
-                        p=p, step=step, options=options or [], asked=text)
+                        p=p, step=step, options=options or [], asked=text, misses=0)
     await send_whatsapp_message(dm_chat, text)
 
 
@@ -52204,9 +52231,13 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) ->
     have had their turn); otherwise only an open question is answered."""
     pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
     if pending:
-        await _dm_action_answer(ident, dm_chat, text, pending)
-        return True
-    if not new or not dm_actions.looks_like_request(text):
+        if await _dm_action_answer(ident, dm_chat, text, pending):
+            return True
+        # Two non-answers: the question is dropped (in _dm_non_answer) and
+        # this message is a new one.
+    if not new:
+        return False
+    if not dm_actions.looks_like_request(text):
         return False
     p = await _dm_action_read(ident, text)
     if p["action"] == "none":
@@ -52225,7 +52256,10 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) ->
     return True
 
 
-async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict) -> None:
+async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict) -> bool:
+    """The answer to the open question about a change. False when this is
+    the second non-answer: the question is dropped and the message is to be
+    handled as a new one."""
     p, step = dict(pending.get("p") or {}), str(pending.get("step") or "")
     options = list(pending.get("options") or [])
     lang = p.get("lang") or "en"
@@ -52233,7 +52267,7 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
     if dm_actions.is_undo(text) or (yn is False and step not in ("type_address", "ask:days")):
         await _dm_state_clear(DM_ACTION_STATE, dm_chat)
         await _dm_say(dm_chat, lang, "cancelled")
-        return
+        return True
     if step == "type_address":
         await _dm_state_clear(DM_ACTION_STATE, dm_chat)
         if yn is False:
@@ -52242,41 +52276,53 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
             await _dm_action_do(ident, dm_chat, p)
         else:
             await _dm_say(dm_chat, lang, "live_mismatch")
-        return
+        return True
     if step == "confirm":
         if yn is True:
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             await _dm_action_do(ident, dm_chat, p)
-            return
-        await _dm_action_restart_or(ident, dm_chat, text, lambda: _dm_say(dm_chat, lang, "yes_or_no"))
-        return
+            return True
+        return await _dm_action_restart_or(ident, dm_chat, text, pending,
+                                           lambda: _dm_say(dm_chat, lang, "yes_or_no"))
     if step.startswith("choose:"):
         i = dm_actions.pick(text, [o.get("label") or "" for o in options])
         if i is None:
-            await _dm_action_restart_or(ident, dm_chat, text,
-                                        lambda: _dm_say(dm_chat, lang, "pick_again"))
-            return
+            return await _dm_action_restart_or(ident, dm_chat, text, pending,
+                                               lambda: _dm_say(dm_chat, lang, "pick_again"))
         p[step.split(":", 1)[1]] = options[i]["value"]
         await _dm_action_step(ident, dm_chat, p)
-        return
+        return True
     if step.startswith("ask:"):
         field = step.split(":", 1)[1]
+        if dm_actions.rules(text).get("action") not in ("none", "undo", None):
+            # A new request, not an answer ("need to add someone" asked
+            # "Which company?"): that request, from the start.
+            return await _dm_action_restart_or(ident, dm_chat, text, pending,
+                                               lambda: _dm_say_raw(dm_chat, str(pending.get("asked") or "")))
         if not _dm_fill(p, field, text):
             if field == "phone":
-                await _dm_ask(dm_chat, p, step, dm_actions.say(lang, "bad_phone"))
-                return
+                again = dm_actions.say(lang, "bad_phone")
+                return await _dm_action_restart_or(ident, dm_chat, text, pending,
+                                                   lambda: _dm_say_raw(dm_chat, again))
             # Not an answer: the same question again (or a new request).
-            await _dm_action_restart_or(ident, dm_chat, text, lambda: _dm_ask(
-                dm_chat, p, step, str(pending.get("asked") or dm_actions.say(lang, "pick_again")),
-                options))
-            return
+            asked = str(pending.get("asked") or dm_actions.say(lang, "pick_again"))
+            return await _dm_action_restart_or(ident, dm_chat, text, pending,
+                                               lambda: _dm_say_raw(dm_chat, asked))
         await _dm_action_step(ident, dm_chat, p)
-        return
+        return True
     await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+    return True
 
 
-async def _dm_action_restart_or(ident: dict, dm_chat: str, text: str, otherwise) -> None:
-    """A new request instead of an answer starts over; else `otherwise`."""
+async def _dm_say_raw(dm_chat: str, text: str) -> None:
+    await send_whatsapp_message(dm_chat, text)
+
+
+async def _dm_action_restart_or(ident: dict, dm_chat: str, text: str, pending: dict,
+                                otherwise) -> bool:
+    """A new request instead of an answer starts over; else a non-answer:
+    the question once more (`otherwise`), and at the second one it is dropped
+    and the message handled as new (False)."""
     if dm_actions.looks_like_request(text):
         p = await _dm_action_read(ident, text)
         if p["action"] not in ("none", "undo"):
@@ -52287,8 +52333,21 @@ async def _dm_action_restart_or(ident: dict, dm_chat: str, text: str, otherwise)
                 await _dm_say(dm_chat, p["lang"], "unsupported")
             else:
                 await _dm_action_step(ident, dm_chat, p)
-            return
-    await otherwise()
+            return True
+    return await _dm_non_answer(DM_ACTION_STATE, dm_chat, pending, otherwise)
+
+
+async def _dm_non_answer(kind: str, dm_chat: str, pending: dict, reask) -> bool:
+    """One more message that does not answer the open question. The first:
+    asked again (its expiry unchanged). The second: dropped -- False, the
+    message is handled as a new one."""
+    misses = int(pending.get("misses") or 0) + 1
+    if misses >= dm_actions.MAX_NON_ANSWERS:
+        await _dm_state_clear(kind, dm_chat)
+        return False
+    await _dm_state_bump(kind, dm_chat, misses=misses)
+    await reask()
+    return True
 
 
 def _dm_fill(p: dict, field: str, text: str) -> bool:
@@ -52941,6 +53000,16 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     now = datetime.now(timezone.utc)
     history = await _dm_history(dm_chat, now)
     await _dm_store_inbound(ident, dm_chat, text, message_id)
+    # "disregard", "never mind", "cancel", "forget it": any open question is
+    # dropped -- never answered with the same question again (Mon 7:17 PM:
+    # a "Which job?" answered "Disregard" with "Which job?", 4 times).
+    if dm_actions.is_drop(text) and await _dm_drop_pending(dm_chat):
+        await _dm_say(dm_chat, dm_actions.reply_lang(text), "dropped")
+        return
+    if dm_actions.is_drop(text) and not dm_actions.is_undo(text):
+        # "disregard" with nothing open: nothing to drop, and never a question.
+        await _dm_say(dm_chat, dm_actions.reply_lang(text), "ok")
+        return
     # An open question about a change ("Add it?", "Which borough?"): this
     # is its answer -- a 👍 too, before it reads as a thank-you.
     if await _dm_action_turn(ident, dm_chat, text, new=False):
@@ -52971,6 +53040,12 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     clarify = await _dm_state_get("dm_clarify", dm_chat)
     if clarify and str(clarify.get("project_id")) in by_id:
         chosen = _dm_pick_since(text, clarify.get("options") or [])
+        if not chosen and not _dm_is_new_question(text) and clarify.get("asked"):
+            # Not an answer and not a new question: asked once more; the
+            # second time it is dropped and this message read as new.
+            if await _dm_non_answer("dm_clarify", dm_chat, clarify,
+                                    lambda: _dm_say_raw(dm_chat, str(clarify["asked"]))):
+                return
         if chosen:
             await _dm_state_clear("dm_clarify", dm_chat)
             await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
@@ -52991,12 +53066,21 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         if pick:
             job, question = by_id[pick], str(menu.get("question") or text)
             await _dm_state_clear("dm_menu", dm_chat)
-        elif to_menu or wa_assistant.is_nudge(text) or _dm_looks_like_pick(text):
-            # Still choosing: the menu again, the question kept.
-            await _dm_ask_which(dm_chat, options or jobs,
-                                str(menu.get("question") or ""), again=True)
-            await _dm_log_answer(ident, None, text, "menu again", "menu")
-            return
+        elif to_menu or wa_assistant.is_nudge(text) or _dm_looks_like_pick(text) \
+                or not _dm_is_new_question(text):
+            # Not a pick and not a new question: the menu once more (its
+            # expiry unchanged); the second time it is dropped and this
+            # message is read as a new one.
+            async def again():
+                await send_whatsapp_message(dm_chat, wa_assistant.menu_text(
+                    (options or jobs)[:wa_assistant.MENU_MAX],
+                    str(menu.get("header") or "Which job?")) + "\n" + wa_assistant.MENU_AGAIN_TEXT)
+                await _dm_log_answer(ident, None, text, "menu again", "menu")
+            if await _dm_non_answer("dm_menu", dm_chat, menu, again):
+                return
+        else:
+            # A new question: it replaces the menu.
+            await _dm_state_clear("dm_menu", dm_chat)
     elif to_menu:
         # The menu was answered (or timed out): a job named in the reply
         # answers the last question asked here, for that job.
@@ -53111,6 +53195,14 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 job = by_id[str(remembered["project_id"])]
             elif len(jobs) == 1:
                 job = jobs[0]
+            elif not _dm_is_new_question(core):
+                # Not a question and no job: a hint, never "Which job?" for
+                # a message that asks nothing (Mon 8:28 PM: gibberish got
+                # the picker).
+                await send_whatsapp_message(dm_chat, wa_assistant.NOT_A_QUESTION_TEXT)
+                await _dm_log_answer(ident, None, text, wa_assistant.NOT_A_QUESTION_TEXT,
+                                     "not_a_question")
+                return
             else:
                 await _dm_ask_which(dm_chat, jobs, question)
                 return
@@ -53139,10 +53231,11 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                                      if k not in ("1", "2") or k == num]
             options.append({"label": wa_headcount.hhmm(start), "since": start.isoformat(),
                             "keys": keys})
+            q = wa_headcount.clarify_since(brief, now, work)
             await _dm_state_set("dm_clarify", dm_chat, wa_assistant.MENU_SECONDS,
                                 project_id=job["id"], question=question,
-                                headcount=wa_headcount.ADDED, options=options)
-            q = wa_headcount.clarify_since(brief, now, work)
+                                headcount=wa_headcount.ADDED, options=options,
+                                asked=q, misses=0)
             await send_whatsapp_message(dm_chat, q)
             await _dm_log_answer(ident, job["id"], question, q, "clarify")
             return
@@ -53164,6 +53257,27 @@ def _dm_pick_since(text: str, options: list) -> Optional[dict]:
     hits = [o for o in options if t in o.get("keys", [])
             or words & set(o.get("keys", []))]
     return hits[0] if len(hits) == 1 else None
+
+
+def _dm_is_new_question(text: str) -> bool:
+    """A message that asks something of its own (not an answer to an open
+    question, not gibberish): a "?", a question word, a known kind, or a
+    sentence of real words ("Could you check whether Joe arrived")."""
+    t = str(text or "").strip()
+    if "?" in t:
+        return True
+    if re.match(r"(?i)^(?:what|whats|what's|who|whos|who's|how|hows|how's|when|where|why|which|"
+                r"is|are|was|were|will|any|did|does|do|can|could|would|should|have|has|had|"
+                r"show|list|tell|give|send|check|find|see|look|let me|i need|need|"
+                r"cuantos|cuantas|que|qué|quien|quién|donde|dónde|cuando|cuándo|hay)\b", t):
+        return True
+    if wa_assistant.question_scope(t) or wa_headcount.intent(t):
+        return True
+    # Keyboard mash ("asdkjh qwe") is short and has no real words; a
+    # sentence has several words with vowels in them.
+    words = [w for w in re.findall(r"[^\W\d_]+", t) if re.search(r"(?i)[aeiouyáéíóú]", w)
+             and not re.search(r"(?i)([^aeiou\W])\1\1|[^aeiouy\W]{5}", w)]
+    return len(words) >= 4
 
 
 def _dm_looks_like_pick(text: str) -> bool:
@@ -53194,7 +53308,8 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
                         again: bool = False, header: str = "Which job?") -> None:
     shown = jobs[:wa_assistant.MENU_MAX]
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
-                        options=[j["id"] for j in shown], question=question)
+                        options=[j["id"] for j in shown], question=question,
+                        header=header, misses=0)
     text = wa_assistant.menu_text(shown, header)
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
@@ -66414,6 +66529,12 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             if command == "start":
                 await _handle_dm_start(dm_chat, parsed.get("body") or "",
                                        parsed.get("raw"))
+                return
+            if command == "stop" and await _dm_drop_pending(dm_chat):
+                # A question was open: "stop" drops it -- STOP again is
+                # still the opt-out, and says so.
+                await _dm_say(dm_chat, dm_actions.reply_lang(parsed.get("body") or ""),
+                              "dropped_stop")
                 return
             if command == "stop":
                 await _handle_dm_stop(dm_chat, parsed.get("raw"))

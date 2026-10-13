@@ -41,7 +41,13 @@ BOROUGHS = ("Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island")
 GC_TEAM = "GC team"
 UNDO_MINUTES = 10
 #: How long a question stays open.
-PENDING_SECONDS = 15 * 60
+#: A question asked in the DM (any of them: "Which job?", "Add it?", "Since
+#: 8:07 or 7am?") expires 30 minutes after it was FIRST asked; asking it again
+#: does not restart the clock (Mon 7:17 PM: a picker still answering at 8:28).
+PENDING_SECONDS = 30 * 60
+#: Non-answers before an open question is dropped and the message handled as
+#: a new one.
+MAX_NON_ANSWERS = 2
 
 _MAX = {"address": 120, "job": 80, "company": 80, "trade": 40, "name": 60, "role": 40,
         "what": 80, "borough": 20, "zip": 5, "phone": 20}
@@ -552,6 +558,18 @@ _YES_EMOJI = ("👍", "✅", "👌", "🙏", "💯", "✔")
 _NO_EMOJI = ("👎", "❌", "✋", "🚫")
 
 
+_DROP = re.compile(
+    r"^(?:ok(?:ay)?\W*)?(?:disregard(?: that| it)?|never ?mind|nevermind|nvm|cancel(?: that| it)?|"
+    r"forget (?:it|that|about it)|stop|drop it|skip (?:it|that)|no thanks|not now|ignore (?:that|it)|"
+    r"olvidalo|olvida eso|dejalo|cancela(?:lo)?|no importa)\W*$")
+
+
+def is_drop(text: Any) -> bool:
+    """'disregard', 'never mind', 'cancel', 'forget it', 'stop': drop the
+    open question."""
+    return bool(_DROP.match(_fold(text)))
+
+
 def yes_no(text: Any) -> Optional[bool]:
     raw = str(text or "").strip()
     if raw and all(ch in "".join(_YES_EMOJI) + "️\U0001f3fb\U0001f3fc\U0001f3fd\U0001f3fe\U0001f3ff "
@@ -685,6 +703,9 @@ TEXT = {
         "not_approved": "Your account isn't approved yet, so I can't make changes. Ask your admin.",
         "which_sub": "Which one?",
         "cancelled": "OK, I won't do it.",
+        "dropped": "OK, dropped it.",
+        "ok": "OK.",
+        "dropped_stop": "OK, dropped it. (Send STOP again to stop all messages from me.)",
         "nothing_to_undo": "There's nothing to undo.",
         "undo_too_late": "That was too long ago to undo here. You can change it in the app.",
         "undone": "Undone — {what}.",
@@ -751,6 +772,9 @@ TEXT = {
         "not_approved": "Su cuenta todavía no está aprobada, así que no puedo hacer cambios. Pregúntele a su administrador.",
         "which_sub": "¿Cuál?",
         "cancelled": "Está bien, no lo hago.",
+        "dropped": "Listo, lo dejé.",
+        "ok": "Está bien.",
+        "dropped_stop": "Listo, lo dejé. (Mande STOP otra vez para no recibir más mensajes.)",
         "nothing_to_undo": "No hay nada que deshacer.",
         "undo_too_late": "Ya pasó mucho tiempo para deshacerlo aquí. Puede cambiarlo en la app.",
         "undone": "Deshecho — {what}.",
