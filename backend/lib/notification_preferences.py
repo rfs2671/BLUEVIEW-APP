@@ -1300,11 +1300,16 @@ def validate_whatsapp_prefs_patch(patch: Any) -> Tuple[Dict[str, Any], List[str]
 #: Company-wide WhatsApp settings (one row per company, scope "company").
 #: "chase_sundays_default": new jobs chase on Sundays (their "Sundays off"
 #: switch starts off). On by default: Orthodox GCs work Sundays.
-COMPANY_SWITCHES = ("chase_sundays_default",)
+#: "shabbos_off": no bot messages that belong to no job (the morning brief,
+#: Upcoming DMs) from one hour before candle-lighting to one hour after
+#: nightfall; a job's messages follow the job's own "Shabbos / Yom Tov off".
+#: "shabbos_critical_alerts": a Stop Work Order or Vacate still posts then.
+COMPANY_SWITCHES = ("chase_sundays_default", "shabbos_off", "shabbos_critical_alerts")
 
 
 def default_whatsapp_company_settings() -> Dict[str, Any]:
-    return {"chase_sundays_default": True}
+    return {"chase_sundays_default": True, "shabbos_off": True,
+            "shabbos_critical_alerts": False}
 
 
 def default_whatsapp_project_settings() -> Dict[str, Any]:

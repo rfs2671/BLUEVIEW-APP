@@ -59,8 +59,9 @@ export const ALERT_SWITCHES = [
 // They replace the old "Chase on weekends" (the server carries it over).
 export const CHASE_REST_SWITCHES = [
   { key: 'chase_shabbos_off', label: 'Shabbos / Yom Tov off',
-    line: 'No chasing from an hour before candle-lighting Friday (or before Yom Tov) '
-      + 'until an hour after nightfall. New York times.' },
+    line: 'No bot messages for this job (chasing, punch lists, alerts) from an hour before '
+      + 'candle-lighting Friday (or before Yom Tov) until an hour after nightfall, New York '
+      + 'times. They go out after, in order.' },
   { key: 'chase_sundays_off', label: 'Sundays off',
     line: 'No chasing on Sunday.' },
 ];

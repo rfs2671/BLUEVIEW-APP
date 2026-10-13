@@ -144,6 +144,19 @@ def is_quiet(at: datetime) -> bool:
     return False
 
 
+def quiet_until(at: datetime) -> Optional[datetime]:
+    """When the quiet stretch `at` falls in ends (one hour after nightfall
+    on its last rest day), or None when `at` is not in one."""
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    today = at.astimezone(NY).date()
+    for d in (today, today + timedelta(days=1)):
+        if is_rest_day(d):
+            start, end = window(d)
+            if start <= at <= end:
+                return end
+    return None
+
+
 def is_sunday(at: datetime) -> bool:
     at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
     return at.astimezone(NY).weekday() == 6

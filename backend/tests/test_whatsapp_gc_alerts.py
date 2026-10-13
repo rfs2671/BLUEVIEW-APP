@@ -484,7 +484,10 @@ class TheAlerts(unittest.TestCase):
         exp = (today + timedelta(days=10)).isoformat()
         db = _world(dob_logs=[_permit("1", exp), _permit("2", None),
                               _permit("3", "")])
-        with _Ctx(db=db) as c:
+
+        async def never_quiet(*a, **k):     # thresholds only (Shabbos: test_shabbos_all_messages)
+            return None
+        with _Ctx(db=db) as c, patch.object(server, "_shabbos_quiet", never_quiet):
             _confirm()
             r = _run(server._gc_alerts_tick(NOON))   # 10 days out: 30, 14 seen
             self.assertEqual(r["permits_no_expiry"], 2)

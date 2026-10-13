@@ -26,6 +26,7 @@ template. Nothing here invents a fine, a deadline or a cure date.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -55,6 +56,25 @@ NEW_KINDS = tuple(k for k in KIND_SWITCH if k not in LEGACY_KINDS)
 DOT_KINDS = ("dot_violation", "dot_permit")
 
 RED, ORANGE = "🔴", "🟠"
+
+_CRITICAL_TEXT = re.compile(r"\bvacate\b|\bstop[- ]work order\b", re.IGNORECASE)
+
+
+def is_critical(it: Dict[str, Any]) -> bool:
+    """A Stop Work Order or a Vacate order: what may still post on Shabbos
+    when the company says so. A rescinded order is not."""
+    if it.get("kind") == "swo":
+        return True
+    if it.get("kind") not in ("violation", "complaint"):
+        return False
+    rec = it.get("rec") or {}
+    sub = str(rec.get("violation_subtype") or "").upper()
+    if sub.startswith(("SWO", "VACATE")):
+        return True
+    text = " ".join(str(rec.get(k) or "") for k in (
+        "violation_type", "violation_category", "description", "category",
+        "complaint_category", "summary", "record_type"))
+    return bool(_CRITICAL_TEXT.search(text))
 CLOSED_WORDS = ("certified", "dismissed", "paid", "resolved", "closed",
                 "rescind", "lifted", "complied", "withdrawn")
 
