@@ -175,6 +175,7 @@ class TheChaseTick(_Base):
         self.assertEqual(self.tick(_ny(2026, 9, 22, 12, 35), due="2026-09-22"), ["midday"])
 
     def test_sunday(self):
+        self.settings["chase_sundays_off"] = True
         self.assertEqual(self.tick(_ny(2026, 12, 20, 12, 35), due="2026-12-20"), [])
         self.settings["chase_sundays_off"] = False
         self.assertEqual(self.tick(_ny(2026, 12, 20, 12, 35), due="2026-12-20"), ["midday"])
@@ -187,6 +188,7 @@ class TheChaseTick(_Base):
         self.assertEqual(self.tick(_ny(2026, 12, 20, 8, 35), due="2026-12-19"), ["morning"])
 
     def test_the_report_says_why(self):
+        self.settings["chase_sundays_off"] = True
         with patch.object(server, "db", self.db):
             _item(self.db, due={"due_text": "today", "due_at": "2026-12-20"})
             report = _run(server._chase_tick(now=_ny(2026, 12, 20, 12, 35).astimezone(timezone.utc)))
@@ -287,12 +289,13 @@ class TheDm(unittest.TestCase):
                 self.assertEqual(tuple(self.rest().values()), want)
 
     def test_back_on(self):
-        (done,) = self.talk("ok to chase on sundays at 588")
+        (done,) = self.talk("ok to chase on sundays at 588", settings={"chase_sundays_off": True})
         self.assertEqual(tuple(self.rest().values()), (True, False))
         self.assertIn("Sundays are on", done)
 
     def test_already_so(self):
-        (r,) = self.talk("no chasing the whole weekend at 588")     # both off by default
+        (r,) = self.talk("no chasing the whole weekend at 588",
+                         settings={"chase_shabbos_off": True, "chase_sundays_off": True})
         self.assertTrue(r.startswith("Already set — at 588"), r)
 
     def test_undo_puts_both_back(self):

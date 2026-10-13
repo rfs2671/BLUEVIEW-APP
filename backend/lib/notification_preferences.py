@@ -1297,6 +1297,16 @@ def validate_whatsapp_prefs_patch(patch: Any) -> Tuple[Dict[str, Any], List[str]
     return clean, errors
 
 
+#: Company-wide WhatsApp settings (one row per company, scope "company").
+#: "chase_sundays_default": new jobs chase on Sundays (their "Sundays off"
+#: switch starts off). On by default: Orthodox GCs work Sundays.
+COMPANY_SWITCHES = ("chase_sundays_default",)
+
+
+def default_whatsapp_company_settings() -> Dict[str, Any]:
+    return {"chase_sundays_default": True}
+
+
 def default_whatsapp_project_settings() -> Dict[str, Any]:
     """Per-project WhatsApp settings. The two alert switches default ON: they
     do nothing until a GC group is confirmed, and confirming it is the opt-in."""
@@ -1310,6 +1320,8 @@ def default_whatsapp_project_settings() -> Dict[str, Any]:
             "gc_proposal": None, "gc_declined": [],
             # When alerts and the GC-group question may go out (lib/wa_gc).
             "send_window": {"mode": "anytime", "start": "07:00", "end": "19:00"},
-            # Sub chasing (lib/wa_chase.py): quiet over Shabbos / Yom Tov
-            # and on Sunday, both by default.
+            # Sub chasing (lib/wa_chase.py): quiet over Shabbos / Yom Tov by
+            # default. Sundays: a job's own switch, else the company's
+            # "Default: chase on Sundays" (server: _whatsapp_project_settings);
+            # this is only the fallback when the company is unknown.
             "chase_shabbos_off": True, "chase_sundays_off": True}

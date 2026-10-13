@@ -16689,6 +16689,16 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
 
+    # A new job starts with the company's "Default: chase on Sundays" -- saved
+    # on the job, so changing the default later leaves it as it was.
+    try:
+        company_wa = await _whatsapp_company_settings(project_dict.get("company_id"))
+        await _set_whatsapp_project_fields(
+            str(result.inserted_id), project_dict.get("company_id"),
+            {wa_chase.SUNDAYS_OFF: not company_wa["chase_sundays_default"]}, actor=actor_id(admin))
+    except Exception as e:
+        logger.warning(f"[project_create] sundays default not saved: {type(e).__name__}: {e}")
+
     await audit_log("project_create", actor_id(admin), "project", str(result.inserted_id), {
         "name": project_dict.get("name"), "address": project_dict.get("address"),
         "project_class": project_dict.get("project_class"), "suggested_class": suggested,
@@ -46053,6 +46063,55 @@ async def get_whatsapp_prefs(user_id: Any, project_id: Any = None) -> dict:
     return _nprefs.effective_whatsapp_prefs(project_row, global_row)
 
 
+async def _whatsapp_company_settings(company_id: Any) -> dict:
+    """The company's WhatsApp settings (one row, scope "company") over the
+    defaults (lib/notification_preferences)."""
+    from lib import notification_preferences as _nprefs
+    out = _nprefs.default_whatsapp_company_settings()
+    if not company_id:
+        return out
+    try:
+        row = await db.notification_preferences.find_one(
+            {"user_id": None, "project_id": None, "scope": "company",
+             "company_id": str(company_id)})
+    except Exception:
+        row = None
+    stored = (row or {}).get("whatsapp_company") or {}
+    for k in _nprefs.COMPANY_SWITCHES:
+        if isinstance(stored.get(k), bool):
+            out[k] = stored[k]
+    return out
+
+
+async def _set_whatsapp_company_fields(company_id: Any, fields: dict, actor: str) -> dict:
+    """Write some company WhatsApp settings; audited with before / after."""
+    now = datetime.now(timezone.utc)
+    before = await _whatsapp_company_settings(company_id)
+    set_ops = {f"whatsapp_company.{k}": v for k, v in fields.items()}
+    set_ops.update({"whatsapp_company.updated_at": now, "whatsapp_company.updated_by": actor,
+                    "updated_at": now})
+    await db.notification_preferences.update_one(
+        {"user_id": None, "project_id": None, "scope": "company", "company_id": str(company_id)},
+        {"$set": set_ops,
+         "$setOnInsert": {"user_id": None, "project_id": None, "scope": "company",
+                          "company_id": str(company_id), "created_at": now}},
+        upsert=True)
+    after = await _whatsapp_company_settings(company_id)
+    await audit_log("whatsapp_company_settings", actor, "company", str(company_id),
+                    {"before": {k: before[k] for k in fields}, "after": {k: after[k] for k in fields}})
+    return after
+
+
+async def _project_company_id(project_id: Any, row: Optional[dict] = None) -> Optional[str]:
+    if row and row.get("company_id"):
+        return str(row["company_id"])
+    try:
+        p = await db.projects.find_one({"_id": to_query_id(project_id)}, {"company_id": 1})
+    except Exception:
+        p = None
+    return str(p["company_id"]) if p and p.get("company_id") else None
+
+
 async def _whatsapp_project_settings(project_id: Any) -> dict:
     from lib import notification_preferences as _nprefs
     out = _nprefs.default_whatsapp_project_settings()
@@ -46077,8 +46136,14 @@ async def _whatsapp_project_settings(project_id: Any) -> dict:
     out["send_window"] = (wa_gc.clean_send_window(stored.get("send_window"))
                           or wa_gc.default_send_window())
     # Shabbos / Yom Tov and Sundays (lib/wa_chase.rest_days; a job with only
-    # the old "Chase on weekends" reads it as both).
-    out.update(wa_chase.rest_days(stored))
+    # the old "Chase on weekends" reads it as both). Sundays never saved: the
+    # company's "Default: chase on Sundays".
+    sundays_default = None
+    if not isinstance(stored.get(wa_chase.SUNDAYS_OFF), bool) and "chase_weekends" not in stored:
+        cid = await _project_company_id(pid, row)
+        if cid:
+            sundays_default = not (await _whatsapp_company_settings(cid))["chase_sundays_default"]
+    out.update(wa_chase.rest_days(stored, sundays_off_default=sundays_default))
     # Punch sends: "shadow" (default: the walker sees what WOULD be posted,
     # nothing is) or "live".
     out["punch_sends"] = stored.get("punch_sends") if stored.get("punch_sends") in punch.SEND_MODES \
@@ -56243,6 +56308,37 @@ async def _chase_rest_days_migration() -> int:
     return n
 
 
+_SUNDAYS_PIN_MARKER = "chase_sundays_pin_2026_10"
+
+
+async def _chase_sundays_pin_migration() -> int:
+    """Once: every job that exists now keeps the Sundays it chases on today
+    (a job that never saved "Sundays off" had it on). Jobs created after it
+    start from the company's "Default: chase on Sundays" (on by default)."""
+    if await db.app_migrations.find_one({"_id": _SUNDAYS_PIN_MARKER}):
+        return 0
+    n = 0
+    projects = await db.projects.find(
+        {"is_deleted": {"$ne": True}}, {"company_id": 1}).to_list(20000)
+    for p in projects:
+        pid = str(p["_id"])
+        row = await db.notification_preferences.find_one(
+            {"user_id": None, "project_id": pid, "scope": "project"})
+        stored = (row or {}).get("whatsapp_project") or {}
+        if isinstance(stored.get(wa_chase.SUNDAYS_OFF), bool):
+            continue
+        today = wa_chase.rest_days(stored)[wa_chase.SUNDAYS_OFF]     # as read before the default
+        await _set_whatsapp_project_fields(pid, (row or {}).get("company_id") or p.get("company_id"),
+                                           {wa_chase.SUNDAYS_OFF: today}, actor="migration")
+        n += 1
+    await db.app_migrations.update_one(
+        {"_id": _SUNDAYS_PIN_MARKER},
+        {"$set": {"_id": _SUNDAYS_PIN_MARKER, "done_at": datetime.now(timezone.utc), "jobs": n}},
+        upsert=True)
+    logger.info(f"WhatsApp migration: Sundays kept as they were on {n} job(s)")
+    return n
+
+
 async def _chase_weekends_for_588_thomas() -> Optional[str]:
     """Turn "Chase on weekends" on for 588 Thomas S Boyland St, once. Only
     when exactly one live project is that address, and only if its switch
@@ -56347,6 +56443,13 @@ async def run_whatsapp_startup_migrations():
         await _chase_rest_days_migration()
     except Exception as e:
         logger.warning(f"whatsapp migration 0c (chase rest days): {e}")
+    # Migration 0d — "Sundays off" now defaults from the company ("Default:
+    # chase on Sundays", on). Every job that exists keeps what it has today.
+    # After 0c; once.
+    try:
+        await _chase_sundays_pin_migration()
+    except Exception as e:
+        logger.warning(f"whatsapp migration 0d (chase sundays pin): {e}")
 
     # Migration 1 — backfill bot_config on legacy group docs
     try:
@@ -68591,6 +68694,31 @@ async def _punch_settings_view(project_id: Any, company_id: Any, settings: dict)
             "punch_contacts": subs,
             "punch_due_default": settings.get("punch_due_default") or punch.DEFAULT_DUE_SETTING,
             "punch_due_options": list(punch.DUE_DEFAULTS)}
+
+
+@api_router.get("/company/whatsapp-settings", dependencies=[Depends(require_approved)])
+async def get_company_whatsapp_settings(current_user=Depends(get_current_user)):
+    """Company-wide WhatsApp settings (admins, and PMs with full access)."""
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return await _whatsapp_company_settings(get_user_company_id(current_user))
+
+
+@api_router.patch("/company/whatsapp-settings", dependencies=[Depends(require_approved)])
+async def patch_company_whatsapp_settings(body: dict, current_user=Depends(get_current_user)):
+    """Change company-wide WhatsApp settings, each true or false. Audited.
+    "chase_sundays_default" applies to jobs created from now on; jobs you
+    already have keep their own "Sundays off"."""
+    from lib import notification_preferences as _nprefs
+    if not is_company_admin(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if (not isinstance(body, dict) or not body
+            or any(k not in _nprefs.COMPANY_SWITCHES for k in body)
+            or any(not isinstance(v, bool) for v in body.values())):
+        raise HTTPException(status_code=422, detail="Send " + ", ".join(_nprefs.COMPANY_SWITCHES)
+                            + " as true or false.")
+    return await _set_whatsapp_company_fields(get_user_company_id(current_user), dict(body),
+                                              actor_id(current_user))
 
 
 @api_router.get("/projects/{project_id}/whatsapp-settings",
