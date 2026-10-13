@@ -256,7 +256,9 @@ class WhichJob(_Harness, unittest.TestCase):
         db = self._admin()
         with _Ctx(db=db) as c:
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "2", "m1")
-        self.assertTrue(reply.startswith("Which job?"))
+        # Not a menu pick and not a question: a hint, never "Which job?"
+        # (Mon 8:28 PM: messages that asked nothing got the picker).
+        self.assertEqual(reply, wa_assistant.NOT_A_QUESTION_TEXT)
 
 
 class KindsOfQuestion(_Harness, unittest.TestCase):
