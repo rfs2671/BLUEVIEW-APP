@@ -187,10 +187,22 @@ class TheJobIsAskedOnce(_Walk):
         self._turn("Bulb burnt 2D", photo=True)
         self.assertEqual(self._turn("2"), ["Walkthrough at 12 Main St. Keep going; 'done' when finished."])
 
-    def test_idle_two_hours_ends_the_walk(self):
+    def test_idle_a_day_ends_the_walk(self):
+        # 12:02 PM: 24 hours idle, not 2 (a real walk is not lost at lunch).
         self.projects = (P588,)
         self.setUp()
         self._turn("Bulb burnt 2D", photo=True)
+        self.db[punch.SESSIONS].rows[0]["updated_at"] = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._turn("Loose outlet 3B", photo=True)
+        self.assertEqual([r["status"] for r in self.db[punch.SESSIONS].rows], ["capturing"])
+        self.db[punch.SESSIONS].rows[0]["updated_at"] = datetime.now(timezone.utc) - timedelta(hours=25)
+        self._turn("Bulb burnt 2D", photo=True)
+        statuses = sorted(r["status"] for r in self.db[punch.SESSIONS].rows)
+        self.assertEqual(statuses, ["capturing", "expired"])
+        self.assertEqual(len([r for r in self.db[punch.SESSIONS].rows
+                              if r["status"] == "expired"][0]["items"]), 2)   # kept
+        self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt"])
+        return
         self.db[punch.SESSIONS].rows[0]["updated_at"] = datetime.now(timezone.utc) - timedelta(hours=3)
         self._turn("Loose outlet 3B", photo=True)
         statuses = sorted(r["status"] for r in self.db[punch.SESSIONS].rows)
@@ -226,76 +238,125 @@ class TypingDuringAWalk(_Walk):
         self.assertEqual(self.item(1)["area"], "lobby")
 
 
-class EveryItemNeedsALocation(_Walk):
+class ALocationIsNeverABlocker(_Walk):
+    """Tue Oct 13, 12:02 PM: a real 45-item walk at 588 stuck at "39 items
+    need a location", asked one at a time; "1st floor" -> "Where on floor
+    1?"; "Back of building is location", "Ignore all that and just finish"
+    and "." -> the same long prompt, 5 times. Now: any words are a place, a
+    floor alone is one, ONE question for all of them, then the draft."""
 
     projects = (P588,)
 
-    def test_done_asks_per_photo_and_never_drafts_without(self):
+    def test_one_question_for_all_then_the_draft(self):
         self._turn("Bulb burnt 2D", photo=True)
         self._turn("Missing screw by table", photo=True)
-        self._turn("Paint touch up corridor", photo=True)
+        self._turn("Paint touch up corridor", photo=True)            # an area: enough
+        self._turn("Crack in slab", photo=True)
         (q,) = self._turn("done")
-        self.assertEqual(q, "2 items need a location before the draft. "
-                            "Where is #2 'Missing screw by table'? (floor + unit, or a named area)")
-        # "done" again: still asked, no draft.
-        (q,) = self._turn("done")
-        self.assertIn("Where is #2", q)
-        self.assertNotIn("(draft)", q)
-        # Not a location: asked again, with examples.
-        (q,) = self._turn("by the table")
-        self.assertIn(punch.WHERE_HELP, q)
-        # A named area needs no floor; a corridor needs one.
-        (q,) = self._turn("boiler room")
-        self.assertEqual(q, "Which floor is #3 'Paint touch up' (corridor) on?")
-        (draft,) = self._turn("3")
+        self.assertEqual(q, "\n".join([
+            "2 have no location. Reply like '3 rear yard, 5-9 roof, 12 2nd floor', or "
+            "'all roof', or 'skip' to send without.",
+            "#2 Missing screw by table", "#4 Crack in slab"]))
+        (draft,) = self._turn("2 back of building, 4 1st floor")
+        self.assertTrue(draft.startswith("Set 2 locations."), draft)
         self.assertIn("(draft)", draft)
-        self.assertEqual((self.item(3)["floor"], self.item(3)["area"]), ("3", "corridor"))
-        self.assertEqual(self.item(2)["area"], "boiler room")
+        self.assertEqual(self.item(2)["area"], "back of building")        # as typed
+        self.assertEqual((self.item(4)["floor"], self.item(4)["area"]), ("1", punch.UNKNOWN))
+        self.assertEqual(self.sess()["status"], "draft")
 
-    def test_a_reply_to_another_photo_while_asked(self):
+    def test_skip_goes_out_without(self):
+        for said in ("skip", "Ignore all that and just finish", ".", "just send", "send as is",
+                     "move on"):
+            with self.subTest(said):
+                self.setUp()
+                self._turn("Bulb burnt", photo=True)
+                self._turn("done")
+                (draft,) = self._turn(said)
+                self.assertIn("(draft)", draft)
+                self.assertIn("*Location: not given*", draft)
+                # And never asked again: 'send' goes on to who gets what.
+                (who,) = self._turn("send")
+                self.assertNotIn("location", who.lower())
+
+    def test_all_and_rest(self):
         self._turn("Bulb burnt", photo=True)
         self._turn("Missing screw", photo=True)
         self._turn("done")
-        # Asked about #1; the walker answers #2 by replying to it.
-        (q,) = self._turn("roof", reply_to=2)
-        self.assertEqual(q, "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
-        (draft,) = self._turn("fl 4 unit F")
-        self.assertIn("Bulb burnt (Apt 4F)", draft)
+        self._turn("all rear yard")
+        self.assertEqual([self.item(n)["area"] for n in (1, 2)], ["rear yard", "rear yard"])
 
-    def test_an_item_added_in_the_draft_is_asked_at_send(self):
-        self._turn("Bulb burnt 2D", photo=True)
+    def test_never_the_same_prompt_twice_in_a_row(self):
+        self._turn("Bulb burnt", photo=True)
+        self._turn("Missing screw", photo=True)
         self._turn("done")
-        self._turn("add: exit sign out floor 3")
-        (q,) = self._turn("send")
-        self.assertIn("Where on floor 3 is #2 'Exit sign out'?", q)
+        (a,) = self._turn("hmm")
+        self.assertEqual(a, punch.BATCH_SHORT)                        # short, no list again
+        (b,) = self._turn("what")
+        self.assertEqual(b, punch.BATCH_SHORT + " " + punch.SKIP_HINT)
+        (draft,) = self._turn("??")
+        self.assertIn("(draft)", draft)                               # on, never a 3rd time
 
-    def test_a_photo_while_asked_is_an_item(self):
-        # Codex review on #754: it was dropped.
+    def test_a_floor_alone_is_a_location(self):
+        self._turn("Bulb burnt 1st floor", photo=True)
+        (draft,) = self._turn("done")
+        self.assertIn("(draft)", draft)
+        self.assertIn("*Floor 1*", draft)
+
+    def test_a_walk_asked_the_old_way(self):
+        # 12:02 PM: a walk mid-question when this ships ("Where on floor 1
+        # is #1?"): the answer is that item's, as typed; then the one question.
+        self._turn("Bulb burnt", photo=True)
+        self._turn("Missing screw", photo=True)
+        sess = self.sess()
+        sess.update(status="locating", asking=1)
+        sess.pop("where_asked", None)
+        (q,) = self._turn("Back of building is location")
+        self.assertEqual(self.item(1)["area"], "Back of building")
+        self.assertTrue(q.startswith("Set 1 location.\n1 has no location."), q)
+        (draft,) = self._turn("Ignore all that and just finish")
+        self.assertIn("(draft)", draft)
+
+    def test_a_photo_after_the_question_is_an_item_and_not_asked(self):
         self._turn("Bulb burnt", photo=True)
         self._turn("done")
-        # 10:36 PM: a photo at any stage is the next item; then that stage again.
-        (q,) = self._turn("Loose outlet 3B", photo=True)
-        self.assertEqual(q, "Added #2 'Loose outlet' (Apt 3B). Back to: the locations. "
-                            "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
-        self.assertEqual(self.sess()["status"], "locating")
+        self._turn("skip")
+        (out,) = self._turn("Loose outlet", photo=True)
+        self.assertIn("Added #2 'Loose outlet'", out)
+        self.assertNotIn("no location", out)
         self.assertEqual([it["text"] for it in self.sess()["items"]], ["Bulb burnt", "Loose outlet"])
-        self.assertEqual(self.assistant, [])
 
     def test_an_unknown_number_changes_nothing(self):
-        # Codex review on #754: "#99 lobby" went on the item being asked.
         self._turn("Bulb burnt", photo=True)
         self._turn("done")
-        (q,) = self._turn("#99 lobby")
-        self.assertEqual(q, "There's no #99 in this walkthrough. "
-                            "Where is #1 'Bulb burnt'? (floor + unit, or a named area)")
-        self.assertEqual(self.item(1)["area"], punch.UNKNOWN)
+        (draft,) = self._turn("#99 lobby")
+        self.assertIn("No #99 in this walkthrough.", draft)
+        self.assertEqual(self.item(1).get("area", punch.UNKNOWN), punch.UNKNOWN)
 
-    def test_drop_instead(self):
+    def test_drop_one(self):
         self._turn("Bulb burnt", photo=True)
         self._turn("Missing screw 4F", photo=True)
         self._turn("done")
-        (draft,) = self._turn("drop")
+        (draft,) = self._turn("drop 1")
         self.assertIn("1 item (draft)", draft)
+
+    def test_locations_in_the_draft(self):
+        self._turn("Bulb burnt", photo=True)
+        self._turn("done")
+        self._turn("skip")
+        (draft,) = self._turn("1 near the gas meter")
+        self.assertTrue(draft.startswith("Set 1 location."), draft)
+        self.assertEqual(self.item(1)["area"], "near the gas meter")
+
+    def test_add_under_a_photo_is_its_own_item(self):
+        # 12:02 PM: "Add missing access ladder" replying to the stucco photo
+        # had been kept as a note on it -- in no draft, in no message.
+        self._turn("Stucco cracked rear wall 2nd floor", photo=True)
+        (out,) = self._turn("Add missing access ladder", reply_to=1)
+        self.assertIn("Added #2 'Missing access ladder'", out)
+        two = self.item(2)
+        self.assertEqual((two["text"], two["floor"], two["photo_key"]),
+                         ("Missing access ladder", "2", None))
+        self.assertNotIn("notes", self.item(1))
 
 
 class WhereWordsAreRead(unittest.TestCase):
@@ -323,14 +384,20 @@ class WhereWordsAreRead(unittest.TestCase):
                 self.assertEqual((loc["floor"], loc["area"]), (floor, area))
                 self.assertEqual(punch.location_state(loc["floor"], loc["area"]), "ok")
 
-    def test_not_enough(self):
-        for words, state in {"Missing screw by table": "missing", "5th floor": "missing",
-                             "Floor 6 kitchen": "missing", "corridor": "needs_floor",
-                             "hallway": "needs_floor", "stairs landing": "needs_floor",
-                             "Apt F": "needs_floor", "2x4 missing": "missing", "10am": "missing"}.items():
+    def test_anything_named_is_enough(self):
+        for words, state in {"Missing screw by table": "missing", "5th floor": "ok",
+                             "Floor 6 kitchen": "ok", "corridor": "ok",
+                             "hallway": "ok", "stairs landing": "ok",
+                             "Apt F": "ok", "2x4 missing": "missing", "10am": "missing"}.items():
             with self.subTest(words):
                 loc = punch.read_location(words)
                 self.assertEqual(punch.location_state(loc["floor"], loc["area"]), state)
+        self.assertEqual(punch.free_location("Back of building is location"),
+                         {"floor": None, "area": "Back of building"})
+        self.assertEqual(punch.free_location("near the gas meter"),
+                         {"floor": None, "area": "near the gas meter"})
+        for filler in ("hmm", "what?", "ok", "idk", "?"):
+            self.assertEqual(punch.free_location(filler), {"floor": None, "area": None})
 
 
 class TheAssistantSeesWhatWasRepliedTo(unittest.TestCase):

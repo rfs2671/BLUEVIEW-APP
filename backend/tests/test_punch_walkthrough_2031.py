@@ -193,10 +193,8 @@ class The2031Sequence(_Walk):
         self.assertEqual((self.item(1)["trade"], self.item(3)["trade"]), ("carpentry", "electrical"))
         # "Done": every photo needs a place.
         (q,) = self.turn("Done")
-        self.assertIn("3 items need a location", q)
-        self.turn("2D")
-        self.turn("4f")
-        (draft,) = self.turn("4F")
+        self.assertTrue(q.startswith("3 have no location."), q)     # one question for all
+        (draft,) = self.turn("1 2D, 2 4f, 3 4F")
         self.assertIn("3 items (draft)", draft)
         self.assertIn("Tile wrong (Apt 4F) — tile?", draft)       # (5) a guess, shown so
         self.assertIn("Bulb burnt (Apt 4F) — electrical?", draft)

@@ -144,7 +144,7 @@ class SendToShortcuts(_Real):
         self.turn("starting walkthrough at 588")
         self.turn("tile cracked", photo=True)                  # no location
         (q,) = self.turn("done, send to chris")
-        self.assertIn("Where", q)
+        self.assertTrue(q.startswith("1 has no location."), q)       # asked once
         (recap,) = self.turn("4D")
         self.assertTrue(recap.startswith("Ready to DM the whole list to Chris Weiss"), recap)
 

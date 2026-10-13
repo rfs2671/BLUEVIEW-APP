@@ -157,22 +157,7 @@
    "text": "done"
   },
   {
-   "text": "Apt 6C"
-  },
-  {
-   "text": "5A"
-  },
-  {
-   "text": "Apt 5B"
-  },
-  {
-   "text": "5D"
-  },
-  {
-   "text": "apto 4B"
-  },
-  {
-   "text": "4C",
+   "text": "{n:faucet} Apt 6C, {n:door closer} 5A, {n:stain on ceiling} 5B, {n:bathroom no light} 5D, {n:lavamanos} 4B, {n:enchufe} 4C",
    "expect": {
     "draft_items": 12,
     "need_trade": 2
@@ -201,9 +186,6 @@
   },
   {
    "text": "send"
-  },
-  {
-   "text": "corridor"
   },
   {
    "text": "send",

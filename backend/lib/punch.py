@@ -88,7 +88,7 @@ def match_project(hint: Optional[str], projects: List[Dict[str, Any]]) -> Tuple[
 
 #: A walkthrough still capturing ends after this long with nothing from the
 #: walker (a draft waits for "send", with its own reminder).
-CAPTURE_IDLE_HOURS = 2
+CAPTURE_IDLE_HOURS = 24
 #: A job picked in this DM this recently is the walkthrough's job.
 JOB_PICK_MINUTES = 30
 #: Typed during a walk, words go on the photo sent this recently; older,
@@ -249,6 +249,19 @@ def update_item(it: dict, words: str, *, note_at: Any = None) -> str:
         it.setdefault("notes", []).append({"text": w, "at": note_at})
         changed.append("note")
     return "+".join(changed)
+
+
+_ADD_WORDS = re.compile(r"^\s*(?:add(?:\s+(?:a|an|one|item|another))?|also|plus|and also|another(?:\s+one)?)"
+                        r"\s*[:\-–,]?\s+(?!(?:photo|pic|picture|to|it|this|that|location|note)\b)(?P<w>\S.{2,})$",
+                        re.IGNORECASE | re.DOTALL)
+
+
+def add_item_words(text: Any) -> Optional[str]:
+    """"Add missing access ladder" (a reply to a photo): a NEW item's words
+    -- never a note hidden on the photo's item (Tue Oct 13, 12:02 PM). None
+    when the message is not one."""
+    m = _ADD_WORDS.match(str(text or ""))
+    return m.group("w").strip() if m else None
 
 
 # ── A CAPTION CORRECTED ──────────────────────────────────────────────────────
@@ -639,18 +652,14 @@ def read_location(text: str) -> Dict[str, Optional[str]]:
 
 
 def location_state(floor: Optional[str], area: Optional[str]) -> str:
-    """"ok", "needs_floor" (a corridor with no floor), or "missing"."""
+    """"ok" when anything is named -- a floor alone ("1st floor"), a unit,
+    a named area, any words ("back of building", "near the gas meter") --
+    else "missing". A location is never a blocker (Tue Oct 13, 12:02 PM: a
+    45-item walk stuck on "Where on floor 1?"): an item may go out without
+    one ("Location: not given")."""
     f = None if floor in (None, "", UNKNOWN) else str(floor)
     a = None if area in (None, "", UNKNOWN) else str(area)
-    if a and a.startswith("Apt "):
-        return "ok" if f else "needs_floor"
-    if a and a in COMMON_AREAS:
-        return "ok"
-    if f and f in ("cellar", "basement", "roof", "bulkhead", "lobby"):
-        return "ok"                              # an old item's named floor
-    if a and a in NEEDS_FLOOR:
-        return "ok" if f and f.isdigit() else "needs_floor"
-    return "missing"
+    return "ok" if (f or a) else "missing"
 
 
 def merge_location(it: dict, loc: Dict[str, Optional[str]]) -> bool:
@@ -711,6 +720,121 @@ def where_question(it: dict) -> str:
     if f != UNKNOWN and str(f).isdigit():
         return f"Where on floor {f} is #{n} '{words}'? (the unit, or a named area)"
     return f"Where is #{n} '{words}'? (floor + unit, or a named area)"
+
+
+# ── ONE QUESTION FOR EVERY MISSING LOCATION ─────────────────────────────────
+
+#: Move on without it, at any stage: "just finish", "skip", "ignore that",
+#: "send as is", "move on", "." (Tue Oct 13, 12:02 PM: each got the same
+#: long prompt again, 5 times).
+_ESCAPE = re.compile(
+    r"^(?:ok(?:ay)?[,.! ]*)?(?:please\s+)?(?:just\s+)?(?:skip(?:\s+(?:it|that|this|them|all|the rest|locations?))?"
+    r"|finish(?:\s+(?:it|up|the walk(?:through)?))?|send(?:\s+it)?\s+(?:as\s+is|without(?:\s+(?:it|them|locations?))?)"
+    r"|just send(?:\s+it)?|ignore(?:\s+(?:that|this|it|all that|all of that|them))?(?:\s+and\s+(?:just\s+)?"
+    r"(?:finish|send|continue|move on)(?:\s+(?:it|up))?)?|move on|next|continue|keep going|go on|no location"
+    r"|none|n/?a|without|leave (?:it|them) blank|blank|salta(?:r)?|sigue|siguiente|ninguno)\W*$|^\W*$")
+
+
+def is_escape(text: Any) -> bool:
+    """'just finish', 'skip', 'ignore that', 'send as is', 'move on', '.'"""
+    t = " ".join(str(text or "").lower().split())
+    return bool(_ESCAPE.match(t))
+
+
+SKIP_HINT = "Reply 'skip' to continue without it."
+
+
+def batch_where_question(missing: List[dict]) -> str:
+    """ONE question for every item with no location, then the draft:
+    "39 have no location. Reply like '3 rear yard, 5-9 roof, 12 2nd floor',
+    or 'all roof', or 'skip' to send without." and the short list."""
+    n = len(missing)
+    lines = [f"{n} {'has' if n == 1 else 'have'} no location. Reply like "
+             "'3 rear yard, 5-9 roof, 12 2nd floor', or 'all roof', or 'skip' to send without."]
+    for it in missing:
+        words = (it.get("text") or "").strip() or "(no words)"
+        if len(words) > 32:
+            words = words[:30].rstrip() + "…"
+        lines.append(f"#{it.get('n')} {words}")
+    return "\n".join(lines)
+
+
+BATCH_SHORT = "Reply like '3 rear yard, 5-9 roof', 'all roof', or 'skip'."
+
+_ALL_LEAD = re.compile(r"^\s*(?:all|everything|every(?:one| item)?|the rest|rest|todos?|todo|el resto)"
+                       r"(?:\s+(?:of\s+)?(?:them|are|is|at|on|in|the))*\s*[:\-–,]?\s*(?P<loc>.+)$",
+                       re.IGNORECASE)
+_PART = re.compile(r"^\s*#?\s*(?P<a>\d{1,3})(?:\s*(?:-|–|to|thru|through)\s*#?\s*(?P<b>\d{1,3}))?"
+                   r"(?:\s*(?:,|and|&)\s*#?\s*(?P<more>\d{1,3}(?:\s*(?:,|and|&)\s*#?\s*\d{1,3})*))?"
+                   r"\s*[:\-–.]?\s+(?P<loc>\D.*?)\s*$", re.IGNORECASE)
+_LOC_FILLER = re.compile(r"^(?:location(?:\s+is)?|loc|it'?s|its|they'?re|at|on|in|the)\s*[:\-]?\s+"
+                         r"|\s+(?:is|are)\s+(?:the\s+)?(?:location|loc)\s*$|\s+(?:location|loc)\s*$",
+                         re.IGNORECASE)
+
+
+#: Words that are not a place, whatever was asked.
+_NOT_A_PLACE = re.compile(
+    r"^(?:hmm+|hm+|huh|what|wait|ok(?:ay)?|yes|yeah|no|nope|idk|i don'?t know|dunno|no idea|"
+    r"not sure|thanks?|thank you|why|how|done|send|help|\?+)[\s?!.]*$", re.IGNORECASE)
+
+
+def free_location(text: Any) -> Dict[str, Optional[str]]:
+    """A location AS TYPED: its floor when one is said ("2nd floor
+    interior" -> floor 2, "interior"), a unit as Apt ("4F" -> Apt 4F), and
+    every other word kept as the area exactly as written ("Back of building
+    is location" -> "Back of building", "rear yard" stays "rear yard").
+    Nothing with letters in it: nothing."""
+    t = " ".join(str(text or "").split()).strip(" .;,")
+    for _ in range(2):
+        t = _LOC_FILLER.sub("", t).strip(" .;,")
+    if not t or not re.search(r"[^\W\d_]", t) or _NOT_A_PLACE.match(t):
+        return {"floor": None, "area": None}
+    loc = read_location(t)
+    if str(loc.get("area") or "").startswith("Apt "):
+        return loc
+    floor = loc.get("floor")
+    rest = _LOC_FLOOR.sub(" ", t) if floor else t
+    rest = " ".join(rest.split()).strip(" ,.-")
+    area = rest[:80] if re.search(r"[^\W\d_]{2,}", rest) else None
+    return {"floor": floor, "area": area}
+
+
+_NUMS = r"#?\d{1,3}(?:\s*(?:-|–|to|thru|through)\s*#?\d{1,3})?"
+_NUM_LIST = _NUMS + r"(?:\s*(?:,|and|&)\s*" + _NUMS + r")*"
+_BATCH_PART = re.compile(
+    r"(?:^|(?<=[,;\n]))\s*(?P<nums>" + _NUM_LIST + r")\s*[:\-–.]?\s+"
+    r"(?P<loc>.+?)(?=\s*[,;\n]\s*" + _NUM_LIST + r"\s*[:\-–.]?\s+(?!(?:st|nd|rd|th)\b)|\s*$)",
+    re.IGNORECASE)
+
+
+def _numbers(said: str) -> List[int]:
+    out: List[int] = []
+    for a, b in re.findall(r"#?(\d{1,3})(?:\s*(?:-|–|to|thru|through)\s*#?(\d{1,3}))?", said):
+        lo, hi = int(a), int(b or a)
+        lo, hi = min(lo, hi), max(lo, hi)
+        out += list(range(lo, hi + 1)) if hi - lo < 200 else [lo]
+    return out
+
+
+def parse_batch_where(text: Any, missing_ns: List[int]) -> Optional[Dict[str, Any]]:
+    """The answer to batch_where_question: {"skip": True}, or {"set": {n:
+    location}} -- "3 rear yard, 5-9 roof, 12 2nd floor", "all roof", "rest
+    lobby", "#4 boiler room", "3,4 and 7 cellar". None: not an answer."""
+    t = " ".join(str(text or "").split())
+    if is_escape(t):
+        return {"skip": True}
+    m = _ALL_LEAD.match(t)
+    if m:
+        loc = free_location(m.group("loc"))
+        if loc.get("floor") or loc.get("area"):
+            return {"set": {n: loc for n in missing_ns}}
+    out: Dict[int, Dict[str, Optional[str]]] = {}
+    for pm in _BATCH_PART.finditer(t):
+        loc = free_location(pm.group("loc"))
+        if loc.get("floor") or loc.get("area"):
+            for n in _numbers(pm.group("nums")):
+                out[n] = loc
+    return {"set": out} if out else None
 
 
 def missing_location(items: List[dict]) -> List[dict]:
@@ -791,12 +915,25 @@ def _floor_key(f: str) -> Tuple[int, str]:
     return (order.get(f, 500), f)
 
 
+NOT_GIVEN = "Location: not given"
+
+
 def floor_label(f: str) -> str:
     if f == UNKNOWN:
-        return "Floor ?"
+        return NOT_GIVEN
     if f.isdigit():
         return f"Floor {f}"
     return f.capitalize()
+
+
+def place_key(it: dict) -> str:
+    """What an item is listed under: its floor; else its area as said
+    ("back of building"); else UNKNOWN (Location: not given)."""
+    f = it.get("floor") or UNKNOWN
+    if f != UNKNOWN:
+        return f
+    a = it.get("area") or UNKNOWN
+    return a if a != UNKNOWN else UNKNOWN
 
 
 def ordered(items: Iterable[dict]) -> List[dict]:
@@ -804,7 +941,7 @@ def ordered(items: Iterable[dict]) -> List[dict]:
     last), then the order the photos came in."""
     def key(it):
         t = it.get("trade") or UNKNOWN
-        return (_floor_key(it.get("floor") or UNKNOWN), t == UNKNOWN, t,
+        return (_floor_key(place_key(it)), t == UNKNOWN, t,
                 it.get("captured") or 0)
     return sorted(items, key=key)
 
@@ -838,7 +975,7 @@ def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_M
     lines = [head]
     by_floor: Dict[str, List[dict]] = {}
     for it in ordered(live):
-        by_floor.setdefault(it.get("floor") or UNKNOWN, []).append(it)
+        by_floor.setdefault(place_key(it), []).append(it)
     for f in sorted(by_floor, key=_floor_key):
         lines.append("")
         lines.append(f"*{floor_label(f)}*")
@@ -966,6 +1103,9 @@ ASSIGN_HINT = ("Reply 'ok', fix one (\"electrical → Mike\"), or send the whole
 
 
 _ASSIGN = re.compile(r"^\s*([a-z /áéíóúñ]+?)\s*(?:→|->|=>|>|:|=|to)\s*(.+?)\s*$", re.IGNORECASE)
+
+
+ASSIGN_SHORT = "Reply like 'electrical → Mike', 'all → Chris', or 'to the group'."
 
 
 def parse_assign(text: str) -> List[Tuple[str, str]]:
@@ -1356,7 +1496,7 @@ def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None) ->
     lines: List[str] = []
     by_floor: Dict[str, Dict[str, List[dict]]] = {}
     for it in items:
-        by_floor.setdefault(it.get("floor") or UNKNOWN, {}).setdefault(
+        by_floor.setdefault(place_key(it), {}).setdefault(
             it.get("trade") or UNKNOWN, []).append(it)
     for f in sorted(by_floor, key=_floor_key):
         lines.append(f"*{floor_label(f)}*")
