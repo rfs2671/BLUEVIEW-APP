@@ -50868,8 +50868,9 @@ async def _dm_state_bump(kind: str, chat: str, **fields) -> None:
 
 
 #: Every kind of open question in a DM: a change's ("Add it?", "Which
-#: borough?"), the "Which job?" menu, "Since 8:07 or since 7am?".
-_DM_QUESTION_KINDS = ("dm_action", "dm_menu", "dm_clarify")
+#: borough?"), the "Which job?" menu, "Since 8:07 or since 7am?", a
+#: reminder's "Save it? YES / NO".
+_DM_QUESTION_KINDS = ("dm_action", "dm_menu", "dm_clarify", UPCOMING_REMIND_STATE)
 
 
 async def _dm_drop_pending(chat: str) -> bool:
@@ -53205,14 +53206,23 @@ def _dm_pick_since(text: str, options: list) -> Optional[dict]:
 
 def _dm_is_new_question(text: str) -> bool:
     """A message that asks something of its own (not an answer to an open
-    question, not gibberish): a "?", a question word, or a known kind."""
+    question, not gibberish): a "?", a question word, a known kind, or a
+    sentence of real words ("Could you check whether Joe arrived")."""
     t = str(text or "").strip()
     if "?" in t:
         return True
     if re.match(r"(?i)^(?:what|whats|what's|who|whos|who's|how|hows|how's|when|where|why|which|"
-                r"is|are|any|did|does|do|can|show|list|tell|give|send|cuantos|que|quien)\b", t):
+                r"is|are|was|were|will|any|did|does|do|can|could|would|should|have|has|had|"
+                r"show|list|tell|give|send|check|find|see|look|let me|i need|need|"
+                r"cuantos|cuantas|que|qué|quien|quién|donde|dónde|cuando|cuándo|hay)\b", t):
         return True
-    return bool(wa_assistant.question_scope(t) or wa_headcount.intent(t))
+    if wa_assistant.question_scope(t) or wa_headcount.intent(t):
+        return True
+    # Keyboard mash ("asdkjh qwe") is short and has no real words; a
+    # sentence has several words with vowels in them.
+    words = [w for w in re.findall(r"[^\W\d_]+", t) if re.search(r"(?i)[aeiouyáéíóú]", w)
+             and not re.search(r"(?i)([^aeiou\W])\1\1|[^aeiouy\W]{5}", w)]
+    return len(words) >= 4
 
 
 def _dm_looks_like_pick(text: str) -> bool:

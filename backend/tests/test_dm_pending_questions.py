@@ -192,5 +192,37 @@ class Stop(_Q, unittest.TestCase):
         self.assertEqual(self.optin(db)["status"], "opted_out")
 
 
+    def test_codex_772_a_reminders_yes_no_is_an_open_question_too(self):
+        for word in ("STOP", "disregard"):
+            with self.subTest(word):
+                db = _world()
+                with _Ctx(db=db) as c:
+                    (ask,) = self.dm(c, "remind me to order rebar tomorrow")
+                    self.assertIsNotNone(self.state(db, server.UPCOMING_REMIND_STATE), ask)
+                    (r,) = self.dm(c, word)
+                self.assertTrue(r[0].startswith(DROPPED), r)
+                self.assertEqual(self.optin(db)["status"], "active")
+                self.assertIsNone(self.state(db, server.UPCOMING_REMIND_STATE))
+
+
+class Codex772PoliteQuestions(_Q, unittest.TestCase):
+    """A real question with no "?" and no job still gets "Which job?" --
+    only a message that asks nothing gets the hint."""
+
+    def test_which_job_not_the_hint(self):
+        for said in ("Could you check whether Joe arrived", "would the inspector come today",
+                     "should we expect the plumbers", "have the plumbers shown up",
+                     "has anyone signed in"):
+            with self.subTest(said):
+                with _Ctx(db=_world()) as c:
+                    (r,) = self.dm(c, said)
+                self.assertNotEqual(r, [HINT])
+
+    def test_gibberish_still_the_hint(self):
+        for said in ("asdkjh qwe", "sdfsdf", "jjjj kkkk llll", "fgh dfg sdf werq asd"):
+            with self.subTest(said):
+                self.assertFalse(server._dm_is_new_question(said))
+
+
 if __name__ == "__main__":
     unittest.main()
