@@ -45583,7 +45583,7 @@ async def _bot_project_scope(company_id: Any, project_id: Any) -> Optional[dict]
         return await db.projects.find_one({
             "_id": to_query_id(pid),
             "company_id": _company_id_filter(cid),
-            "is_deleted": {"$ne": True},
+            **ACTIVE_PROJECT_FILTER,
         })
     except Exception as e:
         logger.warning(f"bot project scope read failed: {type(e).__name__}")
@@ -47083,7 +47083,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         # sweep; a project with no company is skipped below.
         only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
-            await unattended_project_filter({"is_deleted": {"$ne": True}, **only}),
+            await unattended_project_filter({**ACTIVE_PROJECT_FILTER, **only}),
             {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
@@ -50204,7 +50204,7 @@ async def _dm_assistant_projects(user: dict, company_id: str, role: str) -> list
         else:
             out = await db.projects.find(
                 {"company_id": _company_id_filter(company_id),
-                 "is_deleted": {"$ne": True}}).to_list(200)
+                 **ACTIVE_PROJECT_FILTER}).to_list(200)
     except Exception as e:
         logger.warning(f"[wa-assistant] project read failed: {type(e).__name__}")
         return []
@@ -50959,7 +50959,7 @@ async def _upcoming_city_tick(now: Optional[datetime] = None) -> dict:
     today = _upcoming_today(now)
     try:
         projects = await db.projects.find(
-            await unattended_project_filter({"is_deleted": {"$ne": True}}),
+            await unattended_project_filter(dict(ACTIVE_PROJECT_FILTER)),
             {"company_id": 1}).to_list(5000)
     except Exception as e:
         logger.warning(f"[upcoming] project read failed: {type(e).__name__}")
@@ -53718,7 +53718,7 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
     try:
         rows = await db.projects.find(
             {"company_id": _company_id_filter(ident["company_id"]),
-             "is_deleted": {"$ne": True}}).to_list(200)
+             **ACTIVE_PROJECT_FILTER}).to_list(200)
     except Exception:
         return None
     others = [{"id": str(p.get("_id")), "label": wa_assistant.street_label(p),
@@ -56246,7 +56246,7 @@ async def _find_project_for_contact(contact: dict) -> Optional[Tuple[str, str]]:
     # Fallback: first active project in company
     proj = await db.projects.find_one({
         "company_id": _company_id_filter(company_id),
-        "is_deleted": {"$ne": True}})
+        **ACTIVE_PROJECT_FILTER})
     if proj:
         return company_id, str(proj["_id"])
     return None
@@ -65666,7 +65666,7 @@ async def _punch_link_open(tok: str, now: datetime) -> Optional[Tuple[dict, List
         project = await db.projects.find_one(
             {"_id": to_query_id(link["project_id"]),
              "company_id": _company_id_filter(link["company_id"]),
-             "is_deleted": {"$ne": True}})
+             **ACTIVE_PROJECT_FILTER})
         if not project:
             return None
         rows = await _punch_link_rows(link)
@@ -67721,7 +67721,7 @@ async def _assert_link_project_owned(project_id: Any, current_user: dict,
         try:
             project = await db.projects.find_one({
                 "_id": to_query_id(str(project_id)),
-                "is_deleted": {"$ne": True},
+                **ACTIVE_PROJECT_FILTER,
             })
         except Exception:
             project = None
@@ -68317,7 +68317,7 @@ async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
     await _ensure_group_names(rows, coll=PENDING_GROUPS, key="group_id")
 
     projects = await db.projects.find(
-        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"company_id": company_id, **ACTIVE_PROJECT_FILTER},
         {"name": 1, "address": 1, "location": 1, "nickname": 1,
          "nyc_bin": 1, "bbl": 1},
     ).to_list(500)
@@ -68394,7 +68394,7 @@ async def whatsapp_company_groups(current_user=Depends(get_current_user)):
     if pids:
         for p in await db.projects.find(
                 {"_id": {"$in": [to_query_id(x) for x in pids]},
-                 "company_id": company_id, "is_deleted": {"$ne": True}},
+                 "company_id": company_id, **ACTIVE_PROJECT_FILTER},
                 {"name": 1, "address": 1, "location": 1}).to_list(500):
             projects[str(p["_id"])] = p
 
@@ -68636,7 +68636,7 @@ async def whatsapp_pending_group_by_token(
         raise HTTPException(status_code=404, detail="Link expired or invalid")
 
     projects = await db.projects.find(
-        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"company_id": company_id, **ACTIVE_PROJECT_FILTER},
         {"name": 1, "address": 1, "location": 1, "nickname": 1,
          "nyc_bin": 1, "bbl": 1},
     ).to_list(500)
