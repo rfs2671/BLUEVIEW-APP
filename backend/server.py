@@ -10894,12 +10894,12 @@ def _logbook_404():
     raise HTTPException(status_code=404, detail="Not Found")
 
 
-@api_router.get("/projects/{project_id}/logbook/audit", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/logbook/audit")
 async def get_logbook_audit(
     project_id: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Calendar grid view: per-day completeness summary across
     all logbook categories. Frontend renders this as
@@ -10960,10 +10960,10 @@ async def get_logbook_audit(
     }
 
 
-@api_router.get("/projects/{project_id}/logbook/missing", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/logbook/missing")
 async def get_logbook_missing(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -10974,10 +10974,10 @@ async def get_logbook_missing(
     return {"entries": [serialize_id(d) for d in docs]}
 
 
-@api_router.get("/projects/{project_id}/logbook/deficiencies", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/logbook/deficiencies")
 async def get_logbook_deficiencies(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -10988,10 +10988,10 @@ async def get_logbook_deficiencies(
     return {"entries": [serialize_id(d) for d in docs]}
 
 
-@api_router.get("/projects/{project_id}/logbook/attestations", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/logbook/attestations")
 async def get_logbook_attestations(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     if not await _logbook_flag_enabled_for(current_user):
         _logbook_404()
@@ -11037,13 +11037,13 @@ async def generate_ll196_attestation_endpoint(
     return {"entry": serialize_id(dict(entry))}
 
 
-@api_router.get("/projects/{project_id}/logbook/export", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/logbook/export")
 async def export_logbook(
     project_id: str,
     format: str = "pdf",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Render the full audit window as a single PDF for download
     by compliance staff / inspectors. Streamed inline; no R2
@@ -11146,10 +11146,10 @@ async def export_logbook(
 # pipeline; this commit just gets the URL surface in place so
 # the FE doesn't 404.
 
-@api_router.get("/projects/{project_id}/risk-score", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/risk-score")
 async def get_project_risk_score(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return the latest risk score for a project. 404 if no
     score has been calculated yet — frontend renders the
@@ -11193,11 +11193,11 @@ async def get_project_risk_score(
     return {"score": serialize_id(latest)}
 
 
-@api_router.get("/projects/{project_id}/risk-score/history", dependencies=[Depends(require_approved)])
+@api_router.get("/projects/{project_id}/risk-score/history")
 async def get_project_risk_score_history(
     project_id: str,
     days: int = Query(30, ge=1, le=365),
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return the time series of risk scores for charting. Capped
     at 365 days of history; default 30.
@@ -11239,12 +11239,12 @@ async def calculate_project_risk_score(
 # lib/statistical_engine/peer_cohort.py. Used by the Phase 1 Week 11-12
 # Defcon UX for the "Based on N similar projects..." disclosure.
 @api_router.get(
-    "/projects/{project_id}/peer-cohort", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/peer-cohort",
     response_model=PeerCohortResponse,
 )
 async def get_project_peer_cohort(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11260,12 +11260,12 @@ async def get_project_peer_cohort(
 # direct FE display. No caching — per-request recompute is sub-100ms
 # and SWO freshness matters intra-day.
 @api_router.get(
-    "/projects/{project_id}/defcon-status", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/defcon-status",
     response_model=DefconStatusResponse,
 )
 async def get_project_defcon_status(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11281,12 +11281,12 @@ async def get_project_defcon_status(
 # The Tactical Recommendations FE component uses this to decide which
 # complaint buckets to fan out into /api/causal-lift queries.
 @api_router.get(
-    "/projects/{project_id}/recent-complaint-buckets", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/recent-complaint-buckets",
     response_model=RecentComplaintBucketsResponse,
 )
 async def get_project_recent_complaint_buckets(
     project_id: str,
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_current_user), _approved=Depends(require_approved),
 ):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
@@ -11940,8 +11940,8 @@ async def _with_licence_resolved(doc: dict) -> dict:
     return doc
 
 
-@api_router.get("/admin/users/{user_id}", dependencies=[Depends(require_approved)], response_model=UserResponse)
-async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin)):
+@api_router.get("/admin/users/{user_id}", response_model=UserResponse)
+async def get_admin_user_by_id(user_id: str, current_user = Depends(get_user_admin), _approved=Depends(require_approved)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -12239,8 +12239,8 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**await _with_licence_resolved(serialize_id(user)))
 
-@api_router.delete("/admin/users/{user_id}", dependencies=[Depends(require_approved)])
-async def delete_admin_user(user_id: str, admin = Depends(get_user_admin)):
+@api_router.delete("/admin/users/{user_id}")
+async def delete_admin_user(user_id: str, admin = Depends(get_user_admin), _approved=Depends(require_approved)):
     # Fetch user before delete to get phone for whatsapp_contacts cleanup
     user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
 
@@ -13947,13 +13947,13 @@ async def patch_my_notification_preferences(
 
 
 @api_router.get(
-    "/projects/{project_id}/notification-preferences/{user_id}", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/notification-preferences/{user_id}",
     tags=["Notifications"],
 )
 async def get_project_notification_preferences(
     project_id: str,
     user_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Return project-scoped preferences for a user. Auth: caller
     must be the user_id themselves OR an admin/owner of the company
@@ -14086,14 +14086,14 @@ async def get_my_recent_signals(
 
 
 @api_router.patch(
-    "/projects/{project_id}/notification-preferences/{user_id}", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/notification-preferences/{user_id}",
     tags=["Notifications"],
 )
 async def patch_project_notification_preferences(
     project_id: str,
     user_id: str,
     body: dict,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Partial update of project-scoped preferences. Auth: same as
     GET. Creates a project-scoped record from defaults if none
@@ -14113,13 +14113,13 @@ async def patch_project_notification_preferences(
 
 # Phase B1c — DELETE project-scoped record (Reset to user-global).
 @api_router.delete(
-    "/projects/{project_id}/notification-preferences/{user_id}", dependencies=[Depends(require_approved)],
+    "/projects/{project_id}/notification-preferences/{user_id}",
     tags=["Notifications"],
 )
 async def delete_project_notification_preferences(
     project_id: str,
     user_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Reset-to-user-global. Removes the project-scoped preferences
     record so the user falls back to their user-global settings for
@@ -23307,8 +23307,8 @@ async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
         "message": "Check-in successful"
     }
 
-@api_router.post("/checkins/{checkin_id}/checkout", dependencies=[Depends(require_approved)])
-async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user)):
+@api_router.post("/checkins/{checkin_id}/checkout")
+async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     now = datetime.now(timezone.utc)
     result = await db.checkins.update_one(
         {"_id": to_query_id(checkin_id)},
@@ -24169,8 +24169,8 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id)})
     return serialize_id(log)
 
-@api_router.get("/daily-logs/{log_id}", dependencies=[Depends(require_approved)], response_model=DailyLogResponse)
-async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
+@api_router.get("/daily-logs/{log_id}", response_model=DailyLogResponse)
+async def get_daily_log(log_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
@@ -24915,11 +24915,11 @@ async def ensure_signature_ledger_row(logbook, written_by: str) -> str:
 
 # ==================== SIGNATURE EVENT ENDPOINTS ====================
  
-@api_router.post("/signature-events", dependencies=[Depends(require_approved)])
+@api_router.post("/signature-events")
 async def record_signature_event(
     data: SignatureEventCreate,
     request: Request,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Record a signature event from any frontend signature capture.
     Returns the event_id to be stored as a reference on the parent document."""
@@ -25062,11 +25062,11 @@ async def record_signature_event(
 # public ledger write. tests/test_signature_ledger_tenant_scope.py.
 
 
-@api_router.get("/signature-events/document/{document_type}/{document_id}", dependencies=[Depends(require_approved)])
+@api_router.get("/signature-events/document/{document_type}/{document_id}")
 async def get_signature_events_for_document(
     document_type: str,
     document_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Get all signature events for a specific document (audit trail view).
     Returns events in chronological order with hashes for verification."""
@@ -25094,8 +25094,8 @@ async def get_signature_events_for_document(
     return {"events": result, "total": len(result)}
  
  
-@api_router.get("/signature-events/{event_id}", dependencies=[Depends(require_approved)])
-async def get_signature_event_detail(event_id: str, current_user=Depends(get_current_user)):
+@api_router.get("/signature-events/{event_id}")
+async def get_signature_event_detail(event_id: str, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Get full detail of a single signature event including snapshot and signature data."""
     
     event = await db.signature_events.find_one({"_id": to_query_id(event_id)})
@@ -25105,11 +25105,11 @@ async def get_signature_event_detail(event_id: str, current_user=Depends(get_cur
     return serialize_id(event)
  
  
-@api_router.get("/signature-events/verify/{document_type}/{document_id}", dependencies=[Depends(require_approved)])
+@api_router.get("/signature-events/verify/{document_type}/{document_id}")
 async def verify_signature_integrity(
     document_type: str,
     document_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user), _approved=Depends(require_approved),
 ):
     """Verify that no signature events have been tampered with.
     Re-computes content_hash from stored snapshot and compares."""
@@ -25456,8 +25456,8 @@ async def list_cs_registrations(
     return result
  
  
-@api_router.get("/admin/cs-registrations/{registration_id}", dependencies=[Depends(require_approved)])
-async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user)):
+@api_router.get("/admin/cs-registrations/{registration_id}")
+async def get_cs_registration(registration_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Get a specific CS registration."""
     reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
     if not reg:
@@ -25874,8 +25874,8 @@ async def get_compliance_alerts(
     return result
 	
  
-@api_router.put("/admin/compliance-alerts/{alert_id}/resolve", dependencies=[Depends(require_approved)])
-async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user)):
+@api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
+async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_user), _approved=Depends(require_approved)):
     """Mark a compliance alert as resolved."""
     now = datetime.now(timezone.utc)
     await db.compliance_alerts.update_one(
@@ -25887,8 +25887,8 @@ async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_u
  
 # ==================== PER-LOG-TYPE PDF ENDPOINT ====================
  
-@api_router.get("/reports/logbook/{logbook_id}/pdf", dependencies=[Depends(require_approved)])
-async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, current_user=Depends(get_current_user)):
+@api_router.get("/reports/logbook/{logbook_id}/pdf")
+async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Generate PDF for a single logbook entry (per-type PDF).
     Reuses the combined report HTML generator but filters to one log type."""
     from fastapi.responses import Response
@@ -29621,8 +29621,8 @@ async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_a
 
 # ==================== DAILY LOG PDF EXPORT ====================
 
-@api_router.get("/daily-logs/{log_id}/pdf", dependencies=[Depends(require_approved)])
-async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user)):
+@api_router.get("/daily-logs/{log_id}/pdf")
+async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
     """Generate PDF for a daily log"""
     from fastapi.responses import Response
     import io
@@ -72822,8 +72822,8 @@ async def whatsapp_contact_vcard(current_user=Depends(get_current_user)):
 
 # ---------- material request endpoints (auth required) ----------
 
-@api_router.get("/projects/{project_id}/material-requests", dependencies=[Depends(require_approved)])
-async def get_material_requests(project_id: str, status: str = None, current_user=Depends(get_current_user)):
+@api_router.get("/projects/{project_id}/material-requests")
+async def get_material_requests(project_id: str, status: str = None, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Get material requests for a project."""
     query = {"project_id": project_id, "company_id": current_user.get("company_id"), "is_deleted": {"$ne": True}}
     if status:
@@ -72834,8 +72834,8 @@ async def get_material_requests(project_id: str, status: str = None, current_use
     return {"requests": requests, "total": len(requests)}
 
 
-@api_router.put("/material-requests/{request_id}/cancel", dependencies=[Depends(require_approved)])
-async def cancel_material_request(request_id: str, current_user=Depends(get_current_user)):
+@api_router.put("/material-requests/{request_id}/cancel")
+async def cancel_material_request(request_id: str, current_user=Depends(get_current_user), _approved=Depends(require_approved)):
     """Cancel a material request (admin only)."""
     if not _admin_like(current_user):
         raise HTTPException(403, "Only admins can cancel material requests")
