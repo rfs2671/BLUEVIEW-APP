@@ -1485,6 +1485,11 @@ dual-capacity user this product's first customer actually is.
 
 ## `POST /signature-events/public` gets no attestation injection
 
+**RESOLVED 2026-10-13: the endpoint is removed** (security audit B2). It was
+unauthenticated, wrote any tenant's ledger, and had no callers; see the
+tombstone in server.py and tests/test_signature_ledger_tenant_scope.py. The
+entry below is kept as history.
+
 **NOT A DEFECT TODAY. Recorded because that is exactly the state in which it
 becomes one.**
 
