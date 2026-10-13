@@ -81,8 +81,7 @@ class TheWindow(unittest.TestCase):
                          [True, True, True, False, False, False])
 
 
-class TheQueue(unittest.TestCase):
-    """Queued in the order made, delivered once the stretch is over."""
+class _QueueBase(unittest.TestCase):
 
     def setUp(self):
         self.db = G._world()
@@ -108,6 +107,11 @@ class TheQueue(unittest.TestCase):
     def send(self, text, at, project="proj_a"):
         return G._run(server._quiet_or_send({"via": "chat", "chat_id": G.G_GC, "message": text},
                                             company_id=G.CO_A, project_id=project, kind="test", now=at))
+
+
+
+class TheQueue(_QueueBase):
+    """Queued in the order made, delivered once the stretch is over."""
 
     def test_before_candle_lighting_sends_after_it_waits(self):
         self.assertEqual(self.send("Friday 4:30", FRI_BEFORE), {"ok": True})
@@ -140,6 +144,69 @@ class TheQueue(unittest.TestCase):
         self.assertEqual(self.sent, [])
         G._run(server._quiet_queue_tick(YK_TUE))
         self.assertEqual([t for _, _, t in self.sent], ["YK"])
+
+
+class Codex776(_QueueBase):
+    """The queue keeps scope, retries, recovers, and goes with its job."""
+
+    def test_a_group_relinked_meanwhile_gets_nothing(self):
+        self.send("for Main St only", FRI_AFTER)
+        for g in self.db.whatsapp_groups.rows:
+            if g["wa_group_id"] == G.G_GC:
+                g["project_id"], g["company_id"] = "proj_b", G.CO_B      # now another company's
+        rep = G._run(server._quiet_queue_tick(SAT_NIGHT))
+        self.assertEqual((rep["unbound"], rep["sent"]), (1, 0))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(_queue(self.db)[0]["status"], "dropped_unbound")
+
+    def test_purged_with_its_project(self):
+        self.assertIn(server.WA_QUIET_QUEUE, server._PROJECT_OWNED_COLLECTIONS)
+
+    def test_a_failed_send_is_tried_again_then_the_walk_gets_it_back(self):
+        from datetime import timedelta
+        from lib import punch
+        self.db[punch.SESSIONS].rows.append({"_id": "walk1", "status": "sent", "undelivered": []})
+        G._run(server._quiet_enqueue(
+            {"via": "chat", "chat_id": "15550001111@c.us", "message": "P1 fix the door",
+             "punch_session_id": "walk1", "pids": ["P1"]},
+            company_id=G.CO_A, project_id="proj_a", kind="punch_list",
+            until=shabbos.quiet_until(FRI_AFTER), now=FRI_AFTER))
+        fails = {"n": 0}
+
+        async def down(chat, text, *a, **k):
+            fails["n"] += 1
+            return None
+        with patch.object(server, "send_whatsapp_message", down):
+            at = SAT_NIGHT
+            for i in range(server.QUIET_MAX_ATTEMPTS):
+                rep = G._run(server._quiet_queue_tick(at))
+                at = at + timedelta(hours=2)
+        self.assertEqual(fails["n"], server.QUIET_MAX_ATTEMPTS)          # tried again each time
+        self.assertEqual(_queue(self.db)[0]["status"], "failed")
+        walk = self.db[punch.SESSIONS].rows[0]
+        self.assertEqual((walk["status"], walk["undelivered"]), ("resend", ["P1"]))
+
+    def test_a_retry_that_works(self):
+        from datetime import timedelta
+        self.send("second try", FRI_AFTER)
+        calls = {"n": 0}
+
+        async def flaky(chat, text, *a, **k):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else {"ok": True}
+        with patch.object(server, "send_whatsapp_message", flaky):
+            self.assertEqual(G._run(server._quiet_queue_tick(SAT_NIGHT))["retry"], 1)
+            self.assertEqual(G._run(server._quiet_queue_tick(SAT_NIGHT))["due"], 0)   # waits its turn
+            self.assertEqual(G._run(server._quiet_queue_tick(SAT_NIGHT + timedelta(minutes=11)))["sent"], 1)
+
+    def test_a_row_left_sending_by_a_stopped_worker_is_taken_back(self):
+        from datetime import timedelta
+        self.send("stranded", FRI_AFTER)
+        row = _queue(self.db)[0]
+        row.update(status="sending", claimed_at=SAT_NIGHT)
+        self.assertEqual(G._run(server._quiet_queue_tick(SAT_NIGHT + timedelta(minutes=5)))["due"], 0)
+        G._run(server._quiet_queue_tick(SAT_NIGHT + timedelta(minutes=20)))
+        self.assertEqual([t for _, _, t in self.sent], ["stranded"])
 
 
 class TheGcAlerts(unittest.TestCase):

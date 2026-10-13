@@ -17790,6 +17790,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     # Punch list: the job's items and its walkthroughs, and the assignees'
     # private links (lib/punch_link.py).
     "punch_items", "punch_sessions", "punch_links",
+    # Messages waiting for the end of Shabbos / Yom Tov (whole texts, photo
+    # keys): never delivered for a job that is gone.
+    "wa_quiet_queue",
 ]
 
 
@@ -46288,41 +46291,94 @@ async def _quiet_dm(user_id: Any, message: str, *, company_id: Any, kind: str, w
                        kind=kind, window=window)
 
 
+QUIET_MAX_ATTEMPTS = 5
+QUIET_RETRY = timedelta(minutes=10)
+QUIET_LEASE = timedelta(minutes=15)
+
+
+def _quiet_group_of(spec: dict) -> Optional[str]:
+    """The WhatsApp group a queued message goes to, if it goes to one."""
+    target = spec.get("group_id") or spec.get("chat_id") or ""
+    return str(target) if str(target).endswith("@g.us") else None
+
+
+async def _quiet_undelivered(spec: dict) -> None:
+    """A punch list that could not go out after Shabbos: back on the walk, so
+    "resend" sends it (the walker was told it would go out)."""
+    if not spec.get("punch_session_id") or not spec.get("pids"):
+        return
+    try:
+        await db[punch.SESSIONS].update_one(
+            {"_id": spec["punch_session_id"]},
+            {"$set": {"status": "resend"},
+             "$addToSet": {"undelivered": {"$each": list(spec["pids"])}}})
+    except Exception as e:
+        logger.warning(f"[shabbos-queue] undelivered not saved: {type(e).__name__}")
+
+
 async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
     """Deliver what waited, in the order it was made, once its stretch is
-    over."""
+    over. A send that fails is tried again (up to QUIET_MAX_ATTEMPTS); a row
+    left "sending" by a worker that stopped is taken back after its lease."""
     now = now or datetime.now(timezone.utc)
-    report = {"due": 0, "sent": 0, "failed": 0}
+    report = {"due": 0, "sent": 0, "failed": 0, "retry": 0, "unbound": 0}
     try:
         rows = await db[WA_QUIET_QUEUE].find(
             {"status": "queued", "deliver_after": {"$lte": now}}).to_list(2000)
+        rows += await db[WA_QUIET_QUEUE].find(
+            {"status": "sending", "claimed_at": {"$lt": now - QUIET_LEASE}}).to_list(2000)
     except Exception as e:
         logger.warning(f"[shabbos-queue] read failed: {type(e).__name__}")
         return report
     for r in sorted(rows, key=lambda r: r.get("seq") or 0):
         report["due"] += 1
-        res = await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"], "status": "queued"},
-                                                  {"$set": {"status": "sending"}})
+        res = await db[WA_QUIET_QUEUE].update_one(
+            {"_id": r["_id"], "status": r["status"],
+             **({"claimed_at": r.get("claimed_at")} if r["status"] == "sending" else {})},
+            {"$set": {"status": "sending", "claimed_at": now}})
         if not getattr(res, "modified_count", 0):
             continue
         spec = r.get("send") or {}
-        if spec.get("ledger_id"):      # the hold, so the DM's own claim can be taken
-            await db[WA_LEDGER].delete_one({"_id": spec["ledger_id"], "status": "queued_shabbos"})
+        # A group re-linked meanwhile (another job, another company): what
+        # was written for the old job never goes to it.
+        group = _quiet_group_of(spec)
+        if group and r.get("project_id") and not await _gc_group_bound_to(
+                group, r.get("company_id"), r.get("project_id")):
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "dropped_unbound", "delivered_at": now}})
+            if spec.get("gc_ledger_id"):
+                await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                               {"$set": {"status": "dropped_unbound"}})
+            report["unbound"] += 1
+            continue
+        sent = None
         try:
+            if spec.get("ledger_id"):      # the hold, so the DM's own claim can be taken
+                await db[WA_LEDGER].delete_one({"_id": spec["ledger_id"], "status": "queued_shabbos"})
             sent = await _quiet_deliver(spec)
         except Exception as e:
             logger.warning(f"[shabbos-queue] send failed: {type(e).__name__}")
-            sent = None
         ok = sent not in (None, False)
-        if spec.get("gc_ledger_id"):
-            if ok:
+        attempts = int(r.get("attempts") or 0) + 1
+        if ok:
+            if spec.get("gc_ledger_id"):
                 await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
                                                {"$set": {"status": "sent", "sent_at": now}})
-            else:      # not posted: the next alerts run tries it again
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "sent", "delivered_at": now, "attempts": attempts}})
+            report["sent"] += 1
+        elif attempts < QUIET_MAX_ATTEMPTS:
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "queued", "attempts": attempts,
+                "deliver_after": now + QUIET_RETRY * attempts}})
+            report["retry"] += 1
+        else:
+            if spec.get("gc_ledger_id"):   # the next alerts run tries it again
                 await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
-        await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
-            "status": "sent" if ok else "failed", "delivered_at": now}})
-        report["sent" if ok else "failed"] += 1
+            await _quiet_undelivered(spec)
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "failed", "delivered_at": now, "attempts": attempts}})
+            report["failed"] += 1
     if report["due"]:
         logger.info(f"[shabbos-queue] {report}")
     return report
@@ -65322,6 +65378,9 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
     co, pid = sess.get("company_id"), sess.get("project_id")
     quiet = await _shabbos_quiet(co, pid)
 
+    def walk(b):       # if it cannot go out after Shabbos: back on the walk for "resend"
+        return {"punch_session_id": sess.get("_id"), "pids": [r["pid"] for r in b["items"]]}
+
     async def out(spec):
         if quiet:
             await _quiet_enqueue(spec, company_id=co, project_id=pid, kind="punch_list", until=quiet)
@@ -65330,12 +65389,13 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
     for b in batches:
         if b.get("via") == "dm":
             chat = b.get("jid")
-            ok = bool(chat) and bool(await out({"via": "chat", "chat_id": chat, "message": b["text"]}))
+            ok = bool(chat) and bool(await out({"via": "chat", "chat_id": chat, "message": b["text"],
+                                                **walk(b)}))
         else:
             chat = group_id
             ok = bool(await out({"via": "group_post", "group_id": group_id, "message": b["text"],
                                  "targets": b.get("targets") or
-                                 [b.get("target") or wa_mention.target(b["name"], None)]}))
+                                 [b.get("target") or wa_mention.target(b["name"], None)], **walk(b)}))
         if not ok:
             failed.append(b)
             continue
