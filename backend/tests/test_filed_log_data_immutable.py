@@ -198,9 +198,14 @@ class TheOrdinaryFlowIsUntouched(unittest.TestCase):
 
     def test_draft_to_submitted_with_data_and_status_together(self):
         """THE ORDINARY SUBMIT. Stored status is draft, so it passes -- this is
-        why the predicate reads the STORED status and not the request's."""
+        why the predicate reads the STORED status and not the request's.
+
+        AN UNSIGNED DRAFT, SIGNED IN THIS REQUEST: that is the ordinary submit
+        (production 2026-10-13 holds zero affirmed drafts). An ALREADY-affirmed
+        draft whose data changes under the same mark is now refused --
+        test_p2_signed_log_downgrade.py, security audit C1."""
         setops, written = _call(
-            DRAFT,
+            {**DRAFT, "cp_signature": None},
             {"data": {"activities": [{"company": "Vanguard", "work_description": "Deck"}]},
              "status": "submitted", "cp_signature": AFFIRMED},
         )

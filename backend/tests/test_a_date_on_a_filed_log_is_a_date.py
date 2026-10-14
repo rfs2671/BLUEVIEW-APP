@@ -404,8 +404,14 @@ class FilingIsWhereItIsRefused(unittest.TestCase):
         stored -- and a submit that carries corrected data must pass over a
         stored value that was bad."""
         db = _db_for_update(_stored("osha_log", _osha("07/2")))
+        # WITH THE SIGNATURE MADE OVER THE CORRECTED DATA, as every editor
+        # sends it on submit. New data under the stored mark alone is now
+        # refused SUBMIT_MISSING_CP_SIGNATURE: the mark attests to the content
+        # it was made over (security audit C1, test_p2_signed_log_downgrade).
         resp = _put(db, {"status": "submitted",
-                         "data": _osha("2027-03-01")})
+                         "data": _osha("2027-03-01"),
+                         "cp_signature": dict(_SIG, signed_at="2026-09-09T13:00:00Z",
+                                              affirmedAt="2026-09-09T13:00:00Z")})
         self.assertEqual(resp.status_code, 200, resp.text)
 
     def test_update_accepts_a_draft_save_carrying_a_half_typed_date(self):
