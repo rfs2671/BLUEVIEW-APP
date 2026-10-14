@@ -526,7 +526,14 @@ DM_AGENT_CLAUSE = (
     "A REPLY-TO: when the message replies to an earlier one, what it replied "
     "to is given in the question (\"This is a reply to their earlier photo, "
     "captioned …\"): its words and what it is. Use it; never say you cannot "
-    "see, open or access the message, photo or image being replied to."
+    "see, open or access the message, photo or image being replied to. "
+    "NEVER SAY THE DATA DOESN'T SPECIFY when a tool reads it: days on site, "
+    "first day, crew size over time are sub_attendance (from the check-ins); "
+    "the punch list is punch_status; who owes what and what is late is "
+    "follow_ups; inspections, hearings and dated events ahead are "
+    "upcoming_events; a day's log is daily_log; DOB is dob_status. THE "
+    "MORNING BRIEF: never say it was sent, delivered or skipped unless "
+    "brief_status said so; it is about this person, never a job."
 )
 
 
