@@ -310,60 +310,61 @@ class TestSentryUserContextTagging(unittest.TestCase):
 
 
 class TestSentryTestEndpoint(unittest.TestCase):
-    """Admin-only endpoint that intentionally raises so an operator
-    can verify Sentry capture after deploy."""
+    """Operator-only endpoint that intentionally raises so the operator can
+    verify Sentry capture after deploy.
+
+    OPERATOR, NOT ADMIN, since security audit P3 (2026-10-13): it sat on
+    get_admin_seat_user, which admits ANY company's admin. It now carries
+    require_operator_404, which calls get_current_user directly -- so these
+    use real tokens against a fake db, not a dependency override (an override
+    of get_current_user would never be consulted, and every case would 404).
+    """
 
     def setUp(self):
         import server
+        from bson import ObjectId
+        from unittest.mock import patch
+        from tests._fake_mongo import FakeDb
+        self.ids = {k: ObjectId() for k in ("admin", "owner", "worker", "op")}
+        self.db = FakeDb(users=[
+            {"_id": self.ids["admin"], "email": "a@x.test", "role": "admin",
+             "company_id": "co_a", "account_status": "approved"},
+            {"_id": self.ids["owner"], "email": "o@x.test", "role": "owner",
+             "company_id": "co_a", "account_status": "approved"},
+            {"_id": self.ids["worker"], "email": "w@x.test", "role": "worker",
+             "company_id": "co_a", "account_status": "approved"},
+            # The operator's account still carries the retired "owner" role;
+            # the FLAG is what admits it.
+            {"_id": self.ids["op"], "email": "ops@x.test", "role": "owner",
+             "account_status": "approved", "is_platform_operator": True},
+        ])
+        self.patch = patch.object(server, "db", self.db)
+        self.patch.start()
         self.client = TestClient(server.app, raise_server_exceptions=False)
 
     def tearDown(self):
+        self.patch.stop()
+
+    def _get(self, who, role):
         import server
-        server.app.dependency_overrides.clear()
+        tok = server.create_token(str(self.ids[who]), "x@x.test", role)
+        return self.client.get("/api/admin/_sentry_test",
+                               headers={"Authorization": f"Bearer {tok}"})
 
-    def _login_as(self, role, operator=False):
-        """`operator=True` sets the flag and leaves `role` alone.
-
-        The platform operator's account still carries role "owner" -- the
-        retired string -- until the account migration runs, so that pairing is
-        the real shape rather than a contrivance. The key is ABSENT otherwise,
-        which is what every other row looks like.
-        """
-        import server
-
-        async def _fake_user():
-            u = {"id": "u1", "_id": "u1", "role": role, "company_id": "co_a"}
-            if operator:
-                u["is_platform_operator"] = True
-            return u
-
-        server.app.dependency_overrides[server.get_current_user] = _fake_user
-
-    def test_admin_can_hit_endpoint_and_it_500s(self):
-        self._login_as("admin")
-        resp = self.client.get("/api/admin/_sentry_test")
-        self.assertEqual(resp.status_code, 500)
+    def test_a_company_admin_gets_404(self):
+        self.assertEqual(self._get("admin", "admin").status_code, 404)
 
     def test_the_platform_operator_can_hit_endpoint(self):
-        """It read `self._login_as("owner")`, and role "owner" was what every
-        self-serve signup received -- so "an owner can reach the admin
-        diagnostic" meant "anybody who registered can". The role is retired;
-        the operator reaches it on his flag."""
-        self._login_as("owner", operator=True)
-        resp = self.client.get("/api/admin/_sentry_test")
-        self.assertEqual(resp.status_code, 500)
+        """Positive control: the operator, on his flag, gets the deliberate
+        500 -- so the 404s above are the gate and not a mistyped path."""
+        self.assertEqual(self._get("op", "owner").status_code, 500)
 
     def test_the_retired_role_alone_is_rejected(self):
-        """Same account, no flag. Without this the test above would pass just
-        as well if the role had been left in the gate."""
-        self._login_as("owner")
-        resp = self.client.get("/api/admin/_sentry_test")
-        self.assertEqual(resp.status_code, 403)
+        """Same role as the operator, no flag."""
+        self.assertEqual(self._get("owner", "owner").status_code, 404)
 
     def test_non_admin_rejected(self):
-        self._login_as("worker")
-        resp = self.client.get("/api/admin/_sentry_test")
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self._get("worker", "worker").status_code, 404)
 
 
 # ──────────────────────────────────────────────────────────────────

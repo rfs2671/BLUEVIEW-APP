@@ -25912,15 +25912,22 @@ async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_seat_u
     # THE SAME VISIBILITY AS THE LIST (security audit P3, 2026-10-13): the
     # operator, or an admin of the alert's own company. It used to resolve any
     # tenant's alert by id. A platform alert (company_id None) is the
-    # operator's. 404, not 403, so the id is not confirmed to exist.
-    alert = await db.compliance_alerts.find_one({"_id": to_query_id(alert_id)})
-    if not alert or not (is_platform_operator(admin) or _same_company(admin, alert)):
-        raise HTTPException(status_code=404, detail="Alert not found")
+    # operator's. The scope is IN the update's filter -- one atomic write, and
+    # no separate read for test_alert_dedupe_honours_resolved to mistake for a
+    # dedupe. 404, not 403, so the id is not confirmed to exist.
+    flt = {"_id": to_query_id(alert_id)}
+    if not is_platform_operator(admin):
+        company_id = get_user_company_id(admin)  # as the list route filters
+        if not company_id:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        flt["company_id"] = company_id
     now = datetime.now(timezone.utc)
-    await db.compliance_alerts.update_one(
-        {"_id": to_query_id(alert_id)},
+    res = await db.compliance_alerts.update_one(
+        flt,
         {"$set": {"resolved": True, "resolved_at": now, "resolved_by": admin.get("id")}}
     )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Alert not found")
     return {"message": "Alert resolved"}
  
  
