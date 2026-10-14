@@ -110,7 +110,8 @@ class TheDraftStaysWithTheWalker(unittest.TestCase):
         text = "\n".join(res["transcript"])
         self.assertIn("588 Thomas St · walkthrough · 12 items (draft)", text)
         self.assertIn("2 have no trade — fine to send as is.", text)
-        self.assertIn("📷🎤 Falta pintura (hallway)", text)   # "piso 6 … en el pasillo": its place
+        # "piso 6 … en el pasillo": its place -- a heading, floor then area.
+        self.assertIn("*Floor 6 · hallway*\n  _paint_\n  3. 📷🎤 Falta pintura — paint", text)
         self.assertLess(text.index("*Floor 4*"), text.index("*Floor 5*"))
 
 

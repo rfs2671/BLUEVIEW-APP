@@ -73,19 +73,48 @@ def last_n(text: Any) -> Optional[int]:
     return n if n and 1 <= n <= 200 else None
 
 
+#: Words that say what kind of message it is, never what is wrong:
+#: "Correction. 3rd floor interior" -- "Correction" is never a description.
+_FILLER = re.compile(
+    r"^\s*(?:correction|correct(?:ed|ing)?|sorry|oops|wait|actually|update(?:d)?|edit|fix(?:ed)?|"
+    r"my\s+bad|i\s+meant|scratch\s+that|change(?:d)?(?:\s+(?:that|it))?|not\s+that)\b\s*[,.:;!-]*\s*",
+    re.IGNORECASE)
+#: "Back of building is location", "location: cellar".
+_IS_LOCATION = re.compile(r"\s*\b(?:is\s+(?:the\s+)?location|(?:is\s+)?the\s+location)\b\s*$|"
+                          r"^\s*(?:the\s+)?location\s*(?:is|:|-)\s*", re.IGNORECASE)
+
+
+def is_correction(text: Any) -> bool:
+    return bool(re.match(r"^\s*(?:correction|correct(?:ed|ing)?|sorry|oops|i\s+meant|scratch\s+that)\b",
+                         str(text or ""), re.IGNORECASE))
+
+
+def strip_filler(text: Any) -> str:
+    t = " ".join(str(text or "").split())
+    for _ in range(3):
+        t2 = _FILLER.sub("", t).strip(" ,.;:-")
+        t2 = _IS_LOCATION.sub("", t2).strip(" ,.;:-")
+        if t2 == t:
+            break
+        t = t2
+    return t
+
+
 def _strip_scope(text: str) -> str:
-    t = _LAST_N.sub(" ", str(text or ""))
+    t = _LAST_N.sub(" ", strip_filler(text))
     t = " ".join(t.split()).strip(" ,.;:-")
     for _ in range(2):
         t = _LEAD.sub("", t).strip(" ,.;:-")
-    return t
+    # Several texts read as one ("Correction. 3rd floor interior" + "Last 3
+    # photos") leave sentence breaks: one phrase.
+    return strip_filler(re.sub(r"\s*[.;]\s*", " ", t)).strip(" ,.;:-")
 
 
 #: Place words with no floor: a batch's area, never its description.
 _PLACE_ONLY = re.compile(
     r"^(?:(?:the\s+)?(?:inside|outside|interior|exterior|int|ext|indoors?|outdoors?|facade|fa[cç]ade"
     r"|(?:back|front|rear|side|top)(?:\s+(?:of|side\s+of)\s+(?:the\s+)?(?:building|house|bldg|property|lot))?"
-    r"|(?:back|front|rear|side)\s+yard|yard|courtyard|alley(?:way)?|driveway|sidewalk|parking(?:\s+lot)?"
+    r"|(?:back|front|rear|side)\s*yard|yard|courtyard|alley(?:way)?|driveway|sidewalk|parking(?:\s+lot)?"
     r"|garage|basement|cellar|roof(?:top)?|bulkhead|lobby|hallways?|corridors?|stair(?:s|well|case)?(?:\s+[ab])?"
     r"|boiler\s+room|meter\s+room|mechanical\s+room|elevator\s+(?:pit|room|shaft)|common\s+areas?"
     r"|all\s+units|units?|apartments?|public\s+areas?|amenity|gym|laundry(?:\s+room)?|trash\s+room"
@@ -105,7 +134,7 @@ def read_batch(text: Any) -> Dict[str, Any]:
     is the description -- or a note when it is a status ("... finished")."""
     raw = " ".join(str(text or "").split())
     out: Dict[str, Any] = {"last_n": last_n(raw), "floor": None, "area": None,
-                           "description": None, "note": None}
+                           "description": None, "note": None, "correction": is_correction(raw)}
     rest = _strip_scope(raw)
     if not rest:
         return out
@@ -157,6 +186,30 @@ BATCH_PROMPT = (
 _MAX_DESC = 120
 
 
+_ORD = {"first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6",
+        "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10"}
+
+
+def _floor_number(v: Any) -> Optional[str]:
+    """"3", "3rd", "third", "3rd floor", "floor 3" -> "3"; else None."""
+    t = str(v or "").strip().lower()
+    m = re.fullmatch(r"(?:floor\s+)?(\d{1,3})(?:st|nd|rd|th)?(?:\s+(?:floor|fl\.?))?", t)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r"(\w+)(?:\s+(?:floor|fl\.?))?", t)
+    return _ORD.get(m.group(1)) if m else None
+
+
+def _place_only(text: Any) -> bool:
+    """Words that are only a place ("Back of building", "5th floor
+    staircase", "Cellar"): a location, never a description."""
+    t = strip_filler(text)
+    if not t:
+        return False
+    r = read_batch(t)
+    return not r.get("description") and not r.get("note") and bool(r.get("floor") or r.get("area"))
+
+
 def clean_batch_model(got: Any, text: Any) -> Optional[Dict[str, Any]]:
     """The model's reading, checked: None unless it is a JSON object. A
     command comes back {"kind": "command"}. Places must read as places; the
@@ -167,16 +220,19 @@ def clean_batch_model(got: Any, text: Any) -> Optional[Dict[str, Any]]:
         return {"kind": "command"}
     out: Dict[str, Any] = {"kind": "annotation", "last_n": last_n(text), "floor": None,
                            "area": None, "description": None, "note": None}
+    floor = _floor_number(got.get("floor"))
     place = " ".join(str(x) for x in (
-        (f"floor {got['floor']}" if str(got.get("floor") or "").strip().isdigit() else got.get("floor")),
-        got.get("area")) if x)
+        (f"floor {floor}" if floor else got.get("floor")), got.get("area")) if x)
     if place.strip():
         loc = punch.free_location(place)
         out.update(floor=loc.get("floor"), area=loc.get("area"))
+    if floor and not out["floor"]:
+        out["floor"] = floor
     for k in ("description", "note"):
-        v = " ".join(str(got.get(k) or "").split()).strip(" .")
-        if v and len(v) <= _MAX_DESC:
+        v = strip_filler(got.get(k)).strip(" .")
+        if v and len(v) <= _MAX_DESC and not _place_only(v):
             out[k] = punch.capitalize(v)
+    out["correction"] = is_correction(text)
     if out["description"] and is_status_note(out["description"]) and not out["note"]:
         out["note"], out["description"] = out["description"], None
     return out
@@ -314,36 +370,152 @@ def confirm(ann: Dict[str, Any], batch: List[dict]) -> str:
 
 # ── A WALK REPLAYED (the repair) ─────────────────────────────────────────────
 
+#: Texts this close together, with no photo between them, are one message:
+#: "Correction. 3rd floor interior" then "Last 3 photos" (11:52) is ONE
+#: annotation for the last 3 photos.
+MERGE_SECONDS = 60
+
+#: "Same for the last batch of pics": about OTHER photos, by reference --
+#: placed by the model or listed as "couldn't place", never guessed.
+_REFERENCE = re.compile(
+    r"^\s*(?:(?:the\s+)?same\s+(?:for|as|thing|here|with|on)\b|same\b\s*$|ditto\b|"
+    r"(?:also\s+)?(?:the\s+)?same\s+(?:goes\s+)?for\b|those\s+too\b|these\s+too\b)", re.IGNORECASE)
+
+#: A text this soon after "Where is #3 ...?" (and no photo since) answers it.
+ANSWER_SECONDS = 10 * 60
+
+#: The assistant asking about ONE item: "Where is #3 'Back of building'?".
+_ASKS_ITEM = re.compile(r"\bWhere\s+is\s+#(\d{1,3})\b", re.IGNORECASE)
+
+#: Under this heading in the draft: what could not be put on photos.
+UNPLACED_HEADING = punch.UNPLACED_HEADING
+
+
+def is_reference(text: Any) -> bool:
+    return bool(_REFERENCE.search(strip_filler(text) or str(text or "")))
+
+
+def _ts(at: Any) -> Optional[float]:
+    try:
+        return at.timestamp()
+    except Exception:
+        return None
+
+
+def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
+                seconds: int = MERGE_SECONDS) -> List[Dict[str, Any]]:
+    """Consecutive texts with nothing between them (no photo, voice note or
+    assistant message), each within `seconds` of the one before, read as one:
+    "Correction. 3rd floor interior" + "Last 3 photos" -> one annotation. A
+    command ("done") or a reference ("same for ...") is never merged."""
+    out: List[Dict[str, Any]] = []
+    for e in events:
+        prev = out[-1] if out else None
+        if (e.get("kind") == "text" and prev is not None and prev.get("kind") == "text"
+                and not prev.get("voice") and not e.get("voice") and not e.get("quoted")
+                and not prev.get("quoted")
+                and not is_command(e.get("text") or "") and not is_command(prev.get("text") or "")
+                and not is_reference(e.get("text")) and not is_reference(prev.get("text"))):
+            a, b = _ts(prev.get("at")), _ts(e.get("at"))
+            if a is not None and b is not None and 0 <= b - a <= seconds:
+                prev["text"] = (prev.get("text") or "").rstrip(" .") + ". " + (e.get("text") or "").strip()
+                prev.setdefault("merged_ids", [prev.get("message_id")]).append(e.get("message_id"))
+                prev["at"] = e.get("at")
+                continue
+        out.append(dict(e))
+    return out
+
+
+def own_caption_place(it: dict) -> Optional[Dict[str, Any]]:
+    """A photo's own caption read: "Back of building" is its location (the
+    description comes from vision, "(auto)"); "Roof missing coping" is Roof
+    + "Missing coping". None when the caption has no place in it."""
+    words = (it.get("text") or "").strip()
+    if not words or it.get("text_auto") or it.get("text_src") in ("batch", "vision", "none"):
+        return None
+    r = read_batch(words)
+    if not (r.get("floor") or r.get("area")):
+        return None
+    return r
+
+
+def _apply_own_place(it: dict, r: Dict[str, Any]) -> None:
+    # The photo's own caption is its location, as typed ("Backyard", never a
+    # canonical "Courtyard"; "5th floor staircase" -> Floor 5 · staircase).
+    it["floor"] = r.get("floor") or punch.UNKNOWN
+    it["area"] = r.get("area") or punch.UNKNOWN
+    it.pop("room", None)
+    it["loc_src"] = "photo"
+    it.setdefault("said", it.get("text"))
+    if r.get("description"):
+        it["text"] = r["description"]
+    elif r.get("note"):
+        it["text"] = r["note"]
+    else:
+        # Only a place: the vision model describes it, marked (auto).
+        it.pop("text", None)
+        it.pop("text_src", None)
+
+
+def apply_answer(it: dict, ann: Dict[str, Any], at: Any = None) -> bool:
+    """A text answering "Where is #3 ...?": that item only. Its place is
+    the item's location (it was asked for); its words fill an empty item."""
+    did = False
+    if ann.get("floor") or ann.get("area"):
+        if ann.get("floor"):
+            it["floor"] = ann["floor"]
+        if ann.get("area"):
+            it["area"] = ann["area"]
+            it.pop("room", None)
+        it["loc_src"] = "answer"
+        did = True
+    if ann.get("description"):
+        if not _own_words(it):
+            it["text"], it["text_src"] = ann["description"], "batch"
+            it.pop("text_auto", None)
+        else:
+            it.setdefault("notes", []).append({"text": ann["description"], "at": at, "src": "answer"})
+        did = True
+    return did
+
+
 def replay(items: List[dict], events: List[Dict[str, Any]],
            readings: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
     """A walk taken under the old rules, put right: its messages in order
-    (`events`: {"kind": "photo", "message_id"} or {"kind": "text", "text",
-    "i"}), each text read (`readings`, by the event's index) and applied
-    to its batch. Every item a text made (no photo) is removed; every photo
-    item keeps its number (and its P-id); words the old rules took from a
-    text are taken back off the photo first. Returns {"items", "removed",
-    "applied": [(text, [n...])], "unmatched": [message_id...]}."""
+    (`events`: {"kind": "photo"|"text"|"voice"|"bot", ...}; texts already
+    merged, see merge_texts), each text read (`readings`, by the event's
+    index) and applied:
+      * to its batch (the photos since the previous text, or "last N");
+      * to ONE item when it replies to that photo, or answers the
+        assistant's "Where is #3 ...?";
+      * "same for ..." (a reference) -- not applied here: returned in
+        "references" for the model to place, else listed as unplaced.
+    Every item a text made (no photo) is removed; every photo keeps its
+    number (and its P-id); words the old rules took from a later text come
+    off the photo; a caption that is only a place becomes its location.
+    Returns {"items", "removed", "applied": [(text, [n...])], "unmatched",
+    "outcome": {event index: str}, "references": [...], "unplaced": [...]}."""
     by_mid = {}
     for it in items:
         if it.get("message_id"):
             by_mid[punch.short_message_id(it["message_id"])] = it
-    # The texts by message id, and their words: an item is removed only when
-    # a text (or a voice note) that was NOT "add: ..." is shown to have made
-    # it -- never an explicit add (Codex on #785).
     said_by_id, said_words = {}, {}
     for e in events:
         if e.get("kind") == "text":
             t = " ".join(str(e.get("text") or "").split())
-            said_by_id[punch.short_message_id(e.get("message_id"))] = t
+            for mid in e.get("merged_ids") or [e.get("message_id")]:
+                said_by_id[punch.short_message_id(mid)] = t
             if not _ADD.match(t):
                 said_words[t.lower()] = t
+                for part in re.split(r"\.\s+", t):
+                    said_words[part.strip(" .").lower()] = part
     removed, keep = [], []
     for it in items:
         if it.get("photo_key") is None and not it.get("photo_failed"):
             t = said_by_id.get(punch.short_message_id(it.get("message_id")))
             words = " ".join(str(it.get("said") or it.get("text") or "").split()).lower()
             made_by_text = (t is not None and not _ADD.match(t)) or (
-                t is None and not it.get("added_from") and words in said_words)
+                t is None and not it.get("added_from") and words.strip(" .") in said_words)
             if made_by_text:
                 removed.append(it)              # a text made it: never an item
                 continue
@@ -363,36 +535,146 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
                 for k in ("room", "loc_src"):
                     it.pop(k, None)
                 it["floor"] = it["area"] = punch.UNKNOWN
+        else:
+            r = own_caption_place(it)
+            if r:
+                _apply_own_place(it, r)         # "Back of building": its location
         keep.append(it)
+    by_n = {it.get("n"): it for it in keep}
     unmatched: List[str] = []
     applied: List[Tuple[str, List[int]]] = []
+    outcome: Dict[int, str] = {}
+    references: List[Dict[str, Any]] = []
+    batches: List[Dict[str, Any]] = []          # [{"ns", "text", "ann"}], in order
     mark, previous = 0, None
+    asking: Optional[int] = None                # "Where is #3 ...?" waiting for its answer
+    asked_at: Optional[float] = None
     seen_photos: List[dict] = []
     for i, e in enumerate(events):
-        if e.get("kind") == "photo":
+        kind = e.get("kind")
+        if kind == "photo":
             it = by_mid.get(punch.short_message_id(e.get("message_id")))
+            asking = None
             if it is None or it in removed:
                 unmatched.append(str(e.get("message_id") or ""))
+                outcome[i] = "no item for this photo"
                 continue
             seen_photos.append(it)
+            outcome[i] = f"#{it.get('n')}"
+            continue
+        if kind == "bot":
+            m = _ASKS_ITEM.search(e.get("text") or "")
+            if m:
+                asking, asked_at = int(m.group(1)), _ts(e.get("at"))
+            continue
+        if kind == "voice":
+            outcome[i] = "voice note -- no transcript stored, not applied"
             continue
         ann = readings.get(i)
-        if not ann or ann.get("kind") == "command" or is_empty(ann):
+        if not ann:
+            outcome[i] = "not read"
+            continue
+        if ann.get("kind") == "command":
+            outcome[i] = "command (not about photos)"
+            continue
+        if ann.get("kind") == "reference":
+            references.append({"i": i, "text": e.get("text") or "", "at": e.get("at"),
+                               "batches": [dict(b) for b in batches],
+                               "copy": dict(batches[-1]["ann"]) if batches else None})
+            outcome[i] = "a reference to other photos -- placed below, or listed as couldn't place"
+            continue
+        if is_empty(ann):
+            outcome[i] = "nothing to apply"
             continue
         quoted = by_mid.get(punch.short_message_id(e.get("quoted"))) if e.get("quoted") else None
         if quoted is not None and quoted in keep:
             # A reply to one photo: that photo only; the batch goes on.
             _undo, changed = apply_batch([quoted], {**ann, "last_n": 1}, e.get("at"))
             applied.append((e.get("text") or "", [it["n"] for it in changed]))
+            outcome[i] = f"reply to #{quoted.get('n')}: " + describe(ann)
+            continue
+        t_at = _ts(e.get("at"))
+        if asking is not None and asked_at is not None and t_at is not None \
+                and t_at - asked_at > ANSWER_SECONDS:
+            asking = None                       # too long after the question
+        if asking is not None and asking in by_n:
+            # Answering "Where is #3 ...?": #3 only, never a batch (12:02).
+            it = by_n[asking]
+            apply_answer(it, ann, e.get("at"))
+            applied.append((e.get("text") or "", [asking]))
+            outcome[i] = f"answer about #{asking}: " + describe(ann)
             continue
         batch = targets(seen_photos, mark, ann.get("last_n"), previous)
         if not batch:
+            outcome[i] = "no photos before it"
             continue
+        if ann.get("correction"):
+            # "Correction ...": its place replaces what any text set before
+            # (a photo's own caption and an answer about it still stand).
+            for it in batch:
+                if it.get("loc_src") not in ("photo", "answer"):
+                    it["loc_src"] = "batch"
         _undo, changed = apply_batch(batch, ann, e.get("at"))
-        applied.append((e.get("text") or "", [it["n"] for it in changed]))
+        ns = [it["n"] for it in changed]
+        applied.append((e.get("text") or "", ns))
+        batches.append({"ns": [it["n"] for it in batch], "text": e.get("text") or "", "ann": dict(ann)})
+        outcome[i] = (f"{punch.numbers_text(ns)}: " if ns else "nothing changed: ") + describe(ann)
         previous = [it.get("captured") for it in batch]
         mark = max([it.get("captured") or 0 for it in seen_photos] or [mark])
-    return {"items": keep, "removed": removed, "applied": applied, "unmatched": unmatched}
+    return {"items": keep, "removed": removed, "applied": applied, "unmatched": unmatched,
+            "outcome": outcome, "references": references, "unplaced": []}
+
+
+def describe(ann: Dict[str, Any]) -> str:
+    """"Floor 3 · interior — Missing coping" (what a text says)."""
+    bits = [b for b in (place_label(ann.get("floor"), ann.get("area")),
+                        ann.get("description"),
+                        (f"note: {ann['note']}" if ann.get("note") else None)) if b]
+    return " — ".join(bits) or "nothing"
+
+
+def place_label(floor: Any, area: Any) -> str:
+    """"Floor 3 · interior", "Floor 1 · Back of building", "Cellar", ""."""
+    return punch.place_label(floor, area)
+
+
+REFERENCE_PROMPT = (
+    "A construction super sent punch-list photos in batches, each batch followed by a text. "
+    "Then they sent a text that refers to other photos (\"same for the last batch of pics\"). "
+    "You get the batches in order (their photo numbers and text) and that text. Answer with a "
+    "JSON object only: {\"photos\": [numbers] | null, \"copy_from\": batch index | null}. "
+    "photos: exactly which photo numbers the text is about; copy_from: which batch's words it "
+    "says to repeat. If it is not clear which photos are meant, answer {\"photos\": null}. "
+    "Never guess."
+)
+
+
+def clean_reference(got: Any, ref: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The model's placing of a reference, checked: photo numbers that exist
+    in the batches, and a batch to copy that exists. None when unclear."""
+    if not isinstance(got, dict) or not isinstance(got.get("photos"), list):
+        return None
+    known = {n for b in ref.get("batches") or [] for n in b.get("ns") or []}
+    ns = sorted({int(n) for n in got["photos"] if str(n).isdigit() and int(n) in known})
+    if not ns:
+        return None
+    src = got.get("copy_from")
+    bs = ref.get("batches") or []
+    if isinstance(src, int) and 0 <= src < len(bs):
+        ann = bs[src]["ann"]
+    else:
+        ann = ref.get("copy")
+    if not ann or is_empty(ann):
+        return None
+    return {"ns": ns, "ann": {**ann, "last_n": None, "correction": False}}
+
+
+def apply_reference(items: List[dict], placed: Dict[str, Any], at: Any = None) -> List[int]:
+    batch = [it for it in items if it.get("n") in placed["ns"]]
+    if not batch:
+        return []
+    _undo, changed = apply_batch(batch, {**placed["ann"], "last_n": len(batch)}, at)
+    return [it["n"] for it in changed]
 
 
 _ADD = re.compile(r"^\s*add\b", re.IGNORECASE)

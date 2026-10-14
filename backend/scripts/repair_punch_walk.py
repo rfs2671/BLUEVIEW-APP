@@ -15,8 +15,14 @@ again, and nothing is sent. A walk that went out LIVE is never touched.
     railway run python scripts/repair_punch_walk.py --walk <id> --apply --dm   # and DM the walker the draft
     railway run python scripts/repair_punch_walk.py --walk <id> --dump-events walk.json
 
---dump-events writes the walk's message order (photos and texts, with times;
-never phone numbers) -- the shape tests/test_punch_batch_588.py replays.
+--dump-events writes the walk's message order (photos, texts, voice notes
+with their stored transcripts, and the assistant's own messages, with times;
+never phone numbers) -- the shape tests/test_punch_walk_6a868363.py replays.
+
+The dry run prints every message with what it did (which photos, what
+place and words; a voice note's transcript and where it went; "couldn't
+place"), runs the vision model on photos with no words (shown "(auto)";
+--no-vision skips it), and prints the draft exactly as it would be.
 Phone numbers are never printed.
 """
 
@@ -64,14 +70,19 @@ async def main_async(a) -> int:
         return 2
     events = await server._punch_walk_events(sess)
     if a.dump_events:
-        rows = [{"kind": e["kind"], "message_id": e["message_id"], "text": e.get("text") or "",
+        spoken = {server.punch.short_message_id(m): (it.get("voice") or {}).get("transcript")
+                  for it in sess.get("items") or [] if (it.get("voice") or {}).get("transcript")
+                  for m in [it.get("message_id")] + list(it.get("caption_ids") or []) if m}
+        rows = [{"kind": e["kind"], "message_id": e["message_id"],
+                 "text": e.get("text") or spoken.get(server.punch.short_message_id(e["message_id"])) or "",
                  "quoted": e.get("quoted") or "",
                  "at": e["at"].isoformat() if isinstance(e.get("at"), datetime) else None}
                 for e in events]
         Path(a.dump_events).write_text(json.dumps(rows, indent=1, ensure_ascii=False) + "\n")
         print(f"Wrote {len(rows)} events to {a.dump_events}.")
     print(f"\nWalk {walk_id} ({sess.get('job_name')}), {len(events)} messages in the log:")
-    out = await server.punch_walk_rebatch(walk_id, apply=a.apply, dm=a.dm, events=events, say=print)
+    out = await server.punch_walk_rebatch(walk_id, apply=a.apply, dm=a.dm, events=events,
+                                          vision=not a.no_vision, say=print)
     if not out["ok"]:
         print(f"\nNOT DONE: {out['why']}")
         return 1
@@ -93,6 +104,8 @@ def main(argv=None) -> int:
     ap.add_argument("--apply", action="store_true", help="do it (default: dry run)")
     ap.add_argument("--dm", action="store_true", help="DM the walker the corrected draft")
     ap.add_argument("--dump-events", help="write the walk's message order to this JSON file")
+    ap.add_argument("--no-vision", action="store_true",
+                    help="dry run without the vision model's descriptions (no vision calls)")
     a = ap.parse_args(argv)
     if a.dm and not a.apply:
         ap.error("--dm needs --apply")
