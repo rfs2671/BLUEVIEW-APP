@@ -8656,6 +8656,11 @@ ALLOW_LEGACY_NULL_STATUS = True
 APPROVED_ACCOUNT_STATUSES = frozenset({"approved"})
 
 
+# The only statuses PUT /logbooks/{id} may write. "withdrawn" is POST
+# /withdraw's, with its own rules; see update_logbook.
+LOGBOOK_PUT_STATUSES = frozenset({"draft", "submitted"})
+
+
 # ── WHAT A DEMO OR PENDING ACCOUNT MAY REACH THROUGH get_current_user ──────
 #
 # WHAT WAS OPEN (security audit finding 1, 2026-10-13). Self-serve signup makes
@@ -31848,6 +31853,57 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             detail={"code": "FILED_LOG_DATA_IMMUTABLE"},
         )
 
+    # ── A FILED LOG NEVER LEAVES "submitted" THROUGH THIS ROUTE ──────────────
+    #
+    # THE GUARD ABOVE FIRES ON `data`, AND THAT WAS THE WHOLE HOLE (security
+    # audit C1 / P2, 2026-10-13). PUT {"status": "draft"} carries no data, so
+    # it passed, and the next PUT's data landed on a "draft" -- with the
+    # affirmed signature still attached -- which a status-only submit, or the
+    # nightly sweep, then filed under a signature given for other content.
+    #
+    # ONLY TWO VALUES, because those are the only two this route has ever
+    # legitimately written (production 2026-10-13: draft 65, submitted 430).
+    # "withdrawn" belongs to POST /withdraw, which has rules PUT would skip.
+    # The downgrade refusal reuses FILED_LOG_DATA_IMMUTABLE on purpose: it is
+    # the same fact ("this day is filed -- amend it"), and the client already
+    # extracts that code and carries its copy in every language.
+    if data.status is not None and data.status not in LOGBOOK_PUT_STATUSES:
+        raise HTTPException(
+            status_code=422, detail={"code": "LOGBOOK_STATUS_UNKNOWN"},
+        )
+    if ((existing_lb or {}).get("status") == "submitted"
+            and data.status is not None and data.status != "submitted"):
+        raise HTTPException(
+            status_code=409, detail={"code": "FILED_LOG_DATA_IMMUTABLE"},
+        )
+
+    # ── NEW CONTENT ON A SIGNED DRAFT NEEDS A FRESH SIGNATURE ───────────────
+    #
+    # The mark attests to the content it was made over. When `data` changes
+    # and the request does not carry a DIFFERENT affirmed mark, the stored one
+    # is kept but un-affirmed, so the log cannot be filed -- by a submit or by
+    # the sweep, which seals only affirmed signatures -- until the CP signs
+    # again. "Different" is the ledger's own identity of a signing act; every
+    # editor re-sends its cp_signature on every save, and the same mark sent
+    # again is not a fresh one.
+    #
+    # Production 2026-10-13: zero affirmed drafts (all 433 affirmed logs are
+    # submitted), so no flow in use reaches this; it closes the shape.
+    _cleared_sig = None
+    _stored_sig = (existing_lb or {}).get("cp_signature")
+    if (data.data is not None
+            and data.data != (existing_lb or {}).get("data")
+            and _is_affirmed_signature(_stored_sig)):
+        _incoming = data.cp_signature
+        _fresh = (_is_affirmed_signature(_incoming)
+                  and signature_ledger_key("logbook", logbook_id, "", _incoming)
+                  != signature_ledger_key("logbook", logbook_id, "", _stored_sig))
+        if not _fresh:
+            _cleared_sig = dict(_stored_sig)
+            _cleared_sig["affirmed"] = False
+            _cleared_sig["affirmation_cleared_at"] = datetime.now(timezone.utc).isoformat()
+            _cleared_sig["affirmation_cleared_reason"] = "data_changed_after_signature"
+
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # THE PRIMARY PATH, not a mirror of create_logbook's. The ordinary CP flow is
     # Save Draft (POST, status=draft) then Submit — and because the log now
@@ -31872,6 +31928,8 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         _cur = _cur or {}
         _eff_data = data.data if data.data is not None else _cur.get("data")
         _eff_sig = data.cp_signature if data.cp_signature is not None else _cur.get("cp_signature")
+        if _cleared_sig is not None:
+            _eff_sig = _cleared_sig
         if not _eff_data:
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_EMPTY_LOG"},
@@ -31965,7 +32023,11 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     update = {"updated_at": now}
     if data.data is not None:
         update["data"] = data.data
-    if data.cp_signature is not None:
+    if _cleared_sig is not None:
+        # The stale mark, un-affirmed (see NEW CONTENT ON A SIGNED DRAFT).
+        # signed_by is left alone: nobody signed anything in this request.
+        update["cp_signature"] = _cleared_sig
+    elif data.cp_signature is not None:
         # Stamp + validate against THIS document's date (fetch it once).
         _lb = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}, {"date": 1})
         update["cp_signature"] = _finalize_cp_signature(
