@@ -93,6 +93,7 @@ from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_facts  # noqa: E402
+from lib import attendance  # noqa: E402
 from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -52139,8 +52140,9 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # 6:22 PM): what it replied to is in the question.
         logger.info("[wa-assistant] reply denied the replied-to message; saying what it was")
         return wa_assistant.quoted_fallback(body)
-    if reply and wa_facts.about_attendance(body) and wa_facts.denies_data(reply) \
-            and not any(t.get("tool") == "sub_attendance" for t in trace):
+    if reply and (wa_facts.about_attendance(body) or attendance.kind_of(body)) \
+            and wa_facts.denies_data(reply) \
+            and not any(t.get("tool") in ("sub_attendance", "site_headcount") for t in trace):
         # NEVER "the data doesn't specify" how long a sub has been on site
         # (Wed Oct 14, 10:12 AM, Arkon on 588): every check-in has it.
         logger.info("[wa-assistant] reply denied attendance data; answering from check-ins")
@@ -62161,7 +62163,7 @@ _AGENT_TOOLS = [
 _AGENT_TOOLS += wa_subs.TOOLS
 # What the assistant used to say "the data doesn't specify" about (Wed Oct
 # 14, lib/wa_facts.py): days on site, punch, follow-ups, upcoming, the brief.
-_AGENT_TOOLS += [wa_facts.SUB_ATTENDANCE_TOOL, wa_facts.PUNCH_STATUS_TOOL,
+_AGENT_TOOLS += [attendance.SUB_ATTENDANCE_TOOL, attendance.SITE_HEADCOUNT_TOOL, wa_facts.PUNCH_STATUS_TOOL,
                  wa_facts.FOLLOW_UPS_TOOL, wa_facts.UPCOMING_TOOL, wa_facts.BRIEF_STATUS_TOOL]
 #: Read in a direct message only: the brief is the person's own; follow-ups
 #: name who owes what, which a group of subs does not read about each other.
@@ -63240,7 +63242,7 @@ async def _run_group_agent(
             continue
         if name in _DM_ONLY_FACT_TOOLS and not dm:
             continue
-        if name == "sub_attendance" and not features.get("who_on_site", True):
+        if name in ("sub_attendance", "site_headcount") and not features.get("who_on_site", True):
             continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
@@ -63479,10 +63481,14 @@ async def _attendance_rows(project_id: str, since: datetime) -> list:
 async def _attendance_fallback(project: dict, body: str, now: Optional[datetime] = None) -> str:
     """The answer from the check-ins, when the model said they don't say."""
     now = now or datetime.now(timezone.utc)
-    rows = await _attendance_rows(str(project.get("_id")), now - timedelta(days=730))
-    sub = wa_facts.sub_in_question(body, {wa_facts.checkin_company(r) for r in rows})
-    return wa_facts.attendance_text(wa_facts.attendance(rows, now, sub), now, sub,
-                                    wa_assistant.street_label(project))
+    rows = await _attendance_rows(str(project.get("_id")), now - timedelta(days=1100))
+    kind = attendance.kind_of(body) or "sub_attendance"
+    if kind == "sub_attendance":
+        sub = wa_facts.sub_in_question(body, {wa_facts.checkin_company(r) for r in rows})
+        return attendance.answer("sub_attendance", {"sub": sub}, rows, now,
+                                 wa_assistant.street_label(project), body)
+    return attendance.answer("site_headcount", {"view": kind}, rows, now,
+                             wa_assistant.street_label(project), body)
 
 
 def _fact_day(v: Any) -> Optional[_Date]:
@@ -63493,7 +63499,8 @@ def _fact_day(v: Any) -> Optional[_Date]:
 
 
 async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str,
-                      group_id: Optional[str], now: Optional[datetime] = None) -> str:
+                      group_id: Optional[str], now: Optional[datetime] = None,
+                      question: str = "") -> str:
     """sub_attendance / punch_status / follow_ups / upcoming_events /
     brief_status (lib/wa_facts.py). The caller proved the project is the
     company's; every read here is that project's."""
@@ -63503,13 +63510,14 @@ async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str
         return wa_security.BOT_SCOPE_REFUSAL
     job = wa_assistant.street_label(project) if isinstance(project, dict) else ""
     in_dm = bool(group_id) and not str(group_id).endswith("@g.us")
-    if name == "sub_attendance":
-        frm, to = _fact_day(args.get("date_from")), _fact_day(args.get("date_to"))
+    if name in ("sub_attendance", "site_headcount"):
+        # Evidence only (lib/attendance.py): every number counted from the
+        # job's check-ins, for the period as the user said it.
+        frm, _to, _label = attendance.resolve_range(args, question, now)
         since = datetime.combine(frm, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1) \
-            if frm else now - timedelta(days=730)
+            if frm else now - timedelta(days=1100)
         rows = await _attendance_rows(project_id, since)
-        sub = str(args.get("sub") or "").strip() or None
-        return wa_facts.attendance_text(wa_facts.attendance(rows, now, sub, frm, to), now, sub, job)
+        return attendance.answer(name, args, rows, now, job, question)
     if name == "punch_status":
         rows = await db[punch.COLLECTION].find(
             {"project_id": project_id, "company_id": _company_id_filter(company_id),
@@ -63585,10 +63593,11 @@ async def _dispatch_agent_tool(
             if project is None:
                 return wa_security.BOT_SCOPE_REFUSAL
             return await _dm_subs_tool(ident, name, args, project)
-        if name in ("sub_attendance", "punch_status", "follow_ups", "upcoming_events",
+        if name in ("sub_attendance", "site_headcount", "punch_status", "follow_ups", "upcoming_events",
                     "brief_status"):
             return await _facts_tool(name, args or {}, company_id=str(company_id),
-                                     project_id=str(project_id), group_id=group_id)
+                                     project_id=str(project_id), group_id=group_id,
+                                     question=str(user_body or ""))
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."
