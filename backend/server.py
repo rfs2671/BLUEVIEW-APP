@@ -64861,7 +64861,8 @@ def _punch_simple(sess: dict) -> bool:
 
 
 def _punch_draft(sess: dict) -> str:
-    return punch.draft_text(sess["job_name"], sess["items"], simple=_punch_simple(sess))
+    return punch.draft_text(sess["job_name"], sess["items"], simple=_punch_simple(sess),
+                            unplaced=sess.get("unplaced") or None)
 
 
 async def _punch_company_detail(company_id: Any) -> str:
@@ -65772,9 +65773,10 @@ async def _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
 # words and the 7 before it stayed blank. Only photos make items; a text
 # describes its batch: the photos since the previous text, or "last N pics".
 
-async def _punch_batch_model(text: str) -> Optional[dict]:
-    """The model's reading of a text about a batch (punch_batch.BATCH_PROMPT);
-    None without a key, on any error, or when it is not one JSON object."""
+async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optional[dict]:
+    """The model's reading of a text about a batch (punch_batch.BATCH_PROMPT,
+    or `prompt`); None without a key, on any error, or when it is not one
+    JSON object."""
     if not OPENAI_API_KEY:
         return None
     try:
@@ -65784,8 +65786,8 @@ async def _punch_batch_model(text: str) -> Optional[dict]:
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                 json={"model": AGENT_MODEL, "temperature": 0, "max_tokens": 200,
                       "response_format": {"type": "json_object"},
-                      "messages": [{"role": "system", "content": punch_batch.BATCH_PROMPT},
-                                   {"role": "user", "content": str(text)[:600]}]})
+                      "messages": [{"role": "system", "content": prompt or punch_batch.BATCH_PROMPT},
+                                   {"role": "user", "content": str(text)[:4000]}]})
             resp.raise_for_status()
             got = json.loads(resp.json()["choices"][0]["message"]["content"])
         return got if isinstance(got, dict) else None
@@ -65915,7 +65917,37 @@ async def _punch_walk_events(sess: dict, store=None) -> List[dict]:
             continue
         seen.add(key)
         out.append(e)
-    return out
+    # What the assistant said in the chat meanwhile ("Where is #3 'Back of
+    # building'?"): a text right after a question about one item answers it.
+    try:
+        bot = await d.whatsapp_messages.find(
+            {"group_id": sess.get("chat"), "from_me": True,
+             "timestamp": {"$gte": start, "$lte": end + timedelta(minutes=2)}}).to_list(5000)
+    except Exception:
+        bot = []
+    for r in bot:
+        out.append({"chat": sess.get("chat"), "from_me": True, "kind": "bot", "message_id": "",
+                    "text": str(r.get("body") or ""), "quoted": "", "at": r.get("timestamp")})
+
+    def _when(e):
+        at = e.get("at")
+        if isinstance(at, datetime):
+            return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        return start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    return sorted(out, key=_when)
+
+
+async def _punch_place_reference(ref: dict) -> Optional[dict]:
+    """"Same for the last batch of pics": which photos, by the model, from
+    the walk's batches -- checked (punch_batch.clean_reference); None when
+    it is not clear (then it is listed as "couldn't place")."""
+    if not ref.get("batches"):
+        return None
+    lines = [f"batch {i}: photos {punch.numbers_text(b['ns'])} -- text: {b['text']!r}"
+             for i, b in enumerate(ref["batches"])]
+    got = await _punch_batch_model("Batches:\n" + "\n".join(lines) + f"\n\nThe text: {ref['text']!r}",
+                                   prompt=punch_batch.REFERENCE_PROMPT)
+    return punch_batch.clean_reference(got, ref)
 
 
 def _punch_text_is_command(text: str) -> bool:
@@ -65931,7 +65963,7 @@ def _punch_text_is_command(text: str) -> bool:
 
 
 async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool = False,
-                             events: Optional[List[dict]] = None,
+                             events: Optional[List[dict]] = None, vision: bool = True,
                              say=lambda line: None) -> dict:
     """Put one walk right (see above). Dry run unless `apply`. `events`:
     the walk's messages (else read from the webhook log). Returns
@@ -65958,6 +65990,9 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
                 "voice": True}
                if e.get("kind") == "voice" and punch.short_message_id(e.get("message_id")) in spoken
                else e) for e in events]
+    # Texts sent together are one message ("Correction. 3rd floor interior"
+    # + "Last 3 photos", 11:52).
+    events = punch_batch.merge_texts(events, is_command=_punch_text_is_command)
     readings: Dict[int, dict] = {}
     for i, e in enumerate(events):
         if e.get("kind") != "text":
@@ -65965,32 +66000,69 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
         if _punch_text_is_command(e.get("text") or ""):
             readings[i] = {"kind": "command"}
             continue
+        if punch_batch.is_reference(e.get("text") or ""):
+            readings[i] = {"kind": "reference"}
+            continue
         readings[i] = await _punch_read_batch(e["text"])
     items = [dict(it) for it in sess.get("items") or []]
     plan = punch_batch.replay(items, events, readings)
+    # "Same for the last batch of pics": placed by the model, or listed.
+    unplaced_refs: List[dict] = []
+    for ref in plan["references"]:
+        placed = await _punch_place_reference(ref)
+        if placed:
+            ns = punch_batch.apply_reference(plan["items"], placed, ref.get("at"))
+            plan["outcome"][ref["i"]] = (f"same as batch -> {punch.numbers_text(ns)}: "
+                                         + punch_batch.describe(placed["ann"]))
+        else:
+            label = f"{_punch_time(ref.get('at'))} \"{ref['text']}\""
+            plan["unplaced"].append(label)
+            # Kept with the words it would copy, so the walker's "9 10" in
+            # the draft applies them (Codex on #793).
+            unplaced_refs.append(punch_batch.unplaced_entry(label, ref))
+            plan["outcome"][ref["i"]] = "couldn't place -- listed in the draft"
     by_n = {r.get("n"): r for r in rows}
     for it in plan["items"]:
         r = by_n.get(it.get("n"))
         if r and r.get("pid"):
             it["pid"] = r["pid"]                         # its P-id, kept
-    for e in events:
-        say(f"  {_punch_time(e.get('at'))}  {e['kind']:<5} "
-            + (repr((e.get('text') or '')[:70]) if e["kind"] == "text" else ""))
-    for text, ns in plan["applied"]:
-        say(f"  text {text[:60]!r} -> {punch.numbers_text(ns) if ns else 'nothing'}")
+    for i, e in enumerate(events):
+        k = e.get("kind")
+        if k == "bot":
+            say(f"  {_punch_time(e.get('at'))}  bot   {(e.get('text') or '')[:70]!r}")
+            continue
+        if k == "photo":
+            say(f"  {_punch_time(e.get('at'))}  photo {plan['outcome'].get(i, '')}")
+            continue
+        label = "voice" if (k == "voice" or e.get("voice")) else "text"
+        said = repr((e.get("text") or "")[:90]) if e.get("text") else "(no words)"
+        say(f"  {_punch_time(e.get('at'))}  {label} {said}\n           -> {plan['outcome'].get(i, '')}")
     for it in plan["removed"]:
         say(f"  removed (a text made it): #{it.get('n')} {str(it.get('text') or '')[:60]!r}")
     if plan["unmatched"]:
         say(f"  photos in the log with no item: {len(plan['unmatched'])}")
     blanks = punch_batch.blank(plan["items"])
     out = {"ok": True, "why": "", "applied": plan["applied"], "removed": len(plan["removed"]),
-           "kept": len(plan["items"]), "described": len(blanks), "rows": len(rows)}
+           "kept": len(plan["items"]), "described": len(blanks), "rows": len(rows),
+           "unplaced": plan["unplaced"], "outcome": plan["outcome"]}
+    simple = (sess.get("detail") or punch.DEFAULT_DETAIL) == punch.DETAIL_SIMPLE
     if not apply:
-        say(f"  would describe {len(blanks)} photo(s) with no words; would delete "
-            f"{len(rows)} shadow row(s); the walk would be a draft again")
-        out["draft"] = punch.draft_text(sess.get("job_name") or "", plan["items"],
-                                        simple=(sess.get("detail") or punch.DEFAULT_DETAIL)
-                                        == punch.DETAIL_SIMPLE)
+        # The real draft: the vision model's words on every photo with none,
+        # marked (auto) -- in memory only; nothing is saved.
+        if vision and blanks:
+            sem = asyncio.Semaphore(PUNCH_DESCRIBE_AT_ONCE)
+
+            async def _one(it):
+                async with sem:
+                    words = await _punch_describe_photo(it.get("photo_key"), sess.get("project_id")) \
+                        if it.get("photo_key") else None
+                punch_batch.set_auto(it, words)
+                say(f"  vision #{it.get('n')}: {it['text']} (auto)")
+            await asyncio.gather(*[_one(it) for it in blanks])
+        say(f"  {'described' if vision else 'would describe'} {len(blanks)} photo(s) with no words; "
+            f"would delete {len(rows)} shadow row(s); the walk would be a draft again")
+        out["draft"] = punch.draft_text(sess.get("job_name") or "", plan["items"], simple=simple,
+                                        unplaced=plan["unplaced"])
         return out
     now = datetime.now(timezone.utc)
     att_ids = [r.get("attention_item_id") for r in rows if r.get("attention_item_id")]
@@ -66008,7 +66080,7 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
               "shortcut": None, "sent_at": None, "nudge": {}, "loc_undo": None,
               "batch_mark": max([it.get("captured") or 0 for it in photos] or [0]),
               "batch_prev": None, "group_loc_v2": True, "trade_asked": False,
-              "rebatched_at": now, "updated_at": now}
+              "rebatched_at": now, "updated_at": now, "unplaced": unplaced_refs}
     await d[punch.SESSIONS].update_one({"_id": walk_id}, {"$set": fields})
     sess.update(fields)
     out["described"] = await _punch_describe_blanks(sess)
@@ -66288,11 +66360,34 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
+    pending = sess.get("unplaced") or []
+    answer = punch_batch.unplaced_reply(words) if pending else None
+    if answer:
+        # The answer to "Couldn't place — tell me which photos", for the
+        # first one listed: its words go on those photos, or it is let go.
+        # Read before the send words: "skip" here answers that line.
+        first = pending[0] if isinstance(pending[0], dict) else {"label": str(pending[0]), "copy": None}
+        if answer.get("skip"):
+            note = f"Skipped {first['label']}."
+        else:
+            changed, missing = punch_batch.place_unplaced(items, first, answer["ns"])
+            if not changed:
+                bad = missing or answer["ns"]
+                await send_whatsapp_message(dm_chat, (
+                    f"No photo {punch.numbers_text(bad)} in this walkthrough. "
+                    if missing else "Nothing to copy from that one. ") + punch.UNPLACED_FOOT)
+                return True
+            note = (f"Applied {first['label']} to {punch.numbers_text(changed)}."
+                    + (f" No photo {punch.numbers_text(missing)}." if missing else ""))
+        await _punch_save(sess, items=items, unplaced=pending[1:], nudge={})
+        await send_whatsapp_message(dm_chat, note + "\n\n" + _punch_draft(sess))
+        return True
     escape = punch.is_escape(words)
     if low in punch.SEND_WORDS or escape:
         # NOTHING OPTIONAL STOPS A SEND (1:43 PM: "Send" -> "43 still need a
         # trade (5, 2, 3, 8, 19 ...)"): on to who gets it; one soft line there.
-        await _punch_save(sess, nudge={})
+        # A reference still unplaced is let go with it -- never a stale line.
+        await _punch_save(sess, nudge={}, unplaced=[])
         return await _punch_to_assign(ident, sess, dm_chat)
     edits = punch.parse_edits(words)
     where = None if edits else punch.parse_batch_where(

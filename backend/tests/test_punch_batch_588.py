@@ -336,8 +336,13 @@ class ThisWalkPutRight(_Batch):
         self.assertEqual((out["kept"], out["removed"], out["rows"]), (47, 1, 48))
         self.assertEqual(self.sess()["status"], "sent")
         self.assertEqual(len(self.db[punch.COLLECTION].rows), 48)
-        self.assertEqual(self.described, [])
-        self.assertTrue(any("'Last 8 pics all interior' -> #11–#18" in l for l in lines), lines)
+        # The dry run shows the real draft: vision's words on photos with
+        # none, "(auto)" -- in memory only (Wed Oct 14).
+        self.assertTrue(self.described)
+        self.assertIn("(auto)", out["draft"])
+        self.assertFalse(any(it.get("text_auto") for it in self.sess()["items"]))
+        log = "\n".join(lines)
+        self.assertIn("text 'Last 8 pics all interior'\n           -> #11–#18: Interior", log)
 
     def test_applied_the_draft_is_right_and_nothing_is_sent(self):
         events, rows = self._load()

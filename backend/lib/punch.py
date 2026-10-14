@@ -987,6 +987,39 @@ def floor_label(f: str) -> str:
     return f.capitalize()
 
 
+def place_label(floor: Any, area: Any) -> str:
+    """The location as one label: "Floor 3 · interior", "Floor 1 · Back of
+    building", "Roof", "Cellar" -- floor, then area. "" when neither."""
+    f = str(floor or "").strip()
+    a = str(area or "").strip()
+    f = "" if f == UNKNOWN else f
+    a = "" if a == UNKNOWN or a.lower() == f.lower() else a
+    fl = f"Floor {f}" if f.isdigit() else (f[:1].upper() + f[1:] if f else "")
+    if fl and a:
+        return f"{fl} · {a}"
+    return fl or (a[:1].upper() + a[1:] if a else "")
+
+
+def heading_area(it: dict) -> str:
+    """The area a draft heading names: a named area ("interior", "back of
+    building"); never a unit -- "Apt 4F" stays on the item's line under its
+    floor (a heading per apartment is noise)."""
+    a = str(it.get("area") or "")
+    if a == UNKNOWN or a.lower() == str(it.get("floor") or "").lower() or a.startswith("Apt "):
+        return ""
+    return a
+
+
+def heading_key(it: dict) -> Tuple[Tuple[int, str], str]:
+    """Draft order: by floor, then area ("" first) -- areas with no floor
+    ("Back of building") after the floors, "not given" last."""
+    f = it.get("floor") or UNKNOWN
+    a = heading_area(it)
+    if f == UNKNOWN:
+        return ((1500, a.lower()), "") if a else ((2000, ""), "")
+    return (_floor_key(f), a.lower())
+
+
 def place_key(it: dict) -> str:
     """What an item is listed under: its floor; else its area as said
     ("back of building"); else UNKNOWN (Location: not given)."""
@@ -998,12 +1031,12 @@ def place_key(it: dict) -> str:
 
 
 def ordered(items: Iterable[dict], simple: bool = False) -> List[dict]:
-    """The draft's order -- the numbers follow it: floor, then trade ("?"
-    last), then the order the photos came in. Simple: floor, then order."""
+    """The draft's order -- the numbers follow it: floor, then area, then
+    trade ("?" last), then the order the photos came in. Simple: floor,
+    area, then order."""
     def key(it):
         t = "" if simple else (it.get("trade") or UNKNOWN)
-        return (_floor_key(place_key(it)), t == UNKNOWN, t,
-                it.get("captured") or 0)
+        return (heading_key(it), t == UNKNOWN, t, it.get("captured") or 0)
     return sorted(items, key=key)
 
 
@@ -1016,7 +1049,7 @@ def marker(it: dict) -> str:
     return "".join(m)
 
 
-def item_line(it: dict, simple: bool = False) -> str:
+def item_line(it: dict, simple: bool = False, area_shown: bool = False) -> str:
     """"3. 📷 Outlet cover missing — electrical" (area shown when known).
     No trade: no trade shown -- never a "?" or a "roofing?" (1:43 PM).
     Simple: the words only (the floor is the heading)."""
@@ -1027,7 +1060,8 @@ def item_line(it: dict, simple: bool = False) -> str:
         return f"{it['n']}. {marker(it)} {words}".replace("  ", " ")
     trade = it.get("trade") or UNKNOWN
     area = it.get("area")
-    where = f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor") else ""
+    where = (f" ({unit_label(it)})" if area and area != UNKNOWN and area != it.get("floor")
+             and not area_shown else "")
     tail = f" — {trade}" if trade != UNKNOWN else ""
     return f"{it['n']}. {marker(it)} {words}{where}{tail}".replace("  ", " ")
 
@@ -1053,8 +1087,13 @@ def no_trade_line(n: int) -> str:
     return f"{n} {'has' if n == 1 else 'have'} no trade — fine to send as is."
 
 
+#: The draft's list of texts that could not be put on photos.
+UNPLACED_HEADING = "Couldn't place — tell me which photos:"
+UNPLACED_FOOT = 'Reply with the photo numbers for the first one ("9 10" or "9-12"), or "skip".'
+
+
 def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE,
-               simple: bool = False) -> str:
+               simple: bool = False, unplaced: Optional[List[str]] = None) -> str:
     """The draft the walker sees: by floor, then trade, each with ITS number
     -- never renumbered once shown, so they may read #1, #4, #2. Simple: by
     floor, the words only."""
@@ -1062,24 +1101,35 @@ def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_M
     need_trade = [it for it in live if (it.get("trade") or UNKNOWN) == UNKNOWN]
     head = f"{job_name} · walkthrough · {len(live)} item{'s' if len(live) != 1 else ''} (draft)"
     lines = [head]
-    by_floor: Dict[str, List[dict]] = {}
+    # By floor, then area: "Floor 3 · interior" (never a group named after
+    # an area read as a floor, "3rd interior").
+    groups: Dict[Tuple[Tuple[int, str], str], List[dict]] = {}
     for it in ordered(live, simple=simple):
-        by_floor.setdefault(place_key(it), []).append(it)
-    for f in sorted(by_floor, key=_floor_key):
+        groups.setdefault(heading_key(it), []).append(it)
+    for key in sorted(groups):
+        first = groups[key][0]
+        label = (place_label(first.get("floor"), heading_area(first)) if key[0] != (2000, "")
+                 else NOT_GIVEN) or NOT_GIVEN
         lines.append("")
-        lines.append(f"*{floor_label(f)}*")
+        lines.append(f"*{label}*")
         if simple:
-            lines.extend(item_line(it, simple=True) for it in by_floor[f])
+            lines.extend(item_line(it, simple=True) for it in groups[key])
             continue
         by_trade: Dict[str, List[dict]] = {}
-        for it in by_floor[f]:
+        for it in groups[key]:
             by_trade.setdefault(it.get("trade") or UNKNOWN, []).append(it)
         for t in sorted(by_trade, key=lambda x: (x == UNKNOWN, x)):
             if t != UNKNOWN:
                 lines.append(f"_{t}_")
             elif len(by_trade) > 1:
                 lines.append("_no trade_")
-            lines.extend(item_line(it) for it in by_trade[t])
+            lines.extend(item_line(it, area_shown=bool(key[1])) for it in by_trade[t])
+    if unplaced:
+        lines.append("")
+        lines.append(f"*{UNPLACED_HEADING}*")
+        # A walk's saved entry is {"label", "copy"}; the dry run passes labels.
+        lines.extend(f"• {u.get('label') if isinstance(u, dict) else u}" for u in unplaced)
+        lines.append(UNPLACED_FOOT)
     lines.append("")
     if need_trade and not simple and len(need_trade) < len(live):
         lines.append(no_trade_line(len(need_trade)))
