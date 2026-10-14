@@ -51002,6 +51002,13 @@ PROJECT_REPORT_SETTINGS = "project_report_settings"
 REPORT_DM_KIND = "project_report"
 
 
+class ReportSourceUnavailable(Exception):
+    """A record source could not be read: no report is made from it."""
+
+
+REPORT_UNAVAILABLE = "I couldn't read the job's records just now, so I didn't make the report. Try again in a few minutes."
+
+
 async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                        now: datetime) -> dict:
     """Everything one job's report counts, read for that job only."""
@@ -51012,11 +51019,13 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     cf = _company_id_filter(company_id)
 
     async def _q(coll, query, limit=50000, projection=None):
+        # A failed read is never "no records": the report would print zeros
+        # as fact (Codex on #795). It stops, and says so.
         try:
             return await coll.find(query, projection).to_list(limit)
         except Exception as e:
             logger.warning(f"[report] read failed: {type(e).__name__}")
-            return []
+            raise ReportSourceUnavailable(getattr(coll, "name", "records")) from e
     checkins = await _q(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True},
                                       "check_in_time": {"$gte": lo, "$lt": hi}},
                         projection={"worker_id": 1, "worker_phone": 1, "worker_name": 1,
@@ -51030,7 +51039,9 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                + await _q(db.dot_logs, {"project_id": pid, "detected_at": window}))
     events = await _q(db.upcoming_events, {"company_id": cf, "project_id": pid, "status": "open",
                                            "date": {"$gte": start.isoformat()}}, 2000)
-    items = await _q(db.attention_items, {"company_id": cf, "project_id": pid}, 5000)
+    # Punch items are counted once, in Punch: never their attention mirrors.
+    items = await _q(db.attention_items, {"company_id": cf, "project_id": pid, **ATTENTION_NOT_PUNCH},
+                     5000)
     punch_rows = await _q(db[punch.COLLECTION], {"company_id": cf, "project_id": pid}, 5000)
     # The filed daily_jobsite logbooks -- the record the CP signs -- not the
     # retired db.daily_logs kiosk rows.
@@ -51039,7 +51050,7 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                                          end=end.isoformat())
     except Exception as e:
         logger.warning(f"[report] logbooks read failed: {type(e).__name__}")
-        logs = []
+        raise ReportSourceUnavailable("logbooks") from e
     return {"checkins": in_period, "prev_checkins": [r for r in checkins if r not in in_period],
             "records": records, "events": events, "commitments": items,
             "punch_items": punch_rows, "daily_logs": logs}
@@ -51155,8 +51166,12 @@ async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -
                 return True
             picked = [j["project"] for j in jobs]
     start, end, _label = project_report.period_for(text, now)
-    doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
-                                     by=str(ident.get("user_id") or ""), source="dm")
+    try:
+        doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
+                                         by=str(ident.get("user_id") or ""), source="dm")
+    except ReportSourceUnavailable:
+        await send_whatsapp_message(dm_chat, REPORT_UNAVAILABLE)
+        return True
     await send_whatsapp_message(dm_chat, _report_message(doc))
     await _send_report_media(dm_chat, doc)
     return True
@@ -51217,7 +51232,12 @@ async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
         report["due"] += 1
         start, end = period
         key = f"sched:{pid}:{start.isoformat()}:{end.isoformat()}"
-        doc = await build_project_report(cid, [project], start, end, now=now, source="schedule", key=key)
+        try:
+            doc = await build_project_report(cid, [project], start, end, now=now, source="schedule",
+                                             key=key)
+        except ReportSourceUnavailable:
+            report["unavailable"] = report.get("unavailable", 0) + 1
+            continue                         # nothing stored: the next tick tries again
         report["built"] += 1
         message = _report_message(doc)
         window = f"{pid}:{start.isoformat()}:{end.isoformat()}"
@@ -51233,9 +51253,12 @@ async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
                     "report_id": doc["_id"], "kind": REPORT_DM_KIND}
             until = await _shabbos_quiet(cid, pid, now)
             if until:
-                await _quiet_enqueue(spec, company_id=cid, project_id=pid, kind=REPORT_DM_KIND,
-                                     until=until, now=now)
-                await _ledger_hold(wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window), "queued_shabbos",
+                held = wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)
+                # The hold's key rides with the send, so the queue lifts the
+                # hold before the DM takes its own claim (Codex on #795).
+                await _quiet_enqueue({**spec, "ledger_id": held}, company_id=cid, project_id=pid,
+                                     kind=REPORT_DM_KIND, until=until, now=now)
+                await _ledger_hold(held, "queued_shabbos",
                                    user_id=uid, company_id=cid, kind=REPORT_DM_KIND, window=window)
                 report["queued"] += 1
                 continue
@@ -51310,9 +51333,12 @@ async def create_project_report(project_id: str, body: ProjectReportRequest,
             raise HTTPException(status_code=400, detail="Pick a period of at most 400 days")
     else:
         start, end, _ = project_report.period_for(body.range or "", now)
-    doc = await build_project_report(company_id, [project], start, end, now=now,
-                                     by=str(current_user.get("id") or current_user.get("_id") or ""),
-                                     source="app")
+    try:
+        doc = await build_project_report(company_id, [project], start, end, now=now,
+                                         by=str(current_user.get("id") or current_user.get("_id") or ""),
+                                         source="app")
+    except ReportSourceUnavailable:
+        raise HTTPException(status_code=503, detail=REPORT_UNAVAILABLE)
     return _report_view(doc)
 
 
@@ -51349,7 +51375,7 @@ async def get_project_report_settings(project_id: str, current_user=Depends(get_
 async def put_project_report_settings(project_id: str, body: ProjectReportSettingsIn,
                                       current_user=Depends(get_current_user)):
     company_id = await _memory_project(project_id, current_user)
-    if not holds_rank(current_user, COMPANY_ADMIN_ROLES):
+    if not is_company_admin(current_user):          # admins, and PMs with full access
         raise HTTPException(status_code=403, detail="Admins set the report schedule")
     if body.schedule not in project_report.SCHEDULES:
         raise HTTPException(status_code=400, detail="schedule: off, biweekly or monthly")

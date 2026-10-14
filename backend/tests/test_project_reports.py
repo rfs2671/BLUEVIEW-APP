@@ -289,6 +289,17 @@ class TheSchedule(_Reports, unittest.TestCase):
         self.assertEqual((r["queued"], r["sent"]), (1, 0))
         self.assertEqual([p for p in c.wire.calls if "message" in p], [])
         self.assertEqual(db[server.WA_QUIET_QUEUE].rows[0]["send"]["via"], "report_dm")
+        # After Shabbos the queue delivers it: the hold is lifted first, so the
+        # DM's own claim is not refused as a duplicate (Codex on #795).
+        sun = datetime(2026, 8, 2, 9, 0, tzinfo=NY).astimezone(timezone.utc)
+        with _Ctx(db) as c, patch.object(server, "_send_report_media", self.patches()[0].new):
+            _run(server._quiet_queue_tick(sun))
+        msgs = [p["message"] for p in c.wire.calls if "message" in p]
+        self.assertEqual(len(msgs), 1, c.wire.calls)
+        self.assertIn("Jul 1–31, 2026", msgs[0])
+        self.assertEqual(len(self.media), 1)
+        led = db[server.WA_LEDGER].rows
+        self.assertEqual([r["status"] for r in led], ["sent"])
 
     def test_a_whatsapp_failure_is_retried(self):
         db = self.world()
@@ -298,6 +309,58 @@ class TheSchedule(_Reports, unittest.TestCase):
         self.assertEqual(r["retrying"], 1)
         row = db[server.WA_QUIET_QUEUE].rows[0]
         self.assertEqual((row["retry"], row["send"]["via"]), (True, "report_dm"))
+
+
+class WhatIsRead(_Reports, unittest.TestCase):
+
+    def test_punch_mirrors_are_not_commitments(self):
+        # Codex on #795: a sent punch item has an attention mirror; it is
+        # counted once, in Punch.
+        db = _world()
+        db.attention_items.rows[:] = [
+            {"_id": "a1", "company_id": CO_A, "project_id": THOMAS, "status": "open",
+             "kind": "commitment", "created_at": NOW},
+            {"_id": "a2", "company_id": CO_A, "project_id": THOMAS, "status": "open",
+             "tags": ["punch"], "extraction": {"source": "punch"}, "created_at": NOW}]
+        project = next(p for p in db.projects.rows if p["_id"] == THOMAS)
+        with _Ctx(db):
+            rows = _run(server._report_rows(project, CO_A, date(2026, 10, 1), date(2026, 10, 14), NOW))
+        self.assertEqual([r["_id"] for r in rows["commitments"]], ["a1"])
+
+    def test_a_failed_read_makes_no_report(self):
+        # Codex on #795: an unreadable source is never "no records".
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+
+        def boom(*a, **k):
+            raise RuntimeError("mongo down")
+        project = next(p for p in db.projects.rows if p["_id"] == THOMAS)
+        with _Ctx(db), patch.object(db.checkins, "find", boom):
+            with self.assertRaises(server.ReportSourceUnavailable):
+                _run(server.build_project_report(CO_A, [project], date(2026, 10, 1),
+                                                 date(2026, 10, 14), now=NOW))
+            r = None
+            with patch.object(server, "_report_pdf", self.patches()[1].new):
+                db[server.PROJECT_REPORT_SETTINGS].rows.append(
+                    {"_id": THOMAS, "company_id": CO_A, "schedule": "biweekly", "pm_ids": []})
+                r = _run(server._report_schedule_tick(
+                    datetime(2026, 10, 12, 8, 5, tzinfo=NY).astimezone(timezone.utc)))
+        self.assertEqual(db[server.PROJECT_REPORTS].rows, [])
+        self.assertEqual((r["unavailable"], r["sent"]), (1, 0))
+        self.assertEqual(self.pdfs, 0)
+
+
+class WhoSetsTheSchedule(unittest.TestCase):
+
+    def test_admins_and_full_access_pms(self):
+        # Codex on #795: a PM with "Same as admin" sets it, as the screen shows.
+        allowed = server.is_company_admin
+        self.assertTrue(allowed({"role": "admin"}))
+        self.assertTrue(allowed({"role": "pm", "pm_access": "full"}))
+        self.assertFalse(allowed({"role": "pm"}))
+        import inspect
+        src = inspect.getsource(server.put_project_report_settings)
+        self.assertIn("is_company_admin(current_user)", src)
 
 
 class InTheDm(_Reports, _Harness, unittest.TestCase):
@@ -319,6 +382,24 @@ class InTheDm(_Reports, _Harness, unittest.TestCase):
             for p in reversed(ps):
                 p.stop()
         return reply, db
+
+    def test_unreadable_records_say_so(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+
+        def boom(*a, **k):
+            raise RuntimeError("mongo down")
+        ps = self.patches()
+        for p in ps:
+            p.start()
+        try:
+            with _Ctx(db) as c, patch.object(db.checkins, "find", boom):
+                reply = self._send(c, f"{ADMIN_PHONE}@c.us", "report for 588")
+        finally:
+            for p in reversed(ps):
+                p.stop()
+        self.assertEqual(reply, server.REPORT_UNAVAILABLE)
+        self.assertEqual(db[server.PROJECT_REPORTS].rows, [])
 
     def test_send_me_a_report_for_588_for_the_last_2_weeks(self):
         reply, db = self.ask("send me a report for 588 for the last 2 weeks")
