@@ -202,6 +202,45 @@ class Walk6a868363(_Batch):
         # Never anyone's words.
         self.assertEqual(out["draft"].count("Same for the last batch of pics"), 1)
 
+    def test_the_walker_places_it_in_the_draft(self):
+        # Codex on #793: the listed reference is answered in the draft --
+        # "photos 9 and 10" copies the batch words before it onto them.
+        _out, _by_n = self.applied()
+        saved = self.sess()["unplaced"]
+        self.assertEqual([u["label"] for u in saved], ['11:59 AM "Same for the last batch of pics"'])
+        self.assertEqual(saved[0]["copy"]["description"], "Compound and sheetrock not done")
+        said = self.turn("photos 9 and 10")
+        self.assertTrue(said[0].startswith('Applied 11:59 AM "Same for the last batch of pics" '
+                                           'to #9, #10.'), said[0])
+        self.assertNotIn(punch.UNPLACED_HEADING, said[0])
+        self.assertEqual(self.sess()["unplaced"], [])
+        for n in (9, 10):
+            self.assertEqual(self.n_of(n)["text"], "Compound and sheetrock not done", n)
+
+    def test_a_number_not_in_the_walk_keeps_it_listed(self):
+        self.applied()
+        said = self.turn("99")
+        self.assertEqual(said, ["No photo #99 in this walkthrough. " + punch.UNPLACED_FOOT])
+        self.assertEqual(len(self.sess()["unplaced"]), 1)
+
+    def test_skip_lets_it_go_and_send_never_carries_it(self):
+        self.applied()
+        said = self.turn("skip")
+        self.assertTrue(said[0].startswith('Skipped 11:59 AM "Same for the last batch of pics".'))
+        self.assertEqual(self.sess()["unplaced"], [])
+        self.applied()
+        self.turn("send")
+        self.assertEqual(self.sess()["unplaced"], [])
+
+    def test_reading_the_answer(self):
+        r = punch_batch.unplaced_reply
+        self.assertEqual(r("9 10"), {"ns": [9, 10]})
+        self.assertEqual(r("photos 9 and 10"), {"ns": [9, 10]})
+        self.assertEqual(r("#9-12"), {"ns": [9, 10, 11, 12]})
+        self.assertEqual(r("Skip"), {"skip": True})
+        for edit in ("3 electrical", "drop 4", "9 roof", "send"):
+            self.assertIsNone(r(edit), edit)
+
     def test_same_for_placed_by_the_model(self):
         async def place(ref):
             return {"ns": [9, 10], "ann": dict(ref["copy"], last_n=None, correction=False)}

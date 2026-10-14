@@ -66007,6 +66007,7 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
     items = [dict(it) for it in sess.get("items") or []]
     plan = punch_batch.replay(items, events, readings)
     # "Same for the last batch of pics": placed by the model, or listed.
+    unplaced_refs: List[dict] = []
     for ref in plan["references"]:
         placed = await _punch_place_reference(ref)
         if placed:
@@ -66014,7 +66015,11 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
             plan["outcome"][ref["i"]] = (f"same as batch -> {punch.numbers_text(ns)}: "
                                          + punch_batch.describe(placed["ann"]))
         else:
-            plan["unplaced"].append(f"{_punch_time(ref.get('at'))} \"{ref['text']}\"")
+            label = f"{_punch_time(ref.get('at'))} \"{ref['text']}\""
+            plan["unplaced"].append(label)
+            # Kept with the words it would copy, so the walker's "9 10" in
+            # the draft applies them (Codex on #793).
+            unplaced_refs.append(punch_batch.unplaced_entry(label, ref))
             plan["outcome"][ref["i"]] = "couldn't place -- listed in the draft"
     by_n = {r.get("n"): r for r in rows}
     for it in plan["items"]:
@@ -66075,7 +66080,7 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
               "shortcut": None, "sent_at": None, "nudge": {}, "loc_undo": None,
               "batch_mark": max([it.get("captured") or 0 for it in photos] or [0]),
               "batch_prev": None, "group_loc_v2": True, "trade_asked": False,
-              "rebatched_at": now, "updated_at": now, "unplaced": plan["unplaced"]}
+              "rebatched_at": now, "updated_at": now, "unplaced": unplaced_refs}
     await d[punch.SESSIONS].update_one({"_id": walk_id}, {"$set": fields})
     sess.update(fields)
     out["described"] = await _punch_describe_blanks(sess)
@@ -66355,11 +66360,34 @@ async def _punch_draft_turn(ident, sess, dm_chat, text, voice) -> bool:
         await _punch_save(sess, status="cancelled")
         await send_whatsapp_message(dm_chat, "Walkthrough cancelled. Nothing was sent.")
         return True
+    pending = sess.get("unplaced") or []
+    answer = punch_batch.unplaced_reply(words) if pending else None
+    if answer:
+        # The answer to "Couldn't place — tell me which photos", for the
+        # first one listed: its words go on those photos, or it is let go.
+        # Read before the send words: "skip" here answers that line.
+        first = pending[0] if isinstance(pending[0], dict) else {"label": str(pending[0]), "copy": None}
+        if answer.get("skip"):
+            note = f"Skipped {first['label']}."
+        else:
+            changed, missing = punch_batch.place_unplaced(items, first, answer["ns"])
+            if not changed:
+                bad = missing or answer["ns"]
+                await send_whatsapp_message(dm_chat, (
+                    f"No photo {punch.numbers_text(bad)} in this walkthrough. "
+                    if missing else "Nothing to copy from that one. ") + punch.UNPLACED_FOOT)
+                return True
+            note = (f"Applied {first['label']} to {punch.numbers_text(changed)}."
+                    + (f" No photo {punch.numbers_text(missing)}." if missing else ""))
+        await _punch_save(sess, items=items, unplaced=pending[1:], nudge={})
+        await send_whatsapp_message(dm_chat, note + "\n\n" + _punch_draft(sess))
+        return True
     escape = punch.is_escape(words)
     if low in punch.SEND_WORDS or escape:
         # NOTHING OPTIONAL STOPS A SEND (1:43 PM: "Send" -> "43 still need a
         # trade (5, 2, 3, 8, 19 ...)"): on to who gets it; one soft line there.
-        await _punch_save(sess, nudge={})
+        # A reference still unplaced is let go with it -- never a stale line.
+        await _punch_save(sess, nudge={}, unplaced=[])
         return await _punch_to_assign(ident, sess, dm_chat)
     edits = punch.parse_edits(words)
     where = None if edits else punch.parse_batch_where(

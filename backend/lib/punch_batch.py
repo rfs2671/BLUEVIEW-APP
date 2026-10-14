@@ -677,6 +677,51 @@ def apply_reference(items: List[dict], placed: Dict[str, Any], at: Any = None) -
     return [it["n"] for it in changed]
 
 
+# The walker's answer to "Couldn't place — tell me which photos": photo
+# numbers only ("9 10", "photos 9 and 10", "#9-12"), or "skip". Anything
+# else is an ordinary draft edit.
+_UNPLACED_NUMS = re.compile(
+    r"^\s*(?:(?:the\s+)?(?:photos?|pics?|pictures?|items?)\s*)?"
+    r"(?P<ns>#?\d{1,3}(?:\s*(?:-|–|to|thru|through)\s*#?\d{1,3})?"
+    r"(?:\s*(?:,|and|&|\s)\s*#?\d{1,3}(?:\s*(?:-|–|to|thru|through)\s*#?\d{1,3})?)*)\s*\.?\s*$",
+    re.IGNORECASE)
+_UNPLACED_SKIP = re.compile(r"^\s*(?:skip|ignore|none|no|leave\s+it|drop\s+it|forget\s+it)\s*[.!]?\s*$",
+                            re.IGNORECASE)
+
+
+def unplaced_entry(label: str, ref: Dict[str, Any]) -> Dict[str, Any]:
+    """What a walk keeps of a reference it couldn't place: the line shown,
+    and the batch words it would copy (the batch just before it)."""
+    copy = ref.get("copy")
+    return {"label": label, "copy": dict(copy) if copy else None}
+
+
+def unplaced_reply(text: Any) -> Optional[Dict[str, Any]]:
+    """{"skip": True}, {"ns": [9, 10]}, or None (not an answer)."""
+    t = str(text or "")
+    if _UNPLACED_SKIP.match(t):
+        return {"skip": True}
+    m = _UNPLACED_NUMS.match(t)
+    if not m:
+        return None
+    ns = sorted(set(punch._numbers(m.group("ns"))))
+    return {"ns": ns} if ns else None
+
+
+def place_unplaced(items: List[dict], entry: Dict[str, Any], ns: List[int],
+                   at: Any = None) -> Tuple[List[int], List[int]]:
+    """Apply an unplaced entry's words to the photos the walker named.
+    Returns (changed numbers, numbers with no live item)."""
+    live = {it.get("n") for it in items if it.get("status", "draft") != "dropped"}
+    missing = [n for n in ns if n not in live]
+    ann = entry.get("copy")
+    ok = [n for n in ns if n in live]
+    if not ann or is_empty(ann) or not ok:
+        return [], missing
+    return apply_reference(items, {"ns": ok, "ann": {**ann, "last_n": None, "correction": False}}, at), \
+        missing
+
+
 _ADD = re.compile(r"^\s*add\b", re.IGNORECASE)
 
 

@@ -1089,6 +1089,7 @@ def no_trade_line(n: int) -> str:
 
 #: The draft's list of texts that could not be put on photos.
 UNPLACED_HEADING = "Couldn't place — tell me which photos:"
+UNPLACED_FOOT = 'Reply with the photo numbers for the first one ("9 10" or "9-12"), or "skip".'
 
 
 def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_MODE,
@@ -1126,7 +1127,9 @@ def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_M
     if unplaced:
         lines.append("")
         lines.append(f"*{UNPLACED_HEADING}*")
-        lines.extend(f"• {u}" for u in unplaced)
+        # A walk's saved entry is {"label", "copy"}; the dry run passes labels.
+        lines.extend(f"• {u.get('label') if isinstance(u, dict) else u}" for u in unplaced)
+        lines.append(UNPLACED_FOOT)
     lines.append("")
     if need_trade and not simple and len(need_trade) < len(live):
         lines.append(no_trade_line(len(need_trade)))
