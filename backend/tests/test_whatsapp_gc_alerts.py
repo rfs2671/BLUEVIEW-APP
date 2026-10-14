@@ -589,7 +589,11 @@ class TheAlerts(unittest.TestCase):
             _run(server._gc_alerts_tick(NOON))
             self.assertEqual(_group_sends(c), [])
 
-    def test_a_failed_send_is_retried_next_run(self):
+    def test_a_failed_send_is_retried_on_the_shared_schedule(self):
+        # Was: re-posted on the very next run, every run, with no backoff and
+        # nobody told. Now the shared retry (tests/test_scheduled_send_retry.py):
+        # 5 minutes later, from the queue, once.
+        from datetime import timedelta
         db = _world()
         with _Ctx(db=db) as c, _no_ai():
             _confirm()
@@ -599,7 +603,9 @@ class TheAlerts(unittest.TestCase):
             r = _run(server._gc_alerts_tick(NOON))
             self.assertEqual(r["failed"], 1)
             r = _run(server._gc_alerts_tick(NOON))
-            self.assertEqual(r["posted"], 1)
+            self.assertEqual(r["posted"], 0)                       # waiting its turn
+            self.assertEqual(_run(server._quiet_queue_tick(NOON + timedelta(minutes=5)))["sent"], 1)
+            self.assertEqual(_run(server._gc_alerts_tick(NOON + timedelta(minutes=10)))["posted"], 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════

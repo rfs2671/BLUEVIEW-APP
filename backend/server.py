@@ -46361,15 +46361,87 @@ async def _quiet_deliver(spec: dict):
     raise ValueError(f"unknown via {via!r}")
 
 
+#: How long a scheduled message that failed to send keeps being tried
+#: (lib/send_retry: after 5, 15, then every 30 minutes) when its sender
+#: names no window of its own.
+SEND_RETRY_WINDOW = timedelta(hours=2)
+
+
+async def _retry_later(spec: dict, *, company_id: Any, project_id: Any, kind: str,
+                       error: Optional[str] = None, deadline: Optional[datetime] = None,
+                       now: Optional[datetime] = None) -> str:
+    """A scheduled message whose send just failed: queued to be tried again
+    (the same queue as Shabbos, _quiet_queue_tick) after RETRY_MINUTES,
+    until `deadline`; the last failure alerts an operator. Never sent twice:
+    the queue row is claimed before each try, and a DM's ledger claim is
+    taken over only from "failed"."""
+    now = now or datetime.now(timezone.utc)
+    if deadline and send_retry.next_try(1, now) >= deadline:
+        # No try fits before its window closes (11:57 PM for tonight's
+        # day-before DM): this failure is the last.
+        await _send_failed_alert(kind, f"{kind}:{now.isoformat()}", company_id=company_id,
+                                 user_id=spec.get("user_id"), error=error or "not accepted",
+                                 first_at=now, attempts=1, now=now)
+        if spec.get("gc_ledger_id"):
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "failed"}})
+        return "failed"
+    qid = await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
+                               until=send_retry.next_try(1, now), now=now)
+    await db[WA_QUIET_QUEUE].update_one({"_id": qid}, {"$set": {
+        "retry": True, "attempts": 1, "first_failed_at": now,
+        "deadline": deadline or now + SEND_RETRY_WINDOW,
+        "last_error": send_retry.scrub(error, 300) if error else None}})
+    logger.warning(f"[send-retry] {kind} failed; trying again at "
+                   f"{send_retry.next_try(1, now).isoformat()}" + (f": {error}" if error else ""))
+    return qid
+
+
+def _ny_day_end(now: datetime) -> datetime:
+    """Midnight New York after `now`, in UTC: a day-scoped message's window."""
+    local = wa_brief.local_now(now)
+    return (local.replace(hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(days=1)).astimezone(timezone.utc)
+
+
+async def _dm_retry_if_failed(user_id: Any, message: str, *, kind: str, window: str,
+                              company_id: Any, project_id: Any = None,
+                              deadline: Optional[datetime] = None,
+                              now: Optional[datetime] = None) -> bool:
+    """After send_whatsapp_dm returned None: when WaAPI failed it (the
+    ledger claim says "failed"), queue it to be tried again; a refusal (no
+    opt-in, prefs off) is not retried. True when queued."""
+    key = wa_dm.ledger_key(str(user_id), project_id, kind, window)
+    try:
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
+    except Exception:
+        row = None
+    if (row or {}).get("status") != "failed":
+        return False
+    await _retry_later({"via": "dm", "user_id": str(user_id), "message": message, "kind": kind,
+                        "window": window, "project_id": project_id},
+                       company_id=company_id, project_id=project_id, kind=kind,
+                       error=row.get("error"), deadline=deadline, now=now)
+    return True
+
+
 async def _quiet_or_send(spec: dict, *, company_id: Any, project_id: Any = None, kind: str,
-                         now: Optional[datetime] = None):
-    """Send now, or -- over Shabbos / Yom Tov -- queue it: "queued"."""
+                         now: Optional[datetime] = None, deadline: Optional[datetime] = None):
+    """THE way a scheduled message goes out. Over Shabbos / Yom Tov it is
+    queued for after ("queued"); otherwise sent now, and when that send fails
+    it is queued to be tried again ("retrying", _retry_later) -- Wed Oct 14:
+    one WaAPI 500 and a scheduled message was simply gone."""
     until = await _shabbos_quiet(company_id, project_id, now)
     if until:
         await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
                              until=until, now=now)
         return "queued"
-    return await _quiet_deliver(spec)
+    sent = await _quiet_deliver(spec)
+    if sent in (None, False) and spec.get("via") != "dm":
+        out = await _retry_later(spec, company_id=company_id, project_id=project_id, kind=kind,
+                                 deadline=deadline, now=now)
+        return None if out == "failed" else "retrying"
+    return sent
 
 
 async def _ledger_hold(key: str, status: str, *, user_id: Any, company_id: Any, kind: str,
@@ -46398,7 +46470,23 @@ async def _quiet_dm(user_id: Any, message: str, *, company_id: Any, kind: str, w
 
 
 QUIET_MAX_ATTEMPTS = 5
-QUIET_RETRY = timedelta(minutes=10)
+
+
+async def _retry_expired(r: dict, spec: dict, now: datetime, attempts: Optional[int] = None,
+                         err: Optional[str] = None) -> None:
+    """A retry row whose window closed: failed for good, never sent late."""
+    attempts = attempts if attempts is not None else int(r.get("attempts") or 1)
+    if spec.get("gc_ledger_id"):
+        await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                       {"$set": {"status": "failed"}})
+    await _quiet_undelivered(spec)
+    await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+        "status": "failed", "delivered_at": now, "attempts": attempts}})
+    await _send_failed_alert(
+        str(r.get("kind") or "scheduled"), str(r["_id"]), company_id=r.get("company_id"),
+        user_id=spec.get("user_id"), error=err or r.get("last_error") or "not accepted",
+        first_at=_utc(r.get("first_failed_at")) or _utc(r.get("deliver_after")),
+        attempts=attempts, now=now)
 QUIET_LEASE = timedelta(minutes=15)
 
 
@@ -46448,8 +46536,9 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
         # A group re-linked meanwhile (another job, another company): what
         # was written for the old job never goes to it.
         group = _quiet_group_of(spec)
-        if group and r.get("project_id") and not await _gc_group_bound_to(
-                group, r.get("company_id"), r.get("project_id")):
+        bound = (await _gc_group_bound_to(group, r.get("company_id"), r.get("project_id"))
+                 if group and r.get("project_id") else True)
+        if not bound:
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "dropped_unbound", "delivered_at": now}})
             if spec.get("gc_ledger_id"):
@@ -46457,14 +46546,45 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
                                                {"$set": {"status": "dropped_unbound"}})
             report["unbound"] += 1
             continue
+        if spec.get("gc_ledger_id") and isinstance(bound, dict) and not _effective_bot_config(
+                (bound.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            # The group's bot was switched off meanwhile: an alert found
+            # while off never posts later (as in _gc_alerts_tick).
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "dropped_bot_off", "delivered_at": now}})
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "seen_while_off"}})
+            report["bot_off"] = report.get("bot_off", 0) + 1
+            continue
+        dl = _utc(r.get("deadline"))
+        if r.get("retry") and dl and now >= dl:
+            # Its window closed before the try (a late worker): never sent
+            # late -- a day-before DM after midnight is wrong, not late.
+            await _retry_expired(r, spec, now)
+            report["failed"] += 1
+            continue
+        if r.get("retry"):
+            # A retry that comes due over Shabbos / Yom Tov waits for after
+            # it, and keeps its window from there.
+            until = await _shabbos_quiet(r.get("company_id"), r.get("project_id"), now)
+            if until:
+                dl = _utc(r.get("deadline")) or now
+                await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                    "status": "queued", "deliver_after": until,
+                    "deadline": until + max(dl - now, SEND_RETRY_WINDOW)}})
+                continue
         sent = None
+        err = None
         try:
             if spec.get("ledger_id"):      # the hold, so the DM's own claim can be taken
                 await db[WA_LEDGER].delete_one({"_id": spec["ledger_id"], "status": "queued_shabbos"})
             sent = await _quiet_deliver(spec)
         except Exception as e:
+            err = f"{type(e).__name__}: {e}"
             logger.warning(f"[shabbos-queue] send failed: {type(e).__name__}")
         ok = sent not in (None, False)
+        # Tries so far, this one included (a retry row starts at 1: the
+        # failed send it was made from).
         attempts = int(r.get("attempts") or 0) + 1
         if ok:
             if spec.get("gc_ledger_id"):
@@ -46473,17 +46593,29 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "sent", "delivered_at": now, "attempts": attempts}})
             report["sent"] += 1
-        elif attempts < QUIET_MAX_ATTEMPTS:
+        elif attempts < QUIET_MAX_ATTEMPTS and not send_retry.is_final(
+                attempts, now, _utc(r.get("deadline"))):
+            # After 5, 15, then 30 minutes (lib/send_retry), as every
+            # scheduled send.
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "queued", "attempts": attempts,
-                "deliver_after": now + QUIET_RETRY * attempts}})
+                "deliver_after": send_retry.next_try(attempts, now)}})
             report["retry"] += 1
         else:
-            if spec.get("gc_ledger_id"):   # the next alerts run tries it again
-                await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
+            if spec.get("gc_ledger_id"):
+                if r.get("retry"):         # failed for good: the operator is told, not re-posted daily
+                    await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                                   {"$set": {"status": "failed"}})
+                else:                      # the next alerts run tries it again
+                    await db[WA_LEDGER].delete_one({"_id": spec["gc_ledger_id"]})
             await _quiet_undelivered(spec)
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "failed", "delivered_at": now, "attempts": attempts}})
+            await _send_failed_alert(
+                str(r.get("kind") or "scheduled"), str(r["_id"]), company_id=r.get("company_id"),
+                user_id=spec.get("user_id"), error=err or r.get("last_error") or "not accepted",
+                first_at=_utc(r.get("first_failed_at")) or _utc(r.get("deliver_after")),
+                attempts=attempts, now=now)
             report["failed"] += 1
     if report["due"]:
         logger.info(f"[shabbos-queue] {report}")
@@ -47067,13 +47199,25 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             # group, and its bot still switched on.
             sent = None
             again = await _gc_group_bound_to(group_id, company_id, project_id)
-            if again and _effective_bot_config(
-                    (again.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            live = bool(again) and _effective_bot_config(
+                (again.get("group") or {}).get("bot_config"))["bot_enabled"]
+            if live:
                 sent = await send_whatsapp_message(group_id, text)
             posts += 1
             if sent is None:
                 report["failed"] += 1
-                try:  # not posted: release the claim so the next run retries
+                if live:
+                    # Not posted: tried again on the shared schedule (lib/
+                    # send_retry) for up to a day, then an operator is told.
+                    # The claim stays, so the alerts run never posts it too.
+                    await db[WA_LEDGER].update_one({"_id": lid, "status": "sending"},
+                                                   {"$set": {"status": "retrying"}})
+                    await _retry_later({"via": "chat", "chat_id": group_id, "message": text,
+                                        "gc_ledger_id": lid},
+                                       company_id=company_id, project_id=project_id,
+                                       kind=f"gc_{kind}", deadline=now + timedelta(days=1), now=now)
+                    continue
+                try:  # unbound or switched off: release the claim for the next run
                     await db[WA_LEDGER].delete_one({"_id": lid, "status": "sending"})
                 except Exception:
                     pass
@@ -51464,6 +51608,11 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                     continue
                 sent = await send_whatsapp_dm(uid, text, kind=UPCOMING_DAY_BEFORE_KIND,
                                               window=tomorrow.isoformat())
+                if not sent and await _dm_retry_if_failed(
+                        uid, text, kind=UPCOMING_DAY_BEFORE_KIND, window=tomorrow.isoformat(),
+                        company_id=cid, deadline=_ny_day_end(now), now=now):
+                    report["retrying"] = report.get("retrying", 0) + 1
+                    continue
                 report["day_before_sent" if sent else "refused"] += 1
             except Exception as e:
                 logger.warning(f"[upcoming] day-before failed: {type(e).__name__}")
@@ -51493,6 +51642,11 @@ async def _upcoming_notify_tick(now: Optional[datetime] = None) -> dict:
                 continue
             sent = await send_whatsapp_dm(uid, f"Reminder{t}: {r.get('title')}",
                                           kind=UPCOMING_REMINDER_KIND, window=str(r["_id"]))
+            if not sent and await _dm_retry_if_failed(
+                    uid, f"Reminder{t}: {r.get('title')}", kind=UPCOMING_REMINDER_KIND,
+                    window=str(r["_id"]), company_id=cid, deadline=_ny_day_end(now), now=now):
+                report["retrying"] = report.get("retrying", 0) + 1
+                continue
             report["reminders_sent" if sent else "refused"] += 1
     logger.info(f"[upcoming] notify {report}")
     return report
