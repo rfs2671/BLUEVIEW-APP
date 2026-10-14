@@ -218,20 +218,24 @@ class TypingDuringAWalk(_Walk):
     projects = (P588,)
 
     def test_a_note_on_the_photo_just_sent(self):
+        # A text after a captioned photo: about it (its batch) -- a note, its
+        # own words kept (Tue Oct 13, 3:37 PM: a text is never an item).
         self._turn("Bulb burnt 2D", photo=True)
         (said,) = self._turn("also the fixture is loose")
-        self.assertTrue(said.startswith("#1 'Bulb burnt' (Floor 2 · Apt 2D) — got it."))
-        self.assertEqual(self.item(1)["notes"][0]["text"], "also the fixture is loose")
+        self.assertEqual(said, "Got it — #1 (1 photo): The fixture is loose.")
+        self.assertEqual(self.item(1)["text"], "Bulb burnt")
+        self.assertEqual(self.item(1)["notes"][0]["text"], "The fixture is loose")
         self.assertEqual(self.assistant, [])
+        self.assertEqual(len(self.sess()["items"]), 1)
 
-    def test_which_photo_when_the_last_one_is_not_recent(self):
+    def test_a_text_later_is_still_about_its_batch(self):
+        # However long after: the photos since the previous text.
         self._turn("Bulb burnt 2D", photo=True)
         self._turn("Missing screw 4F", photo=True)
         self.sess()["items"][-1]["at"] = datetime.now(timezone.utc) - timedelta(minutes=30)
-        self.assertEqual(self._turn("hinge is loose too"), [punch.WHICH_PHOTO])
-        (said,) = self._turn("1")
-        self.assertTrue(said.startswith("#1 'Bulb burnt'"))
-        self.assertEqual(self.item(1)["notes"][0]["text"], "hinge is loose too")
+        (said,) = self._turn("hinge is loose too")
+        self.assertEqual(said, "Got it — #2 (1 photo): Hinge is loose too.")   # after its own words
+        self.assertEqual(len(self.sess()["items"]), 2)
         self.assertEqual(self.assistant, [])
 
     def test_hash_number_targets_a_photo(self):

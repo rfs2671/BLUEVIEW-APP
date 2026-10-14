@@ -40,12 +40,12 @@ class GroupLocations(_Walk):
         self._turn("starting walkthrough at 588")
         self.photos(*[f"defect {i}" for i in range(1, 13)])
         (said,) = self._turn("all 2nd floor interior")
-        self.assertEqual(said, "Set 2nd floor (interior) for #1–#12 (12 photos).")
+        self.assertEqual(said, "Got it — #1–#12 (12 photos): 2nd floor (interior).")
         for n in range(1, 13):
             self.assertEqual((self.item(n)["floor"], self.item(n)["area"]), ("2", "interior"))
         self.photos(*[f"flashing loose {i}" for i in range(13, 18)])
         (said,) = self._turn("roof")
-        self.assertEqual(said, "Set roof for #13–#17 (5 photos).")
+        self.assertEqual(said, "Got it — #13–#17 (5 photos): roof.")
         self.assertEqual([self.item(n)["area"] for n in range(13, 18)], ["roof"] * 5)
         self.assertEqual(self.item(12)["area"], "interior")              # untouched
 
@@ -58,8 +58,7 @@ class GroupLocations(_Walk):
                 self.setUp()
                 self.photos("a", "b")
                 (out,) = self._turn(said)
-                self.assertTrue(out.endswith("for #1–#2 (2 photos).") or out.endswith(
-                    "for #1, #2 (2 photos)."), out)
+                self.assertTrue(out.startswith("Got it — #1, #2 (2 photos): "), out)
                 got = (self.item(1).get("floor"), self.item(1)["area"])
                 self.assertEqual(got[1], where[1])
 
@@ -69,7 +68,7 @@ class GroupLocations(_Walk):
         self.assertEqual(self.item(2)["area"], "lobby")
         self.assertNotIn("area", {k for k, v in self.item(3).items() if v not in (None, "?")})
         (out,) = self._turn("all roof")
-        self.assertEqual(out, "Set roof for #3 (1 photo).")
+        self.assertEqual(out, "Got it — #3 (1 photo): roof.")         # only the one it changed
         self.assertEqual((self.item(1)["area"], self.item(2)["area"], self.item(3)["area"]),
                          ("Apt 4F", "lobby", "roof"))
 
@@ -78,7 +77,7 @@ class GroupLocations(_Walk):
         self.photos("a", "b", "c")
         self._turn("#2 lobby")
         (out,) = self._turn("all roof")
-        self.assertEqual(out, "Set roof for #1, #3 (2 photos).")
+        self.assertEqual(out, "Got it — #1, #3 (2 photos): roof.")
         self.assertEqual(self.item(2)["area"], "lobby")
 
     def test_numbers(self):
@@ -95,21 +94,22 @@ class GroupLocations(_Walk):
         self.assertEqual([self.item(n).get("area") for n in (1, 2, 3)], [punch.UNKNOWN] * 3)
         # The next group is the same photos again.
         (out,) = self._turn("roof")
-        self.assertEqual(out, "Set roof for #1–#3 (3 photos).")
+        self.assertEqual(out, "Got it — #1–#3 (3 photos): roof.")
 
     def test_loose_words_through_the_model(self):
         async def model(text):
-            return {"kind": "location", "scope": "group", "numbers": [],
-                    "location": "back of building"} if "back" in text else {"kind": "other"}
-        with patch.object(server, "_punch_loc_model", model):
+            return {"kind": "annotation", "area": "back of building"} if "back" in text \
+                else {"kind": "annotation", "description": "Hinge loose too"}
+        with patch.object(server, "_punch_batch_model", model):
             self.photos("a", "b")
             (out,) = self._turn("ok so all of that was back of the building")
-            self.assertEqual(out, "Set back of building for #1, #2 (2 photos).")
-            # Not a place: a note on the photo just sent, as before.
+            self.assertEqual(out, "Got it — #1, #2 (2 photos): back of building.")
+            # Not a place: about the photos since -- #3 has its own words, so a note.
             self._turn("c", photo=True)
             (out,) = self._turn("hinge loose too")
-            self.assertIn("got it", out)
+            self.assertEqual(out, "Got it — #3 (1 photo): Hinge loose too.")
         self.assertEqual(self.item(3).get("area"), punch.UNKNOWN)
+        self.assertEqual(self.item(3)["notes"][0]["text"], "Hinge loose too")
 
     def test_the_model_is_checked(self):
         self.assertIsNone(punch.clean_loc_model({"kind": "other", "location": "roof"}))
@@ -157,7 +157,7 @@ class AWalkFromBefore(_Walk):
         self.assertEqual(self.item(1).get("area"), punch.UNKNOWN)
         # The next group starts after #4 (Codex on #783): "roof" now is #5 only.
         (said,) = self._turn("all roof")
-        self.assertEqual(said, "Set roof for #5 (1 photo).")
+        self.assertEqual(said, "Got it — #5 (1 photo): roof.")
         self.assertEqual(self.item(4)["area"], "cellar")
 
     def test_the_old_rules_note_is_read_whole(self):
