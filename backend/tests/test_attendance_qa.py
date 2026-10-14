@@ -70,6 +70,19 @@ class SubAttendance(unittest.TestCase):
         s = A.summary(rows, WED, "arkon")
         self.assertEqual((len(s["days"]), s["man_days"]), (1, 1))
 
+    def test_a_worker_in_two_companies_one_day_counts_once_first_company(self):
+        # Codex on #794: a corrected company on a later check-in is not a
+        # second worker -- the first check-in's company, as the headcount does.
+        d = date(2026, 10, 13)
+        rows = [{"worker_id": "a", "worker_company": "Arkon", "check_in_time": _at(d, 7)},
+                {"worker_id": "a", "worker_company": "Power Direct", "check_in_time": _at(d, 13)},
+                {"worker_id": "b", "worker_company": "Power Direct", "check_in_time": _at(d, 8)}]
+        days = A.by_day(reversed(rows))
+        self.assertEqual({c: sorted(w) for c, w in days[d].items()},
+                         {"Arkon": ["a"], "Power Direct": ["b"]})
+        self.assertEqual(A.summary(rows, WED)["man_days"], 2)
+        self.assertEqual(A.summary(rows, WED, "power direct")["man_days"], 1)
+
     def test_no_check_ins_says_so(self):
         self.assertEqual(A.answer("sub_attendance", {"sub": "arkon", "range": "last week"}, [], WED, "588"),
                          "No check-ins at 588 from a company called 'arkon'.")
@@ -134,6 +147,10 @@ class Ranges(unittest.TestCase):
             "since Oct 1": (date(2026, 10, 1), date(2026, 10, 14)),
             "on Oct 3": (date(2026, 10, 3), date(2026, 10, 3)),
             "from Oct 1 to Oct 9": (date(2026, 10, 1), date(2026, 10, 9)),
+            # Codex on #794: one interval, one year; past today ends today.
+            "from Oct 1 to Oct 20": (date(2026, 10, 1), date(2026, 10, 14)),
+            "from Nov 1 to Nov 9": (date(2025, 11, 1), date(2025, 11, 9)),
+            "between Dec 20 and Jan 5": (date(2025, 12, 20), date(2026, 1, 5)),
             "September": (date(2026, 9, 1), date(2026, 9, 30)),
             "the last 2 weeks": (date(2026, 10, 1), date(2026, 10, 14)),
             "yesterday": (date(2026, 10, 13), date(2026, 10, 13)),

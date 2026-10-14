@@ -56,7 +56,7 @@ _DAY = re.compile(r"\b(?P<m>" + _MON + r")\s+(?P<d>\d{1,2})(?:st|nd|rd|th)?\b(?:
 _NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "a": 1, "an": 1}
 
 
-def _a_day(m: "re.Match", today: date) -> Optional[date]:
+def _a_day(m: "re.Match", today: date, roll: bool = True) -> Optional[date]:
     try:
         if m.group("m"):
             mon = _MONTHS[m.group("m").lower().rstrip(".")]
@@ -68,9 +68,32 @@ def _a_day(m: "re.Match", today: date) -> Optional[date]:
             d = date(y, int(m.group("m2")), int(m.group("d2")))
     except (ValueError, KeyError):
         return None
-    if not (m.group("y") if m.group("m") else m.group("y2")) and d > today:
+    if roll and not _has_year(m) and d > today:
         d = d.replace(year=d.year - 1)               # "Dec 3" said in October: last year's
     return d
+
+
+def _has_year(m: "re.Match") -> bool:
+    return bool(m.group("y") if m.group("m") else m.group("y2"))
+
+
+def _interval(found: List["re.Match"], today: date) -> Optional[Tuple[date, date]]:
+    """"from Oct 1 to Oct 20" said on Oct 14: both ends in the same year,
+    read together (Codex on #794) -- never Oct 20 last year to Oct 1 this
+    year. Said in that order ("Dec 20 to Jan 5" crosses New Year). A no-year
+    interval wholly ahead of today is last year's; one that runs past today
+    ends today."""
+    a, b = (_a_day(m, today, roll=False) for m in found[:2])
+    if not a or not b:
+        return None
+    if not (_has_year(found[0]) or _has_year(found[1])):
+        if b < a:
+            a = a.replace(year=a.year - 1)           # "Dec 20 to Jan 5": across New Year
+        if a > today:
+            a, b = a.replace(year=a.year - 1), b.replace(year=b.year - 1)
+        elif b > today:
+            b = today
+    return tuple(sorted((a, b)))
 
 
 def parse_range(text: Any, now: datetime) -> Tuple[Optional[date], Optional[date], str]:
@@ -82,10 +105,13 @@ def parse_range(text: Any, now: datetime) -> Tuple[Optional[date], Optional[date
     today = local_day(now) or now.date()
     if not t:
         return None, None, ""
-    days = [d for d in (_a_day(m, today) for m in _DAY.finditer(t)) if d]
-    if re.search(r"\b(?:from|between)\b", t) and len(days) >= 2:
-        a, b = sorted(days[:2])
-        return a, b, f"{_label(a, today)} → {_label(b, today)}"
+    found = list(_DAY.finditer(t))
+    days = [d for d in (_a_day(m, today) for m in found) if d]
+    if re.search(r"\b(?:from|between)\b", t) and len(found) >= 2:
+        both = _interval(found, today)
+        if both:
+            a, b = both
+            return a, b, f"{_label(a, today)} → {_label(b, today)}"
     if re.search(r"\b(?:since|after|starting)\b", t) and days:
         return days[0], today, f"since {_label(days[0], today)}"
     if re.search(r"\b(?:until|through|before|thru)\b", t) and days:
@@ -143,12 +169,26 @@ def by_day(rows: Iterable[Dict[str, Any]], date_from: Optional[date] = None,
            date_to: Optional[date] = None) -> Dict[date, Dict[str, set]]:
     """{day: {company: {worker, ...}}} -- each worker once per day."""
     out: Dict[date, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
-    for r in rows:
+    seen: set = set()
+    # A worker is counted once a day, with the company of their FIRST check-in
+    # that day -- as the headcount and the brief do -- even if a later one
+    # says another company (a correction). Codex on #794.
+    for r in sorted(rows, key=lambda x: _sort_at(x.get("check_in_time"))):
         d = local_day(r.get("check_in_time"))
         if d is None or (date_from and d < date_from) or (date_to and d > date_to):
             continue
+        k = (d, worker_key(r))
+        if k in seen:
+            continue
+        seen.add(k)
         out[d][checkin_company(r) or "No company"].add(worker_key(r))
     return out
+
+
+def _sort_at(at: Any) -> datetime:
+    if not isinstance(at, datetime):
+        return datetime.max.replace(tzinfo=timezone.utc)
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
 
 
 def pick_sub(rows: List[Dict[str, Any]], sub: str) -> Dict[str, Any]:
@@ -173,10 +213,14 @@ def summary(rows: Iterable[Dict[str, Any]], now: datetime, sub: Optional[str] = 
             return {**out, "ambiguous": got["ambiguous"]}
         if not got["companies"]:
             return {**out, "no_such": True}
-        keep = {_fold(c) for c in got["companies"]}
-        rows = [r for r in rows if _fold(checkin_company(r)) in keep]
         out["companies"] = got["companies"]
+    # Counted over everyone first, so a worker is that day's in one company
+    # only; then this sub's share.
     days = by_day(rows, date_from, date_to)
+    if sub:
+        keep = {_fold(c) for c in got["companies"]}
+        days = {d: {c: w for c, w in cs.items() if _fold(c) in keep} for d, cs in days.items()}
+        days = {d: cs for d, cs in days.items() if cs}
     per = {d: sum(len(w) for w in days[d].values()) for d in sorted(days)}
     if not per:
         return out
