@@ -80,15 +80,6 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
             r3 = _tick(c2, THU_7 + timedelta(minutes=20))
         self.assertEqual((r3["already"], len(_sends(c2))), (1, 0))
 
-    def test_at_most_three_tries_a_day(self):
-        db = _world()
-        _optin(db, "u_admin", ADMIN_PHONE)
-        with _Ctx(db, wire=_Wire([(400, {}, None)] * 5)) as c:
-            for i in range(5):
-                _tick(c, THU_7 + timedelta(minutes=10 * i))
-        self.assertEqual(len(_sends(c)), server.BRIEF_MAX_ATTEMPTS)
-        self.assertEqual(_log(db)["attempts"], 3)
-
     def test_a_send_stuck_in_sending_is_tried_again(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
@@ -136,22 +127,6 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
         self.assertEqual((_log(db)["reason"], _log(db)["error"]), ("error", "KeyError: 'due_at'"))
         self.assertTrue(any("KeyError: 'due_at'" in m for m in logs.output))
 
-    def test_a_brief_that_fails_before_sending_stops_after_three(self):
-        # Codex on #791: composing it raised, so no ledger row -- the
-        # attempts still cap it.
-        db = _world()
-        _optin(db, "u_admin", ADMIN_PHONE)
-        calls = []
-
-        async def boom(user, now):
-            calls.append(now)
-            raise KeyError("due_at")
-        with _Ctx(db) as c, patch.object(server, "_brief_for_user", boom), \
-                self.assertLogs(server.logger, "ERROR"):
-            for i in range(6):
-                _tick(c, THU_7 + timedelta(minutes=10 * i))
-        self.assertEqual(len(calls), server.BRIEF_MAX_ATTEMPTS)
-
     def test_the_error_survives_a_successful_retry(self):
         # Codex on #791: the history keeps each try's error.
         db = _world()
@@ -161,7 +136,7 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
             _tick(c, THU_7 + timedelta(minutes=10))
         hist = _log(db)["history"]
         self.assertEqual([(h["status"], h["error"]) for h in hist],
-                         [("failed", "http 400"), ("sent", None)])
+                         [("failed", "http 400 (send-message)"), ("sent", None)])
 
     def test_shabbos_skip_and_no_jobs_are_logged(self):
         db = _world()
@@ -174,6 +149,147 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
             text = _run(server._brief_status_for("u_admin", THU, THU_7))
         self.assertEqual((_log(db)["status"], _log(db)["reason"]), ("skipped", "shabbos"))
         self.assertIn("Shabbos", text)
+
+
+def _ny(h, m=0):
+    """Thu Oct 8 2026 (the test world's day), New York time."""
+    return datetime(2026, 10, 8, h, m, tzinfo=NY).astimezone(timezone.utc)
+
+
+class TheRetryPolicy(unittest.TestCase):
+    """Wed Oct 14 in prod: WaAPI send-message answered 500 at 8:05; the
+    ledger said "failed" and nothing more happened that day."""
+
+    def setUp(self):
+        self.db = _world()
+        _optin(self.db, "u_admin", ADMIN_PHONE)
+        self.db.notification_preferences.rows.append(
+            {"_id": "np", "user_id": "u_admin", "project_id": None,
+             "whatsapp": {"brief_time": "08:00"}})
+        self.db.users.rows.append({"_id": "op", "is_platform_operator": True,
+                                   "email": "ops@levelog.test"})
+        self.emails = []
+
+    def _ticks(self, wire, times):
+        async def email(db, **kw):
+            self.emails.append(kw)
+            return {"status": "sent"}
+        tried = []
+        with _Ctx(self.db, wire=wire) as c, \
+                patch("lib.notifications.send_notification", email):
+            for t in times:
+                before = len(_sends(c))
+                _tick(c, t)
+                if len(_sends(c)) > before:
+                    tried.append(t)
+        return c, tried
+
+    def test_the_500_at_805_goes_out_on_the_next_try_and_once(self):
+        five_hundred = (500, {"_text": "<html>Internal Server Error</html>"}, None)
+        c, tried = self._ticks(_Wire([five_hundred] * wa_dm.DM_SEND_ATTEMPTS),
+                               [_ny(8, 5), _ny(8, 7), _ny(8, 15), _ny(8, 25), _ny(9, 0)])
+        self.assertEqual(tried, [_ny(8, 5), _ny(8, 15)])   # 8:07 waits for 8:10
+        self.assertEqual(_ledger(self.db)["status"], "sent")
+        log = _log(self.db)
+        self.assertEqual([h["status"] for h in log["history"]], ["failed", "sent"])
+        # 1. which call, its status and what WaAPI said:
+        self.assertEqual(log["history"][0]["error"],
+                         "http 500 (send-message): {\"_text\":\"<html>Internal Server Error</html>\"}")
+        self.assertEqual(self.emails, [])
+
+    def test_backoff_5_15_30_until_the_window_closes_then_one_alert(self):
+        c, tried = self._ticks(_Wire([(400, {"error": "boom"}, None)] * 40),
+                               [_ny(8, 5) + timedelta(minutes=5 * i) for i in range(40)])
+        self.assertEqual([wa_facts._clock(t) for t in tried],
+                         ["8:05", "8:10", "8:25", "8:55", "9:25", "9:55", "10:25", "10:55"])
+        log = _log(self.db)
+        self.assertTrue(log["final"])
+        self.assertEqual(log["attempts"], 8)
+        # 4. one operator alert, a row for the owner portal, and the status:
+        self.assertEqual(len(self.emails), 1)
+        self.assertEqual(self.emails[0]["permit_renewal_id"], f"send_failed:morning_brief:u_admin:{THU}")
+        fail = self.db[server.SEND_FAILURES].rows[0]
+        self.assertEqual((fail["kind"], fail["attempts"]), ("morning_brief", 8))
+        self.assertIn("http 400 (send-message)", fail["error"])
+        with _Ctx(self.db):
+            text = _run(server._brief_status_for("u_admin", THU, _ny(11, 30)))
+        self.assertEqual(text, 'Sending failed at 8:05 (WhatsApp error). '
+                               'Say "send me my brief" to try again.')
+
+    def test_a_brief_that_cannot_be_built_follows_the_same_policy(self):
+        calls = []
+
+        async def boom(user, now):
+            calls.append(now)
+            raise KeyError("due_at")
+        with patch.object(server, "_brief_for_user", boom), self.assertLogs(server.logger, "ERROR"):
+            self._ticks(_Wire(), [_ny(8, 5), _ny(8, 7), _ny(8, 15), _ny(8, 20), _ny(8, 30)])
+        self.assertEqual([wa_facts._clock(t) for t in calls], ["8:05", "8:15", "8:30"])
+        self.assertEqual(_log(self.db)["reason"], "error")
+
+
+class TheLedgerNeverBlocksARetry(unittest.TestCase):
+    """5. Every DM: a "failed" claim (or one stuck "sending") is taken over
+    by the next send; a sent one still blocks."""
+
+    def _send(self, c):
+        return _run(server.send_whatsapp_dm("u_admin", "hello", kind="morning_brief",
+                                            window="2026-10-08"))
+
+    def test_failed_then_sent_then_blocked(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        with _Ctx(db, wire=_Wire([(400, {}, None)])) as c:
+            self.assertIsNone(self._send(c))
+            self.assertEqual(_ledger(db)["status"], "failed")
+            self.assertIsNotNone(self._send(c))
+            self.assertEqual(_ledger(db)["status"], "sent")
+            self.assertIsNone(self._send(c))          # never twice
+        self.assertEqual(len(_sends(c)), 2)
+        self.assertEqual(_ledger(db)["tries"], 1)
+
+    def test_a_stale_sending_claim_is_taken_over(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        key = wa_dm.ledger_key("u_admin", None, "morning_brief", "2026-10-08")
+        db[server.WA_LEDGER].rows.append({"_id": key, "status": "sending",
+                                          "created_at": datetime.now(timezone.utc) - timedelta(hours=1)})
+        with _Ctx(db) as c:
+            self.assertIsNotNone(self._send(c))
+
+    def test_a_fresh_sending_claim_blocks(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        key = wa_dm.ledger_key("u_admin", None, "morning_brief", "2026-10-08")
+        db[server.WA_LEDGER].rows.append({"_id": key, "status": "sending",
+                                          "created_at": datetime.now(timezone.utc)})
+        with _Ctx(db) as c:
+            self.assertIsNone(self._send(c))
+        self.assertEqual(_sends(c), [])
+
+
+class TheErrorText(unittest.TestCase):
+
+    def test_waapi_error(self):
+        from lib import send_retry
+        self.assertEqual(send_retry.waapi_error("send-message", 500, {"_text": "Bad Gateway"}, None),
+                         'http 500 (send-message): {"_text":"Bad Gateway"}')
+        self.assertEqual(send_retry.waapi_error("send-message", 500, {}, None),
+                         "http 500 (send-message)")
+        self.assertEqual(send_retry.waapi_error("send-message", None, None, TimeoutError()),
+                         "TimeoutError (send-message)")
+        said = send_retry.waapi_error("send-message", 400,
+                                      {"error": "chat 15550001234@c.us not found"}, None)
+        self.assertNotIn("15550001234", said)
+        self.assertIn("[number]", said)
+
+    def test_the_schedule(self):
+        from lib import send_retry
+        t = _ny(8, 5)
+        self.assertEqual([send_retry.next_try(n, t) - t for n in (1, 2, 3, 4, 9)],
+                         [timedelta(minutes=m) for m in (5, 15, 30, 30, 30)])
+        self.assertTrue(send_retry.is_final(4, _ny(10, 40), _ny(11)))
+        self.assertFalse(send_retry.is_final(4, _ny(10, 25), _ny(11)))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -212,9 +328,31 @@ class BriefStatus(unittest.TestCase):
         self.assertIn("could not be put together", text)
 
     def test_a_failed_ledger_row_alone(self):
-        text = wa_facts.brief_status_text(None, {"status": "failed", "error": "http 500"},
-                                          {"brief_time": "08:00"}, WED, WED.astimezone(NY).date())
-        self.assertTrue(text.startswith("Today's brief was not sent"))
+        # The diag on Wed Oct 14: ledger failed, created 8:04:59, finished
+        # 8:05:43, http 500, no brief_log row. Was "Today's brief was not
+        # sent: it was not sent."
+        led = {"status": "failed", "error": "http 500",
+               "created_at": datetime(2026, 10, 14, 8, 4, 59, tzinfo=NY),
+               "finished_at": datetime(2026, 10, 14, 8, 5, 43, tzinfo=NY)}
+        text = wa_facts.brief_status_text(None, led, {"brief_time": "08:00"}, WED,
+                                          WED.astimezone(NY).date())
+        self.assertEqual(text, 'Sending failed at 8:05 (WhatsApp error). '
+                               'Say "send me my brief" to try again.')
+
+    def test_while_a_retry_is_pending(self):
+        log = {"status": "failed", "reason": "send_failed", "attempts": 1,
+               "first_failed_at": datetime(2026, 10, 14, 8, 5, tzinfo=NY),
+               "next_try_at": datetime(2026, 10, 14, 8, 10, tzinfo=NY), "final": False}
+        self.assertEqual(
+            wa_facts.brief_status_text(log, None, {"brief_time": "08:00"}, WED, WED.astimezone(NY).date()),
+            'Sending failed at 8:05 (WhatsApp error). I\'ll try again at 8:10. '
+            'Say "send me my brief" to try again.')
+
+    def test_a_refusal_without_a_reason_never_repeats_itself(self):
+        text = wa_facts.brief_status_text({"status": "refused"}, None, {"brief_time": "08:00"},
+                                          WED, WED.astimezone(NY).date())
+        self.assertNotIn("not sent: it was not sent", text)
+        self.assertTrue(text.startswith("I can't see why today's brief wasn't sent."))
 
     def test_off(self):
         text = wa_facts.brief_status_text(None, None, {"brief_time": "off"}, WED,
@@ -260,7 +398,8 @@ class UserLevel(_Harness, unittest.TestCase):
         with _Ctx(db) as c:
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "Why didnt I get morning brief")
         self.assertNotIn("Which job", reply)
-        self.assertTrue(reply.startswith("Today's brief was not sent: WhatsApp did not accept"))
+        self.assertTrue(reply.startswith("Sending failed at "), reply)
+        self.assertTrue(reply.endswith('Say "send me my brief" to try again.'))
         self.assertEqual(self.agent_calls, [])
 
     def test_no_record_says_so(self):

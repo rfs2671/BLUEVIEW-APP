@@ -323,40 +323,62 @@ REASONS = {
 }
 
 
+def _clock(at: Any) -> str:
+    """"8:05" (New York), or "" for no time."""
+    if not isinstance(at, datetime):
+        return ""
+    at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    return _fmt(at.astimezone(NY), "%-I:%M")
+
+
 def brief_status_text(log: Optional[Dict[str, Any]], ledger: Optional[Dict[str, Any]],
                       settings: Dict[str, Any], now: datetime, day: date) -> str:
-    """From the send log only: "Your brief went out today at 8:00 AM.",
-    "Today's brief was not sent: <why>.", or that there is no record --
-    never a guess."""
-    today = local_day(now)
-    which = "Today's brief" if day == today else f"The brief for {_fmt(day, '%a %b %-d')}"
-    status = (log or {}).get("status")
-    at = (log or {}).get("sent_at") or (log or {}).get("at")
+    """From the send log only: "Today's brief went out at 8:05 AM.",
+    "Sending failed at 8:05 (WhatsApp error). …", "…was not sent: <why>.",
+    or that there is no record -- never a guess."""
+    is_today = day == local_day(now)
+    which = "Today's brief" if is_today else f"The brief for {_fmt(day, '%a %b %-d')}"
+    log = dict(log or {})
+    status = log.get("status")
+    at = log.get("sent_at") or log.get("at")
     if not status and ledger:
-        status = {"sent": "sent", "failed": "failed", "sending": "failed",
-                  "skipped_shabbos": "skipped"}.get(ledger.get("status"), ledger.get("status"))
+        # The ledger alone (a send before brief_log existed).
+        lst = ledger.get("status")
+        status = {"sending": "failed", "skipped_shabbos": "skipped"}.get(lst, lst)
         at = ledger.get("finished_at") or ledger.get("created_at")
-        if ledger.get("status") == "skipped_shabbos":
-            log = {"reason": "shabbos"}
+        log["reason"] = {"failed": "send_failed", "sending": "send_failed",
+                         "skipped_shabbos": "shabbos"}.get(lst)
     if status in ("sent", "resent"):
         t = _fmt(at.astimezone(NY), "%-I:%M %p") if isinstance(at, datetime) else ""
         return f"{which} went out" + (f" at {t}." if t else ".")
-    if status in ("failed", "refused", "skipped"):
-        # The reason in words only: the raw error stays in brief_log and the
-        # server log, never in a WhatsApp reply.
-        why = REASONS.get((log or {}).get("reason") or "", "") or "it was not sent"
-        return (f"{which} was not sent: {why}. "
-                + ("Say \"send me my brief\" and I'll send it now." if day == today else ""))
+    if status == "failed":
+        t = _clock(log.get("first_failed_at") or at)
+        when = f" at {t}" if t else ""
+        if not is_today:
+            return f"{which} failed to send{when}."
+        nxt = log.get("next_try_at")
+        retry = (f" I'll try again at {_clock(nxt)}."
+                 if isinstance(nxt, datetime) and not log.get("final") else "")
+        if log.get("reason") == "error":
+            head = f"Today's brief could not be put together{when} — the team has been told."
+        else:
+            head = f"Sending failed{when} (WhatsApp error)."
+        return f"{head}{retry} Say \"send me my brief\" to try again."
+    if status in ("refused", "skipped"):
+        why = REASONS.get(log.get("reason") or "")
+        tail = " Say \"send me my brief\" and I'll send it now." if is_today else ""
+        if not why:
+            return f"I can't see why {which[0].lower() + which[1:]} wasn't sent.{tail}"
+        return f"{which} was not sent: {why}.{tail}"
     t = settings.get("brief_time")
-    if day == today and t and t != "off":
-        h = int(t[:2])
-        due = now.astimezone(NY).replace(hour=h, minute=0, second=0, microsecond=0)
+    if is_today and t and t != "off":
+        due = now.astimezone(NY).replace(hour=int(t[:2]), minute=0, second=0, microsecond=0)
         if now.astimezone(NY) < due:
             return f"Your brief is set for {_fmt(due, '%-I:%M %p')} — it hasn't gone out yet today."
     if t == "off":
-        return f"I can't see a brief sent to you {('today' if day == today else 'that day')}: your brief is set to Off."
-    return (f"I can't see a brief sent to you {('today' if day == today else 'that day')}. "
-            + ("Say \"send me my brief\" and I'll send it now." if day == today else ""))
+        return f"I can't see a brief sent to you {('today' if is_today else 'that day')}: your brief is set to Off."
+    return (f"I can't see a brief sent to you {('today' if is_today else 'that day')}."
+            + (" Say \"send me my brief\" and I'll send it now." if is_today else ""))
 
 
 BRIEF_STATUS_TOOL = {"type": "function", "function": {

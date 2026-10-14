@@ -16,7 +16,8 @@ For every active opt-in (or the users matching --user), prints:
               skipped_shabbos). Before the fix a "failed" row stopped every
               later tick that day.
   5. LOG      the day's brief_log row (from this fix on): status, reason,
-              error, attempts, history.
+              error, attempts, next try / final (lib/send_retry: +5, +15,
+              then every 30 min until the catch-up window closes), history.
   6. COMPOSE  builds the brief now (sends nothing) and prints its first lines,
               or the full traceback when building it fails.
 
@@ -96,7 +97,9 @@ async def _one(db, server, user: dict, day: date, now: datetime, a) -> None:
     log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day.isoformat()}"})
     print("  LOG     " + ("none" if not log else
                           f"{log.get('status')} reason={log.get('reason')} error={_safe(log.get('error'))} "
-                          f"attempts={log.get('attempts', 0)} at {_t(log.get('at'))}"))
+                          f"attempts={log.get('attempts', 0)} at {_t(log.get('at'))}"
+                          + (f" first_failed={_t(log.get('first_failed_at'))} next_try={_t(log.get('next_try_at'))}"
+                             f" final={bool(log.get('final'))}" if log.get('status') == 'failed' else "")))
     for h in (log or {}).get("history") or []:
         print(f"            {_t(h.get('at'))}  {h.get('status')} {h.get('reason') or ''}")
     print("  STATUS  " + _safe(await server._brief_status_for(uid, day.isoformat(), now), 300))

@@ -93,6 +93,7 @@ from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_facts  # noqa: E402
+from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
@@ -45959,6 +45960,10 @@ async def _active_optin_for_phone(phone: str) -> Optional[dict]:
         return None
 
 
+#: A ledger row still "sending" after this is a send that died midway.
+DM_STALE_SENDING = timedelta(minutes=15)
+
+
 async def _dm_send_verdict(chat_id: str, message: str,
                            dm_meta: Optional[dict]) -> dict:
     """May this direct message go out? {allowed, reason, ledger_id?}.
@@ -46000,7 +46005,23 @@ async def _dm_send_verdict(chat_id: str, message: str,
             "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS),
         })
     except DuplicateKeyError:
-        return {"allowed": False, "reason": "duplicate"}
+        # A claim whose send FAILED (or died mid-send: "sending" past
+        # DM_STALE_SENDING) never blocks a later try -- Wed Oct 14, a failed
+        # 8:05 brief blocked every retry that day. Taken over atomically, so
+        # two retries never both send; a sent / queued / skipped row stays.
+        try:
+            res = await db[WA_LEDGER].update_one(
+                {"_id": key, "$or": [{"status": "failed"},
+                                     {"status": "sending",
+                                      "created_at": {"$lt": now - DM_STALE_SENDING}}]},
+                {"$set": {"status": "sending", "created_at": now, "retried_at": now},
+                 "$inc": {"tries": 1}, "$unset": {"error": "", "finished_at": ""}})
+        except Exception as e:
+            logger.warning(f"ledger retake failed: {type(e).__name__}")
+            return {"allowed": False, "reason": "ledger_unavailable"}
+        if not getattr(res, "modified_count", 0):
+            return {"allowed": False, "reason": "duplicate"}
+        return {"allowed": True, "reason": "optin_retry", "ledger_id": key}
     except Exception as e:
         logger.warning(f"ledger claim failed: {type(e).__name__}")
         return {"allowed": False, "reason": "ledger_unavailable"}
@@ -46013,7 +46034,7 @@ async def _ledger_finish(ledger_id: str, ok: bool, err: Optional[str]) -> None:
             {"_id": ledger_id},
             {"$set": {"status": "sent" if ok else "failed",
                       "finished_at": datetime.now(timezone.utc),
-                      "error": None if ok else (err or "unknown")[:200]}},
+                      "error": None if ok else (err or "unknown")[:300]}},
         )
     except Exception:
         pass
@@ -46027,7 +46048,9 @@ async def _waapi_post_raw(url: str, payload: dict, headers: dict):
         try:
             body = resp.json() if resp.content else {}
         except Exception:
-            body = {}
+            # Not JSON (a 500's HTML or text): kept, so a failure says
+            # what WaAPI answered (lib/send_retry.waapi_error).
+            body = {"_text": (resp.text or "")[:500]} if resp.content else {}
         return resp.status_code, body, None
     except Exception as e:
         return None, None, e
@@ -46038,7 +46061,7 @@ async def _waapi_post_once(url: str, payload: dict, headers: dict):
     code, body, exc = await _waapi_post_raw(url, payload, headers)
     if exc is None and code is not None and code < 400:
         return True, body, None
-    return False, None, (type(exc).__name__ if exc else f"http {code}")
+    return False, None, send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
 
 
 _DM_SEND_LOCK = asyncio.Lock()
@@ -46066,7 +46089,8 @@ async def _waapi_send_dm_paced(url: str, payload: dict, headers: dict,
                 code, body, exc = await _waapi_post_raw(url, payload, headers)
                 if exc is None and code is not None and code < 400:
                     return True, body, None
-                err = type(exc).__name__ if exc else f"http {code}"
+                # Which call, its status and what WaAPI said (no numbers).
+                err = send_retry.waapi_error(url.rsplit("/", 1)[-1], code, body, exc)
                 if (not wa_dm.is_transient(code, exc)
                         or attempt == tries - 1):
                     break
@@ -49001,6 +49025,20 @@ async def _mention_test_people(g: dict) -> List[dict]:
     return out
 
 
+@api_router.get("/owner/whatsapp/send-failures", tags=["Owner"],
+                dependencies=[Depends(require_operator_404)])
+async def owner_whatsapp_send_failures(days: int = 7):
+    """Scheduled WhatsApp sends that failed for good (every retry spent),
+    newest first: what, when, how many tries, the last error (no phone
+    numbers)."""
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days or 7), 60)))
+    rows = await db[SEND_FAILURES].find({"final_at": {"$gte": since}}).to_list(500)
+    rows.sort(key=lambda r: _utc(r.get("final_at")) or since, reverse=True)
+    return {"failures": [{k: r.get(k) for k in ("kind", "company_id", "user_id", "error",
+                                                 "attempts", "first_failed_at", "final_at")}
+                         for r in rows]}
+
+
 @api_router.get("/owner/whatsapp/mention-test", tags=["Owner"],
                 dependencies=[Depends(require_operator_404)])
 async def owner_mention_test_groups(operator=Depends(require_operator_404)):
@@ -50477,13 +50515,13 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     return wa_brief.compose(now, jobs, {"today": own_today, "later": own_later})
 
 
-#: A brief whose send failed is tried again on the next tick (inside the
-#: catch-up hours) up to this many times in a day. Wed Oct 14: one failed
-#: WaAPI call left the ledger row "failed", the next tick read that as
-#: "already sent", and nothing went out all day.
-BRIEF_MAX_ATTEMPTS = 3
-#: A "sending" row this old is a send that died midway (a restart).
-BRIEF_STALE_SENDING = timedelta(minutes=15)
+#: Wed Oct 14: WaAPI's send-message answered HTTP 500 at 8:05, the ledger
+#: row became "failed", every later tick read that as "already sent", and
+#: nothing went out all day. Now a failed brief is tried again after 5, 15,
+#: then every 30 minutes (lib/send_retry.RETRY_MINUTES) until its catch-up
+#: window closes; the last failure is final and an operator is told.
+#: Scheduled sends that failed for good, for the owner portal.
+SEND_FAILURES = "outbound_failures"
 
 
 def _utc(at: Any) -> Optional[datetime]:
@@ -50492,18 +50530,29 @@ def _utc(at: Any) -> Optional[datetime]:
     return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
 
 
+def _brief_deadline(now: datetime, brief_time: str) -> datetime:
+    """When today's catch-up window for this brief time closes (UTC)."""
+    local = wa_brief.local_now(now)
+    start = local.replace(hour=int(str(brief_time)[:2]), minute=0, second=0, microsecond=0)
+    return (start + timedelta(hours=wa_brief.CATCHUP_HOURS)).astimezone(timezone.utc)
+
+
 async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
                      reason: Optional[str] = None, error: Optional[str] = None,
-                     attempt: bool = False, now: Optional[datetime] = None) -> None:
+                     attempt: bool = False, now: Optional[datetime] = None,
+                     extra: Optional[Dict[str, Any]] = None) -> None:
     """One row per user per day in brief_log: what happened to the brief --
     sent / resent (sent_at), skipped / refused (reason), failed (reason,
-    error). brief_status reads it; nothing else is the truth about a brief."""
+    error, next_try_at, final). brief_status reads it; nothing else is the
+    truth about a brief."""
     now = now or datetime.now(timezone.utc)
     st: Dict[str, Any] = {"user_id": uid, "company_id": str(company_id or ""), "day": day,
                           "status": status, "reason": reason, "error": (error or None) and str(error)[:300],
-                          "at": now, "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}
+                          "at": now, "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS),
+                          "next_try_at": None, "final": False}
     if status in ("sent", "resent"):
         st["sent_at"] = now
+    st.update(extra or {})
     upd: Dict[str, Any] = {"$set": st, "$push": {"history": {"$each": [
         {"status": status, "reason": reason, "error": st["error"], "at": now}], "$slice": -20}}}
     if attempt:
@@ -50512,6 +50561,64 @@ async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
         await db[wa_facts.BRIEF_LOG].update_one({"_id": f"{uid}:{day}"}, upd, upsert=True)
     except Exception as e:
         logger.warning(f"[wa-brief] log write failed: {type(e).__name__}")
+
+
+async def _send_failed_alert(kind: str, key: str, *, company_id: Any, user_id: Any = None,
+                             error: Optional[str], first_at: Optional[datetime],
+                             attempts: int, now: Optional[datetime] = None) -> None:
+    """A scheduled send that failed for good: an ERROR line ("[send-failed]",
+    for a log alert), a row the owner portal lists, and one email to the
+    platform operators (once per send: the notification id dedupes)."""
+    now = now or datetime.now(timezone.utc)
+    err = send_retry.scrub(error, 300)
+    logger.error(f"[send-failed] {kind} {key[-24:]} failed for good after {attempts} "
+                 f"tries (first {first_at.isoformat() if first_at else '?'}): {err}")
+    try:
+        await db[SEND_FAILURES].update_one({"_id": f"{kind}:{key}"}, {"$set": {
+            "kind": kind, "key": key, "company_id": str(company_id or ""),
+            "user_id": str(user_id or "") or None, "error": err, "attempts": attempts,
+            "first_failed_at": first_at or now, "final_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[send-failed] row not saved: {type(e).__name__}")
+    from lib.notifications import send_notification
+    when = _fmt_ny(first_at or now)
+    text = (f"A scheduled WhatsApp message failed to send and will not be retried.\n\n"
+            f"What: {kind}\nFirst failure: {when}\nTries: {attempts}\nLast error: {err}\n\n"
+            f"Run scripts/diag_morning_brief.py for a brief, or check the WaAPI instance.")
+    for recipient in await _waapi_monitor_recipients():
+        try:
+            await send_notification(
+                db, permit_renewal_id=f"send_failed:{kind}:{key}",
+                trigger_type="scheduled_send_failed", recipient=recipient,
+                subject=f"WhatsApp {kind.replace('_', ' ')} failed to send",
+                html="<p>" + text.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>",
+                text=text, metadata={"kind": kind, "attempts": attempts})
+        except Exception as e:
+            logger.warning(f"[send-failed] email failed: {type(e).__name__}")
+
+
+def _fmt_ny(at: datetime) -> str:
+    from lib.datefmt import strftime as _f
+    return _f(_utc(at).astimezone(wa_facts.NY), "%a %b %-d, %-I:%M %p ET")
+
+
+async def _brief_failed(uid: str, company_id: Any, day: str, now: datetime, settings: dict, *,
+                        reason: str, error: Optional[str]) -> bool:
+    """Log a failed try and when the next one is; True when it was the last
+    (the window closes first), and then an operator is told."""
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"},
+                                               {"attempts": 1, "first_failed_at": 1})
+    attempts = int((log or {}).get("attempts") or 0) + 1
+    first = _utc((log or {}).get("first_failed_at")) or now
+    final = send_retry.is_final(attempts, now, _brief_deadline(now, settings["brief_time"]))
+    await _brief_log(uid, company_id, day, "failed", reason=reason, error=error, attempt=True,
+                     now=now, extra={"first_failed_at": first, "final": final,
+                                     "next_try_at": None if final else send_retry.next_try(attempts, now)})
+    if final:
+        await _send_failed_alert(MORNING_BRIEF_KIND, f"{uid}:{day}", company_id=company_id,
+                                 user_id=uid, error=error, first_at=first, attempts=attempts, now=now)
+    return final
 
 
 async def _dm_refusal_reason(uid: str, kind: str) -> Optional[str]:
@@ -50542,25 +50649,26 @@ async def _dm_refusal_reason(uid: str, kind: str) -> Optional[str]:
 
 
 async def _brief_claimed(uid: str, key: str, day: str, now: datetime) -> bool:
-    """Is today's brief already done (sent, skipped, or in flight)? A failed
-    send -- or a "sending" left by a restart -- is cleared for another try,
-    up to BRIEF_MAX_ATTEMPTS a day."""
+    """Is today's brief done, or waiting for its next try? Sent, queued,
+    skipped or in flight: done. A failed one waits for brief_log's
+    next_try_at; a final failure is done (say "send me my brief"). The
+    ledger's "failed" row never blocks the retry: the next send takes it
+    over (_dm_send_verdict)."""
     row = await db[WA_LEDGER].find_one({"_id": key})
-    if not row:
-        # A brief that failed before any send (composing it raised) has no
-        # ledger row; the day's attempts still cap it.
-        log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"}, {"attempts": 1})
-        return int((log or {}).get("attempts") or 0) >= BRIEF_MAX_ATTEMPTS
-    status = row.get("status")
-    stale = (status == "sending" and (_utc(row.get("created_at")) or now)
-             < now - BRIEF_STALE_SENDING)
-    if status != "failed" and not stale:
+    if row:
+        status = row.get("status")
+        stale = (status == "sending" and (_utc(row.get("created_at")) or now)
+                 < now - DM_STALE_SENDING)
+        if status != "failed" and not stale:
+            return True
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"},
+                                               {"final": 1, "next_try_at": 1, "status": 1})
+    if not log or log.get("status") != "failed":
+        return False
+    if log.get("final"):
         return True
-    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"}, {"attempts": 1})
-    if int((log or {}).get("attempts") or 0) >= BRIEF_MAX_ATTEMPTS:
-        return True
-    gone = await db[WA_LEDGER].delete_one({"_id": key, "status": status})
-    return not getattr(gone, "deleted_count", 0)
+    nxt = _utc(log.get("next_try_at"))
+    return bool(nxt and nxt > now)
 
 
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
@@ -50625,11 +50733,15 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
             # (the ledger row says "failed", with its error).
             reason = await _dm_refusal_reason(uid, MORNING_BRIEF_KIND)
             row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
+            if reason is None and (row or {}).get("status") in ("sending", "sent"):
+                report["already"] += 1      # another run has it in hand
+                continue
             if reason is None and (row or {}).get("status") == "failed":
                 report["failed"] += 1
-                await _brief_log(uid, company_id, today, "failed", reason="send_failed",
-                                 error=row.get("error"), attempt=True, now=now)
-                logger.warning(f"[wa-brief] send failed for user {uid[-6:]}: {row.get('error')}")
+                final = await _brief_failed(uid, company_id, today, now, settings,
+                                            reason="send_failed", error=row.get("error"))
+                logger.warning(f"[wa-brief] send failed for user {uid[-6:]}"
+                               f"{' (final)' if final else ', will retry'}: {row.get('error')}")
             else:
                 report["refused"] += 1
                 await _brief_log(uid, company_id, today, "refused",
@@ -50640,8 +50752,11 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
             # nobody anything.
             report["failed"] += 1
             logger.exception(f"[wa-brief] user {uid[-6:]} failed: {type(e).__name__}: {e}")
-            await _brief_log(uid, company_id, today, "failed", reason="error",
-                             error=f"{type(e).__name__}: {e}", attempt=True, now=now)
+            try:
+                await _brief_failed(uid, company_id, today, now, await _brief_settings(uid),
+                                    reason="error", error=f"{type(e).__name__}: {e}")
+            except Exception as e2:
+                logger.warning(f"[wa-brief] failure not logged: {type(e2).__name__}")
     logger.info(f"[wa-brief] {report}")
     await _dm_answers_daily(now)
     return report
@@ -57034,6 +57149,9 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[wa_facts.BRIEF_LOG], keys=[("expires_at", 1)],
         name="brief_log_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[SEND_FAILURES], keys=[("expires_at", 1)],
+        name="outbound_failures_ttl", expireAfterSeconds=0)
     await _ensure_index_resilient(
         db[WA_OPTINS], keys=[("phone", 1)],
         name="whatsapp_optins_phone_unique", unique=True)
