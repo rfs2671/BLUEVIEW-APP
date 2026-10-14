@@ -125,6 +125,31 @@ class AScheduledGroupMessage(_Base):
         self.assertEqual((row["kind"], row["attempts"]), ("gc_violation", 5))
 
 
+class TheDeadline(_Base):
+    """Codex on #792: never sent after its window closed."""
+
+    def test_a_failure_too_close_to_the_deadline_is_final_at_once(self):
+        late = _ny(2026, 10, 7, 23, 57)            # tonight's day-before DM, 11:57 PM
+        with self.ctx():
+            out = G._run(server._retry_later(
+                {"via": "dm", "user_id": "u_admin", "message": "Tomorrow: inspection",
+                 "kind": "upcoming_day_before", "window": "2026-10-08"},
+                company_id=G.CO_A, project_id=None, kind="upcoming_day_before",
+                deadline=server._ny_day_end(late), now=late))
+        self.assertEqual(out, "failed")
+        self.assertEqual(_queue(self.db), [])
+        self.assertEqual([k for k, _ in self.alerts], ["upcoming_day_before"])
+
+    def test_a_late_worker_never_sends_an_expired_retry(self):
+        with self.ctx(FAIL) as c:
+            self.post("summary", WED)                          # deadline WED + 2 h
+            rep = self.tick(WED + timedelta(hours=3))           # the worker was down
+        self.assertEqual(rep["sent"], 0)
+        self.assertEqual(len([p for p in c.wire.calls if "message" in p]), 1)  # the first try only
+        self.assertEqual(_queue(self.db)[0]["status"], "failed")
+        self.assertEqual(len(self.alerts), 1)
+
+
 class AnUpcomingDm(_Base):
 
     def test_a_failed_reminder_is_retried_and_sent_once(self):
@@ -174,6 +199,24 @@ class ADobAlert(_Base):
             G._run(server._gc_alerts_tick(at + timedelta(minutes=30)))
         posts = [p for p in c.wire.calls if "Violation" in str(p.get("message"))]
         self.assertEqual(len(posts), 2)        # the failed one, then the one that went out
+
+    def test_switched_off_while_waiting_never_posts(self):
+        # Codex on #792 (P1): the retry re-checks the group's bot switch.
+        with self.ctx(FAIL) as c, G._no_ai():
+            G._confirm()
+            G._run(server._gc_alerts_tick(G.NOON))
+            self.db.dob_logs.rows.append(G._violation("3"))
+            at = G.NOON + timedelta(hours=1)
+            G._run(server._gc_alerts_tick(at))
+            lid = _queue(self.db)[0]["send"]["gc_ledger_id"]
+            for g in self.db.whatsapp_groups.rows:
+                if g.get("wa_group_id") == G.G_GC:
+                    g["bot_config"] = {**(g.get("bot_config") or {}), "bot_enabled": False}
+            rep = self.tick(at + timedelta(minutes=5))
+        self.assertEqual((rep["sent"], rep.get("bot_off")), (0, 1))
+        self.assertEqual(len([p for p in c.wire.calls if "Violation" in str(p.get("message"))]), 1)
+        led = next(r for r in self.db[server.WA_LEDGER].rows if r["_id"] == lid)
+        self.assertEqual(led["status"], "seen_while_off")
 
 
 if __name__ == "__main__":

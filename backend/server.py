@@ -46376,6 +46376,16 @@ async def _retry_later(spec: dict, *, company_id: Any, project_id: Any, kind: st
     the queue row is claimed before each try, and a DM's ledger claim is
     taken over only from "failed"."""
     now = now or datetime.now(timezone.utc)
+    if deadline and send_retry.next_try(1, now) >= deadline:
+        # No try fits before its window closes (11:57 PM for tonight's
+        # day-before DM): this failure is the last.
+        await _send_failed_alert(kind, f"{kind}:{now.isoformat()}", company_id=company_id,
+                                 user_id=spec.get("user_id"), error=error or "not accepted",
+                                 first_at=now, attempts=1, now=now)
+        if spec.get("gc_ledger_id"):
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "failed"}})
+        return "failed"
     qid = await _quiet_enqueue(spec, company_id=company_id, project_id=project_id, kind=kind,
                                until=send_retry.next_try(1, now), now=now)
     await db[WA_QUIET_QUEUE].update_one({"_id": qid}, {"$set": {
@@ -46428,9 +46438,9 @@ async def _quiet_or_send(spec: dict, *, company_id: Any, project_id: Any = None,
         return "queued"
     sent = await _quiet_deliver(spec)
     if sent in (None, False) and spec.get("via") != "dm":
-        await _retry_later(spec, company_id=company_id, project_id=project_id, kind=kind,
-                           deadline=deadline, now=now)
-        return "retrying"
+        out = await _retry_later(spec, company_id=company_id, project_id=project_id, kind=kind,
+                                 deadline=deadline, now=now)
+        return None if out == "failed" else "retrying"
     return sent
 
 
@@ -46460,6 +46470,23 @@ async def _quiet_dm(user_id: Any, message: str, *, company_id: Any, kind: str, w
 
 
 QUIET_MAX_ATTEMPTS = 5
+
+
+async def _retry_expired(r: dict, spec: dict, now: datetime, attempts: Optional[int] = None,
+                         err: Optional[str] = None) -> None:
+    """A retry row whose window closed: failed for good, never sent late."""
+    attempts = attempts if attempts is not None else int(r.get("attempts") or 1)
+    if spec.get("gc_ledger_id"):
+        await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                       {"$set": {"status": "failed"}})
+    await _quiet_undelivered(spec)
+    await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+        "status": "failed", "delivered_at": now, "attempts": attempts}})
+    await _send_failed_alert(
+        str(r.get("kind") or "scheduled"), str(r["_id"]), company_id=r.get("company_id"),
+        user_id=spec.get("user_id"), error=err or r.get("last_error") or "not accepted",
+        first_at=_utc(r.get("first_failed_at")) or _utc(r.get("deliver_after")),
+        attempts=attempts, now=now)
 QUIET_LEASE = timedelta(minutes=15)
 
 
@@ -46509,14 +46536,32 @@ async def _quiet_queue_tick(now: Optional[datetime] = None) -> dict:
         # A group re-linked meanwhile (another job, another company): what
         # was written for the old job never goes to it.
         group = _quiet_group_of(spec)
-        if group and r.get("project_id") and not await _gc_group_bound_to(
-                group, r.get("company_id"), r.get("project_id")):
+        bound = (await _gc_group_bound_to(group, r.get("company_id"), r.get("project_id"))
+                 if group and r.get("project_id") else True)
+        if not bound:
             await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
                 "status": "dropped_unbound", "delivered_at": now}})
             if spec.get("gc_ledger_id"):
                 await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
                                                {"$set": {"status": "dropped_unbound"}})
             report["unbound"] += 1
+            continue
+        if spec.get("gc_ledger_id") and isinstance(bound, dict) and not _effective_bot_config(
+                (bound.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            # The group's bot was switched off meanwhile: an alert found
+            # while off never posts later (as in _gc_alerts_tick).
+            await db[WA_QUIET_QUEUE].update_one({"_id": r["_id"]}, {"$set": {
+                "status": "dropped_bot_off", "delivered_at": now}})
+            await db[WA_LEDGER].update_one({"_id": spec["gc_ledger_id"]},
+                                           {"$set": {"status": "seen_while_off"}})
+            report["bot_off"] = report.get("bot_off", 0) + 1
+            continue
+        dl = _utc(r.get("deadline"))
+        if r.get("retry") and dl and now >= dl:
+            # Its window closed before the try (a late worker): never sent
+            # late -- a day-before DM after midnight is wrong, not late.
+            await _retry_expired(r, spec, now)
+            report["failed"] += 1
             continue
         if r.get("retry"):
             # A retry that comes due over Shabbos / Yom Tov waits for after
@@ -47154,13 +47199,14 @@ async def _gc_alerts_tick(now: Optional[datetime] = None) -> dict:
             # group, and its bot still switched on.
             sent = None
             again = await _gc_group_bound_to(group_id, company_id, project_id)
-            if again and _effective_bot_config(
-                    (again.get("group") or {}).get("bot_config"))["bot_enabled"]:
+            live = bool(again) and _effective_bot_config(
+                (again.get("group") or {}).get("bot_config"))["bot_enabled"]
+            if live:
                 sent = await send_whatsapp_message(group_id, text)
             posts += 1
             if sent is None:
                 report["failed"] += 1
-                if again:
+                if live:
                     # Not posted: tried again on the shared schedule (lib/
                     # send_retry) for up to a day, then an operator is told.
                     # The claim stays, so the alerts run never posts it too.
