@@ -136,6 +136,33 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
         self.assertEqual((_log(db)["reason"], _log(db)["error"]), ("error", "KeyError: 'due_at'"))
         self.assertTrue(any("KeyError: 'due_at'" in m for m in logs.output))
 
+    def test_a_brief_that_fails_before_sending_stops_after_three(self):
+        # Codex on #791: composing it raised, so no ledger row -- the
+        # attempts still cap it.
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        calls = []
+
+        async def boom(user, now):
+            calls.append(now)
+            raise KeyError("due_at")
+        with _Ctx(db) as c, patch.object(server, "_brief_for_user", boom), \
+                self.assertLogs(server.logger, "ERROR"):
+            for i in range(6):
+                _tick(c, THU_7 + timedelta(minutes=10 * i))
+        self.assertEqual(len(calls), server.BRIEF_MAX_ATTEMPTS)
+
+    def test_the_error_survives_a_successful_retry(self):
+        # Codex on #791: the history keeps each try's error.
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        with _Ctx(db, wire=_Wire([(400, {}, None)])) as c:
+            _tick(c, THU_7)
+            _tick(c, THU_7 + timedelta(minutes=10))
+        hist = _log(db)["history"]
+        self.assertEqual([(h["status"], h["error"]) for h in hist],
+                         [("failed", "http 400"), ("sent", None)])
+
     def test_shabbos_skip_and_no_jobs_are_logged(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)
@@ -174,6 +201,15 @@ class BriefStatus(unittest.TestCase):
         text = wa_facts.brief_status_text(None, None, {"brief_time": "08:00"}, early,
                                           early.astimezone(NY).date())
         self.assertEqual(text, "Your brief is set for 8:00 AM — it hasn't gone out yet today.")
+
+    def test_the_raw_error_never_reaches_the_user(self):
+        # Codex on #791: the reason in words; the error stays in the log.
+        text = wa_facts.brief_status_text(
+            {"status": "failed", "reason": "error", "error": "KeyError: 'due_at' at mongodb://x"},
+            None, {"brief_time": "08:00"}, WED, WED.astimezone(NY).date())
+        self.assertNotIn("KeyError", text)
+        self.assertNotIn("mongodb", text)
+        self.assertIn("could not be put together", text)
 
     def test_a_failed_ledger_row_alone(self):
         text = wa_facts.brief_status_text(None, {"status": "failed", "error": "http 500"},
@@ -256,6 +292,18 @@ class UserLevel(_Harness, unittest.TestCase):
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "what are my notification settings")
         self.assertTrue(reply.startswith("Morning brief: 7:00 AM, Mon–Fri"))
         self.assertNotIn("Which job", reply)
+        self.assertNotIn("turned off", reply)
+
+    def test_settings_say_when_whatsapp_is_off(self):
+        # Codex on #791: an opt-in with the master switch off sends nothing.
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+
+        async def prefs(uid, project_id=None):
+            return {"enabled": False}
+        with _Ctx(db) as c, patch.object(server, "get_whatsapp_prefs", prefs):
+            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "what are my notification settings")
+        self.assertIn("WhatsApp messages are turned off in your notification settings", reply)
 
 
 # ══════════════════════════════════════════════════════════════════════════

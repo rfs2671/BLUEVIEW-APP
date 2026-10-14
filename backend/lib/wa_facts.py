@@ -342,10 +342,10 @@ def brief_status_text(log: Optional[Dict[str, Any]], ledger: Optional[Dict[str, 
         t = _fmt(at.astimezone(NY), "%-I:%M %p") if isinstance(at, datetime) else ""
         return f"{which} went out" + (f" at {t}." if t else ".")
     if status in ("failed", "refused", "skipped"):
+        # The reason in words only: the raw error stays in brief_log and the
+        # server log, never in a WhatsApp reply.
         why = REASONS.get((log or {}).get("reason") or "", "") or "it was not sent"
-        err = (log or {}).get("error")
-        tail = f" ({err})" if err and status == "failed" else ""
-        return (f"{which} was not sent: {why}{tail}. "
+        return (f"{which} was not sent: {why}. "
                 + ("Say \"send me my brief\" and I'll send it now." if day == today else ""))
     t = settings.get("brief_time")
     if day == today and t and t != "off":
@@ -418,7 +418,7 @@ def user_topic(text: Any) -> Optional[str]:
     return None
 
 
-def settings_text(settings: Dict[str, Any], optin: bool) -> str:
+def settings_text(settings: Dict[str, Any], optin: bool, enabled: bool = True) -> str:
     t = settings.get("brief_time") or "off"
     when = "Off" if t == "off" else _fmt(datetime.strptime(t, "%H:%M"), "%-I:%M %p")
     days = "every day" if settings.get("brief_weekend") else "Mon–Fri"
@@ -426,6 +426,9 @@ def settings_text(settings: Dict[str, Any], optin: bool) -> str:
     lines.append("5 PM \"Tomorrow\" reminders: " + ("on." if settings.get("upcoming_reminders") else "off."))
     if not optin:
         lines.append("WhatsApp messages from Levelog are off for your number — reply START to turn them on.")
+    elif not enabled:
+        lines.append("But WhatsApp messages are turned off in your notification settings, so none of "
+                     "these are sent — turn them on in the app: Settings → WhatsApp.")
     lines.append("Change them in the app: Settings → WhatsApp.")
     return "\n".join(lines)
 

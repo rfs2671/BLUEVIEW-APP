@@ -50505,7 +50505,7 @@ async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
     if status in ("sent", "resent"):
         st["sent_at"] = now
     upd: Dict[str, Any] = {"$set": st, "$push": {"history": {"$each": [
-        {"status": status, "reason": reason, "at": now}], "$slice": -20}}}
+        {"status": status, "reason": reason, "error": st["error"], "at": now}], "$slice": -20}}}
     if attempt:
         upd["$inc"] = {"attempts": 1}
     try:
@@ -50547,7 +50547,10 @@ async def _brief_claimed(uid: str, key: str, day: str, now: datetime) -> bool:
     up to BRIEF_MAX_ATTEMPTS a day."""
     row = await db[WA_LEDGER].find_one({"_id": key})
     if not row:
-        return False
+        # A brief that failed before any send (composing it raised) has no
+        # ledger row; the day's attempts still cap it.
+        log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"}, {"attempts": 1})
+        return int((log or {}).get("attempts") or 0) >= BRIEF_MAX_ATTEMPTS
     status = row.get("status")
     stale = (status == "sending" and (_utc(row.get("created_at")) or now)
              < now - BRIEF_STALE_SENDING)
@@ -53867,7 +53870,8 @@ async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetim
         return True
     settings = await _brief_settings(uid)
     optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
-    await send_whatsapp_message(dm_chat, wa_facts.settings_text(settings, bool(optin)))
+    enabled = bool((await get_whatsapp_prefs(uid, None)).get("enabled"))
+    await send_whatsapp_message(dm_chat, wa_facts.settings_text(settings, bool(optin), enabled))
     return True
 
 
