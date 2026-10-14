@@ -12243,6 +12243,17 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_u
 async def delete_admin_user(user_id: str, admin = Depends(get_user_admin), _approved=Depends(require_approved)):
     # Fetch user before delete to get phone for whatsapp_contacts cleanup
     user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # THE SAME RULE AS PUT /admin/users/{user_id}, and it was missing here
+    # (security audit P1, 2026-10-13): get_user_admin is a ROLE check, so any
+    # company's admin could soft-delete any account on the platform -- another
+    # company's admins, or the operator -- and a soft delete revokes the login.
+    if not is_platform_operator(admin) and not _same_company(admin, user_doc):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to delete this user",
+        )
 
     # SOFT delete, and never anything harder. `signature_events.signer.user_id`
     # is the one link proving WHICH AUTHENTICATED ACCOUNT produced a signature,
@@ -23309,6 +23320,18 @@ async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
 
 @api_router.post("/checkins/{checkin_id}/checkout")
 async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user), _approved=Depends(require_approved)):
+    # HELD TO THE CHECK-IN'S PROJECT (security audit P1, 2026-10-13). It took
+    # the id and wrote, for any principal. project_access_ok is the shared
+    # rule -- a site device on its own project, the project's company, or an
+    # assignment -- without ACTIVE_PROJECT_FILTER, so a worker can still be
+    # checked out of a job that was closed while he was on it.
+    checkin = await db.checkins.find_one({"_id": to_query_id(checkin_id)})
+    if not checkin:
+        raise HTTPException(status_code=404, detail="Check-in record not found")
+    _pid = str(checkin.get("project_id") or "")
+    _project = await db.projects.find_one({"_id": to_query_id(_pid)}) if _pid else None
+    if not _project or not project_access_ok(_project, _pid, current_user):
+        raise HTTPException(status_code=404, detail="Check-in record not found")
     now = datetime.now(timezone.utc)
     result = await db.checkins.update_one(
         {"_id": to_query_id(checkin_id)},
@@ -74160,24 +74183,13 @@ async def _send_renewal_notification_hook(
             )
 
 
-# Card audit routers — gate_router serves public HTML at /checkin/...
-# and /enrollment/... (no auth, workers are anonymous), admin_router
-# serves JSON at /api/admin/... (admin-gated). The admin gate is a
-# small dep wrapper that resolves the admin user AND stashes it on
-# request.state so card_audit endpoints can read it without taking
-# it as a parameter (mount-time include_router deps don't expose
-# their resolved values to downstream endpoint signatures).
-async def _card_audit_admin_gate(request: Request, admin_user = Depends(get_admin_user)):
-    request.state.current_user = admin_user
-    return admin_user
-
+# Card audit router — gate_router serves public HTML at /checkin/...
+# and /enrollment/... (no auth, workers are anonymous). Its admin_router
+# (/api/admin/card-queue, /api/admin/card-flags) was removed 2026-10-13:
+# unscoped by id, and dead -- see card_audit.py, ADMIN ENDPOINTS.
 try:
     import card_audit as _card_audit_module  # noqa: E402
     app.include_router(_card_audit_module.gate_router)
-    app.include_router(
-        _card_audit_module.admin_router,
-        dependencies=[Depends(_card_audit_admin_gate)],
-    )
 except Exception as _card_router_err:
     logger.error(f"card_audit router mount failed: {_card_router_err!r}")
 
@@ -74350,9 +74362,25 @@ app.include_router(api_router)
 async def annotation_short_link(annotation_id: str, request: Request):
     """Short link redirect for annotation deep links."""
     from fastapi.responses import HTMLResponse
+    import html as _html
+    import json as _json
+
+    # REFLECTED XSS, CLOSED TWICE (security audit, 2026-10-13). The path
+    # segment went straight into a <script> string and an href on
+    # api.levelog.com, so /a/x%22%3Balert(1)%3B%22 ran script there. An id is
+    # an ObjectId; anything outside [A-Za-z0-9_-] is not one and gets a 404.
+    # And what does pass is still ENCODED FOR WHERE IT LANDS -- json.dumps
+    # inside the script (with "</" broken so no string can close the tag),
+    # html.escape in the attribute -- so the page is safe even if this
+    # pattern is ever widened.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", annotation_id or ""):
+        raise HTTPException(status_code=404, detail="Not Found")
 
     web_url = f"https://levelog.com/plans?annotation={annotation_id}"
     deep_link = f"levelog://annotation/{annotation_id}"
+    deep_js = _json.dumps(deep_link).replace("</", "<\\/")
+    web_js = _json.dumps(web_url).replace("</", "<\\/")
+    web_attr = _html.escape(web_url, quote=True)
 
     # Return HTML that tries the deep link first, falls back to web
     html = f"""<!DOCTYPE html>
@@ -74361,8 +74389,8 @@ async def annotation_short_link(annotation_id: str, request: Request):
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Redirecting…</title>
 <script>
-  var deep = "{deep_link}";
-  var web  = "{web_url}";
+  var deep = {deep_js};
+  var web  = {web_js};
   var ua = navigator.userAgent || "";
   if (/iPhone|iPad|Android/i.test(ua)) {{
     window.location = deep;
@@ -74374,7 +74402,7 @@ async def annotation_short_link(annotation_id: str, request: Request):
 </head>
 <body style="font-family:sans-serif;text-align:center;padding:60px;">
 <p>Redirecting&hellip;</p>
-<p><a href="{web_url}">Click here if not redirected</a></p>
+<p><a href="{web_attr}">Click here if not redirected</a></p>
 </body></html>"""
     return HTMLResponse(content=html)
 

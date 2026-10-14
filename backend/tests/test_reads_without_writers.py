@@ -51,6 +51,14 @@ BASELINE = {
     # existed. Do not remove this line to make the suite green — removing it
     # means the field is finally written, or the readers are finally gone.
     ("daily_logs", "phase"),
+    # GENUINELY UNWRITTEN SINCE 2026-10-13, and on purpose. The only writer was
+    # POST /admin/card-flags/{id}/action, removed in security audit P1
+    # (unscoped by id; no caller; zero card_fraud_flags rows in production).
+    # The fraud detector's `acknowledged_at: None` dedup filter now always
+    # matches, which is the truth: nothing can acknowledge a flag. Remove this
+    # line when a company-scoped acknowledge surface exists, or the detector
+    # is retired.
+    ("card_fraud_flags", "acknowledged_at"),
     ("daily_panels", "project_id"),
     ("dob_logs", "complaint_date"),
     ("dob_logs", "expiration_date"),
