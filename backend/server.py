@@ -49967,7 +49967,7 @@ async def _send_contact_card(chat: str) -> Optional[str]:
     if ok and wa_contact.waapi_succeeded(body):
         logger.info("[wa-contact] sent as vcard")
         return "vcard"
-    if err == "http 429":
+    if str(err or "").startswith("http 429"):
         logger.warning("[wa-contact] send-vcard rate-limited by WaAPI (429); nothing more sent")
         return "waapi_429"
     logger.warning(f"[wa-contact] send-vcard not sent ({wa_contact.waapi_failure(body, err)}); "
