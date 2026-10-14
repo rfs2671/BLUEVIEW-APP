@@ -74,6 +74,9 @@ def intent(text: str) -> Optional[str]:
     t = str(text or "")
     if _CARDS_RE.search(t):
         return None
+    from lib import attendance             # "each day last week", "on Oct 3": the history
+    if attendance.is_history(t):
+        return None
     if _CHALLENGE_RE.search(t):
         return CHALLENGE
     if _ADDED_RE.search(t) and (_ON_SITE_HINT.search(t) or re.search(

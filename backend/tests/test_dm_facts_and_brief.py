@@ -512,7 +512,8 @@ class SubAttendance(unittest.TestCase):
             text = _run(server._facts_tool("sub_attendance", {"sub": "arkon"}, company_id=CO_A,
                                            project_id=THOMAS, group_id=f"{ADMIN_PHONE}@c.us",
                                            now=WED))
-        self.assertTrue(text.startswith("Arkon Builders: 23 days on site at 588 Thomas"), text)
+        self.assertEqual(text, "Arkon Builders: 23 days (Sep 14 → today), 230 man-days, avg 10/day, "
+                               "most 14 on Oct 2; 9 today.")
 
     def test_another_companys_job_is_refused(self):
         db = _world()
@@ -590,8 +591,7 @@ class TheBackstop(unittest.TestCase):
         db.checkins.rows[:] = _arkon_rows()[0]
         out = self._answer(db, "How many days has Arkon been on 588?",
                            "The data doesn't specify how many days Arkon has been on site.")
-        self.assertTrue(out.startswith("Arkon Builders: "), out)
-        self.assertIn("days on site at 588 Thomas", out)
+        self.assertTrue(out.startswith("Arkon Builders: 23 days (Sep 14 → today), 230 man-days"), out)
 
     def test_an_invented_brief_is_replaced_by_the_log(self):
         db = _world()
