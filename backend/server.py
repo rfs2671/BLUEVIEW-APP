@@ -94,6 +94,7 @@ from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
+from lib import project_report  # noqa: E402
 from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -7807,7 +7808,7 @@ DEFAULT_COMPLETION_SOURCE = "admin_attested"
 # The ONE definition of the filed daily record. Imported here so the report
 # preview panel and the compliance detectors read the same document (#291).
 from lib.logbook.daily_jobsite_source import (  # noqa: E402
-    daily_jobsite_filter, as_daily_log_row,
+    daily_jobsite_filter, as_daily_log_row, submitted_logs as _submitted_daily_logs,
 )
 # The agreement to sign electronically, and the wording of every version of it.
 from lib.logbook.cs_attribution import (  # noqa: E402
@@ -46359,6 +46360,8 @@ async def _quiet_deliver(spec: dict):
         return await _group_post(spec["group_id"], spec["message"], spec.get("targets") or [])
     if via == "photo":
         return await _punch_send_photo(spec["chat_id"], spec["key"], spec.get("caption") or "")
+    if via == "report_dm":
+        return await _report_deliver(spec)
     raise ValueError(f"unknown via {via!r}")
 
 
@@ -50982,6 +50985,386 @@ async def _whatsapp_brief_job() -> None:
         logger.error(f"[wa-brief] tick failed: {type(e).__name__}: {e}")
 
 
+# ── PROJECT REPORTS (lib/project_report.py) ─────────────────────────────────
+#
+# A period's report for a job (or all of a person's jobs): a PDF stored in
+# R2, a five-line WhatsApp summary, and a no-login link that works for 30
+# days (the temp-media token: opaque, single object, expires). On request in
+# the DM ("send me a report for 588 for the last 2 weeks", "monthly report
+# 588", "report all jobs September"), from the app (Project → Reports), and
+# on a per-job schedule (off / bi-weekly Monday 8 AM / monthly 1st 8 AM) to
+# the company's admins and the PMs chosen -- through the Shabbos queue and
+# the shared retry policy. Every number is counted from the job's records
+# (lib/project_report.compute); phone numbers never appear.
+
+PROJECT_REPORTS = "project_reports"
+PROJECT_REPORT_SETTINGS = "project_report_settings"
+REPORT_DM_KIND = "project_report"
+
+
+async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
+                       now: datetime) -> dict:
+    """Everything one job's report counts, read for that job only."""
+    pid = str(project.get("_id"))
+    length = (end - start).days + 1
+    lo = datetime.combine(start - timedelta(days=length + 1), datetime.min.time(), tzinfo=timezone.utc)
+    hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc)
+    cf = _company_id_filter(company_id)
+
+    async def _q(coll, query, limit=50000, projection=None):
+        try:
+            return await coll.find(query, projection).to_list(limit)
+        except Exception as e:
+            logger.warning(f"[report] read failed: {type(e).__name__}")
+            return []
+    checkins = await _q(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True},
+                                      "check_in_time": {"$gte": lo, "$lt": hi}},
+                        projection={"worker_id": 1, "worker_phone": 1, "worker_name": 1,
+                                    "worker_company": 1, "company": 1, "company_name": 1,
+                                    "check_in_time": 1, "sst_status": 1})
+    in_period = [r for r in checkins if attendance.local_day(r.get("check_in_time")) and
+                 start <= attendance.local_day(r["check_in_time"]) <= end]
+    window = {"$gte": datetime.combine(start - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
+              "$lt": hi}
+    records = (await _q(db.dob_logs, {"project_id": pid, "detected_at": window})
+               + await _q(db.dot_logs, {"project_id": pid, "detected_at": window}))
+    events = await _q(db.upcoming_events, {"company_id": cf, "project_id": pid, "status": "open",
+                                           "date": {"$gte": start.isoformat()}}, 2000)
+    items = await _q(db.attention_items, {"company_id": cf, "project_id": pid}, 5000)
+    punch_rows = await _q(db[punch.COLLECTION], {"company_id": cf, "project_id": pid}, 5000)
+    # The filed daily_jobsite logbooks -- the record the CP signs -- not the
+    # retired db.daily_logs kiosk rows.
+    try:
+        logs = await _submitted_daily_logs(db, pid, start=start.isoformat(),
+                                         end=end.isoformat())
+    except Exception as e:
+        logger.warning(f"[report] logbooks read failed: {type(e).__name__}")
+        logs = []
+    return {"checkins": in_period, "prev_checkins": [r for r in checkins if r not in in_period],
+            "records": records, "events": events, "commitments": items,
+            "punch_items": punch_rows, "daily_logs": logs}
+
+
+def _report_pdf(html_text: str) -> bytes:
+    """The PDF bytes. Blocking: only ever called through asyncio.to_thread
+    (build_project_report), like every other weasyprint render here."""
+    import weasyprint
+
+    def _render_pdf(h: str) -> bytes:
+        return weasyprint.HTML(string=h).write_pdf()
+    return _render_pdf(html_text)
+
+
+async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
+                               now: Optional[datetime] = None, by: str = "",
+                               source: str = "app", key: Optional[str] = None) -> dict:
+    """Compute, render, store and link one report (one job, or several).
+    `key`: a scheduled report's once-only key -- the same period's report is
+    reused, never built twice."""
+    now = now or datetime.now(timezone.utc)
+    if key:
+        old = await db[PROJECT_REPORTS].find_one({"key": key})
+        if old:
+            return old
+    gc = await _punch_link_gc_name(company_id) or ""
+    reps = []
+    for p in projects:
+        rows = await _report_rows(p, company_id, start, end, now)
+        reps.append(project_report.compute(
+            job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
+            start=start, end=end, now=now, **rows))
+    title = project_report.title_for(reps)
+    html_text = project_report.render_html(reps, gc=gc, title=title, now=now)
+    rid = str(uuid.uuid4())
+    r2_key = f"reports/{company_id}/{rid}.pdf"
+    stored = False
+    try:
+        pdf = await asyncio.to_thread(_report_pdf, html_text)
+        stored = bool(await asyncio.to_thread(_upload_to_r2, pdf, r2_key, "application/pdf"))
+    except Exception as e:
+        logger.error(f"[report] PDF failed: {type(e).__name__}: {e}")
+    token = await _mint_temp_media_token(r2_key, "application/pdf",
+                                         ttl_seconds=project_report.LINK_DAYS * 86400) if stored else None
+    lines = (project_report.summary_lines(reps[0]) if len(reps) == 1
+             else [f"{title}:"] + [project_report.summary_lines(r)[0] for r in reps[:4]])
+    doc = {"_id": rid, "company_id": str(company_id), "project_ids": [str(p.get("_id")) for p in projects],
+           "start": start.isoformat(), "end": end.isoformat(), "title": title, "summary": lines,
+           "r2_key": r2_key if stored else None, "link": _public_temp_media_url(token) if token else None,
+           "link_expires": now + timedelta(days=project_report.LINK_DAYS), "created_at": now,
+           "created_by": by, "source": source, "key": key,
+           "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf"}
+    await db[PROJECT_REPORTS].insert_one(doc)
+    logger.info(f"[report] {rid} {title} source={source} stored={stored}")
+    return doc
+
+
+def _report_message(doc: dict) -> str:
+    """The five lines, and the link (30 days, no login)."""
+    lines = list(doc.get("summary") or [])[:5]
+    if doc.get("link"):
+        lines.append(f"Full report (PDF, link works {project_report.LINK_DAYS} days): {doc['link']}")
+    else:
+        lines.append("The PDF could not be made just now -- it's in the app under Project → Reports.")
+    return "\n".join(lines)
+
+
+async def _send_report_media(chat_id: str, doc: dict) -> bool:
+    """The PDF itself, after its message went out in this chat."""
+    if not doc.get("r2_key") or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        return False
+    try:
+        tok = await _mint_temp_media_token(doc["r2_key"], "application/pdf", ttl_seconds=3600)
+        async with ServerHttpClient(timeout=60) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
+                json={"chatId": chat_id, "mediaUrl": _public_temp_media_url(tok),
+                      "mediaName": doc.get("filename") or "report.pdf", "caption": doc.get("title") or ""})
+            return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"[report] PDF send failed: {type(e).__name__}")
+        return False
+
+
+async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -> bool:
+    """"send me a report for 588 for the last 2 weeks" -- built now, sent
+    here: the five lines + link, then the PDF. True when it was a request."""
+    if not project_report.is_request(text):
+        return False
+    if not ident["projects"]:
+        await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
+        return True
+    jobs = await _dm_jobs(ident)
+    if project_report.wants_all_jobs(text):
+        picked = [j["project"] for j in jobs]
+    else:
+        ids = wa_assistant.find_jobs(text, jobs)
+        if not ids:
+            jid = wa_assistant.job_named(text, jobs, in_sentence=True)
+            ids = [jid] if jid else []
+        if ids:
+            picked = [j["project"] for j in jobs if j["id"] in ids]
+        elif len(jobs) == 1:
+            picked = [jobs[0]["project"]]
+        else:
+            named = re.search(r"\b\d{2,5}\b|\bfor\s+([A-Za-z][\w ]{2,30})", text)
+            if named and not attendance.parse_range(text, now)[0]:
+                await send_whatsapp_message(
+                    dm_chat, "I don't see that job. Your jobs: "
+                    + ", ".join(j["label"] for j in jobs[:8]) + ". Or say \"report all jobs\".")
+                return True
+            picked = [j["project"] for j in jobs]
+    start, end, _label = project_report.period_for(text, now)
+    doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
+                                     by=str(ident.get("user_id") or ""), source="dm")
+    await send_whatsapp_message(dm_chat, _report_message(doc))
+    await _send_report_media(dm_chat, doc)
+    return True
+
+
+# ── SCHEDULED ────────────────────────────────────────────────────────────────
+
+async def _report_settings(project_id: str) -> dict:
+    row = await db[PROJECT_REPORT_SETTINGS].find_one({"_id": str(project_id)}) or {}
+    sched = row.get("schedule") if row.get("schedule") in project_report.SCHEDULES \
+        else project_report.DEFAULT_SCHEDULE
+    return {"schedule": sched, "pm_ids": [str(x) for x in row.get("pm_ids") or []]}
+
+
+async def _report_recipients(company_id: str, project_id: str, pm_ids: List[str]) -> List[dict]:
+    """The company's admins, and the PMs chosen who are on this job."""
+    users = await db.users.find({"company_id": _company_id_filter(company_id),
+                                 "is_deleted": {"$ne": True}}).to_list(500)
+    out = []
+    for u in users:
+        role = wa_dm.norm_role(u.get("role"))
+        if role == "admin" or (str(u.get("_id")) in pm_ids and (
+                not pm_scoped_to_assigned(u)
+                or str(project_id) in {str(p) for p in u.get("assigned_projects") or []})):
+            if wa_dm.is_dm_eligible(u):
+                out.append(u)
+    return out
+
+
+async def _report_deliver(spec: dict) -> Any:
+    """One scheduled report to one person: the message (gated, ledgered),
+    then the PDF in the same chat."""
+    sent = await send_whatsapp_dm(spec["user_id"], spec["message"], kind=REPORT_DM_KIND,
+                                  window=spec["window"])
+    if sent:
+        doc = await db[PROJECT_REPORTS].find_one({"_id": spec.get("report_id")})
+        optin = await db[WA_OPTINS].find_one({"user_id": spec["user_id"], "status": "active"})
+        if doc and optin:
+            await _send_report_media(optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"]), doc)
+    return sent
+
+
+async def _report_schedule_tick(now: Optional[datetime] = None) -> dict:
+    """Every scheduled report that is due now: built once per job and
+    period, sent once to each recipient (the ledger), held over Shabbos /
+    Yom Tov, retried on the shared schedule when WhatsApp fails."""
+    now = now or datetime.now(timezone.utc)
+    report = {"due": 0, "built": 0, "sent": 0, "queued": 0, "retrying": 0, "skipped": 0}
+    rows = await db[PROJECT_REPORT_SETTINGS].find({"schedule": {"$in": ["biweekly", "monthly"]}}).to_list(2000)
+    for row in rows:
+        period = project_report.scheduled_period(row.get("schedule"), now)
+        if not period:
+            continue
+        pid, cid = str(row["_id"]), str(row.get("company_id") or "")
+        project = await _bot_project_scope(cid, pid)
+        if not project or project.get("is_deleted"):
+            continue
+        report["due"] += 1
+        start, end = period
+        key = f"sched:{pid}:{start.isoformat()}:{end.isoformat()}"
+        doc = await build_project_report(cid, [project], start, end, now=now, source="schedule", key=key)
+        report["built"] += 1
+        message = _report_message(doc)
+        window = f"{pid}:{start.isoformat()}:{end.isoformat()}"
+        for u in await _report_recipients(cid, pid, [str(x) for x in row.get("pm_ids") or []]):
+            uid = str(u["_id"])
+            if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)},
+                                            {"_id": 1}):
+                continue
+            if await _dm_refusal_reason(uid, REPORT_DM_KIND):
+                report["skipped"] += 1
+                continue
+            spec = {"via": "report_dm", "user_id": uid, "message": message, "window": window,
+                    "report_id": doc["_id"], "kind": REPORT_DM_KIND}
+            until = await _shabbos_quiet(cid, pid, now)
+            if until:
+                await _quiet_enqueue(spec, company_id=cid, project_id=pid, kind=REPORT_DM_KIND,
+                                     until=until, now=now)
+                await _ledger_hold(wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window), "queued_shabbos",
+                                   user_id=uid, company_id=cid, kind=REPORT_DM_KIND, window=window)
+                report["queued"] += 1
+                continue
+            if await _report_deliver(spec):
+                report["sent"] += 1
+                continue
+            led = await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(uid, None, REPORT_DM_KIND, window)},
+                                               {"status": 1, "error": 1})
+            if (led or {}).get("status") == "failed":
+                await _retry_later(spec, company_id=cid, project_id=pid, kind=REPORT_DM_KIND,
+                                   error=led.get("error"), deadline=_ny_day_end(now), now=now)
+                report["retrying"] += 1
+    if report["due"]:
+        logger.info(f"[report] schedule {report}")
+    return report
+
+
+async def _report_schedule_job() -> None:
+    try:
+        await _report_schedule_tick()
+    except Exception as e:
+        logger.error(f"[report] schedule tick failed: {type(e).__name__}: {e}")
+
+
+# ── THE APP: Project → Reports ──────────────────────────────────────────────
+
+class ProjectReportRequest(BaseModel):
+    range: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+class ProjectReportSettingsIn(BaseModel):
+    schedule: str
+    pm_ids: List[str] = []
+
+
+def _report_view(doc: dict) -> dict:
+    exp = doc.get("link_expires")
+    live = isinstance(exp, datetime) and (exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)) \
+        > datetime.now(timezone.utc)
+    return {"id": doc["_id"], "title": doc.get("title"), "start": doc.get("start"), "end": doc.get("end"),
+            "summary": doc.get("summary") or [], "source": doc.get("source"),
+            "created_at": _iso_utc(doc["created_at"]) if isinstance(doc.get("created_at"), datetime) else None,
+            "link": doc.get("link") if live else None, "has_pdf": bool(doc.get("r2_key"))}
+
+
+@api_router.get("/projects/{project_id}/project-reports",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def list_project_reports(project_id: str, current_user=Depends(get_current_user)):
+    company_id = await _memory_project(project_id, current_user)
+    rows = await db[PROJECT_REPORTS].find({"company_id": str(company_id),
+                                           "project_ids": str(project_id)}).to_list(200)
+    rows.sort(key=lambda r: r.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return {"reports": [_report_view(r) for r in rows[:100]],
+            "settings": await _report_settings(project_id)}
+
+
+@api_router.post("/projects/{project_id}/project-reports",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def create_project_report(project_id: str, body: ProjectReportRequest,
+                                current_user=Depends(get_current_user)):
+    company_id = await _memory_project(project_id, current_user)
+    project = await _bot_project_scope(company_id, project_id)
+    now = datetime.now(timezone.utc)
+    if body.start and body.end:
+        try:
+            start, end = _Date.fromisoformat(body.start), _Date.fromisoformat(body.end)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Dates are YYYY-MM-DD")
+        if end < start or (end - start).days > 400:
+            raise HTTPException(status_code=400, detail="Pick a period of at most 400 days")
+    else:
+        start, end, _ = project_report.period_for(body.range or "", now)
+    doc = await build_project_report(company_id, [project], start, end, now=now,
+                                     by=str(current_user.get("id") or current_user.get("_id") or ""),
+                                     source="app")
+    return _report_view(doc)
+
+
+@api_router.get("/project-reports/{report_id}/pdf", dependencies=[Depends(require_approved)])
+async def get_project_report_pdf(report_id: str, current_user=Depends(get_current_user)):
+    doc = await db[PROJECT_REPORTS].find_one({"_id": report_id})
+    if not doc or str(doc.get("company_id")) != str(get_user_company_id(current_user)):
+        raise HTTPException(status_code=404, detail="Report not found")
+    for pid in doc.get("project_ids") or []:
+        await _memory_project(pid, current_user)
+    if not doc.get("r2_key") or not _r2_client or not R2_BUCKET_NAME:
+        raise HTTPException(status_code=404, detail="PDF not stored")
+    obj = await asyncio.to_thread(_r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=doc["r2_key"])
+    return Response(content=obj["Body"].read(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{doc.get("filename") or "report.pdf"}"'})
+
+
+@api_router.get("/projects/{project_id}/project-report-settings",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def get_project_report_settings(project_id: str, current_user=Depends(get_current_user)):
+    company_id = await _memory_project(project_id, current_user)
+    users = await db.users.find({"company_id": _company_id_filter(company_id),
+                                 "is_deleted": {"$ne": True}}).to_list(500)
+    pms = [{"id": str(u["_id"]), "name": u.get("full_name") or u.get("name") or ""}
+           for u in users if wa_dm.norm_role(u.get("role")) == "pm" and (
+               not pm_scoped_to_assigned(u)
+               or str(project_id) in {str(p) for p in u.get("assigned_projects") or []})]
+    return {**await _report_settings(project_id), "pms": pms,
+            "schedules": list(project_report.SCHEDULES)}
+
+
+@api_router.put("/projects/{project_id}/project-report-settings",
+                dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def put_project_report_settings(project_id: str, body: ProjectReportSettingsIn,
+                                      current_user=Depends(get_current_user)):
+    company_id = await _memory_project(project_id, current_user)
+    if not holds_rank(current_user, COMPANY_ADMIN_ROLES):
+        raise HTTPException(status_code=403, detail="Admins set the report schedule")
+    if body.schedule not in project_report.SCHEDULES:
+        raise HTTPException(status_code=400, detail="schedule: off, biweekly or monthly")
+    allowed = {p["id"] for p in (await get_project_report_settings(project_id, current_user))["pms"]}
+    pm_ids = [x for x in body.pm_ids if x in allowed]
+    now = datetime.now(timezone.utc)
+    await db[PROJECT_REPORT_SETTINGS].update_one(
+        {"_id": str(project_id)},
+        {"$set": {"company_id": str(company_id), "schedule": body.schedule, "pm_ids": pm_ids,
+                  "updated_at": now, "updated_by": str(current_user.get("id") or "")}}, upsert=True)
+    await audit_log("project_report_settings", str(current_user.get("id") or ""), "project",
+                    str(project_id), {"schedule": body.schedule, "pm_ids": pm_ids})
+    return await _report_settings(project_id)
+
+
 # ── UPCOMING v1 (lib/upcoming.py) ─────────────────────────────────────────
 #
 # What is coming up on a job, in one collection, `upcoming_events`:
@@ -54212,6 +54595,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     # Their own settings, asked about (a change was the turn above).
     if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("settings",)):
+        return
+    # "send me a report for 588 for the last 2 weeks", "report all jobs September".
+    if await _dm_report_turn(ident, dm_chat, text, now):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
@@ -77383,6 +77769,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    # Scheduled project reports (bi-weekly Monday / monthly 1st, 8 AM New
+    # York): checked every 15 minutes; each is built and sent once (ledger).
+    scheduler.add_job(
+        _report_schedule_job,
+        IntervalTrigger(minutes=15),
+        id='project_reports',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=6),
     )
     # What waited over Shabbos / Yom Tov, delivered in order once it ends.
     scheduler.add_job(

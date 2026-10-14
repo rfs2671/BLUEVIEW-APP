@@ -1906,6 +1906,38 @@ export const punchAPI = {
 };
 
 /**
+ * Project reports: Project → Reports (PDF of a period; lib/project_report.py).
+ */
+export const projectReportsAPI = {
+  // { reports: [{ id, title, start, end, summary, source, created_at, link, has_pdf }], settings }
+  list: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/project-reports`);
+    return response.data;
+  },
+  // range: words the server reads ("last 2 weeks", "this month", "last month")
+  create: async (projectId, range) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/project-reports`, { range });
+    return response.data;
+  },
+  pdf: async (reportId) => {
+    const response = await apiClient.get(`/api/project-reports/${encodeURIComponent(reportId)}/pdf`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+  // { schedule, pm_ids, pms: [{ id, name }], schedules }
+  settings: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/project-report-settings`);
+    return response.data;
+  },
+  // Admins only: { schedule: 'off'|'biweekly'|'monthly', pm_ids }
+  saveSettings: async (projectId, body) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/project-report-settings`, body);
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {
