@@ -92,6 +92,7 @@ from lib import project_memory  # noqa: E402
 from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
 from lib import wa_brief  # noqa: E402
+from lib import wa_facts  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import dot_sync  # noqa: E402
@@ -50476,58 +50477,218 @@ async def _brief_for_user(user: dict, now: datetime) -> Optional[str]:
     return wa_brief.compose(now, jobs, {"today": own_today, "later": own_later})
 
 
+#: A brief whose send failed is tried again on the next tick (inside the
+#: catch-up hours) up to this many times in a day. Wed Oct 14: one failed
+#: WaAPI call left the ledger row "failed", the next tick read that as
+#: "already sent", and nothing went out all day.
+BRIEF_MAX_ATTEMPTS = 3
+#: A "sending" row this old is a send that died midway (a restart).
+BRIEF_STALE_SENDING = timedelta(minutes=15)
+
+
+def _utc(at: Any) -> Optional[datetime]:
+    if not isinstance(at, datetime):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+async def _brief_log(uid: str, company_id: Any, day: str, status: str, *,
+                     reason: Optional[str] = None, error: Optional[str] = None,
+                     attempt: bool = False, now: Optional[datetime] = None) -> None:
+    """One row per user per day in brief_log: what happened to the brief --
+    sent / resent (sent_at), skipped / refused (reason), failed (reason,
+    error). brief_status reads it; nothing else is the truth about a brief."""
+    now = now or datetime.now(timezone.utc)
+    st: Dict[str, Any] = {"user_id": uid, "company_id": str(company_id or ""), "day": day,
+                          "status": status, "reason": reason, "error": (error or None) and str(error)[:300],
+                          "at": now, "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}
+    if status in ("sent", "resent"):
+        st["sent_at"] = now
+    upd: Dict[str, Any] = {"$set": st, "$push": {"history": {"$each": [
+        {"status": status, "reason": reason, "at": now}], "$slice": -20}}}
+    if attempt:
+        upd["$inc"] = {"attempts": 1}
+    try:
+        await db[wa_facts.BRIEF_LOG].update_one({"_id": f"{uid}:{day}"}, upd, upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-brief] log write failed: {type(e).__name__}")
+
+
+async def _dm_refusal_reason(uid: str, kind: str) -> Optional[str]:
+    """Why send_whatsapp_dm would refuse this person (its own checks, in its
+    order), as a brief_log reason; None when it would not."""
+    try:
+        user = await db.users.find_one({"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+    except Exception:
+        user = None
+    if not wa_dm.is_dm_eligible(user):
+        return "not_eligible"
+    try:
+        optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"})
+    except Exception:
+        optin = None
+    if not optin:
+        return "no_optin"
+    if optin.get("phone") not in [wa_dm.phone_digits(v) for v in
+                                  _contact_phone_variants(user.get("phone") or "")]:
+        return "phone_changed"
+    prefs = await get_whatsapp_prefs(uid, None)
+    if not prefs.get("enabled"):
+        return "prefs_off"
+    pref_key = _WA_KIND_PREF.get(kind)
+    if pref_key and pref_key != "summary_frequency" and not prefs.get(pref_key):
+        return "prefs_off"
+    return None
+
+
+async def _brief_claimed(uid: str, key: str, day: str, now: datetime) -> bool:
+    """Is today's brief already done (sent, skipped, or in flight)? A failed
+    send -- or a "sending" left by a restart -- is cleared for another try,
+    up to BRIEF_MAX_ATTEMPTS a day."""
+    row = await db[WA_LEDGER].find_one({"_id": key})
+    if not row:
+        return False
+    status = row.get("status")
+    stale = (status == "sending" and (_utc(row.get("created_at")) or now)
+             < now - BRIEF_STALE_SENDING)
+    if status != "failed" and not stale:
+        return True
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{day}"}, {"attempts": 1})
+    if int((log or {}).get("attempts") or 0) >= BRIEF_MAX_ATTEMPTS:
+        return True
+    gone = await db[WA_LEDGER].delete_one({"_id": key, "status": status})
+    return not getattr(gone, "deleted_count", 0)
+
+
 async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     report = {"optins": 0, "due": 0, "sent": 0, "refused": 0, "skipped": 0,
-              "already": 0, "shabbos_skipped": 0}
+              "already": 0, "shabbos_skipped": 0, "failed": 0, "retried": 0}
     today = wa_brief.local_now(now).date().isoformat()
     try:
         optins = await db[WA_OPTINS].find({"status": "active"}).to_list(5000)
     except Exception as e:
-        logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}")
+        logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}: {e}")
         return report
     for optin in optins:
         report["optins"] += 1
         uid = str(optin.get("user_id") or "")
         if not uid:
             continue
+        company_id = optin.get("company_id")
         try:
             user = await db.users.find_one(
                 {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+            company_id = (user or {}).get("company_id") or company_id
+            settings = await _brief_settings(uid)
+            due = wa_brief.is_due(now, settings["brief_time"], settings["brief_weekend"])
             if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
                     optin.get("company_id") or user.get("company_id"),
                     user.get("company_id")):
                 report["skipped"] += 1
+                if due:
+                    await _brief_log(uid, company_id, today, "skipped", reason="not_eligible", now=now)
                 continue
-            settings = await _brief_settings(uid)
-            if not wa_brief.is_due(now, settings["brief_time"],
-                                   settings["brief_weekend"]):
+            if not due:
                 continue
             report["due"] += 1
-            if await db[WA_LEDGER].find_one({"_id": wa_dm.ledger_key(
-                    uid, None, MORNING_BRIEF_KIND, today)}, {"_id": 1}):
+            key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today)
+            had = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+            if await _brief_claimed(uid, key, today, now):
                 report["already"] += 1
                 continue
+            if had:
+                report["retried"] += 1
             if await _shabbos_quiet(user.get("company_id"), None, now):
                 # Shabbos / Yom Tov: today's brief is skipped, not queued.
-                await _ledger_hold(wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today),
-                                   "skipped_shabbos", user_id=uid,
+                await _ledger_hold(key, "skipped_shabbos", user_id=uid,
                                    company_id=user.get("company_id"),
                                    kind=MORNING_BRIEF_KIND, window=today)
+                await _brief_log(uid, company_id, today, "skipped", reason="shabbos", now=now)
                 report["shabbos_skipped"] += 1
                 continue
             text = await _brief_for_user(user, now)
             if not text:
                 report["skipped"] += 1
+                await _brief_log(uid, company_id, today, "skipped", reason="no_jobs", now=now)
                 continue
             sent = await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND,
                                           window=today)
-            report["sent" if sent else "refused"] += 1
+            if sent:
+                report["sent"] += 1
+                await _brief_log(uid, company_id, today, "sent", attempt=True, now=now)
+                continue
+            # Not sent: refused before WaAPI (a reason), or WaAPI said no
+            # (the ledger row says "failed", with its error).
+            reason = await _dm_refusal_reason(uid, MORNING_BRIEF_KIND)
+            row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1, "error": 1})
+            if reason is None and (row or {}).get("status") == "failed":
+                report["failed"] += 1
+                await _brief_log(uid, company_id, today, "failed", reason="send_failed",
+                                 error=row.get("error"), attempt=True, now=now)
+                logger.warning(f"[wa-brief] send failed for user {uid[-6:]}: {row.get('error')}")
+            else:
+                report["refused"] += 1
+                await _brief_log(uid, company_id, today, "refused",
+                                 reason=reason or "send_failed", now=now)
+                logger.warning(f"[wa-brief] refused for user {uid[-6:]}: {reason or 'unknown'}")
         except Exception as e:
-            logger.warning(f"[wa-brief] user failed: {type(e).__name__}")
+            # The whole error, once per user: "user failed: KeyError" told
+            # nobody anything.
+            report["failed"] += 1
+            logger.exception(f"[wa-brief] user {uid[-6:]} failed: {type(e).__name__}: {e}")
+            await _brief_log(uid, company_id, today, "failed", reason="error",
+                             error=f"{type(e).__name__}: {e}", attempt=True, now=now)
     logger.info(f"[wa-brief] {report}")
     await _dm_answers_daily(now)
     return report
+
+
+async def _brief_resend(user: dict, dm_chat: str, now: datetime) -> str:
+    """"send me my brief": today's brief, now, as a reply to their message
+    (their message opened the window). Recorded as resent in brief_log and
+    in the ledger, so the morning tick does not send it a second time."""
+    uid = str(user.get("_id"))
+    today = wa_brief.local_now(now).date().isoformat()
+    try:
+        text = await _brief_for_user(user, now)
+    except Exception as e:
+        logger.exception(f"[wa-brief] resend for {uid[-6:]} failed: {type(e).__name__}: {e}")
+        await _brief_log(uid, user.get("company_id"), today, "failed", reason="error",
+                         error=f"{type(e).__name__}: {e}", now=now)
+        return "error"
+    if not text:
+        await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
+        return "no_jobs"
+    sent = await send_whatsapp_message(dm_chat, text)
+    if not sent:
+        await _brief_log(uid, user.get("company_id"), today, "failed", reason="send_failed", now=now)
+        return "failed"
+    await _brief_log(uid, user.get("company_id"), today, "resent", now=now)
+    try:
+        key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today)
+        await db[WA_LEDGER].replace_one({"_id": key}, {
+            "_id": key, "user_id": uid, "company_id": str(user.get("company_id") or ""),
+            "project_id": None, "kind": MORNING_BRIEF_KIND, "window": today, "status": "sent",
+            "created_at": now, "finished_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}, upsert=True)
+    except Exception:
+        pass
+    return "sent"
+
+
+async def _brief_status_for(uid: str, day: Optional[str], now: datetime) -> str:
+    """brief_status: from brief_log (and the ledger), never a guess."""
+    try:
+        d = _Date.fromisoformat(day) if day else wa_brief.local_now(now).date()
+    except ValueError:
+        d = wa_brief.local_now(now).date()
+    iso = d.isoformat()
+    log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{iso}"})
+    ledger = await db[WA_LEDGER].find_one(
+        {"_id": wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, iso)})
+    settings = await _brief_settings(uid)
+    return wa_facts.brief_status_text(log, ledger, settings, now, d)
 
 
 async def _dm_answers_daily(now: datetime) -> Optional[dict]:
@@ -51706,6 +51867,18 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         # 6:22 PM): what it replied to is in the question.
         logger.info("[wa-assistant] reply denied the replied-to message; saying what it was")
         return wa_assistant.quoted_fallback(body)
+    if reply and wa_facts.about_attendance(body) and wa_facts.denies_data(reply) \
+            and not any(t.get("tool") == "sub_attendance" for t in trace):
+        # NEVER "the data doesn't specify" how long a sub has been on site
+        # (Wed Oct 14, 10:12 AM, Arkon on 588): every check-in has it.
+        logger.info("[wa-assistant] reply denied attendance data; answering from check-ins")
+        return await _attendance_fallback(project, body)
+    if reply and wa_facts.claims_brief(reply) \
+            and not any(t.get("tool") == "brief_status" for t in trace):
+        # NEVER "the brief was sent" from nowhere (Wed Oct 14, 10:12 AM):
+        # only the send log says so.
+        logger.info("[wa-assistant] reply spoke of the brief without the log; reading it")
+        return await _brief_status_for(str(ident["user_id"]), None, datetime.now(timezone.utc))
     if not reply:
         return reply
     allowed = " ".join([body, wa_assistant.street_label(project)]
@@ -53671,6 +53844,33 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
     await _dm_say(dm_chat, lang, "undone", what=what)
 
 
+async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetime,
+                              topics: tuple = ("brief", "send_brief", "settings")) -> bool:
+    """"send me my brief", "why didn't I get my brief", "what are my
+    settings": answered from their own records. True when answered."""
+    topic = wa_facts.user_topic(text)
+    if topic not in topics:
+        return False
+    uid = str(ident.get("user_id") or "")
+    if topic == "send_brief":
+        user = await db.users.find_one({"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+        if not user:
+            return False
+        out = await _brief_resend(user, dm_chat, now)
+        if out in ("error", "failed"):
+            await send_whatsapp_message(
+                dm_chat, "I couldn't send your brief just now — it's logged and the team "
+                         "will see it. Try again in a few minutes.")
+        return True
+    if topic == "brief":
+        await send_whatsapp_message(dm_chat, await _brief_status_for(uid, None, now))
+        return True
+    settings = await _brief_settings(uid)
+    optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
+    await send_whatsapp_message(dm_chat, wa_facts.settings_text(settings, bool(optin)))
+    return True
+
+
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                               message_id: str, heard: Optional[str] = None,
                               quoted: Optional[dict] = None) -> None:
@@ -53727,9 +53927,16 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     # before the jobs.
     if await _upcoming_dm_turn(ident, dm_chat, text, now):
         return
+    # About THEM -- their brief, their settings -- never a job (Wed 10:11
+    # AM: "Why didn't I get morning brief" got "Which job?").
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief", "send_brief")):
+        return
     # A change asked in their own words (lib/dm_actions.py): add a job, a
     # sub, a person, a punch contact; a job's settings; undo.
     if await _dm_action_turn(ident, dm_chat, text, new=True):
+        return
+    # Their own settings, asked about (a change was the turn above).
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("settings",)):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
@@ -56820,6 +57027,9 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db[WA_LEDGER], keys=[("user_id", 1), ("created_at", -1)],
         name="whatsapp_notification_ledger_by_user")
+    await _ensure_index_resilient(
+        db[wa_facts.BRIEF_LOG], keys=[("expires_at", 1)],
+        name="brief_log_ttl", expireAfterSeconds=0)
     await _ensure_index_resilient(
         db[WA_OPTINS], keys=[("phone", 1)],
         name="whatsapp_optins_phone_unique", unique=True)
@@ -61673,6 +61883,13 @@ _AGENT_TOOLS = [
 ]
 # The company's subs list (DM only; see _run_group_agent's filter).
 _AGENT_TOOLS += wa_subs.TOOLS
+# What the assistant used to say "the data doesn't specify" about (Wed Oct
+# 14, lib/wa_facts.py): days on site, punch, follow-ups, upcoming, the brief.
+_AGENT_TOOLS += [wa_facts.SUB_ATTENDANCE_TOOL, wa_facts.PUNCH_STATUS_TOOL,
+                 wa_facts.FOLLOW_UPS_TOOL, wa_facts.UPCOMING_TOOL, wa_facts.BRIEF_STATUS_TOOL]
+#: Read in a direct message only: the brief is the person's own; follow-ups
+#: name who owes what, which a group of subs does not read about each other.
+_DM_ONLY_FACT_TOOLS = ("follow_ups", "brief_status")
 
 
 # ── THE STANCE COMES FIRST, BECAUSE IT DECIDES THE OTHER RULES ─────────────
@@ -62745,6 +62962,10 @@ async def _run_group_agent(
         # The company's subs list: a DM only (it spans the person's jobs).
         if name in ("find_sub", "list_subs") and not dm:
             continue
+        if name in _DM_ONLY_FACT_TOOLS and not dm:
+            continue
+        if name == "sub_attendance" and not features.get("who_on_site", True):
+            continue
         if name == "who_on_site" and not features.get("who_on_site", True):
             continue
         if name == "list_workers" and not features.get("who_on_site", True):
@@ -62970,6 +63191,91 @@ async def _run_group_agent(
         return None
 
 
+async def _attendance_rows(project_id: str, since: datetime) -> list:
+    """The job's check-ins since `since`: who, their company, when."""
+    return await db.checkins.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True},
+         "check_in_time": {"$gte": since}},
+        {"worker_id": 1, "worker_phone": 1, "worker_name": 1, "worker_company": 1,
+         "company": 1, "company_name": 1, "check_in_time": 1}).to_list(100000)
+
+
+async def _attendance_fallback(project: dict, body: str, now: Optional[datetime] = None) -> str:
+    """The answer from the check-ins, when the model said they don't say."""
+    now = now or datetime.now(timezone.utc)
+    rows = await _attendance_rows(str(project.get("_id")), now - timedelta(days=730))
+    sub = wa_facts.sub_in_question(body, {wa_facts.checkin_company(r) for r in rows})
+    return wa_facts.attendance_text(wa_facts.attendance(rows, now, sub), now, sub,
+                                    wa_assistant.street_label(project))
+
+
+def _fact_day(v: Any) -> Optional[_Date]:
+    try:
+        return _Date.fromisoformat(str(v).strip()[:10]) if v else None
+    except ValueError:
+        return None
+
+
+async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str,
+                      group_id: Optional[str], now: Optional[datetime] = None) -> str:
+    """sub_attendance / punch_status / follow_ups / upcoming_events /
+    brief_status (lib/wa_facts.py). The caller proved the project is the
+    company's; every read here is that project's."""
+    now = now or datetime.now(timezone.utc)
+    project = await _bot_project_scope(company_id, project_id)
+    if not project:
+        return wa_security.BOT_SCOPE_REFUSAL
+    job = wa_assistant.street_label(project) if isinstance(project, dict) else ""
+    in_dm = bool(group_id) and not str(group_id).endswith("@g.us")
+    if name == "sub_attendance":
+        frm, to = _fact_day(args.get("date_from")), _fact_day(args.get("date_to"))
+        since = datetime.combine(frm, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1) \
+            if frm else now - timedelta(days=730)
+        rows = await _attendance_rows(project_id, since)
+        sub = str(args.get("sub") or "").strip() or None
+        return wa_facts.attendance_text(wa_facts.attendance(rows, now, sub, frm, to), now, sub, job)
+    if name == "punch_status":
+        rows = await db[punch.COLLECTION].find(
+            {"project_id": project_id, "company_id": _company_id_filter(company_id),
+             "status": {"$in": ["open", "ready_to_check", "closed"]}},
+            {"status": 1, "assignee": 1, "pid": 1, "assigned_at": 1, "created_at": 1}).to_list(5000)
+        return wa_facts.punch_text(rows, now, str(args.get("assignee") or "").strip() or None, job)
+    if name == "follow_ups":
+        if not in_dm:
+            return "Follow-ups are read in a direct message only."
+        items = await db.attention_items.find(
+            {"project_id": project_id, "company_id": _company_id_filter(company_id),
+             "status": {"$in": ["open", "rescheduled"]}}).to_list(2000)
+        ids = [str(i["_id"]) for i in items]
+        chased: Dict[str, datetime] = {}
+        if ids:
+            for n in await db[wa_chase.COLLECTION].find(
+                    {"item_ids": {"$in": ids}}, {"item_ids": 1, "at": 1}).to_list(5000):
+                at = _utc(n.get("at"))
+                for i in n.get("item_ids") or []:
+                    if at and (i not in chased or at > chased[i]):
+                        chased[i] = at
+        return wa_facts.follow_ups_text(items, chased, now, str(args.get("owner") or "").strip() or None, job)
+    if name == "upcoming_events":
+        try:
+            days = max(1, min(60, int(args.get("days") or 14)))
+        except (TypeError, ValueError):
+            days = 14
+        today = wa_brief.local_now(now).date()
+        events = await db.upcoming_events.find(
+            {"company_id": _company_id_filter(company_id), "project_id": project_id,
+             "status": "open", "date": {"$gte": today.isoformat()}}).to_list(500)
+        return wa_facts.upcoming_text(events, now, days, job)
+    if name == "brief_status":
+        if not in_dm:
+            return "The brief is read in a direct message only."
+        ident = await _dm_assistant_identity(group_id)
+        if not ident or str(ident.get("company_id")) != str(company_id):
+            return wa_security.BOT_SCOPE_REFUSAL
+        return await _brief_status_for(str(ident["user_id"]), args.get("date"), now)
+    return f"Unknown tool {name}."
+
+
 async def _dispatch_agent_tool(
     name: str, args: dict, *, project_id: str, group_id: str,
     company_id: Optional[str], sender: str, reply_to: Optional[str] = None,
@@ -63003,6 +63309,10 @@ async def _dispatch_agent_tool(
             if project is None:
                 return wa_security.BOT_SCOPE_REFUSAL
             return await _dm_subs_tool(ident, name, args, project)
+        if name in ("sub_attendance", "punch_status", "follow_ups", "upcoming_events",
+                    "brief_status"):
+            return await _facts_tool(name, args or {}, company_id=str(company_id),
+                                     project_id=str(project_id), group_id=group_id)
         if name == "recent_voice_notes":
             if not group_id or str(group_id).endswith("@g.us"):
                 return "Voice notes are read in a direct message only."

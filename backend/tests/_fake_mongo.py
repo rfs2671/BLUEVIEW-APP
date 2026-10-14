@@ -2,7 +2,7 @@
 
 Supports: equality (incl. a scalar against an array field), $in, $nin, $ne,
 $gt, $gte, $lt, $lte, $exists, $regex, $or; updates $set, $setOnInsert, $inc,
-$push, $addToSet (with $each),
+$push (with $each, $slice), $addToSet (with $each),
 $unset; unique `_id` and optional unique single fields; find / find_one /
 find_one_and_update / insert_one / update_one / update_many / replace_one /
 count_documents / delete_one / create_index (recorded, not enforced except
@@ -236,7 +236,13 @@ class Coll:
         for k, v in (update.get("$push") or {}).items():
             cur = _get(doc, k)
             cur = list(cur) if isinstance(cur, list) else []
-            cur.append(v)
+            if isinstance(v, dict) and "$each" in v:
+                cur.extend(v["$each"])
+                if isinstance(v.get("$slice"), int):
+                    n = v["$slice"]
+                    cur = cur[n:] if n < 0 else cur[:n]
+            else:
+                cur.append(v)
             _set(doc, k, cur)
 
     async def update_one(self, query, update, upsert=False, **k):
