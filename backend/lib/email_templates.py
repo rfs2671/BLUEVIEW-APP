@@ -489,6 +489,40 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
     return subject, html, text
 
 
+def render_project_progress_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
+    """A progress report (lib/progress_report.py) by email: the short message
+    -- the same lines the WhatsApp one carries -- and the PDF attached (or,
+    when it is too large, the no-login link). Same shape as the daily report
+    notification, so it reaches the inbox the same way."""
+    from html import escape
+    title = ctx.get("title") or "Progress report"
+    lines = [str(x) for x in ctx.get("lines") or [] if str(x).strip()]
+    attached = bool(ctx.get("attached"))
+    link = ctx.get("link") or ""
+    subject = title
+    body = (
+        _greeting(ctx)
+        + "".join(f'<p style="margin:0 0 6px;font-size:14px;color:#374151;line-height:1.5;">'
+                  f'{escape(l)}</p>' for l in lines)
+        + (f'<p style="margin:16px 0 0;font-size:13px;color:#6b7280;line-height:1.5;">'
+           + ("The full report is attached as a PDF." if attached else
+              (f'Full report (PDF): <a href="{escape(link)}">{escape(link)}</a>' if link
+               else "The full report is in LeveLog under Project → Reports."))
+           + '</p>')
+    )
+    # Its recipients are the job's admins and PMs (users): the button opens
+    # the report -- its no-login link, else the job's Reports in the app.
+    url = link or ctx.get("action_link") or ""
+    html = _card(header_color="#1F3A5F", header_emoji="📊", header_title="Construction Progress Report",
+                 header_subtitle=escape(title), body_html=body,
+                 action_label="Open the report" if url else "", action_url=url)
+    text = (f"Hi {ctx.get('recipient_name') or 'there'},\n\n" + "\n".join(lines) + "\n\n"
+            + ("The full report is attached as a PDF." if attached else
+               (f"Full report (PDF): {link}" if link else "The full report is in LeveLog under Project → Reports."))
+            + "\n\n— LeveLog")
+    return subject, html, text
+
+
 # ── Trigger registry ───────────────────────────────────────────────
 
 TRIGGER_RENDERERS = {
@@ -498,6 +532,7 @@ TRIGGER_RENDERERS = {
     "filing_stuck":        render_stuck,
     "renewal_completed":   render_completed,
     "project_daily_report": render_project_daily_report,
+    "project_progress_report": render_project_progress_report,
 }
 
 VALID_TRIGGER_TYPES = frozenset(TRIGGER_RENDERERS.keys())

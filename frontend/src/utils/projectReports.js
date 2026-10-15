@@ -10,12 +10,83 @@ export function canSeeReports(user) {
   return canSearch(user);
 }
 
-/** The periods offered by Generate; the words are what the server reads. */
+/** Generate now: the presets (lib/project_report.PRESETS), and a custom range. */
+export const PRESETS = [
+  { key: 'last_7_days', label: 'Last 7 days' },
+  { key: 'last_2_weeks', label: 'Last 2 weeks' },
+  { key: 'this_month', label: 'This month' },
+  { key: 'last_month', label: 'Last month' },
+  { key: 'this_quarter', label: 'This quarter' },
+  { key: 'whole_project', label: 'Whole project' },
+  { key: 'custom', label: 'Custom range' },
+];
+/** Kept for anything that still names the old three. */
 export const RANGE_CHOICES = [
   { key: 'last 2 weeks', label: 'Last 2 weeks' },
   { key: 'this month', label: 'This month' },
   { key: 'last month', label: 'Last month' },
 ];
+
+/** The reports a job can be sent on a schedule -- any combination. */
+export const KINDS = [
+  { key: 'daily', label: 'Daily', hint: 'The daily report, at its send time' },
+  { key: 'weekly', label: 'Weekly', hint: 'Mondays 8am · the week before' },
+  { key: 'biweekly', label: 'Bi-weekly', hint: 'Every other Monday 8am · 2 weeks' },
+  { key: 'monthly', label: 'Monthly', hint: '1st of the month 8am · the month before' },
+  { key: 'quarterly', label: 'Quarterly', hint: 'Jan, Apr, Jul, Oct 1st 8am · the quarter before' },
+];
+
+/** The list with `key` in or out. */
+export function toggled(list, key) {
+  const cur = new Set((list || []).map(String));
+  if (cur.has(String(key))) cur.delete(String(key)); else cur.add(String(key));
+  return Array.from(cur);
+}
+
+/** What the screen sends to save the schedule. */
+export function settingsBody(schedules, recipientIds, delivery) {
+  const keys = KINDS.map((k) => k.key);
+  return {
+    schedules: keys.filter((k) => (schedules || []).includes(k)),
+    recipient_ids: Array.from(new Set((recipientIds || []).map(String))),
+    delivery: { whatsapp: !!(delivery && delivery.whatsapp), email: !!(delivery && delivery.email) },
+  };
+}
+
+/** A custom range: YYYY-MM-DD to YYYY-MM-DD, at most 400 days. '' when good, else why not. */
+export function rangeProblem(start, end) {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(String(start || '')) || !re.test(String(end || ''))) return 'Enter both dates (MM/DD/YYYY).';
+  const a = Date.parse(`${start}T00:00:00Z`);
+  const b = Date.parse(`${end}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 'Enter both dates (MM/DD/YYYY).';
+  if (b < a) return 'The end is before the start.';
+  if ((b - a) / 86400000 > 400) return 'Pick at most 400 days.';
+  return '';
+}
+
+/** "Weekly · Scheduled" / "Asked in WhatsApp by Pat PM" / "Made in the app by Ada Admin". */
+export function whoLine(r) {
+  const x = r || {};
+  const src = x.source_label || sourceLabel(x.source);
+  const by = x.requested_by && x.requested_by !== 'Schedule' ? ` by ${x.requested_by}` : '';
+  return [x.kind_label, `${src}${by}`].filter(Boolean).join(' · ');
+}
+
+/** "Oct 15, 2026" (New York) -- when the report was made. */
+export function madeLabel(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric',
+    year: 'numeric' });
+}
+
+/** What Share sends when there is no file to share: the title and the no-login link. */
+export function shareText(r) {
+  const x = r || {};
+  return x.link ? `${x.title || 'Progress report'}\n${x.link}` : '';
+}
 
 export const SCHEDULE_OPTIONS = [
   { key: 'off', label: 'Off' },

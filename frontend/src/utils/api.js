@@ -1909,14 +1909,18 @@ export const punchAPI = {
  * Project reports: Project → Reports (PDF of a period; lib/project_report.py).
  */
 export const projectReportsAPI = {
-  // { reports: [{ id, title, start, end, summary, source, created_at, link, has_pdf }], settings }
+  // { reports: [{ id, title, start, end, period, kind_label, summary, source, source_label,
+  //   requested_by, created_at, link, has_pdf }], settings, presets }
   list: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/project-reports`);
     return response.data;
   },
-  // range: words the server reads ("last 2 weeks", "this month", "last month")
-  create: async (projectId, range) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/project-reports`, { range });
+  // what: a preset key ('last_7_days' … 'whole_project'), { start, end } (YYYY-MM-DD), or
+  // words the server reads ("last 2 weeks").
+  create: async (projectId, what) => {
+    const body = (what && typeof what === 'object') ? { start: what.start, end: what.end }
+      : (/^[a-z_0-9]+$/.test(String(what || '')) ? { preset: what } : { range: what });
+    const response = await apiClient.post(`/api/projects/${projectId}/project-reports`, body);
     return response.data;
   },
   pdf: async (reportId) => {
@@ -1925,12 +1929,13 @@ export const projectReportsAPI = {
     });
     return response.data;
   },
-  // { schedule, pm_ids, pms: [{ id, name }], schedules }
+  // { schedules, recipient_ids, delivery: {whatsapp, email}, people: [{ id, name, role, email,
+  //   whatsapp }], kinds, summary, daily: { send_time, email_list }, can_edit }
   settings: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/project-report-settings`);
     return response.data;
   },
-  // Admins only: { schedule: 'off'|'biweekly'|'monthly', pm_ids }
+  // Admins and full-access PMs: { schedules: [...], recipient_ids: [...], delivery }
   saveSettings: async (projectId, body) => {
     const response = await apiClient.put(`/api/projects/${projectId}/project-report-settings`, body);
     return response.data;

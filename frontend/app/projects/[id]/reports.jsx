@@ -8,39 +8,49 @@ import {
   ActivityIndicator,
   Linking,
   Platform,
+  Share,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, FileText, Download, Check } from 'lucide-react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { ArrowLeft, FileText, Download, Check, Share2, ExternalLink } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
-import { projectReportsAPI } from '../../../src/utils/api';
+import DateInput from '../../../src/components/DateInput';
+import { toStoredDate } from '../../../src/utils/dateEntry';
+import apiClient, { projectReportsAPI, getToken } from '../../../src/utils/api';
 import {
-  RANGE_CHOICES, SCHEDULE_OPTIONS, periodLabel, sourceLabel, pdfName, scheduleBody, scheduleLabel,
+  PRESETS, KINDS, periodLabel, pdfName, settingsBody, toggled, rangeProblem, whoLine, madeLabel,
+  shareText,
 } from '../../../src/utils/projectReports';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
-import { useAuth, isCompanyAdmin } from '../../../src/context/AuthContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 
-// Project → Reports: generate a PDF report for a period, list the ones made
-// (in the app, asked for in WhatsApp, or sent on the schedule), download them.
-// Admins set the schedule here: off / every 2 weeks / monthly, sent by
-// WhatsApp to the company's admins and the PMs chosen below.
+// Project → Reports: the job's progress reports (lib/progress_report.py --
+// the same report the WhatsApp one is).
+//   * Generate now: last 7 days, last 2 weeks, this month, last month, this
+//     quarter, the whole project, or a custom range.
+//   * Schedule (admins and full-access PMs): any combination of daily (the
+//     daily report), weekly, bi-weekly, monthly and quarterly; to the admins
+//     and PMs picked; by WhatsApp DM and / or email.
+//   * Every report made -- scheduled or asked for, here or in WhatsApp --
+//     with its period, when, who asked; open, download, share.
 export default function ProjectReportsScreen() {
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { colors } = useTheme();
-  const { user } = useAuth();
   const toast = useToast();
-  const isAdmin = isCompanyAdmin(user);
   const [reports, setReports] = useState(null);
-  const [settings, setSettings] = useState(null);     // { schedule, pm_ids, pms }
-  const [range, setRange] = useState(RANGE_CHOICES[0].key);
+  const [settings, setSettings] = useState(null);
+  const [preset, setPreset] = useState(PRESETS[1].key);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
   const [making, setMaking] = useState(false);
-  const [downloading, setDownloading] = useState(null);
+  const [busy, setBusy] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -61,11 +71,20 @@ export default function ProjectReportsScreen() {
   useEffect(() => { load(); }, [load]);
 
   const generate = async () => {
+    let what = preset;
+    if (preset === 'custom') {
+      // DateInput hands up the typed text; toStoredDate makes it ISO.
+      const a = toStoredDate(start);
+      const b = toStoredDate(end);
+      const why = rangeProblem(a, b);
+      if (why) { toast?.error?.('Custom range', why); return; }
+      what = { start: a, end: b };
+    }
     setMaking(true);
     try {
-      const made = await projectReportsAPI.create(projectId, range);
+      const made = await projectReportsAPI.create(projectId, what);
       setReports((list) => [made, ...(list || []).filter((r) => r.id !== made.id)]);
-      toast?.success?.('Report ready', periodLabel(made.start, made.end));
+      toast?.success?.('Report ready', made.period || periodLabel(made.start, made.end));
     } catch (e) {
       toast?.error?.('No report', 'Could not make the report. Try again.');
     } finally {
@@ -73,54 +92,144 @@ export default function ProjectReportsScreen() {
     }
   };
 
-  const download = async (r) => {
-    if (Platform.OS !== 'web') {
-      // The 30-day no-login link opens in the phone's PDF viewer.
-      if (r.link) {
-        Linking.openURL(r.link);
-      } else {
-        toast?.error?.('Link expired', 'Generate the report again for a new link.');
-      }
-      return;
+  // The PDF as a local file (native): the no-login link when it still works,
+  // else the app's own download with the token in the header -- never in a
+  // URL handed to anything else.
+  const localPdf = async (r) => {
+    const target = `${FileSystem.cacheDirectory}${pdfName(r)}`;
+    if (r.link) {
+      const { uri, status } = await FileSystem.downloadAsync(r.link, target);
+      if (status === 200) return uri;
     }
-    setDownloading(r.id);
+    const token = await getToken();
+    const base = apiClient.defaults.baseURL || '';
+    const { uri, status } = await FileSystem.downloadAsync(
+      `${base}/api/project-reports/${encodeURIComponent(r.id)}/pdf`, target,
+      { headers: { Authorization: `Bearer ${token}` } });
+    return status === 200 ? uri : null;
+  };
+
+  const webBlobUrl = async (r) => window.URL.createObjectURL(await projectReportsAPI.pdf(r.id));
+
+  const open = async (r) => {
+    setBusy(`open-${r.id}`);
     try {
-      const blob = await projectReportsAPI.pdf(r.id);
-      const url = window.URL.createObjectURL(blob);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = pdfName(r);
-      a.click();
-      window.URL.revokeObjectURL(url);
+      if (Platform.OS === 'web') {
+        window.open(r.link || await webBlobUrl(r), '_blank');
+      } else if (r.link) {
+        await Linking.openURL(r.link);
+      } else {
+        const uri = await localPdf(r);
+        if (uri && await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+        } else {
+          toast?.error?.('Not opened', 'Try again.');
+        }
+      }
     } catch (e) {
-      toast?.error?.('Not downloaded', 'Try again.');
+      toast?.error?.('Not opened', 'Try again.');
     } finally {
-      setDownloading(null);
+      setBusy(null);
     }
   };
 
-  const saveSchedule = async (next) => {
-    const body = scheduleBody(next.schedule, next.pm_ids);
-    setSaving(true);
+  const download = async (r) => {
+    setBusy(`dl-${r.id}`);
     try {
-      const saved = await projectReportsAPI.saveSettings(projectId, body);
-      setSettings((s) => ({ ...(s || {}), ...saved }));
+      if (Platform.OS === 'web') {
+        const url = await webBlobUrl(r);
+        const a = window.document.createElement('a');
+        a.href = url;
+        a.download = pdfName(r);
+        a.click();
+        window.URL.revokeObjectURL(url);
+      } else {
+        const uri = await localPdf(r);
+        if (!uri) throw new Error('no file');
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf',
+            dialogTitle: 'Save report' });
+        } else {
+          await Linking.openURL(uri);
+        }
+      }
+    } catch (e) {
+      toast?.error?.('Not downloaded', 'Try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const share = async (r) => {
+    setBusy(`share-${r.id}`);
+    try {
+      if (Platform.OS === 'web') {
+        if (r.link && window.navigator?.share) {
+          await window.navigator.share({ title: r.title || 'Progress report', url: r.link });
+        } else if (r.link && window.navigator?.clipboard) {
+          await window.navigator.clipboard.writeText(r.link);
+          toast?.success?.('Link copied', 'The link works for 30 days, no login.');
+        } else {
+          toast?.error?.('No link', 'Download the PDF to share it.');
+        }
+      } else if (await Sharing.isAvailableAsync()) {
+        const uri = await localPdf(r);
+        if (!uri) throw new Error('no file');
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf',
+          dialogTitle: 'Share report' });
+      } else if (shareText(r)) {
+        await Share.share({ title: r.title || 'Progress report', message: shareText(r) });
+      } else {
+        toast?.error?.('Not shared', 'Try again.');
+      }
+    } catch (e) {
+      toast?.error?.('Not shared', 'Try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const save = async (next) => {
+    const body = settingsBody(next.schedules, next.recipient_ids, next.delivery);
+    setSaving(true);
+    setSettings((s) => ({ ...(s || {}), ...body }));
+    try {
+      setSettings(await projectReportsAPI.saveSettings(projectId, body));
     } catch (e) {
       toast?.error?.('Not saved', 'Try again.');
+      load();
     } finally {
       setSaving(false);
     }
   };
 
-  const togglePm = (id) => {
-    const cur = new Set((settings?.pm_ids) || []);
-    if (cur.has(id)) cur.delete(id); else cur.add(id);
-    saveSchedule({ schedule: settings?.schedule, pm_ids: Array.from(cur) });
-  };
-
   const text = { color: colors.text.primary };
   const muted = { color: colors.text.muted };
   const chosen = { borderColor: colors.primary };
+  const canEdit = !!(settings && settings.can_edit);
+  const cur = settings || {};
+
+  const box = (on, label, onPress, key, hint) => (
+    <Pressable key={key} onPress={onPress} disabled={!canEdit || saving}
+      accessibilityRole="checkbox" accessibilityState={{ checked: on, disabled: !canEdit }}
+      style={styles.pmRow}>
+      <View style={[styles.box, on && chosen]}>{on ? <Check size={14} color={text.color} /> : null}</View>
+      <View style={styles.grow}>
+        <Text style={[styles.line, text]}>{label}</Text>
+        {hint ? <Text style={[styles.hint, muted]}>{hint}</Text> : null}
+      </View>
+    </Pressable>
+  );
+
+  const act = (r, kind, Icon, label, fn) => (
+    <Pressable key={kind} onPress={() => fn(r)} hitSlop={8} disabled={busy === `${kind}-${r.id}`}
+      accessibilityRole="button" accessibilityLabel={label} style={styles.act}>
+      {busy === `${kind}-${r.id}`
+        ? <ActivityIndicator size="small" />
+        : <Icon size={16} color={text.color} />}
+      <Text style={[styles.actText, text]}>{label}</Text>
+    </Pressable>
+  );
 
   return (
     <View style={styles.flex}>
@@ -135,21 +244,33 @@ export default function ProjectReportsScreen() {
         <ScrollView contentContainerStyle={styles.body}>
           <Text style={[styles.title, text]}>Reports</Text>
           <Text style={[styles.sub, muted]}>
-            A PDF of the job for a period: manpower, subs, DOB/DOT, upcoming, commitments, punch,
-            daily logs and safety. Every number comes from Levelog's records.
+            A progress report of the job for a period — work by sub, actual work from the daily logs,
+            photos, site activity, DOB/DOT, open items, what's next — the same report sent in WhatsApp.
           </Text>
 
           <GlassCard style={styles.card}>
-            <Text style={[styles.section, text]}>New report</Text>
+            <Text style={[styles.section, text]}>Generate now</Text>
             <View style={styles.chips}>
-              {RANGE_CHOICES.map((c) => (
-                <Pressable key={c.key} onPress={() => setRange(c.key)}
-                  accessibilityRole="radio" accessibilityState={{ selected: range === c.key }}
-                  style={[styles.chip, range === c.key && chosen]}>
+              {PRESETS.map((c) => (
+                <Pressable key={c.key} onPress={() => setPreset(c.key)}
+                  accessibilityRole="radio" accessibilityState={{ selected: preset === c.key }}
+                  style={[styles.chip, preset === c.key && chosen]}>
                   <Text style={[styles.chipText, text]}>{c.label}</Text>
                 </Pressable>
               ))}
             </View>
+            {preset === 'custom' && (
+              <View style={[styles.chips, styles.gap]}>
+                <DateInput value={start} onChange={setStart} placeholderTextColor={muted.color}
+                  palette={{ error: colors.status.error, hint: colors.text.muted }}
+                  style={styles.dateField} accessibilityLabel="From date"
+                  fieldStyle={[styles.input, text, { borderColor: colors.glass.border }]} />
+                <DateInput value={end} onChange={setEnd} placeholderTextColor={muted.color}
+                  palette={{ error: colors.status.error, hint: colors.text.muted }}
+                  style={styles.dateField} accessibilityLabel="To date"
+                  fieldStyle={[styles.input, text, { borderColor: colors.glass.border }]} />
+              </View>
+            )}
             <View style={styles.buttons}>
               <GlassButton title={making ? 'Making…' : 'Generate'} onPress={generate} disabled={making} />
             </View>
@@ -158,52 +279,34 @@ export default function ProjectReportsScreen() {
           {settings && (
             <GlassCard style={styles.card}>
               <Text style={[styles.section, text]}>Send automatically</Text>
-              {isAdmin ? (
-                <>
-                  <View style={styles.chips}>
-                    {SCHEDULE_OPTIONS.map((o) => (
-                      <Pressable key={o.key} disabled={saving}
-                        onPress={() => saveSchedule({ schedule: o.key, pm_ids: settings.pm_ids })}
-                        accessibilityRole="radio" accessibilityState={{ selected: settings.schedule === o.key }}
-                        style={[styles.chip, settings.schedule === o.key && chosen]}>
-                        <Text style={[styles.chipText, text]}>{o.label}</Text>
-                        {o.hint ? <Text style={[styles.hint, muted]}>{o.hint}</Text> : null}
-                      </Pressable>
-                    ))}
-                  </View>
-                  {settings.schedule !== 'off' && (
-                    <>
-                      <Text style={[styles.line, muted, styles.gap]}>
-                        Sent by WhatsApp to the company's admins, and to these PMs:
-                      </Text>
-                      {(settings.pms || []).length === 0 && (
-                        <Text style={[styles.line, muted]}>No PMs on this job.</Text>
-                      )}
-                      {(settings.pms || []).map((p) => {
-                        const on = (settings.pm_ids || []).includes(p.id);
-                        return (
-                          <Pressable key={p.id} onPress={() => togglePm(p.id)} disabled={saving}
-                            accessibilityRole="checkbox" accessibilityState={{ checked: on }}
-                            style={styles.pmRow}>
-                            <View style={[styles.box, on && chosen]}>
-                              {on ? <Check size={14} color={text.color} /> : null}
-                            </View>
-                            <Text style={[styles.line, text]}>{p.name || 'PM'}</Text>
-                          </Pressable>
-                        );
-                      })}
-                    </>
-                  )}
-                </>
-              ) : (
-                <Text style={[styles.line, muted]}>
-                  {scheduleLabel(settings.schedule)}. An admin sets this.
-                </Text>
+              <Text style={[styles.line, muted]}>{cur.summary}</Text>
+              {!canEdit && <Text style={[styles.hint, muted]}>An admin sets this.</Text>}
+              <Text style={[styles.label, muted]}>Reports</Text>
+              {KINDS.map((k) => box((cur.schedules || []).includes(k.key), k.label,
+                () => save({ ...cur, schedules: toggled(cur.schedules, k.key) }), `k-${k.key}`,
+                k.key === 'daily' && cur.daily
+                  ? `${k.hint} (${cur.daily.send_time} ET; also to the ${cur.daily.email_list} address`
+                    + `${cur.daily.email_list === 1 ? '' : 'es'} on the report email list)`
+                  : k.hint))}
+              <Text style={[styles.label, muted]}>Send to</Text>
+              {(cur.people || []).length === 0 && (
+                <Text style={[styles.line, muted]}>No admins or PMs on this job.</Text>
               )}
+              {(cur.people || []).map((p) => box((cur.recipient_ids || []).includes(p.id),
+                `${p.name || 'Someone'} · ${p.role === 'admin' ? 'Admin' : 'PM'}`,
+                () => save({ ...cur, recipient_ids: toggled(cur.recipient_ids, p.id) }), `p-${p.id}`,
+                [!p.whatsapp && 'no WhatsApp', !p.email && 'no email'].filter(Boolean).join(' · ')))}
+              <Text style={[styles.label, muted]}>How</Text>
+              {box(!!(cur.delivery || {}).whatsapp, 'WhatsApp (the PDF in a DM)',
+                () => save({ ...cur, delivery: { ...cur.delivery, whatsapp: !(cur.delivery || {}).whatsapp } }),
+                'd-wa')}
+              {box(!!(cur.delivery || {}).email, 'Email (the PDF attached)',
+                () => save({ ...cur, delivery: { ...cur.delivery, email: !(cur.delivery || {}).email } }),
+                'd-email')}
             </GlassCard>
           )}
 
-          <Text style={[styles.section, text, styles.gap]}>Made</Text>
+          <Text style={[styles.section, text, styles.gap]}>Reports</Text>
           {reports === null && <ActivityIndicator style={styles.spinner} />}
           {reports !== null && reports.length === 0 && (
             <GlassCard style={styles.card}>
@@ -214,20 +317,23 @@ export default function ProjectReportsScreen() {
             <GlassCard key={r.id} style={styles.card}>
               <View style={styles.rowHead}>
                 <FileText size={16} color={muted.color} />
-                <Text style={[styles.line, text, styles.grow]}>{periodLabel(r.start, r.end) || r.title}</Text>
-                {(r.has_pdf || r.link) ? (
-                  <Pressable onPress={() => download(r)} hitSlop={10} disabled={downloading === r.id}
-                    accessibilityRole="button" accessibilityLabel="Download PDF">
-                    {downloading === r.id
-                      ? <ActivityIndicator size="small" />
-                      : <Download size={18} color={text.color} />}
-                  </Pressable>
-                ) : null}
+                <Text style={[styles.line, text, styles.grow]}>
+                  {r.period || periodLabel(r.start, r.end) || r.title}
+                </Text>
               </View>
-              <Text style={[styles.meta, muted]}>{sourceLabel(r.source)}</Text>
+              <Text style={[styles.meta, muted]}>
+                {[whoLine(r), madeLabel(r.created_at)].filter(Boolean).join(' · ')}
+              </Text>
               {(r.summary || []).map((s, i) => (
                 <Text key={i} style={[styles.summary, text]}>{s}</Text>
               ))}
+              {(r.has_pdf || r.link) ? (
+                <View style={styles.acts}>
+                  {act(r, 'open', ExternalLink, 'Open', open)}
+                  {act(r, 'dl', Download, 'Download', download)}
+                  {act(r, 'share', Share2, 'Share', share)}
+                </View>
+              ) : <Text style={[styles.hint, muted]}>No PDF — it could not be made.</Text>}
             </GlassCard>
           ))}
         </ScrollView>
@@ -246,12 +352,17 @@ const styles = StyleSheet.create({
   card: { padding: spacing.md, marginBottom: spacing.md, borderRadius: borderRadius.lg },
   spinner: { marginVertical: spacing.md },
   section: { fontWeight: '700', marginBottom: spacing.sm },
+  label: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginTop: spacing.md,
+           marginBottom: spacing.xs },
   gap: { marginTop: spacing.sm },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: { paddingVertical: spacing.xs, paddingHorizontal: spacing.md, borderRadius: 999,
           borderWidth: 1, borderColor: 'rgba(148,163,184,0.4)' },
   chipText: { fontSize: 14, fontWeight: '600' },
-  hint: { fontSize: 11 },
+  dateField: { flex: 1, minWidth: 140 },
+  input: { minWidth: 140, borderWidth: 1, borderRadius: borderRadius.md,
+           paddingHorizontal: spacing.sm, paddingVertical: 6 },
+  hint: { fontSize: 12 },
   buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   pmRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
   box: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(148,163,184,0.6)',
@@ -261,4 +372,7 @@ const styles = StyleSheet.create({
   line: { fontSize: 15, lineHeight: 21 },
   meta: { fontSize: 12, marginTop: 2, marginBottom: spacing.xs },
   summary: { fontSize: 13, lineHeight: 19 },
+  acts: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginTop: spacing.sm },
+  act: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  actText: { fontSize: 14, fontWeight: '600' },
 });
