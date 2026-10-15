@@ -12,6 +12,7 @@ with the likely one first ("Which job — 588 …? Or another:")."""
 
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -200,26 +201,70 @@ class Pure(unittest.TestCase):
 
 
 class WasItSent(unittest.TestCase):
-    """The punch facts say how the last list went out."""
+    """The punch facts say how the last list went out -- from the walk's own
+    record: when it was sent, shadow or live, what failed, what waits for
+    Shabbos (Codex on #800)."""
+
+    NOW = datetime(2026, 10, 15, 13, 5, tzinfo=timezone.utc)
+    SENT = datetime(2026, 10, 15, 13, 1, tzinfo=timezone.utc)
+
+    def rows(self, n=47, via="group_list", mode="shadow", **kw):
+        # Captured from 11:39: the send time is the walk's, never an item's.
+        return [{"walk_id": "w", "status": "open", "sent_via": via, "send_mode": mode,
+                 "created_at": datetime(2026, 10, 15, 15, 39, tzinfo=timezone.utc), **kw}] * n
 
     def test_shadow(self):
-        now = datetime(2026, 10, 15, 13, 5, tzinfo=timezone.utc)
-        rows = [{"walk_id": "w", "status": "open", "sent_via": "group_list", "send_mode": "shadow",
-                 "created_at": datetime(2026, 10, 15, 13, 1, tzinfo=timezone.utc)}] * 47
+        walk = {"_id": "w", "sent_at": self.SENT, "send_mode": "shadow", "status": "sent"}
         self.assertIn("Last list: 47 items, today 9:01 AM — shadow mode: nothing was actually "
                       "sent (it would have been posted in the job's group chat).",
-                      wa_facts.punch_text(rows, now, job="588"))
+                      wa_facts.punch_text(self.rows(), self.NOW, job="588", last_walk=walk))
 
     def test_live_dm(self):
-        now = datetime(2026, 10, 15, 13, 5, tzinfo=timezone.utc)
-        rows = [{"walk_id": "w", "status": "open", "sent_via": "dm", "send_mode": "live",
-                 "assignee": {"name": "Chris Weiss"},
-                 "created_at": datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc)}]
-        self.assertEqual(wa_facts.last_list_line(rows, now),
+        walk = {"_id": "w", "sent_at": datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc),
+                "send_mode": "live", "status": "sent", "undelivered": []}
+        rows = self.rows(1, via="dm", mode="live", assignee={"name": "Chris Weiss"})
+        self.assertEqual(wa_facts.last_list_line(walk, rows, self.NOW),
                          "Last list: 1 item, yesterday 4:00 PM — DM'd to Chris Weiss.")
 
+    def test_a_failed_delivery_is_never_called_sent(self):
+        walk = {"_id": "w", "sent_at": self.SENT, "send_mode": "live", "status": "resend",
+                "undelivered": ["P-588-1", "P-588-2"]}
+        line = wa_facts.last_list_line(walk, self.rows(5, mode="live"), self.NOW)
+        self.assertEqual(line, "Last list: 5 items, today 9:01 AM — NOT all delivered: 2 items could "
+                               "not be sent (posted in the job's group chat failed); the walker can "
+                               "reply 'resend'.")
+
+    def test_held_for_shabbos(self):
+        walk = {"_id": "w", "sent_at": self.SENT, "send_mode": "live", "status": "sent",
+                "queued_until": datetime(2026, 10, 17, 23, 45, tzinfo=timezone.utc)}
+        line = wa_facts.last_list_line(walk, self.rows(3, mode="live"), self.NOW)
+        self.assertEqual(line, "Last list: 3 items, today 9:01 AM — held for Shabbos / Yom Tov: it will "
+                               "be posted in the job's group chat after it ends (Sat 7:45 PM).")
+
+    def test_not_for_one_assignees_question(self):
+        walk = {"_id": "w", "sent_at": self.SENT, "send_mode": "shadow", "status": "sent"}
+        rows = self.rows(2, assignee={"name": "Bob"})
+        text = wa_facts.punch_text(rows, self.NOW, "Alice", "588", last_walk=walk)
+        self.assertIsNone(re.search(r"Last list", text), text)
+
     def test_nothing_sent_says_nothing(self):
-        self.assertEqual(wa_facts.last_list_line([{"status": "open"}], datetime.now(timezone.utc)), "")
+        self.assertEqual(wa_facts.last_list_line(None, [{"status": "open"}], self.NOW), "")
+        self.assertEqual(wa_facts.last_list_line({"_id": "w"}, [], self.NOW), "")
+
+    def test_the_tool_reads_the_walk(self):
+        from tests.test_whatsapp_dm_assistant import _db
+        fake = _db()
+        fake[punch.SESSIONS].rows.append({"_id": "w", "project_id": THOMAS, "company_id": CO_A,
+                                          "sent_at": self.SENT, "send_mode": "shadow",
+                                          "status": "sent"})
+        fake[punch.COLLECTION].rows.extend(
+            [{**r, "_id": f"r{i}", "project_id": THOMAS, "company_id": CO_A}
+             for i, r in enumerate(self.rows(3))])
+        with _Ctx(db=fake):
+            text = _run(server._facts_tool("punch_status", {}, company_id=CO_A,
+                                           project_id=THOMAS, group_id=CHAT))
+        self.assertIn("Last list: 3 items", text)
+        self.assertIn("shadow mode: nothing was actually sent", text)
 
 
 if __name__ == "__main__":

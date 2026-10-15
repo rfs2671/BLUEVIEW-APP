@@ -64046,7 +64046,12 @@ async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str
              "status": {"$in": ["open", "ready_to_check", "closed"]}},
             {"status": 1, "assignee": 1, "pid": 1, "assigned_at": 1, "created_at": 1,
              "walk_id": 1, "sent_via": 1, "send_mode": 1}).to_list(5000)
-        return wa_facts.punch_text(rows, now, str(args.get("assignee") or "").strip() or None, job)
+        last_walk = await db[punch.SESSIONS].find_one(
+            {"project_id": project_id, "sent_at": {"$ne": None}},
+            {"sent_at": 1, "send_mode": 1, "status": 1, "undelivered": 1, "queued_until": 1},
+            sort=[("sent_at", -1)])
+        return wa_facts.punch_text(rows, now, str(args.get("assignee") or "").strip() or None, job,
+                                   last_walk=last_walk)
     if name == "follow_ups":
         if not in_dm:
             return "Follow-ups are read in a direct message only."
@@ -68015,6 +68020,7 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
                      "(the items are kept with them; ask \"show P23 photo\").")
     if quiet and done:
         from lib import shabbos as _shabbos
+        await _punch_save(sess, queued_until=quiet)     # "was it sent?": held, not sent
         lines.append(f"It's Shabbos / Yom Tov: these go out after it ends "
                      f"({quiet.astimezone(_shabbos.NY):%a %-I:%M %p}).")
     if failed:

@@ -176,12 +176,14 @@ SUB_ATTENDANCE_TOOL = {"type": "function", "function": {
 # ── PUNCH ────────────────────────────────────────────────────────────────────
 
 def punch_text(rows: Iterable[Dict[str, Any]], now: datetime, assignee: Optional[str] = None,
-               job: str = "") -> str:
+               job: str = "", last_walk: Optional[Dict[str, Any]] = None) -> str:
     """Open and ready-to-check punch items, by assignee, with the oldest;
     then how the last list went out (shadow mode: nothing was sent)."""
     today = local_day(now)
     rows = [r for r in rows if r.get("status") in ("open", "ready_to_check", "closed")]
-    last = last_list_line(rows, now)
+    # The job's last list -- not for one assignee's question (it may be
+    # someone else's list).
+    last = "" if assignee else last_list_line(last_walk, rows, now)
     if assignee:
         a = _fold(assignee)
         rows = [r for r in rows if a and (a in _fold((r.get("assignee") or {}).get("name"))
@@ -208,24 +210,27 @@ def punch_text(rows: Iterable[Dict[str, Any]], now: datetime, assignee: Optional
     return "\n".join(lines)
 
 
-def last_list_line(rows: Iterable[Dict[str, Any]], now: datetime) -> str:
-    """How the latest walk's list went out (Thu 9:03 AM: "Was it sent to
-    the GC team group chat?"): "Last list: 47 items, today 9:01 AM — shadow
-    mode, nothing was actually sent (it would have been posted in the job's
-    group chat)." "" when no row says how it was sent."""
-    sent = [r for r in rows if r.get("walk_id") and r.get("sent_via")]
-    if not sent:
+def _aware(v: Any) -> Optional[datetime]:
+    return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)) if isinstance(v, datetime) else None
+
+
+def last_list_line(walk: Optional[Dict[str, Any]], rows: Iterable[Dict[str, Any]],
+                   now: datetime) -> str:
+    """How the job's latest walk went out (Thu 9:03 AM: "Was it sent to the
+    GC team group chat?"), from the walk's own record -- when it was sent,
+    shadow or live, what could not be delivered, what waits for Shabbos to
+    end -- never from what was asked for alone: "Last list: 47 items, today
+    9:01 AM — shadow mode: nothing was actually sent (it would have been
+    posted in the job's group chat)." `rows`: the walk's punch rows. ""
+    when the job has no sent walk."""
+    if not walk or not walk.get("sent_at"):
         return ""
-    def at(r):
-        v = r.get("created_at")
-        return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)) if isinstance(v, datetime) else None
-    newest = max(sent, key=lambda r: at(r) or datetime.min.replace(tzinfo=timezone.utc))
-    walk = [r for r in sent if r.get("walk_id") == newest.get("walk_id")]
-    when = at(newest)
+    mine = [r for r in rows if str(r.get("walk_id") or "") == str(walk.get("_id"))]
+    when = _aware(walk.get("sent_at"))
     stamp = (f"{day_label(when.astimezone(NY).date(), local_day(now))} "
              f"{_fmt(when.astimezone(NY), '%-I:%M %p')}") if when else ""
-    via = {r.get("sent_via") for r in walk}
-    people = sorted({str((r.get("assignee") or {}).get("name") or "").strip() for r in walk
+    via = {r.get("sent_via") for r in mine}
+    people = sorted({str((r.get("assignee") or {}).get("name") or "").strip() for r in mine
                      if r.get("sent_via") == "dm"} - {""})
     where = []
     if via & {"group", "group_list"}:
@@ -233,12 +238,21 @@ def last_list_line(rows: Iterable[Dict[str, Any]], now: datetime) -> str:
     if "dm" in via:
         where.append("DM'd to " + (", ".join(people) if people else "one person"))
     where_s = " and ".join(where) or "sent"
-    n = len(walk)
+    n = len(mine)
     head = f"Last list: {n} item{'s' if n != 1 else ''}" + (f", {stamp}" if stamp else "")
-    if any(r.get("send_mode") == "live" for r in walk):
-        return f"{head} — {where_s}."
-    return (f"{head} — shadow mode: nothing was actually sent "
-            f"(it would have been {where_s}).")
+    if walk.get("send_mode") != "live":
+        return (f"{head} — shadow mode: nothing was actually sent "
+                f"(it would have been {where_s}).")
+    missed = list(walk.get("undelivered") or [])
+    if walk.get("status") == "resend" or missed:
+        k = len(missed) or n
+        return (f"{head} — NOT all delivered: {k} item{'s' if k != 1 else ''} could not be "
+                f"sent ({where_s} failed); the walker can reply 'resend'.")
+    held = _aware(walk.get("queued_until"))
+    if held and held > now:
+        return (f"{head} — held for Shabbos / Yom Tov: it will be {where_s} after it ends "
+                f"({_fmt(held.astimezone(NY), '%a %-I:%M %p')}).")
+    return f"{head} — {where_s}."
 
 
 PUNCH_STATUS_TOOL = {"type": "function", "function": {
