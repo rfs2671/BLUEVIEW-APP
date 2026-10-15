@@ -123,6 +123,12 @@ VISION_REFUSAL_CHECK = "plan_refusal_check"
 # photo, at "done" (and before a send, for any added later).
 VISION_PUNCH_PHOTO = "punch_photo_describe"
 
+# ── A PROGRESS REPORT'S PHOTOS ────────────────────────────────────────────
+#
+# Which of a period's photos go in the report: one call per photo (at most 40
+# a report), cached by photo, so a photo is judged once ever.
+VISION_REPORT_PHOTO = "report_photo_pick"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -131,6 +137,7 @@ VISION_ENDPOINTS = frozenset({
     VISION_WHATSAPP_VQA,
     VISION_REFUSAL_CHECK,
     VISION_PUNCH_PHOTO,
+    VISION_REPORT_PHOTO,
 })
 
 COLLECTION = "vision_calls"

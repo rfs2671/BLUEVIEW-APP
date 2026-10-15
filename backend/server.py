@@ -96,6 +96,7 @@ from lib import wa_brief  # noqa: E402
 from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
+from lib import progress_report  # noqa: E402
 from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -3826,6 +3827,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_WHATSAPP_VQA,
     VISION_REFUSAL_CHECK,
     VISION_PUNCH_PHOTO,
+    VISION_REPORT_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
@@ -50989,14 +50991,16 @@ async def _whatsapp_brief_job() -> None:
 # ── PROJECT REPORTS (lib/project_report.py) ─────────────────────────────────
 #
 # A period's report for a job (or all of a person's jobs): a PDF stored in
-# R2, a five-line WhatsApp summary, and a no-login link that works for 30
+# R2, the short WhatsApp message it goes with, and a no-login link that works for 30
 # days (the temp-media token: opaque, single object, expires). On request in
 # the DM ("send me a report for 588 for the last 2 weeks", "monthly report
 # 588", "report all jobs September"), from the app (Project → Reports), and
 # on a per-job schedule (off / bi-weekly Monday 8 AM / monthly 1st 8 AM) to
 # the company's admins and the PMs chosen -- through the Shabbos queue and
-# the shared retry policy. Every number is counted from the job's records
-# (lib/project_report.compute); phone numbers never appear.
+# the shared retry policy. Every statement is built from the job's records
+# (lib/progress_report.compute: check-ins, filed daily logs, group chat,
+# photos, DOB/DOT, commitments, punch, upcoming); phone numbers never appear.
+# The PDF goes as the WhatsApp attachment; the link only when it can't.
 
 PROJECT_REPORTS = "project_reports"
 PROJECT_REPORT_SETTINGS = "project_report_settings"
@@ -51044,17 +51048,23 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     items = await _q(db.attention_items, {"company_id": cf, "project_id": pid, **ATTENTION_NOT_PUNCH},
                      5000)
     punch_rows = await _q(db[punch.COLLECTION], {"company_id": cf, "project_id": pid}, 5000)
-    # The filed daily_jobsite logbooks -- the record the CP signs -- not the
-    # retired db.daily_logs kiosk rows.
-    try:
-        logs = await _submitted_daily_logs(db, pid, start=start.isoformat(),
-                                         end=end.isoformat())
-    except Exception as e:
-        logger.warning(f"[report] logbooks read failed: {type(e).__name__}")
-        raise ReportSourceUnavailable("logbooks") from e
-    return {"checkins": in_period, "prev_checkins": [r for r in checkins if r not in in_period],
-            "records": records, "events": events, "commitments": items,
-            "punch_items": punch_rows, "daily_logs": logs}
+    # The filed daily_jobsite logbooks -- the record the CP signs -- as filed:
+    # each crew's work description, locations and photos (the adapter keeps
+    # only one joined line).
+    logbooks = await _q(db.logbooks, daily_jobsite_filter(pid, start=start.isoformat(),
+                                                          end=end.isoformat()), 400,
+                        projection={"date": 1, "data.activities": 1, "data.observations": 1,
+                                    "data.general_description": 1})
+    # The job's group chat: what people wrote (the bot's own lines and
+    # skipped / unreadable voice notes are left out by the engine).
+    chat = await _q(db.whatsapp_messages,
+                    {"project_id": pid, "company_id": cf, "sender": {"$ne": "bot"},
+                     "timestamp": {"$gte": lo + timedelta(days=length), "$lt": hi}}, 5000,
+                    projection={"sender": 1, "sender_name": 1, "body": 1, "timestamp": 1,
+                                "created_at": 1, "skipped": 1, "voice.transcript": 1,
+                                "voice.review": 1, "voice.flagged": 1})
+    return {"checkins": in_period, "records": records, "events": events, "commitments": items,
+            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat}
 
 
 def _report_pdf(html_text: str) -> bytes:
@@ -51065,6 +51075,117 @@ def _report_pdf(html_text: str) -> bytes:
     def _render_pdf(h: str) -> bytes:
         return weasyprint.HTML(string=h).write_pdf()
     return _render_pdf(html_text)
+
+
+REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
+#: Photos sent to vision per report (each is one call, cached by photo).
+REPORT_JUDGE_MAX = 40
+REPORT_JUDGE_AT_ONCE = 4
+
+
+async def _report_judge_photo(key: str, project_id: str) -> Optional[dict]:
+    """The vision model's verdict on one photo, cached by its key: {ok,
+    kind, score, caption}. None (and nothing cached) when it can't be read
+    or judged -- such a photo is never shown."""
+    try:
+        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
+    except Exception:
+        cached = None
+    if cached:
+        return cached
+    if not QWEN_API_KEY:
+        return None
+    raw, err = await asyncio.to_thread(_r2_fetch, key)
+    if not raw:
+        logger.info(f"[report] photo not read ({err})")
+        return None
+    data, err = await asyncio.to_thread(_vision_jpeg, raw)
+    if not data:
+        return None
+    await record_vision_call(db, endpoint=VISION_REPORT_PHOTO, project_id=project_id)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 80, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": progress_report.JUDGE_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[report] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[report] vision failed: {type(e).__name__}")
+        return None
+    v = progress_report.parse_verdict(said)
+    if v is None:
+        return None
+    try:
+        await db[REPORT_PHOTO_VERDICTS].update_one(
+            {"_id": key}, {"$set": {**v, "at": datetime.now(timezone.utc)}}, upsert=True)
+    except Exception:
+        pass
+    return v
+
+
+async def _report_photos(rep: dict, project_id: str) -> List[dict]:
+    """10-15 photos for the report: vision on a capped set, then the pick."""
+    todo = progress_report.to_judge(rep["photo_candidates"], REPORT_JUDGE_MAX)
+    verdicts: Dict[str, dict] = {}
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(c):
+        async with sem:
+            v = await _report_judge_photo(c["key"], project_id)
+            if v:
+                verdicts[c["key"]] = v
+    await asyncio.gather(*(one(c) for c in todo))
+    return progress_report.pick_photos(todo, verdicts)
+
+
+def _report_image(key: str) -> Optional[str]:
+    """A chosen photo as a data URI for the PDF (at most 900 px)."""
+    raw, _err = _r2_fetch(key)
+    if not raw:
+        return None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(raw)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((900, 900))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=78)
+        return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+    except Exception:
+        return None
+
+
+async def _report_summary(rep: dict) -> str:
+    """The summary: the model writes it from the report's facts; it goes out
+    only when every number and name in it is in them, else the summary
+    written from the records alone."""
+    if OPENAI_API_KEY:
+        try:
+            async with ServerHttpClient(timeout=40) as client_http:
+                resp = await client_http.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    json={"model": AGENT_MODEL, "temperature": 0.2, "max_tokens": 450,
+                          "messages": [
+                              {"role": "system", "content": progress_report.SUMMARY_PROMPT},
+                              {"role": "user", "content": f"Job: {rep['job']}. Period: {rep['period']}.\n"
+                                                          + "\n".join(progress_report.facts(rep))}]},
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                             "Content-Type": "application/json"})
+            text = str(resp.json()["choices"][0]["message"]["content"]).strip()
+            if progress_report.check_summary(text, rep):
+                return " ".join(text.split())
+            logger.info("[report] model summary failed the check; the records' summary is used")
+        except Exception as e:
+            logger.warning(f"[report] summary call failed: {type(e).__name__}")
+    return progress_report.summary_fallback(rep)
 
 
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
@@ -51082,11 +51203,20 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
     reps = []
     for p in projects:
         rows = await _report_rows(p, company_id, start, end, now)
-        reps.append(project_report.compute(
+        rep = progress_report.compute(
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
-            start=start, end=end, now=now, **rows))
-    title = project_report.title_for(reps)
-    html_text = project_report.render_html(reps, gc=gc, title=title, now=now)
+            start=start, end=end, now=now, **rows)
+        rep["photos"] = await _report_photos(rep, str(p.get("_id")))
+        rep["summary"] = await _report_summary(rep)
+        reps.append(rep)
+    images = {}
+    for rep in reps:
+        for ph in rep["photos"]:
+            uri = await asyncio.to_thread(_report_image, ph["key"])
+            if uri:
+                images[ph["key"]] = uri
+    title = progress_report.title_for(reps)
+    html_text = progress_report.render_html(reps, gc=gc, title=title, now=now, images=images)
     rid = str(uuid.uuid4())
     r2_key = f"reports/{company_id}/{rid}.pdf"
     stored = False
@@ -51097,31 +51227,35 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
         logger.error(f"[report] PDF failed: {type(e).__name__}: {e}")
     token = await _mint_temp_media_token(r2_key, "application/pdf",
                                          ttl_seconds=project_report.LINK_DAYS * 86400) if stored else None
-    lines = (project_report.summary_lines(reps[0]) if len(reps) == 1
-             else [f"{title}:"] + [project_report.summary_lines(r)[0] for r in reps[:4]])
+    heads = [progress_report.whatsapp_message(r, attached=False) for r in reps[:4]]
     doc = {"_id": rid, "company_id": str(company_id), "project_ids": [str(p.get("_id")) for p in projects],
-           "start": start.isoformat(), "end": end.isoformat(), "title": title, "summary": lines,
+           "start": start.isoformat(), "end": end.isoformat(), "title": title,
+           "summary": "\n\n".join(heads).splitlines(), "narrative": [r["summary"] for r in reps],
            "r2_key": r2_key if stored else None, "link": _public_temp_media_url(token) if token else None,
            "link_expires": now + timedelta(days=project_report.LINK_DAYS), "created_at": now,
            "created_by": by, "source": source, "key": key,
            "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf"}
     await db[PROJECT_REPORTS].insert_one(doc)
-    logger.info(f"[report] {rid} {title} source={source} stored={stored}")
+    logger.info(f"[report] {rid} {title} source={source} stored={stored} photos={len(images)}")
     return doc
 
 
-def _report_message(doc: dict) -> str:
-    """The five lines, and the link (30 days, no login)."""
-    lines = list(doc.get("summary") or [])[:5]
-    if doc.get("link"):
-        lines.append(f"Full report (PDF, link works {project_report.LINK_DAYS} days): {doc['link']}")
+def _report_message(doc: dict, attached: bool = True) -> str:
+    """The short message: the job, the work, the site, what is open -- and
+    "Full report (PDF) attached." when the PDF goes with it; the link only
+    when it can't."""
+    lines = [l for l in doc.get("summary") or []]
+    if attached and doc.get("r2_key"):
+        lines.append(progress_report.ATTACHED_LINE)
+    elif doc.get("link"):
+        lines.append(f"Full report (PDF): {doc['link']}")
     else:
         lines.append("The PDF could not be made just now -- it's in the app under Project → Reports.")
     return "\n".join(lines)
 
 
-async def _send_report_media(chat_id: str, doc: dict) -> bool:
-    """The PDF itself, after its message went out in this chat."""
+async def _send_report_media(chat_id: str, doc: dict, caption: str = "") -> bool:
+    """The PDF itself, as a WhatsApp document (with `caption` on it)."""
     if not doc.get("r2_key") or not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
         return False
     try:
@@ -51131,16 +51265,24 @@ async def _send_report_media(chat_id: str, doc: dict) -> bool:
                 f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
                 headers={"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"},
                 json={"chatId": chat_id, "mediaUrl": _public_temp_media_url(tok),
-                      "mediaName": doc.get("filename") or "report.pdf", "caption": doc.get("title") or ""})
+                      "mediaName": doc.get("filename") or "report.pdf", "caption": caption})
             return 200 <= resp.status_code < 300
     except Exception as e:
         logger.warning(f"[report] PDF send failed: {type(e).__name__}")
         return False
 
 
+async def _report_link_fallback(chat_id: str, doc: dict) -> None:
+    """The PDF did not go: the link instead (never "attached" with nothing)."""
+    if doc.get("link"):
+        await send_whatsapp_message(chat_id, f"The PDF didn't attach. Full report (PDF): {doc['link']}")
+    else:
+        await send_whatsapp_message(chat_id, "The PDF didn't attach -- it's in the app under Project → Reports.")
+
+
 async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -> bool:
     """"send me a report for 588 for the last 2 weeks" -- built now, sent
-    here: the five lines + link, then the PDF. True when it was a request."""
+    here: the PDF, with the short message on it. True when it was a request."""
     if not project_report.is_request(text):
         return False
     if not ident["projects"]:
@@ -51173,8 +51315,10 @@ async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -
     except ReportSourceUnavailable:
         await send_whatsapp_message(dm_chat, REPORT_UNAVAILABLE)
         return True
-    await send_whatsapp_message(dm_chat, _report_message(doc))
-    await _send_report_media(dm_chat, doc)
+    # The PDF with the message as its caption; the link only when it can't
+    # go.
+    if not await _send_report_media(dm_chat, doc, caption=_report_message(doc)):
+        await send_whatsapp_message(dm_chat, _report_message(doc, attached=False))
     return True
 
 
@@ -51204,14 +51348,16 @@ async def _report_recipients(company_id: str, project_id: str, pm_ids: List[str]
 
 async def _report_deliver(spec: dict) -> Any:
     """One scheduled report to one person: the message (gated, ledgered),
-    then the PDF in the same chat."""
+    then the PDF in the same chat -- or, when it can't go, its link."""
     sent = await send_whatsapp_dm(spec["user_id"], spec["message"], kind=REPORT_DM_KIND,
                                   window=spec["window"])
     if sent:
         doc = await db[PROJECT_REPORTS].find_one({"_id": spec.get("report_id")})
         optin = await db[WA_OPTINS].find_one({"user_id": spec["user_id"], "status": "active"})
         if doc and optin:
-            await _send_report_media(optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"]), doc)
+            chat = optin.get("chat_id") or wa_dm.dm_chat_id(optin["phone"])
+            if not await _send_report_media(chat, doc):
+                await _report_link_fallback(chat, doc)
     return sent
 
 
