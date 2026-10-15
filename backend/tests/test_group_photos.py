@@ -146,6 +146,9 @@ class APhotoInTheGroupIsKept(unittest.TestCase):
             _send(w, cap, _image("IMG7", "framing"))
             row = next(r for r in w.db.whatsapp_messages.rows if r.get("message_id") == "IMG7")
         self.assertEqual((row["photo"]["key"], row["photo"]["failed"], cap.vision), (None, True, 0))
+        # Not captured, still who and what (Codex on #804).
+        self.assertEqual(row["photo"]["caption"], "framing")
+        self.assertTrue(row["photo"]["media_ref"])
         self.assertEqual(wa_photos.log_row(row, who="x", place="", at="")["status"], "not_captured")
 
 

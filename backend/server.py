@@ -51225,17 +51225,18 @@ async def _group_photo_capture(row: dict, parsed: dict, project_id: Any, company
         if not photo_key:
             photo_key, quality, record = await _punch_store_photo(
                 parsed, wa_photos.key(company_id, project_id, parsed.get("message_id")))
-        if not photo_key:
-            await db.whatsapp_messages.update_one(
-                {"_id": row["_id"]}, {"$set": {"photo": {"key": None, "failed": True,
-                                                         "capture": record, "at": now}}})
-            logger.warning("[group-photo] not captured")
-            return None
         co, name, how = await _group_photo_company(row, company_id, project_id)
         photo = wa_photos.doc(photo_key, quality, wa_photos.caption(body), sender_company=co,
                               sender_name=name or str(row.get("sender_name") or ""), company_how=how,
                               shared=shared, at=row.get("timestamp") or now,
                               media_ref=wa_media_ref(parsed.get("raw") or {}))
+        if not photo_key:
+            # Not captured: who sent it, the caption and where WhatsApp keeps
+            # it are kept all the same (Codex on #804) -- the log says so.
+            photo.update(key=None, quality=None, failed=True, capture=record)
+            await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
+            logger.warning("[group-photo] not captured")
+            return None
         await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
         raw = await asyncio.to_thread(_r2_bytes, photo_key)
         v = await _photo_verdict(raw, project_id, VISION_GROUP_PHOTO) if raw else None
