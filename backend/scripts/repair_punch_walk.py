@@ -64,6 +64,9 @@ async def _pick(db, a):
 
 
 _PHONE = re.compile(r"\+?\d[\d\s().-]{8,}\d")
+#: A no-login link ("/api/public/punch/<token>"): the token is a key to the
+#: assignee's items. Never in a dump.
+_PUBLIC_LINK = re.compile(r"https?://\S*/api/public/\S+")
 
 #: What a dumped item keeps: enough to replay the walk exactly.
 _ITEM_KEYS = ("n", "captured", "photo_key", "photo_failed", "message_id", "caption_ids", "text",
@@ -75,7 +78,7 @@ def _clean(v):
     if isinstance(v, datetime):
         return v.isoformat()
     if isinstance(v, str):
-        return _PHONE.sub("[number]", v)
+        return _PHONE.sub("[number]", _PUBLIC_LINK.sub("[link]", v))
     if isinstance(v, list):
         return [_clean(x) for x in v]
     return v

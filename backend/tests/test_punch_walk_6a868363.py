@@ -601,6 +601,8 @@ class TheRealWalk(_WalkBase):
         # Never a phone number or a chat id in it.
         blob = FIXTURE.read_text(encoding="utf-8")
         self.assertIsNone(re.search(r"@(?:c\.us|g\.us|s\.whatsapp\.net)", blob))
+        # Nor a no-login link: its token opens the assignee's items.
+        self.assertIsNone(re.search(r"/api/public/", blob))
 
     def test_1_the_correction_is_for_the_last_3_photos_only(self):
         out, log = self.dry()
@@ -657,6 +659,39 @@ class TheRealWalk(_WalkBase):
         self.assertEqual(len(heads), len({h.lower() for h in heads}), heads)
 
 
+class AfterDone(unittest.TestCase):
+    """Texts after Done ran the walk, not the photos -- until another photo
+    comes (a photo at any stage is still captured)."""
+
+    READING = {"kind": "annotation", "floor": "7", "area": None, "description": "Paint",
+               "note": None, "last_n": None}
+
+    def _walk(self, closing):
+        def ev(kind, at, text=""):
+            return {"kind": kind, "at": at, "text": text, "message_id": f"m{at.minute}{at.second}"}
+        items = [{"n": k, "captured": k, "photo_key": f"k{k}", "message_id": f"m{m}0",
+                  "floor": punch.UNKNOWN, "area": punch.UNKNOWN}
+                 for k, m in enumerate([1, 5], 1)]
+        events = [ev("photo", _t(12, 1)), ev("text", _t(12, 2), closing),
+                  ev("text", _t(12, 3), "7th floor paint"),        # after Done: not #1's
+                  ev("photo", _t(12, 5)), ev("text", _t(12, 6), "7th floor paint")]
+        got = punch_batch.replay([dict(i) for i in items], events,
+                                 {1: {"kind": "command"}, 2: self.READING, 4: self.READING})
+        return got, {it["n"]: it for it in got["items"]}
+
+    def test_a_photo_after_done_takes_its_caption(self):
+        got, by_n = self._walk("Done")
+        self.assertEqual(got["outcome"][2], "after Done -- not about photos")
+        self.assertEqual(by_n[1]["floor"], punch.UNKNOWN)
+        self.assertEqual(by_n[2]["floor"], "7")
+
+    def test_done_send_to_a_name_finishes_the_walk(self):
+        got, by_n = self._walk("done, send to Chris")
+        self.assertEqual(got["outcome"][2], "after Done -- not about photos")
+        self.assertEqual(by_n[1]["floor"], punch.UNKNOWN)
+        self.assertEqual(by_n[2]["floor"], "7")
+
+
 class TheDump(_WalkBase):
     """`--dump-events` writes what the fixture loader replays: a walk dumped
     and loaded back reads exactly as the walk itself."""
@@ -671,6 +706,9 @@ class TheDump(_WalkBase):
         rows, items = mod.dump(sess, events, punch)
         blob = json.dumps({"events": rows, "items": items})
         self.assertNotIn(CHAT.split("@")[0], blob)                 # never the phone in an id
+        self.assertEqual(mod._clean("mark them done (no login):\n"
+                                    "https://api.levelog.com/api/public/punch/abc.def\n(+3 photos)"),
+                         "mark them done (no login):\n[link]\n(+3 photos)")
         direct, _ = self.dry()
         with patch(f"{__name__}._fixture", lambda: json.loads(blob)):
             from_dump, _ = self.dry()

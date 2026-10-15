@@ -709,6 +709,7 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
                     pending["last"] = t
                 else:
                     settle()
+            finished = False                      # a photo after Done: the walk goes on
             seen_photos.append(it)
             outcome[i] = f"#{it.get('n')}"
             continue
@@ -734,8 +735,12 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             outcome[i] = "not read"
             continue
         if ann.get("kind") == "command":
-            if " ".join(str(e.get("text") or "").lower().split()).strip(".! ") in punch.DONE_WORDS:
-                finished = True
+            said = " ".join(str(e.get("text") or "").lower().split()).strip(".! ")
+            if said in punch.DONE_WORDS or punch.send_shortcut(e.get("text")):
+                finished = True                   # "done", "done, send to Chris"
+                # The photos before it are closed: a caption after a later
+                # photo is that photo's alone.
+                mark = max([mark] + [it.get("captured") or 0 for it in seen_photos])
             outcome[i] = "command (not about photos)"
             continue
         if finished and asking is None:
