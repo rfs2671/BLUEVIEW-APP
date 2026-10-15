@@ -126,7 +126,7 @@ async def main_async(a) -> int:
         rows, items = dump(sess, events, server.punch)
         Path(a.dump_events).write_text(json.dumps(
             {"walk": walk_id, "job_name": sess.get("job_name"), "detail": sess.get("detail"),
-             "events": rows, "items": items}, indent=1, ensure_ascii=False) + "\n")
+             "events": rows, "items": items}, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"Wrote {len(rows)} events and {len(items)} items to {a.dump_events}.")
     print(f"\nWalk {walk_id} ({sess.get('job_name')}), {len(events)} messages in the log:")
     out = await server.punch_walk_rebatch(walk_id, apply=a.apply, dm=a.dm, events=events,
@@ -144,7 +144,17 @@ async def main_async(a) -> int:
     return 0
 
 
+def _utf8_out() -> None:
+    """Print "·", "—", "→" on any console (Windows cp1252 crashed)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None) -> int:
+    _utf8_out()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--walk", help="the walk's id")
     ap.add_argument("--project", default="588", help="find walks at this job (name or address)")

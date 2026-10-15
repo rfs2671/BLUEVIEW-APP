@@ -159,7 +159,7 @@ def _fixture() -> dict:
     """The exact walk, when it has been dumped: {"events", "items", ...}."""
     if not FIXTURE.exists():
         return {}
-    got = json.loads(FIXTURE.read_text())
+    got = json.loads(FIXTURE.read_text(encoding="utf-8"))
     return got if isinstance(got, dict) else {"events": got}
 
 
@@ -241,8 +241,9 @@ def _old_walk(timeline=None):
 
 class _WalkBase(_Batch):
 
-    #: None: the walk (the dumped one when saved); else this timeline.
-    timeline = None
+    #: The rebuilt walk (TIMELINE): each rule on its own. TheRealWalk sets
+    #: None: the real dumped walk (tests/fixtures/punch_walk_6a868363.json).
+    timeline = TIMELINE
 
     def _load(self):
         sess, events = _old_walk(self.timeline)
@@ -574,6 +575,86 @@ class TheOct15ApplyCheck(_WalkBase):
               "captured": 1}
         punch_batch.apply_batch([it], {"floor": "7", "area": "interior"})
         self.assertEqual((it["floor"], it["area"]), ("6", punch.UNKNOWN))      # never another floor's
+
+
+class TheRealWalk(_WalkBase):
+    """The real walk 6a868363, dumped from production (130 messages, 47
+    items): what the dry run must show before it is applied. Two things the
+    rebuild did not have: "Correction. 3rd floor interior" (11:52) was a REPLY
+    to a message outside the walk -- the assistant asked "Which photo is that
+    for?" in the same second -- and texts kept coming after "Done" (3:37 PM
+    "Keep things simple just send to me")."""
+
+    timeline = None
+
+    def setUp(self):
+        super().setUp()
+        if not _fixture().get("items"):
+            self.skipTest("the real walk's fixture is not saved")
+
+    def where(self, by_n, n):
+        return punch.place_label(by_n[n].get("floor"), by_n[n].get("area"))
+
+    def test_the_fixture_is_the_walk(self):
+        fx = _fixture()
+        self.assertEqual((len(fx["events"]), len(fx["items"])), (130, 47))
+        # Never a phone number or a chat id in it.
+        blob = FIXTURE.read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"@(?:c\.us|g\.us|s\.whatsapp\.net)", blob))
+
+    def test_1_the_correction_is_for_the_last_3_photos_only(self):
+        out, log = self.dry()
+        self.assertIn("text 'Correction. 3rd floor interior. Last 3 photos'\n"
+                      "           -> #11–#13: Floor 3 · interior", log)
+        self.assertNotIn("text 'Last 3 photos'", log)
+        before = {it["n"]: (it.get("floor"), it.get("area")) for it in _fixture()["items"]}
+        _out, by_n = self.applied()
+        self.assertEqual(sorted(n for n, it in by_n.items() if it.get("floor") == "3"), [11, 12, 13])
+        for n in (11, 12, 13):
+            self.assertEqual(self.where(by_n, n), "Floor 3 · interior", n)
+        # #2, #6, #7, #9, #10 stay as they were.
+        for n in (2, 6, 7, 9, 10):
+            self.assertEqual((by_n[n].get("floor"), by_n[n].get("area")), before[n], n)
+
+    def test_2_the_where_placeholder_is_never_a_place(self):
+        out, log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual([h for h in heads if re.search(r"(?i)\bwhere\b|\bunit\b", h)], [])
+        self.assertNotIn("confirmed at capture: #13", log)
+        self.assertNotIn("confirmed at capture: #44", log)
+
+    def test_3_a_confirmation_never_removes_detail(self):
+        _out, by_n = self.applied()
+        self.assertEqual(self.where(by_n, 36), "Floor 6 · interior")
+
+    def test_4_same_for_the_last_batch_is_the_next_4(self):
+        out, log = self.dry()
+        self.assertIn("-> same as the last batch -> the next photos #41–#44: Floor 7", log)
+        self.assertEqual(out["unplaced"], [])
+        _out, by_n = self.applied()
+        for n in (41, 42, 43, 44):
+            self.assertEqual(by_n[n]["floor"], "7", n)
+            self.assertTrue(by_n[n]["text"].startswith("Compound and sheetrock not done"), n)
+
+    def test_the_confirmed_places_stand(self):
+        _out, by_n = self.applied()
+        self.assertEqual({n: self.where(by_n, n) for n in (1, 15, 45, 46, 47)},
+                         {1: "Facade", 15: "Floor 5 · stairs", 45: "Roof", 46: "Roof",
+                          47: "Floor 7 · bulkhead"})
+        self.assertEqual(self.where(by_n, 3), "Floor 1 · Back of building")     # the answers
+
+    def test_after_done_texts_are_not_photo_words(self):
+        out, log = self.dry()
+        self.assertIn("text 'Keep things simple just send to me'\n"
+                      "           -> after Done -- not about photos", log)
+        _out, by_n = self.applied()
+        said = [str(x.get("text")) for x in by_n[47].get("notes") or []] + [by_n[47].get("text")]
+        self.assertEqual([w for w in said if "Keep things simple" in str(w)], [])
+
+    def test_one_heading_per_place(self):
+        out, _log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual(len(heads), len({h.lower() for h in heads}), heads)
 
 
 class TheDump(_WalkBase):
