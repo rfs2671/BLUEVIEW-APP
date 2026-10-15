@@ -91,6 +91,44 @@ class TheNumbersAreTheRecords(unittest.TestCase):
         self.assertFalse(any("bot line" in c["text"] or c["text"] == "ok" for c in talk))
 
 
+class CodexOn803(unittest.TestCase):
+
+    def test_two_subs_that_differ_by_trade_stay_two(self):
+        d = F.WORKDAYS[0]
+        ck = [{"worker_id": f"{c}{i}", "worker_company": co, "check_in_time": F._at(d)}
+              for c, co in (("p", "ABC Plumbing"), ("e", "ABC Electrical")) for i in range(3)]
+        r = P.compute(job=F.JOB, address="", gc="G", start=F.START, end=F.END, now=F.NOW, checkins=ck)
+        self.assertEqual(sorted(s["name"] for s in r["subs"]), ["ABC Electrical", "ABC Plumbing"])
+        self.assertEqual([s["max"] for s in r["subs"]], [3, 3])
+
+    def test_a_short_name_is_the_one_sub_it_can_be(self):
+        d = F.WORKDAYS[0]
+        ck = [{"worker_id": f"j{i}", "worker_company": "J&G", "check_in_time": F._at(d)} for i in range(2)]
+        logs = [{"_id": "l1", "date": d.isoformat(), "data": {"activities": [
+            {"company": "J&G Scaffolding", "num_workers": 2, "work_description": "Scaffolding",
+             "work_locations": "Front facade"}]}}]
+        r = P.compute(job=F.JOB, address="", gc="G", start=F.START, end=F.END, now=F.NOW,
+                      checkins=ck, logbooks=logs)
+        self.assertEqual(len(r["subs"]), 1)
+        self.assertEqual(r["subs"][0]["label"], "Scaffolding")
+
+    def test_a_commitment_made_after_the_period_is_not_late_in_it(self):
+        later = F.commitments()[0]
+        later["created_at"] = F._at(date(2026, 10, 20))
+        r = P.compute(job=F.JOB, address="", gc="G", start=F.START, end=F.END, now=F.NOW,
+                      commitments=[later])
+        self.assertEqual(r["late"], [])
+
+    def test_a_photo_with_only_its_inline_copy_is_a_candidate(self):
+        d = F.WORKDAYS[0]
+        logs = [{"_id": "l1", "date": d.isoformat(), "data": {"activities": [
+            {"company": "Arkon Builders", "num_workers": 2, "work_description": "Framing",
+             "photos": [{"base64": "data:image/jpeg;base64,AAAA"}, {"thumb_base64": "AAAA"}, {}]}]}}]
+        r = P.compute(job=F.JOB, address="", gc="G", start=F.START, end=F.END, now=F.NOW, logbooks=logs)
+        self.assertEqual([c["key"] for c in r["photo_candidates"]], ["inline:l1:0:0", "inline:l1:0:1"])
+        self.assertEqual(r["photo_candidates"][0]["photo"], {"base64": "data:image/jpeg;base64,AAAA"})
+
+
 class Photos(unittest.TestCase):
 
     def test_only_passed_photos_earliest_and_latest(self):

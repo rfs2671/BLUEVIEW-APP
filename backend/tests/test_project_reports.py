@@ -194,6 +194,30 @@ class WhatIsRead(_Reports, unittest.TestCase):
         self.assertEqual(self.pdfs, 0)
 
 
+class ReportPhotoBytes(unittest.TestCase):
+
+    def test_an_inline_only_photo_is_read(self):
+        # Codex on #803: a filed photo with only its inline copy is used.
+        import base64
+        raw = b"\xff\xd8jpeg-bytes"
+        c = {"key": "inline:l1:0:0", "photo": {"base64": "data:image/jpeg;base64,"
+                                                         + base64.b64encode(raw).decode()}}
+        with patch.object(server, "_r2_fetch", lambda k: (None, "no r2")):
+            self.assertEqual(server._report_photo_bytes(c), raw)
+
+    def test_r2_first_when_it_has_one(self):
+        c = {"key": "k", "photo": {"enhanced_r2_key": "k", "base64": "QUJD"}}
+        with patch.object(server, "_r2_fetch", lambda k: (b"from-r2", None)):
+            self.assertEqual(server._report_photo_bytes(c), b"from-r2")
+
+    def test_the_longest_period_reads_every_filed_log(self):
+        # Codex on #803: 401 days may be asked for; the read is not capped
+        # under it.
+        import inspect
+        src = inspect.getsource(server._report_rows)
+        self.assertIn("length + 31", src)
+
+
 class WhoSetsTheSchedule(unittest.TestCase):
 
     def test_admins_and_full_access_pms(self):

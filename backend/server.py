@@ -51051,8 +51051,10 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     # The filed daily_jobsite logbooks -- the record the CP signs -- as filed:
     # each crew's work description, locations and photos (the adapter keeps
     # only one joined line).
+    # One filed log a day: the longest period asked for (401 days) is read
+    # whole (Codex on #803).
     logbooks = await _q(db.logbooks, daily_jobsite_filter(pid, start=start.isoformat(),
-                                                          end=end.isoformat()), 400,
+                                                          end=end.isoformat()), length + 31,
                         projection={"date": 1, "data.activities": 1, "data.observations": 1,
                                     "data.general_description": 1})
     # The job's group chat: what people wrote (the bot's own lines and
@@ -51083,10 +51085,23 @@ REPORT_JUDGE_MAX = 40
 REPORT_JUDGE_AT_ONCE = 4
 
 
-async def _report_judge_photo(key: str, project_id: str) -> Optional[dict]:
+def _report_photo_bytes(c: dict) -> Optional[bytes]:
+    """A report photo's bytes: a daily-log photo from any copy it still has
+    (R2 or inline, as the log viewer serves it -- Codex on #803), a
+    walkthrough photo from R2."""
+    sources = _logbook_photo_sources(c["photo"], "enhanced") if c.get("photo") else [("r2", c["key"])]
+    for kind, val in sources:
+        raw = _r2_fetch(val)[0] if kind == "r2" else _decode_image_data_url(val)
+        if raw:
+            return raw
+    return None
+
+
+async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     """The vision model's verdict on one photo, cached by its key: {ok,
     kind, score, caption}. None (and nothing cached) when it can't be read
     or judged -- such a photo is never shown."""
+    key = c["key"]
     try:
         cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
     except Exception:
@@ -51095,9 +51110,9 @@ async def _report_judge_photo(key: str, project_id: str) -> Optional[dict]:
         return cached
     if not QWEN_API_KEY:
         return None
-    raw, err = await asyncio.to_thread(_r2_fetch, key)
+    raw = await asyncio.to_thread(_report_photo_bytes, c)
     if not raw:
-        logger.info(f"[report] photo not read ({err})")
+        logger.info("[report] photo not read")
         return None
     data, err = await asyncio.to_thread(_vision_jpeg, raw)
     if not data:
@@ -51139,16 +51154,16 @@ async def _report_photos(rep: dict, project_id: str) -> List[dict]:
 
     async def one(c):
         async with sem:
-            v = await _report_judge_photo(c["key"], project_id)
+            v = await _report_judge_photo(c, project_id)
             if v:
                 verdicts[c["key"]] = v
     await asyncio.gather(*(one(c) for c in todo))
     return progress_report.pick_photos(todo, verdicts)
 
 
-def _report_image(key: str) -> Optional[str]:
+def _report_image(c: dict) -> Optional[str]:
     """A chosen photo as a data URI for the PDF (at most 900 px)."""
-    raw, _err = _r2_fetch(key)
+    raw = _report_photo_bytes(c)
     if not raw:
         return None
     try:
@@ -51212,7 +51227,7 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
     images = {}
     for rep in reps:
         for ph in rep["photos"]:
-            uri = await asyncio.to_thread(_report_image, ph["key"])
+            uri = await asyncio.to_thread(_report_image, ph)
             if uri:
                 images[ph["key"]] = uri
     title = progress_report.title_for(reps)

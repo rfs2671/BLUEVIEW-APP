@@ -113,17 +113,48 @@ def _fold(s: Any) -> str:
 
 def company_key(name: Any) -> str:
     """One key however a company is written: "Arkon" / "Arkon Builders LLC"
-    -> "arkon", "J&G Scaffolding" -> "j g", "Power Direct" -> "power direct"."""
+    -> "arkon", "Power Direct" -> "power direct". Trade words stay: "ABC
+    Plumbing" and "ABC Electrical" are two subs (Codex on #803)."""
     from lib import wa_style
     full = _fold(name)
-    core = [w for w in full.split() if w not in wa_style._CO_TAIL] or full.split()
-    bare = [w for w in core if w not in wa_style._TRADE_WORDS] or core
-    return " ".join(bare)
+    return " ".join([w for w in full.split() if w not in wa_style._CO_TAIL] or full.split())
 
 
-def names_sub(text: Any, key: str) -> bool:
-    """`text` names the sub of `key` ("J&G" in "J&G short 2 guys")."""
-    return bool(key) and len(key) >= 3 and f" {key} " in f" {_fold(text)} "
+def bare_key(key: str) -> str:
+    """The key without its trade words: "j g scaffolding" -> "j g"."""
+    from lib import wa_style
+    words = key.split()
+    return " ".join([w for w in words if w not in wa_style._TRADE_WORDS] or words)
+
+
+def canonical_keys(keys: Iterable[str]) -> Dict[str, str]:
+    """Each key -> the sub it is. "j g" (no trade word) is "j g scaffolding"
+    when that is the only sub it can be; never merges two subs whose names
+    differ by their trade ("abc plumbing", "abc electrical")."""
+    keys = {k for k in keys if k}
+    out = {k: k for k in keys}
+    for k in keys:
+        if bare_key(k) != k:
+            continue
+        fuller = [k2 for k2 in keys if k2 != k and bare_key(k2) == k]
+        if len(fuller) == 1:
+            out[k] = fuller[0]
+    return out
+
+
+def sub_aliases(keys: Iterable[str]) -> Dict[str, List[str]]:
+    """What in a text names each sub: its key, and its name without the
+    trade word when no other sub shares that ("J&G" -> J&G Scaffolding)."""
+    keys = list(keys)
+    bares = Counter(bare_key(k) for k in keys)
+    return {k: [k] + ([bare_key(k)] if bare_key(k) != k and bares[bare_key(k)] == 1 else [])
+            for k in keys}
+
+
+def names_sub(text: Any, names: Iterable[str]) -> bool:
+    """`text` names the sub ("J&G" in "J&G short 2 guys")."""
+    t = f" {_fold(text)} "
+    return any(n and len(n) >= 3 and f" {n} " in t for n in names)
 
 
 _FLOOR = re.compile(r"\b(?:fl(?:oor)?s?\.?\s*#?(\d{1,2})(?:\s*(?:-|–|to|&|and)\s*(\d{1,2}))?"
@@ -172,7 +203,7 @@ def _log_activities(logs: Iterable[dict], start: date, end: date) -> List[Dict[s
         d = base._d(lg.get("date"))
         if not base._in(d, start, end):
             continue
-        for a in ((lg.get("data") or {}).get("activities") or []):
+        for slot, a in enumerate((lg.get("data") or {}).get("activities") or []):
             if not isinstance(a, dict) or not str(a.get("company") or "").strip():
                 continue
             where = " ".join(str(a.get("work_locations") or "").split())
@@ -181,7 +212,7 @@ def _log_activities(logs: Iterable[dict], start: date, end: date) -> List[Dict[s
                 workers = int(a.get("num_workers") or 0)
             except (TypeError, ValueError):
                 workers = 0
-            out.append({"date": d, "company": str(a["company"]).strip(),
+            out.append({"date": d, "company": str(a["company"]).strip(), "log": f"{lg.get('_id') or d}:{slot}",
                         "key": company_key(a["company"]), "trade": str(a.get("trade") or "").strip(),
                         "workers": workers, "work": work, "where": where,
                         "floors": floors_in(where) or floors_in(a.get("work_description")),
@@ -263,11 +294,20 @@ def _subs(checkins: List[dict], acts: List[Dict[str, Any]], start: date, end: da
     """One entry per sub: its days on site (check-ins, else the logs), crew
     per day, the work by run, issues."""
     days = att.by_day(checkins, start, end)
+    canon = canonical_keys([company_key(co) for by_co in days.values() for co in by_co]
+                           + [a["key"] for a in acts])
+    for a in acts:
+        a["key"] = canon.get(a["key"], a["key"])
+
+    def key_of(name: Any) -> str:
+        k = company_key(name)
+        return canon.get(k, k)
+    aliases = sub_aliases(set(canon.values()))
     crew: Dict[str, Dict[date, int]] = defaultdict(dict)
     names: Dict[str, Counter] = defaultdict(Counter)
     for d, by_co in days.items():
         for co, workers in by_co.items():
-            k = company_key(co) or co.lower()
+            k = key_of(co) or co.lower()
             crew[k][d] = crew[k].get(d, 0) + len(workers)
             names[k][co] += len(workers)
     log_crew: Dict[str, Dict[date, int]] = defaultdict(dict)
@@ -309,15 +349,15 @@ def _subs(checkins: List[dict], acts: List[Dict[str, Any]], start: date, end: da
         issues = []
         for c in commitments:
             o = c.get("owner") or {}
-            if company_key(o.get("sub_company") or o.get("name")) == k and c.get("_late"):
+            if key_of(o.get("sub_company") or o.get("name")) == k and c.get("_late"):
                 issues.append(f"Late: {base.no_phone(c.get('summary'))[:120]} "
                               f"(due {_day(base._d((c.get('due') or {}).get('due_at')))})")
-        open_punch = sum(1 for p in punch_items if p.get("status") == "open" and company_key(
+        open_punch = sum(1 for p in punch_items if p.get("status") == "open" and key_of(
             (p.get("assignee") or {}).get("company") or (p.get("assignee") or {}).get("name")) == k)
         if open_punch:
             issues.append(f"{open_punch} open punch item{'s' if open_punch != 1 else ''}")
         for o in observations:
-            if names_sub(o["text"], k):
+            if names_sub(o["text"], aliases.get(k, [k])):
                 issues.append(f"{_day(o['date'])}: {o['text']}")
         counts = list(per_day.values())
         out.append({"key": k, "name": name, "trade": trades[k].most_common(1)[0][0] if trades[k] else "",
@@ -325,7 +365,7 @@ def _subs(checkins: List[dict], acts: List[Dict[str, Any]], start: date, end: da
                     "avg": round(sum(counts) / len(counts), 1), "max": max(counts),
                     "first": min(per_day), "last": max(per_day), "runs": runs,
                     "work": bullets, "label": _work_label(mine), "issues": issues[:6],
-                    "chat": [c for c in chat if names_sub(c["text"], k)][:8]})
+                    "chat": [c for c in chat if names_sub(c["text"], aliases.get(k, [k]))][:8]})
     out.sort(key=lambda s: (-len(s["days"]), -s["max"], s["name"]))
     return out
 
@@ -359,6 +399,10 @@ def _late_commitments(items: List[dict], end: date) -> List[Dict[str, Any]]:
     out = []
     for i in items:
         due = base._d((i.get("due") or {}).get("due_at"))
+        made = base._d(i.get("created_at"))
+        # Not yet made by the end of the period: not late in it (Codex on #803).
+        if made and made > end:
+            continue
         if i.get("status") in base._OPEN and due and due < end:
             i["_late"] = True
             o = i.get("owner") or {}
@@ -412,12 +456,16 @@ def photo_candidates(acts: List[Dict[str, Any]], punch_items: List[dict],
     work, where, date) and walkthrough photos (floor, the item's words)."""
     out = []
     for a in acts:
-        for p in a["photos"]:
+        for n, p in enumerate(a["photos"]):
             key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
+            # A filed photo with only its inline copy is a photo too (Codex on
+            # #803): keyed by where it is, read from the log by the server.
+            if not key and (p.get("base64") or p.get("thumb_base64")):
+                key = f"inline:{a['log']}:{n}"
             if key:
                 out.append({"key": key, "date": a["date"], "sub": a["company"],
                             "where": a["where"] or floors_label(a["floors"]),
-                            "words": a["work"], "source": "daily log"})
+                            "words": a["work"], "source": "daily log", "photo": p})
     for it in punch_items:
         d = base._d(it.get("created_at"))
         if not it.get("photo_key") or not base._in(d, start, end):
