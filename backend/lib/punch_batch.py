@@ -442,7 +442,9 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
 #: and let stand -- the photo's place at the time, which no later batch
 #: text overwrites.
 _CONFIRMED = re.compile(
-    r"#(\d{1,3})(?:\s+['\u2018\u201c\"]([^'\u2019\u201d\"]{0,80})['\u2019\u201d\"])?\s*\(([^()]{1,60})\)")
+    # The caption may hold quotes of its own ("Women's bathroom", 6"): it
+    # ends at the quote just before the "(".
+    r"#(\d{1,3})(?:\s+['\u2018\u201c\"](.{0,80}?)['\u2019\u201d\"])?\s*\(([^()]{1,60})\)")
 _NOT_A_PLACE = re.compile(r"\bphotos?\b|\bpics?\b|^\s*\?\s*$|not\s+given|no\s+location|unknown",
                           re.IGNORECASE)
 _LEVELS = ("cellar", "basement", "sub-cellar", "subcellar", "lobby", "ground", "roof", "rooftop",

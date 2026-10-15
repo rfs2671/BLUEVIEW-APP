@@ -477,6 +477,11 @@ class ReadingConfirmations(unittest.TestCase):
         c = punch_batch.capture_confirmations
         self.assertEqual([(n, w) for n, w, _ in c("Got it. #1 'Front' (Facade)")], [(1, "Front")])
         self.assertEqual([n for n, _w, _p in c("#15 (Floor 5 · stairs)")], [15])
+        # Quotes inside the caption (Codex on #796).
+        got = c("#1 'Women's bathroom crack' (Floor 2 · bathroom)")
+        self.assertEqual([(n, w, p) for n, w, p in got],
+                         [(1, "Women's bathroom crack", {"floor": "2", "area": "bathroom"})])
+        self.assertEqual([(n, w) for n, w, _ in c('#4 "6" gap at sill" (Floor 3)')], [(4, '6" gap at sill')])
         # A batch's count, a question: never a photo's place.
         self.assertEqual(c("Got it — #5–#12 (8 photos): Floor 2 · interior."), [])
         self.assertEqual(c("Where is #3 'Back of building'? (floor + unit, or a named area)"), [])
@@ -518,6 +523,27 @@ class Vision(unittest.TestCase):
         with patch.object(server, "ServerHttpClient", _Http(400, {}, text="InvalidParameter: image")):
             got = self.run_({"n": 3, "photo_key": "wa/3.jpg"}, r2=lambda k: (_jpeg(), None))
         self.assertEqual(got["error"], "vision HTTP 400: InvalidParameter: image")
+
+    def test_apply_describes_a_photo_with_no_stored_copy(self):
+        # Codex on #796: photo_failed items get the WhatsApp fallback on
+        # apply too, as in the dry run.
+        import asyncio
+        seen = []
+
+        async def vision(it, project_id=None, store=None):
+            seen.append(it.get("n"))
+            return {"words": "Cracked tile", "source": "whatsapp", "error": None}
+
+        async def save(*a, **k):
+            return None
+        sess = {"project_id": "p588", "items": [
+            {"n": 1, "photo_key": None, "photo_failed": True, "message_id": "A", "text": ""},
+            {"n": 2, "photo_key": None, "message_id": "B", "text": ""}]}
+        with patch.object(server, "_punch_vision", vision), patch.object(server, "_punch_save", save):
+            asyncio.run(server._punch_describe_blanks(sess, trades=False))
+        self.assertEqual(seen, [1])
+        self.assertEqual(sess["items"][0]["text"], "Cracked tile")
+        self.assertEqual(sess["items"][1].get("vision_error"), "no photo")
 
     def test_the_r2_client_is_made_on_first_use(self):
         made = []

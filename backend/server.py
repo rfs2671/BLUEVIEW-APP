@@ -66667,8 +66667,11 @@ async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
     gate = asyncio.Semaphore(PUNCH_DESCRIBE_AT_ONCE)
 
     async def one(it):
+        # A photo item with no stored copy (photo_failed) still has its
+        # WhatsApp media: the same fallback as the dry run (Codex on #796).
+        is_photo = it.get("photo_key") or it.get("photo_failed")
         async with gate:
-            got = await _punch_vision(it, sess.get("project_id")) if it.get("photo_key") \
+            got = await _punch_vision(it, sess.get("project_id")) if is_photo \
                 else {"words": None, "error": "no photo"}
         words = got["words"]
         punch_batch.set_auto(it, words, got["error"])
