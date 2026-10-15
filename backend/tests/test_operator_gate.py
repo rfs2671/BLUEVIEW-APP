@@ -54,6 +54,19 @@ OPERATOR_ROUTES = {
     ("GET", "/api/admin/notifications"),
     ("POST", "/api/admin/notifications/{notification_id}/resend"),
     ("POST", "/api/admin/migrate-company-data"),
+    # PLATFORM-WIDE, so the operator's and nobody else's (security audit A /
+    # P3, 2026-10-13). They were on get_admin_seat_user, which admits ANY
+    # company's admin: a customer could change or delete a flag for every
+    # tenant, rewrite the global risk priors, start a paid AI pass over every
+    # company's projects, or fire the Sentry probe.
+    ("GET", "/api/admin/feature-flags"),
+    ("POST", "/api/admin/feature-flags"),
+    ("PATCH", "/api/admin/feature-flags/{flag}"),
+    ("DELETE", "/api/admin/feature-flags/{flag}"),
+    ("GET", "/api/admin/risk-score/calibration"),
+    ("POST", "/api/admin/risk-score/weights"),
+    ("POST", "/api/admin/run-phase-inference"),
+    ("GET", "/api/admin/_sentry_test"),
 }
 
 #: Under an operator prefix but not an operator route: a company admin's
