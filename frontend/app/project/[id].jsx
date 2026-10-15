@@ -21,6 +21,7 @@ import {
   Building2,
   ClipboardList,
   ClipboardCheck,
+  FileBarChart,
   Settings,
   Wifi,
   ChevronRight,
@@ -61,6 +62,7 @@ import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { canSeePunch } from '../../src/utils/punchList';
+import { canSeeReports } from '../../src/utils/projectReports';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
@@ -666,6 +668,8 @@ export default function ProjectDetailScreen() {
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
     // Admins and PMs: punch items from walkthroughs in WhatsApp.
     ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
+    // Admins and PMs: PDF project reports (generate, list, download, schedule).
+    ...(canSeeReports(user) ? [{ title: 'Reports', icon: FileBarChart, path: `/projects/${projectId}/reports`, color: '#6366f1' }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +

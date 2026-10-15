@@ -450,7 +450,7 @@ class TheLeaseRunsAJobOnce(unittest.TestCase):
         src = (Path(server.__file__)).read_text(encoding="utf-8")
         start = src.index("async def startup_event")
         body = src[start:]
-        self.assertEqual(body.count("scheduler.add_job("), 39)
+        self.assertEqual(body.count("scheduler.add_job("), 40)   # + project reports
 
 
 # ══════════════════════════════════════════════════════════════════════════
