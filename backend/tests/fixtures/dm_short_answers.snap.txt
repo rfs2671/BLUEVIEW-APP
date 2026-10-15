@@ -1,0 +1,139 @@
+>>> How many arkon workers in 588
+Arkon: 15 on site today at 588.
+Want the names?
+
+>>> how many guys from arkon at 588 today
+Arkon: 15 on site today at 588.
+Want the names?
+
+>>> arkon headcount at 588?
+Arkon: 15 on site today at 588.
+Want the names?
+
+>>> how many Quality Plumbing workers at 588
+Quality Plumbing: 8 on site today at 588.
+Want the names?
+
+>>> who from Power Direct is here at 588
+Power Direct: 6 on site at 588 — Power Worker 3 (6:56), Power Worker 4 (6:57), Power Worker 5 (6:58), Power Worker 6 (6:59), Power Worker 1 (10:24) and Power Worker 2 (10:25).
+
+>>> is J&G on site at 588
+Yes — J&G Plumbing: 4 on site at 588 now.
+Want the names?
+
+>>> is spark data at the site at 588?
+Yes — Spark Data & Security: 4 on site at 588 now.
+Want the names?
+
+>>> any power direct guys on site at 588
+Yes — Power Direct: 6 on site at 588 now.
+Want the names?
+
+>>> is Quality Plumbing on site at 588 · names
+Quality Plumbing: 8 on site at 588 — Quality Worker 3 (6:48), Quality Worker 4 (6:49), Quality Worker 5 (6:50), Quality Worker 6 (6:51), Quality Worker 7 (6:52), Quality Worker 8 (6:53), Quality Worker 1 (10:16) and Quality Worker 2 (10:17).
+
+>>> How many arkon workers in 588 · yes
+Arkon: 15 on site at 588 — Arkon Worker 5 (6:35), Arkon Worker 6 (6:36), Arkon Worker 7 (6:37), Arkon Worker 8 (6:38), Arkon Worker 9 (6:39), Arkon Worker 10 (6:40), Arkon Worker 11 (6:41), Arkon Worker 12 (6:42), Arkon Worker 13 (6:43), Arkon Worker 14 (6:44), Arkon Worker 15 (6:45), Arkon Worker 1 (10:01), Arkon Worker 2 (10:02), Arkon Worker 3 (10:03) and Arkon Worker 4 (10:04).
+
+>>> how many workers at 588
+37 on site at 588 now.
+Arkon 15, Quality Plumbing 8, Power Direct 6 (+2 more subs).
+9 came in since your 8:07 brief. Want the names?
+
+>>> Any updates on worker count at 588?
+37 on site at 588 now.
+Arkon 15, Quality Plumbing 8, Power Direct 6 (+2 more subs).
+9 came in since your 8:07 brief. Want the names?
+
+>>> manpower at 588 today?
+37 on site at 588 now.
+Arkon 15, Quality Plumbing 8, Power Direct 6 (+2 more subs).
+9 came in since your 8:07 brief. Want the names?
+
+>>> how many came in since the brief at 588
+9 since your 8:07 brief. Want the names?
+37 on site at 588 now.
+
+>>> who came in after the brief at 588
+9 since your 8:07 brief — Arkon Worker 1, Arkon Worker 2, Arkon Worker 3 and Arkon Worker 4 (Arkon), in at 10:01, 10:02, 10:03 and 10:04; Quality Worker 1 and Quality Worker 2 (Quality Plumbing), in at 10:16 and 10:17; Power Worker 1 and Power Worker 2 (Power Direct), in at 10:24 and 10:25; J&G Worker 1 (J&G Plumbing), in at 10:30.
+37 on site at 588 now — Arkon 15, Quality Plumbing 8, Power Direct 6, J&G Plumbing 4, Spark Data & Security 4.
+
+>>> who's on site at 588
+37 on site at 588 now — Arkon 15, Quality Plumbing 8, Power Direct 6, J&G Plumbing 4, Spark Data & Security 4.
+• Arkon Worker 5 (Arkon) 6:35
+• Arkon Worker 6 (Arkon) 6:36
+• Arkon Worker 7 (Arkon) 6:37
+• Arkon Worker 8 (Arkon) 6:38
+• Arkon Worker 9 (Arkon) 6:39
+• Arkon Worker 10 (Arkon) 6:40
+• Arkon Worker 11 (Arkon) 6:41
+• Arkon Worker 12 (Arkon) 6:42
+• Arkon Worker 13 (Arkon) 6:43
+• Arkon Worker 14 (Arkon) 6:44
+• Arkon Worker 15 (Arkon) 6:45
+• Quality Worker 3 (Quality Plumbing) 6:48
+• Quality Worker 4 (Quality Plumbing) 6:49
+• Quality Worker 5 (Quality Plumbing) 6:50
+• Quality Worker 6 (Quality Plumbing) 6:51
+• Quality Worker 7 (Quality Plumbing) 6:52
+• Quality Worker 8 (Quality Plumbing) 6:53
+• Power Worker 3 (Power Direct) 6:56
+• Power Worker 4 (Power Direct) 6:57
+• Power Worker 5 (Power Direct) 6:58
+• Power Worker 6 (Power Direct) 6:59
+• J&G Worker 2 (J&G Plumbing) 7:01
+• J&G Worker 3 (J&G Plumbing) 7:02
+• J&G Worker 4 (J&G Plumbing) 7:03
+• Spark Worker 1 (Spark Data & Security) 7:04
+• Spark Worker 2 (Spark Data & Security) 7:05
+• Spark Worker 3 (Spark Data & Security) 7:06
+• Spark Worker 4 (Spark Data & Security) 7:07
+• Arkon Worker 1 (Arkon) 10:01
+• Arkon Worker 2 (Arkon) 10:02
+• Arkon Worker 3 (Arkon) 10:03
+• Arkon Worker 4 (Arkon) 10:04
+• Quality Worker 1 (Quality Plumbing) 10:16
+• Quality Worker 2 (Quality Plumbing) 10:17
+• Power Worker 1 (Power Direct) 10:24
+• Power Worker 2 (Power Direct) 10:25
+• J&G Worker 1 (J&G Plumbing) 10:30
+
+>>> what's open at 588
+12 open items at 588.
+Oldest is 9 days, the fire stop at the cellar.
+Want the full list?
+
+>>> what's open at 588 · yes
+12 open items at 588.
+Oldest is 9 days, the fire stop at the cellar.
+• P-588-1 Item 1 — Arkon, due Fri
+• P-588-2 Item 2 — Arkon, due Fri
+• P-588-3 Item 3 — Arkon, due Fri
+• P-588-4 Item 4 — Arkon, due Fri
+• P-588-5 Item 5 — Arkon, due Fri
+• P-588-6 Item 6 — Arkon, due Fri
+• P-588-7 Item 7 — Arkon, due Fri
+• P-588-8 Item 8 — Arkon, due Fri
+• P-588-9 Item 9 — Arkon, due Fri
+• P-588-10 Item 10 — Arkon, due Fri
+• P-588-11 Item 11 — Arkon, due Fri
+• P-588-12 Item 12 — Arkon, due Fri
+
+>>> list the open items at 588
+12 open items at 588.
+Oldest is 9 days, the fire stop at the cellar.
+• P-588-1 Item 1 — Arkon, due Fri
+• P-588-2 Item 2 — Arkon, due Fri
+• P-588-3 Item 3 — Arkon, due Fri
+• P-588-4 Item 4 — Arkon, due Fri
+• P-588-5 Item 5 — Arkon, due Fri
+• P-588-6 Item 6 — Arkon, due Fri
+• P-588-7 Item 7 — Arkon, due Fri
+• P-588-8 Item 8 — Arkon, due Fri
+• P-588-9 Item 9 — Arkon, due Fri
+• P-588-10 Item 10 — Arkon, due Fri
+• P-588-11 Item 11 — Arkon, due Fri
+• P-588-12 Item 12 — Arkon, due Fri
+
+>>> any violations at 588?
+No open violations at 588.
