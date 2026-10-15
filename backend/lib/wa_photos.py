@@ -13,8 +13,11 @@ company and the job, on its message row (`whatsapp_messages.photo`):
   * The sender's company comes from the company's own records: a user of the
     company is the GC team; a worker who checked in at this job, the company of
     their check-in; else what People (Project → WhatsApp → People) says.
-  * The vision model describes it once, at ingest; the report, the memory
-    search and the app read that, never asking again.
+  * The vision model describes it once, at ingest; the memory search and the
+    app read that, never asking again.
+  * NEVER IN A PROGRESS REPORT: the report's photos are the daily logs'
+    only (each already filed under its sub, day and work). These are for the
+    search and the Voice & media log.
   * Kept as the message is: the 7-year job rule (wa_retention), and deleted
     with it (retention, project delete) -- by key.
   * Nothing before deploy: WhatsApp's media expires, so old photos can't be

@@ -18,8 +18,11 @@ reads days on site and workers on site.
                    the days it was on site, each bar labelled with its work
   4 Work by sub    dates on site, average / most workers, the work (from the
                    logs), its issues
-  5 Photos         10-15, chosen with vision (pick_photos): each sub's
-                   earliest and latest of the period, then the best
+  5 Photos         10-15 from the filed DAILY LOGS only (never the group
+                   chat's or a walkthrough's), grouped by sub: each sub's
+                   earliest and latest, dated, captioned with its work line;
+                   vision only screens out blurry / people / document shots.
+                   Fewer usable: what there is, never padded
   6 Site activity  workers on site per day, by sub
   7 DOB / DOT      new records, number and status
   8 Open items     late commitments, punch by assignee
@@ -48,7 +51,7 @@ UPCOMING_DAYS = 14
 #: is 10-15, never a photo that does not).
 MAX_PHOTOS = 15
 ATTACHED_LINE = "Full report (PDF) attached."
-SOURCE_LINE = "Source: Levelog records — check-ins, daily logs, group chat, photos"
+SOURCE_LINE = "Source: Levelog records — check-ins, daily logs and their photos, group chat"
 
 #: Never in the report.
 FORBIDDEN = re.compile(r"man[- ]?days?|\d+\s?%|percent", re.IGNORECASE)
@@ -453,28 +456,17 @@ def _coming_up(events: List[dict], items: List[dict], start: date, end: date) ->
 
 # ── PHOTOS ───────────────────────────────────────────────────────────────────
 
-def photo_candidates(acts: List[Dict[str, Any]], punch_items: List[dict],
-                     start: date, end: date, group_photos: Iterable[dict] = ()) -> List[Dict[str, Any]]:
-    """Every photo of the period with what it is of: photos posted in the
-    job's groups (who sent it, their company, the caption, what vision saw at
-    ingest), daily-log photos (sub, work, where, date) and walkthrough photos
-    (floor, the item's words)."""
+def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
+                     *_ignored: Any, **_ignored_kw: Any) -> List[Dict[str, Any]]:
+    """The report's photos come from the filed daily logs ONLY: each one is
+    already filed under its sub, its day and its work. Never a photo from the
+    group chat or a walkthrough (they are kept for the search and the media
+    log, not for the report)."""
     out = []
-    in_group = set()
-    for r in group_photos:
-        p = r.get("photo") or {}
-        d = att.local_day(r.get("timestamp") or p.get("at"))
-        # Only the original: a preview is not a report photo.
-        if not p.get("key") or p.get("quality") == "preview" or not base._in(d, start, end):
-            continue
-        cap = base.no_phone(p.get("caption") or "")
-        seen = base.no_phone((p.get("vision") or {}).get("caption") or "")
-        where = floors_label(floors_in(cap) or floors_in(seen))
-        out.append({"key": p["key"], "date": d, "sub": p.get("sender_company") or "",
-                    "where": where, "words": cap or seen, "source": "group chat",
-                    "verdict": p.get("vision"), "message_id": str(r.get("message_id") or "")})
-        in_group.add(str(r.get("message_id") or ""))
     for a in acts:
+        if not base._in(a["date"], start, end):
+            continue
+        place = floors_label(a["floors"]) or base.no_phone(a["where"])[:60]
         for n, p in enumerate(a["photos"]):
             key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
             # A filed photo with only its inline copy is a photo too (Codex on
@@ -482,28 +474,25 @@ def photo_candidates(acts: List[Dict[str, Any]], punch_items: List[dict],
             if not key and (p.get("base64") or p.get("thumb_base64")):
                 key = f"inline:{a['log']}:{n}"
             if key:
-                out.append({"key": key, "date": a["date"], "sub": a["company"],
-                            "where": a["where"] or floors_label(a["floors"]),
-                            "words": a["work"], "source": "daily log", "photo": p})
-    for it in punch_items:
-        d = base._d(it.get("created_at"))
-        if not it.get("photo_key") or not base._in(d, start, end):
-            continue
-        if it.get("message_id") and str(it["message_id"]) in in_group:
-            continue                     # the same photo, already kept from the group
-        floor = str(it.get("floor") or "")
-        where = " · ".join(x for x in (f"Floor {floor}" if floor.isdigit() else floor,
-                                       str(it.get("area") or "")) if x and x != "?")
-        out.append({"key": it["photo_key"], "date": d,
-                    "sub": (it.get("assignee") or {}).get("company") or "",
-                    "where": where, "words": base.no_phone(it.get("text"))[:100],
-                    "source": "walkthrough"})
+                out.append({"key": key, "date": a["date"], "sub": a["company"], "where": place,
+                            "words": work_line(a["work"] or a["trade"], place),
+                            "source": "daily log", "photo": p})
     seen, uniq = set(), []
     for c in sorted(out, key=lambda c: (c["date"], c["key"])):
         if c["key"] not in seen:
             seen.add(c["key"])
             uniq.append(c)
     return uniq
+
+
+def work_line(work: Any, place: Any) -> str:
+    """The caption of a daily-log photo: the sub's work that day, as the log
+    says it -- "Framing — fl 1–2", "Scaffolding — Front facade"."""
+    w = str(work or "").strip() or "Work on site"
+    p = str(place or "").strip()
+    if p and p[:1].isalpha() and not p.startswith("fl "):
+        p = p[:1].upper() + p[1:]
+    return f"{w} — {p}" if p else w
 
 
 def to_judge(cands: List[Dict[str, Any]], limit: int = 40) -> List[Dict[str, Any]]:
@@ -525,37 +514,46 @@ def to_judge(cands: List[Dict[str, Any]], limit: int = 40) -> List[Dict[str, Any
 
 def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],
                 most: int = MAX_PHOTOS) -> List[Dict[str, Any]]:
-    """10-15 for the report: only photos vision calls a clear progress shot
-    (never blurry, people-only, a document or a duplicate); each sub's
-    earliest and latest first (before / after), then the best scores."""
+    """Up to 15 daily-log photos for the report, grouped by sub: only photos
+    vision calls a clear progress shot (never blurry, people-only, a document
+    or a duplicate of the same sub, day and place); each sub's earliest and
+    latest first, then every sub's best in turn. Fewer than 10 usable: what
+    there is -- never padded. The caption is the sub's work line from the
+    log (never words the model wrote)."""
     good = []
     for c in cands:
+        if c.get("source") != "daily log":
+            continue
         v = verdicts.get(c["key"]) or {}
         if v.get("ok") and v.get("kind", "progress") == "progress":
-            # Group and daily-log photos first: a walkthrough photo shows a
-            # defect, not progress.
-            good.append({**c, "score": float(v.get("score") or 0) - (2 if c["source"] == "walkthrough" else 0),
-                         "caption": base.no_phone(v.get("caption") or c["words"] or "Progress")[:120]})
+            good.append({**c, "score": float(v.get("score") or 0),
+                         "caption": base.no_phone(c["words"] or "Work on site")[:120]})
     chosen: List[dict] = []
 
     def add(c):
-        if c in chosen or len(chosen) >= most:
-            return
-        # A duplicate: the same sub, day and place as one already in.
-        if any(x["sub"] == c["sub"] and x["date"] == c["date"] and x["where"] == c["where"]
-               for x in chosen):
-            return
+        if len(chosen) >= most or any(x["key"] == c["key"] for x in chosen):
+            return False
+        if any(company_key(x["sub"]) == company_key(c["sub"]) and x["date"] == c["date"]
+               and x["where"] == c["where"] for x in chosen):
+            return False
         chosen.append(c)
+        return True
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
-        by_sub[company_key(c["sub"]) or c["source"]].append(c)
+        by_sub[company_key(c["sub"]) or c["sub"]].append(c)
     for group in by_sub.values():
-        group.sort(key=lambda c: c["date"])
-        if len(group) > 1 and group[0]["date"] != group[-1]["date"]:
+        group.sort(key=lambda c: (c["date"], -c["score"]))
+        if group[0]["date"] != group[-1]["date"]:
             add({**group[0], "pair": "before"})
             add({**group[-1], "pair": "after"})
-    for c in sorted(good, key=lambda c: -c["score"]):
-        add(c)
+        else:
+            add(max(group, key=lambda c: c["score"]))
+    # Then each sub's best in turn, so no one sub fills the page.
+    queues = [sorted(g, key=lambda c: -c["score"]) for g in by_sub.values()]
+    while len(chosen) < most and any(queues):
+        for q in queues:
+            while q and not add(q.pop(0)):
+                pass
     chosen.sort(key=lambda c: (c["sub"], c["date"]))
     return chosen
 
@@ -733,7 +731,7 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
             checkins: Iterable[dict] = (), logbooks: Iterable[dict] = (), chat: Iterable[dict] = (),
             records: Iterable[dict] = (), events: Iterable[dict] = (),
             commitments: Iterable[dict] = (), punch_items: Iterable[dict] = (),
-            group_photos: Iterable[dict] = (), **_ignored: Any) -> Dict[str, Any]:
+            **_ignored: Any) -> Dict[str, Any]:
     """Everything of one job's report for [start, end], from its rows."""
     today = att.local_day(now) or end
     checkins, logbooks = list(checkins), list(logbooks)
@@ -755,8 +753,8 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
         "chat": talk, "records": base._records(list(records), start, end),
         "late": late, "punch": _punch_summary(punch_items),
         "coming_up": _coming_up(list(events), commitments, nxt, nxt + timedelta(days=UPCOMING_DAYS - 1)),
-        "photo_candidates": _named(photo_candidates(acts, punch_items, start, end, list(group_photos)),
-                                   subs),
+        # Daily-log photos only (never the group chat's or a walkthrough's).
+        "photo_candidates": _named(photo_candidates(acts, start, end), subs),
         "photos": [], "summary": "",
     }
 
@@ -1014,20 +1012,20 @@ def _subs_section(rep: Dict[str, Any]) -> str:
 def _photos_section(rep: Dict[str, Any], images: Dict[str, str]) -> str:
     shown = [p for p in rep["photos"] if images.get(p["key"])]
     if not shown:
-        return ("<section><h2>Progress photos</h2><p class='none'>No progress photos on file for "
-                "this period.</p></section>")
+        return ("<section><h2>Progress photos</h2><p class='none'>No progress photos in the daily "
+                "logs for this period.</p></section>")
     groups: Dict[str, List[dict]] = defaultdict(list)
     for p in shown:
-        groups[p.get("sub") or "Walkthrough"].append(p)
-    out = ["<section><h2>Progress photos</h2>"]
+        groups[p.get("sub") or "Daily log"].append(p)
+    out = ["<section><h2>Progress photos</h2><div class='muted'>From the daily logs: each photo "
+           "dated, with the sub's work that day.</div>"]
     for sub, photos in groups.items():
         cells = []
         for p in sorted(photos, key=lambda x: x["date"]):
             pair = (f"<span class='tag'>{'Earliest' if p['pair'] == 'before' else 'Latest'}</span>"
                     if p.get("pair") else "")
-            where = f" · {_e(p['where'])}" if p.get("where") else ""
             cells.append(f"<td class='photo'><img src='{images[p['key']]}'/>"
-                         f"<div class='cap'><b>{_e(_day(p['date']))}{where}</b>{pair}<br>"
+                         f"<div class='cap'><b>{_e(_wday(p['date']))}</b>{pair}<br>"
                          f"{_e(p['caption'])}</div></td>")
         rows = "".join("<tr>" + "".join(cells[i:i + 2]) + ("<td class='photo'></td>" if len(cells[i:i + 2]) < 2
                                                             else "") + "</tr>"
@@ -1126,7 +1124,7 @@ def text_outline(rep: Dict[str, Any]) -> str:
         out += [f"    - {w}" for w in s["work"]] or ["    - No work description in the daily logs."]
         out += [f"    ! {i}" for i in s["issues"]]
     out += ["", "PROGRESS PHOTOS"]
-    out += [f"  {_day(p['date'])} · {p['where']} — {p['caption']} ({p['sub'] or p['source']})"
+    out += [f"  {p['sub']} · {_wday(p['date'])} — {p['caption']}"
             f"{' [' + p['pair'] + ']' if p.get('pair') else ''}" for p in rep["photos"]] or ["  None."]
     site = rep["site"]
     out += ["", "SITE ACTIVITY"]

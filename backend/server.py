@@ -51182,14 +51182,10 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                     projection={"sender": 1, "sender_name": 1, "body": 1, "timestamp": 1,
                                 "created_at": 1, "skipped": 1, "voice.transcript": 1,
                                 "voice.review": 1, "voice.flagged": 1})
-    # Photos posted in the job's groups, kept at ingest (lib/wa_photos.py).
-    group_photos = await _q(db.whatsapp_messages,
-                            {"project_id": pid, "company_id": cf, "photo.key": {"$ne": None},
-                             "timestamp": {"$gte": lo + timedelta(days=length), "$lt": hi}}, 5000,
-                            projection={"photo": 1, "timestamp": 1, "message_id": 1, "sender_name": 1})
+    # The report's photos are the daily logs' (in `logbooks`); the group
+    # chat's photos are kept for the search and the media log, never here.
     return {"checkins": in_period, "records": records, "events": events, "commitments": items,
-            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat,
-            "group_photos": group_photos}
+            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat}
 
 
 def _report_pdf(html_text: str) -> bytes:
@@ -51261,8 +51257,6 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     kind, score, caption}. None (and nothing cached) when it can't be read
     or judged -- such a photo is never shown."""
     key = c["key"]
-    if c.get("verdict"):
-        return c["verdict"]                 # a group photo: judged at ingest
     try:
         cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
     except Exception:
@@ -51360,12 +51354,9 @@ async def _group_photo_capture(row: dict, parsed: dict, project_id: Any, company
 
 
 async def _report_photos(rep: dict, project_id: str) -> List[dict]:
-    """10-15 photos for the report: vision on a capped set, then the pick."""
-    # Group photos were judged once, at ingest: never again, and never
-    # counted against the cap.
-    judged = [c for c in rep["photo_candidates"] if c.get("verdict")]
-    todo = judged + progress_report.to_judge(
-        [c for c in rep["photo_candidates"] if not c.get("verdict")], REPORT_JUDGE_MAX)
+    """Up to 15 daily-log photos for the report: vision screens a capped set
+    (blurry, people-only, documents out), then the pick."""
+    todo = progress_report.to_judge(rep["photo_candidates"], REPORT_JUDGE_MAX)
     verdicts: Dict[str, dict] = {}
     sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
 
