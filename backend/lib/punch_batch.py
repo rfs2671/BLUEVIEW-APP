@@ -316,6 +316,16 @@ def apply_batch(batch: List[dict], ann: Dict[str, Any], at: Any = None
                 it.pop("room", None)
             it["loc_src"] = "batch"
             did = True
+        elif (place["area"] and place["floor"] and it.get("confirmed")
+              and str(it.get("floor") or "").lower() == str(place["floor"]).lower()
+              and (it.get("area") or punch.UNKNOWN) == punch.UNKNOWN):
+            # The place the assistant confirmed at capture is "Floor 6"; the
+            # batch says "Floor 6 · interior": the same floor, so the more
+            # specific area is added (#36). Its floor, and an area it has, are
+            # never changed. A walker's own caption is not widened this way.
+            it["area"] = place["area"]
+            it.pop("room", None)
+            did = True
         if ann.get("description") and it in for_words:
             if not _own_words(it):
                 it["text"] = ann["description"]
@@ -384,8 +394,21 @@ _REFERENCE = re.compile(
 #: A text this soon after "Where is #3 ...?" (and no photo since) answers it.
 ANSWER_SECONDS = 10 * 60
 
+#: "Same for the last batch of pics" with no photo since the last batch is
+#: about the NEXT burst (11:59 -> #41-#44 at 12:00): photos that start within
+#: this long after it...
+NEXT_BURST_SECONDS = 5 * 60
+#: ...and run on with no gap longer than this (the walker's next text or
+#: voice note ends the burst too).
+BURST_GAP_SECONDS = 60
+
 #: The assistant asking about ONE item: "Where is #3 'Back of building'?".
 _ASKS_ITEM = re.compile(r"\bWhere\s+is\s+#(\d{1,3})\b", re.IGNORECASE)
+
+#: The assistant asking which photos the walker's last text was for ("Which
+#: photo is that for?", 11:52): the walker's next text is the answer -- it
+#: names the photos for THAT text, however long it took to type.
+_ASKS_WHICH = re.compile(r"\bwhich\s+(?:photos?|pics?|pictures?|ones?|items?)\b", re.IGNORECASE)
 
 #: Under this heading in the draft: what could not be put on photos.
 UNPLACED_HEADING = punch.UNPLACED_HEADING
@@ -413,12 +436,15 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
     reference ("same for ...") is never merged."""
     out: List[Dict[str, Any]] = []
     last = None                                   # index in `out` of the walker's last text
+    asked_which = False                           # the assistant asked "which photos?" about it
     for e in events:
         kind = e.get("kind")
         if kind == "bot":
             out.append(dict(e))
             if _ASKS_ITEM.search(e.get("text") or ""):
                 last = None
+            elif last is not None and _ASKS_WHICH.search(e.get("text") or ""):
+                asked_which = True
             continue
         prev = out[last] if last is not None else None
         if (kind == "text" and prev is not None
@@ -427,13 +453,16 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
                 and not is_command(e.get("text") or "") and not is_command(prev.get("text") or "")
                 and not is_reference(e.get("text")) and not is_reference(prev.get("text"))):
             a, b = _ts(prev.get("at")), _ts(e.get("at"))
-            if a is not None and b is not None and 0 <= b - a <= seconds:
+            limit = ANSWER_SECONDS if asked_which else seconds
+            if a is not None and b is not None and 0 <= b - a <= limit:
+                asked_which = False
                 prev["text"] = (prev.get("text") or "").rstrip(" .") + ". " + (e.get("text") or "").strip()
                 prev.setdefault("merged_ids", [prev.get("message_id")]).append(e.get("message_id"))
                 prev["at"] = e.get("at")
                 continue
         out.append(dict(e))
         last = len(out) - 1 if kind == "text" else None
+        asked_which = False
     return out
 
 
@@ -445,7 +474,10 @@ _CONFIRMED = re.compile(
     # The caption may hold quotes of its own ("Women's bathroom", 6"): it
     # ends at the quote just before the "(".
     r"#(\d{1,3})(?:\s+['\u2018\u201c\"](.{0,80}?)['\u2019\u201d\"])?\s*\(([^()]{1,60})\)")
-_NOT_A_PLACE = re.compile(r"\bphotos?\b|\bpics?\b|^\s*\?\s*$|not\s+given|no\s+location|unknown",
+#: Not a place: a batch's count, "?", and the assistant's own placeholder
+#: "(where? floor and unit)" (#13, #44) -- never a "Where? floor and unit" group.
+_NOT_A_PLACE = re.compile(r"\bphotos?\b|\bpics?\b|\?|\bwhere\b|floor\s+(?:and|&|\+)\s+unit"
+                          r"|not\s+given|no\s+location|unknown",
                           re.IGNORECASE)
 _LEVELS = ("cellar", "basement", "sub-cellar", "subcellar", "lobby", "ground", "roof", "rooftop",
            "bulkhead", "penthouse", "mezzanine", "attic")
@@ -483,9 +515,13 @@ def capture_confirmations(text: Any) -> List[Tuple[int, Optional[str], Dict[str,
 
 def pin_confirmed(it: dict, place: Dict[str, Optional[str]]) -> None:
     """The place the assistant confirmed for this photo when it came in."""
-    # The label is the whole place at that moment: "(Facade)" had no floor.
+    # The label is the place at that moment: "(Facade)" had no floor. It
+    # never removes detail: "(Floor 6)" on a photo already Floor 6 ·
+    # interior keeps the interior (the same floor, the more specific area).
+    before_f, before_a = it.get("floor") or punch.UNKNOWN, it.get("area") or punch.UNKNOWN
     it["floor"] = place.get("floor") or punch.UNKNOWN
-    it["area"] = place.get("area") or punch.UNKNOWN
+    same_floor = str(before_f).lower() == str(it["floor"]).lower()
+    it["area"] = place.get("area") or (before_a if same_floor else punch.UNKNOWN)
     it.pop("room", None)
     it["loc_src"] = "photo"
     it["confirmed"] = True
@@ -617,6 +653,31 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
     asking: Optional[int] = None                # "Where is #3 ...?" waiting for its answer
     asked_at: Optional[float] = None
     seen_photos: List[dict] = []
+    # "Same for ..." waiting for the next burst: {"ref", "burst", "last"}.
+    pending: Optional[Dict[str, Any]] = None
+
+    def settle():
+        """The waiting "same for ..." gets its burst, or goes to the model /
+        the couldn't-place list when no photos came."""
+        nonlocal pending, mark, previous
+        if pending is None:
+            return
+        ref, burst = pending["ref"], pending["burst"]
+        pending = None
+        if not burst:
+            references.append(ref)
+            outcome[ref["i"]] = "a reference to other photos -- placed below, or listed as couldn't place"
+            return
+        ann = {**ref["copy"], "last_n": len(burst), "correction": False}
+        _undo, changed = apply_batch(burst, ann, ref.get("at"))
+        ns = [it["n"] for it in changed]
+        applied.append((ref["text"], ns))
+        batches.append({"ns": [it["n"] for it in burst], "text": ref["text"], "ann": dict(ann)})
+        outcome[ref["i"]] = (f"same as the last batch -> the next photos "
+                             f"{punch.numbers_text([it['n'] for it in burst])}: " + describe(ann))
+        previous = [it.get("captured") for it in burst]
+        mark = max([mark] + [it.get("captured") or 0 for it in burst])
+
     for i, e in enumerate(events):
         kind = e.get("kind")
         if kind == "photo":
@@ -626,6 +687,17 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
                 unmatched.append(str(e.get("message_id") or ""))
                 outcome[i] = "no item for this photo"
                 continue
+            if pending is not None:
+                t = _ts(e.get("at"))
+                start = _ts(pending["ref"].get("at"))
+                fits = (t is not None and start is not None and (
+                    t - start <= NEXT_BURST_SECONDS if not pending["burst"]
+                    else t - pending["last"] <= BURST_GAP_SECONDS))
+                if fits:
+                    pending["burst"].append(it)
+                    pending["last"] = t
+                else:
+                    settle()
             seen_photos.append(it)
             outcome[i] = f"#{it.get('n')}"
             continue
@@ -642,6 +714,7 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             if got:
                 outcome[i] = "confirmed at capture: " + ", ".join(got)
             continue
+        settle()                                  # the walker spoke: the burst is over
         if kind == "voice":
             outcome[i] = "voice note -- no transcript stored, not applied"
             continue
@@ -653,9 +726,17 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             outcome[i] = "command (not about photos)"
             continue
         if ann.get("kind") == "reference":
-            references.append({"i": i, "text": e.get("text") or "", "at": e.get("at"),
-                               "batches": [dict(b) for b in batches],
-                               "copy": dict(batches[-1]["ann"]) if batches else None})
+            ref = {"i": i, "text": e.get("text") or "", "at": e.get("at"),
+                   "batches": [dict(b) for b in batches],
+                   "copy": dict(batches[-1]["ann"]) if batches else None}
+            if ref["copy"] and not [p for p in seen_photos if (p.get("captured") or 0) > mark]:
+                # Nothing new since the last batch: it is about the photos
+                # that come next (11:59 "Same for the last batch of pics" ->
+                # #41-#44 at 12:00).
+                pending = {"ref": ref, "burst": [], "last": None}
+                outcome[i] = "same as the last batch -- for the next photos"
+                continue
+            references.append(ref)
             outcome[i] = "a reference to other photos -- placed below, or listed as couldn't place"
             continue
         if is_empty(ann):
@@ -696,6 +777,7 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
         outcome[i] = (f"{punch.numbers_text(ns)}: " if ns else "nothing changed: ") + describe(ann)
         previous = [it.get("captured") for it in batch]
         mark = max([it.get("captured") or 0 for it in seen_photos] or [mark])
+    settle()
     return {"items": keep, "removed": removed, "applied": applied, "unmatched": unmatched,
             "outcome": outcome, "references": references, "unplaced": []}
 
