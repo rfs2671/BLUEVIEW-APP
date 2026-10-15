@@ -171,6 +171,42 @@ class TheThursdayQuestion(_Site, unittest.TestCase):
         self.assertEqual(reply, "No — nobody from Tri-State Steel has checked in at 588 today.")
 
 
+class ReviewFindings(_Site, unittest.TestCase):
+    """Codex on #802."""
+
+    def test_a_time_in_the_question_keeps_the_sub(self):
+        reply = self.ask("how many Arkon workers came in since 9 at 588")
+        self.assertTrue(reply.startswith("Arkon: 4 since 9:00, 15 on site at 588 now."), reply)
+        self.assertIsNone(re.search(r"\b37\b|\b9 since", reply), reply)
+
+    def test_who_came_in_names_the_arrivals_only(self):
+        reply = self.ask("who from Arkon came in after the brief at 588")
+        self.assertTrue(reply.startswith("Arkon: 4 since your 8:07 brief — "), reply)
+        self.assertEqual(reply.count("Arkon Worker"), 4)          # the 4 late ones, not 15
+
+    def test_a_recheck_keeps_the_sub(self):
+        reply = self.ask("How many arkon workers in 588 · are you sure?")
+        self.assertTrue(reply.startswith("Rechecked the check-ins.\nArkon: 15 on site today at 588."),
+                        reply)
+        self.assertIsNone(re.search(r"\b37\b", reply), reply)
+
+    def test_an_exact_name_wins_over_a_similar_one(self):
+        names = ["Power Direct", "Power Electrical"]
+        self.assertEqual(wa_style.company_in("how many power direct guys", names), ["Power Direct"])
+        self.assertEqual(wa_style.company_in("how many power electrical guys", names),
+                         ["Power Electrical"])
+
+    def test_a_short_list_unasked_is_cut_too(self):
+        short = "2 open items at 588.\n• P-1 Outlet\n• P-2 Door"
+        out, trimmed = wa_style.tighten(short, "anything open at 588?")
+        self.assertEqual((out, trimmed), ("2 open items at 588.\n" + wa_style.OFFER_LIST, True))
+        many = "\n".join(["One.", "Two.", "Three.", "Four.", "Five."])
+        out, trimmed = wa_style.tighten(many, "status?")
+        self.assertTrue(trimmed)
+        self.assertLessEqual(len(out.splitlines()), wa_style.MAX_LINES + 1)
+        self.assertEqual(wa_style.tighten("A.\nB.\nC.", "status?"), ("A.\nB.\nC.", False))
+
+
 class EveryAnswer(_Site, unittest.TestCase):
 
     def test_the_snapshot(self):

@@ -359,6 +359,13 @@ def compose_short(kind: str, data: Dict[str, Any], job: str, since_label: str = 
         names = _names(data["workers"])
         full = (f"{company}: {total} on site at {job} — {names}." if total
                 else f"{company}: nobody on site at {job} now.")
+        if kind == ADDED and data.get("since"):
+            # Who came in since: the arrivals, gone or not -- never the crew
+            # now (Codex on #802).
+            full = (f"{company}: {len(added)} since {since_label} — {_names(added)}." if added
+                    else f"{company}: nobody new since {since_label}.")
+            if asked:
+                return {"short": full, "full": full}
         if kind == PRESENCE:
             if total:
                 head = f"Yes — {company}: {total} on site at {job} now."
@@ -381,7 +388,8 @@ def compose_short(kind: str, data: Dict[str, Any], job: str, since_label: str = 
                 "\n".join([f"{company}: {total} on site at {job}:"]
                           + [_line(w) for w in data["workers"][:MAX_LISTED]])
             return {"short": short, "full": short}
-        return {"short": head + (f"\n{wa_style.OFFER_NAMES}" if total else ""), "full": full}
+        offer = bool(added) if kind == ADDED and data.get("since") else bool(total)
+        return {"short": head + (f"\n{wa_style.OFFER_NAMES}" if offer else ""), "full": full}
     full = compose(kind, data, job, since_label)
     if total == 0 and not added:
         return {"short": f"Nobody has checked in at {job} today.", "full": full}

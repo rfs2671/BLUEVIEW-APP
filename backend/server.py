@@ -53508,7 +53508,8 @@ def _dm_job_companies(rows: list, project: Optional[dict]) -> List[str]:
 async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                dm_chat: str, *, since_iso: Optional[str] = None,
                                since_said: str = "", challenged: bool = False,
-                               names: Optional[bool] = None, said: Optional[str] = None) -> str:
+                               names: Optional[bool] = None, own_words: Optional[str] = None,
+                               companies: Optional[List[str]] = None) -> str:
     """Count / who was added / who is on site, from today's check-ins for
     this job (the brief's rule). The model may only rephrase; `verify`
     decides whether its wording or the fixed answer goes out."""
@@ -53540,9 +53541,9 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     # only (Thu 11:35 AM: Arkon was asked, all 37 were answered).
     # Their own words only -- never the answer they replied to, which names
     # every sub (`said`; a challenge recounts the same scope: none).
-    own = question if said is None else said
-    named = wa_style.company_in(own, _dm_job_companies(rows, job.get("project"))) \
-        if own and not challenged else []
+    own = question if own_words is None else own_words
+    named = list(companies or []) if challenged else (
+        wa_style.company_in(own, _dm_job_companies(rows, job.get("project"))) if own else [])
     company = None
     if named:
         keys = {wa_headcount.company_key(n) for n in named}
@@ -53571,7 +53572,7 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
         reply = "Rechecked the check-ins.\n" + reply
     await _dm_state_set("dm_last", dm_chat, DM_LAST_SECONDS, project_id=pid,
                         headcount=kind, since=since.isoformat() if since else None,
-                        since_label=since_label, names=names)
+                        since_label=since_label, names=names, companies=named)
     await _dm_log_answer(
         ident, pid, question, reply, "headcount",
         tool_data={"kind": kind, "company": company,
@@ -54884,7 +54885,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 ident, job, question, str(last_hc.get("headcount") or wa_headcount.COUNT),
                 dm_chat, since_iso=last_hc.get("since"),
                 since_said=str(last_hc.get("since_label") or ""), challenged=True,
-                names=last_hc.get("names")), heard,
+                names=last_hc.get("names"), companies=last_hc.get("companies")), heard,
                 project_id=str(last_hc["project_id"]),
                 labels=[j["label"] for j in jobs], styled=True)
             return
@@ -54989,7 +54990,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         hc = wa_headcount.PRESENCE        # "is J&G on site", "who from Power Direct is here"
     if hc == wa_headcount.PRESENCE:
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
-            ident, job, question, hc, dm_chat, said=core), heard, project_id=str(job["id"]),
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
             question=question, labels=[j["label"] for j in jobs], styled=True)
         return
     if hc in (wa_headcount.COUNT, wa_headcount.ADDED, wa_headcount.LIST):
@@ -55020,7 +55021,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_log_answer(ident, job["id"], question, q, "clarify")
             return
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
-            ident, job, question, hc, dm_chat, said=core), heard, project_id=str(job["id"]),
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
             question=question, labels=[j["label"] for j in jobs], styled=True)
         return
     trace: list = []

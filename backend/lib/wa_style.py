@@ -144,10 +144,14 @@ def tighten(reply: Any, question: Any = "", labels: Iterable[str] = (),
     ("Want the names?" when names were left out). `trimmed` -- the caller
     keeps the full reply for a "yes"."""
     text = clean(reply, labels)
-    if asks_for_list(question) or len(text) <= limit:
+    if asks_for_list(question):
         return text, False
     body = [l for l in text.splitlines() if l.strip()]
-    first, rest = body[0], body[1:]
+    first, rest = (body[0], body[1:]) if body else ("", [])
+    # Short is not enough: a list or more than 3 lines unasked is cut too
+    # (Codex on #802).
+    if len(text) <= limit and len(body) <= MAX_LINES and not any(_ITEM.match(l) for l in rest):
+        return text, False
     offer = (OFFER_NAMES if _names_in(rest) else OFFER_LIST if any(_ITEM.match(l) for l in rest)
              else OFFER_MORE)
     room = limit - len(offer) - 1
@@ -200,20 +204,24 @@ def company_in(question: Any, names: Iterable[str]) -> List[str]:
     it names several."""
     q = f" {_fold(question)} "
     qwords = q.split()
-    hits: List[str] = []
+    exact: List[str] = []
+    loose: List[str] = []
     for name in sorted({str(n).strip() for n in names if str(n or "").strip()}):
         full = _fold(name)
         core = " ".join(w for w in full.split() if w not in _CO_TAIL) or full
         # "J&G" for "J&G Plumbing": the name without its trade words too.
         bare = " ".join(w for w in core.split() if w not in _TRADE_WORDS) or core
-        if any(x and f" {x} " in q for x in (full, core, bare)):
-            hits.append(name)
+        if any(x and f" {x} " in q for x in (full, core)):
+            exact.append(name)
             continue
         first = core.split()[0] if core else ""
-        if len(first) >= 4 and first not in _NOT_A_CO and (
-                first in qwords or any(_close(first, w) for w in qwords if len(w) >= 4)):
-            hits.append(name)
-    return hits
+        if (bare and len(bare) >= 3 and f" {bare} " in q) or (
+                len(first) >= 4 and first not in _NOT_A_CO and (
+                    first in qwords or any(_close(first, w) for w in qwords if len(w) >= 4))):
+            loose.append(name)
+    # "Power Direct" said in full: never "Power Electrical" too (Codex on
+    # #802) -- a name said whole wins over a part of another.
+    return exact or loose
 
 
 def _close(a: str, b: str) -> bool:
