@@ -206,6 +206,10 @@ class TheDailyReport(_World, unittest.TestCase):
         c, sent = self.run_daily(db, ny(2026, 10, 15, 18, 0), resend_key="k")
         self.assertEqual(sorted(s[0] for s in sent), ["a@a", "owner@x.com"])
         self.assertTrue(all(s[1] == "project_daily_report" for s in sent))
+        # Email only: still kept in the job's reports list (Codex on #805).
+        doc = db[server.PROJECT_REPORTS].rows[0]
+        self.assertEqual((doc["kind"], doc["start"], bool(doc["r2_key"])), ("daily", "2026-10-15", True))
+        self.assertEqual([p for p in c.wire.calls if "message" in p], [])
 
     def test_not_at_its_time(self):
         db = self.daily_world(whatsapp=True, email=False)

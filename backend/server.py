@@ -44844,10 +44844,22 @@ async def reset_and_resync_dob_logs(project_id: str, current_user=Depends(get_ad
 async def _daily_report_whatsapp(project: dict, people: List[dict], today: str,
                                  pdf_bytes: Optional[bytes], logbook_count: int, checkin_count: int,
                                  now: datetime) -> dict:
-    """The daily report by WhatsApp (Project → Reports, Daily): kept with
-    the job's reports (so it is in the app's list), then the short message
-    and the PDF to each person chosen -- once (the ledger), held over
-    Shabbos / Yom Tov, retried when WhatsApp fails."""
+    """The daily report by WhatsApp (Project → Reports, Daily): the short
+    message and the PDF to each person chosen -- once (the ledger), held
+    over Shabbos / Yom Tov, retried when WhatsApp fails."""
+    doc = await _daily_report_doc(project, today, pdf_bytes, logbook_count, checkin_count, now)
+    pid, cid = str(project["_id"]), str(project.get("company_id") or "")
+    day = _Date.fromisoformat(today)
+    report = {"sent": 0, "queued": 0, "retrying": 0, "skipped": 0}
+    await _report_whatsapp(doc, people, cid, pid, day, day, now, report, window=doc["key"],
+                           message=_report_message(doc))
+    return report
+
+
+async def _daily_report_doc(project: dict, today: str, pdf_bytes: Optional[bytes],
+                            logbook_count: int, checkin_count: int, now: datetime) -> dict:
+    """The day's daily report kept with the job's reports (Project →
+    Reports), whichever way it is sent -- once a day (its key)."""
     pid, cid = str(project["_id"]), str(project.get("company_id") or "")
     key = f"daily:{pid}:{today}"
     day = _Date.fromisoformat(today)
@@ -44875,10 +44887,7 @@ async def _daily_report_whatsapp(project: dict, people: List[dict], today: str,
                "created_by": "", "source": "schedule", "key": key, "kind": "daily",
                "filename": re.sub(r"[^A-Za-z0-9 ._-]+", "", title).strip()[:80] + ".pdf"}
         await db[PROJECT_REPORTS].insert_one(doc)
-    report = {"sent": 0, "queued": 0, "retrying": 0, "skipped": 0}
-    await _report_whatsapp(doc, people, cid, pid, day, day, now, report, window=key,
-                           message=_report_message(doc))
-    return report
+    return doc
 
 
 def _fmt_date(d: _Date) -> str:
@@ -45047,14 +45056,20 @@ async def check_and_send_reports(now: Optional[datetime] = None):
                     f"Daily report PDF render failed for {project_name} {today} "
                     f"({e!r}) — sending link only"
                 )
-            if by_whatsapp:
-                # Project → Reports: the daily report by WhatsApp too -- the
-                # PDF with a short message, once per person (the ledger).
+            if st:
+                # Project → Reports, Daily: kept in the job's reports list
+                # however it is sent (Codex on #805) -- and by WhatsApp too,
+                # the PDF with a short message, once per person (the ledger).
                 try:
-                    await _daily_report_whatsapp(project, people, today, pdf_bytes, logbook_count,
-                                                 checkin_count, now)
+                    if by_whatsapp:
+                        await _daily_report_whatsapp(project, people, today, pdf_bytes, logbook_count,
+                                                     checkin_count, now)
+                    else:
+                        await _daily_report_doc(project, today, pdf_bytes, logbook_count,
+                                                checkin_count, now)
                 except Exception as e:
-                    logger.warning(f"[report] daily WhatsApp failed for {project_name}: {type(e).__name__}")
+                    logger.warning(f"[report] daily report keep/WhatsApp failed for {project_name}: "
+                                   f"{type(e).__name__}")
 
             # No permit-expiry key in this context. The renderer no
             # longer reads one, so a stale caller passing it cannot
