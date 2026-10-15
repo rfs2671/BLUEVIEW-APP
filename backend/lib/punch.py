@@ -1263,9 +1263,22 @@ def trade_name(t: str) -> str:
     return "No trade" if (t or UNKNOWN) == UNKNOWN else t
 
 
-def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False) -> str:
+def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False, simple: bool = False) -> str:
     """"Who gets what?" -- one row per trade; the items with no trade are a
-    "No trade" row (never "? → ?", 1:43 PM). Examples only when stuck."""
+    "No trade" row (never "? → ?", 1:43 PM). Examples only when stuck.
+    Simple: no trade anywhere (Thu 9:03 AM) -- each person once, and the
+    rest of the list when nobody has it yet."""
+    if simple:
+        people = list(dict.fromkeys(who_label(p) for p in sugg.values() if p))
+        lines = ["Who gets it?"]
+        if len(people) == 1 and all(sugg.values()):
+            lines.append(f"• The whole list → {people[0]}")
+        else:
+            lines.extend(f"• {w}" for w in people)
+            if not all(sugg.values()):
+                lines.append("• The rest → who?")
+        lines.append(ASSIGN_STUCK if stuck else ASSIGN_HINT)
+        return "\n".join(lines)
     lines = ["Who gets what?"]
     for t, p in sorted(sugg.items(), key=lambda kv: (kv[0] == UNKNOWN, kv[0])):
         lines.append(f"• {trade_name(t)} → {who_label(p) if p else 'who?'}")
@@ -1286,8 +1299,12 @@ _ASSIGN = re.compile(r"^\s*([a-z /áéíóúñ]+?)\s*(?:→|->|=>|>|:|=|to)\s*(.
 ASSIGN_SHORT = "Sorry, who should get it? A name, \"me\", or \"the group\" works."
 #: Simple mode's one question: the whole list to whom.
 WHO_GETS_IT = "Who should get it — you, someone on the job, or the job group?"
-def open_trades_question(trades: List[str], stuck: bool = False) -> str:
-    """'ok' with trades nobody has yet: who, in one line."""
+def open_trades_question(trades: List[str], stuck: bool = False, simple: bool = False) -> str:
+    """'ok' with trades nobody has yet: who, in one line. Simple: never a
+    trade named -- the rest of the list."""
+    if simple:
+        return ("Who should get the rest of the list? A name, or \"me\"."
+                + (" Or \"the rest to me\"." if stuck else ""))
     names = [trade_name(t).lower() if t == UNKNOWN else t for t in sorted(trades)]
     what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     return (f"Who should get the {what} items? A name, or \"me\"."
@@ -1772,9 +1789,10 @@ def full_list_text(job_name: str, items: List[dict], due_words: str,
 def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
                mode: str = DEFAULT_SEND_MODE, whole: Optional[dict] = None, *,
                target: Optional[str] = None, group_name: str = "",
-               default_due: str = ASAP) -> str:
+               default_due: str = ASAP, simple: bool = False) -> str:
     """The exact send, before it happens: where it goes, who gets which
-    numbers, and when. 'ok' sends."""
+    numbers, and when. 'ok' sends. Simple: never a trade -- each person
+    once, the due by person (Thu 9:03 AM: cleaning, concrete, drywall …)."""
     live = ordered([it for it in items if it.get("status", "draft") != "dropped"])
     shadow = " (shadow mode: nothing will be sent)" if mode != "live" else ""
     group = group_name or "the job group"
@@ -1793,7 +1811,9 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
                 owners.setdefault(who_label(assign[t]), []).append(trade_name(t).lower()
                                                                    if t == UNKNOWN else t)
         head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}"]
-        if owners:
+        if owners and simple:
+            head.append("Mentioning " + "; ".join(owners))
+        elif owners:
             head.append("Mentioning " + "; ".join(f"{w} — {', '.join(ts)}" for w, ts in owners.items()))
     elif whole:
         head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
@@ -1808,7 +1828,15 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
     for it in live:
         by_t[it.get("trade") or UNKNOWN] = due.get(it.get("trade") or UNKNOWN) or default_due
     days = sorted(set(by_t.values()))
-    if len(days) <= 1:
+    if simple and len(days) > 1:
+        # By person, never by trade: "due Meilich Friedman Friday, Dov Klein asap".
+        by_who: Dict[str, List[str]] = {}
+        for t, d in by_t.items():
+            by_who.setdefault(who_label(assign.get(t)) if assign.get(t) else "the rest", []).append(d)
+        short = lambda d: "no date" if d == NO_DUE else d        # noqa: E731
+        when = "due " + ", ".join(f"{w} {', '.join(short(d) for d in sorted(set(ds)))}"
+                                  for w, ds in by_who.items())
+    elif len(days) <= 1:
         when = due_label(days[0] if days else default_due)
     else:
         counts: Dict[str, int] = {}

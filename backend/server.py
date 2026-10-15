@@ -65633,7 +65633,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
         note = await _punch_recheck_assign(sess)
         if note:
             await send_whatsapp_message(dm_chat, note + "\n\n"
-                                        + punch.assign_text(sess.get("assign") or {}))
+                                        + punch.assign_text(sess.get("assign") or {}, simple=_punch_simple(sess)))
             return True
     if not parsed.get("has_image") and said.strip() and sess["status"] in PUNCH_THINK_STAGES \
             and not await _punch_fast(sess, said, text, voice):
@@ -65972,7 +65972,7 @@ async def _punch_show_stage(sess: dict, dm_chat: str) -> bool:
         assign = sess.get("assign") or {}
         await send_whatsapp_message(dm_chat, punch.WHO_GETS_IT if not any(assign.values())
                                     and (_punch_simple(sess) or list(assign) == [punch.UNKNOWN])
-                                    else punch.assign_text(assign))
+                                    else punch.assign_text(assign, simple=_punch_simple(sess)))
         return True
     return await _punch_show_recap(sess, dm_chat)
 
@@ -66977,7 +66977,7 @@ async def _punch_to_assign(ident, sess, dm_chat) -> bool:
         # never a "? → ?" row (1:43 PM).
         assign[punch.UNKNOWN] = _punch_who(await _punch_walker(sess))
     await _punch_save(sess, status="assign", whole=None, choose=None, assign=assign)
-    await send_whatsapp_message(dm_chat, "\n\n".join(x for x in (soft, punch.assign_text(assign)) if x))
+    await send_whatsapp_message(dm_chat, "\n\n".join(x for x in (soft, punch.assign_text(assign, simple=_punch_simple(sess))) if x))
     return True
 
 
@@ -67014,7 +67014,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
         # 'ok' with a trade nobody has: that one short question, never the
         # whole list again (1:43 PM).
         n = await _punch_nudge(sess)
-        await send_whatsapp_message(dm_chat, punch.open_trades_question(open_now, stuck=n >= 2))
+        await send_whatsapp_message(dm_chat, punch.open_trades_question(open_now, stuck=n >= 2, simple=_punch_simple(sess)))
         return True
     if r.get("group"):
         # The job's group: the whole list posted there, each trade's owner
@@ -67024,7 +67024,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
     if r.get("who"):
         # 11:05 PM: "who can you send it to?" got the same list again.
         await send_whatsapp_message(dm_chat, await _punch_people_text(sess) + "\n\n"
-                                    + punch.assign_text(assign))
+                                    + punch.assign_text(assign, simple=_punch_simple(sess)))
         return True
     if choose and not (r.get("all") or r.get("pairs") or r.get("fill")):
         await send_whatsapp_message(dm_chat, punch.which_text(choose["said"], choose["options"]))
@@ -67053,7 +67053,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             return await _punch_assign_to(sess, dm_chat, assign, "all", person, [])
         if miss:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
-                                        + punch.assign_text(assign))
+                                        + punch.assign_text(assign, simple=_punch_simple(sess)))
             return True
     elif r.get("pairs"):
         for t, name in r["pairs"]:
@@ -67079,7 +67079,7 @@ async def _punch_assign_turn(ident, sess, dm_chat, text) -> bool:
             return await _punch_assign_to(sess, dm_chat, assign, "fill", person, [])
         if miss:
             await send_whatsapp_message(dm_chat, _punch_unknown(", ".join(miss), pool) + "\n\n"
-                                        + punch.assign_text(assign))
+                                        + punch.assign_text(assign, simple=_punch_simple(sess)))
             return True
     elif not r.get("ok") and not punch.is_escape(text):
         # Never the whole list again for words it cannot read: short.
@@ -67105,7 +67105,7 @@ def _punch_who_text(sess: dict, assign: Dict[str, Optional[dict]]) -> str:
     plain question; else "Who gets what?"."""
     if not any(assign.values()) and (_punch_simple(sess) or list(assign) == [punch.UNKNOWN]):
         return punch.WHO_GETS_IT
-    return punch.assign_text(assign)
+    return punch.assign_text(assign, simple=_punch_simple(sess))
 
 
 async def _punch_people_text(sess) -> str:
@@ -67206,7 +67206,7 @@ async def _punch_apply_shortcut(sess: dict, dm_chat: str) -> bool:
         return True
     await _punch_save(sess, status="assign")
     await send_whatsapp_message(dm_chat, _punch_unknown(sc.get("name") or "", pool) + "\n\n"
-                                + punch.assign_text(assign))
+                                + punch.assign_text(assign, simple=_punch_simple(sess)))
     return True
 
 
@@ -67338,7 +67338,11 @@ async def _punch_recheck_assign(sess) -> str:
     for t, p in assign.items():
         # Only a real refusal takes a name off -- never a failed check.
         if p and await _recipient_refusal(sess["company_id"], p) == RECIPIENT_REFUSED:
-            gone.append(f"{t} → {p.get('name') or p.get('company') or '?'}")
+            who = p.get('name') or p.get('company') or '?'
+            if who not in gone and _punch_simple(sess):
+                gone.append(who)                  # simple: never a trade named
+            elif not _punch_simple(sess):
+                gone.append(f"{t} → {who}")
             assign[t] = None
     whole = sess.get("whole")
     if whole and await _recipient_refusal(sess["company_id"], whole) == RECIPIENT_REFUSED:
@@ -67358,7 +67362,7 @@ async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
         # A name taken off: "Who gets what?" again, never a recap with a hole.
         await _punch_save(sess, status="assign")
         await send_whatsapp_message(dm_chat, "\n\n".join(
-            x for x in (head, note, punch.assign_text(sess.get("assign") or {})) if x))
+            x for x in (head, note, punch.assign_text(sess.get("assign") or {}, simple=_punch_simple(sess))) if x))
         return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     mode = settings.get("punch_sends") if settings.get("punch_sends") in punch.SEND_MODES \
@@ -67366,7 +67370,7 @@ async def _punch_show_recap(sess, dm_chat, head: str = "") -> bool:
     await send_whatsapp_message(dm_chat, (head + "\n\n" if head else "") + punch.recap_text(
         sess["items"], sess.get("assign") or {}, sess.get("due") or {}, mode, sess.get("whole"),
         target=sess.get("target"), group_name=await _punch_group_name(settings.get("gc_group_id")),
-        default_due=punch.due_default(settings.get("punch_due_default"))))
+        default_due=punch.due_default(settings.get("punch_due_default")), simple=_punch_simple(sess)))
     return True
 
 
@@ -67423,7 +67427,7 @@ async def _punch_send_now(ident, sess, dm_chat) -> bool:
             for t in orphan:
                 assign[t] = None
             await _punch_save(sess, status="assign", assign=assign, choose=None)
-            await send_whatsapp_message(dm_chat, punch.open_trades_question(orphan))
+            await send_whatsapp_message(dm_chat, punch.open_trades_question(orphan, simple=_punch_simple(sess)))
             return True
     settings = await _whatsapp_project_settings(sess["project_id"])
     default = punch.due_default(settings.get("punch_due_default"))
@@ -67692,7 +67696,7 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         await _punch_save(sess, status="assign", assign=assign, whole=None)
         names = "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)
         return (f"Not sent: {names} — {RECIPIENT_REFUSED}. Nothing was posted.\n\n"
-                + punch.assign_text(assign))
+                + punch.assign_text(assign, simple=_punch_simple(sess)))
     if whole and not to_group and not whole.get("jid"):
         await _punch_save(sess, status="recap")
         return (f"{punch.who_label(whole)} has no WhatsApp number to DM. Say \"to the group\" "
