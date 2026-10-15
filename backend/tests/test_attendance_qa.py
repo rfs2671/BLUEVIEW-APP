@@ -201,7 +201,12 @@ class Routing(unittest.TestCase):
             return "The data doesn't specify how many workers were on site each day."
         ident = {"company_id": CO_A, "user_id": "u_admin", "role": "admin", "user": {}}
         project = next(p for p in db.projects.rows if p["_id"] == THOMAS)
-        with _Ctx(db), patch.object(server, "_run_group_agent", agent):
+        real = server._attendance_fallback
+
+        async def on_wed(project, body, now=None):
+            return await real(project, body, now=WED)       # "this month" is October
+        with _Ctx(db), patch.object(server, "_run_group_agent", agent), \
+                patch.object(server, "_attendance_fallback", on_wed):
             out = _run(server._dm_answer_job(ident, project, f"{ADMIN_PHONE}@c.us",
                                              "busiest day this month", "m1"))
         self.assertIn("Fri Oct 2 — 20 on site", out)
