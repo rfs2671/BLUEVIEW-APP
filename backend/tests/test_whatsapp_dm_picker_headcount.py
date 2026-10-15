@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -131,7 +132,7 @@ class ThePicker(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.assertEqual(self.say(c, "Any updates on worker count?"), MENU)
             reply = self.say(c, "588")
-        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
+        self.assertIn("20 on site at 588 now.", reply)
         self.assertNotIn("Could you provide more context", reply)
 
     def test_a_number_picks(self):
@@ -144,7 +145,7 @@ class ThePicker(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.say(c, "Any updates on worker count?")
             reply = self.say(c, "U asked which address I said 588", quoted=MENU, from_bot=True)
-        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
+        self.assertIn("20 on site at 588 now.", reply)
 
     def test_part_of_the_address_picks(self):
         with _Ctx(db=self.db) as c:
@@ -158,7 +159,7 @@ class ThePicker(_Chat, unittest.TestCase):
             self.assertTrue(again.startswith(MENU))
             self.assertIn(wa_assistant.MENU_AGAIN_TEXT, again)
             reply = self.say(c, "1")
-        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
+        self.assertIn("20 on site at 588 now.", reply)
         self.assertEqual(self.llm_calls, [])          # never a generic answer
 
     def test_a_reply_to_an_expired_menu_says_so(self):
@@ -179,7 +180,7 @@ class ReplyTo(_Chat, unittest.TestCase):
     def test_a_dot_under_your_headcount_question_counts(self):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, ".", quoted="how many workers at 588 thomas?")
-        self.assertIn("20 on site at 588 Thomas S Boyland St now", reply)
+        self.assertIn("20 on site at 588 now.", reply)
 
     def test_a_reply_to_an_answer_carries_it_as_context(self):
         with _Ctx(db=self.db) as c:
@@ -205,11 +206,14 @@ class TheExchange(_Chat, unittest.TestCase):
             count = self.say(c, "588")
             added = self.say(c, "Who are the 2 added?")
             again = self.say(c, "That doesn't make sense", quoted=added, from_bot=True)
-        on_site = ("20 on site at 588 Thomas S Boyland St now — Arkon 11, "
-                   "Quality Plumbing 6, Power Direct 3.")
+        on_site = "20 on site at 588 now — Arkon 11, Quality Plumbing 6, Power Direct 3."
         two = ("2 since your 8:07 brief — Jose Zarate and Pablo Sen (Quality Plumbing), "
                "in at 9:12 and 9:30.")
-        self.assertEqual(count, on_site + "\n" + two)
+        # The count: short, the names offered (Thu 11:35 AM, lib/wa_style.py).
+        self.assertEqual(count, "20 on site at 588 now.\n"
+                                "Arkon 11, Quality Plumbing 6, Power Direct 3.\n"
+                                "2 came in since your 8:07 brief. Want the names?")
+        # "Who are the 2 added?" asks for the names: they come.
         self.assertEqual(added, two + "\n" + on_site)
         self.assertEqual(again, "Rechecked the check-ins.\n" + added)
         for invented in ("Juan Lopez", "Power Direct, Juan"):
@@ -285,8 +289,8 @@ class TheConversation(_Chat, unittest.TestCase):
             self.assertEqual(menu, "Which job — 588 Thomas S Boyland St? Or another: "
                                    "1) 588 Thomas S Boyland St 2) 8 Walworth St")
             first = self.say(c, "588")                                        # answers it
-            self.assertTrue(first.startswith("20 on site at 588 Thomas S Boyland St now"))
-            self.assertIn(two, first)
+            self.assertTrue(first.startswith("20 on site at 588 now.\n"), first)
+            self.assertIn("2 came in since your 8:07 brief. Want the names?", first)
             again = self.say(c, "U asked which address I said 588", quoted=MENU, from_bot=True)
             self.assertEqual(again, first)                                    # same question, same job
             dot = self.say(c, ".", quoted="Any updates on worker count?")
@@ -300,7 +304,9 @@ class TheConversation(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.say(c, "how many workers at 588 thomas")
             reply = self.say(c, "and since the morning?")
-        self.assertTrue(reply.startswith("2 since your 8:07 brief — Jose Zarate"))
+            self.assertEqual(reply, "2 since your 8:07 brief. Want the names?\n20 on site at 588 now.")
+            names = self.say(c, "yes")                                     # the offer, taken
+        self.assertTrue(names.startswith("2 since your 8:07 brief — Jose Zarate"), names)
 
     def test_those_refers_to_the_last_answer(self):
         with _Ctx(db=self.db) as c:
@@ -387,7 +393,7 @@ class ReviewFindings(_Chat, unittest.TestCase):
             reply = self.say(c, "how many workers at 588 thomas",
                              llm=lambda t: "11 on site now — Arkon 20, Quality Plumbing 6, "
                                            "Power Direct 3.", key="sk-test")
-        self.assertTrue(reply.startswith("20 on site at 588 Thomas S Boyland St now — Arkon 11"))
+        self.assertTrue(reply.startswith("20 on site at 588 now.\nArkon 11"), reply)
         self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["wording"],
                          "fixed_after_check_failed")
 
@@ -406,10 +412,9 @@ class ReviewFindings(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, "how many workers at 588 thomas")
         # Worker 1 checked in twice; the later row is still checked out.
-        self.assertTrue(reply.startswith("18 on site at 588 Thomas S Boyland St now — Arkon 9,"),
-                        reply)
+        self.assertTrue(reply.startswith("18 on site at 588 now.\nArkon 9,"), reply)
         # Who checked in since the brief still counts anyone who came, gone or not.
-        self.assertIn("2 since your 8:07 brief", reply)
+        self.assertIn("2 came in since your 8:07 brief", reply)
 
     def test_all_my_jobs_stays_all_jobs(self):
         with _Ctx(db=self.db) as c:
@@ -421,8 +426,8 @@ class ReviewFindings(_Chat, unittest.TestCase):
         with _Ctx(db=self.db) as c:
             self.say(c, "how many workers at 588 thomas")
             reply = self.say(c, "the count at 8 walworth is wrong")
-        self.assertIn("8 Walworth St", reply)
-        self.assertNotIn("588 Thomas", reply)
+        self.assertIn("8 Walworth", reply)
+        self.assertIsNone(re.search(r"\b588\b", reply), reply)
 
 
 class TheRules(unittest.TestCase):

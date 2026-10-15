@@ -38,6 +38,8 @@ NO_COMPANY = "No company"
 MAX_LISTED = 40
 
 COUNT, ADDED, LIST, CHALLENGE = "count", "added", "list", "challenge"
+#: "is J&G on site": a yes / no about one sub (only with a sub named).
+PRESENCE = "presence"
 
 _ADDED_RE = re.compile(
     r"\bwho (?:are|were|is|was) the (?:\d+|two|three|four|five|new|extra) ?"
@@ -313,6 +315,100 @@ def compose(kind: str, data: Dict[str, Any], job: str, since_label: str = "") ->
     return out
 
 
+# ── THE SHORT ANSWER (lib/wa_style.py) ─────────────────────────────────────
+#
+# Thu 11:35 AM: "How many arkon workers in 588" got the whole site -- 37,
+# every sub -- and 9 late arrivals by name. The answer is now the line asked
+# for: a sub named, that sub only; names only when asked ("who", "list",
+# "names"), else "Want the names?" (and `full` is what "yes" sends).
+
+TOP_COMPANIES = 3
+
+
+def company_key(name: Any) -> str:
+    """One key for a company however it is spelled ("Arkon", "Arkon
+    Builders", "ARKON BUILDERS LLC")."""
+    from lib import wa_style
+    full = " ".join(re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split())
+    core = " ".join(w for w in full.split() if w not in wa_style._CO_TAIL) or full
+    return core.split()[0] if core else ""
+
+
+def _companies_line(by_co: List[tuple]) -> str:
+    top = ", ".join(f"{c} {n}" for c, n in by_co[:TOP_COMPANIES])
+    more = len(by_co) - TOP_COMPANIES
+    return top + (f" (+{more} more sub{'s' if more != 1 else ''})" if more > 0 else "") + "."
+
+
+def _names(ws: List[Dict[str, Any]], timed: bool = True) -> str:
+    return _join([w["name"] + (f" ({hhmm(w['at'])})" if timed and w.get("at") else "")
+                  for w in ws])
+
+
+def compose_short(kind: str, data: Dict[str, Any], job: str, since_label: str = "",
+                  question: str = "", company: Optional[str] = None,
+                  names: Optional[bool] = None) -> Dict[str, str]:
+    """{"short": what goes out, "full": what "yes" / "the names" sends}.
+    `job`: the short job name ("588"). `company`: the sub the question
+    names, `data` summarized from its check-ins only."""
+    from lib import wa_style
+    asked = kind == LIST or wa_style.asks_for_list(question) if names is None else names
+    total, added = data["total"], list(data.get("added") or [])
+    left = data.get("checked_out") or 0
+    if company:
+        names = _names(data["workers"])
+        full = (f"{company}: {total} on site at {job} — {names}." if total
+                else f"{company}: nobody on site at {job} now.")
+        if kind == ADDED and data.get("since"):
+            # Who came in since: the arrivals, gone or not -- never the crew
+            # now (Codex on #802).
+            full = (f"{company}: {len(added)} since {since_label} — {_names(added)}." if added
+                    else f"{company}: nobody new since {since_label}.")
+            if asked:
+                return {"short": full, "full": full}
+        if kind == PRESENCE:
+            if total:
+                head = f"Yes — {company}: {total} on site at {job} now."
+            elif left:
+                head = (f"No — {company} isn't on site at {job} now ({left} checked in "
+                        f"today and left).")
+            else:
+                head = f"No — nobody from {company} has checked in at {job} today."
+        elif kind == ADDED and data.get("since"):
+            head = (f"{company}: {len(added)} since {since_label}, {total} on site at {job} now."
+                    if added else f"{company}: nobody new since {since_label}; {total} on site "
+                                  f"at {job}.")
+        elif total:
+            head = f"{company}: {total} on site today at {job}."
+        else:
+            head = (f"{company}: nobody on site at {job} now ({left} checked in today and left)."
+                    if left else f"{company}: nobody on site at {job} today.")
+        if asked and total:
+            short = full if len(full) <= wa_style.MAX_CHARS else \
+                "\n".join([f"{company}: {total} on site at {job}:"]
+                          + [_line(w) for w in data["workers"][:MAX_LISTED]])
+            return {"short": short, "full": short}
+        offer = bool(added) if kind == ADDED and data.get("since") else bool(total)
+        return {"short": head + (f"\n{wa_style.OFFER_NAMES}" if offer else ""), "full": full}
+    full = compose(kind, data, job, since_label)
+    if total == 0 and not added:
+        return {"short": f"Nobody has checked in at {job} today.", "full": full}
+    if asked:
+        return {"short": full, "full": full}
+    if kind == ADDED and data.get("since"):
+        head = (f"{len(added)} since {since_label}." if added
+                else f"Nobody new since {since_label}.")
+        lines = [head, f"{total} on site at {job} now."]
+        if added:
+            lines[0] += f" {wa_style.OFFER_NAMES}"
+        return {"short": "\n".join(lines), "full": full}
+    lines = [f"{total} on site at {job} now.", _companies_line(data["by_company"])]
+    if data.get("since"):
+        lines.append(f"{len(added)} came in since {since_label}. {wa_style.OFFER_NAMES}"
+                     if added else f"Nobody new since {since_label}.")
+    return {"short": "\n".join(lines), "full": full}
+
+
 # ── THE CHECK ────────────────────────────────────────────────────────────────
 
 # Words a rephrasing may capitalise without them being a name.
@@ -325,6 +421,7 @@ company companies crew breakdown here's there's that's still only just yes
 ok okay sure sorry correct you per by first then latest earlier later list
 everyone all one two three four five six seven eight nine ten twelve
 note noted again checking checked-in onsite
+want names more subs sub came yes isn't left
 """.split())
 
 
@@ -395,7 +492,7 @@ PHRASE_PROMPT = (
     "reads like a quick text: lead with the answer, short, no filler, no "
     "greeting, no 'Yes, that's current information'. Use ONLY the names, "
     "companies, numbers and times in it. Do not add, drop, round or compute "
-    "anything. At most 4 short lines."
+    "anything. Never longer than it is: as many lines or fewer, no names added."
 )
 
 

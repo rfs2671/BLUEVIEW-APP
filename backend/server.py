@@ -91,6 +91,7 @@ from lib import wa_chase  # noqa: E402
 from lib import project_memory  # noqa: E402
 from lib import wa_retention  # noqa: E402
 from lib import wa_headcount  # noqa: E402
+from lib import wa_style  # noqa: E402
 from lib import wa_brief  # noqa: E402
 from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
@@ -53482,9 +53483,33 @@ async def _dm_brief_sent_today(user_id: str, now: datetime) -> Optional[datetime
     return None
 
 
+async def _dm_today_companies(ident: dict, job: dict) -> List[str]:
+    """The companies checked in at this job today, and its roster's."""
+    start, end = wa_brief_day_range(datetime.now(timezone.utc))
+    try:
+        rows = await db.checkins.find(
+            {"project_id": str(job["id"]), "company_id": _company_id_filter(ident["company_id"]),
+             "check_in_time": {"$gte": start, "$lt": end}, "is_deleted": {"$ne": True}},
+            {"worker_company": 1, "company": 1, "company_name": 1}).to_list(2000)
+    except Exception:
+        rows = []
+    return _dm_job_companies(rows, job.get("project"))
+
+
+def _dm_job_companies(rows: list, project: Optional[dict]) -> List[str]:
+    """Every company a headcount question could name: today's check-ins and
+    the job's roster."""
+    names = [wa_facts.checkin_company(r) for r in rows]
+    if project:
+        names += [str(a.get("company") or "") for a in _active_assignments(project)]
+    return [n for n in dict.fromkeys(names) if n]
+
+
 async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                dm_chat: str, *, since_iso: Optional[str] = None,
-                               since_said: str = "", challenged: bool = False) -> str:
+                               since_said: str = "", challenged: bool = False,
+                               names: Optional[bool] = None, own_words: Optional[str] = None,
+                               companies: Optional[List[str]] = None) -> str:
     """Count / who was added / who is on site, from today's check-ins for
     this job (the brief's rule). The model may only rephrase; `verify`
     decides whether its wording or the fixed answer goes out."""
@@ -53512,23 +53537,46 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
         "project_id": pid, "company_id": _company_id_filter(ident["company_id"]),
         "check_in_time": {"$gte": start, "$lt": end},
         "is_deleted": {"$ne": True}}).to_list(2000)
+    # A sub named ("how many arkon workers", "is J&G on site"): that sub
+    # only (Thu 11:35 AM: Arkon was asked, all 37 were answered).
+    # Their own words only -- never the answer they replied to, which names
+    # every sub (`said`; a challenge recounts the same scope: none).
+    own = question if own_words is None else own_words
+    named = list(companies or []) if challenged else (
+        wa_style.company_in(own, _dm_job_companies(rows, job.get("project"))) if own else [])
+    company = None
+    if named:
+        keys = {wa_headcount.company_key(n) for n in named}
+        rows = [r for r in rows if wa_headcount.company_key(wa_facts.checkin_company(r)) in keys]
+        seen = [wa_facts.checkin_company(r) for r in rows if wa_facts.checkin_company(r)]
+        company = " / ".join(dict.fromkeys(seen)) if seen else " / ".join(named)
+    short_job = wa_style.short_job(job["label"])
     data = wa_headcount.summarize(rows, since)
-    fixed = wa_headcount.compose(kind, data, job["label"], since_label)
+    if names is None:
+        names = kind == wa_headcount.LIST or wa_style.asks_for_list(question)
+    out = wa_headcount.compose_short(kind, data, short_job, since_label, question, company,
+                                     names=names)
+    fixed = out["short"]
     reply, used = fixed, "fixed"
     phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) if OPENAI_API_KEY else None
     if phrased:
-        if wa_headcount.verify(phrased, data, job["label"], since_label):
+        if wa_headcount.verify(phrased, data, f"{short_job} {job['label']}", since_label) \
+                and len(phrased) <= max(len(fixed), wa_style.MAX_CHARS):
             reply, used = phrased, "phrased"
         else:
             used = "fixed_after_check_failed"
+    if out["full"] != fixed:
+        # "Want the names?" -> "yes" sends them (10 minutes).
+        await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS, full=out["full"])
     if challenged:
         reply = "Rechecked the check-ins.\n" + reply
     await _dm_state_set("dm_last", dm_chat, DM_LAST_SECONDS, project_id=pid,
                         headcount=kind, since=since.isoformat() if since else None,
-                        since_label=since_label)
+                        since_label=since_label, names=names, companies=named)
     await _dm_log_answer(
         ident, pid, question, reply, "headcount",
-        tool_data={"kind": kind, "since": since.isoformat() if since else None,
+        tool_data={"kind": kind, "company": company,
+                   "since": since.isoformat() if since else None,
                    "total": data["total"], "by_company": data["by_company"],
                    "workers": [{"name": w["name"], "company": w["company"],
                                 "at": w["at"].isoformat() if w["at"] else None}
@@ -54634,7 +54682,8 @@ async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetim
                          "will see it. Try again in a few minutes.")
         return True
     if topic == "brief":
-        await send_whatsapp_message(dm_chat, await _brief_status_for(uid, None, now))
+        reply, _trimmed = wa_style.tighten(await _brief_status_for(uid, None, now), text)
+        await send_whatsapp_message(dm_chat, reply)
         return True
     settings = await _brief_settings(uid)
     optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
@@ -54699,6 +54748,14 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     # before the jobs.
     if await _upcoming_dm_turn(ident, dm_chat, text, now):
         return
+    # (After a reminder's own yes / no.)
+    # "Want the names?" -> "yes", "names", "list them": the answer in full.
+    more = await _dm_state_get("dm_more", dm_chat)
+    if more and more.get("full") and wa_style.wants_more(text):
+        await _dm_state_clear("dm_more", dm_chat)
+        await send_whatsapp_message(dm_chat, str(more["full"]))
+        await _dm_log_answer(ident, None, text, str(more["full"]), "more")
+        return
     # About THEM -- their brief, their settings -- never a job (Wed 10:11
     # AM: "Why didn't I get morning brief" got "Which job?").
     if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief", "send_brief")):
@@ -54736,7 +54793,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 ident, by_id[str(clarify["project_id"])], str(clarify.get("question") or text),
                 str(clarify.get("headcount") or wa_headcount.ADDED), dm_chat,
                 since_iso=chosen["since"], since_said=chosen["label"]), heard,
-                project_id=str(clarify["project_id"]))
+                project_id=str(clarify["project_id"]),
+                labels=[j["label"] for j in jobs], styled=True)
             return
 
     # ── An open "Which job?" menu (10 minutes): a number, the house number
@@ -54826,8 +54884,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
                 ident, job, question, str(last_hc.get("headcount") or wa_headcount.COUNT),
                 dm_chat, since_iso=last_hc.get("since"),
-                since_said=str(last_hc.get("since_label") or ""), challenged=True), heard,
-                project_id=str(last_hc["project_id"]))
+                since_said=str(last_hc.get("since_label") or ""), challenged=True,
+                names=last_hc.get("names"), companies=last_hc.get("companies")), heard,
+                project_id=str(last_hc["project_id"]),
+                labels=[j["label"] for j in jobs], styled=True)
             return
         hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT and ref[0] != wa_headcount.AMBIGUOUS) \
             or re.search(r"\badded|\bnew\b", core, re.IGNORECASE) \
@@ -54863,7 +54923,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             subs_trace: list = []
             await _dm_send_answer(dm_chat, message_id,
                                   _dm_answer_subs(ident, question, subs_trace), heard,
-                                  log=(ident, None, question, "subs", subs_trace))
+                                  log=(ident, None, question, "subs", subs_trace),
+                                  labels=[j["label"] for j in jobs])
             return
         if len(named) == 1:
             job = named[0]
@@ -54888,7 +54949,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 return
             if scope == wa_assistant.SCOPE_ALL:
                 await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, question),
-                                      heard, log=(ident, None, question, "all_jobs"))
+                                      heard, log=(ident, None, question, "all_jobs"),
+                                      labels=[j["label"] for j in jobs])
                 return
             # Before ever asking: the message replied to, the walk just
             # finished, the job named here in the last 30 min, the only job
@@ -54923,6 +54985,14 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                         project_id=job["id"])
     if hc is None:
         hc = wa_headcount.intent(core)
+    if hc is None and wa_style.asks_presence(core) and wa_style.company_in(
+            core, await _dm_today_companies(ident, job)):
+        hc = wa_headcount.PRESENCE        # "is J&G on site", "who from Power Direct is here"
+    if hc == wa_headcount.PRESENCE:
+        await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
+            question=question, labels=[j["label"] for j in jobs], styled=True)
+        return
     if hc in (wa_headcount.COUNT, wa_headcount.ADDED, wa_headcount.LIST):
         ref = wa_headcount.since_ref(core, now)
         if ref and ref[0] == wa_headcount.AMBIGUOUS:
@@ -54951,13 +55021,15 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             await _dm_log_answer(ident, job["id"], question, q, "clarify")
             return
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
-            ident, job, question, hc, dm_chat), heard, project_id=str(job["id"]))
+            ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
+            question=question, labels=[j["label"] for j in jobs], styled=True)
         return
     trace: list = []
     await _dm_send_answer(dm_chat, message_id,
                           _dm_answer_job(ident, job["project"], dm_chat,
                                          question, message_id, trace, history), heard,
-                          log=(ident, job["id"], question, "job_agent", trace))
+                          log=(ident, job["id"], question, "job_agent", trace),
+                          question=question, labels=[j["label"] for j in jobs])
 
 
 def _dm_pick_since(text: str, options: list) -> Optional[dict]:
@@ -55022,6 +55094,7 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
         # The likely one first: "Which job — 588 Thomas S Boyland St? Or another:".
         jobs, header = wa_assistant.likely_first(jobs, likely["id"])
     shown = jobs[:wa_assistant.MENU_MAX]
+    await _dm_state_clear("dm_more", dm_chat)       # "yes" now answers the menu
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
                         options=[j["id"] for j in shown], question=question,
                         header=header, misses=0, likely=likely["id"] if likely else None)
@@ -55033,10 +55106,13 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
 
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           heard: Optional[str] = None, log: Optional[tuple] = None,
-                          project_id: Optional[str] = None) -> None:
+                          project_id: Optional[str] = None, question: Optional[str] = None,
+                          labels: Any = (), styled: bool = False) -> None:
     """Send the answer; 👀 on the question first if it takes over 5 s, and
     taken back if no answer comes. A voice note's answer opens with
-    `Heard: "…"`."""
+    `Heard: "…"`. Every answer goes through the style post-check
+    (lib/wa_style.py): short job names, no preamble, ~300 characters unless
+    a list was asked for -- the rest offered ("Want the names?")."""
     task = asyncio.ensure_future(answer_coro)
     eyes = False
     try:
@@ -55045,6 +55121,16 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     except asyncio.TimeoutError:
         eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
         reply = await task
+    if reply:
+        asked = question if question is not None else (log[2] if log else "")
+        full = reply
+        # A headcount answer is already in the style (wa_headcount.compose_short),
+        # its names only when asked: never cut, only the job names shortened.
+        reply, trimmed = (wa_style.shorten_jobs(reply, labels), False) if styled \
+            else wa_style.tighten(reply, asked, labels)
+        if trimmed:
+            await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS,
+                                full=wa_style.clean(full, labels))
     if log:
         # (ident, project_id, question, path[, tool trace])
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
