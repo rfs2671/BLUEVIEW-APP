@@ -65021,11 +65021,31 @@ async def _punch_store_photo(parsed: dict, key: str) -> Tuple[Optional[str], Opt
 # assignee's page say "Original unavailable — preview only"). Nothing is
 # deleted. At startup (in the background) and by scripts/punch_photo_backfill.py.
 
-def _r2_bytes(key: str) -> Optional[bytes]:
+def _r2() -> Any:
+    """The R2 client, made on first use. A script imports server without its
+    startup (scripts/repair_punch_walk.py): `_r2_client` was None there and
+    every read failed silently -- all 39 photos of walk 6a868363 got "See
+    photo" in the dry run."""
+    global _r2_client
+    if _r2_client is None:
+        _r2_client = _get_r2_client()
+    return _r2_client
+
+
+def _r2_fetch(key: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """(bytes, None) or (None, why) -- the why is shown, never swallowed."""
+    client = _r2()
+    if client is None:
+        return None, "R2 not configured (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT_URL)"
     try:
-        return _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=key)["Body"].read()
-    except Exception:
-        return None
+        return client.get_object(Bucket=R2_BUCKET_NAME, Key=key)["Body"].read(), None
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
+        return None, f"{type(e).__name__}{(' ' + code) if code else ''}"
+
+
+def _r2_bytes(key: str) -> Optional[bytes]:
+    return _r2_fetch(key)[0]
 
 
 def _full_key(key: str) -> str:
@@ -66450,7 +66470,8 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
     for i, e in enumerate(events):
         k = e.get("kind")
         if k == "bot":
-            say(f"  {_punch_time(e.get('at'))}  bot   {(e.get('text') or '')[:70]!r}")
+            say(f"  {_punch_time(e.get('at'))}  bot   {(e.get('text') or '')[:70]!r}"
+                + (f"\n           -> {plan['outcome'][i]}" if plan["outcome"].get(i) else ""))
             continue
         if k == "photo":
             say(f"  {_punch_time(e.get('at'))}  photo {plan['outcome'].get(i, '')}")
@@ -66475,11 +66496,19 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
 
             async def _one(it):
                 async with sem:
-                    words = await _punch_describe_photo(it.get("photo_key"), sess.get("project_id")) \
-                        if it.get("photo_key") else None
-                punch_batch.set_auto(it, words)
-                say(f"  vision #{it.get('n')}: {it['text']} (auto)")
-            await asyncio.gather(*[_one(it) for it in blanks])
+                    got = await _punch_vision(it, sess.get("project_id"), d)
+                punch_batch.set_auto(it, got["words"], got["error"])
+                return it, got
+            results = await asyncio.gather(*[_one(it) for it in blanks])
+            # The real description, or the exact reason there is none.
+            for it, got in sorted(results, key=lambda r: r[0].get("n") or 0):
+                if got["words"]:
+                    say(f"  vision #{it.get('n')}: {got['words']} (auto)   [{got['source']}]")
+                else:
+                    say(f"  vision #{it.get('n')}: NO DESCRIPTION -- {got['error']}")
+            failed = sum(1 for _it, got in results if not got["words"])
+            if failed:
+                say(f"  vision: {failed} of {len(results)} photo(s) without a description (reasons above)")
         say(f"  {'described' if vision else 'would describe'} {len(blanks)} photo(s) with no words; "
             f"would delete {len(rows)} shadow row(s); the walk would be a draft again")
         out["draft"] = punch.draft_text(sess.get("job_name") or "", plan["items"], simple=simple,
@@ -66518,12 +66547,8 @@ async def punch_walk_rebatch(walk_id: str, *, apply: bool, store=None, dm: bool 
 
 # ── A PHOTO WITH NO WORDS: what it shows (vision model, "(auto)") ──────────
 
-def _punch_vision_jpeg(key: str) -> Optional[bytes]:
-    """The stored photo as a JPEG at most 1024 px (what the vision model is
-    sent); None when it cannot be read or drawn."""
-    raw = _r2_bytes(key)
-    if not raw:
-        return None
+def _vision_jpeg(raw: bytes) -> Tuple[Optional[bytes], Optional[str]]:
+    """The photo as a JPEG at most 1024 px (what the vision model is sent)."""
     try:
         from PIL import Image, ImageOps
         with Image.open(io.BytesIO(raw)) as im:
@@ -66531,19 +66556,65 @@ def _punch_vision_jpeg(key: str) -> Optional[bytes]:
             im.thumbnail((1024, 1024))
             out = io.BytesIO()
             im.save(out, "JPEG", quality=85)
-        return out.getvalue()
-    except Exception:
-        return None
+        return out.getvalue(), None
+    except Exception as e:
+        return None, f"not an image ({type(e).__name__}, {len(raw)} bytes)"
 
 
-async def _punch_describe_photo(key: str, project_id: Any = None) -> Optional[str]:
-    """At most 8 words for the visible issue in a punch photo; None without
-    a vision key, a readable photo, or an answer."""
-    if not QWEN_API_KEY or not key:
-        return None
-    data = await asyncio.to_thread(_punch_vision_jpeg, key)
+def _punch_vision_jpeg(key: str) -> Optional[bytes]:
+    raw = _r2_bytes(key)
+    return _vision_jpeg(raw)[0] if raw else None
+
+
+async def _punch_photo_bytes(it: dict, store=None) -> Tuple[Optional[bytes], str, Optional[str]]:
+    """A punch photo's bytes: R2 (the full photo, then the stored key), else
+    WhatsApp's media for its message (the webhook log's reference). Returns
+    (bytes, where from, None) or (None, "", every reason it failed)."""
+    why = []
+    key = it.get("photo_key")
+    if key:
+        for k in dict.fromkeys([_full_key(key), key]):
+            raw, err = await asyncio.to_thread(_r2_fetch, k)
+            if raw:
+                return raw, f"r2:{k}", None
+            why.append(f"R2 {k}: {err}")
+            if err and err.startswith("R2 not configured"):
+                break
+    else:
+        why.append("no photo_key on the item")
+    mid = it.get("message_id") or ""
+    ref = it.get("media_ref") or (await _webhook_media_ref(mid, store) if mid else {})
+    if mid or ref:
+        try:
+            img = await download_image({"message_id_serialized": mid, "message_id": mid, "raw": ref})
+        except Exception as e:
+            img = None
+            why.append(f"WhatsApp media: {type(e).__name__}: {e}"[:200])
+        else:
+            if img:
+                return img, "whatsapp", None
+            why.append("WhatsApp media: nothing came back" + ("" if ref else " (no media reference in the log)"))
+    else:
+        why.append("no message id for WhatsApp media")
+    return None, "", "; ".join(why)
+
+
+async def _punch_vision(it: dict, project_id: Any = None, store=None) -> Dict[str, Any]:
+    """The vision model on one punch photo: {"words", "error", "source"}.
+    `words` at most 8, or None; `error` says exactly why there are none (no
+    key, no photo bytes and why, the HTTP status and body, the model's own
+    "none"). Logged per photo -- never a silent None."""
+    n = it.get("n")
+    if not QWEN_API_KEY:
+        return {"words": None, "source": "", "error": "no vision key (QWEN_API_KEY / DASHSCOPE_API_KEY unset)"}
+    raw, source, err = await _punch_photo_bytes(it, store)
+    if not raw:
+        logger.warning(f"[punch] vision #{n}: no photo ({err})")
+        return {"words": None, "source": "", "error": f"no photo: {err}"}
+    data, err = await asyncio.to_thread(_vision_jpeg, raw)
     if not data:
-        return None
+        logger.warning(f"[punch] vision #{n}: {err} from {source}")
+        return {"words": None, "source": source, "error": f"{err} from {source}"}
     await record_vision_call(db, endpoint=VISION_PUNCH_PHOTO,
                              project_id=str(project_id) if project_id else None)
     try:
@@ -66557,12 +66628,25 @@ async def _punch_describe_photo(key: str, project_id: Any = None) -> Optional[st
                           {"type": "image_url", "image_url": {
                               "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
                           {"type": "text", "text": punch_batch.PHOTO_PROMPT}]}]})
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                body = " ".join(str(resp.text or "").split())[:200]
+                logger.warning(f"[punch] vision #{n}: HTTP {resp.status_code} {body}")
+                return {"words": None, "source": source, "error": f"vision HTTP {resp.status_code}: {body}"}
             said = resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.warning(f"[punch] photo description failed: {type(e).__name__}")
-        return None
-    return punch_batch.clean_description(said)
+        logger.warning(f"[punch] vision #{n}: {type(e).__name__}: {e}")
+        return {"words": None, "source": source, "error": f"vision call failed: {type(e).__name__}: {e}"[:240]}
+    words = punch_batch.clean_description(said)
+    if not words:
+        return {"words": None, "source": source,
+                "error": f"the model saw nothing wrong (answered {str(said or '').strip()[:40]!r})"}
+    return {"words": words, "source": source, "error": None}
+
+
+async def _punch_describe_photo(key: str, project_id: Any = None) -> Optional[str]:
+    """At most 8 words for a stored photo (by its key); None with the reason
+    logged."""
+    return (await _punch_vision({"photo_key": key}, project_id))["words"] if key else None
 
 
 #: How many photos are described at once.
@@ -66571,9 +66655,9 @@ PUNCH_DESCRIBE_AT_ONCE = 4
 
 async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
                                  trades: bool = True) -> int:
-    """Every live item with no words gets the vision model's (or "See
-    photo"), marked "(auto)" -- never a blank item (3:37 PM: 33 went out
-    blank). Returns how many."""
+    """Every live item with no words gets the vision model's, marked
+    "(auto)"; one it cannot describe keeps the reason and is shown "(no
+    description)" -- never a stand-in description. Returns how many."""
     todo = punch_batch.blank(sess["items"])
     if not todo:
         return 0
@@ -66584,9 +66668,10 @@ async def _punch_describe_blanks(sess: dict, dm_chat: Optional[str] = None,
 
     async def one(it):
         async with gate:
-            words = await _punch_describe_photo(it.get("photo_key"), sess.get("project_id")) \
-                if it.get("photo_key") else None
-        punch_batch.set_auto(it, words)
+            got = await _punch_vision(it, sess.get("project_id")) if it.get("photo_key") \
+                else {"words": None, "error": "no photo"}
+        words = got["words"]
+        punch_batch.set_auto(it, words, got["error"])
         if trades and words and ((it.get("trade") or punch.UNKNOWN) == punch.UNKNOWN or it.get("trade_guess")):
             it["trade"], it["trade_guess"] = punch.trade_for(words)
     await asyncio.gather(*(one(it) for it in todo))

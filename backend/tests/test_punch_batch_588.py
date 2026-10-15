@@ -59,10 +59,20 @@ class _Batch(_Walk):
             self.described.append(key)
             return _seen(key)
 
+        async def vision(it, project_id=None, store=None):
+            key = it.get("photo_key")
+            if getattr(self, "vision_error", None):
+                return {"words": None, "source": "", "error": self.vision_error}
+            if not key:
+                return {"words": None, "source": "", "error": "no photo"}
+            self.described.append(key)
+            return {"words": _seen(key), "source": f"r2:{key}", "error": None}
+
         async def no_model(*a, **k):
             return None
         return super()._patches() + [
             patch.object(server, "_punch_describe_photo", describe),
+            patch.object(server, "_punch_vision", vision),
             patch.object(server, "_punch_batch_model", no_model),
             patch.object(server, "_punch_brain_model", no_model)]
 

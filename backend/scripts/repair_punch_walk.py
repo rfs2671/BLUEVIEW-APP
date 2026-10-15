@@ -16,8 +16,14 @@ again, and nothing is sent. A walk that went out LIVE is never touched.
     railway run python scripts/repair_punch_walk.py --walk <id> --dump-events walk.json
 
 --dump-events writes the walk's message order (photos, texts, voice notes
-with their stored transcripts, and the assistant's own messages, with times;
-never phone numbers) -- the shape tests/test_punch_walk_6a868363.py replays.
+with their stored transcripts, and the assistant's own messages -- its
+capture confirmations among them -- with times) AND its items as stored;
+never phone numbers. Saved as backend/tests/fixtures/punch_walk_6a868363.json,
+tests/test_punch_walk_6a868363.py replays exactly that walk.
+
+The dry run's vision lines are the real description, or the exact reason
+there is none (no key; the R2 keys tried and their errors; WhatsApp media;
+the model's HTTP status and body) -- never a stand-in.
 
 The dry run prints every message with what it did (which photos, what
 place and words; a voice note's transcript and where it went; "couldn't
@@ -57,6 +63,53 @@ async def _pick(db, a):
     return walks[0]["_id"] if walks and a.latest else None
 
 
+_PHONE = re.compile(r"\+?\d[\d\s().-]{8,}\d")
+
+#: What a dumped item keeps: enough to replay the walk exactly.
+_ITEM_KEYS = ("n", "captured", "photo_key", "photo_failed", "message_id", "caption_ids", "text",
+              "said", "text_src", "text_auto", "floor", "area", "room", "loc_src", "trade",
+              "trade_guess", "trade_src", "status", "added_from", "at")
+
+
+def _clean(v):
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, str):
+        return _PHONE.sub("[number]", v)
+    if isinstance(v, list):
+        return [_clean(x) for x in v]
+    return v
+
+
+def dump(sess, events, punch):
+    """The walk's messages (photos, texts, voice notes with their stored
+    transcripts, the assistant's own messages -- its capture confirmations
+    among them) and its items as stored. Never a phone number."""
+    spoken = {punch.short_message_id(m): (it.get("voice") or {}).get("transcript")
+              for it in sess.get("items") or [] if (it.get("voice") or {}).get("transcript")
+              for m in [it.get("message_id")] + list(it.get("caption_ids") or []) if m}
+    # The short id only: a serialized one ("false_<phone>@c.us_<id>") holds
+    # the sender's phone number. The replay matches on the short id.
+    sid = punch.short_message_id
+    rows = [{"kind": e["kind"], "message_id": sid(e.get("message_id")) or "",
+             "text": _clean(e.get("text") or spoken.get(sid(e.get("message_id"))) or ""),
+             "quoted": sid(e.get("quoted")) or "",
+             "at": e["at"].isoformat() if isinstance(e.get("at"), datetime) else None}
+            for e in events]
+    items = []
+    for it in sess.get("items") or []:
+        row = {k: _clean(it[k]) for k in _ITEM_KEYS if k in it}
+        if "message_id" in row:
+            row["message_id"] = sid(it.get("message_id")) or ""
+        if "caption_ids" in row:
+            row["caption_ids"] = [sid(c) for c in it.get("caption_ids") or [] if c]
+        v = it.get("voice") or {}
+        if v.get("transcript"):
+            row["voice"] = {"transcript": _clean(v["transcript"]), "lang": v.get("lang")}
+        items.append(row)
+    return rows, items
+
+
 async def main_async(a) -> int:
     import server
     db = server.db
@@ -70,16 +123,11 @@ async def main_async(a) -> int:
         return 2
     events = await server._punch_walk_events(sess)
     if a.dump_events:
-        spoken = {server.punch.short_message_id(m): (it.get("voice") or {}).get("transcript")
-                  for it in sess.get("items") or [] if (it.get("voice") or {}).get("transcript")
-                  for m in [it.get("message_id")] + list(it.get("caption_ids") or []) if m}
-        rows = [{"kind": e["kind"], "message_id": e["message_id"],
-                 "text": e.get("text") or spoken.get(server.punch.short_message_id(e["message_id"])) or "",
-                 "quoted": e.get("quoted") or "",
-                 "at": e["at"].isoformat() if isinstance(e.get("at"), datetime) else None}
-                for e in events]
-        Path(a.dump_events).write_text(json.dumps(rows, indent=1, ensure_ascii=False) + "\n")
-        print(f"Wrote {len(rows)} events to {a.dump_events}.")
+        rows, items = dump(sess, events, server.punch)
+        Path(a.dump_events).write_text(json.dumps(
+            {"walk": walk_id, "job_name": sess.get("job_name"), "detail": sess.get("detail"),
+             "events": rows, "items": items}, indent=1, ensure_ascii=False) + "\n")
+        print(f"Wrote {len(rows)} events and {len(items)} items to {a.dump_events}.")
     print(f"\nWalk {walk_id} ({sess.get('job_name')}), {len(events)} messages in the log:")
     out = await server.punch_walk_rebatch(walk_id, apply=a.apply, dm=a.dm, events=events,
                                           vision=not a.no_vision, say=print)

@@ -978,6 +978,10 @@ def _floor_key(f: str) -> Tuple[int, str]:
 
 NOT_GIVEN = "Location: not given"
 
+#: An item with no words yet (the vision model could not say): shown as
+#: this, never a made-up description -- "See photo" read as one.
+NO_WORDS = "(no description)"
+
 
 def floor_label(f: str) -> str:
     if f == UNKNOWN:
@@ -1010,11 +1014,34 @@ def heading_area(it: dict) -> str:
     return a
 
 
+#: Places that are a level of the building, however they were stored: a
+#: floor "Roof", a floor "roof" and an area "Roof" with no floor are ONE
+#: heading (two "Roof" headings in the 6a868363 dry run).
+_LEVEL_WORDS = ("cellar", "basement", "sub-cellar", "subcellar", "lobby", "ground", "roof",
+                "rooftop", "bulkhead", "penthouse", "mezzanine", "attic")
+
+
+def _level(it: dict) -> Tuple[str, str]:
+    """(floor, area) as the draft groups them: case-folded, an area that is
+    a level read as the floor."""
+    f = str(it.get("floor") or UNKNOWN).strip()
+    a = heading_area(it)
+    if f != UNKNOWN and not f.isdigit():
+        f = f.lower()
+    if f == UNKNOWN and a.lower() in _LEVEL_WORDS:
+        f, a = a.lower(), ""
+    if a.lower() == f.lower():
+        a = ""
+    if f != UNKNOWN and a and " " not in a:
+        a = a.lower()                       # "Floor 2 · interior", never "Floor 2 · Interior"
+    return f, a
+
+
 def heading_key(it: dict) -> Tuple[Tuple[int, str], str]:
     """Draft order: by floor, then area ("" first) -- areas with no floor
-    ("Back of building") after the floors, "not given" last."""
-    f = it.get("floor") or UNKNOWN
-    a = heading_area(it)
+    ("Back of building") after the floors, "not given" last. One key per
+    place, whatever its case or which field it was stored in."""
+    f, a = _level(it)
     if f == UNKNOWN:
         return ((1500, a.lower()), "") if a else ((2000, ""), "")
     return (_floor_key(f), a.lower())
@@ -1053,8 +1080,8 @@ def item_line(it: dict, simple: bool = False, area_shown: bool = False) -> str:
     """"3. 📷 Outlet cover missing — electrical" (area shown when known).
     No trade: no trade shown -- never a "?" or a "roofing?" (1:43 PM).
     Simple: the words only (the floor is the heading)."""
-    words = (it.get("text") or "").strip() or "See photo"
-    if it.get("text_auto"):
+    words = (it.get("text") or "").strip() or NO_WORDS
+    if it.get("text_auto") and (it.get("text") or "").strip():
         words += " (auto)"                  # the vision model's words: a guess, editable
     if simple:
         return f"{it['n']}. {marker(it)} {words}".replace("  ", " ")
@@ -1108,8 +1135,7 @@ def draft_text(job_name: str, items: List[dict], sent_mode: str = DEFAULT_SEND_M
         groups.setdefault(heading_key(it), []).append(it)
     for key in sorted(groups):
         first = groups[key][0]
-        label = (place_label(first.get("floor"), heading_area(first)) if key[0] != (2000, "")
-                 else NOT_GIVEN) or NOT_GIVEN
+        label = (place_label(*_level(first)) if key[0] != (2000, "") else NOT_GIVEN) or NOT_GIVEN
         lines.append("")
         lines.append(f"*{label}*")
         if simple:
@@ -1683,8 +1709,8 @@ def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
             for it in by_floor[f][t]:
                 u = "" if simple else unit_label(it)
                 # Never a bullet with no words (3:37 PM: 33 blank ones).
-                words = (it.get("text") or "").strip() or "See photo"
-                if it.get("text_auto"):
+                words = (it.get("text") or "").strip() or NO_WORDS
+                if it.get("text_auto") and (it.get("text") or "").strip():
                     words += " (auto)"
                 lines.append(f"• {it['pid']} {words}"
                              f"{(' (' + u + ')') if u and u != f else ''}")
@@ -1704,8 +1730,8 @@ def group_text(name: str, items: List[dict], due_words: str,
         for it in items:
             where = (floor_label(place_key(it)) if place_key(it) != UNKNOWN else "") if simple \
                 else _where(it)
-            words = (it.get("text") or "").strip() or "See photo"
-            if it.get("text_auto"):
+            words = (it.get("text") or "").strip() or NO_WORDS
+            if it.get("text_auto") and (it.get("text") or "").strip():
                 words += " (auto)"
             lines.append(f"• {it['pid']} {words}{(' (' + where + ')') if where else ''}")
     lines.append(done_hint(items))
