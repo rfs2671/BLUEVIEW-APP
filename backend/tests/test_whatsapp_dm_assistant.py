@@ -249,8 +249,12 @@ class WhichJob(_Harness, unittest.TestCase):
                 (row["expires_at"] - datetime.now(timezone.utc)).total_seconds(),
                 30 * 60, delta=5)
             row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+            # ...and the chat that named it is over 30 minutes old: asked,
+            # with 8 Walworth first (named in the last 4 hours).
+            for m in db.whatsapp_messages.rows:
+                m["created_at"] = datetime.now(timezone.utc) - timedelta(minutes=31)
             reply = self._send(c, f"{ADMIN_PHONE}@c.us", "and the open items?", "m3")
-        self.assertTrue(reply.startswith("Which job?"))
+        self.assertTrue(reply.startswith("Which job — 8 Walworth St? Or another: 1) 8 Walworth St"), reply)
 
     def test_a_number_without_a_menu_is_just_a_message(self):
         db = self._admin()
