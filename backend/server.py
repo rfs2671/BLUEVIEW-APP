@@ -67718,11 +67718,28 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         b = by_person.setdefault(key, {"person": None if to_group else person, "items": [], "dues": {}})
         b["items"].append(it)
         b["dues"][it["trade"]] = due_of.get(it["trade"]) or default_due
+    simple = _punch_simple(sess)
     for b in by_person.values():
         # One due for all of a message's items, else "electrical Mon, tile Fri".
         days = sorted(set(b["dues"].values()))
-        b["due_words"] = days[0] if len(days) == 1 else ", ".join(
-            f"{t} {punch.due_label(d)}" for t, d in sorted(b["dues"].items()))
+        if len(days) == 1:
+            b["due_words"] = days[0]
+        elif simple:
+            # Never a trade on a simple walk (Codex on #801): the group post
+            # by person, a person's own message by day.
+            names: Dict[tuple, str] = {}
+            by_who: Dict[tuple, List[str]] = {}
+            for t, d in sorted(b["dues"].items()):
+                p = owner_of({"trade": t})
+                k = punch._person_key(p) if p else ("", "")
+                names[k] = (p.get("name") or p.get("company") or "?") if p else "the rest"
+                by_who.setdefault(k, []).append(d)
+            b["due_words"] = (", ".join(f"{names[k]} {' / '.join(sorted(set(ds)))}"
+                                        for k, ds in by_who.items())
+                              if to_group and len(by_who) > 1 else " / ".join(days))
+        else:
+            b["due_words"] = ", ".join(
+                f"{t} {punch.due_label(d)}" for t, d in sorted(b["dues"].items()))
     # Real @mentions: every person resolved together (one get-lid call per 50
     # unresolved @lids) -- per trade owner for the group post.
     people = {}

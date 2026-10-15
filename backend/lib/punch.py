@@ -1269,7 +1269,8 @@ def assign_text(sugg: Dict[str, Optional[dict]], stuck: bool = False, simple: bo
     Simple: no trade anywhere (Thu 9:03 AM) -- each person once, and the
     rest of the list when nobody has it yet."""
     if simple:
-        people = list(dict.fromkeys(who_label(p) for p in sugg.values() if p))
+        # By who they are: two people named alike stay two (Codex on #801).
+        people = list({_person_key(p): who_label(p) for p in sugg.values() if p}.values())
         lines = ["Who gets it?"]
         if len(people) == 1 and all(sugg.values()):
             lines.append(f"• The whole list → {people[0]}")

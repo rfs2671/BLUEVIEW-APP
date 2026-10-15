@@ -51,6 +51,13 @@ class TheTexts(unittest.TestCase):
         for text in (whole, part, punch.open_trades_question(["hvac", punch.UNKNOWN], simple=True)):
             self.assertIsNone(_TRADE_WORD.search(text), text)
 
+    def test_two_people_named_alike_stay_two(self):
+        alex1 = {"kind": "user", "id": "u7", "name": "Alex"}
+        alex2 = {"kind": "user", "id": "u8", "name": "Alex"}
+        text = punch.assign_text({t: (alex2 if t == "hvac" else alex1) for t in TRADES}, simple=True)
+        self.assertIsNone(re.search(r"The whole list", text), text)
+        self.assertEqual(text.count("• Alex (GC team)"), 2, text)
+
     def test_the_post(self):
         mentions = {t: "@Meilich Friedman" for t in TRADES}
         text = punch.full_list_text("588 Thomas St", _items(), punch.ASAP, mentions, simple=True)
@@ -92,6 +99,38 @@ class TheWalk(_Live, unittest.TestCase):
         for text in said + posted:
             self.assertIsNone(_TRADE_WORD.search(text), text)
         self.assertIn("Mentioning Dov Klein (Power Direct)\n", "\n".join(said))
+
+    def _post(self, *steps, due):
+        self.setting(punch_sends="live")
+        posted = []
+
+        async def gpost(gid, text, targets, reply_to=None):
+            posted.append(text)
+            return True
+
+        async def dm(chat, text, *a, **k):
+            posted.append(text)
+            return True
+
+        async def photo(*a, **k):
+            return True
+        self.turn("Bulb burnt 4F", photo=True)
+        self.turn("Faucet leaking 2D", photo=True)
+        for text in ("done", "send") + steps:
+            self.turn(text)
+        self.sess()["due"] = due
+        with patch.object(server, "_group_post", gpost), patch.object(server, "_punch_send_photo", photo):
+            self.turn("ok")
+        return [t for t in posted + self.said if "punch list" in t]
+
+    def test_dues_that_differ_never_name_a_trade_in_the_post(self):
+        # Codex on #801: the send built "electrical due Mon, plumbing due Fri".
+        out = self._post("electrical to Dov", "plumbing to Chris GC", "to the group",
+                         due={"electrical": "Mon", "plumbing": "Fri"})
+        self.assertTrue(out, self.said)
+        for text in out:
+            self.assertIsNone(_TRADE_WORD.search(text), text)
+        self.assertIn("punch list — due Dov Klein Mon, Chris Weiss Fri:", "\n".join(out))
 
 
 if __name__ == "__main__":
