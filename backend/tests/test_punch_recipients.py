@@ -11,6 +11,7 @@ would have @mentioned a stranger in the group; shadow mode saved it.
 
 from __future__ import annotations
 
+import re
 import asyncio
 import os
 import sys
@@ -116,6 +117,7 @@ class TheGuard(unittest.TestCase):
             return True
         sess = {"_id": "walk1", "user_id": "u_roy", "company_id": CO, "project_id": "p588",
                 "chat": "17185550100@c.us", "job_name": "588 Thomas St", "job_code": "588",
+                "detail": punch.DETAIL_DETAILED,                        # trades shown
                 "status": "due", "assign": {"electrical": dict(YEYZMAR)},
                 "due": {"electrical": "Fri"},
                 "items": [{"n": 1, "captured": 1, "text": "Bulb burnt", "trade": "electrical",
@@ -134,6 +136,27 @@ class TheGuard(unittest.TestCase):
         self.assertTrue(rev["summary"].startswith("Not sent (punch): Yeyzmar B Bate"))
         self.assertTrue(rev["needs_review"])
         self.assertNotIn("17185550199", str(rev))                   # never the number
+
+    def test_simple_names_the_person_never_the_trade(self):
+        db = _world()
+
+        async def post(*a, **k):
+            return True
+        sess = {"_id": "walk2", "user_id": "u_roy", "company_id": CO, "project_id": "p588",
+                "chat": "17185550100@c.us", "job_name": "588 Thomas St", "job_code": "588",
+                "detail": punch.DETAIL_SIMPLE, "status": "due",
+                "assign": {"electrical": dict(YEYZMAR), "plumbing": dict(YEYZMAR)},
+                "due": {},
+                "items": [{"n": 1, "captured": 1, "text": "Bulb burnt", "trade": "electrical",
+                           "floor": "4", "photo_key": "k1", "message_id": "m1"},
+                          {"n": 2, "captured": 2, "text": "Faucet", "trade": "plumbing",
+                           "floor": "2", "photo_key": "k2", "message_id": "m2"}]}
+        db[punch.SESSIONS].rows.append(dict(sess))
+        with patch.object(server, "_group_post", post), \
+                patch.object(server, "_punch_send_photo", post):
+            reply = _run(db, server._punch_send({"user_id": "u_roy"}, sess))
+        self.assertTrue(reply.startswith("Not sent: Yeyzmar B Bate — "), reply)
+        self.assertIsNone(re.search(r"\b(?:electrical|plumbing)\b", reply), reply)
 
 
 class NamesAreNeverGuessed(unittest.TestCase):

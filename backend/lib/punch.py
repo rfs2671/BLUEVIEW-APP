@@ -1805,16 +1805,17 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
         return ", ".join("#" + str(n) for n in ns)
     if target == "group":
         # Each person once, with their trades (Thu 9:03 AM: one name 6 times).
-        owners: Dict[str, List[str]] = {}
+        # By who they are, not their label: two people named alike stay two.
+        owners: Dict[tuple, Tuple[str, List[str]]] = {}
         for t in sorted({it.get("trade") or UNKNOWN for it in live}, key=lambda x: (x == UNKNOWN, x)):
             if assign.get(t):
-                owners.setdefault(who_label(assign[t]), []).append(trade_name(t).lower()
-                                                                   if t == UNKNOWN else t)
+                owners.setdefault(_person_key(assign[t]), (who_label(assign[t]), []))[1].append(
+                    trade_name(t).lower() if t == UNKNOWN else t)
         head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}"]
         if owners and simple:
-            head.append("Mentioning " + "; ".join(owners))
+            head.append("Mentioning " + "; ".join(w for w, _ts in owners.values()))
         elif owners:
-            head.append("Mentioning " + "; ".join(f"{w} — {', '.join(ts)}" for w, ts in owners.items()))
+            head.append("Mentioning " + "; ".join(f"{w} — {', '.join(ts)}" for w, ts in owners.values()))
     elif whole:
         head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
                 f"{nums(it['n'] for it in live)}"]

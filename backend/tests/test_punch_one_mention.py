@@ -30,6 +30,14 @@ class OneMention(unittest.TestCase):
         self.assertIn("Mentioning Meilich Friedman (GC team) — cleaning, concrete, drywall, roofing, "
                       "no trade; Dov Klein (Power Direct) — hvac\n", recap)
 
+    def test_two_people_named_alike_stay_two(self):
+        alex1 = {"kind": "user", "id": "u7", "name": "Alex"}
+        alex2 = {"kind": "user", "id": "u8", "name": "Alex"}
+        assign = {t: (alex2 if t == "hvac" else alex1) for t in TRADES}
+        recap = punch.recap_text(_items(), assign, {}, target="group")
+        self.assertIn("Mentioning Alex (GC team) — cleaning, concrete, drywall, roofing, no trade; "
+                      "Alex (GC team) — hvac\n", recap)
+
     def test_the_post_mentions_each_person_once_at_the_top(self):
         mentions = {t: "@Meilich Friedman" for t in TRADES}
         text = punch.full_list_text("588 Thomas St", _items(), punch.ASAP, mentions)

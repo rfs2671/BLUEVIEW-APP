@@ -67694,7 +67694,9 @@ async def _punch_send(ident: dict, sess: dict) -> str:
         for t, _p, _w in refused:
             assign[t] = None
         await _punch_save(sess, status="assign", assign=assign, whole=None)
-        names = "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)
+        names = "; ".join(dict.fromkeys(p.get('name') or '?' for _t, p, _w in refused)) \
+            if _punch_simple(sess) else \
+            "; ".join(f"{t} → {p.get('name') or '?'}" for t, p, _w in refused)   # simple: no trade
         return (f"Not sent: {names} — {RECIPIENT_REFUSED}. Nothing was posted.\n\n"
                 + punch.assign_text(assign, simple=_punch_simple(sess)))
     if whole and not to_group and not whole.get("jid"):
