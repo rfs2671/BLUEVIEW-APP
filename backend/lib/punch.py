@@ -1688,11 +1688,10 @@ def done_hint(items: List[dict]) -> str:
     return f"Reply \"done {pid}\" (a photo helps) when each one is finished."
 
 
-def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
-                simple: bool = False) -> List[str]:
-    """Items under their floor, then trade; a trade's owner @mentioned
-    beside it when `mentions` names one. No trade: no "_?_" heading. Simple:
-    the floor and the words only."""
+def _list_lines(items: List[dict], simple: bool = False) -> List[str]:
+    """Items under their floor, then trade. No trade: no "_?_" heading.
+    Simple: the floor and the words only. Never an @mention: those are at
+    the top, once each (mention_lines)."""
     lines: List[str] = []
     by_floor: Dict[str, Dict[str, List[dict]]] = {}
     for it in items:
@@ -1701,11 +1700,8 @@ def _list_lines(items: List[dict], mentions: Optional[Dict[str, str]] = None,
     for f in sorted(by_floor, key=_floor_key):
         lines.append(f"*{floor_label(f)}*")
         for t in sorted(by_floor[f], key=lambda x: (x == UNKNOWN, x)):
-            who = (mentions or {}).get(t)
             if t != UNKNOWN:
-                lines.append(f"_{t}_" + (f" {who}" if who else ""))
-            elif who:
-                lines.append(f"_no trade_ {who}")
+                lines.append(f"_{t}_")
             for it in by_floor[f][t]:
                 u = "" if simple else unit_label(it)
                 # Never a bullet with no words (3:37 PM: 33 blank ones).
@@ -1744,12 +1740,33 @@ def dm_text(job_name: str, items: List[dict], due_words: str, simple: bool = Fal
                       *_list_lines(items, simple=simple), done_hint(items)])
 
 
+def mention_lines(mentions: Dict[str, str], trades: Optional[List[str]] = None,
+                  simple: bool = False) -> List[str]:
+    """Each person @mentioned ONCE, at the top (Thu 9:03 AM: "Meilich
+    Friedman (GC team)" 6 times, once per trade). `mentions`: trade ->
+    handle. Their trades beside them only when it says something: a detailed
+    list where they don't have every trade in it."""
+    who: Dict[str, List[str]] = {}
+    for t in sorted(mentions, key=lambda x: (x == UNKNOWN, x)):
+        if mentions[t]:
+            who.setdefault(mentions[t], []).append(t)
+    if not who:
+        return []
+    every = set(trades if trades is not None else mentions)
+    if simple or (len(who) == 1 and set(next(iter(who.values()))) >= every):
+        return [" ".join(who)]
+    return [f"{h} — {', '.join(trade_name(t).lower() if t == UNKNOWN else t for t in ts)}"
+            for h, ts in who.items()]
+
+
 def full_list_text(job_name: str, items: List[dict], due_words: str,
                    mentions: Dict[str, str], simple: bool = False) -> str:
-    """The whole list posted in the job's group, each trade's owner
-    @mentioned beside it where known."""
+    """The whole list posted in the job's group: each owner @mentioned once,
+    at the top; then the list."""
+    trades = sorted({it.get("trade") or UNKNOWN for it in items})
     return "\n".join([f"{job_name} punch list — {due_label(due_words)}:",
-                      *_list_lines(items, mentions, simple=simple), done_hint(items)])
+                      *mention_lines(mentions, trades, simple=simple),
+                      *_list_lines(items, simple=simple), done_hint(items)])
 
 
 def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[str, str],
@@ -1769,11 +1786,16 @@ def recap_text(items: List[dict], assign: Dict[str, Optional[dict]], due: Dict[s
             return f"{len(ns)} items"
         return ", ".join("#" + str(n) for n in ns)
     if target == "group":
-        owners = sorted({f"{who_label(assign.get(t))} ({trade_name(t)})"
-                         for t in {it.get("trade") or UNKNOWN for it in live} if assign.get(t)})
+        # Each person once, with their trades (Thu 9:03 AM: one name 6 times).
+        # By who they are, not their label: two people named alike stay two.
+        owners: Dict[tuple, Tuple[str, List[str]]] = {}
+        for t in sorted({it.get("trade") or UNKNOWN for it in live}, key=lambda x: (x == UNKNOWN, x)):
+            if assign.get(t):
+                owners.setdefault(_person_key(assign[t]), (who_label(assign[t]), []))[1].append(
+                    trade_name(t).lower() if t == UNKNOWN else t)
         head = [f"Ready to post the whole list in {group}{shadow}: {nums(it['n'] for it in live)}"]
         if owners:
-            head.append("Mentioning " + "; ".join(owners))
+            head.append("Mentioning " + "; ".join(f"{w} — {', '.join(ts)}" for w, ts in owners.values()))
     elif whole:
         head = [f"Ready to DM the whole list to {who_label(whole)}{shadow}: "
                 f"{nums(it['n'] for it in live)}"]
