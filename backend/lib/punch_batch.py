@@ -404,14 +404,24 @@ def _ts(at: Any) -> Optional[float]:
 
 def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
                 seconds: int = MERGE_SECONDS) -> List[Dict[str, Any]]:
-    """Consecutive texts with nothing between them (no photo, voice note or
-    assistant message), each within `seconds` of the one before, read as one:
-    "Correction. 3rd floor interior" + "Last 3 photos" -> one annotation. A
-    command ("done") or a reference ("same for ...") is never merged."""
+    """The walker's consecutive texts, each within `seconds` of the one
+    before, with no photo or voice note between them, read as one:
+    "Correction. 3rd floor interior" + "Last 3 photos" -> one annotation.
+    The assistant's own replies in between do not split them (11:52: the bot
+    answered between the two) -- unless it ASKED about an item ("Where is
+    #3 ...?"): the next text is the answer. A command ("done") or a
+    reference ("same for ...") is never merged."""
     out: List[Dict[str, Any]] = []
+    last = None                                   # index in `out` of the walker's last text
     for e in events:
-        prev = out[-1] if out else None
-        if (e.get("kind") == "text" and prev is not None and prev.get("kind") == "text"
+        kind = e.get("kind")
+        if kind == "bot":
+            out.append(dict(e))
+            if _ASKS_ITEM.search(e.get("text") or ""):
+                last = None
+            continue
+        prev = out[last] if last is not None else None
+        if (kind == "text" and prev is not None
                 and not prev.get("voice") and not e.get("voice") and not e.get("quoted")
                 and not prev.get("quoted")
                 and not is_command(e.get("text") or "") and not is_command(prev.get("text") or "")
@@ -423,7 +433,62 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
                 prev["at"] = e.get("at")
                 continue
         out.append(dict(e))
+        last = len(out) - 1 if kind == "text" else None
     return out
+
+
+#: The assistant confirming a photo when it came in: "#1 'Front' (Facade)",
+#: "#15 (Floor 5 · stairs)", "#47 (Floor 7 · bulkhead)". What the walker saw
+#: and let stand -- the photo's place at the time, which no later batch
+#: text overwrites.
+_CONFIRMED = re.compile(
+    # The caption may hold quotes of its own ("Women's bathroom", 6"): it
+    # ends at the quote just before the "(".
+    r"#(\d{1,3})(?:\s+['\u2018\u201c\"](.{0,80}?)['\u2019\u201d\"])?\s*\(([^()]{1,60})\)")
+_NOT_A_PLACE = re.compile(r"\bphotos?\b|\bpics?\b|^\s*\?\s*$|not\s+given|no\s+location|unknown",
+                          re.IGNORECASE)
+_LEVELS = ("cellar", "basement", "sub-cellar", "subcellar", "lobby", "ground", "roof", "rooftop",
+           "bulkhead", "penthouse", "mezzanine", "attic")
+
+
+def place_from_label(label: Any) -> Optional[Dict[str, Optional[str]]]:
+    """"Floor 5 · stairs" -> floor 5, stairs; "Facade" -> the area Facade;
+    "Roof" -> the level roof. None when it is not a place."""
+    t = " ".join(str(label or "").split()).strip(" .")
+    if not t or _NOT_A_PLACE.search(t):
+        return None
+    parts = [x.strip() for x in re.split(r"\s*[·•|]\s*", t) if x.strip()]
+    head, rest = parts[0], " · ".join(parts[1:]) or None
+    m = re.fullmatch(r"(?i)(?:floor|fl\.?)\s*(\w{1,4})", head)
+    if m:
+        f = _floor_number(m.group(1)) or m.group(1).lower()
+        return {"floor": f, "area": rest}
+    f = _floor_number(head)
+    if f and re.search(r"(?i)\bfloor\b|\d", head):
+        return {"floor": f, "area": rest}
+    if head.lower() in _LEVELS:
+        return {"floor": head.lower(), "area": rest}
+    return {"floor": None, "area": head if not rest else f"{head} · {rest}"}
+
+
+def capture_confirmations(text: Any) -> List[Tuple[int, Optional[str], Dict[str, Optional[str]]]]:
+    """[(n, the caption as quoted, its place)] in one assistant message."""
+    out = []
+    for m in _CONFIRMED.finditer(str(text or "")):
+        place = place_from_label(m.group(3))
+        if place:
+            out.append((int(m.group(1)), m.group(2), place))
+    return out
+
+
+def pin_confirmed(it: dict, place: Dict[str, Optional[str]]) -> None:
+    """The place the assistant confirmed for this photo when it came in."""
+    # The label is the whole place at that moment: "(Facade)" had no floor.
+    it["floor"] = place.get("floor") or punch.UNKNOWN
+    it["area"] = place.get("area") or punch.UNKNOWN
+    it.pop("room", None)
+    it["loc_src"] = "photo"
+    it["confirmed"] = True
 
 
 def own_caption_place(it: dict) -> Optional[Dict[str, Any]]:
@@ -442,7 +507,9 @@ def own_caption_place(it: dict) -> Optional[Dict[str, Any]]:
 def _apply_own_place(it: dict, r: Dict[str, Any]) -> None:
     # The photo's own caption is its location, as typed ("Backyard", never a
     # canonical "Courtyard"; "5th floor staircase" -> Floor 5 · staircase).
-    it["floor"] = r.get("floor") or punch.UNKNOWN
+    # A caption with no floor ("Interior") keeps the floor the photo already
+    # had (#8 Floor 2 + "Interior" is Floor 2 · interior, never "Interior").
+    it["floor"] = r.get("floor") or it.get("floor") or punch.UNKNOWN
     it["area"] = r.get("area") or punch.UNKNOWN
     it.pop("room", None)
     it["loc_src"] = "photo"
@@ -566,6 +633,14 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             m = _ASKS_ITEM.search(e.get("text") or "")
             if m:
                 asking, asked_at = int(m.group(1)), _ts(e.get("at"))
+            got = []
+            for n, _said, place in capture_confirmations(e.get("text")):
+                it = by_n.get(n)
+                if it is not None and not it.get("confirmed"):
+                    pin_confirmed(it, place)
+                    got.append(f"#{n} {place_label(place.get('floor'), place.get('area'))}")
+            if got:
+                outcome[i] = "confirmed at capture: " + ", ".join(got)
             continue
         if kind == "voice":
             outcome[i] = "voice note -- no transcript stored, not applied"
@@ -748,8 +823,6 @@ PHOTO_PROMPT = (
     "wrong is visible, answer exactly: none. Answer with the words only."
 )
 
-#: When the photo cannot be described: still words, never a blank item.
-SEE_PHOTO = "See photo"
 
 
 def clean_description(got: Any) -> Optional[str]:
@@ -764,8 +837,17 @@ def clean_description(got: Any) -> Optional[str]:
     return punch.capitalize(t)
 
 
-def set_auto(it: dict, words: Optional[str]) -> None:
-    """The vision model's words on a blank item, marked "(auto)"."""
-    it["text"] = words or SEE_PHOTO
-    it["text_auto"] = True
-    it["text_src"] = "vision" if words else "none"
+def set_auto(it: dict, words: Optional[str], error: Optional[str] = None) -> None:
+    """The vision model's words on a blank item, marked "(auto)". No words:
+    the item stays without a description (shown "(no description)") and
+    keeps why -- never a stand-in like "See photo"."""
+    if words:
+        it["text"] = words
+        it["text_auto"] = True
+        it["text_src"] = "vision"
+        it.pop("vision_error", None)
+    else:
+        it.pop("text", None)
+        it.pop("text_auto", None)
+        it["text_src"] = "none"
+        it["vision_error"] = error or "no description"

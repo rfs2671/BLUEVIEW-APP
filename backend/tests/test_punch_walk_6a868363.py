@@ -1,27 +1,41 @@
-"""The repair dry run of walk 6a868363 (588) misread it (Wed Oct 14).
+"""The repair dry run of walk 6a868363 (588) misread it.
 
-1. "Correction. 3rd floor interior" + "Last 3 photos" (11:52, one message
-   split in two) hit 8 photos (#1, 6, 7, 9-13) and set "Correction" as their
-   description. Texts within 60 s with nothing between them are ONE
-   annotation: the last 3 photos -> Floor 3 · interior. "Correction" is never
-   a description.
-2. "1st floor", "Back of building is location" (12:02-12:03, after "Done",
-   answering "Where is #3 'Back of building'?") went to #41-44. They are #3's.
-3. "Same for the last batch of pics" (11:59): placed by the model, else listed
-   under "Couldn't place -- tell me which photos" -- never guessed or dropped.
-4. A caption that is only a place ("Cellar", "Back of building", "Backyard",
-   "5th floor staircase", "Front") is the location; the description comes
-   from vision "(auto)". "Roof missing coping" -> Roof · "Missing coping".
-5. Floor + area ("Floor 3 · interior"), never a group named "3rd interior";
-   the draft by floor, then area.
-6. The dry run shows the vision descriptions, "(auto)".
-7. The 11:46 / 11:47 voice notes: what they said, and where they went.
+Wed Oct 14:
+1. "Correction. 3rd floor interior" + "Last 3 photos" (11:52) is ONE
+   annotation: the last 3 photos -> Floor 3 · interior.
+2. "1st floor", "Back of building is location" (after "Done", answering
+   "Where is #3 'Back of building'?") are #3's.
+3. "Same for the last batch of pics": placed by the model, else listed under
+   "Couldn't place -- tell me which photos".
+4. A caption that is only a place is the location; vision describes it.
+5. Floor + area, the draft by floor, then area.
+6. Vision descriptions in the dry run. 7. The voice notes and where they went.
 
-THE MESSAGES. Rebuilt from the dry run's report of this walk: every text,
-time and question above is as reported; the photo counts between them are
-not known here. `scripts/repair_punch_walk.py --walk 6a868363 --dump-events
-walk.json` writes the exact log; saved as tests/fixtures/punch_walk_6a868363.json
-it replaces TIMELINE below (the same checks run on it).
+Thu Oct 15, the dry run at d1e9a11 (new reader), still wrong:
+V1. Vision: all 39 "See photo (auto)" -- the script never made the R2
+    client, every read failed silently. Now each photo shows the real
+    description or the exact error; "See photo" is never a description.
+V2. The assistant's reply between "Correction. 3rd floor interior" and
+    "Last 3 photos" split them: the first hit #1, 2, 6, 7, 9-13 and "Last 3
+    photos" nothing. Bot messages between the walker's texts never split them.
+V3. A photo's own caption, or the place the assistant confirmed for it at
+    capture ("#1 'Front' (Facade)", "#15 (Floor 5 · stairs)", "#47 (Floor 7 ·
+    bulkhead)"), is never overwritten by a batch text (#1, #2 went to
+    Floor 3 interior).
+V4. #8, #19, #23 had floors 2, 4, 5 + "Interior" and lost the floor.
+V5. One heading per place (two "Roof").
+V6. The assistant's capture confirmations are the ground truth.
+
+THE MESSAGES. TIMELINE below is rebuilt from what the two dry-run reports
+said (texts, times, the question, the confirmations quoted); the photos'
+exact order is not known here. The exact walk:
+
+    railway run python scripts/repair_punch_walk.py --walk 6a868363 \\
+        --dump-events backend/tests/fixtures/punch_walk_6a868363.json
+
+writes its messages AND its items as stored (never phone numbers). Saved
+there, every test below replays it instead of TIMELINE; the checks that name
+a photo by number run on it too.
 """
 
 from __future__ import annotations
@@ -52,57 +66,100 @@ def _t(h, m, s=0):
     return datetime(2026, 10, 14, h, m, s, tzinfo=NY)
 
 
-#: (time, kind, caption / text / transcript). A photo's caption is its own.
+def _burst(start, n, every=2, extra=None):
+    return [(start + timedelta(seconds=every * i), "photo", "", (extra or {}).get(i))
+            for i in range(n)]
+
+
+#: (time, kind, caption / text / transcript / the assistant's words, stored
+#: place {"floor", "area", "loc_src"} or None). A photo's caption is its own.
 TIMELINE = [
-    (_t(11, 40, 0), "photo", "Cellar"),                     # 1
-    (_t(11, 40, 30), "photo", ""),                          # 2
-    (_t(11, 41, 0), "photo", "Back of building"),           # 3
-    (_t(11, 41, 30), "photo", ""),                          # 4
-    (_t(11, 42, 0), "photo", ""),                           # 5
-    (_t(11, 42, 30), "photo", ""),                          # 6
-    (_t(11, 43, 0), "photo", ""),                           # 7
-    (_t(11, 43, 30), "photo", ""),                          # 8
-    (_t(11, 46, 10), "voice", "Sheetrock not finished in the hallway"),
-    (_t(11, 47, 5), "voice", "Missing outlet covers"),
-    (_t(11, 48, 0), "photo", ""),                           # 9
-    (_t(11, 49, 0), "photo", ""),                           # 10
-    (_t(11, 50, 0), "photo", ""),                           # 11
-    (_t(11, 50, 30), "photo", ""),                          # 12
-    (_t(11, 51, 0), "photo", ""),                           # 13
-    (_t(11, 52, 5), "text", "Correction. 3rd floor interior"),
-    (_t(11, 52, 40), "text", "Last 3 photos"),
-    (_t(11, 54, 0), "photo", "Backyard"),                   # 14
-    (_t(11, 54, 30), "photo", ""),                          # 15
-    (_t(11, 55, 0), "photo", "5th floor staircase"),        # 16
-    (_t(11, 55, 30), "photo", ""),                          # 17
-    (_t(11, 56, 0), "photo", "Front"),                      # 18
-    (_t(11, 56, 30), "photo", ""),                          # 19
-    (_t(11, 57, 0), "photo", "Roof missing coping"),        # 20
-    (_t(11, 58, 0), "text", "Compound and sheetrock not done"),
-    (_t(11, 59, 0), "text", "Same for the last batch of pics"),
-] + [(_t(12, 0, 0) + timedelta(seconds=2 * i), "photo", "") for i in range(24)] + [  # 21-44
-    (_t(12, 1, 0), "text", "Done"),
-    (_t(12, 1, 20), "bot", "Where is #3 'Back of building'? (floor + unit, or a named area)"),
-    (_t(12, 2, 10), "text", "1st floor"),
-    (_t(12, 3, 30), "text", "Back of building is location"),
+    (_t(11, 40, 0), "photo", "Front", None),                               # 1
+    (_t(11, 40, 5), "bot", "Got it. #1 'Front' (Facade)", None),
+    (_t(11, 40, 20), "photo", "", None),                                   # 2
+    (_t(11, 40, 25), "bot", "#2 (Facade)", None),
+    (_t(11, 41, 0), "photo", "Back of building", None),                    # 3
+    (_t(11, 41, 5), "bot", "#3 'Back of building' (?)", None),
+    (_t(11, 41, 30), "photo", "", None),                                   # 4
+    (_t(11, 42, 0), "photo", "", None),                                    # 5
+    (_t(11, 42, 30), "photo", "", None),                                   # 6
+    (_t(11, 43, 0), "photo", "", None),                                    # 7
+    (_t(11, 43, 30), "photo", "Interior", {"floor": "2", "loc_src": "group"}),   # 8
+    (_t(11, 46, 10), "voice", "Sheetrock not finished in the hallway", None),
+    (_t(11, 47, 5), "voice", "Missing outlet covers", None),
+    (_t(11, 48, 0), "photo", "", None),                                    # 9
+    (_t(11, 49, 0), "photo", "", None),                                    # 10
+    (_t(11, 50, 0), "photo", "", None),                                    # 11
+    (_t(11, 50, 30), "photo", "", None),                                   # 12
+    (_t(11, 51, 0), "photo", "", None),                                    # 13
+    (_t(11, 52, 5), "text", "Correction. 3rd floor interior", None),
+    (_t(11, 52, 15), "bot", "Noted. Which photos is that for?", None),
+    (_t(11, 52, 40), "text", "Last 3 photos", None),
+    (_t(11, 54, 0), "photo", "Backyard", None),                            # 14
+    (_t(11, 54, 30), "photo", "", None),                                   # 15
+    (_t(11, 54, 35), "bot", "#15 (Floor 5 · stairs)", None),
+    (_t(11, 55, 0), "photo", "5th floor staircase", None),                 # 16
+    (_t(11, 55, 30), "photo", "", None),                                   # 17
+    (_t(11, 56, 0), "photo", "Front", None),                               # 18
+    (_t(11, 56, 30), "photo", "Interior", {"floor": "4", "loc_src": "group"}),   # 19
+    (_t(11, 57, 0), "photo", "Roof missing coping", None),                 # 20
+    (_t(11, 58, 0), "text", "Compound and sheetrock not done", None),
+    (_t(11, 59, 0), "text", "Same for the last batch of pics", None),
+] + _burst(_t(12, 0, 0), 24, extra={2: {"floor": "5", "loc_src": "group"},     # 21-44: 23
+                                    9: {"floor": "Roof", "loc_src": "group"}}) + [  # 30: a floor "Roof"
+    (_t(12, 0, 50), "photo", "", None),                                    # 45
+    (_t(12, 0, 52), "photo", "", None),                                    # 46
+    (_t(12, 0, 54), "photo", "", None),                                    # 47
+    (_t(12, 0, 56), "bot", "#47 (Floor 7 · bulkhead)", None),
+    (_t(12, 1, 0), "text", "Done", None),
+    (_t(12, 1, 20), "bot", "Where is #3 'Back of building'? (floor + unit, or a named area)", None),
+    (_t(12, 2, 10), "text", "1st floor", None),
+    (_t(12, 3, 30), "text", "Back of building is location", None),
 ]
+#: #23 is the burst's 3rd photo, its caption "Interior".
+TIMELINE[[i for i, r in enumerate(TIMELINE) if r[1] == "photo"][22]] = (
+    _t(12, 0, 4), "photo", "Interior", {"floor": "5", "loc_src": "group"})
 
 
-def _timeline():
-    """The exact log when it is saved; else the rebuilt one."""
-    if FIXTURE.exists():
-        rows = json.loads(FIXTURE.read_text())
-        return [(datetime.fromisoformat(r["at"]), r["kind"], r.get("text") or "") for r in rows]
-    return TIMELINE
+def _fixture() -> dict:
+    """The exact walk, when it has been dumped: {"events", "items", ...}."""
+    if not FIXTURE.exists():
+        return {}
+    got = json.loads(FIXTURE.read_text())
+    return got if isinstance(got, dict) else {"events": got}
+
+
+def _session(items) -> dict:
+    return {"_id": "w6a8", "user_id": "u_roy", "company_id": CO, "chat": CHAT, "project_id": "p588",
+            "job_name": "588 Thomas St", "job_code": "588", "status": "sent", "items": items,
+            "created_at": _t(11, 39), "sent_at": _t(12, 10), "send_mode": "shadow",
+            "detail": "simple", "group_loc_v2": True}
+
+
+def _from_fixture(fx: dict):
+    """The dumped walk, replayed as it is: its items as stored, its events."""
+    events = []
+    for r in fx["events"]:
+        e = dict(r)
+        e["at"] = datetime.fromisoformat(r["at"]) if r.get("at") else None
+        events.append(e)
+    items = [dict(it) for it in fx.get("items") or []]
+    for it in items:
+        if isinstance(it.get("at"), str):
+            it["at"] = datetime.fromisoformat(it["at"])
+    return _session(items), events
 
 
 def _old_walk():
     """The walk as the old rule left it: each text and voice note was the
     last photo's words (its caption_ids say so), the 11:47 voice note an
-    item of its own; sent in shadow."""
+    item of its own; sent in shadow. The exact walk when it is dumped."""
+    fx = _fixture()
+    if fx.get("items"):
+        return _from_fixture(fx)
     items, events = [], []
     n = 0
-    for i, (at, kind, said) in enumerate(_timeline()):
+    for i, (at, kind, said, stored) in enumerate(TIMELINE):
         mid = f"false_{CHAT}_E{i:03d}"
         if kind == "photo":
             n += 1
@@ -113,6 +170,7 @@ def _old_walk():
                 fresh = punch.new_item(n, said, photo_key=it["photo_key"], message_id=mid)
                 it.update({k: fresh[k] for k in ("text", "floor", "area", "trade", "trade_guess")},
                           caption_ids=[mid])
+            it.update(stored or {})
             items.append(it)
             events.append({"kind": "photo", "message_id": mid, "at": at, "text": "", "quoted": ""})
         elif kind == "bot":
@@ -121,6 +179,11 @@ def _old_walk():
             events.append({"kind": "voice", "message_id": mid, "at": at, "text": "", "quoted": ""})
             if at.minute == 47:
                 items.append({"n": 90, "captured": n + 0.5, "photo_key": None, "message_id": mid,
+                              "text": said, "voice": {"transcript": said, "lang": "en"},
+                              "floor": punch.UNKNOWN, "area": punch.UNKNOWN, "trade": punch.UNKNOWN})
+            elif [it for it in items if it.get("photo_key")][-1].get("text"):
+                # After a captioned photo the old rule made the note an item of its own.
+                items.append({"n": 80 + i, "captured": n + 0.4, "photo_key": None, "message_id": mid,
                               "text": said, "voice": {"transcript": said, "lang": "en"},
                               "floor": punch.UNKNOWN, "area": punch.UNKNOWN, "trade": punch.UNKNOWN})
             else:
@@ -139,14 +202,10 @@ def _old_walk():
                                   "area": punch.UNKNOWN, "trade": punch.UNKNOWN})
                 else:
                     last.update(text=said, caption_ids=[mid])
-    sess = {"_id": "w6a8", "user_id": "u_roy", "company_id": CO, "chat": CHAT, "project_id": "p588",
-            "job_name": "588 Thomas St", "job_code": "588", "status": "sent", "items": items,
-            "created_at": _t(11, 39), "sent_at": _t(12, 10), "send_mode": "shadow",
-            "detail": "simple", "group_loc_v2": True}
-    return sess, events
+    return _session(items), events
 
 
-class Walk6a868363(_Batch):
+class _WalkBase(_Batch):
 
     def _load(self):
         sess, events = _old_walk()
@@ -166,6 +225,10 @@ class Walk6a868363(_Batch):
         out = self._run(server.punch_walk_rebatch("w6a8", apply=True, events=events))
         self.assertTrue(out["ok"], out)
         return out, {it["n"]: it for it in self.sess()["items"]}
+
+
+
+class Walk6a868363(_WalkBase):
 
     # 1 ───────────────────────────────────────────────────────────────────
     def test_correction_plus_last_3_photos_is_one_annotation(self):
@@ -256,12 +319,12 @@ class Walk6a868363(_Batch):
         def where(n):
             return punch.place_label(by_n[n].get("floor"), by_n[n].get("area"))
         self.assertEqual({n: where(n) for n in (1, 14, 16, 18, 20)},
-                         {1: "Cellar", 14: "Backyard", 16: "Floor 5 · staircase", 18: "Front",
+                         {1: "Facade", 14: "Backyard", 16: "Floor 5 · staircase", 18: "Front",
                           20: "Roof"})
         self.assertEqual(by_n[20]["text"], "Missing coping")
         # A place is never the words: the batch's text, or vision "(auto)".
         for n in (1, 14, 16, 18):
-            self.assertNotIn(by_n[n]["text"], ("Cellar", "Backyard", "5th floor staircase", "Front"), n)
+            self.assertNotIn(by_n[n].get("text"), ("Front", "Backyard", "5th floor staircase"), n)
         self.assertEqual((by_n[18]["text"], by_n[18]["text_auto"]),
                          (_seen(by_n[18]["photo_key"]), True))           # vision, "(auto)"
 
@@ -314,6 +377,227 @@ class Walk6a868363(_Batch):
             self.assertTrue(lines[i + 1].strip().startswith("-> #"), lines[i + 1])
 
 
+class TheOct15DryRun(_WalkBase):
+    """V1-V6: what the d1e9a11 dry run still got wrong."""
+
+    # V2 ──────────────────────────────────────────────────────────────────
+    def test_the_bots_reply_does_not_split_the_correction(self):
+        out, log = self.dry()
+        self.assertIn("'Correction. 3rd floor interior. Last 3 photos'", log)
+        self.assertIn("-> #11–#13: Floor 3 · interior", log)
+        # "Last 3 photos" is never read on its own, and nothing else moved.
+        self.assertNotIn("text 'Last 3 photos'", log)
+        _out, by_n = self.applied()
+        on3 = sorted(n for n, it in by_n.items() if it.get("floor") == "3")
+        self.assertEqual(on3, [11, 12, 13])
+
+    # V3 / V6 ─────────────────────────────────────────────────────────────
+    def test_what_the_bot_confirmed_at_capture_stands(self):
+        out, log = self.dry()
+        self.assertIn("confirmed at capture: #1 Facade", log)
+        self.assertIn("confirmed at capture: #15 Floor 5 · stairs", log)
+        self.assertIn("confirmed at capture: #47 Floor 7 · bulkhead", log)
+        _out, by_n = self.applied()
+
+        def where(n):
+            return punch.place_label(by_n[n].get("floor"), by_n[n].get("area"))
+        self.assertEqual({n: where(n) for n in (1, 2, 15, 47)},
+                         {1: "Facade", 2: "Facade", 15: "Floor 5 · stairs", 47: "Floor 7 · bulkhead"})
+
+    def test_a_photos_own_caption_is_never_overwritten_by_a_batch(self):
+        _out, by_n = self.applied()
+        self.assertEqual(punch.place_label(by_n[14]["floor"], by_n[14]["area"]), "Backyard")
+        self.assertEqual(punch.place_label(by_n[16]["floor"], by_n[16]["area"]), "Floor 5 · staircase")
+
+    # V4 ──────────────────────────────────────────────────────────────────
+    def test_interior_keeps_the_floor(self):
+        _out, by_n = self.applied()
+        self.assertEqual({n: punch.place_label(by_n[n]["floor"], by_n[n]["area"]).lower()
+                          for n in (8, 19, 23)},
+                         {8: "floor 2 · interior", 19: "floor 4 · interior", 23: "floor 5 · interior"})
+
+    # V5 ──────────────────────────────────────────────────────────────────
+    def test_one_heading_per_place(self):
+        out, _log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual(len(heads), len(set(h.lower() for h in heads)), heads)
+        self.assertEqual([h for h in heads if "roof" in h.lower()], ["*Roof*"])
+        # One spelling per heading: "Floor 2 · interior" like "Floor 3 · interior".
+        self.assertIn("*Floor 2 · interior*", heads)
+        self.assertNotIn("*Floor 2 · Interior*", heads)
+
+    # V1 ──────────────────────────────────────────────────────────────────
+    def test_vision_errors_are_shown_never_see_photo(self):
+        self.vision_error = "no photo: R2 wa-photos/x-full.jpg: ClientError NoSuchKey"
+        events = self._load()
+        lines = []
+        out = self._run(server.punch_walk_rebatch("w6a8", apply=False, events=events,
+                                                  say=lines.append))
+        log = "\n".join(lines)
+        self.assertRegex(log, r"vision #\d+: NO DESCRIPTION -- no photo: R2 wa-photos/x-full\.jpg: "
+                              r"ClientError NoSuchKey")
+        self.assertRegex(log, r"vision: \d+ of \d+ photo\(s\) without a description")
+        self.assertNotIn("See photo", log + out["draft"])
+        self.assertIn(punch.NO_WORDS, out["draft"])
+
+
+class TheDump(_WalkBase):
+    """`--dump-events` writes what the fixture loader replays: a walk dumped
+    and loaded back reads exactly as the walk itself."""
+
+    def test_dumped_and_replayed_is_the_same_walk(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "repair_punch_walk", Path(__file__).parents[1] / "scripts" / "repair_punch_walk.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sess, events = _old_walk()
+        rows, items = mod.dump(sess, events, punch)
+        blob = json.dumps({"events": rows, "items": items})
+        self.assertNotIn(CHAT.split("@")[0], blob)                 # never the phone in an id
+        direct, _ = self.dry()
+        with patch(f"{__name__}._fixture", lambda: json.loads(blob)):
+            from_dump, _ = self.dry()
+        self.assertEqual(from_dump["draft"], direct["draft"])
+
+
+class ReadingConfirmations(unittest.TestCase):
+
+    def test_labels(self):
+        f = punch_batch.place_from_label
+        self.assertEqual(f("Floor 5 · stairs"), {"floor": "5", "area": "stairs"})
+        self.assertEqual(f("Floor 7 · bulkhead"), {"floor": "7", "area": "bulkhead"})
+        self.assertEqual(f("Facade"), {"floor": None, "area": "Facade"})
+        self.assertEqual(f("Roof"), {"floor": "roof", "area": None})
+        self.assertEqual(f("3rd floor"), {"floor": "3", "area": None})
+        for no in ("?", "8 photos", "Location: not given", ""):
+            self.assertIsNone(f(no), no)
+
+    def test_messages(self):
+        c = punch_batch.capture_confirmations
+        self.assertEqual([(n, w) for n, w, _ in c("Got it. #1 'Front' (Facade)")], [(1, "Front")])
+        self.assertEqual([n for n, _w, _p in c("#15 (Floor 5 · stairs)")], [15])
+        # Quotes inside the caption (Codex on #796).
+        got = c("#1 'Women's bathroom crack' (Floor 2 · bathroom)")
+        self.assertEqual([(n, w, p) for n, w, p in got],
+                         [(1, "Women's bathroom crack", {"floor": "2", "area": "bathroom"})])
+        self.assertEqual([(n, w) for n, w, _ in c('#4 "6" gap at sill" (Floor 3)')], [(4, '6" gap at sill')])
+        # A batch's count, a question: never a photo's place.
+        self.assertEqual(c("Got it — #5–#12 (8 photos): Floor 2 · interior."), [])
+        self.assertEqual(c("Where is #3 'Back of building'? (floor + unit, or a named area)"), [])
+
+
+class Vision(unittest.TestCase):
+    """The real vision path: every reason there is no description, said."""
+
+    def run_(self, it, **env):
+        import asyncio
+        with patch.object(server, "QWEN_API_KEY", env.get("key", "k")), \
+                patch.object(server, "record_vision_call", _noop), \
+                patch.object(server, "_webhook_media_ref", _empty_ref), \
+                patch.object(server, "download_image", env.get("wa", _no_media)), \
+                patch.object(server, "_r2_fetch", env.get("r2", lambda k: (None, "ClientError NoSuchKey"))):
+            return asyncio.run(server._punch_vision(it, "p588"))
+
+    def test_no_key(self):
+        got = self.run_({"n": 1, "photo_key": "k.jpg"}, key="")
+        self.assertIn("no vision key", got["error"])
+
+    def test_no_photo_says_where_it_looked(self):
+        got = self.run_({"n": 1, "photo_key": "wa/1.jpg", "message_id": "false_x_ABC"})
+        self.assertIsNone(got["words"])
+        self.assertIn("R2 wa/1-full.jpg: ClientError NoSuchKey", got["error"])
+        self.assertIn("R2 wa/1.jpg: ClientError NoSuchKey", got["error"])
+        self.assertIn("WhatsApp media: nothing came back (no media reference in the log)", got["error"])
+
+    def test_whatsapp_media_when_r2_has_none(self):
+        async def wa(parsed):
+            return _jpeg()
+        with patch.object(server, "ServerHttpClient", _Http(200, {"choices": [{"message": {
+                "content": "Missing outlet cover plate."}}]})):
+            got = self.run_({"n": 2, "photo_key": "wa/2.jpg", "message_id": "false_x_DEF"}, wa=wa)
+        self.assertEqual((got["words"], got["source"], got["error"]),
+                         ("Missing outlet cover plate", "whatsapp", None))
+
+    def test_http_error_is_shown(self):
+        with patch.object(server, "ServerHttpClient", _Http(400, {}, text="InvalidParameter: image")):
+            got = self.run_({"n": 3, "photo_key": "wa/3.jpg"}, r2=lambda k: (_jpeg(), None))
+        self.assertEqual(got["error"], "vision HTTP 400: InvalidParameter: image")
+
+    def test_apply_describes_a_photo_with_no_stored_copy(self):
+        # Codex on #796: photo_failed items get the WhatsApp fallback on
+        # apply too, as in the dry run.
+        import asyncio
+        seen = []
+
+        async def vision(it, project_id=None, store=None):
+            seen.append(it.get("n"))
+            return {"words": "Cracked tile", "source": "whatsapp", "error": None}
+
+        async def save(*a, **k):
+            return None
+        sess = {"project_id": "p588", "items": [
+            {"n": 1, "photo_key": None, "photo_failed": True, "message_id": "A", "text": ""},
+            {"n": 2, "photo_key": None, "message_id": "B", "text": ""}]}
+        with patch.object(server, "_punch_vision", vision), patch.object(server, "_punch_save", save):
+            asyncio.run(server._punch_describe_blanks(sess, trades=False))
+        self.assertEqual(seen, [1])
+        self.assertEqual(sess["items"][0]["text"], "Cracked tile")
+        self.assertEqual(sess["items"][1].get("vision_error"), "no photo")
+
+    def test_the_r2_client_is_made_on_first_use(self):
+        made = []
+        with patch.object(server, "_r2_client", None), \
+                patch.object(server, "_get_r2_client", lambda: made.append(1) or "client"):
+            self.assertEqual(server._r2(), "client")
+        self.assertEqual(made, [1])
+
+
+async def _noop(*a, **k):
+    return None
+
+
+async def _empty_ref(*a, **k):
+    return {}
+
+
+async def _no_media(parsed):
+    return None
+
+
+def _jpeg() -> bytes:
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(out, "JPEG")
+    return out.getvalue()
+
+
+class _Http:
+    def __init__(self, status, body, text=""):
+        self.status, self.body, self.text = status, body, text
+
+    def __call__(self, *a, **k):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **k):
+        outer = self
+
+        class R:
+            status_code = outer.status
+            text = outer.text
+
+            def json(self):
+                return outer.body
+        return R()
+
+
 class MergingTexts(unittest.TestCase):
 
     def test_only_close_texts_with_nothing_between(self):
@@ -326,6 +610,22 @@ class MergingTexts(unittest.TestCase):
         got = punch_batch.merge_texts(ev, is_command=lambda t: t == "done")
         self.assertEqual([e.get("text", "") for e in got],
                          ["Correction. 3rd floor interior. Last 3 photos", "", "Cellar", "Interior", "done"])
+
+    def test_the_assistants_reply_between_them_does_not_split_them(self):
+        # V2 (11:52): the bot answered between the two texts.
+        ev = [{"kind": "text", "text": "Correction. 3rd floor interior", "at": _t(11, 52, 5)},
+              {"kind": "bot", "text": "Noted.", "at": _t(11, 52, 15)},
+              {"kind": "text", "text": "Last 3 photos", "at": _t(11, 52, 40)}]
+        got = punch_batch.merge_texts(ev)
+        self.assertEqual([(e["kind"], e.get("text")) for e in got],
+                         [("text", "Correction. 3rd floor interior. Last 3 photos"), ("bot", "Noted.")])
+
+    def test_a_question_about_an_item_does(self):
+        ev = [{"kind": "text", "text": "Done", "at": _t(12, 1)},
+              {"kind": "bot", "text": "Where is #3 'Back of building'?", "at": _t(12, 1, 20)},
+              {"kind": "text", "text": "1st floor", "at": _t(12, 1, 40)}]
+        got = punch_batch.merge_texts(ev)
+        self.assertEqual([e.get("text") for e in got if e["kind"] == "text"], ["Done", "1st floor"])
 
 
 if __name__ == "__main__":
