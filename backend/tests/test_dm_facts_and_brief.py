@@ -583,7 +583,14 @@ class TheBackstop(unittest.TestCase):
             return reply
         ident = {"company_id": CO_A, "user_id": "u_admin", "role": "admin", "user": {}}
         project = next(p for p in db.projects.rows if p["_id"] == THOMAS)
-        with _Ctx(db), patch.object(server, "_run_group_agent", agent):
+        real = server._attendance_fallback
+
+        async def on_wed(project, body, now=None):
+            # The fixture's day: "today" is Wed Oct 14 whatever the clock says
+            # (CI after midnight in New York read it as "yesterday").
+            return await real(project, body, now=WED)
+        with _Ctx(db), patch.object(server, "_run_group_agent", agent), \
+                patch.object(server, "_attendance_fallback", on_wed):
             return _run(server._dm_answer_job(ident, project, f"{ADMIN_PHONE}@c.us", body, "m1"))
 
     def test_doesnt_specify_is_answered_from_check_ins(self):

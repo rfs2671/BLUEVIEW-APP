@@ -26,6 +26,15 @@ V4. #8, #19, #23 had floors 2, 4, 5 + "Interior" and lost the floor.
 V5. One heading per place (two "Roof").
 V6. The assistant's capture confirmations are the ground truth.
 
+Thu Oct 15, the dry run at ae14f5f with real vision (descriptions work):
+W1. "Correction. 3rd floor interior" -> bot "Which photo is that for?" ->
+    "Last 3 photos": the next text ANSWERS the question -- the photos for the
+    previous text, however long it took. #11-#13 only.
+W2. A confirmation "(where? floor and unit)" (#13, #44) is the assistant's
+    placeholder, not a place: never a "Where? floor and unit" group.
+W3. A capture confirmation never removes detail: #36 confirmed "Floor 6",
+    then a batch "Floor 6 · interior" -> Floor 6 · interior.
+
 THE MESSAGES. TIMELINE below is rebuilt from what the two dry-run reports
 said (texts, times, the question, the confirmations quoted); the photos'
 exact order is not known here. The exact walk:
@@ -92,9 +101,10 @@ TIMELINE = [
     (_t(11, 50, 0), "photo", "", None),                                    # 11
     (_t(11, 50, 30), "photo", "", None),                                   # 12
     (_t(11, 51, 0), "photo", "", None),                                    # 13
+    (_t(11, 51, 5), "bot", "#13 (where? floor and unit)", None),
     (_t(11, 52, 5), "text", "Correction. 3rd floor interior", None),
-    (_t(11, 52, 15), "bot", "Noted. Which photos is that for?", None),
-    (_t(11, 52, 40), "text", "Last 3 photos", None),
+    (_t(11, 52, 15), "bot", "Which photo is that for?", None),
+    (_t(11, 53, 35), "text", "Last 3 photos", None),                       # 90 s later
     (_t(11, 54, 0), "photo", "Backyard", None),                            # 14
     (_t(11, 54, 30), "photo", "", None),                                   # 15
     (_t(11, 54, 35), "bot", "#15 (Floor 5 · stairs)", None),
@@ -103,22 +113,46 @@ TIMELINE = [
     (_t(11, 56, 0), "photo", "Front", None),                               # 18
     (_t(11, 56, 30), "photo", "Interior", {"floor": "4", "loc_src": "group"}),   # 19
     (_t(11, 57, 0), "photo", "Roof missing coping", None),                 # 20
-    (_t(11, 58, 0), "text", "Compound and sheetrock not done", None),
+] + _burst(_t(11, 57, 4), 20, extra={2: {"floor": "5", "loc_src": "group"},     # 21-40: 23
+                                     9: {"floor": "Roof", "loc_src": "group"}}) + [  # 30: a floor "Roof"
+    (_t(11, 58, 0), "text", "7th floor. Compound and sheetrock not done", None),
     (_t(11, 59, 0), "text", "Same for the last batch of pics", None),
-] + _burst(_t(12, 0, 0), 24, extra={2: {"floor": "5", "loc_src": "group"},     # 21-44: 23
-                                    9: {"floor": "Roof", "loc_src": "group"}}) + [  # 30: a floor "Roof"
-    (_t(12, 0, 50), "photo", "", None),                                    # 45
-    (_t(12, 0, 52), "photo", "", None),                                    # 46
-    (_t(12, 0, 54), "photo", "", None),                                    # 47
-    (_t(12, 0, 56), "bot", "#47 (Floor 7 · bulkhead)", None),
-    (_t(12, 1, 0), "text", "Done", None),
-    (_t(12, 1, 20), "bot", "Where is #3 'Back of building'? (floor + unit, or a named area)", None),
+] + _burst(_t(12, 0, 0), 4) + [                                            # 41-44: the NEXT 4
+    (_t(12, 1, 10), "photo", "", None),                                    # 45 (64 s later)
+    (_t(12, 1, 12), "photo", "", None),                                    # 46
+    (_t(12, 1, 14), "photo", "", None),                                    # 47
+    (_t(12, 1, 16), "bot", "#47 (Floor 7 · bulkhead)", None),
+    (_t(12, 1, 30), "text", "Done", None),
+    (_t(12, 1, 40), "bot", "Where is #3 'Back of building'? (floor + unit, or a named area)", None),
     (_t(12, 2, 10), "text", "1st floor", None),
     (_t(12, 3, 30), "text", "Back of building is location", None),
 ]
 #: #23 is the burst's 3rd photo, its caption "Interior".
 TIMELINE[[i for i, r in enumerate(TIMELINE) if r[1] == "photo"][22]] = (
-    _t(12, 0, 4), "photo", "Interior", {"floor": "5", "loc_src": "group"})
+    _t(11, 57, 8), "photo", "Interior", {"floor": "5", "loc_src": "group"})
+
+
+def _after_photo(n, *rows, timeline=TIMELINE):
+    i = [k for k, r in enumerate(timeline) if r[1] == "photo"][n - 1]
+    timeline[i + 1:i + 1] = list(rows)
+
+
+#: W3: #36 confirmed "Floor 6"; then "Last 2 photos 6th floor interior" (#35, #36).
+_after_photo(36, (_t(11, 57, 34), "bot", "#36 (Floor 6)", None),
+             (_t(11, 57, 35), "text", "Last 2 photos 6th floor interior", None))
+#: W2: the placeholder on #44.
+_after_photo(44, (_t(12, 0, 7), "bot", "#44 (where? floor and unit)", None))
+
+
+def _late(timeline):
+    """The same walk with nothing sent for 6 minutes after "Same for the last
+    batch of pics": no next burst -- the model places it, or it is listed."""
+    k = next(i for i, r in enumerate(timeline) if r[2] == "Same for the last batch of pics")
+    return timeline[:k + 1] + [(at + timedelta(minutes=6), kind, said, stored)
+                               for at, kind, said, stored in timeline[k + 1:]]
+
+
+LATE_TIMELINE = _late(TIMELINE)
 
 
 def _fixture() -> dict:
@@ -150,16 +184,16 @@ def _from_fixture(fx: dict):
     return _session(items), events
 
 
-def _old_walk():
+def _old_walk(timeline=None):
     """The walk as the old rule left it: each text and voice note was the
     last photo's words (its caption_ids say so), the 11:47 voice note an
     item of its own; sent in shadow. The exact walk when it is dumped."""
     fx = _fixture()
-    if fx.get("items"):
+    if fx.get("items") and timeline is None:
         return _from_fixture(fx)
     items, events = [], []
     n = 0
-    for i, (at, kind, said, stored) in enumerate(TIMELINE):
+    for i, (at, kind, said, stored) in enumerate(timeline or TIMELINE):
         mid = f"false_{CHAT}_E{i:03d}"
         if kind == "photo":
             n += 1
@@ -207,8 +241,11 @@ def _old_walk():
 
 class _WalkBase(_Batch):
 
+    #: None: the walk (the dumped one when saved); else this timeline.
+    timeline = None
+
     def _load(self):
-        sess, events = _old_walk()
+        sess, events = _old_walk(self.timeline)
         self.db[punch.SESSIONS].rows[:] = [sess]           # a dry run, then an apply: one walk
         return events
 
@@ -251,66 +288,53 @@ class Walk6a868363(_WalkBase):
         self.assertIn("-> answer about #3: Back of building", log)
         _out, by_n = self.applied()
         self.assertEqual((by_n[3]["floor"], by_n[3]["area"]), ("1", "Back of building"))
-        for n in (41, 42, 43, 44):
-            self.assertEqual(by_n[n]["floor"], punch.UNKNOWN, n)
+        for n in (41, 42, 43, 44):                          # the next burst's: never #3's
+            self.assertEqual(by_n[n]["floor"], "7", n)
             self.assertIn(by_n[n]["area"], (punch.UNKNOWN, None), n)
 
     # 3 ───────────────────────────────────────────────────────────────────
-    def test_same_for_the_last_batch_is_listed_when_it_cannot_be_placed(self):
+    def test_same_for_the_last_batch_is_the_next_burst(self):
+        # 11:59 "Same for the last batch of pics", nothing sent since the last
+        # batch: the NEXT 4 photos (#41-#44, 12:00) are Floor 7, "Compound and
+        # sheetrock not done". #45-#47 (64 s later) are another burst.
         out, log = self.dry()
-        self.assertEqual(out["unplaced"], ['11:59 AM "Same for the last batch of pics"'])
-        self.assertIn(punch.UNPLACED_HEADING, out["draft"])
-        self.assertIn('• 11:59 AM "Same for the last batch of pics"', out["draft"])
-        self.assertIn("-> couldn't place -- listed in the draft", log)
-        # Never anyone's words.
-        self.assertEqual(out["draft"].count("Same for the last batch of pics"), 1)
-
-    def test_the_walker_places_it_in_the_draft(self):
-        # Codex on #793: the listed reference is answered in the draft --
-        # "photos 9 and 10" copies the batch words before it onto them.
-        _out, _by_n = self.applied()
-        saved = self.sess()["unplaced"]
-        self.assertEqual([u["label"] for u in saved], ['11:59 AM "Same for the last batch of pics"'])
-        self.assertEqual(saved[0]["copy"]["description"], "Compound and sheetrock not done")
-        said = self.turn("photos 9 and 10")
-        self.assertTrue(said[0].startswith('Applied 11:59 AM "Same for the last batch of pics" '
-                                           'to #9, #10.'), said[0])
-        self.assertNotIn(punch.UNPLACED_HEADING, said[0])
-        self.assertEqual(self.sess()["unplaced"], [])
-        for n in (9, 10):
-            self.assertEqual(self.n_of(n)["text"], "Compound and sheetrock not done", n)
-
-    def test_a_number_not_in_the_walk_keeps_it_listed(self):
-        self.applied()
-        said = self.turn("99")
-        self.assertEqual(said, ["No photo #99 in this walkthrough. " + punch.UNPLACED_FOOT])
-        self.assertEqual(len(self.sess()["unplaced"]), 1)
-
-    def test_skip_lets_it_go_and_send_never_carries_it(self):
-        self.applied()
-        said = self.turn("skip")
-        self.assertTrue(said[0].startswith('Skipped 11:59 AM "Same for the last batch of pics".'))
-        self.assertEqual(self.sess()["unplaced"], [])
-        self.applied()
-        self.turn("send")
-        self.assertEqual(self.sess()["unplaced"], [])
-
-    def test_reading_the_answer(self):
-        r = punch_batch.unplaced_reply
-        self.assertEqual(r("9 10"), {"ns": [9, 10]})
-        self.assertEqual(r("photos 9 and 10"), {"ns": [9, 10]})
-        self.assertEqual(r("#9-12"), {"ns": [9, 10, 11, 12]})
-        self.assertEqual(r("Skip"), {"skip": True})
-        for edit in ("3 electrical", "drop 4", "9 roof", "send"):
-            self.assertIsNone(r(edit), edit)
-
-    def test_same_for_placed_by_the_model(self):
-        async def place(ref):
-            return {"ns": [9, 10], "ann": dict(ref["copy"], last_n=None, correction=False)}
-        with patch.object(server, "_punch_place_reference", place):
-            out, log = self.dry()
+        self.assertIn("-> same as the last batch -> the next photos #41–#44: Floor 7 — "
+                      "Compound and sheetrock not done", log)
         self.assertEqual(out["unplaced"], [])
-        self.assertIn("same as batch -> #9, #10: Compound and sheetrock not done", log)
+        self.assertNotIn(punch.UNPLACED_HEADING, out["draft"])
+        _out, by_n = self.applied()
+        for n in (41, 42, 43, 44):
+            self.assertEqual((by_n[n]["floor"], by_n[n]["text"]),
+                             ("7", "Compound and sheetrock not done"), n)
+        for n in (45, 46):
+            self.assertEqual(by_n[n]["floor"], punch.UNKNOWN, n)
+        # The batch it copies: #37-#40.
+        for n in (37, 40):
+            self.assertEqual((by_n[n]["floor"], by_n[n]["text"]),
+                             ("7", "Compound and sheetrock not done"), n)
+
+    def test_the_rule(self):
+        def ev(kind, at, text=""):
+            return {"kind": kind, "at": at, "text": text, "message_id": f"m{at.minute}{at.second}"}
+        items = [{"n": k, "captured": k, "photo_key": f"k{k}", "message_id": f"m{m}{sec}",
+                  "floor": punch.UNKNOWN, "area": punch.UNKNOWN}
+                 for k, (m, sec) in enumerate([(1, 0), (1, 5), (3, 0), (3, 5), (9, 0)], 1)]
+        reading = {"kind": "annotation", "floor": "7", "area": None, "description": "Paint", "note": None,
+                   "last_n": None}
+        events = [ev("photo", _t(12, 1)), ev("photo", _t(12, 1, 5)), ev("text", _t(12, 2), "7th floor paint"),
+                  ev("text", _t(12, 2, 30), "same for the next ones"),
+                  ev("photo", _t(12, 3)), ev("photo", _t(12, 3, 5)),      # within 5 min: these two
+                  ev("photo", _t(12, 9))]                                # a new burst: not this one
+        got = punch_batch.replay([dict(i) for i in items], events,
+                                 {2: reading, 3: {"kind": "reference"}})
+        by_n = {it["n"]: it for it in got["items"]}
+        self.assertEqual([by_n[k]["floor"] for k in (1, 2, 3, 4, 5)], ["7", "7", "7", "7", punch.UNKNOWN])
+        self.assertEqual(got["references"], [])
+        # Nothing within 5 minutes: to the model / the couldn't-place list.
+        late = events[:4] + [ev("photo", _t(12, 8))]
+        got = punch_batch.replay([dict(i) for i in items[:3]], late,
+                                 {2: reading, 3: {"kind": "reference"}})
+        self.assertEqual([r["text"] for r in got["references"]], ["same for the next ones"])
 
     # 4 ───────────────────────────────────────────────────────────────────
     def test_a_caption_that_is_a_place_is_the_location(self):
@@ -377,6 +401,70 @@ class Walk6a868363(_WalkBase):
             self.assertTrue(lines[i + 1].strip().startswith("-> #"), lines[i + 1])
 
 
+class NoNextBurst(_WalkBase):
+    """A "same for ..." with no photos within 5 minutes: placed by the model,
+    else listed under "Couldn't place -- tell me which photos"."""
+
+    timeline = LATE_TIMELINE
+
+    def test_same_for_the_last_batch_is_listed_when_it_cannot_be_placed(self):
+        out, log = self.dry()
+        self.assertEqual(out["unplaced"], ['11:59 AM "Same for the last batch of pics"'])
+        self.assertIn(punch.UNPLACED_HEADING, out["draft"])
+        self.assertIn('• 11:59 AM "Same for the last batch of pics"', out["draft"])
+        self.assertIn("-> couldn't place -- listed in the draft", log)
+        # Never anyone's words.
+        self.assertEqual(out["draft"].count("Same for the last batch of pics"), 1)
+
+    def test_the_walker_places_it_in_the_draft(self):
+        # Codex on #793: the listed reference is answered in the draft --
+        # "photos 9 and 10" copies the batch words before it onto them.
+        _out, _by_n = self.applied()
+        saved = self.sess()["unplaced"]
+        self.assertEqual([u["label"] for u in saved], ['11:59 AM "Same for the last batch of pics"'])
+        self.assertEqual(saved[0]["copy"]["description"], "Compound and sheetrock not done")
+        said = self.turn("photos 9 and 10")
+        self.assertTrue(said[0].startswith('Applied 11:59 AM "Same for the last batch of pics" '
+                                           'to #9, #10.'), said[0])
+        self.assertNotIn(punch.UNPLACED_HEADING, said[0])
+        self.assertEqual(self.sess()["unplaced"], [])
+        for n in (9, 10):
+            self.assertEqual(self.n_of(n)["text"], "Compound and sheetrock not done", n)
+
+    def test_a_number_not_in_the_walk_keeps_it_listed(self):
+        self.applied()
+        said = self.turn("99")
+        self.assertEqual(said, ["No photo #99 in this walkthrough. " + punch.UNPLACED_FOOT])
+        self.assertEqual(len(self.sess()["unplaced"]), 1)
+
+    def test_skip_lets_it_go_and_send_never_carries_it(self):
+        self.applied()
+        said = self.turn("skip")
+        self.assertTrue(said[0].startswith('Skipped 11:59 AM "Same for the last batch of pics".'))
+        self.assertEqual(self.sess()["unplaced"], [])
+        self.applied()
+        self.turn("send")
+        self.assertEqual(self.sess()["unplaced"], [])
+
+    def test_reading_the_answer(self):
+        r = punch_batch.unplaced_reply
+        self.assertEqual(r("9 10"), {"ns": [9, 10]})
+        self.assertEqual(r("photos 9 and 10"), {"ns": [9, 10]})
+        self.assertEqual(r("#9-12"), {"ns": [9, 10, 11, 12]})
+        self.assertEqual(r("Skip"), {"skip": True})
+        for edit in ("3 electrical", "drop 4", "9 roof", "send"):
+            self.assertIsNone(r(edit), edit)
+
+    def test_same_for_placed_by_the_model(self):
+        async def place(ref):
+            return {"ns": [9, 10], "ann": dict(ref["copy"], last_n=None, correction=False)}
+        with patch.object(server, "_punch_place_reference", place):
+            out, log = self.dry()
+        self.assertEqual(out["unplaced"], [])
+        self.assertIn("same as batch -> #9, #10: Floor 7 — Compound and sheetrock not done", log)
+
+
+
 class TheOct15DryRun(_WalkBase):
     """V1-V6: what the d1e9a11 dry run still got wrong."""
 
@@ -441,6 +529,53 @@ class TheOct15DryRun(_WalkBase):
         self.assertIn(punch.NO_WORDS, out["draft"])
 
 
+class TheOct15ApplyCheck(_WalkBase):
+    """W1-W3: the dry run with real vision."""
+
+    def test_the_answer_to_which_photo_names_the_photos(self):
+        out, log = self.dry()
+        self.assertIn("'Correction. 3rd floor interior. Last 3 photos'", log)
+        self.assertIn("-> #11–#13: Floor 3 · interior", log)
+        self.assertNotIn("text 'Correction. 3rd floor interior'\n", log)
+        _out, by_n = self.applied()
+        self.assertEqual(sorted(n for n, it in by_n.items() if it.get("floor") == "3"), [11, 12, 13])
+        # #2, #6, #7, #9, #10 stay as they were.
+        self.assertEqual(punch.place_label(by_n[2]["floor"], by_n[2]["area"]), "Facade")
+        for n in (6, 7):
+            self.assertEqual(punch.place_label(by_n[n]["floor"], by_n[n]["area"]), "Hallway", n)
+        for n in (9, 10):
+            self.assertEqual((by_n[n]["floor"], by_n[n]["area"]), (punch.UNKNOWN, punch.UNKNOWN), n)
+
+    def test_the_where_placeholder_is_not_a_place(self):
+        out, log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual([h for h in heads if "where" in h.lower() or "unit" in h.lower()], [])
+        self.assertNotIn("confirmed at capture: #13", log)
+        self.assertNotIn("confirmed at capture: #44", log)
+        _out, by_n = self.applied()
+        self.assertEqual(punch.place_label(by_n[13]["floor"], by_n[13]["area"]), "Floor 3 · interior")
+        self.assertIsNone(re.search(r"(?i)\bwhere\b", str(by_n[44].get("area"))))
+
+    def test_a_confirmation_never_removes_detail(self):
+        out, log = self.dry()
+        self.assertIn("confirmed at capture: #36 Floor 6", log)
+        _out, by_n = self.applied()
+        self.assertEqual({n: punch.place_label(by_n[n]["floor"], by_n[n]["area"]) for n in (35, 36)},
+                         {35: "Floor 6 · interior", 36: "Floor 6 · interior"})
+
+    def test_merging_a_confirmation_with_what_the_photo_had(self):
+        it = {"floor": "6", "area": "interior"}
+        punch_batch.pin_confirmed(it, {"floor": "6", "area": None})
+        self.assertEqual((it["floor"], it["area"]), ("6", "interior"))         # same floor: kept
+        it = {"floor": "5", "area": "interior"}
+        punch_batch.pin_confirmed(it, {"floor": "6", "area": None})
+        self.assertEqual((it["floor"], it["area"]), ("6", punch.UNKNOWN))      # another floor
+        it = {"floor": "6", "area": punch.UNKNOWN, "loc_src": "photo", "confirmed": True, "n": 1,
+              "captured": 1}
+        punch_batch.apply_batch([it], {"floor": "7", "area": "interior"})
+        self.assertEqual((it["floor"], it["area"]), ("6", punch.UNKNOWN))      # never another floor's
+
+
 class TheDump(_WalkBase):
     """`--dump-events` writes what the fixture loader replays: a walk dumped
     and loaded back reads exactly as the walk itself."""
@@ -470,7 +605,8 @@ class ReadingConfirmations(unittest.TestCase):
         self.assertEqual(f("Facade"), {"floor": None, "area": "Facade"})
         self.assertEqual(f("Roof"), {"floor": "roof", "area": None})
         self.assertEqual(f("3rd floor"), {"floor": "3", "area": None})
-        for no in ("?", "8 photos", "Location: not given", ""):
+        for no in ("?", "8 photos", "Location: not given", "", "where? floor and unit",
+                   "Where? Floor and unit"):
             self.assertIsNone(f(no), no)
 
     def test_messages(self):
@@ -619,6 +755,23 @@ class MergingTexts(unittest.TestCase):
         got = punch_batch.merge_texts(ev)
         self.assertEqual([(e["kind"], e.get("text")) for e in got],
                          [("text", "Correction. 3rd floor interior. Last 3 photos"), ("bot", "Noted.")])
+
+    def test_the_answer_to_which_photo_however_long(self):
+        # W1: the bot asked "Which photo is that for?"; the answer 90 s later.
+        ev = [{"kind": "text", "text": "Correction. 3rd floor interior", "at": _t(11, 52, 5)},
+              {"kind": "bot", "text": "Which photo is that for?", "at": _t(11, 52, 15)},
+              {"kind": "text", "text": "Last 3 photos", "at": _t(11, 53, 35)}]
+        self.assertEqual([e.get("text") for e in punch_batch.merge_texts(ev) if e["kind"] == "text"],
+                         ["Correction. 3rd floor interior. Last 3 photos"])
+        # Timed from the question (Codex on #797): asked 9 min later,
+        # answered 2 min after that.
+        late = [dict(ev[0]), {"kind": "bot", "text": "Which photo is that for?", "at": _t(12, 1, 5)},
+                {"kind": "text", "text": "Last 3 photos", "at": _t(12, 3, 5)}]
+        self.assertEqual([e.get("text") for e in punch_batch.merge_texts(late) if e["kind"] == "text"],
+                         ["Correction. 3rd floor interior. Last 3 photos"])
+        # Not asked: 90 s apart are two texts.
+        ev[1]["text"] = "Got it."
+        self.assertEqual(len([e for e in punch_batch.merge_texts(ev) if e["kind"] == "text"]), 2)
 
     def test_a_question_about_an_item_does(self):
         ev = [{"kind": "text", "text": "Done", "at": _t(12, 1)},
