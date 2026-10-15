@@ -541,14 +541,22 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
         by_sub[company_key(c["sub"]) or c["sub"]].append(c)
-    for group in by_sub.values():
-        group.sort(key=lambda c: (c["date"], -c["score"]))
-        if group[0]["date"] != group[-1]["date"]:
-            add({**group[0], "pair": "before"})
-            add({**group[-1], "pair": "after"})
-        else:
-            add(max(group, key=lambda c: c["score"]))
-    # Then each sub's best in turn, so no one sub fills the page.
+
+    def best_on(group, day):
+        return max((c for c in group if c["date"] == day), key=lambda c: c["score"])
+    # 1. Every sub once, before any sub gets two (Codex on #806): its best
+    #    photo of its latest day.
+    latest = {k: best_on(g, max(c["date"] for c in g)) for k, g in by_sub.items()}
+    for k in by_sub:
+        add(dict(latest[k]))
+    # 2. Then each sub's earliest day's best -- the before / after pair.
+    for k, g in by_sub.items():
+        first = min(c["date"] for c in g)
+        if first != latest[k]["date"] and add({**best_on(g, first), "pair": "before"}):
+            for x in chosen:
+                if x["key"] == latest[k]["key"]:
+                    x["pair"] = "after"
+    # 3. Then each sub's best in turn, so no one sub fills the page.
     queues = [sorted(g, key=lambda c: -c["score"]) for g in by_sub.values()]
     while len(chosen) < most and any(queues):
         for q in queues:

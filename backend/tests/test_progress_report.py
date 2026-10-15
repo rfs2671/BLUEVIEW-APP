@@ -172,6 +172,24 @@ class Photos(unittest.TestCase):
         self.assertGreaterEqual(sum(1 for p in picked if p["sub"] == "Power Direct"), 5)
         self.assertEqual({p.get("pair") for p in picked if p["sub"] == "Arkon"} - {None}, {"before", "after"})
 
+    def test_the_latest_is_the_best_of_its_day(self):
+        # Codex on #806: two photos at one place on the last day -- the better one.
+        d1, d2 = date(2026, 10, 1), date(2026, 10, 9)
+        cands = [{"key": k, "date": d, "sub": "Arkon", "where": "fl 2", "words": "Framing",
+                  "source": "daily log"} for k, d in (("a", d1), ("weak", d2), ("strong", d2))]
+        v = {"a": 5, "weak": 2, "strong": 9}
+        picked = P.pick_photos(cands, {k: {"ok": True, "kind": "progress", "score": n} for k, n in v.items()})
+        self.assertEqual([(p["key"], p.get("pair")) for p in picked], [("a", "before"), ("strong", "after")])
+
+    def test_every_sub_before_any_pair(self):
+        # Codex on #806: nine subs with photos on two days each -- all nine shown.
+        d1, d2 = date(2026, 10, 1), date(2026, 10, 9)
+        cands = [{"key": f"{s}{i}", "date": d, "sub": f"Sub {s}", "where": "", "words": "Work",
+                  "source": "daily log"} for s in "ABCDEFGHI" for i, d in enumerate((d1, d2))]
+        picked = P.pick_photos(cands, {c["key"]: {"ok": True, "kind": "progress", "score": 5} for c in cands})
+        self.assertEqual(len(picked), 15)
+        self.assertEqual({p["sub"] for p in picked}, {f"Sub {s}" for s in "ABCDEFGHI"})
+
     def test_never_people_blurry_or_a_document(self):
         keys = {p["key"] for p in rep()["photos"]}
         for (sub, d), v in F.PHOTOS.items():
