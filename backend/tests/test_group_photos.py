@@ -6,9 +6,7 @@
     company of their check-in at the job, or the GC team for a user), and
     what the vision model saw -- asked once, at ingest.
   * A group that is not linked: nothing downloaded, nothing stored.
-  * The progress report picks group photos (from the stored verdict, never
-    asking vision again), ahead of walkthrough photos; a preview-only photo
-    is not a report photo.
+  * Never in a progress report: its photos are the daily logs' only.
   * The memory search reads its caption and what it shows; never the base64
     thumbnail an uncaptioned image carries as its body.
   * Retention and the project delete remove it from R2, by key; a punch
@@ -137,8 +135,7 @@ class APhotoInTheGroupIsKept(unittest.TestCase):
             _send(w, cap, _image("IMG4", "framing"))
             row = next(r for r in w.db.whatsapp_messages.rows if r.get("message_id") == "IMG4")
         self.assertEqual(row["photo"]["quality"], server.PHOTO_PREVIEW)
-        cands = P.photo_candidates([], [], date(2026, 10, 1), date(2026, 10, 31), [row])
-        self.assertEqual(cands, [])
+        self.assertTrue(row["photo"]["key"])
 
     def test_nothing_to_be_had_is_said(self):
         cap = _Capture(full=False)
@@ -152,52 +149,34 @@ class APhotoInTheGroupIsKept(unittest.TestCase):
         self.assertEqual(wa_photos.log_row(row, who="x", place="", at="")["status"], "not_captured")
 
 
-class TheReportPicksGroupPhotos(unittest.TestCase):
+class NeverInTheReport(unittest.TestCase):
+    """Group photos are kept for the search and the media log; the report's
+    photos are the daily logs' only."""
 
-    def test_webhook_to_report(self):
+    def test_webhook_to_report_uses_none_of_them(self):
         cap = _Capture()
         with _Live() as w:
             _people(w.db, f"{MEILICH}@c.us", "Arkon Builders")
             _send(w, cap, _image("IMG5", "framing 3rd floor"))
             project = {"_id": JOB, "company_id": CO, "address": "588 Thomas S Boyland St"}
-
-            async def no_logs(*a, **k):
-                return []
             rows = _run(server._report_rows(project, CO, date(2026, 10, 1), date(2026, 10, 14),
                                             SAT_312PM))
             rep = P.compute(job="588 Thomas S Boyland St", address="", gc="G", start=date(2026, 10, 1),
                             end=date(2026, 10, 14), now=SAT_312PM, **rows)
-            asked = cap.vision
-            with patch.object(server, "_photo_verdict", side_effect=AssertionError("asked again")):
-                picked = _run(server._report_photos(rep, JOB))
-        self.assertEqual([(c["source"], c["sub"]) for c in rep["photo_candidates"]],
-                         [("group chat", "Arkon Builders")])
-        self.assertEqual([p["key"] for p in picked], [f"wa-group-photos/{CO}/{JOB}/IMG5.jpg"])
-        self.assertEqual(picked[0]["caption"], FRAMING["caption"])
-        self.assertEqual(asked, 1)                              # only at ingest
+            stored = next(r for r in w.db.whatsapp_messages.rows if r.get("message_id") == "IMG5")
+        self.assertTrue(stored["photo"]["key"])                  # kept…
+        self.assertNotIn("group_photos", rows)                   # …but never read for the report
+        self.assertEqual(rep["photo_candidates"], [])
 
-    def test_ahead_of_walkthrough_photos(self):
+    def test_not_even_when_passed(self):
         d = date(2026, 10, 6)
         at = datetime(2026, 10, 6, 15, tzinfo=timezone.utc)
-        group = [{"message_id": f"G{i}", "timestamp": at,
-                  "photo": {"key": f"wa-group-photos/c/p/G{i}.jpg", "quality": "original",
-                            "caption": f"fl {i + 2}", "sender_company": "Arkon",
-                            "vision": dict(FRAMING, score=7)}}
-                 for i in range(2)]
-        punch_items = [{"photo_key": f"wa-photos/p/s/{i}.jpg", "created_at": at, "floor": "3",
-                        "text": "patch", "message_id": f"W{i}"} for i in range(2)]
-        cands = P.photo_candidates([], punch_items, d, d, group)
-        verdicts = {c["key"]: c.get("verdict") or dict(FRAMING, score=8) for c in cands}
-        picked = P.pick_photos(cands, verdicts, most=2)
-        self.assertEqual({p["source"] for p in picked}, {"group chat"})
-
-    def test_the_same_photo_is_not_twice(self):
-        d = date(2026, 10, 6)
-        at = datetime(2026, 10, 6, 15, tzinfo=timezone.utc)
-        group = [{"message_id": "M1", "timestamp": at,
-                  "photo": {"key": "wa-group-photos/c/p/M1.jpg", "quality": "original", "vision": FRAMING}}]
-        walk = [{"photo_key": "wa-photos/p/s/1.jpg", "created_at": at, "message_id": "M1", "text": "x"}]
-        self.assertEqual([c["source"] for c in P.photo_candidates([], walk, d, d, group)], ["group chat"])
+        group = [{"message_id": "G1", "timestamp": at,
+                  "photo": {"key": "wa-group-photos/c/p/G1.jpg", "quality": "original", "vision": FRAMING}}]
+        r = P.compute(job="J", address="", gc="G", start=d, end=d, now=at, group_photos=group)
+        self.assertEqual(r["photo_candidates"], [])
+        self.assertEqual(P.pick_photos([{"key": "x", "source": "group chat", "sub": "A", "date": d,
+                                         "where": "", "words": "w"}], {"x": FRAMING}), [])
 
 
 class MemorySearch(unittest.TestCase):

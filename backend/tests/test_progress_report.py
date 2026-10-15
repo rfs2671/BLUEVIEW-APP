@@ -19,7 +19,7 @@ import os
 import re
 import unittest
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
@@ -141,6 +141,55 @@ class Photos(unittest.TestCase):
         self.assertEqual(pairs[("Arkon Builders", "after")], date(2026, 10, 15))
         self.assertEqual(pairs[("Quality Plumbing", "after")], date(2026, 10, 14))
 
+    def test_daily_log_photos_only(self):
+        r = rep()
+        # The real 588 walk's 47 punch photos are in the rows: none is a candidate.
+        self.assertTrue(any(i.get("photo_key") for i in F.punch_items()))
+        self.assertEqual({c["source"] for c in r["photo_candidates"]}, {"daily log"})
+        self.assertTrue(all(p["key"].startswith("logbooks/") for p in r["photos"]))
+
+    def test_the_caption_is_the_subs_work_line(self):
+        by = {(p["sub"], p["date"]): p["caption"] for p in rep()["photos"]}
+        self.assertEqual(by[("Arkon Builders", date(2026, 10, 2))], "Framing — fl 1–2")
+        self.assertEqual(by[("J&G Scaffolding", date(2026, 10, 15))], "Scaffolding — Rear facade")
+        # Never the model's words.
+        self.assertNotIn("Metal stud framing started on the 1st floor", by.values())
+
+    def test_fewer_than_ten_usable_shows_what_there_is(self):
+        usable = sum(1 for v in F.PHOTOS.values() if v["ok"])
+        self.assertEqual(len(rep()["photos"]), usable)          # 9: never padded
+
+    def test_fifteen_at_most_every_sub_shown(self):
+        d0 = date(2026, 10, 1)
+        cands = [{"key": f"a{i}", "date": d0 + timedelta(days=i % 14), "sub": "Arkon", "where": f"fl {i}",
+                  "words": "Framing", "source": "daily log"} for i in range(30)]
+        cands += [{"key": f"b{i}", "date": d0 + timedelta(days=i), "sub": "Power Direct", "where": f"fl {i}",
+                   "words": "Rough-in", "source": "daily log"} for i in range(5)]
+        verdicts = {c["key"]: {"ok": True, "kind": "progress", "score": 9 if c["sub"] == "Arkon" else 5}
+                    for c in cands}
+        picked = P.pick_photos(cands, verdicts)
+        self.assertEqual(len(picked), 15)
+        self.assertGreaterEqual(sum(1 for p in picked if p["sub"] == "Power Direct"), 5)
+        self.assertEqual({p.get("pair") for p in picked if p["sub"] == "Arkon"} - {None}, {"before", "after"})
+
+    def test_the_latest_is_the_best_of_its_day(self):
+        # Codex on #806: two photos at one place on the last day -- the better one.
+        d1, d2 = date(2026, 10, 1), date(2026, 10, 9)
+        cands = [{"key": k, "date": d, "sub": "Arkon", "where": "fl 2", "words": "Framing",
+                  "source": "daily log"} for k, d in (("a", d1), ("weak", d2), ("strong", d2))]
+        v = {"a": 5, "weak": 2, "strong": 9}
+        picked = P.pick_photos(cands, {k: {"ok": True, "kind": "progress", "score": n} for k, n in v.items()})
+        self.assertEqual([(p["key"], p.get("pair")) for p in picked], [("a", "before"), ("strong", "after")])
+
+    def test_every_sub_before_any_pair(self):
+        # Codex on #806: nine subs with photos on two days each -- all nine shown.
+        d1, d2 = date(2026, 10, 1), date(2026, 10, 9)
+        cands = [{"key": f"{s}{i}", "date": d, "sub": f"Sub {s}", "where": "", "words": "Work",
+                  "source": "daily log"} for s in "ABCDEFGHI" for i, d in enumerate((d1, d2))]
+        picked = P.pick_photos(cands, {c["key"]: {"ok": True, "kind": "progress", "score": 5} for c in cands})
+        self.assertEqual(len(picked), 15)
+        self.assertEqual({p["sub"] for p in picked}, {f"Sub {s}" for s in "ABCDEFGHI"})
+
     def test_never_people_blurry_or_a_document(self):
         keys = {p["key"] for p in rep()["photos"]}
         for (sub, d), v in F.PHOTOS.items():
@@ -239,7 +288,7 @@ class ThePdf(unittest.TestCase):
         r["summary"] = P.summary_fallback(r)
         h = self.html(r)
         self.assertIn("None — no new DOB or DOT records this period.", h)
-        self.assertIn("No progress photos on file", h)
+        self.assertIn("No progress photos in the daily logs", h)
         self.assertIn("No crews on site in this period.", h)
 
     def test_no_phone(self):
