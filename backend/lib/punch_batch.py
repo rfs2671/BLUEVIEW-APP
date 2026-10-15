@@ -436,7 +436,7 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
     reference ("same for ...") is never merged."""
     out: List[Dict[str, Any]] = []
     last = None                                   # index in `out` of the walker's last text
-    asked_which = False                           # the assistant asked "which photos?" about it
+    asked_which = None                            # when the assistant asked "which photos?" about it
     for e in events:
         kind = e.get("kind")
         if kind == "bot":
@@ -444,7 +444,7 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
             if _ASKS_ITEM.search(e.get("text") or ""):
                 last = None
             elif last is not None and _ASKS_WHICH.search(e.get("text") or ""):
-                asked_which = True
+                asked_which = _ts(e.get("at"))
             continue
         prev = out[last] if last is not None else None
         if (kind == "text" and prev is not None
@@ -453,16 +453,19 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
                 and not is_command(e.get("text") or "") and not is_command(prev.get("text") or "")
                 and not is_reference(e.get("text")) and not is_reference(prev.get("text"))):
             a, b = _ts(prev.get("at")), _ts(e.get("at"))
-            limit = ANSWER_SECONDS if asked_which else seconds
-            if a is not None and b is not None and 0 <= b - a <= limit:
-                asked_which = False
+            # An answer to "Which photo is that for?" is timed from the
+            # question (Codex on #797); otherwise from the text before.
+            since = asked_which if asked_which is not None else a
+            limit = ANSWER_SECONDS if asked_which is not None else seconds
+            if since is not None and b is not None and 0 <= b - since <= limit:
+                asked_which = None
                 prev["text"] = (prev.get("text") or "").rstrip(" .") + ". " + (e.get("text") or "").strip()
                 prev.setdefault("merged_ids", [prev.get("message_id")]).append(e.get("message_id"))
                 prev["at"] = e.get("at")
                 continue
         out.append(dict(e))
         last = len(out) - 1 if kind == "text" else None
-        asked_which = False
+        asked_which = None
     return out
 
 

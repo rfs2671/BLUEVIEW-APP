@@ -763,6 +763,12 @@ class MergingTexts(unittest.TestCase):
               {"kind": "text", "text": "Last 3 photos", "at": _t(11, 53, 35)}]
         self.assertEqual([e.get("text") for e in punch_batch.merge_texts(ev) if e["kind"] == "text"],
                          ["Correction. 3rd floor interior. Last 3 photos"])
+        # Timed from the question (Codex on #797): asked 9 min later,
+        # answered 2 min after that.
+        late = [dict(ev[0]), {"kind": "bot", "text": "Which photo is that for?", "at": _t(12, 1, 5)},
+                {"kind": "text", "text": "Last 3 photos", "at": _t(12, 3, 5)}]
+        self.assertEqual([e.get("text") for e in punch_batch.merge_texts(late) if e["kind"] == "text"],
+                         ["Correction. 3rd floor interior. Last 3 photos"])
         # Not asked: 90 s apart are two texts.
         ev[1]["text"] = "Got it."
         self.assertEqual(len([e for e in punch_batch.merge_texts(ev) if e["kind"] == "text"]), 2)
