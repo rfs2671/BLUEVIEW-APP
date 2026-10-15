@@ -437,7 +437,7 @@ export default function WhatsAppGroupsScreen() {
                   accessibilityLabel="Open the voice log"
                   style={({ pressed }) => [s.quietLink, pressed && { opacity: 0.7 }]}
                 >
-                  <Text style={s.quietLinkText}>Voice log — every voice note, what it said and produced</Text>
+                  <Text style={s.quietLinkText}>Voice & media log — every voice note and photo</Text>
                 </Pressable>
               ) : null}
 

@@ -1,9 +1,35 @@
 // Project → WhatsApp → Voice log (admins): the words for each row. Pure; the
 // screen is app/projects/[id]/voice-log.jsx.
 
-export const VOICE_LOG_TITLE = 'Voice log';
+export const VOICE_LOG_TITLE = 'Voice & media log';
 export const VOICE_LOG_NOTE =
-  "Every voice note of this job: its groups' notes, and DM voice notes answered about it.";
+  "Every voice note and photo of this job: its groups' notes and photos, and DM voice notes answered about it.";
+
+// Voice notes, photos, or both.
+export const MEDIA_FILTERS = ['', 'voice', 'photo'];
+export const MEDIA_LABELS = { '': 'All', voice: 'Voice notes', photo: 'Photos' };
+
+export function isPhoto(n) {
+  return !!n && n.kind === 'photo';
+}
+
+/** "Yoel · Arkon Builders · 588 – Site". */
+export function photoHead(n) {
+  const x = n || {};
+  return [x.forwarded ? `forwarded by ${x.who || 'someone'}` : (x.who || 'Someone'),
+    x.company, x.place].filter(Boolean).join(' · ');
+}
+
+/** The lines under a photo: its caption, what it shows, if it is only the preview. */
+export function photoLines(n) {
+  const x = n || {};
+  const out = [];
+  if (x.caption) out.push({ key: 'caption', text: x.caption, quote: true });
+  if (x.seen) out.push({ key: 'seen', text: `Shows: ${x.seen}` });
+  if (x.status === 'not_captured') out.push({ key: 'nc', text: 'Photo not kept — WhatsApp did not give the original.' });
+  else if (x.quality === 'preview') out.push({ key: 'pv', text: 'Preview only — the original was not available.' });
+  return out;
+}
 
 const LANGS = { en: 'English', es: 'Spanish', yi: 'Yiddish' };
 export const STATUS_LABELS = {
@@ -74,7 +100,7 @@ export function producedRoute(projectId, p) {
 }
 
 export function emptyText(filtered) {
-  return filtered ? 'No voice note matches these filters.' : 'No voice notes yet.';
+  return filtered ? 'Nothing matches these filters.' : 'No voice notes or photos yet.';
 }
 
 export const LOAD_MORE = 'Load more';

@@ -38,6 +38,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from lib import attendance as att
+from lib import wa_photos
 from lib import project_report as base
 from lib.datefmt import strftime as _fmt
 
@@ -244,7 +245,9 @@ def _chat(rows: Iterable[dict], start: date, end: date) -> List[Dict[str, Any]]:
         if not base._in(d, start, end) or r.get("skipped") or r.get("from_me") \
                 or str(r.get("sender") or "") == "bot" or voice.get("review") or voice.get("flagged"):
             continue
-        text = base.no_phone((r.get("voice") or {}).get("transcript") or r.get("body"))
+        # A photo's body may be its base64 thumbnail: only its caption is words.
+        said = (r.get("voice") or {}).get("transcript") or r.get("body")
+        text = base.no_phone(wa_photos.caption(said))
         if len(text) < 8 or text.startswith("("):
             continue
         out.append({"date": d, "who": base.no_phone(r.get("sender_name") or ""), "text": text[:300]})
@@ -451,10 +454,26 @@ def _coming_up(events: List[dict], items: List[dict], start: date, end: date) ->
 # ── PHOTOS ───────────────────────────────────────────────────────────────────
 
 def photo_candidates(acts: List[Dict[str, Any]], punch_items: List[dict],
-                     start: date, end: date) -> List[Dict[str, Any]]:
-    """Every photo of the period with what it is of: daily-log photos (sub,
-    work, where, date) and walkthrough photos (floor, the item's words)."""
+                     start: date, end: date, group_photos: Iterable[dict] = ()) -> List[Dict[str, Any]]:
+    """Every photo of the period with what it is of: photos posted in the
+    job's groups (who sent it, their company, the caption, what vision saw at
+    ingest), daily-log photos (sub, work, where, date) and walkthrough photos
+    (floor, the item's words)."""
     out = []
+    in_group = set()
+    for r in group_photos:
+        p = r.get("photo") or {}
+        d = att.local_day(r.get("timestamp") or p.get("at"))
+        # Only the original: a preview is not a report photo.
+        if not p.get("key") or p.get("quality") == "preview" or not base._in(d, start, end):
+            continue
+        cap = base.no_phone(p.get("caption") or "")
+        seen = base.no_phone((p.get("vision") or {}).get("caption") or "")
+        where = floors_label(floors_in(cap) or floors_in(seen))
+        out.append({"key": p["key"], "date": d, "sub": p.get("sender_company") or "",
+                    "where": where, "words": cap or seen, "source": "group chat",
+                    "verdict": p.get("vision"), "message_id": str(r.get("message_id") or "")})
+        in_group.add(str(r.get("message_id") or ""))
     for a in acts:
         for n, p in enumerate(a["photos"]):
             key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
@@ -470,6 +489,8 @@ def photo_candidates(acts: List[Dict[str, Any]], punch_items: List[dict],
         d = base._d(it.get("created_at"))
         if not it.get("photo_key") or not base._in(d, start, end):
             continue
+        if it.get("message_id") and str(it["message_id"]) in in_group:
+            continue                     # the same photo, already kept from the group
         floor = str(it.get("floor") or "")
         where = " · ".join(x for x in (f"Floor {floor}" if floor.isdigit() else floor,
                                        str(it.get("area") or "")) if x and x != "?")
@@ -511,7 +532,9 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
     for c in cands:
         v = verdicts.get(c["key"]) or {}
         if v.get("ok") and v.get("kind", "progress") == "progress":
-            good.append({**c, "score": float(v.get("score") or 0),
+            # Group and daily-log photos first: a walkthrough photo shows a
+            # defect, not progress.
+            good.append({**c, "score": float(v.get("score") or 0) - (2 if c["source"] == "walkthrough" else 0),
                          "caption": base.no_phone(v.get("caption") or c["words"] or "Progress")[:120]})
     chosen: List[dict] = []
 
@@ -525,7 +548,7 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
         chosen.append(c)
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
-        by_sub[c["sub"] or c["source"]].append(c)
+        by_sub[company_key(c["sub"]) or c["source"]].append(c)
     for group in by_sub.values():
         group.sort(key=lambda c: c["date"])
         if len(group) > 1 and group[0]["date"] != group[-1]["date"]:
@@ -710,7 +733,7 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
             checkins: Iterable[dict] = (), logbooks: Iterable[dict] = (), chat: Iterable[dict] = (),
             records: Iterable[dict] = (), events: Iterable[dict] = (),
             commitments: Iterable[dict] = (), punch_items: Iterable[dict] = (),
-            **_ignored: Any) -> Dict[str, Any]:
+            group_photos: Iterable[dict] = (), **_ignored: Any) -> Dict[str, Any]:
     """Everything of one job's report for [start, end], from its rows."""
     today = att.local_day(now) or end
     checkins, logbooks = list(checkins), list(logbooks)
@@ -732,9 +755,24 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
         "chat": talk, "records": base._records(list(records), start, end),
         "late": late, "punch": _punch_summary(punch_items),
         "coming_up": _coming_up(list(events), commitments, nxt, nxt + timedelta(days=UPCOMING_DAYS - 1)),
-        "photo_candidates": photo_candidates(acts, punch_items, start, end),
+        "photo_candidates": _named(photo_candidates(acts, punch_items, start, end, list(group_photos)),
+                                   subs),
         "photos": [], "summary": "",
     }
+
+
+def _named(cands: List[Dict[str, Any]], subs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each photo under its sub's name as the report says it ("Arkon" sent
+    in the group is "Arkon Builders" of the check-ins and logs)."""
+    keys = [s["key"] for s in subs]
+    canon = canonical_keys(keys + [company_key(c["sub"]) for c in cands if c["sub"]])
+    name = {s["key"]: s["name"] for s in subs}
+    for c in cands:
+        k = company_key(c["sub"])
+        k = canon.get(k, k)
+        if k in name:
+            c["sub"] = name[k]
+    return cands
 
 
 # ── THE WHATSAPP MESSAGE ─────────────────────────────────────────────────────

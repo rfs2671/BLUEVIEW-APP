@@ -2017,13 +2017,15 @@ export const whatsappAPI = {
     return response.data;
   },
 
-  // Voice log, admins: { notes, next_before, scanned, facets: {senders, langs} } -- every
-  // voice note of the job (its groups', and DM notes answered about it).
-  // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed').
+  // Voice & media log, admins: { notes, next_before, scanned, facets: {senders, langs} } --
+  // every voice note of the job (its groups', and DM notes answered about it) and every
+  // photo posted in its groups (kind: 'photo', photo_url good for 15 minutes).
+  // Filters: sender, lang, status ('transcribed' | 'flagged' | 'not_processed'),
+  // media ('voice' | 'photo').
   // `before`: the next_before of the previous page ("Load more").
   getVoiceLog: async (projectId, filters = {}, before = null) => {
     const params = {};
-    ['sender', 'lang', 'status'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
+    ['sender', 'lang', 'status', 'media'].forEach((k) => { if (filters[k]) params[k] = filters[k]; });
     if (before) params.before = before;
     const response = await apiClient.get(`/api/projects/${projectId}/whatsapp/voice-log`,
       { params });
