@@ -22,6 +22,7 @@ SENDING
 
 from __future__ import annotations
 
+import re
 import asyncio
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -111,11 +112,13 @@ class Names(_Live):
                 self.assertTrue(recap.startswith(
                     f"Ready to post the whole list in {GROUP_NAME} (shadow mode: nothing will be sent): "
                     "#1, #2"), recap)
-                self.assertIn("Mentioning Dov Klein (Power Direct) (electrical)", recap)
+                self.assertIn("Mentioning Dov Klein (Power Direct) — electrical", recap)
                 self.assertEqual(self.db[punch.COLLECTION].rows, [])       # 'ok' still required
         (sent,) = self.turn("ok")
         self.assertIn(f"Would post in {GROUP_NAME}, mentioning Dov Klein:", sent)
-        self.assertIn("_electrical_ @Dov Klein", sent)
+        # Dov once, at the top, with his trade; never beside a heading.
+        self.assertIn("punch list — due ASAP:\n@Dov Klein — electrical\n*Floor 2*", sent)
+        self.assertEqual(sent.count("@Dov Klein"), 1)
         self.assertIn("_plumbing_\n", sent)                                 # no one to mention
         rows = self.db[punch.COLLECTION].rows
         self.assertEqual({r["sent_via"] for r in rows}, {"group_list"})
@@ -140,6 +143,31 @@ class Names(_Live):
         self.assertEqual(posted[0][0], GROUP)
         self.assertEqual(posted[0][2], ["@Dov Klein"])
         self.assertEqual(out, f"Posted in {GROUP_NAME}, mentioning Dov Klein: 2 items.")
+
+    def test_3_one_person_on_every_trade_is_mentioned_once(self):
+        # Thu 9:03 AM: "Meilich Friedman (GC team)" 6 times, once per trade.
+        self.setting(punch_sends="live")
+        posted = []
+
+        async def gpost(gid, text, targets, reply_to=None):
+            posted.append((text, [t["handle"] for t in targets]))
+            return True
+
+        async def photo(*a, **k):
+            return True
+        self._to_assign()
+        self.turn("electrical → Dov")
+        self.turn("plumbing → Dov")
+        (recap,) = self.turn("to the group")
+        self.assertIn("Mentioning Dov Klein (Power Direct) — electrical, plumbing\n", recap)
+        self.assertEqual(recap.count("Dov Klein"), 1)
+        with patch.object(server, "_group_post", gpost), patch.object(server, "_punch_send_photo", photo):
+            self.turn("ok")
+        ((text, handles),) = posted
+        self.assertEqual(handles, ["@Dov Klein"])
+        self.assertEqual(text.count("@Dov Klein"), 1)
+        self.assertEqual(text.splitlines()[1], "@Dov Klein")       # once, at the top
+        self.assertIsNone(re.search(r"_\w+_ @", text))             # never beside a heading
 
     def test_4_who_can_you_send_it_to(self):
         self._to_assign()

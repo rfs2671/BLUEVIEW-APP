@@ -67804,7 +67804,8 @@ async def _punch_send(ident: dict, sess: dict) -> str:
                 tgt = tgts.get(f"{p['kind']}:{p['id']}") if p else None
                 if tgt:
                     mentions[t] = tgt["handle"]
-                    tlist.append(tgt)
+                    if all(x["handle"] != tgt["handle"] for x in tlist):
+                        tlist.append(tgt)                  # each person mentioned once
                     if p.get("name") not in named_list:
                         named_list.append(p.get("name"))
             for r in rows:
