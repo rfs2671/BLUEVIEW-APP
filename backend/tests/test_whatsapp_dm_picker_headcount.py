@@ -281,7 +281,9 @@ class TheConversation(_Chat, unittest.TestCase):
                "in at 9:12 and 9:30.")
         with _Ctx(db=self.db) as c:
             menu = self.say(c, "Any updates on worker count?")                # 9:41
-            self.assertEqual(menu, MENU)
+            # The brief an hour ago was about 588: offered first (Thu 9:03 AM).
+            self.assertEqual(menu, "Which job — 588 Thomas S Boyland St? Or another: "
+                                   "1) 588 Thomas S Boyland St 2) 8 Walworth St")
             first = self.say(c, "588")                                        # answers it
             self.assertTrue(first.startswith("20 on site at 588 Thomas S Boyland St now"))
             self.assertIn(two, first)

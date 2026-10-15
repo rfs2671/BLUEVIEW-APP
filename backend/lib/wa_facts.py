@@ -177,16 +177,19 @@ SUB_ATTENDANCE_TOOL = {"type": "function", "function": {
 
 def punch_text(rows: Iterable[Dict[str, Any]], now: datetime, assignee: Optional[str] = None,
                job: str = "") -> str:
-    """Open and ready-to-check punch items, by assignee, with the oldest."""
+    """Open and ready-to-check punch items, by assignee, with the oldest;
+    then how the last list went out (shadow mode: nothing was sent)."""
     today = local_day(now)
     rows = [r for r in rows if r.get("status") in ("open", "ready_to_check", "closed")]
+    last = last_list_line(rows, now)
     if assignee:
         a = _fold(assignee)
         rows = [r for r in rows if a and (a in _fold((r.get("assignee") or {}).get("name"))
                                           or a in _fold((r.get("assignee") or {}).get("company")))]
     at = f" at {job}" if job else ""
     if not rows:
-        return f"No punch items{at}" + (f" for {assignee}." if assignee else ".")
+        return f"No punch items{at}" + (f" for {assignee}." if assignee else ".") + \
+            (f"\n{last}" if last else "")
     open_ = [r for r in rows if r.get("status") == "open"]
     ready = [r for r in rows if r.get("status") == "ready_to_check"]
     closed = [r for r in rows if r.get("status") == "closed"]
@@ -200,7 +203,42 @@ def punch_text(rows: Iterable[Dict[str, Any]], now: datetime, assignee: Optional
     if ready:
         lines.append("Ready to check: " + ", ".join(str(r.get("pid") or "?") for r in ready[:10])
                      + (" …" if len(ready) > 10 else ""))
+    if last:
+        lines.append(last)
     return "\n".join(lines)
+
+
+def last_list_line(rows: Iterable[Dict[str, Any]], now: datetime) -> str:
+    """How the latest walk's list went out (Thu 9:03 AM: "Was it sent to
+    the GC team group chat?"): "Last list: 47 items, today 9:01 AM — shadow
+    mode, nothing was actually sent (it would have been posted in the job's
+    group chat)." "" when no row says how it was sent."""
+    sent = [r for r in rows if r.get("walk_id") and r.get("sent_via")]
+    if not sent:
+        return ""
+    def at(r):
+        v = r.get("created_at")
+        return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)) if isinstance(v, datetime) else None
+    newest = max(sent, key=lambda r: at(r) or datetime.min.replace(tzinfo=timezone.utc))
+    walk = [r for r in sent if r.get("walk_id") == newest.get("walk_id")]
+    when = at(newest)
+    stamp = (f"{day_label(when.astimezone(NY).date(), local_day(now))} "
+             f"{_fmt(when.astimezone(NY), '%-I:%M %p')}") if when else ""
+    via = {r.get("sent_via") for r in walk}
+    people = sorted({str((r.get("assignee") or {}).get("name") or "").strip() for r in walk
+                     if r.get("sent_via") == "dm"} - {""})
+    where = []
+    if via & {"group", "group_list"}:
+        where.append("posted in the job's group chat")
+    if "dm" in via:
+        where.append("DM'd to " + (", ".join(people) if people else "one person"))
+    where_s = " and ".join(where) or "sent"
+    n = len(walk)
+    head = f"Last list: {n} item{'s' if n != 1 else ''}" + (f", {stamp}" if stamp else "")
+    if any(r.get("send_mode") == "live" for r in walk):
+        return f"{head} — {where_s}."
+    return (f"{head} — shadow mode: nothing was actually sent "
+            f"(it would have been {where_s}).")
 
 
 PUNCH_STATUS_TOOL = {"type": "function", "function": {
@@ -208,7 +246,9 @@ PUNCH_STATUS_TOOL = {"type": "function", "function": {
     "description": (
         "The job's punch list: how many items are open, ready to check (the sub says done) "
         "and closed, who has how many open and since when. Optionally for one assignee "
-        "(a person or their company). USE THIS for any punch-list question."),
+        "(a person or their company). Also how the last list went out: posted in the "
+        "group chat or DM'd, and whether sends were in shadow mode (nothing sent). USE THIS "
+        "for any punch-list question, \"was it sent?\" included."),
     "parameters": {"type": "object", "properties": {
         "assignee": {"type": "string", "description": "Optional: a person or company as said."}},
         "additionalProperties": False}}}

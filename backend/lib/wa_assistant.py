@@ -8,7 +8,8 @@ no network here; server.py (`_dm_assistant_*`) does the reading.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Everyone who is not an opted-in Admin or PM gets this, and only this. The
 # same words for an unknown number, a CP, a superintendent or an admin who
@@ -318,7 +319,87 @@ def pick_from_menu(text: Any, options: List[Dict[str, Any]]) -> Optional[str]:
 
 
 def is_menu_message(body: Any) -> bool:
-    return str(body or "").strip().startswith("Which job?")
+    """"Which job? 1) ..." and "Which job — 588 Thomas S Boyland St? Or another: 1) ..."."""
+    return bool(re.match(r"Which job\b", str(body or "").strip()))
+
+
+# ── WHICH JOB, BEFORE EVER ASKING ───────────────────────────────────────────
+#
+# Thu 9:03 AM, right after the 588 walk was sent: "Was it sent to the GC
+# team group chat?" got "Which job?"; a reply to the 588 list ("The list")
+# got "Which job?" again. The job is read from, in order:
+#   (a) the message replied to;
+#   (b) the walk (or flow) going on or just finished -- 2 hours;
+#   (c) the job named in this DM in the last 30 minutes;
+#   (d) the only job the question could be about (a punch question: the job
+#       with the latest punch activity).
+# Asked only when still unknown -- and then with the likely one first.
+
+CONTEXT_WALK_SECONDS = 2 * 3600
+CONTEXT_NAMED_SECONDS = 30 * 60
+
+
+def job_in_text(text: Any, jobs: List[Dict[str, Any]]) -> Optional[str]:
+    """The ONE job a text names (an address, a house number of 2+ digits, a
+    job code like "P-588-6"), else None."""
+    t = str(text or "")
+    if is_menu_message(t):
+        return None                          # a "Which job?" menu names them all
+    hit = find_jobs(t, jobs)
+    if len(hit) > 1:
+        return None
+    # A full address names its job whatever its house number ("8 Walworth
+    # St" too): two jobs named is no job.
+    norm = _norm(t)
+    full = {str(j["id"]) for j in jobs if _norm(j.get("label")).strip()
+            and f" {_norm(j.get('label')).strip()} " in norm}
+    one = {str(h) for h in hit} | full
+    if len(one) > 1:
+        return None
+    if one:
+        return one.pop()
+    return job_named(t, jobs, in_sentence=True)
+
+
+def _aware(v: Any) -> Optional[datetime]:
+    if not isinstance(v, datetime):
+        return None
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
+
+def named_recently(rows: Iterable[Dict[str, Any]], jobs: List[Dict[str, Any]], now: datetime,
+                   seconds: int = CONTEXT_NAMED_SECONDS) -> Optional[str]:
+    """The job named last in this chat (either side) within `seconds`: the
+    newest message that names exactly one job."""
+    since = now - timedelta(seconds=seconds)
+    for r in reversed(list(rows)):
+        at = _aware(r.get("created_at"))
+        if at is None or at < since:
+            continue
+        jid = job_in_text(r.get("body"), jobs)
+        if jid:
+            return jid
+    return None
+
+
+_PUNCH_Q = re.compile(r"\b(?:punch|walk\s*-?\s*throughs?|walks?|lists?|items?|p-?\d+(?:-\d+)?|"
+                      r"sent|send|post(?:ed)?)\b", re.IGNORECASE)
+
+
+def about_punch(text: Any) -> bool:
+    """A question about a punch list / walk ("was it sent to the group?",
+    "the list", "what's open on P-588-6")."""
+    return bool(_PUNCH_Q.search(str(text or "")))
+
+
+def likely_first(jobs: List[Dict[str, Any]], likely_id: Optional[str]) -> Tuple[List[Dict[str, Any]], str]:
+    """The menu with the likely job first, and its header: "Which job —
+    588 Thomas S Boyland St? Or another:"; plain "Which job?" when none."""
+    likely = next((j for j in jobs if str(j["id"]) == str(likely_id)), None) if likely_id else None
+    if not likely:
+        return list(jobs), "Which job?"
+    rest = [j for j in jobs if j is not likely]
+    return [likely] + rest, f"Which job — {likely['label']}? Or another:"
 
 
 _EMPTY_RE = re.compile(r"^[\s.?!…,;:-]*$")

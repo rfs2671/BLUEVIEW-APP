@@ -53753,7 +53753,8 @@ async def _dm_voice_unheard(dm_chat: str, vresult: Any, voice_message_id: str) -
     return True
 
 
-async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) -> bool:
+async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool,
+                          quoted: str = "") -> bool:
     """A DM that asks for a change, or answers the open question about one.
     True when handled. `new`: may start a new request (after the reminders
     have had their turn); otherwise only an open question is answered."""
@@ -53772,6 +53773,8 @@ async def _dm_action_turn(ident: dict, dm_chat: str, text: str, *, new: bool) ->
         return False
     p["lang"] = dm_actions.reply_lang(text)
     p["said"] = dm_actions.redact(text)[:300]
+    if quoted:
+        p["quoted"] = dm_actions.redact(quoted)[:500]     # (a): the job of the message replied to
     if p["action"] not in ("unsupported",) and not _dm_is_approved(ident):
         await _dm_say(dm_chat, p["lang"], "not_approved")
         return True
@@ -53818,6 +53821,8 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
         return True
     if step.startswith("choose:"):
         i = dm_actions.pick(text, [o.get("label") or "" for o in options])
+        if i is None and yn is True and step == "choose:_project_id" and p.get("_likely_first"):
+            i = 0                                 # "Which job — 588 …? Or another:" -> "yes"
         if i is None:
             return await _dm_action_restart_or(ident, dm_chat, text, pending,
                                                lambda: _dm_say(dm_chat, lang, "pick_again"))
@@ -53954,12 +53959,86 @@ async def _dm_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
         if pid else None
 
 
+async def _dm_latest_punch_job(ids: List[str]) -> Optional[str]:
+    """The job (of `ids`) with the latest punch activity: a walk saved, or
+    an item made or changed."""
+    if not ids:
+        return None
+    best: Tuple[Optional[datetime], Optional[str]] = (None, None)
+    try:
+        for coll, field in ((punch.SESSIONS, "updated_at"), (punch.COLLECTION, "updated_at"),
+                            (punch.COLLECTION, "created_at")):
+            row = await db[coll].find_one({"project_id": {"$in": ids}, field: {"$ne": None}},
+                                          {"project_id": 1, field: 1}, sort=[(field, -1)])
+            at = _utc(row.get(field)) if row else None
+            if at and (best[0] is None or at > best[0]):
+                best = (at, str(row.get("project_id")))
+    except Exception as e:
+        logger.warning(f"[wa-assistant] punch activity read failed: {type(e).__name__}")
+    return best[1]
+
+
+async def _dm_recent_walk_job(ident: dict, ids: List[str], now: datetime) -> Optional[str]:
+    """The job of their walk going on or finished in the last 2 hours."""
+    try:
+        row = await db[punch.SESSIONS].find_one(
+            {"user_id": str(ident.get("user_id")), "project_id": {"$in": ids},
+             "status": {"$ne": "cancelled"},
+             "updated_at": {"$gte": now - timedelta(seconds=wa_assistant.CONTEXT_WALK_SECONDS)}},
+            {"project_id": 1}, sort=[("updated_at", -1)])
+    except Exception as e:
+        logger.warning(f"[wa-assistant] walk read failed: {type(e).__name__}")
+        return None
+    return str(row["project_id"]) if row else None
+
+
+async def _dm_job_context(ident: dict, dm_chat: str, jobs: list, *, text: str = "",
+                          quoted_body: str = "", history: Optional[list] = None,
+                          now: Optional[datetime] = None, walk: bool = True,
+                          topic: bool = True) -> Tuple[Optional[dict], Optional[dict], str]:
+    """(job, likely, rule): the job a DM is about, by the rules in order
+    (lib/wa_assistant.py, "WHICH JOB, BEFORE EVER ASKING"): (a) the message
+    replied to, (b) the walk going on or just finished (2 h), (c) the job
+    named here in the last 30 min, (d) the only job the question could be
+    about. No job: `likely` is the one to offer first when asking.
+    `jobs`: _dm_jobs rows. `walk`/`topic`: rules (b)/(d) on or off."""
+    now = now or datetime.now(timezone.utc)
+    by_id = {str(j["id"]): j for j in jobs}
+    ids = list(by_id)
+    if quoted_body:
+        jid = wa_assistant.job_in_text(quoted_body, jobs)
+        if jid in by_id:
+            return by_id[jid], None, "replied_to"
+    if walk:
+        jid = await _dm_recent_walk_job(ident, ids, now)
+        if jid in by_id:
+            return by_id[jid], None, "walk"
+    remembered = await _dm_state_get("dm_job", dm_chat)
+    if remembered and str(remembered.get("project_id")) in by_id:
+        return by_id[str(remembered["project_id"])], None, "named_30min"
+    if history is None:
+        history = await _dm_history(dm_chat, now)
+    jid = wa_assistant.named_recently(history, jobs, now)
+    if jid in by_id:
+        return by_id[jid], None, "named_30min"
+    if len(jobs) == 1:
+        return jobs[0], None, "only_job"
+    punch_job = await _dm_latest_punch_job(ids) if wa_assistant.about_punch(text) else None
+    if topic and punch_job in by_id:
+        return by_id[punch_job], None, "punch_activity"
+    likely = wa_assistant.named_recently(history, jobs, now, wa_assistant.HISTORY_HOURS * 3600) \
+        or punch_job
+    return None, by_id.get(likely or ""), ""
+
+
 async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
     """The job `p` is about, or None after asking which (never a guess).
 
     "Which job?" is asked ONLY when it cannot be inferred: the job named in
-    the message, else their only job, else the job picked in this chat in the
-    last 30 minutes."""
+    the message, else the rules of _dm_job_context -- the message replied
+    to, the walk just finished (2 h), the job named here in the last 30
+    minutes, their only job. A change never takes a job from the topic
+    alone ((d)): that job is offered first instead."""
     lang = p.get("lang") or "en"
     projects = ident.get("projects") or []
     if p.get("_project_id"):
@@ -53974,17 +54053,24 @@ async def _dm_pick_job(ident: dict, dm_chat: str, p: dict) -> Optional[dict]:
     if len(found) == 1:
         p["_project_id"] = str(found[0]["_id"])
         return found[0]
-    if not found and not p.get("job") and len(projects) == 1:
-        p["_project_id"] = str(projects[0]["_id"])
-        return projects[0]
-    recent = await _dm_recent_job(ident, dm_chat) if not p.get("job") and not found else None
-    if recent:
-        p["_project_id"] = str(recent["_id"])
-        return recent
+    likely = None
+    if not p.get("job") and not found:
+        jobs = await _dm_jobs(ident)
+        ctx, likely, _rule = await _dm_job_context(
+            ident, dm_chat, jobs, text=p.get("said") or "", quoted_body=p.get("quoted") or "",
+            topic=False)
+        if ctx:
+            p["_project_id"] = str(ctx["id"])
+            return ctx["project"]
     choices = found or projects
+    if likely and not found:
+        choices = [likely["project"]] + [x for x in choices if str(x["_id"]) != str(likely["id"])]
     options = [{"label": _dm_job_label(x), "value": str(x["_id"])} for x in choices[:6]]
     question = dm_actions.say(lang, "no_job" if p.get("job") and not found else
-                              "which_one" if len(found) > 1 else "which_job")
+                              "which_one" if len(found) > 1 else
+                              "which_job_likely" if likely and not found else "which_job",
+                              job=_dm_job_label(likely["project"]) if likely else "")
+    p["_likely_first"] = bool(likely and not found)
     await _dm_ask(dm_chat, p, "choose:_project_id",
                   dm_actions.numbered(question, [o["label"] for o in options]), options)
     return None
@@ -54157,9 +54243,11 @@ async def _dm_action_step(ident: dict, dm_chat: str, p: dict) -> None:
         elif len({str(pr["_id"]) for pr, _r in subs}) > 1:
             # The sub is on several jobs: the job picked here in the last 30
             # minutes, when the sub is on it, before asking which.
-            recent = await _dm_recent_job(ident, dm_chat)
-            if recent and any(str(pr["_id"]) == str(recent["_id"]) for pr, _r in subs):
-                subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(recent["_id"])]
+            recent, _likely, _rule = await _dm_job_context(
+                ident, dm_chat, await _dm_jobs(ident), text=p.get("said") or "",
+                quoted_body=p.get("quoted") or "", topic=False)
+            if recent and any(str(pr["_id"]) == str(recent["id"]) for pr, _r in subs):
+                subs = [(pr, r) for pr, r in subs if str(pr["_id"]) == str(recent["id"])]
         if not subs:
             await _dm_state_clear(DM_ACTION_STATE, dm_chat)
             await _dm_say(dm_chat, lang, "sub_not_on_job", company=p["company"],
@@ -54617,7 +54705,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     # A change asked in their own words (lib/dm_actions.py): add a job, a
     # sub, a person, a punch contact; a job's settings; undo.
-    if await _dm_action_turn(ident, dm_chat, text, new=True):
+    if await _dm_action_turn(ident, dm_chat, text, new=True, quoted=qbody):
         return
     # Their own settings, asked about (a change was the turn above).
     if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("settings",)):
@@ -54659,6 +54747,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if menu:
         options = [by_id[str(i)] for i in menu.get("options") or [] if str(i) in by_id]
         pick = wa_assistant.pick_from_menu(text, options)
+        if not pick and qbody and not to_menu:
+            # A reply to a message about one of the menu's jobs answers it
+            # (Thu 9:04 AM: "The list", replying to the 588 list).
+            jid = wa_assistant.job_in_text(qbody, options)
+            pick = jid if jid in {o["id"] for o in options} else None
+        if not pick and menu.get("likely") in by_id and dm_actions.yes_no(text) is True:
+            pick = str(menu["likely"])            # "Which job — 588 …? Or another:" -> "yes"
         if pick:
             job, question = by_id[pick], str(menu.get("question") or text)
             await _dm_state_clear("dm_menu", dm_chat)
@@ -54795,12 +54890,23 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await _dm_send_answer(dm_chat, message_id, _dm_answer_all(ident, question),
                                       heard, log=(ident, None, question, "all_jobs"))
                 return
-            remembered = await _dm_state_get("dm_job", dm_chat)
+            # Before ever asking: the message replied to, the walk just
+            # finished, the job named here in the last 30 min, the only job
+            # the question could be about (Thu 9:03 AM: "Was it sent to the
+            # GC team group chat?" right after the 588 walk got "Which job?").
+            asks = bool(qbody) or _dm_is_new_question(core)
+            remembered = None if asks else await _dm_state_get("dm_job", dm_chat)
+            ctx, likely = None, None
             if remembered and str(remembered.get("project_id")) in by_id:
-                job = by_id[str(remembered["project_id"])]
-            elif len(jobs) == 1:
-                job = jobs[0]
-            elif not _dm_is_new_question(core):
+                ctx = by_id[str(remembered["project_id"])]
+            elif not asks and len(jobs) == 1:
+                ctx = jobs[0]
+            elif asks:
+                ctx, likely, _rule = await _dm_job_context(
+                    ident, dm_chat, jobs, text=core, quoted_body=qbody, history=history, now=now)
+            if ctx:
+                job = ctx
+            elif not asks:
                 # Not a question and no job: a hint, never "Which job?" for
                 # a message that asks nothing (Mon 8:28 PM: gibberish got
                 # the picker).
@@ -54809,7 +54915,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                                      "not_a_question")
                 return
             else:
-                await _dm_ask_which(dm_chat, jobs, question)
+                await _dm_ask_which(dm_chat, jobs, question, likely=likely)
                 return
 
     # The current job for this chat: 30 minutes, refreshed on every use.
@@ -54910,11 +55016,15 @@ async def _dm_other_company_job(ident: dict, text: str) -> Optional[str]:
 
 
 async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
-                        again: bool = False, header: str = "Which job?") -> None:
+                        again: bool = False, header: str = "Which job?",
+                        likely: Optional[dict] = None) -> None:
+    if likely:
+        # The likely one first: "Which job — 588 Thomas S Boyland St? Or another:".
+        jobs, header = wa_assistant.likely_first(jobs, likely["id"])
     shown = jobs[:wa_assistant.MENU_MAX]
     await _dm_state_set("dm_menu", dm_chat, wa_assistant.MENU_SECONDS,
                         options=[j["id"] for j in shown], question=question,
-                        header=header, misses=0)
+                        header=header, misses=0, likely=likely["id"] if likely else None)
     text = wa_assistant.menu_text(shown, header)
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
@@ -63934,7 +64044,8 @@ async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str
         rows = await db[punch.COLLECTION].find(
             {"project_id": project_id, "company_id": _company_id_filter(company_id),
              "status": {"$in": ["open", "ready_to_check", "closed"]}},
-            {"status": 1, "assignee": 1, "pid": 1, "assigned_at": 1, "created_at": 1}).to_list(5000)
+            {"status": 1, "assignee": 1, "pid": 1, "assigned_at": 1, "created_at": 1,
+             "walk_id": 1, "sent_via": 1, "send_mode": 1}).to_list(5000)
         return wa_facts.punch_text(rows, now, str(args.get("assignee") or "").strip() or None, job)
     if name == "follow_ups":
         if not in_dm:
@@ -65268,12 +65379,16 @@ async def _punch_session(user_id: str) -> Optional[dict]:
 
 
 async def _punch_recent_job(ident: dict, dm_chat: str) -> Optional[dict]:
-    """The job picked in this DM in the last 30 minutes (the assistant's
-    current job), when it is one of the walker's."""
+    """The job picked or named in this DM in the last 30 minutes (rule (c)
+    of _dm_job_context), when it is one of the walker's. A new walk is a new
+    visit: never the last walk's job alone ((b)) -- the start message names
+    the job it took."""
     remembered = await _dm_state_get("dm_job", dm_chat)
     if remembered:
         return _punch_project_of(ident, remembered.get("project_id"))
-    return None
+    now = datetime.now(timezone.utc)
+    jid = wa_assistant.named_recently(await _dm_history(dm_chat, now), await _dm_jobs(ident), now)
+    return _punch_project_of(ident, jid) if jid else None
 
 
 async def _punch_set_job(sess: dict, project: dict, dm_chat: str) -> None:
@@ -65496,7 +65611,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     if not parsed.get("has_image") and not voice:
         q = punch.parse_query(text)
         if q:
-            await send_whatsapp_message(dm_chat, await _punch_answer(ident, q))
+            await send_whatsapp_message(dm_chat, await _punch_answer(ident, q, dm_chat, text))
             return True
         if punch.super_verdict(text):
             reply = await _punch_verdict(ident, text, now)
@@ -68470,11 +68585,21 @@ async def _punch_verdict(ident: dict, text: str, now: datetime) -> Optional[str]
     return f"{row['pid']} reopened; it will be chased again."
 
 
-async def _punch_answer(ident: dict, q: dict) -> str:
+async def _punch_answer(ident: dict, q: dict, dm_chat: str = "", text: str = "") -> str:
     projects = ident.get("projects") or []
     if q["q"] == "open":
         project, why = punch.match_project(q.get("job"), projects)
+        likely = None
+        if not project and not q.get("job") and dm_chat:
+            # No job said: the walk just finished, the job named here in the
+            # last 30 min, the job with the latest punch activity.
+            ctx, likely, _rule = await _dm_job_context(ident, dm_chat, await _dm_jobs(ident),
+                                                       text=text or "punch")
+            project = ctx["project"] if ctx else None
         if not project:
+            if likely:
+                return (f"Which job — {likely['label']}? Ask e.g. "
+                        f"\"what's open on 6 at {wa_assistant.house_number(likely['label']) or likely['label']}?\"")
             return "Which job? Ask e.g. \"what's open on 6 at 588?\""
         pid = str(project.get("_id") or project.get("id"))
         rows = await db[punch.COLLECTION].find({"project_id": pid}).to_list(2000)
