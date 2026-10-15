@@ -77,7 +77,32 @@ class TheLog(unittest.TestCase):
             return _run(server.get_project_voice_log(
                 PID, filters.get("sender", ""), filters.get("lang", ""),
                 filters.get("status", ""), filters.get("before", ""),
-                filters.get("limit", server.VOICE_LOG_PAGE), current_user=user))
+                filters.get("limit", server.VOICE_LOG_PAGE), filters.get("media", ""),
+                current_user=user))
+
+    def test_group_photos_are_in_the_log(self):
+        db = _full_world()
+        db.whatsapp_messages.rows.append({
+            "_id": "ph1", "project_id": PID, "company_id": CO_A, "group_id": ROWS[0]["group_id"],
+            "sender": "15550001111", "sender_name": "Yoel", "has_audio": False,
+            "timestamp": AT + timedelta(minutes=5), "created_at": AT + timedelta(minutes=5),
+            "photo": {"key": "wa-group-photos/c/p/ph1.jpg", "quality": "original",
+                      "caption": "3rd floor framing", "sender_company": "Arkon Builders",
+                      "vision": {"ok": True, "kind": "progress", "score": 8,
+                                 "caption": "Metal stud framing"}}})
+        with patch.object(server, "_presign_r2_get", lambda k, s: f"https://r2/{k}"):
+            both = self._get(db=db)
+            photos = self._get(db=db, media="photo")
+            voice = self._get(db=db, media="voice")
+        self.assertEqual(both["notes"][0]["id"], "ph1")                  # newest first
+        self.assertEqual([n["id"] for n in photos["notes"]], ["ph1"])
+        ph = photos["notes"][0]
+        self.assertEqual((ph["kind"], ph["company"], ph["caption"], ph["seen"], ph["photo_url"]),
+                         ("photo", "Arkon Builders", "3rd floor framing", "Metal stud framing",
+                          "https://r2/wa-group-photos/c/p/ph1.jpg"))
+        self.assertNotIn("ph1", [n["id"] for n in voice["notes"]])
+        with self.assertRaises(HTTPException):
+            self._get(db=db, media="video")
 
     def test_every_note_newest_first_with_dm(self):
         out = self._get()

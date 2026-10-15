@@ -97,6 +97,7 @@ from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
+from lib import wa_photos  # noqa: E402
 from lib import send_retry  # noqa: E402
 from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
@@ -3828,6 +3829,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_REFUSAL_CHECK,
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
+    VISION_GROUP_PHOTO,
 )
 from lib import plan_extract  # noqa: E402
 from lib import plan_eval  # noqa: E402
@@ -18192,6 +18194,17 @@ async def hard_delete_project(
     r2_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"wa-audio/{project_id}/",
     )
+
+    # ── R2: the photos posted in the job's groups, BY KEY from their rows.
+    try:
+        _photo_rows = await db.whatsapp_messages.find(
+            {"project_id": {"$in": [project_id, str(project_id)]},
+             "photo.key": {"$exists": True, "$ne": None}},
+            {"photo": 1}).to_list(None)
+        r2_deleted += await _r2_delete_keys(
+            _r2_client, R2_BUCKET_NAME, [k for r in _photo_rows for k in wa_photos.owned_keys(r)])
+    except Exception as e:
+        logger.warning(f"[hard_delete] group photo delete skipped: {e!r}")
 
     # ── R2: prefix sweeps for artefacts NO DB ROW NAMES. A supplement, not the
     # mechanism — every one of these returns 0 here regardless of what is in
@@ -49860,14 +49873,16 @@ async def _retention_tick(now: Optional[datetime] = None,
                 if not await _retention_still_expired(b, today):
                     c["stopped"] = c.get("stopped", 0) + 1
                     break
-                rows = await db[coll].find(b["query"], {"_id": 1, "voice.audio_key": 1}).limit(
+                rows = await db[coll].find(b["query"], {"_id": 1, "voice.audio_key": 1,
+                                                        "photo": 1}).limit(
                     min(wa_retention.BATCH, budget)).to_list(None)
                 ids = [r["_id"] for r in rows]
                 if not ids:
                     break
-                # A voice note's audio goes with its message (R2, by key).
+                # A voice note's audio and a group photo go with their
+                # message (R2, by key).
                 audio = [(r.get("voice") or {}).get("audio_key") for r in rows]
-                audio = [k for k in audio if k]
+                audio = [k for k in audio if k] + [k for r in rows for k in wa_photos.owned_keys(r)]
                 if audio and _r2_client is not None:
                     try:
                         await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, audio)
@@ -51065,8 +51080,14 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
                     projection={"sender": 1, "sender_name": 1, "body": 1, "timestamp": 1,
                                 "created_at": 1, "skipped": 1, "voice.transcript": 1,
                                 "voice.review": 1, "voice.flagged": 1})
+    # Photos posted in the job's groups, kept at ingest (lib/wa_photos.py).
+    group_photos = await _q(db.whatsapp_messages,
+                            {"project_id": pid, "company_id": cf, "photo.key": {"$ne": None},
+                             "timestamp": {"$gte": lo + timedelta(days=length), "$lt": hi}}, 5000,
+                            projection={"photo": 1, "timestamp": 1, "message_id": 1, "sender_name": 1})
     return {"checkins": in_period, "records": records, "events": events, "commitments": items,
-            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat}
+            "punch_items": punch_rows, "logbooks": logbooks, "chat": chat,
+            "group_photos": group_photos}
 
 
 def _report_pdf(html_text: str) -> bytes:
@@ -51097,11 +51118,49 @@ def _report_photo_bytes(c: dict) -> Optional[bytes]:
     return None
 
 
+async def _photo_verdict(raw: bytes, project_id: Any, endpoint: str) -> Optional[dict]:
+    """One vision call on a photo: {ok, kind, score, caption}, or None."""
+    if not QWEN_API_KEY or not raw:
+        return None
+    data, _err = await asyncio.to_thread(_vision_jpeg, raw)
+    if not data:
+        return None
+    await record_vision_call(db, endpoint=endpoint, project_id=str(project_id) if project_id else None)
+    try:
+        async with ServerHttpClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
+                json={"model": QWEN_MODEL, "max_tokens": 80, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
+                          {"type": "text", "text": progress_report.JUDGE_PROMPT}]}]})
+            if resp.status_code >= 400:
+                logger.warning(f"[photo] vision HTTP {resp.status_code}")
+                return None
+            said = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"[photo] vision failed: {type(e).__name__}")
+        return None
+    return progress_report.parse_verdict(said)
+
+
+async def _photo_verdict_cache(key: str, v: dict) -> None:
+    try:
+        await db[REPORT_PHOTO_VERDICTS].update_one(
+            {"_id": key}, {"$set": {**v, "at": datetime.now(timezone.utc)}}, upsert=True)
+    except Exception:
+        pass
+
+
 async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     """The vision model's verdict on one photo, cached by its key: {ok,
     kind, score, caption}. None (and nothing cached) when it can't be read
     or judged -- such a photo is never shown."""
     key = c["key"]
+    if c.get("verdict"):
+        return c["verdict"]                 # a group photo: judged at ingest
     try:
         cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
     except Exception:
@@ -51114,41 +51173,97 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     if not raw:
         logger.info("[report] photo not read")
         return None
-    data, err = await asyncio.to_thread(_vision_jpeg, raw)
-    if not data:
-        return None
-    await record_vision_call(db, endpoint=VISION_REPORT_PHOTO, project_id=project_id)
-    try:
-        async with ServerHttpClient(timeout=45.0) as client:
-            resp = await client.post(
-                f"{QWEN_API_BASE}/chat/completions",
-                headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
-                json={"model": QWEN_MODEL, "max_tokens": 80, "temperature": 0,
-                      "messages": [{"role": "user", "content": [
-                          {"type": "image_url", "image_url": {
-                              "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
-                          {"type": "text", "text": progress_report.JUDGE_PROMPT}]}]})
-            if resp.status_code >= 400:
-                logger.warning(f"[report] vision HTTP {resp.status_code}")
-                return None
-            said = resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.warning(f"[report] vision failed: {type(e).__name__}")
-        return None
-    v = progress_report.parse_verdict(said)
-    if v is None:
-        return None
-    try:
-        await db[REPORT_PHOTO_VERDICTS].update_one(
-            {"_id": key}, {"$set": {**v, "at": datetime.now(timezone.utc)}}, upsert=True)
-    except Exception:
-        pass
+    v = await _photo_verdict(raw, project_id, VISION_REPORT_PHOTO)
+    if v is not None:
+        await _photo_verdict_cache(key, v)
     return v
+
+
+# ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
+
+async def _group_photo_company(row: dict, company_id: Any, project_id: Any) -> Tuple[str, str, str]:
+    """(company, name, how) of who sent a group photo, from the company's
+    own records: a user of the company is the GC team; a worker who checked
+    in at this job, their check-in's company; else People. ("", "", "") when
+    nobody knows."""
+    person = await _attention_resolve(str(row.get("sender_jid") or ""), str(company_id or ""),
+                                      str(project_id or ""), {})
+    if person.get("status") != "resolved":
+        return "", "", ""
+    name = str(person.get("name") or "")
+    if person.get("kind") == "user":
+        return wa_sender_map.GC_TEAM, name, "user"
+    if person.get("kind") == "worker" and person.get("id"):
+        try:
+            ck = await db.checkins.find(
+                {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
+                 "worker_id": person["id"], "is_deleted": {"$ne": True}},
+                {"worker_company": 1, "company": 1, "company_name": 1}).sort(
+                [("check_in_time", -1)]).to_list(1)
+        except Exception:
+            ck = []
+        co = attendance.checkin_company(ck[0]) if ck else ""
+        if co:
+            return co, name, "checkin"
+    if person.get("sub_company"):
+        return str(person["sub_company"]), name, "people"
+    return "", name, ""
+
+
+async def _group_photo_capture(row: dict, parsed: dict, project_id: Any, company_id: Any,
+                               body: str, now: datetime) -> Optional[dict]:
+    """A photo posted in a linked job group: the original in R2 (company /
+    job scoped), who sent it and their company, the caption -- and what the
+    vision model sees, once. Never raises: the message is stored either
+    way."""
+    if not project_id or not row or not row.get("_id"):
+        return None
+    try:
+        photo_key, quality = parsed.get("photo_key"), parsed.get("photo_quality")
+        shared = bool(photo_key)            # a punch completion photo, already kept
+        record: dict = {}
+        if not photo_key:
+            photo_key, quality, record = await _punch_store_photo(
+                parsed, wa_photos.key(company_id, project_id, parsed.get("message_id")))
+        co, name, how = await _group_photo_company(row, company_id, project_id)
+        photo = wa_photos.doc(photo_key, quality, wa_photos.caption(body), sender_company=co,
+                              sender_name=name or str(row.get("sender_name") or ""), company_how=how,
+                              shared=shared, at=row.get("timestamp") or now,
+                              media_ref=wa_media_ref(parsed.get("raw") or {}))
+        if not photo_key:
+            # Not captured: who sent it, the caption and where WhatsApp keeps
+            # it are kept all the same (Codex on #804) -- the log says so.
+            photo.update(key=None, quality=None, failed=True, capture=record)
+            await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
+            logger.warning("[group-photo] not captured")
+            return None
+        await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo": photo}})
+        raw = await asyncio.to_thread(_r2_bytes, photo_key)
+        v = await _photo_verdict(raw, project_id, VISION_GROUP_PHOTO) if raw else None
+        if v is not None:
+            photo["vision"] = v
+            await db.whatsapp_messages.update_one({"_id": row["_id"]}, {"$set": {"photo.vision": v}})
+            await _photo_verdict_cache(photo_key, v)
+        row["photo"] = photo
+        # Indexed already (the indexer ran first)? Its words now include what
+        # the photo shows.
+        mem = await db.project_memory.find_one({"_id": f"wa:{row['_id']}"}, {"group_name": 1})
+        if mem is not None and project_memory.indexable_message(row):
+            await _memory_upsert({"_id": f"wa:{row['_id']}", **_memory_wa_doc(row, mem.get("group_name") or "")},
+                                 datetime.now(timezone.utc))
+        return photo
+    except Exception as e:
+        logger.warning(f"[group-photo] capture failed: {type(e).__name__}")
+        return None
 
 
 async def _report_photos(rep: dict, project_id: str) -> List[dict]:
     """10-15 photos for the report: vision on a capped set, then the pick."""
-    todo = progress_report.to_judge(rep["photo_candidates"], REPORT_JUDGE_MAX)
+    # Group photos were judged once, at ingest: never again, and never
+    # counted against the cap.
+    judged = [c for c in rep["photo_candidates"] if c.get("verdict")]
+    todo = judged + progress_report.to_judge(
+        [c for c in rep["photo_candidates"] if not c.get("verdict")], REPORT_JUDGE_MAX)
     verdicts: Dict[str, dict] = {}
     sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
 
@@ -52908,12 +53023,11 @@ def _memory_wa_doc(row: dict, group_name: str) -> dict:
         "day": ny.strftime("%Y-%m-%d") if ny else None,
         # A voice note: its text is the transcript as said -- or, for one that
         # may not be what was said, only Whisper's English of the audio.
-        "text": project_memory.clean(
-            (row.get("voice") or {}).get("english_direct")
-            if wa_voice.unreliable_note(row.get("voice")) else row.get("body")
-        )[:project_memory.TEXT_MAX],
+        "text": (project_memory.clean((row.get("voice") or {}).get("english_direct"))
+                 if wa_voice.unreliable_note(row.get("voice"))
+                 else project_memory.message_text(row))[:project_memory.TEXT_MAX],
         "unreliable": wa_voice.unreliable_note(row.get("voice")),
-        "kind": "voice" if row.get("voice") else "text",
+        "kind": "voice" if row.get("voice") else "photo" if (row.get("photo") or {}).get("key") else "text",
         "voice": bool(row.get("voice")),
         "lang": (row.get("voice") or {}).get("lang"),
         "english": ((row.get("voice") or {}).get("english_direct")
@@ -65023,7 +65137,9 @@ async def _store_group_message(parsed: dict, group_id: str, project_id: Any,
             row["quoted_message_id"] = str(hit.get("message_id") or "")
             row["quoted_author"] = row["quoted_author"] or str(hit.get("sender_jid") or "")
             row["quoted_link"] = "body_match"
-    await db.whatsapp_messages.insert_one(row)
+    res = await db.whatsapp_messages.insert_one(row)
+    if row.get("_id") is None and getattr(res, "inserted_id", None) is not None:
+        row["_id"] = res.inserted_id
     return row
 
 
@@ -69553,9 +69669,14 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                         parsed["photo_meta"] = parsed.get("_photo_meta")
                 except Exception as e:
                     logger.warning(f"[punch] completion photo failed: {type(e).__name__}")
-            await _store_group_message(parsed, group_id, project_id, msg_company_id,
-                                       stored_body if voice_block else body, now,
-                                       voice=voice_block)
+            stored_row = await _store_group_message(parsed, group_id, project_id, msg_company_id,
+                                                    stored_body if voice_block else body, now,
+                                                    voice=voice_block)
+            # A photo posted in a linked job group is kept, with who sent it
+            # and what it shows (lib/wa_photos.py) -- history, like the
+            # message itself: not subject to bot_enabled.
+            if parsed.get("has_image"):
+                await _group_photo_capture(stored_row, parsed, project_id, msg_company_id, body, now)
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
@@ -72728,16 +72849,26 @@ VOICE_LOG_PAGE = 100
 VOICE_LOG_SCAN_MAX = 5000
 
 
-async def _voice_log_stream(company_id: str, project_id: str, before: Optional[datetime]):
-    """The job's voice notes, newest first, a page at a time: its groups'
-    rows (whatsapp_messages) and DM voice events, merged on time. Yields
-    (at, "group" | "dm", row)."""
+async def _voice_log_stream(company_id: str, project_id: str, before: Optional[datetime],
+                            media: str = ""):
+    """The job's voice notes and group photos, newest first, a page at a
+    time: its groups' rows (whatsapp_messages) and DM voice events, merged on
+    time. `media`: "voice", "photo", or both. Yields (at, "group" | "dm",
+    row)."""
     async def pages(kind):
         cur = before
+        if kind == "dm" and media == "photo":
+            return
         while True:
             if kind == "group":
                 q = {"project_id": str(project_id), "company_id": _company_id_filter(company_id),
-                     "has_audio": True, "sender": {"$ne": "bot"}}
+                     "sender": {"$ne": "bot"}}
+                if media == "voice":
+                    q["has_audio"] = True
+                elif media == "photo":
+                    q["photo"] = {"$exists": True}
+                else:
+                    q["$or"] = [{"has_audio": True}, {"photo": {"$exists": True}}]
                 if cur is not None:
                     q["timestamp"] = {"$lt": cur}
                 batch = await db.whatsapp_messages.find(q).sort(
@@ -72781,7 +72912,7 @@ def _utc_aware(v: datetime) -> datetime:
                  dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "",
                                 status: str = "", before: str = "", limit: int = VOICE_LOG_PAGE,
-                                current_user=Depends(get_current_user)):
+                                media: str = "", current_user=Depends(get_current_user)):
     """Admin only: every voice note of this job, newest first -- its groups'
     notes, and DM voice notes answered about this job. Per note: when, who
     (a name; never a number), where (group / DM), language, confidence, what
@@ -72793,6 +72924,8 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
     while reading, page after page; `next_before` continues (pass it as
     `before`), null when the history is read to the end."""
     company_id = await _attention_admin_project(project_id, current_user)
+    if media and media not in ("voice", "photo"):
+        raise HTTPException(status_code=422, detail="media: voice or photo")
     if status and status not in wa_voice.LOG_STATUSES:
         raise HTTPException(status_code=422,
                             detail="status: " + ", ".join(wa_voice.LOG_STATUSES))
@@ -72813,7 +72946,7 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
     kept: List[dict] = []
     langs: set = set()
     scanned, last_at, exhausted = 0, None, True
-    stream = _voice_log_stream(company_id, project_id, before_at)
+    stream = _voice_log_stream(company_id, project_id, before_at, media)
     async for at, kind, r in stream:
         if len(kept) >= limit or scanned >= VOICE_LOG_SCAN_MAX:
             exhausted = False
@@ -72825,9 +72958,15 @@ async def get_project_voice_log(project_id: str, sender: str = "", lang: str = "
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
             who = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
                    else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
-            view = wa_voice.log_row(r, who=who, where="group",
-                                    place=gnames.get(r.get("group_id")) or "",
-                                    at=_iso_utc(at), produced=[])
+            if r.get("photo") is not None and not r.get("has_audio"):
+                pkey = (r.get("photo") or {}).get("key")
+                url = await asyncio.to_thread(_presign_r2_get, pkey, 900) if pkey else ""
+                view = wa_photos.log_row(r, who=who, place=gnames.get(r.get("group_id")) or "",
+                                         at=_iso_utc(at), photo_url=url or "")
+            else:
+                view = wa_voice.log_row(r, who=who, where="group",
+                                        place=gnames.get(r.get("group_id")) or "",
+                                        at=_iso_utc(at), produced=[])
         else:
             uid = str(r.get("user_id") or "")
             if uid and uid not in users:

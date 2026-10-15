@@ -129,6 +129,12 @@ VISION_PUNCH_PHOTO = "punch_photo_describe"
 # a report), cached by photo, so a photo is judged once ever.
 VISION_REPORT_PHOTO = "report_photo_pick"
 
+# ── A PHOTO POSTED IN A JOB GROUP ─────────────────────────────────────────
+#
+# Described once, at ingest (lib/wa_photos.py): the report, the memory search
+# and the app read the stored description, never asking again.
+VISION_GROUP_PHOTO = "group_photo_describe"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
@@ -138,6 +144,7 @@ VISION_ENDPOINTS = frozenset({
     VISION_REFUSAL_CHECK,
     VISION_PUNCH_PHOTO,
     VISION_REPORT_PHOTO,
+    VISION_GROUP_PHOTO,
 })
 
 COLLECTION = "vision_calls"

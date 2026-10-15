@@ -8,6 +8,7 @@ import {
   TextInput,
   ActivityIndicator,
   Linking,
+  Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,15 +22,18 @@ import { PLAY_LABEL, NO_AUDIO_TEXT } from '../../../src/utils/whatsappAttention'
 import {
   VOICE_LOG_TITLE, VOICE_LOG_NOTE, STATUS_LABELS, STATUS_FILTERS, langLabel, whenLabel,
   headLine, statusLine, producedLines, producedRoute, emptyText, LOAD_MORE, appendPage,
+  MEDIA_FILTERS, MEDIA_LABELS, isPhoto, photoHead, photoLines,
 } from '../../../src/utils/voiceLog';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 
-// Project → WhatsApp → Voice log (admins): every voice note of the job --
-// when, who, where (group / DM), language and confidence, what was said and
-// its English, ▶ Play when the audio is kept, its status, and what it
-// produced (an Attention item, an Upcoming event, or nothing).
+// Project → WhatsApp → Voice & media log (admins): every voice note of the
+// job -- when, who, where (group / DM), language and confidence, what was
+// said and its English, ▶ Play when the audio is kept, its status, and what
+// it produced (an Attention item, an Upcoming event, or nothing) -- and every
+// photo posted in its groups: who sent it, their company, the caption and
+// what it shows.
 export default function VoiceLogScreen() {
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
@@ -39,9 +43,10 @@ export default function VoiceLogScreen() {
   const [sender, setSender] = useState('');
   const [lang, setLang] = useState('');
   const [status, setStatus] = useState('');
+  const [media, setMedia] = useState('');
   const [busy, setBusy] = useState(null);
 
-  const filters = { sender: sender.trim(), lang, status };
+  const filters = { sender: sender.trim(), lang, status, media };
   const load = useCallback(async () => {
     try {
       setData(await whatsappAPI.getVoiceLog(projectId, filters));
@@ -49,7 +54,7 @@ export default function VoiceLogScreen() {
       setData({ notes: [], facets: {}, error: true });
       toast?.error?.(VOICE_LOG_TITLE, 'Could not load. Try again.');
     }
-  }, [projectId, sender, lang, status]);
+  }, [projectId, sender, lang, status, media]);
 
   // The next page: filters keep running past what was read.
   const loadMore = async () => {
@@ -66,7 +71,7 @@ export default function VoiceLogScreen() {
     }
   };
 
-  useEffect(() => { load(); }, [lang, status]);   // the name filters on Search
+  useEffect(() => { load(); }, [lang, status, media]);   // the name filters on Search
 
   const play = async (n) => {
     setBusy(n.id);
@@ -124,6 +129,10 @@ export default function VoiceLogScreen() {
               {chip('Search', false, load, 'search')}
             </View>
             <View style={styles.row}>
+              {MEDIA_FILTERS.map((m) => chip(MEDIA_LABELS[m], media === m,
+                () => setMedia(m), `media-${m || 'all'}`))}
+            </View>
+            <View style={styles.row}>
               {STATUS_FILTERS.map((st) => chip(st ? STATUS_LABELS[st] : 'All',
                 status === st, () => setStatus(st), `st-${st || 'all'}`))}
             </View>
@@ -137,12 +146,28 @@ export default function VoiceLogScreen() {
           {data !== null && notes.length === 0 && (
             <GlassCard style={styles.card}>
               <Text style={[styles.line, muted]}>
-                {data.next_before ? 'Nothing yet in what was read.' : emptyText(!!(sender.trim() || lang || status))}
+                {data.next_before ? 'Nothing yet in what was read.' : emptyText(!!(sender.trim() || lang || status || media))}
               </Text>
             </GlassCard>
           )}
 
-          {notes.map((n) => (
+          {notes.map((n) => (isPhoto(n) ? (
+            <GlassCard key={`photo-${n.id}`} style={styles.card}>
+              <Text style={[styles.when, text]}>{whenLabel(n.at)}</Text>
+              <Text style={[styles.line, muted]}>{photoHead(n)}</Text>
+              {n.photo_url ? (
+                <Pressable onPress={() => Linking.openURL(n.photo_url)} accessibilityRole="imagebutton"
+                  accessibilityLabel="Open the photo">
+                  <Image source={{ uri: n.photo_url }} style={styles.photo} resizeMode="cover" />
+                </Pressable>
+              ) : null}
+              {photoLines(n).map((l) => (
+                <Text key={l.key} style={[l.quote ? styles.quote : styles.line, l.quote ? text : muted]}>
+                  {l.quote ? quoteText(l.text, false) : l.text}
+                </Text>
+              ))}
+            </GlassCard>
+          ) : (
             <GlassCard key={`${n.where}-${n.id}`} style={styles.card}>
               <Text style={[styles.when, text]}>{whenLabel(n.at)}</Text>
               <Text style={[styles.line, muted]}>{headLine(n)}</Text>
@@ -166,7 +191,7 @@ export default function VoiceLogScreen() {
                   : chip(PLAY_LABEL, false, () => play(n), `play-${n.id}`)
               ) : null}
             </GlassCard>
-          ))}
+          )))}
 
           {data && data.next_before ? (
             busy === 'more'
@@ -198,4 +223,5 @@ const styles = StyleSheet.create({
   when: { fontWeight: '700' },
   line: { fontSize: 13, marginTop: 4 },
   quote: { fontSize: 15, marginTop: 4 },
+  photo: { width: '100%', aspectRatio: 4 / 3, borderRadius: borderRadius.md, marginTop: spacing.xs },
 });

@@ -64,7 +64,19 @@ def indexable_message(row: Dict[str, Any]) -> bool:
         return bool(clean(v.get("english_direct")))
     if row.get("skipped"):
         return False    # "(voicenote — download failed)": a placeholder, not words
-    return bool(clean(row.get("body")))
+    return bool(message_text(row))
+
+
+def message_text(row: Dict[str, Any]) -> str:
+    """A message's words for the index. A photo: its caption and what the
+    vision model saw at ingest (lib/wa_photos.py) -- never the base64
+    thumbnail an uncaptioned image arrives with as its body."""
+    from lib import wa_photos
+    if (row.get("photo") or {}).get("key"):
+        return clean(wa_photos.search_text(row))
+    if row.get("media_type") == "image":
+        return clean(wa_photos.caption(row.get("body")))
+    return clean(row.get("body"))
 
 
 def clean(text: Any) -> str:
