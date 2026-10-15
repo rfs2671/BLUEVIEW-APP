@@ -447,9 +447,13 @@ def merge_texts(events: List[Dict[str, Any]], is_command=lambda t: False,
                 asked_which = _ts(e.get("at"))
             continue
         prev = out[last] if last is not None else None
+        # A reply is never merged -- unless the assistant asked which photos
+        # it was for: its quote reached no photo (11:52, the real walk:
+        # "Correction. 3rd floor interior" replied to a message outside the
+        # walk), and the next text names them.
         if (kind == "text" and prev is not None
                 and not prev.get("voice") and not e.get("voice") and not e.get("quoted")
-                and not prev.get("quoted")
+                and (not prev.get("quoted") or asked_which is not None)
                 and not is_command(e.get("text") or "") and not is_command(prev.get("text") or "")
                 and not is_reference(e.get("text")) and not is_reference(prev.get("text"))):
             a, b = _ts(prev.get("at")), _ts(e.get("at"))
@@ -658,6 +662,10 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
     seen_photos: List[dict] = []
     # "Same for ..." waiting for the next burst: {"ref", "burst", "last"}.
     pending: Optional[Dict[str, Any]] = None
+    # The walker said "Done": what follows runs the walk ("send to me",
+    # "keep things simple") or answers "Where is #n?" -- never photo words
+    # (3:37 PM, the real walk: "Keep things simple just send to me" went on #47).
+    finished = False
 
     def settle():
         """The waiting "same for ..." gets its burst, or goes to the model /
@@ -701,6 +709,7 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
                     pending["last"] = t
                 else:
                     settle()
+            finished = False                      # a photo after Done: the walk goes on
             seen_photos.append(it)
             outcome[i] = f"#{it.get('n')}"
             continue
@@ -726,7 +735,16 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             outcome[i] = "not read"
             continue
         if ann.get("kind") == "command":
+            said = " ".join(str(e.get("text") or "").lower().split()).strip(".! ")
+            if said in punch.DONE_WORDS or punch.send_shortcut(e.get("text")):
+                finished = True                   # "done", "done, send to Chris"
+                # The photos before it are closed: a caption after a later
+                # photo is that photo's alone.
+                mark = max([mark] + [it.get("captured") or 0 for it in seen_photos])
             outcome[i] = "command (not about photos)"
+            continue
+        if finished and asking is None:
+            outcome[i] = "after Done -- not about photos"
             continue
         if ann.get("kind") == "reference":
             ref = {"i": i, "text": e.get("text") or "", "at": e.get("at"),
@@ -762,6 +780,9 @@ def replay(items: List[dict], events: List[Dict[str, Any]],
             apply_answer(it, ann, e.get("at"))
             applied.append((e.get("text") or "", [asking]))
             outcome[i] = f"answer about #{asking}: " + describe(ann)
+            continue
+        if finished:
+            outcome[i] = "after Done -- not about photos"
             continue
         batch = targets(seen_photos, mark, ann.get("last_n"), previous)
         if not batch:

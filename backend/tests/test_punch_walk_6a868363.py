@@ -159,7 +159,7 @@ def _fixture() -> dict:
     """The exact walk, when it has been dumped: {"events", "items", ...}."""
     if not FIXTURE.exists():
         return {}
-    got = json.loads(FIXTURE.read_text())
+    got = json.loads(FIXTURE.read_text(encoding="utf-8"))
     return got if isinstance(got, dict) else {"events": got}
 
 
@@ -241,8 +241,9 @@ def _old_walk(timeline=None):
 
 class _WalkBase(_Batch):
 
-    #: None: the walk (the dumped one when saved); else this timeline.
-    timeline = None
+    #: The rebuilt walk (TIMELINE): each rule on its own. TheRealWalk sets
+    #: None: the real dumped walk (tests/fixtures/punch_walk_6a868363.json).
+    timeline = TIMELINE
 
     def _load(self):
         sess, events = _old_walk(self.timeline)
@@ -576,6 +577,121 @@ class TheOct15ApplyCheck(_WalkBase):
         self.assertEqual((it["floor"], it["area"]), ("6", punch.UNKNOWN))      # never another floor's
 
 
+class TheRealWalk(_WalkBase):
+    """The real walk 6a868363, dumped from production (130 messages, 47
+    items): what the dry run must show before it is applied. Two things the
+    rebuild did not have: "Correction. 3rd floor interior" (11:52) was a REPLY
+    to a message outside the walk -- the assistant asked "Which photo is that
+    for?" in the same second -- and texts kept coming after "Done" (3:37 PM
+    "Keep things simple just send to me")."""
+
+    timeline = None
+
+    def setUp(self):
+        super().setUp()
+        if not _fixture().get("items"):
+            self.skipTest("the real walk's fixture is not saved")
+
+    def where(self, by_n, n):
+        return punch.place_label(by_n[n].get("floor"), by_n[n].get("area"))
+
+    def test_the_fixture_is_the_walk(self):
+        fx = _fixture()
+        self.assertEqual((len(fx["events"]), len(fx["items"])), (130, 47))
+        # Never a phone number or a chat id in it.
+        blob = FIXTURE.read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"@(?:c\.us|g\.us|s\.whatsapp\.net)", blob))
+        # Nor a no-login link: its token opens the assignee's items.
+        self.assertIsNone(re.search(r"/api/public/", blob))
+
+    def test_1_the_correction_is_for_the_last_3_photos_only(self):
+        out, log = self.dry()
+        self.assertIn("text 'Correction. 3rd floor interior. Last 3 photos'\n"
+                      "           -> #11–#13: Floor 3 · interior", log)
+        self.assertNotIn("text 'Last 3 photos'", log)
+        before = {it["n"]: (it.get("floor"), it.get("area")) for it in _fixture()["items"]}
+        _out, by_n = self.applied()
+        self.assertEqual(sorted(n for n, it in by_n.items() if it.get("floor") == "3"), [11, 12, 13])
+        for n in (11, 12, 13):
+            self.assertEqual(self.where(by_n, n), "Floor 3 · interior", n)
+        # #2, #6, #7, #9, #10 stay as they were.
+        for n in (2, 6, 7, 9, 10):
+            self.assertEqual((by_n[n].get("floor"), by_n[n].get("area")), before[n], n)
+
+    def test_2_the_where_placeholder_is_never_a_place(self):
+        out, log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual([h for h in heads if re.search(r"(?i)\bwhere\b|\bunit\b", h)], [])
+        self.assertNotIn("confirmed at capture: #13", log)
+        self.assertNotIn("confirmed at capture: #44", log)
+
+    def test_3_a_confirmation_never_removes_detail(self):
+        _out, by_n = self.applied()
+        self.assertEqual(self.where(by_n, 36), "Floor 6 · interior")
+
+    def test_4_same_for_the_last_batch_is_the_next_4(self):
+        out, log = self.dry()
+        self.assertIn("-> same as the last batch -> the next photos #41–#44: Floor 7", log)
+        self.assertEqual(out["unplaced"], [])
+        _out, by_n = self.applied()
+        for n in (41, 42, 43, 44):
+            self.assertEqual(by_n[n]["floor"], "7", n)
+            self.assertTrue(by_n[n]["text"].startswith("Compound and sheetrock not done"), n)
+
+    def test_the_confirmed_places_stand(self):
+        _out, by_n = self.applied()
+        self.assertEqual({n: self.where(by_n, n) for n in (1, 15, 45, 46, 47)},
+                         {1: "Facade", 15: "Floor 5 · stairs", 45: "Roof", 46: "Roof",
+                          47: "Floor 7 · bulkhead"})
+        self.assertEqual(self.where(by_n, 3), "Floor 1 · Back of building")     # the answers
+
+    def test_after_done_texts_are_not_photo_words(self):
+        out, log = self.dry()
+        self.assertIn("text 'Keep things simple just send to me'\n"
+                      "           -> after Done -- not about photos", log)
+        _out, by_n = self.applied()
+        said = [str(x.get("text")) for x in by_n[47].get("notes") or []] + [by_n[47].get("text")]
+        self.assertEqual([w for w in said if "Keep things simple" in str(w)], [])
+
+    def test_one_heading_per_place(self):
+        out, _log = self.dry()
+        heads = [l for l in out["draft"].splitlines() if l.startswith("*") and l.endswith("*")]
+        self.assertEqual(len(heads), len({h.lower() for h in heads}), heads)
+
+
+class AfterDone(unittest.TestCase):
+    """Texts after Done ran the walk, not the photos -- until another photo
+    comes (a photo at any stage is still captured)."""
+
+    READING = {"kind": "annotation", "floor": "7", "area": None, "description": "Paint",
+               "note": None, "last_n": None}
+
+    def _walk(self, closing):
+        def ev(kind, at, text=""):
+            return {"kind": kind, "at": at, "text": text, "message_id": f"m{at.minute}{at.second}"}
+        items = [{"n": k, "captured": k, "photo_key": f"k{k}", "message_id": f"m{m}0",
+                  "floor": punch.UNKNOWN, "area": punch.UNKNOWN}
+                 for k, m in enumerate([1, 5], 1)]
+        events = [ev("photo", _t(12, 1)), ev("text", _t(12, 2), closing),
+                  ev("text", _t(12, 3), "7th floor paint"),        # after Done: not #1's
+                  ev("photo", _t(12, 5)), ev("text", _t(12, 6), "7th floor paint")]
+        got = punch_batch.replay([dict(i) for i in items], events,
+                                 {1: {"kind": "command"}, 2: self.READING, 4: self.READING})
+        return got, {it["n"]: it for it in got["items"]}
+
+    def test_a_photo_after_done_takes_its_caption(self):
+        got, by_n = self._walk("Done")
+        self.assertEqual(got["outcome"][2], "after Done -- not about photos")
+        self.assertEqual(by_n[1]["floor"], punch.UNKNOWN)
+        self.assertEqual(by_n[2]["floor"], "7")
+
+    def test_done_send_to_a_name_finishes_the_walk(self):
+        got, by_n = self._walk("done, send to Chris")
+        self.assertEqual(got["outcome"][2], "after Done -- not about photos")
+        self.assertEqual(by_n[1]["floor"], punch.UNKNOWN)
+        self.assertEqual(by_n[2]["floor"], "7")
+
+
 class TheDump(_WalkBase):
     """`--dump-events` writes what the fixture loader replays: a walk dumped
     and loaded back reads exactly as the walk itself."""
@@ -590,6 +706,9 @@ class TheDump(_WalkBase):
         rows, items = mod.dump(sess, events, punch)
         blob = json.dumps({"events": rows, "items": items})
         self.assertNotIn(CHAT.split("@")[0], blob)                 # never the phone in an id
+        self.assertEqual(mod._clean("mark them done (no login):\n"
+                                    "https://api.levelog.com/api/public/punch/abc.def\n(+3 photos)"),
+                         "mark them done (no login):\n[link]\n(+3 photos)")
         direct, _ = self.dry()
         with patch(f"{__name__}._fixture", lambda: json.loads(blob)):
             from_dump, _ = self.dry()
