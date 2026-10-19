@@ -51450,12 +51450,6 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
             logger.warning(f"[report] read failed: {type(e).__name__}")
             raise ReportSourceUnavailable(getattr(coll, "name", "records")) from e
 
-    async def _first(coll, query, field):
-        try:
-            return await coll.find(query, {field: 1}).sort([(field, 1)]).to_list(1)
-        except Exception as e:
-            logger.warning(f"[report] read failed: {type(e).__name__}")
-            raise ReportSourceUnavailable(getattr(coll, "name", "records")) from e
     checkins = await _q(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True},
                                       "check_in_time": {"$gte": lo, "$lt": hi}},
                         projection={"worker_id": 1, "worker_phone": 1, "worker_name": 1,
@@ -51466,12 +51460,20 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     # The first day anything was recorded on the job: working days count from
     # it (lib/report_calendar), not from before the job began.
     firsts = []
-    for r in await _first(db.checkins, {"project_id": pid, "is_deleted": {"$ne": True}}, "check_in_time"):
+    try:
+        first_ck = await db.checkins.find({"project_id": pid, "is_deleted": {"$ne": True}},
+                                          {"check_in_time": 1}).sort([("check_in_time", 1)]).to_list(1)
+        first_lg = await db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
+                                           "status": "submitted", "is_deleted": {"$ne": True}},
+                                          {"date": 1}).sort([("date", 1)]).to_list(1)
+    except Exception as e:
+        logger.warning(f"[report] read failed: {type(e).__name__}")
+        raise ReportSourceUnavailable("records") from e
+    for r in first_ck:
         d = attendance.local_day(r.get("check_in_time"))
         if d:
             firsts.append(d)
-    for r in await _first(db.logbooks, {"project_id": pid, "log_type": "daily_jobsite", "status": "submitted",
-                                        "is_deleted": {"$ne": True}}, "date"):
+    for r in first_lg:
         d = project_report._d(r.get("date"))
         if d:
             firsts.append(d)
