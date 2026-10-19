@@ -24224,6 +24224,9 @@ async def get_daily_log(log_id: str, current_user = Depends(get_current_user), _
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
+    # The same gate as PUT, against the STORED project id. This read had none:
+    # any approved account in any company could fetch a log by its id.
+    await _assert_project_access(str(log.get("project_id") or ""), current_user)
     return DailyLogResponse(**serialize_id(log))
 
 @api_router.get("/daily-logs/project/{project_id}")
@@ -29680,11 +29683,10 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
-    
-    # Get project info
-    project = None
-    if log.get("project_id"):
-        project = await db.projects.find_one({"_id": to_query_id(log["project_id"])})
+
+    # Authorized against the STORED project id, like GET and PUT on the same
+    # log. The project it returns is the one the PDF is headed with.
+    project = await _assert_project_access(str(log.get("project_id") or ""), current_user)
     
     project_name = project.get("name", "Unknown") if project else "Unknown"
     project_address = project.get("address") or project.get("location") or project.get("name", "") if project else ""
