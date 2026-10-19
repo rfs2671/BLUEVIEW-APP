@@ -101,8 +101,7 @@ export default function VoiceLogScreen() {
   );
 
   return (
-    <View style={styles.flex}>
-      <AnimatedBackground />
+    <AnimatedBackground>
       <SafeAreaView style={styles.flex} edges={['top']}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} accessibilityLabel="Back">
@@ -200,7 +199,7 @@ export default function VoiceLogScreen() {
           ) : null}
         </ScrollView>
       </SafeAreaView>
-    </View>
+    </AnimatedBackground>
   );
 }
 

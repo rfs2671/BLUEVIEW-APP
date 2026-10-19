@@ -318,8 +318,7 @@ export default function ProjectReportsScreen() {
   );
 
   return (
-    <View style={styles.flex}>
-      <AnimatedBackground />
+    <AnimatedBackground>
       <SafeAreaView style={styles.flex} edges={['top']}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} accessibilityLabel="Back">
@@ -489,7 +488,7 @@ export default function ProjectReportsScreen() {
           ))}
         </ScrollView>
       </SafeAreaView>
-    </View>
+    </AnimatedBackground>
   );
 }
 
