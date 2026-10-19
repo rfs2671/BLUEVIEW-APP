@@ -55422,7 +55422,11 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     last_hc = await _dm_state_get("dm_last", dm_chat)
     ref = wa_headcount.since_ref(core, now)
     if last_hc and str(last_hc.get("project_id")) in by_id and job is None and (
-            hc in (wa_headcount.CHALLENGE, wa_headcount.SUBS)
+            hc == wa_headcount.CHALLENGE
+            # "how many subs on site across all my jobs": all of them, never
+            # the job counted last (Codex on #807).
+            or (hc == wa_headcount.SUBS
+                and wa_assistant.question_scope(core) != wa_assistant.SCOPE_ALL)
             or (hc is None and (ref or wa_headcount.refers_back(core)))):
         # A job named in the message wins over the last one counted ("the
         # count at 8 Walworth is wrong").

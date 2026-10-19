@@ -70,6 +70,22 @@ class MondayAt588(_Site, unittest.TestCase):
                  if r.get("path") == "headcount"]
         self.assertEqual(kinds, ["count", "subs", "subs", "subs"])
 
+    def test_all_jobs_wins_over_the_job_counted_last(self):
+        """Codex on #807: after a count at 588, "across all my jobs" is about
+        every job, not 588."""
+        from unittest.mock import patch
+        from tests.test_whatsapp_phase1_foundations import _Ctx
+        asked = []
+
+        async def all_jobs(ident, body):
+            asked.append(body)
+            return "All jobs: 2 subs on site."
+        with _Ctx(db=self.db) as c, patch.object(server, "_dm_answer_all", all_jobs):
+            self.say(c, "Update on workers 588")
+            reply = self.say(c, "how many subs are on site across all my jobs?")
+        self.assertEqual(reply, "All jobs: 2 subs on site.")
+        self.assertEqual(asked, ["how many subs are on site across all my jobs?"])
+
     def test_with_the_job_named(self):
         self.assertEqual(self.ask("which subs are on site at 588?"), ALL)
         self.assertEqual(self.ask("how many companies at 588 today"), ALL)
