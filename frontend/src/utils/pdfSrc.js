@@ -28,8 +28,9 @@
  *      the pdf.js copy staged on the device by pdfjsViewer.js. A token in a
  *      header cannot land in anyone else's log.
  *
- * iOS keeps the direct url: WKWebView renders application/pdf through PDFKit
- * itself, so the url goes to api.levelog.com and nowhere else.
+ * iOS does the same since the viewer gained search: Apple's PDFKit, which used
+ * to be handed the url, cannot be searched from the app, so both phones fetch
+ * the bytes with the token in a header and draw them with the staged pdf.js.
  *
  * Pure on purpose — no react-native import, no storage read — so the rules are
  * testable without a renderer. `platformOS` and `apiBase` are arguments for the
@@ -92,26 +93,22 @@ export function authorizedPdfUrl(rawUrl, { apiBase, token } = {}) {
 export const PDF_SOURCE_NONE = 'none';
 export const PDF_SOURCE_LOCAL = 'local';
 export const PDF_SOURCE_DOWNLOAD = 'download';
-export const PDF_SOURCE_DIRECT = 'direct';
 
 /**
  * What the native viewer must do with `rawUrl` on this platform.
  *
  *   none     — nothing to show.
  *   local    — already a `file://`; hand it to the renderer as is.
- *   direct   — the platform renders a remote PDF itself. iOS ONLY.
  *   download — fetch the bytes to disk (token in the Authorization header),
  *              then render the local copy.
  *
- * iOS is named explicitly rather than Android being singled out: any platform
- * WITHOUT a native PDF renderer must download, and defaulting the unknown case
- * to `download` keeps a remote url out of a wrapped viewer no matter what
- * `Platform.OS` reports.
+ * Every platform downloads — iOS too, since the viewer gained search (the
+ * staged pdf.js can be searched; PDFKit cannot). A remote url is never handed
+ * to a viewer, whatever `Platform.OS` reports.
  */
 export function pdfSourcePlan(rawUrl, platformOS) {
   if (!rawUrl) return { kind: PDF_SOURCE_NONE };
   if (isLocalFileUri(rawUrl)) return { kind: PDF_SOURCE_LOCAL, uri: rawUrl };
-  if (platformOS === 'ios') return { kind: PDF_SOURCE_DIRECT };
   return { kind: PDF_SOURCE_DOWNLOAD };
 }
 
