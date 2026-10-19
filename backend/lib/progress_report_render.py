@@ -479,14 +479,9 @@ def _workforce(rep: Dict[str, Any]) -> str:
                     f"<td class='n'>{prev_avg}</td><td class='n'>{s['max']}</td></tr>")
     callouts = []
     if mob["comparable"]:
-        for m in mob["new"][:4]:
-            callouts.append(f"{m['name']} mobilized (first on site {_fmt(m['first'], '%b %-d')}).")
-        for m in mob["changed"][:3]:
-            callouts.append(f"{m['name']} crew {'up' if m['direction'] == 'up' else 'down'}: average "
-                            f"{m['avg']:g} vs {m['prev_avg']:g}.")
         for g in mob["gone"][:3]:
             callouts.append(f"{g['name']} not on site this period (last seen {_fmt(g['last'], '%b %-d')}).")
-    call = ("<h3>Changes in mobilization</h3><ul class='tight'>" + "".join(f"<li>{_e(c)}{_tag('G')}</li>" for c in callouts)
+    call = ("<h3>Not on site this period</h3><ul class='tight'>" + "".join(f"<li>{_e(c)}{_tag('G')}</li>" for c in callouts)
             + "</ul>") if callouts else ""
     return (f"<section><h2>Workforce and site activity {_tag('G')}</h2><p class='muted'>Workers counted once per day from "
             f"site check-ins; working days are {_e(rep['site']['basis'])}.</p>{call}"
@@ -542,9 +537,9 @@ def _regulatory(rep: Dict[str, Any]) -> str:
                   + "." if insp["failed"] else " None failed.")
         parts.append(f"<h3>Daily site inspections {_tag('L')}</h3><p>{insp['walked']} inspection items were walked on "
                      f"{insp['days']} days; {insp['passed']} passed, {insp['failed']} failed.{failed}</p>")
-    up = rep["upcoming"]
+    up = rep["upcoming"][5:]            # the first five are on page 1 ("Coming up")
     if up:
-        parts.append("<h3>Upcoming deadlines</h3><ul class='tight'>" + "".join(
+        parts.append("<h3>Further deadlines</h3><ul class='tight'>" + "".join(
             f"<li><b>{_e(_fmt(u['date'], '%a %b %-d, %Y'))}</b> — {_e(u['what'])}{_tag(u['src'])}</li>" for u in up) + "</ul>")
     return f"<section><h2>Regulatory and material risks {_tag('R')}</h2>{''.join(parts)}</section>"
 

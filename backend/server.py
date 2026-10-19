@@ -51435,6 +51435,11 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     matters), the city events, the confirmed schedule and financials, and the
     sync state."""
     pid = str(project.get("_id"))
+    # Defence in depth: every caller has scoped the project to the company
+    # already; a report never reads another company's job whatever called it.
+    if str(project.get("company_id") or "") != str(company_id or ""):
+        logger.error("[report] refused: project is not this company's")
+        raise ReportSourceUnavailable("project")
     length = (end - start).days + 1
     prev_start = start - timedelta(days=length)
     lo = datetime.combine(prev_start - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)

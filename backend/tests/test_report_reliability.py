@@ -208,6 +208,16 @@ class TheDryRunTouchesNothing(_Reports, unittest.TestCase):
         self.assertTrue(got["snapshot"] and got["reports"])
 
 
+class AReportNeverReadsAnotherCompanysJob(unittest.TestCase):
+
+    def test_a_project_of_another_company_is_refused(self):
+        db = _world()
+        with _Ctx(db):
+            project = {**_run(db.projects.find_one({"_id": THOMAS})), "company_id": "someone-else"}
+            with self.assertRaises(server.ReportSourceUnavailable):
+                _run(server._report_rows(project, CO_A, date(2026, 10, 1), date(2026, 10, 14), NOW))
+
+
 def progress_report_engine():
     from lib import progress_report
     return progress_report.ENGINE_VERSION
