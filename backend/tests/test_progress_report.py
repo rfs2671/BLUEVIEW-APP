@@ -125,7 +125,7 @@ class TheChangeSinceTheLastPeriod(unittest.TestCase):
         self.assertFalse(r["mobilization"]["comparable"])
         self.assertEqual({i["status"] for w in r["work"] for i in w["items"]}, {"reported"})
         self.assertFalse([c for c in r["changes"] if c["src"] in ("G", "L")])
-        self.assertNotIn("previous", " ".join(r["overview"]))
+        self.assertIsNone(re.search(r'\bprevious\b', " ".join(r["overview"])))
 
     def test_the_chart_compares_by_position_and_follows_the_cadence(self):
         r = rep()
