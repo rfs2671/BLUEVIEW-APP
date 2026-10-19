@@ -8,7 +8,6 @@ import {
   Pressable,
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Modal,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -191,7 +190,7 @@ export default function PublicCheckInScreen() {
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior="padding"
           style={s.keyboardView}
         >
           <ScrollView

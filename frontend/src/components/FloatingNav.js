@@ -9,7 +9,6 @@ import {
   TextInput,
   Modal,
   ActivityIndicator,
-  Platform,
   KeyboardAvoidingView,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
@@ -124,7 +123,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior="padding"
         style={modalStyles.overlay}
       >
         <Pressable style={modalStyles.backdrop} onPress={onClose} />

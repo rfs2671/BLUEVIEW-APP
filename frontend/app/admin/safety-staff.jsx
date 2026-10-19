@@ -577,7 +577,7 @@ export default function SafetyStaffScreen() {
           onRequestClose={() => setShowAddModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>
@@ -707,7 +707,7 @@ export default function SafetyStaffScreen() {
           onRequestClose={() => setShowEditModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>
