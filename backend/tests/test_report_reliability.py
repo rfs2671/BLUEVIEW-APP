@@ -183,6 +183,31 @@ class TheScheduleIsReliable(_World, unittest.TestCase):
         self.assertEqual({e["id"] for e in snap["evidence"]} >= {"G", "L"}, True)
 
 
+class TheDryRunTouchesNothing(_Reports, unittest.TestCase):
+
+    def setUp(self):
+        _Reports.setUp(self)
+
+    def test_it_renders_and_stores_nothing(self):
+        db = _world()
+        uploads = []
+        ps = self.patches() + [patch.object(server, "_upload_to_r2", lambda *a, **k: uploads.append(a) or "x")]
+        for p in ps:
+            p.start()
+        try:
+            with _Ctx(db):
+                project = _run(db.projects.find_one({"_id": THOMAS}))
+                got = _run(server.build_project_report(CO_A, [project], date(2026, 10, 1), date(2026, 10, 14),
+                                                       now=NOW, by="dry-run", source="dry_run", dry_run=True))
+        finally:
+            for p in reversed(ps):
+                p.stop()
+        self.assertEqual(got["pdf"], b"%PDF-fake")
+        self.assertEqual(db[server.PROJECT_REPORTS].rows, [])
+        self.assertEqual(uploads, [])
+        self.assertTrue(got["snapshot"] and got["reports"])
+
+
 def progress_report_engine():
     from lib import progress_report
     return progress_report.ENGINE_VERSION

@@ -261,5 +261,38 @@ def is_request(text: Any) -> bool:
     return bool(t) and bool(_REQUEST.search(t)) and not _OTHER_REPORT.search(t)
 
 
+_MONTHS_RE = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+              r"sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_DATE_WORDS = re.compile(
+    r"\b(?:last|past|previous|this|next)\s+(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"twelve|fourteen)?\s*(?:days?|weeks?|months?|quarters?|years?)\b"
+    r"|\b(?:" + _MONTHS_RE + r")\b\.?(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s*\d{4})?"
+    r"|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b(?:19|20)\d{2}\b|\b(?:today|yesterday|ytd)\b",
+    re.IGNORECASE)
+_FILLER = frozenset("""send me a an the report reports for on of my monthly weekly biweekly bi weekly project job
+jobs site sites please give get make run pull generate email want need can i have and in at to from since until
+through thru between before after starting quarterly quarter all every each whole entire full progress now
+whatsapp pdf it us about with that this those these""".split())
+
+
+def names_a_job(text: Any) -> bool:
+    """Does a report request name something that is not a date or a filler
+    word -- "report for 588", "send 99 Nowhere St report for last 2 weeks"? A
+    request that names a job we could not find is told so; it never quietly
+    becomes a report on every job (the date range in the same sentence is
+    not a reason to guess)."""
+    t = _DATE_WORDS.sub(" ", " ".join(str(text or "").lower().split()))
+    for w in re.findall(r"[a-z0-9']+", t):
+        if w in _FILLER:
+            continue
+        if w.isdigit():
+            if len(w) >= 2:
+                return True
+            continue
+        if len(w) >= 3:
+            return True
+    return False
+
+
 def wants_all_jobs(text: Any) -> bool:
     return bool(_ALL_JOBS.search(str(text or "")))

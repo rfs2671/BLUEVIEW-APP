@@ -299,6 +299,27 @@ class InTheDm(_Reports, _Harness, unittest.TestCase):
         self.assertEqual(doc["start"][5:], "09-01")
         self.assertTrue(doc["title"].startswith("Progress report — 2 jobs —"))
 
+    def test_an_unknown_job_with_a_date_range_is_not_every_job(self):
+        # THE BUG: "report for 99 Nowhere St for the last 2 weeks" fell through
+        # to a report on ALL jobs because a date range was in the sentence.
+        for text in ("send me a report for 99 Nowhere St for the last 2 weeks",
+                     "report for the Atlantic Ave job since Oct 1"):
+            reply, db = self.ask(text)
+            self.assertIn("I don't see that job", reply or "", text)
+            self.assertEqual(db[server.PROJECT_REPORTS].rows, [], text)
+            self.assertEqual(self.media, [], text)
+
+    def test_a_date_range_alone_still_means_every_job(self):
+        reply, db = self.ask("send me a report for the last 2 weeks")
+        self.assertEqual(sorted(db[server.PROJECT_REPORTS].rows[0]["project_ids"]), sorted([THOMAS, WALWORTH]))
+
+    def test_names_a_job(self):
+        for text, named in (("report for 588 last 30 days", True), ("monthly report", False),
+                            ("report for September", False), ("report 12/3 to 12/10", False),
+                            ("give me the weekly report from Oct 1 to Oct 9", False),
+                            ("report for Atlantic Ave last week", True)):
+            self.assertEqual(R.names_a_job(text), named, text)
+
     def test_not_a_report_request(self):
         for t in ("daily report for 588", "what did the report say"):
             self.assertFalse(R.is_request(t), t)

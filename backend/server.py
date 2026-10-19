@@ -51721,8 +51721,12 @@ def _report_image(c: dict) -> Optional[str]:
 async def build_project_report(company_id: str, projects: List[dict], start: _Date, end: _Date, *,
                                now: Optional[datetime] = None, by: str = "",
                                source: str = "app", key: Optional[str] = None,
-                               kind: str = "") -> dict:
+                               kind: str = "", dry_run: bool = False) -> dict:
     """Compute, render, store and link one report (one job, or several).
+
+    `dry_run`: read, compute and render only -- nothing is stored, uploaded,
+    linked or sent; the result is {"pdf", "html", "snapshot", "title", "photos"}.
+    It is how a report is checked against a database without touching it.
 
     `key`: a scheduled report's once-only key. A report already built under it
     WITH ITS PDF is returned, never built twice. One whose PDF could not be
@@ -51758,6 +51762,11 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
     rid = str((old or {}).get("_id") or uuid.uuid4())
     html_text = progress_report_render.render_html(reps, gc=gc, title=title, now=now, images=images,
                                                    report_id=rid)
+    if dry_run:
+        return {"pdf": await asyncio.to_thread(_report_pdf, html_text), "html": html_text, "title": title,
+                "snapshot": [progress_report.snapshot(r) for r in reps],
+                "photos": [{k: v for k, v in ph.items() if k != "key"} for r in reps for ph in r["photos"]],
+                "reports": reps}
     r2_key = f"reports/{company_id}/{rid}.pdf"
     stored, error = False, None
     try:
@@ -51862,8 +51871,7 @@ async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -
         elif len(jobs) == 1:
             picked = [jobs[0]["project"]]
         else:
-            named = re.search(r"\b\d{2,5}\b|\bfor\s+([A-Za-z][\w ]{2,30})", text)
-            if named and not attendance.parse_range(text, now)[0]:
+            if project_report.names_a_job(text):
                 await send_whatsapp_message(
                     dm_chat, "I don't see that job. Your jobs: "
                     + ", ".join(j["label"] for j in jobs[:8]) + ". Or say \"report all jobs\".")
@@ -52357,6 +52365,9 @@ class ScheduleImportFile(BaseModel):
 
 class ScheduleConfirm(BaseModel):
     reviewed: bool = False
+    #: Required when a confirmed schedule exists: an import never replaces
+    #: what a person confirmed unless a person says so.
+    replace_confirmed: bool = False
 
 
 def _schedule_view(rec: dict, *, detail: bool = False) -> dict:
@@ -52494,6 +52505,20 @@ async def confirm_baseline_schedule(project_id: str, schedule_id: str, body: Sch
                                                 "status": "draft"})
     if not rec:
         raise HTTPException(status_code=404, detail="No draft schedule to confirm")
+    try:
+        today = datetime.now(timezone.utc).astimezone(project_report.NY).date()
+        usable = schedule_plan.assess(rec.get("doc") or {}, period_start=today - timedelta(days=13),
+                                      period_end=today, today=today)["usable"]
+    except Exception:
+        usable = False
+    if not usable:
+        raise HTTPException(status_code=422, detail="No dated activities could be read from that file, "
+                                                    "so it cannot be confirmed")
+    current = await db[PROJECT_SCHEDULES].find_one({"company_id": cf, "project_id": pid, "status": "confirmed"})
+    if current and not body.replace_confirmed:
+        raise HTTPException(status_code=409, detail=(
+            "A schedule is already confirmed (" + str(current.get("source_name") or "schedule")
+            + "). Confirm again with replace_confirmed to replace it; it is kept as superseded."))
     now = datetime.now(timezone.utc)
     await db[PROJECT_SCHEDULES].update_many({"company_id": cf, "project_id": pid, "status": "confirmed"},
                                             {"$set": {"status": "superseded"}})

@@ -820,3 +820,47 @@ class TestResetResyncReingest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheMorningBriefSeesInPlaceChanges(unittest.TestCase):
+    """A violation or stop-work order is refreshed IN PLACE (one row, a growing
+    status_history); the brief used to need a second row to see any change."""
+
+    NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+    SINCE = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+
+    def row(self, **kw):
+        base = {"raw_dob_id": "SWO-1", "record_type": "swo", "stop_work_order_number": "SWO-1",
+                "violation_number": "SWO-1", "severity": "Action",
+                "detected_at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+                "status_changed_at": datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc),
+                "previous_status": "ACTIVE", "current_status": "RESCINDED", "is_seed_transition": False,
+                "status_history": [{"status": "ACTIVE", "at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+                                    "source": "first_seen"},
+                                   {"status": "RESCINDED", "at": datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc),
+                                    "source": "sync"}]}
+        base.update(kw)
+        return base
+
+    def items(self, row):
+        from lib import wa_brief
+        return wa_brief.job_items([row], self.SINCE, self.NOW)
+
+    def test_a_rescinded_swo_changed_in_place_is_in_the_brief(self):
+        got = self.items(self.row())
+        self.assertTrue(any("SWO-1" in i["text"] and "ACTIVE → RESCINDED" in i["text"] for i in got), got)
+
+    def test_a_legacy_first_refresh_is_not(self):
+        self.assertEqual(self.items(self.row(is_seed_transition=True)), [])
+
+    def test_a_row_that_never_changed_is_not(self):
+        one = self.row(previous_status=None, current_status="ACTIVE",
+                       status_history=[{"status": "ACTIVE", "at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+                                        "source": "first_seen"}])
+        self.assertFalse([i for i in self.items(one) if "changed" in i["text"]])
+
+    def test_unpaid_is_not_closed(self):
+        from lib import wa_brief
+        self.assertFalse(wa_brief._is_closed({"current_status": "UNPAID"}))
+        self.assertFalse(wa_brief._is_closed({"resolution_state": "NOT CERTIFIED"}))
+        self.assertTrue(wa_brief._is_closed({"current_status": "RESOLVED"}))
