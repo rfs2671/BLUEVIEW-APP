@@ -1,74 +1,94 @@
-"""The project progress report: what a GC sends an owner or a lender.
+"""The project progress report: one document for a GC, an owner, a developer,
+an investor and a lender.
 
-Plain construction language, evidence only. Every statement in it is built
-from a record the server read for the job and the period: check-ins (who was
-on site, which days), filed daily logs (each crew's work description,
-locations and photos, the day's observations), the job's group chat (text),
-walkthrough photos, DOB/DOT records, commitments, punch items and upcoming
-events. Nothing is estimated; a section with nothing in it says "None".
+Plain construction language, evidence only. Every statement is built from a
+record the server read for the job and the period, and says which kind of
+record it came from:
 
-Never "man-days", never a percentage against the period before: an owner
-reads days on site and workers on site.
+  G  gate check-ins          who was on site, which days (independent of any log)
+  L  filed daily logs        what each crew reported doing, where, with photos
+  R  DOB / DOT records       the city's own record, with its number and link
+  S  project schedule        a schedule a person imported and confirmed
+  F  financial figures       figures a person provided and confirmed
 
-  1 Cover          job, GC, period, prepared date
-  2 Summary        5-8 sentences (the model writes them from the facts here;
-                   check_summary keeps only a text whose every number and
-                   name is in the facts, else summary_fallback)
-  3 Schedule       "Actual work (from daily logs)": one row per sub, bars on
-                   the days it was on site, each bar labelled with its work
-  4 Work by sub    dates on site, average / most workers, the work (from the
-                   logs), its issues
-  5 Photos         10-15 from the filed DAILY LOGS only (never the group
-                   chat's or a walkthrough's), grouped by sub: each sub's
-                   earliest and latest, dated, captioned with its work line;
-                   vision only screens out blurry / people / document shots.
-                   Fewer usable: what there is, never padded
-  6 Site activity  workers on site per day, by sub
-  7 DOB / DOT      new records, number and status
-  8 Open items     late commitments, punch by assignee
-  9 Coming up      the next 2 weeks
+Nothing is estimated and nothing is generated: the overview and the changes
+since the previous period are composed from the numbers below by fixed
+templates, so every sentence can be traced to a line of the evidence index.
+A section with nothing in it is left out or reduced to one honest line.
 
-Pure: no database, no network, no model. server.py reads the rows, calls the
-model, fetches the photos, and renders the PDF with WeasyPrint.
+WHAT IS DELIBERATELY NOT IN THIS REPORT (and why)
+  * WhatsApp chat, commitments, chasing, reminders. They are internal to the
+    GC, model-extracted and (the attention engine) unreviewed; an owner or
+    lender reads "late commitment" as a project risk. Chat text is no longer
+    sent to a model for this report either.
+  * The punch list and walkthrough observations: assignments to named people
+    on the GC's own team are internal; their statuses were also read as of
+    today, not as of the period.
+  * Individual workers: counts by sub only.
+  * Free-text site observations: unclassified and potentially personal. The
+    structured daily inspections (pass / fail per item) are included.
+  * A percent complete derived from manpower, log wording or photographs. A
+    percent appears only when the schedule file itself reports it (lib/
+    schedule_plan.py), attributed to that file and its data date.
+  * Any financial figure that was not provided and confirmed.
+
+PERIOD-AWARE, NOT PERIOD-SPECIFIC. Weekly, bi-weekly, monthly, quarterly and
+custom reports are the same report. The period changes only the granularity
+of the charts (days, weeks, months) and, through the previous period of the
+same length, what "changed" means.
+
+Pure: no database, no network, no model. server.py reads the rows, screens
+the photos with the vision model, and renders the PDF with WeasyPrint.
 """
 
 from __future__ import annotations
 
-import html
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from lib import attendance as att
-from lib import wa_photos
 from lib import project_report as base
+from lib import report_calendar, report_regulatory
 from lib.datefmt import strftime as _fmt
 
 NY = base.NY
-UPCOMING_DAYS = 14
-#: At most this many photos; as many as the period has that pass (the aim
-#: is 10-15, never a photo that does not).
-MAX_PHOTOS = 15
+ENGINE_VERSION = "2026.10.2"
+UPCOMING_DAYS = 30
+#: 4-6 photographs, never more: a few good ones, not a gallery.
+MIN_PHOTOS, MAX_PHOTOS = 4, 6
+MAX_PER_SUB = 2
 ATTACHED_LINE = "Full report (PDF) attached."
-SOURCE_LINE = "Source: Levelog records — check-ins, daily logs and their photos, group chat"
+SOURCE_LINE = "Source: Levelog records — site check-ins, filed daily logs, DOB/DOT records"
+
+#: A sub's headcount "changed" when its average moved at least this much AND
+#: at least this many workers; a whole-site change uses the same rule.
+CHANGE_PCT = 0.30
+CHANGE_WORKERS = 3
+WORKFORCE_NOTE_PCT = 0.15
+#: Gate and log headcount "agree" within this many workers or this share.
+AGREE_WORKERS = 1
+AGREE_PCT = 0.25
 
 #: Never in the report.
 FORBIDDEN = re.compile(r"man[- ]?days?|\d+\s?%|percent", re.IGNORECASE)
 
 #: Colors for the subs (charts), in order.
-PALETTE = ["#1F3A5F", "#C8102E", "#2E7D32", "#E07B00", "#6A1B9A", "#00838F", "#8D6E63",
-           "#5C6BC0", "#AD1457", "#9E9D24"]
+PALETTE = ["#1F3A5F", "#2A7F8E", "#6B5B95", "#B7791F", "#3F7D58", "#5B7083", "#8D6E63",
+           "#4C5FB5", "#8E4585", "#8A8D2F"]
+
+_UNASSIGNED = {"unassigned", "no company", "pending assignment", "unknown", "none", "n a"}
 
 
 # ── SMALL THINGS ─────────────────────────────────────────────────────────────
 
-def _e(v: Any) -> str:
-    return html.escape(base.no_phone(v))
-
-
 def _day(d: Optional[date]) -> str:
     return _fmt(d, "%b %-d") if d else ""
+
+
+def _dayy(d: Optional[date]) -> str:
+    return _fmt(d, "%b %-d, %Y") if d else ""
 
 
 def _wday(d: date) -> str:
@@ -84,17 +104,23 @@ def _span(a: date, b: date) -> str:
     return f"{_day(a)}–{_day(b)}"
 
 
-def short_name(name: Any, work: Any = "") -> str:
-    """A sub as people say it: "Arkon Builders" -> "Arkon"; "J&G
-    Scaffolding" -> "J&G" when the work already says scaffolding."""
-    from lib import wa_style
-    words = str(name or "").split()
-    while len(words) > 1 and _fold(words[-1]) in wa_style._CO_TAIL:
-        words.pop()
-    if len(words) > 1 and _fold(words[-1]) in wa_style._TRADE_WORDS \
-            and _fold(words[-1]) in _fold(work).split():
-        words.pop()
-    return " ".join(words) or str(name or "")
+def _n(n: int, word: str, plural: Optional[str] = None) -> str:
+    return f"{n} {word if n == 1 else (plural or word + 's')}"
+
+
+def _join(parts: List[str]) -> str:
+    parts = [p for p in parts if p]
+    if not parts:
+        return ""
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _fold(s: Any) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).split())
+
+
+def _e_phone(v: Any) -> str:
+    return base.no_phone(v)
 
 
 def short_period(start: date, end: date, now: datetime) -> str:
@@ -109,10 +135,6 @@ def job_title(label: str) -> str:
     off, as people say it)."""
     t = " ".join(str(label or "").split())
     return re.sub(r"\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Pl|Place)\.?$", "", t, flags=re.IGNORECASE) or t
-
-
-def _fold(s: Any) -> str:
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).split())
 
 
 def company_key(name: Any) -> str:
@@ -146,19 +168,10 @@ def canonical_keys(keys: Iterable[str]) -> Dict[str, str]:
     return out
 
 
-def sub_aliases(keys: Iterable[str]) -> Dict[str, List[str]]:
-    """What in a text names each sub: its key, and its name without the
-    trade word when no other sub shares that ("J&G" -> J&G Scaffolding)."""
-    keys = list(keys)
-    bares = Counter(bare_key(k) for k in keys)
-    return {k: [k] + ([bare_key(k)] if bare_key(k) != k and bares[bare_key(k)] == 1 else [])
-            for k in keys}
-
-
-def names_sub(text: Any, names: Iterable[str]) -> bool:
-    """`text` names the sub ("J&G" in "J&G short 2 guys")."""
-    t = f" {_fold(text)} "
-    return any(n and len(n) >= 3 and f" {n} " in t for n in names)
+def is_unassigned(name: Any) -> bool:
+    """A check-in or log row with no real company: "UNASSIGNED", "No
+    company", a blank. Counted in the site's headcount, never shown as a sub."""
+    return _fold(name) in _UNASSIGNED or not _fold(name)
 
 
 _FLOOR = re.compile(r"\b(?:fl(?:oor)?s?\.?\s*#?(\d{1,2})(?:\s*(?:-|–|to|&|and)\s*(\d{1,2}))?"
@@ -178,13 +191,15 @@ def floors_in(text: Any) -> List[int]:
 
 
 def floors_label(floors: Iterable[int]) -> str:
-    """[1, 2, 3, 4] -> "fl 1–4"; [2, 5] -> "fl 2, 5"."""
+    """[1, 2, 3, 4] -> "floors 1–4"; [2, 5] -> "floors 2, 5"; [3] -> "floor 3"."""
     fs = sorted(set(floors))
     if not fs:
         return ""
-    if fs == list(range(fs[0], fs[-1] + 1)) and len(fs) > 1:
-        return f"fl {fs[0]}–{fs[-1]}"
-    return "fl " + ", ".join(str(f) for f in fs)
+    if len(fs) == 1:
+        return f"floor {fs[0]}"
+    if fs == list(range(fs[0], fs[-1] + 1)):
+        return f"floors {fs[0]}–{fs[-1]}"
+    return "floors " + ", ".join(str(f) for f in fs)
 
 
 def _clean_work(text: Any) -> str:
@@ -197,274 +212,295 @@ def _clean_work(text: Any) -> str:
     return (t[:1].upper() + t[1:]) if t else ""
 
 
-# ── THE ROWS, READ ───────────────────────────────────────────────────────────
+# ── THE LOGS: ONE EFFECTIVE RECORD PER DAY ───────────────────────────────────
+
+def effective_logs(logs: Iterable[dict]) -> Dict[str, Any]:
+    """The filed daily logs as the report must read them.
+
+    `logs` are the CHAIN HEADS the server picked (server.collapse_amendment_
+    chains: the original until an amendment is signed and filed, then the
+    amendment; a withdrawn or unsigned amendment never wins) -- the same rule
+    the daily report and the inspector's list use, so the three cannot
+    disagree about a corrected day. They carry `_chain_length` (>1: amended),
+    `_competing` (filed corrections on a fork) and `_amendment_reason`.
+
+    The OLD reader excluded every amendment, so a correction the Competent
+    Person had signed never reached the report: the lender read what the CP
+    had formally corrected. Here an amended day is read from its amendment
+    and marked, and the appendix says so.
+
+    Two heads for one date that are not a chain (a day filed twice) are one
+    day: the one filed last is used and the duplicate counted."""
+    by_date: Dict[date, List[dict]] = defaultdict(list)
+    for lg in logs:
+        d = base._d(lg.get("date"))
+        if d:
+            by_date[d].append(lg)
+    items: List[dict] = []
+    duplicates = 0
+
+    def stamp(lg: dict) -> str:
+        v = lg.get("updated_at") or lg.get("created_at")
+        return v.isoformat() if isinstance(v, datetime) else str(v or "")
+    for d in sorted(by_date):
+        rows = sorted(by_date[d], key=lambda lg: (stamp(lg), str(lg.get("_id") or "")))
+        duplicates += len(rows) - 1
+        items.append(rows[-1])
+    amended = [base._d(lg.get("date")) for lg in items if int(lg.get("_chain_length") or 1) > 1]
+    return {"items": items, "duplicates": duplicates, "amended": amended,
+            "competing": sum(int(lg.get("_competing") or 0) for lg in items)}
+
 
 def _log_activities(logs: Iterable[dict], start: date, end: date) -> List[Dict[str, Any]]:
-    """Every crew row of the filed daily logs in the period: {date, company,
-    key, trade, workers, work, where, floors, photos}."""
+    """Every crew row of the effective daily logs in [start, end]: {date,
+    company, key, trade, workers, work, where, floors, photos, log, amended}.
+    A row with no company is kept (its crew and photos are real) and marked
+    `key == ""`: counted in the site total, never shown as a sub."""
     out = []
     for lg in logs:
         d = base._d(lg.get("date"))
         if not base._in(d, start, end):
             continue
+        amended = int(lg.get("_chain_length") or 1) > 1
         for slot, a in enumerate((lg.get("data") or {}).get("activities") or []):
-            if not isinstance(a, dict) or not str(a.get("company") or "").strip():
+            if not isinstance(a, dict):
                 continue
+            company = " ".join(str(a.get("company") or "").split())
             where = " ".join(str(a.get("work_locations") or "").split())
             work = _clean_work(a.get("work_description"))
             try:
                 workers = int(a.get("num_workers") or 0)
             except (TypeError, ValueError):
                 workers = 0
-            out.append({"date": d, "company": str(a["company"]).strip(), "log": f"{lg.get('_id') or d}:{slot}",
-                        "key": company_key(a["company"]), "trade": str(a.get("trade") or "").strip(),
-                        "workers": workers, "work": work, "where": where,
-                        "floors": floors_in(where) or floors_in(a.get("work_description")),
-                        "photos": [p for p in (a.get("photos") or []) if isinstance(p, dict)]})
+            key = "" if is_unassigned(company) else company_key(company)
+            out.append({"date": d, "company": company, "log": f"{lg.get('_id') or d}:{slot}",
+                        "log_id": str(lg.get("_id") or ""), "key": key,
+                        "trade": str(a.get("trade") or "").strip(), "workers": workers, "work": work,
+                        "where": where, "floors": floors_in(where) or floors_in(a.get("work_description")),
+                        "photos": [p for p in (a.get("photos") or []) if isinstance(p, dict)],
+                        "amended": amended})
     return out
 
 
-def _log_observations(logs: Iterable[dict], start: date, end: date) -> List[Dict[str, Any]]:
-    out = []
+_INSPECTION_LABEL = {"street_frontage": "Street frontage", "fire_safety": "Fire safety",
+                     "perimeter_fence": "Perimeter fence", "fall_protections": "Fall protection",
+                     "neighbors_property": "Neighboring property", "license_spot_check": "License spot-check",
+                     "plans": "Plans on site", "permits": "Permits posted", "other": "Other"}
+_PASS, _FAIL = {"pass", "passed", "ok"}, {"fail", "failed"}
+
+
+def inspections(logs: Iterable[dict], start: date, end: date) -> Dict[str, Any]:
+    """The daily inspection items (pass / fail / not walked) of the effective
+    logs in the period: STRUCTURED facts, no free text. -> {"days", "walked",
+    "passed", "failed", "failed_items": [{date, item}]}."""
+    days = walked = passed = 0
+    failed_items: List[Dict[str, Any]] = []
     for lg in logs:
         d = base._d(lg.get("date"))
         if not base._in(d, start, end):
             continue
-        for o in ((lg.get("data") or {}).get("observations") or []):
-            t = base.no_phone((o or {}).get("description"))
-            if t and t.lower().strip(". ") not in ("n/a", "na", "none", "no", "nothing"):
-                out.append({"date": d, "text": t[:240]})
-    out.sort(key=lambda x: x["date"])
-    return out
-
-
-def _chat(rows: Iterable[dict], start: date, end: date) -> List[Dict[str, Any]]:
-    """The group's own words in the period: text people wrote (never the
-    bot's, never a skipped / voice placeholder)."""
-    out = []
-    for r in rows:
-        d = att.local_day(r.get("timestamp") or r.get("created_at"))
-        voice = r.get("voice") or {}
-        if not base._in(d, start, end) or r.get("skipped") or r.get("from_me") \
-                or str(r.get("sender") or "") == "bot" or voice.get("review") or voice.get("flagged"):
+        items = (lg.get("data") or {}).get("checklist_items") or {}
+        results = [(k, str((v or {}).get("result") or "").strip().lower()) for k, v in items.items()
+                   if isinstance(v, dict)]
+        day_walked = [(k, r) for k, r in results if r in _PASS | _FAIL]
+        if not day_walked:
             continue
-        # A photo's body may be its base64 thumbnail: only its caption is words.
-        said = (r.get("voice") or {}).get("transcript") or r.get("body")
-        text = base.no_phone(wa_photos.caption(said))
-        if len(text) < 8 or text.startswith("("):
-            continue
-        out.append({"date": d, "who": base.no_phone(r.get("sender_name") or ""), "text": text[:300]})
-    out.sort(key=lambda x: x["date"])
-    return out
-
-
-# ── THE SUBS ─────────────────────────────────────────────────────────────────
-
-def _runs(days: List[date]) -> List[Tuple[date, date]]:
-    """Consecutive working days as one bar (a weekend in between does not
-    break it)."""
-    runs: List[Tuple[date, date]] = []
-    for d in sorted(set(days)):
-        if runs:
-            a, b = runs[-1]
-            gap = [b + timedelta(days=i) for i in range(1, (d - b).days)]
-            if all(g.weekday() >= 5 for g in gap):
-                runs[-1] = (a, d)
-                continue
-        runs.append((d, d))
-    return runs
-
-
-def _work_label(acts: List[Dict[str, Any]]) -> str:
-    """"Framing fl 1–4", "Riser install fl 2–3 · Fixtures" -- the work the
-    logs give for these rows, most frequent first, at most two."""
-    if not acts:
-        return ""
-    by_work: Dict[str, List[int]] = defaultdict(list)
-    count: Counter = Counter()
-    for a in acts:
-        if not a["work"]:
-            continue
-        count[a["work"]] += 1
-        by_work[a["work"]].extend(a["floors"])
-    parts = []
-    for work, _n in count.most_common(2):
-        fl = floors_label(by_work[work])
-        parts.append(f"{work} {fl}".strip())
-    return " · ".join(parts)
-
-
-def _subs(checkins: List[dict], acts: List[Dict[str, Any]], start: date, end: date,
-          chat: List[Dict[str, Any]], commitments: List[dict], punch_items: List[dict],
-          observations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """One entry per sub: its days on site (check-ins, else the logs), crew
-    per day, the work by run, issues."""
-    days = att.by_day(checkins, start, end)
-    canon = canonical_keys([company_key(co) for by_co in days.values() for co in by_co]
-                           + [a["key"] for a in acts])
-    for a in acts:
-        a["key"] = canon.get(a["key"], a["key"])
-
-    def key_of(name: Any) -> str:
-        k = company_key(name)
-        return canon.get(k, k)
-    aliases = sub_aliases(set(canon.values()))
-    crew: Dict[str, Dict[date, int]] = defaultdict(dict)
-    names: Dict[str, Counter] = defaultdict(Counter)
-    for d, by_co in days.items():
-        for co, workers in by_co.items():
-            k = key_of(co) or co.lower()
-            crew[k][d] = crew[k].get(d, 0) + len(workers)
-            names[k][co] += len(workers)
-    log_crew: Dict[str, Dict[date, int]] = defaultdict(dict)
-    trades: Dict[str, Counter] = defaultdict(Counter)
-    for a in acts:
-        k = a["key"] or a["company"].lower()
-        if not names[k]:
-            names[k][a["company"]] = 1
-        if a["workers"]:
-            log_crew[k][a["date"]] = max(log_crew[k].get(a["date"], 0), a["workers"])
-        if a["trade"]:
-            trades[k][a["trade"]] += 1
-    out = []
-    for k in set(crew) | set(log_crew):
-        per_day = crew.get(k) or log_crew.get(k) or {}
-        if not per_day:
-            continue
-        name = names[k].most_common(1)[0][0] if names[k] else k.title()
-        mine = [a for a in acts if (a["key"] or a["company"].lower()) == k]
-        runs = []
-        for a, b in _runs(list(per_day)):
-            in_run = [x for x in mine if a <= x["date"] <= b]
-            runs.append({"start": a, "end": b, "label": _work_label(in_run)})
-        # One bullet per stretch of the same work in the same place:
-        # "Framing — fl 1–2 (Oct 2–9)", then "Framing — fl 3–4 (Oct 12–15)".
-        stretches: List[Dict[str, Any]] = []
-        for x in sorted(mine, key=lambda y: y["date"]):
-            if not x["work"]:
-                continue
-            place = floors_label(x["floors"]) or base.no_phone(x["where"])[:60]
-            place = place[:1].upper() + place[1:] if place and not x["floors"] else place
-            open_one = next((w for w in reversed(stretches) if w["work"] == x["work"]), None)
-            if open_one and open_one["place"] == place:
-                open_one["last"] = x["date"]
+        days += 1
+        walked += len(day_walked)
+        for k, r in day_walked:
+            if r in _PASS:
+                passed += 1
             else:
-                stretches.append({"work": x["work"], "place": place, "first": x["date"], "last": x["date"]})
-        bullets = [f"{w['work']}{' — ' + w['place'] if w['place'] else ''} ({_span(w['first'], w['last'])})"
-                   for w in stretches]
-        issues = []
-        for c in commitments:
-            o = c.get("owner") or {}
-            if key_of(o.get("sub_company") or o.get("name")) == k and c.get("_late"):
-                issues.append(f"Late: {base.no_phone(c.get('summary'))[:120]} "
-                              f"(due {_day(base._d((c.get('due') or {}).get('due_at')))})")
-        open_punch = sum(1 for p in punch_items if p.get("status") == "open" and key_of(
-            (p.get("assignee") or {}).get("company") or (p.get("assignee") or {}).get("name")) == k)
-        if open_punch:
-            issues.append(f"{open_punch} open punch item{'s' if open_punch != 1 else ''}")
-        for o in observations:
-            if names_sub(o["text"], aliases.get(k, [k])):
-                issues.append(f"{_day(o['date'])}: {o['text']}")
-        counts = list(per_day.values())
-        out.append({"key": k, "name": name, "trade": trades[k].most_common(1)[0][0] if trades[k] else "",
-                    "days": sorted(per_day), "crew": per_day,
-                    "avg": round(sum(counts) / len(counts), 1), "max": max(counts),
-                    "first": min(per_day), "last": max(per_day), "runs": runs,
-                    "work": bullets, "label": _work_label(mine), "issues": issues[:6],
-                    "chat": [c for c in chat if names_sub(c["text"], aliases.get(k, [k]))][:8]})
-    out.sort(key=lambda s: (-len(s["days"]), -s["max"], s["name"]))
-    return out
+                failed_items.append({"date": d, "item": _INSPECTION_LABEL.get(k, k.replace("_", " ").capitalize())})
+    failed_items.sort(key=lambda x: x["date"], reverse=True)
+    return {"days": days, "walked": walked, "passed": passed, "failed": len(failed_items),
+            "failed_items": failed_items[:6]}
 
 
-# ── SITE ACTIVITY ────────────────────────────────────────────────────────────
+# ── WHO WAS ON SITE: THE GATE AND THE LOGS, TOGETHER ────────────────────────
 
-def _site(subs: List[Dict[str, Any]], start: date, end: date, today: date) -> Dict[str, Any]:
-    days: Dict[date, Dict[str, int]] = defaultdict(dict)
-    for s in subs:
-        for d, n in s["crew"].items():
-            days[d][s["name"]] = n
-    worked = sorted(days)
-    # The days the site could have been worked: weekdays up to today, and any
-    # weekend day it was.
-    last = min(end, today)
-    possible = sorted({start + timedelta(days=i) for i in range((last - start).days + 1)
-                       if (start + timedelta(days=i)).weekday() < 5} | set(worked))
-    if not worked:
-        return {"worked": 0, "possible": len(possible), "table": []}
-    totals = {d: sum(days[d].values()) for d in worked}
-    top = max(totals.values())
-    return {"worked": len(worked), "possible": len(possible),
-            "avg": round(sum(totals.values()) / len(worked)), "max": top,
-            "max_day": next(d for d in worked if totals[d] == top),
-            "table": [{"day": d, "by_sub": dict(days[d]), "total": totals[d]} for d in worked]}
+def _window(days_map: Dict[date, Dict[str, set]], acts: List[Dict[str, Any]], canon: Dict[str, str],
+            start: date, end: date, log_days: set) -> Dict[str, Any]:
+    """One window's workforce: per sub per day the count from the GATE, else
+    from the daily log (`basis`), the gate-vs-log comparison, and the site
+    total per day.
 
+    A sub's day is a day it has gate check-ins OR a crew row in a filed log.
+    The headcount is the gate's whenever the gate saw anyone (the gate does
+    not depend on anyone remembering to write it down); a day known only from
+    the log is counted from the log and marked, and the appendix says how
+    many there were. Where both exist and differ by more than AGREE_*, the
+    day is a variance and is counted, never averaged away."""
+    per: Dict[str, Dict[str, Any]] = {}
+    unassigned: Dict[date, int] = defaultdict(int)
 
-# ── OPEN ITEMS AND WHAT'S NEXT ──────────────────────────────────────────────
-
-def _late_commitments(items: List[dict], end: date) -> List[Dict[str, Any]]:
-    out = []
-    for i in items:
-        due = base._d((i.get("due") or {}).get("due_at"))
-        made = base._d(i.get("created_at"))
-        # Not yet made by the end of the period: not late in it (Codex on #803).
-        if made and made > end:
+    def sub(k: str, name: str) -> Dict[str, Any]:
+        s = per.setdefault(k, {"key": k, "names": Counter(), "trades": Counter(), "days": {}})
+        s["names"][name] += 1
+        return s
+    for d, by_co in days_map.items():
+        if not base._in(d, start, end):
             continue
-        if i.get("status") in base._OPEN and due and due < end:
-            i["_late"] = True
-            o = i.get("owner") or {}
-            out.append({"who": base.no_phone(o.get("name") or o.get("sub_company") or "No owner yet"),
-                        "company": base.no_phone(o.get("sub_company") or ""),
-                        "what": base.no_phone(i.get("summary") or "")[:160], "due": due,
-                        "since": base._d(i.get("created_at")), "days_late": (end - due).days})
-    out.sort(key=lambda x: (x["due"], x["who"]))
+        for co, workers in by_co.items():
+            if is_unassigned(co):
+                unassigned[d] += len(workers)
+                continue
+            k = company_key(co)
+            k = canon.get(k, k)
+            s = sub(k, co)
+            e = s["days"].setdefault(d, {"gate": 0, "log": 0, "log_rows": 0})
+            e["gate"] += len(workers)
+    log_rows_no_company: Dict[date, int] = defaultdict(int)
+    for a in acts:
+        if not base._in(a["date"], start, end):
+            continue
+        if not a["key"]:
+            log_rows_no_company[a["date"]] += 1
+            continue
+        k = canon.get(a["key"], a["key"])
+        s = sub(k, a["company"])
+        if a["trade"]:
+            s["trades"][a["trade"]] += 1
+        e = s["days"].setdefault(a["date"], {"gate": 0, "log": 0, "log_rows": 0})
+        e["log"] = max(e["log"], a["workers"]) if e["log_rows"] else a["workers"]
+        e["log_rows"] += 1
+    totals: Dict[date, int] = defaultdict(int)
+    recon = {"aligned": 0, "variance": 0, "gate_only": 0, "log_only": 0, "no_log_day": 0, "log_basis_days": 0}
+    variance_days: List[Dict[str, Any]] = []
+    for s in per.values():
+        for d, e in s["days"].items():
+            gate, log = e["gate"], e["log"]
+            if gate:
+                e["count"], e["basis"] = gate, "gate"
+            else:
+                e["count"], e["basis"] = log, "log"
+                if log:
+                    recon["log_basis_days"] += 1
+            if not e["count"] and not e["log_rows"] and not gate:
+                continue
+            totals[d] += e["count"]
+            if gate and e["log_rows"]:
+                if abs(gate - log) <= max(AGREE_WORKERS, round(AGREE_PCT * max(gate, log))):
+                    recon["aligned"] += 1
+                else:
+                    recon["variance"] += 1
+                    variance_days.append({"date": d, "sub": s["names"].most_common(1)[0][0],
+                                          "gate": gate, "log": log})
+            elif gate and d in log_days:
+                recon["gate_only"] += 1
+            elif gate:
+                recon["no_log_day"] += 1
+            elif e["log_rows"]:
+                recon["log_only"] += 1
+    for d, n in unassigned.items():
+        totals[d] += n
+    worked = sorted(d for d, n in totals.items() if n > 0)
+    return {"per": per, "totals": dict(totals), "worked": worked, "unassigned": dict(unassigned),
+            "recon": recon, "variance_days": sorted(variance_days, key=lambda v: v["date"]),
+            "log_rows_no_company": sum(log_rows_no_company.values())}
+
+
+def _stats(totals: Dict[date, int], worked: List[date]) -> Dict[str, Any]:
+    if not worked:
+        return {"days": 0, "avg": 0.0, "peak": 0, "peak_day": None}
+    vals = [totals[d] for d in worked]
+    top = max(vals)
+    return {"days": len(worked), "avg": round(sum(vals) / len(vals), 1), "peak": top,
+            "peak_day": next(d for d in worked if totals[d] == top)}
+
+
+def _sub_rows(win: Dict[str, Any], prev: Dict[str, Any], canon_names: Dict[str, str]) -> List[Dict[str, Any]]:
+    out = []
+    for k, s in win["per"].items():
+        counted = {d: e["count"] for d, e in s["days"].items() if e["count"] > 0}
+        if not counted:
+            continue
+        ds = sorted(counted)
+        vals = list(counted.values())
+        p = prev["per"].get(k)
+        pcounts = [e["count"] for e in (p["days"].values() if p else []) if e["count"] > 0]
+        out.append({"key": k, "name": canon_names.get(k) or s["names"].most_common(1)[0][0],
+                    "trade": s["trades"].most_common(1)[0][0] if s["trades"] else "",
+                    "days": ds, "counts": counted, "avg": round(sum(vals) / len(vals), 1), "max": max(vals),
+                    "first": ds[0], "last": ds[-1],
+                    "log_days": sum(1 for d in ds if s["days"][d]["basis"] == "log"),
+                    "prev_days": len(pcounts),
+                    "prev_avg": round(sum(pcounts) / len(pcounts), 1) if pcounts else 0.0})
+    out.sort(key=lambda r: (-len(r["days"]), -r["max"], r["name"]))
     return out
 
 
-def _punch_summary(items: List[dict]) -> Dict[str, Any]:
-    live = [i for i in items if i.get("status") in ("open", "ready_to_check", "closed")]
-    if not live:
-        return {}
-    by: Dict[str, Dict[str, int]] = defaultdict(lambda: {"open": 0, "ready": 0, "closed": 0})
-    for i in live:
-        a = i.get("assignee") or {}
-        who = base.no_phone(a.get("name") or a.get("company") or "Unassigned")
-        by[who][{"open": "open", "ready_to_check": "ready", "closed": "closed"}[i["status"]]] += 1
-    rows = sorted(({"name": k, **v} for k, v in by.items()), key=lambda r: (-r["open"], -r["ready"], r["name"]))
-    return {"open": sum(r["open"] for r in rows), "ready": sum(r["ready"] for r in rows),
-            "closed": sum(r["closed"] for r in rows), "by_assignee": rows}
+# ── THE WORK: BY TRADE AND FLOOR, AGAINST THE PREVIOUS PERIOD ────────────────
 
+def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str, str],
+          subs: List[Dict[str, Any]], comparable: bool = True) -> List[Dict[str, Any]]:
+    """What each sub reported doing, in a few lines, and what is NEW since the
+    previous period: a work type it was not doing, or floors it had not been
+    reported on. Two sentences' worth, never one line per day: the same work
+    on the same floors across ten days is one line with its span.
 
-def _coming_up(events: List[dict], items: List[dict], start: date, end: date) -> List[Dict[str, Any]]:
+    `comparable` is False when the previous period holds no activity at all
+    (the job's first period): nothing is then "new" or "advanced" -- there
+    is nothing to be new against -- and items are just "reported"."""
+    def keyed(a: Dict[str, Any]) -> str:
+        return canon.get(a["key"], a["key"])
     out = []
-    for e in base._events(events, start, end):
-        what = e["title"] + (f" ({e['agency']})" if e.get("agency") else "")
-        out.append({"date": e["date"], "what": what, "time": e.get("time") or "",
-                    "say": f"{what} on {_wday(e['date'])}"})
-    for i in items:
-        due = base._d((i.get("due") or {}).get("due_at"))
-        if i.get("status") in base._OPEN and base._in(due, start, end):
-            o = i.get("owner") or {}
-            who = base.no_phone(o.get("name") or o.get("sub_company") or "")
-            item = base.no_phone(i.get("summary"))[:120]
-            out.append({"date": due, "time": "",
-                        "what": f"{who + ': ' if who else ''}{item} (due)",
-                        "say": f"{item[:1].lower() + item[1:]}{' from ' + who if who else ''} "
-                               f"due {_wday(due)}"})
-    out.sort(key=lambda x: (x["date"], x["time"]))
-    return out[:20]
+    for s in subs:
+        mine = [a for a in cur if keyed(a) == s["key"] and a["work"]]
+        before = [a for a in prev if keyed(a) == s["key"] and a["work"]]
+        before_floors: Dict[str, set] = defaultdict(set)
+        for a in before:
+            before_floors[a["work"].lower()].update(a["floors"])
+        by_work: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for a in sorted(mine, key=lambda x: x["date"]):
+            by_work[a["work"].lower()].append(a)
+        items = []
+        for _, rows in by_work.items():
+            floors = sorted({f for a in rows for f in a["floors"]})
+            places = Counter(a["where"] for a in rows if a["where"] and not a["floors"])
+            seen_before = rows[0]["work"].lower() in before_floors
+            new_floors = sorted(set(floors) - before_floors.get(rows[0]["work"].lower(), set()))
+            status = ("reported" if not comparable else "new" if not seen_before else
+                      "advanced" if new_floors and floors else "continued")
+            items.append({"work": rows[0]["work"], "floors": floors,
+                          "place": floors_label(floors) or (places.most_common(1)[0][0][:60] if places else ""),
+                          "first": rows[0]["date"], "last": rows[-1]["date"], "days": len({a["date"] for a in rows}),
+                          "status": status, "new_floors": new_floors if seen_before else [],
+                          "amended": any(a["amended"] for a in rows)})
+        items.sort(key=lambda i: (-i["days"], i["work"]))
+        out.append({"key": s["key"], "name": s["name"], "trade": s["trade"], "items": items[:4]})
+    return out
+
+
+def _floor_matrix(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str, str],
+                  subs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Floors where each sub reported work: this period, or only before. A
+    record of REPORTED ACTIVITY by floor -- never a completion claim. None
+    when the logs name fewer than two floors."""
+    def floors_of(rows: List[Dict[str, Any]], k: str) -> set:
+        return {f for a in rows if canon.get(a["key"], a["key"]) == k for f in a["floors"]}
+    allf = sorted({f for a in cur + prev for f in a["floors"]})
+    if len(allf) < 2 or len(allf) > 30:
+        return None
+    rows = []
+    for s in subs:
+        now, before = floors_of(cur, s["key"]), floors_of(prev, s["key"])
+        if now or before:
+            rows.append({"name": s["name"], "color": s.get("color", PALETTE[0]),
+                         "cells": {f: ("now" if f in now else "before" if f in before else "") for f in allf}})
+    return {"floors": allf, "rows": rows} if rows else None
 
 
 # ── PHOTOS ───────────────────────────────────────────────────────────────────
 
 def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
                      *_ignored: Any, **_ignored_kw: Any) -> List[Dict[str, Any]]:
-    """The report's photos come from the filed daily logs ONLY: each one is
+    """The report's photographs come from the filed daily logs ONLY: each is
     already filed under its sub, its day and its work. Never a photo from the
-    group chat or a walkthrough (they are kept for the search and the media
-    log, not for the report)."""
+    group chat or a walkthrough, and never one from a day nobody filed."""
     out = []
     for a in acts:
-        if not base._in(a["date"], start, end):
+        if not base._in(a["date"], start, end) or not a["key"]:
             continue
         place = floors_label(a["floors"]) or base.no_phone(a["where"])[:60]
         for n, p in enumerate(a["photos"]):
@@ -474,9 +510,9 @@ def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
             if not key and (p.get("base64") or p.get("thumb_base64")):
                 key = f"inline:{a['log']}:{n}"
             if key:
-                out.append({"key": key, "date": a["date"], "sub": a["company"], "where": place,
-                            "words": work_line(a["work"] or a["trade"], place),
-                            "source": "daily log", "photo": p})
+                out.append({"key": key, "date": a["date"], "sub": a["company"], "trade": a["trade"],
+                            "where": place, "words": work_line(a["work"] or a["trade"], place),
+                            "work": a["work"], "log_id": a["log_id"], "source": "daily log", "photo": p})
     seen, uniq = set(), []
     for c in sorted(out, key=lambda c: (c["date"], c["key"])):
         if c["key"] not in seen:
@@ -487,23 +523,23 @@ def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
 
 def work_line(work: Any, place: Any) -> str:
     """The caption of a daily-log photo: the sub's work that day, as the log
-    says it -- "Framing — fl 1–2", "Scaffolding — Front facade"."""
+    says it -- "Framing — floors 1–2", "Scaffolding — Front facade"."""
     w = str(work or "").strip() or "Work on site"
     p = str(place or "").strip()
-    if p and p[:1].isalpha() and not p.startswith("fl "):
+    if p and p[:1].isalpha() and not p.startswith(("fl ", "floor")):
         p = p[:1].upper() + p[1:]
     return f"{w} — {p}" if p else w
 
 
-def to_judge(cands: List[Dict[str, Any]], limit: int = 40) -> List[Dict[str, Any]]:
-    """Which photos to send to vision (it costs): each sub's first 3 and last
-    3, then the rest spread over the period."""
+def to_judge(cands: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
+    """Which photos to send to vision (it costs): each sub's first 2 and last
+    2, then the rest spread over the period."""
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in cands:
         by_sub[company_key(c["sub"]) or c["source"]].append(c)
     picked: List[dict] = []
     for group in by_sub.values():
-        for c in group[:3] + group[-3:]:
+        for c in group[:2] + group[-2:]:
             if c not in picked:
                 picked.append(c)
     rest = [c for c in cands if c not in picked]
@@ -514,12 +550,18 @@ def to_judge(cands: List[Dict[str, Any]], limit: int = 40) -> List[Dict[str, Any
 
 def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],
                 most: int = MAX_PHOTOS) -> List[Dict[str, Any]]:
-    """Up to 15 daily-log photos for the report, grouped by sub: only photos
-    vision calls a clear progress shot (never blurry, people-only, a document
-    or a duplicate of the same sub, day and place); each sub's earliest and
-    latest first, then every sub's best in turn. Fewer than 10 usable: what
-    there is -- never padded. The caption is the sub's work line from the
-    log (never words the model wrote)."""
+    """Up to six photographs, grouped as the logs filed them: only photos
+    vision calls a clear progress shot (never blurry, people-only or a
+    document), the best of each sub first, then the next best, never the same
+    sub, day and place twice and never more than two of one sub.
+
+    NO BEFORE / AFTER. The old pick paired each sub's "earliest" and "latest"
+    photograph and tagged them. Nothing checks that the two show the same
+    place or the same view -- the logs give a location as free text -- so a
+    pair was a claim of progress the report could not support. Each photo is
+    shown for what it is: supplied in a filed log, on a date, for a sub's
+    work, at a place as written. The caption is the sub's own work line from
+    the log, never words a model wrote."""
     good = []
     for c in cands:
         if c.get("source") != "daily log":
@@ -529,40 +571,27 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
             good.append({**c, "score": float(v.get("score") or 0),
                          "caption": base.no_phone(c["words"] or "Work on site")[:120]})
     chosen: List[dict] = []
+    per_sub: Counter = Counter()
 
-    def add(c):
-        if len(chosen) >= most or any(x["key"] == c["key"] for x in chosen):
+    def add(c: Dict[str, Any]) -> bool:
+        k = company_key(c["sub"]) or c["sub"]
+        if len(chosen) >= most or per_sub[k] >= MAX_PER_SUB or any(x["key"] == c["key"] for x in chosen):
             return False
         if any(company_key(x["sub"]) == company_key(c["sub"]) and x["date"] == c["date"]
                and x["where"] == c["where"] for x in chosen):
             return False
         chosen.append(c)
+        per_sub[k] += 1
         return True
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
         by_sub[company_key(c["sub"]) or c["sub"]].append(c)
-
-    def best_on(group, day):
-        return max((c for c in group if c["date"] == day), key=lambda c: c["score"])
-    # 1. Every sub once, before any sub gets two (Codex on #806): its best
-    #    photo of its latest day.
-    latest = {k: best_on(g, max(c["date"] for c in g)) for k, g in by_sub.items()}
-    for k in by_sub:
-        add(dict(latest[k]))
-    # 2. Then each sub's earliest day's best -- the before / after pair.
-    for k, g in by_sub.items():
-        first = min(c["date"] for c in g)
-        if first != latest[k]["date"] and add({**best_on(g, first), "pair": "before"}):
-            for x in chosen:
-                if x["key"] == latest[k]["key"]:
-                    x["pair"] = "after"
-    # 3. Then each sub's best in turn, so no one sub fills the page.
-    queues = [sorted(g, key=lambda c: -c["score"]) for g in by_sub.values()]
+    queues = [sorted(g, key=lambda c: (-c["score"], c["date"])) for _, g in sorted(by_sub.items())]
     while len(chosen) < most and any(queues):
         for q in queues:
             while q and not add(q.pop(0)):
                 pass
-    chosen.sort(key=lambda c: (c["sub"], c["date"]))
+    chosen.sort(key=lambda c: (c["date"], c["sub"]))
     return chosen
 
 
@@ -601,225 +630,536 @@ JUDGE_PROMPT = (
     "a number or a date you cannot see.")
 
 
-# ── THE SUMMARY ──────────────────────────────────────────────────────────────
+# ── COMING UP ────────────────────────────────────────────────────────────────
 
-def facts(rep: Dict[str, Any]) -> List[str]:
-    """What the summary may say, one fact a line, each with its source."""
-    out = []
-    site = rep["site"]
-    if site["worked"]:
-        out.append(f"[check-ins] The site was worked {site['worked']} of {site['possible']} working days; "
-                   f"an average of {site['avg']} workers on site a day; busiest day "
-                   f"{_wday(site['max_day'])} with {site['max']} workers.")
-    else:
-        out.append("[check-ins] No check-ins in this period.")
-    for s in rep["subs"]:
-        work = "; ".join(s["work"]) or "no work description in the daily logs"
-        out.append(f"[daily logs] {s['name']}{' (' + s['trade'] + ')' if s['trade'] else ''}: "
-                   f"{len(s['days'])} days on site ({_span(s['first'], s['last'])}), "
-                   f"up to {s['max']} workers. Work: {work}.")
-        for c in s["chat"][:3]:
-            out.append(f"[group chat {_day(c['date'])}, {c['who'] or 'someone'}] {c['text']}")
-    for o in rep["observations"][:6]:
-        out.append(f"[daily log {_day(o['date'])}] {o['text']}")
-    if rep["records"]:
-        for r in rep["records"]:
-            out.append(f"[DOB/DOT] New {r['kind']} {r['number']} ({_day(r['date'])}), status {r['status']}.")
-    else:
-        out.append("[DOB/DOT] No new DOB or DOT records.")
-    for c in rep["late"]:
-        out.append(f"[commitments] Late: {c['who']} — {c['what']} (due {_day(c['due'])}).")
-    p = rep["punch"]
-    if p:
-        out.append(f"[punch] {p['open']} open, {p['ready']} ready to check, {p['closed']} closed.")
-    for e in rep["coming_up"][:6]:
-        out.append(f"[coming up] {_wday(e['date'])}: {e['what']}.")
-    return out
+def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
+              regulatory: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What is dated and next, from records with their own date: the city's
+    hearing and permit dates, permits that expire, and the schedule's
+    upcoming milestones. NOT from chat: a date a model read out of a message
+    is a guess an owner would take for a commitment.
 
-
-SUMMARY_PROMPT = (
-    "You write the summary of a construction progress report that a general contractor sends "
-    "to the owner or the lender. Write 5 to 8 sentences of plain construction language: what "
-    "work was done on site, the key progress, any problems, and what is next. Use ONLY the "
-    "facts given (each line is one fact and its source). Every number, date, name and company "
-    "must come from them; do not add, estimate, compute or round anything. Never say "
-    "\"man-days\", never a percentage, no headings, no bullet points, no greeting.")
-
-_COMMON_CAPS = set("""
-The This That These Those It Its On In At By For From With Work Workers Site Floor Floors
-Next Open Late No New Busiest Average Up Upcoming Coming Daily DOB DOT Punch Mon Tue Wed Thu
-Fri Sat Sun Monday Tuesday Wednesday Thursday Friday Saturday Sunday Jan Feb Mar Apr May Jun
-Jul Aug Sep Oct Nov Dec January February March April June July August September October
-November December During Over Across Overall Progress Several Both All Two Three Four Five
-Six Seven Eight Nine Ten There We A An And Also Work Crews Crew Meanwhile However Some One
-""".split())
-
-
-_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
-
-
-def _numbers(text: str) -> Tuple[set, set]:
-    """({(month, day), ...}, {count, ...}) in `text`: "Oct 15" is a date,
-    "37 workers" / "fl 1–4" / "14.4" are counts."""
-    days = {(m.group(1)[:3].lower(), m.group(2))
-            for m in re.finditer(r"\b(" + _MONTH + r")\s+(\d{1,2})\b", text)}
-    rest = re.sub(r"\b" + _MONTH + r"\s+\d{1,2}(?:\s*[–-]\s*\d{1,2}\b)?(?:,\s*\d{4})?", " ", text)
-    # A record number's digits ("X01-…-A11") are not counts; "3rd" is 3.
-    counts = set(re.findall(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)(?:st|nd|rd|th)?(?![A-Za-z0-9])", rest))
-    return days, counts
-
-
-def check_summary(text: Any, rep: Dict[str, Any]) -> bool:
-    """The model's summary goes out only when it says nothing the facts do
-    not: every number and every name in it is in them, 5-8 sentences,
-    never "man-days" or a percentage."""
-    t = " ".join(str(text or "").split())
-    if not t or FORBIDDEN.search(t):
-        return False
-    sentences = [s for s in re.split(r"(?<=[.!?])\s+", t) if s.strip()]
-    if not 4 <= len(sentences) <= 9:
-        return False
-    src = " ".join(facts(rep)) + " " + rep["job"] + " " + rep["period"]
-    # A date's day goes with its month ("Oct 15"); any other number must be
-    # one of the facts' own counts, not just digits seen somewhere in a date.
-    days, counts = _numbers(src)
-    t_days, t_counts = _numbers(t)
-    if not t_days <= days or not t_counts <= counts:
-        return False
-    words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z&'’.-]*", src)}
-    for w in re.findall(r"(?<![.!?]\s)(?<!^)\b[A-Z][A-Za-z&'’-]+", t):
-        if w not in _COMMON_CAPS and w.lower() not in words and w.lower().rstrip("s") not in words:
-            return False
-    return True
-
-
-def summary_fallback(rep: Dict[str, Any]) -> str:
-    """The summary from the records alone, when the model's does not pass."""
-    s, site = rep["subs"], rep["site"]
-    out = []
-    if s:
-        parts = [f"{x['label'].lower() if x['label'] else 'work on site'} ({x['name']})" for x in s[:5]]
-        out.append(f"Work this period at {rep['job']}: " + _join(parts) + ".")
-    if site["worked"]:
-        out.append(f"The site was worked {site['worked']} of {site['possible']} working days, "
-                   f"with an average of {site['avg']} workers on site a day; the busiest day was "
-                   f"{_wday(site['max_day'])} with {site['max']}.")
-    else:
-        out.append("No one checked in on site in this period.")
-    if rep["observations"]:
-        o = rep["observations"][0]
-        out.append(f"The daily log of {_day(o['date'])} notes: {o['text'].rstrip('.')}.")
-    if rep["records"]:
-        n = len(rep["records"])
-        out.append(f"{n} new DOB/DOT record{'s were' if n != 1 else ' was'} issued for the job "
-                   f"({', '.join(r['kind'] + ' ' + r['number'] for r in rep['records'][:3])}).")
-    else:
-        out.append("No new DOB or DOT records were issued for the job.")
-    late, p = rep["late"], rep["punch"]
-    if late or p.get("open"):
-        bits = []
-        if late:
-            bits.append(f"{len(late)} commitment{'s are' if len(late) != 1 else ' is'} past due")
-        if p.get("open"):
-            bits.append(f"{p['open']} punch item{'s remain' if p['open'] != 1 else ' remains'} open")
-        out.append(_join(bits).capitalize() + ".")
-    if rep["coming_up"]:
-        out.append("Coming up: " + _join([e["say"].rstrip(".") for e in rep["coming_up"][:2]]) + ".")
-    return " ".join(out)
-
-
-def _join(parts: List[str]) -> str:
-    parts = [p for p in parts if p]
-    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1] if parts else ""
+    The window is anchored on the period's LAST DAY, not on today, so a
+    report for last month shows what was upcoming then."""
+    horizon = end + timedelta(days=UPCOMING_DAYS)
+    out: List[Dict[str, Any]] = []
+    for e in events:
+        if str(e.get("source") or "city") != "city" or e.get("status") in ("cancelled", "dismissed"):
+            continue
+        d = base._d(e.get("date"))
+        if d and end < d <= horizon:
+            out.append({"date": d, "what": base.no_phone(e.get("title")), "src": "R",
+                        "kind": str(e.get("kind") or "")})
+    seen = {(o["date"], o["what"]) for o in out}
+    for p in regulatory.get("expiring") or []:
+        what = f"{p['kind']} {p['number']} expires".strip()
+        if p["expires"] and p["expires"] <= horizon and (p["expires"], what) not in seen:
+            out.append({"date": p["expires"], "what": what, "src": "R", "kind": "permit_expiration"})
+    for m in (plan or {}).get("milestones", {}).get("upcoming") or []:
+        d = base._d(m.get("date")) or base._d(m.get("current_finish")) or base._d(m.get("baseline_finish"))
+        if d:
+            out.append({"date": d, "what": f"Milestone: {m.get('name')}", "src": "S", "kind": "milestone"})
+    out.sort(key=lambda x: (x["date"], x["what"]))
+    return out[:8]
 
 
 # ── THE REPORT ───────────────────────────────────────────────────────────────
 
-def compute(*, job: str, address: str, gc: str, start: date, end: date, now: datetime,
-            checkins: Iterable[dict] = (), logbooks: Iterable[dict] = (), chat: Iterable[dict] = (),
-            records: Iterable[dict] = (), events: Iterable[dict] = (),
-            commitments: Iterable[dict] = (), punch_items: Iterable[dict] = (),
-            **_ignored: Any) -> Dict[str, Any]:
-    """Everything of one job's report for [start, end], from its rows."""
+def bucket_for(days: int) -> str:
+    """The chart granularity for a period of `days`: daily up to three weeks,
+    weekly up to about four months, monthly beyond."""
+    return "day" if days <= 21 else "week" if days <= 125 else "month"
+
+
+def _bucket_key(d: date, grain: str) -> date:
+    if grain == "day":
+        return d
+    if grain == "week":
+        return d - timedelta(days=d.weekday())
+    return d.replace(day=1)
+
+
+def series(totals: Dict[date, int], worked: List[date], start: date, end: date, grain: str
+           ) -> List[Dict[str, Any]]:
+    """The workforce chart's bars: one per bucket of the period (a day, a
+    Monday-start week, a month): the average workers on the days worked in
+    it, and how many days that was."""
+    buckets: Dict[date, List[int]] = defaultdict(list)
+    for d in worked:
+        if start <= d <= end:
+            buckets[_bucket_key(d, grain)].append(totals[d])
+    out = []
+    cur = _bucket_key(start, grain)
+    while cur <= end:
+        vals = buckets.get(cur, [])
+        out.append({"start": cur, "avg": round(sum(vals) / len(vals), 1) if vals else 0.0,
+                    "days": len(vals), "peak": max(vals) if vals else 0})
+        cur = (cur + timedelta(days=1 if grain == "day" else 7)) if grain != "month" else \
+            (cur.replace(year=cur.year + 1, month=1) if cur.month == 12 else cur.replace(month=cur.month + 1))
+    return out
+
+
+def compute(*, job: str, address: str, gc: str, start: date, end: date, now: datetime, kind: str = "",
+            checkins: Iterable[dict] = (), logbooks: Iterable[dict] = (),
+            dob_rows: Iterable[dict] = (), dot_rows: Iterable[dict] = (),
+            events: Iterable[dict] = (), schedule: Optional[Dict[str, Any]] = None,
+            schedule_meta: Optional[Dict[str, Any]] = None, financials: Optional[Dict[str, Any]] = None, sync: Optional[Dict[str, Any]] = None,
+            first_activity: Optional[date] = None, **_ignored: Any) -> Dict[str, Any]:
+    """Everything of one job's report for [start, end], from its rows.
+
+    `checkins` and `logbooks` span the period AND the previous period of the
+    same length (the server reads both); the comparison is computed here from
+    the same rows, so a number printed twice cannot differ."""
     today = att.local_day(now) or end
-    checkins, logbooks = list(checkins), list(logbooks)
-    commitments = [dict(c) for c in commitments]
-    punch_items = list(punch_items)
-    acts = _log_activities(logbooks, start, end)
-    observations = _log_observations(logbooks, start, end)
-    talk = _chat(chat, start, end)
-    late = _late_commitments(commitments, end)
-    subs = _subs(checkins, acts, start, end, talk, commitments, punch_items, observations)
+    length = (end - start).days + 1
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=length - 1)
+    checkins = list(checkins)
+    log_set = effective_logs(logbooks)
+    logs = log_set["items"]
+    acts = _log_activities(logs, prev_start, end)
+    days_map = att.by_day(checkins, prev_start, end)
+    all_keys = [company_key(co) for by_co in days_map.values() for co in by_co if not is_unassigned(co)]
+    canon = canonical_keys(all_keys + [a["key"] for a in acts if a["key"]])
+    log_days = {d for d in (base._d(lg.get("date")) for lg in logs) if d}
+    cur = _window(days_map, acts, canon, start, end, log_days)
+    prv = _window(days_map, acts, canon, prev_start, prev_end, log_days)
+    names: Dict[str, str] = {}
+    for w in (cur, prv):
+        for k, s in w["per"].items():
+            names.setdefault(k, s["names"].most_common(1)[0][0])
+    subs = _sub_rows(cur, prv, names)
     for i, s in enumerate(subs):
         s["color"] = PALETTE[i % len(PALETTE)]
-    nxt = max(end, today) + timedelta(days=1)
-    return {
+    now_stats, prev_stats = _stats(cur["totals"], cur["worked"]), _stats(prv["totals"], prv["worked"])
+    last = min(end, today)
+    possible = report_calendar.working_days(start, last, first_activity=first_activity, worked=cur["worked"])
+    prev_possible = report_calendar.working_days(prev_start, prev_end, first_activity=first_activity,
+                                                 worked=prv["worked"])
+    grain = bucket_for(length)
+    cur_acts = [a for a in acts if start <= a["date"] <= end]
+    prev_acts = [a for a in acts if prev_start <= a["date"] <= prev_end]
+    work = _work(cur_acts, prev_acts, canon, subs, comparable=bool(prv["worked"] or prev_acts))
+    reg = report_regulatory.build(list(dob_rows), list(dot_rows), start, end, today=today, sync=sync, now=now)
+    plan = None
+    if schedule:
+        try:
+            from lib import schedule_plan
+            plan = schedule_plan.assess(schedule, period_start=start, period_end=end, today=today)
+            plan.update({k: v for k, v in (schedule_meta or {}).items() if k in ("source_name", "confirmed_by")})
+        except Exception:                      # a schedule that cannot be read is no schedule
+            plan = None
+    insp = inspections(logs, start, end)
+    rep: Dict[str, Any] = {
+        "engine": ENGINE_VERSION, "kind": kind or "custom",
         "job": job_title(job), "job_full": job, "address": address, "gc": gc,
-        "start": start, "end": end, "today": today, "generated": now,
+        "start": start, "end": end, "today": today, "generated": now, "length": length,
+        "prev_start": prev_start, "prev_end": prev_end, "grain": grain,
         "period": base.period_label(start, end), "period_short": short_period(start, end, now),
-        "subs": subs, "site": _site(subs, start, end, today), "observations": observations,
-        "chat": talk, "records": base._records(list(records), start, end),
-        "late": late, "punch": _punch_summary(punch_items),
-        "coming_up": _coming_up(list(events), commitments, nxt, nxt + timedelta(days=UPCOMING_DAYS - 1)),
-        # Daily-log photos only (never the group chat's or a walkthrough's).
-        "photo_candidates": _named(photo_candidates(acts, start, end), subs),
-        "photos": [], "summary": "",
+        "subs": subs, "work": work, "floor_matrix": _floor_matrix(cur_acts, prev_acts, canon, subs),
+        "site": {**now_stats, "possible": len(possible), "worked": len(cur["worked"]),
+                 "table": [{"day": d, "total": cur["totals"][d]} for d in cur["worked"]],
+                 "series": series(cur["totals"], cur["worked"], start, end, grain),
+                 "prev_series": series(prv["totals"], prv["worked"], prev_start, prev_end, grain),
+                 "basis": report_calendar.BASIS_NOTE,
+                 "holidays": report_calendar.holiday_names(start, last)},
+        "prev": {**prev_stats, "possible": len(prev_possible), "worked": len(prv["worked"])},
+        "regulatory": reg, "inspections": insp, "schedule": plan, "financials": _financials(financials),
+        "photo_candidates": photo_candidates(cur_acts, start, end), "photos": [],
+        "log_set": {"filed": len([lg for lg in logs if start <= (base._d(lg.get("date")) or start) <= end]),
+                    "amended": [d for d in log_set["amended"] if d and start <= d <= end],
+                    "duplicates": log_set["duplicates"], "competing": log_set["competing"]},
+        "recon": {**cur["recon"], "variance_days": cur["variance_days"][:6],
+                  "log_rows_no_company": cur["log_rows_no_company"],
+                  "unassigned_checkins": sum(cur["unassigned"].values())},
     }
+    rep["prev_subs"] = [{"name": names.get(k) or s["names"].most_common(1)[0][0], "key": k,
+                         "days": len([1 for e in s["days"].values() if e["count"] > 0]),
+                         "last": max((d for d, e in s["days"].items() if e["count"] > 0), default=None)}
+                        for k, s in prv["per"].items() if any(e["count"] > 0 for e in s["days"].values())]
+    rep["mobilization"] = mobilization(rep)
+    rep["upcoming"] = coming_up(list(events), end, plan, reg)
+    rep["risks"] = risks(rep)
+    rep["status"] = status(rep)
+    rep["changes"] = changes(rep)
+    rep["overview"] = overview(rep)
+    rep["limitations"] = limitations(rep)
+    rep["data_notes"] = data_notes(rep, [lg for lg in logs if start <= (base._d(lg.get("date")) or start) <= end],
+                                   checkins, cur["worked"])
+    rep["evidence"] = evidence(rep, checkins, [lg for lg in logs if base._in(base._d(lg.get("date")), start, end)])
+    return rep
 
 
-def _named(cands: List[Dict[str, Any]], subs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Each photo under its sub's name as the report says it ("Arkon" sent
-    in the group is "Arkon Builders" of the check-ins and logs)."""
-    keys = [s["key"] for s in subs]
-    canon = canonical_keys(keys + [company_key(c["sub"]) for c in cands if c["sub"]])
-    name = {s["key"]: s["name"] for s in subs}
-    for c in cands:
-        k = company_key(c["sub"])
-        k = canon.get(k, k)
-        if k in name:
-            c["sub"] = name[k]
-    return cands
+def _financials(f: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Financial figures, ONLY when a person provided and confirmed them: a
+    dict with `confirmed` True, an `as_of` date and a `source`, and at least
+    one figure. Anything else is no financial data -- the section is left out
+    and the limitation says so. No figure is ever computed here."""
+    if not isinstance(f, dict) or not f.get("confirmed") or not f.get("source") or not f.get("as_of"):
+        return None
+    keys = ("contract_value", "approved_changes", "revised_contract", "billed_to_date", "paid_to_date",
+            "retainage", "cost_to_complete", "contingency_remaining", "budget")
+    figs = {k: f[k] for k in keys if isinstance(f.get(k), (int, float)) and not isinstance(f.get(k), bool)}
+    if not figs:
+        return None
+    return {"as_of": base._d(f.get("as_of")), "source": str(f.get("source"))[:120], "figures": figs,
+            "draw_status": str(f.get("draw_status") or "")[:80] or None}
+
+
+# ── WHAT CHANGED, WHAT IS AT RISK, WHAT IT IS BASED ON ───────────────────────
+
+def mobilization(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """Subs that arrived, left, or changed size since the previous period.
+    Not asserted when the previous period had no site activity (the job's
+    first period: everyone would be "new")."""
+    out: Dict[str, Any] = {"new": [], "gone": [], "changed": [], "comparable": rep["prev"]["days"] > 0}
+    if not out["comparable"]:
+        return out
+    here = {s["key"] for s in rep["subs"]}
+    for g in rep.get("prev_subs") or []:
+        if g["key"] not in here and g["days"] >= 2:
+            out["gone"].append({"name": g["name"], "last": g["last"]})
+    for s in rep["subs"]:
+        if s["prev_days"] == 0:
+            out["new"].append({"name": s["name"], "first": s["first"], "avg": s["avg"]})
+        else:
+            delta = s["avg"] - s["prev_avg"]
+            if abs(delta) >= CHANGE_WORKERS and abs(delta) >= CHANGE_PCT * max(s["prev_avg"], 1):
+                out["changed"].append({"name": s["name"], "avg": s["avg"], "prev_avg": s["prev_avg"],
+                                       "direction": "up" if delta > 0 else "down"})
+    return out
+
+
+def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The meaningful changes since the previous period, at most six, each
+    with the kind of record it rests on, most material first: regulatory
+    events, schedule milestones, the workforce, mobilization, then the work.
+    Deterministic: the rules are the thresholds above and the regulatory /
+    schedule facts."""
+    out: List[Dict[str, Any]] = []
+    site, prev, mob = rep["site"], rep["prev"], rep["mobilization"]
+    reg = rep["regulatory"]
+    for r in reg["swo_lifted"][:2]:
+        out.append({"src": "R", "refs": [r["id"]],
+                    "text": f"{r['kind']} {r['number']} was lifted on {_dayy(r['changed_on'])}."})
+    new_issues = [r for r in reg["issued"] if r["type"] in report_regulatory.OPEN_TYPES]
+    if new_issues:
+        out.append({"src": "R", "refs": [r["id"] for r in new_issues[:3]],
+                    "text": f"{_n(len(new_issues), 'new DOB/DOT violation or order')} issued: "
+                    + _join([f"{r['kind']} {r['number']}".strip() for r in new_issues[:3]]) + "."})
+    resolved = [r for r in reg["changed"] if r["closed"] and r["type"] in report_regulatory.OPEN_TYPES
+                and r["id"] not in {x["id"] for x in reg["swo_lifted"]}]
+    if resolved:
+        out.append({"src": "R", "refs": [r["id"] for r in resolved[:3]],
+                    "text": f"{_n(len(resolved), 'violation')} resolved: "
+                    + _join([f"{r['kind']} {r['number']}".strip() for r in resolved[:3]]) + "."})
+    plan = rep["schedule"]
+    if plan and plan.get("usable"):
+        done = plan["milestones"]["completed_in_period"]
+        if done:
+            out.append({"src": "S", "text": f"{_n(len(done), 'milestone')} completed per the schedule: "
+                        + _join([m["name"] for m in done[:2]]) + "."})
+    if prev["days"] and site["worked"]:
+        delta = site["avg"] - prev["avg"]
+        if abs(delta) >= CHANGE_WORKERS and abs(delta) >= WORKFORCE_NOTE_PCT * max(prev["avg"], 1):
+            out.append({"src": "G", "text": f"Average workforce {'rose' if delta > 0 else 'fell'} to "
+                        f"{site['avg']:g} workers a day from {prev['avg']:g} in the previous period."})
+    if mob["new"]:
+        out.append({"src": "G", "text": _join([m["name"] for m in mob["new"][:4]])
+                    + " mobilized this period (not on site in the previous one)."})
+    if mob["gone"]:
+        out.append({"src": "G", "text": _join([g["name"] for g in mob["gone"][:3]])
+                    + " no longer on site (none this period)."})
+    for m in mob["changed"][:2]:
+        out.append({"src": "G", "text": f"{m['name']} crew {'increased' if m['direction'] == 'up' else 'decreased'} "
+                    f"to an average of {m['avg']:g} from {m['prev_avg']:g}."})
+    adv = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "advanced"]
+    for name, i in adv[:3]:
+        out.append({"src": "L", "text": f"{name}: {i['work'].lower()} advanced to {floors_label(i['new_floors'])}."})
+    news = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "new"]
+    for name, i in news[:2]:
+        out.append({"src": "L", "text": f"{name} began {i['work'].lower()}"
+                    + (f" ({i['place']})" if i["place"] else "") + "."})
+    return out[:6]
+
+
+def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Material, project-level risks, from facts only: stop work and vacate
+    orders, open DOB/DOT violations, permits about to expire, failed daily
+    inspections, overdue milestones, a schedule that has slipped, a sharp
+    drop in the workforce. Each has a level (critical / high / watch), the
+    evidence kind and the entries it rests on. At most six."""
+    out: List[Dict[str, Any]] = []
+    reg = rep["regulatory"]
+    for r in reg["swo_active"]:
+        out.append({"level": "critical", "src": "R", "ref": r["id"], "refs": [r["id"]],
+                    "text": f"{r['kind']} {r['number']} is active (issued {_dayy(r['issued'])})."})
+    opens = [r for r in reg["open"] if r["id"] not in {x["id"] for x in reg["swo_active"]}]
+    if opens:
+        out.append({"level": "high", "src": "R", "ref": ",".join(r["id"] for r in opens[:5]),
+                    "refs": [r["id"] for r in opens[:3]],
+                    "text": f"{_n(len(opens), 'DOB/DOT violation or complaint')} open: "
+                    + _join([f"{r['kind']} {r['number']}".strip() for r in opens[:3]])
+                    + (f" and {len(opens) - 3} more" if len(opens) > 3 else "") + "."})
+    soon = [p for p in reg["expiring"] if p["expires"] and (p["expires"] - rep["end"]).days <= 30]
+    if soon:
+        out.append({"level": "watch", "src": "R", "ref": ",".join(p["id"] for p in soon[:5]),
+                    "refs": [p["id"] for p in soon[:3]],
+                    "text": ("Permits expiring within 30 days: " if len(soon) > 1 else "Permit expiring within 30 days: ")
+                    + _join([f"{p['kind']} {p['number']} ({_dayy(p['expires'])})".strip() for p in soon[:3]]) + "."})
+    insp = rep["inspections"]
+    if insp["failed"]:
+        out.append({"level": "high", "src": "L", "ref": "",
+                    "text": f"{_n(insp['failed'], 'daily inspection item')} recorded as failed in the daily logs: "
+                    + _join(sorted({f"{f['item']} ({_day(f['date'])})" for f in insp["failed_items"]})[:3]) + "."})
+    plan = rep["schedule"]
+    if plan and plan.get("usable"):
+        od = plan["milestones"]["overdue"]
+        if od:
+            out.append({"level": "high", "src": "S", "ref": "",
+                        "text": f"{_n(len(od), 'milestone')} past due per the schedule: "
+                        + _join([m["name"] for m in od[:2]]) + "."})
+        v = plan["project"].get("variance_days")
+        if v is not None and v >= 14:
+            out.append({"level": "watch", "src": "S", "ref": "",
+                        "text": f"The schedule's forecast finish is {_n(v, 'day')} after its original finish."})
+    site, prev = rep["site"], rep["prev"]
+    if prev["days"] >= 3 and site["worked"] and prev["avg"] >= 6 and \
+            site["avg"] <= prev["avg"] * (1 - 0.35):
+        out.append({"level": "watch", "src": "G", "ref": "",
+                    "text": f"Average workforce is down to {site['avg']:g} a day from {prev['avg']:g}."})
+    rank = {"critical": 0, "high": 1, "watch": 2}
+    out.sort(key=lambda r: rank[r["level"]])
+    return out[:6]
+
+
+def status(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """The report's flag: what the records show, and what they cannot. It is
+    NOT a judgment of schedule, cost or quality -- those need a schedule and
+    figures the report does not have unless they were provided."""
+    levels = {r["level"] for r in rep["risks"]}
+    if "critical" in levels:
+        label, level = "Needs attention", "critical"
+    elif "high" in levels:
+        label, level = "Watch", "high"
+    elif levels:
+        label, level = "Watch", "watch"
+    else:
+        label, level = "No flagged issues", "ok"
+    cov = rep["regulatory"]["coverage"]["state"]
+    basis = "Based on site check-ins, filed daily logs and DOB/DOT records"
+    if cov in ("unknown", "not_tracked", "stale"):
+        basis += "; regulatory records could not be verified for this period"
+    return {"label": label, "level": level, "basis": basis + "."}
+
+
+def overview(rep: Dict[str, Any]) -> List[str]:
+    """The paragraphs of the executive overview, composed from the numbers:
+    activity, progress, regulatory, schedule, finance. Each is one or two
+    plain sentences and every figure in it is printed elsewhere in the
+    report."""
+    site, prev, subs = rep["site"], rep["prev"], rep["subs"]
+    out: List[str] = []
+    if site["worked"]:
+        s = (f"{_n(len(subs), 'subcontractor')} worked on site on {site['worked']} of {site['possible']} "
+             f"working days, averaging {site['avg']:g} workers a day with a peak of {site['peak']} on "
+             f"{_wday(site['peak_day'])}.")
+        if prev["days"]:
+            delta = site["avg"] - prev["avg"]
+            if abs(delta) >= CHANGE_WORKERS and abs(delta) >= WORKFORCE_NOTE_PCT * max(prev["avg"], 1):
+                s += f" The average was {'up' if delta > 0 else 'down'} from {prev['avg']:g} in the previous period."
+            else:
+                s += f" That is in line with the previous period ({prev['avg']:g} a day)."
+        out.append(s)
+    else:
+        out.append("No site check-ins or filed crew reports were recorded in this period.")
+    lines = []
+    for w in rep["work"][:4]:
+        for i in w["items"][:1]:
+            lines.append(f"{w['name']}: {i['work'].lower()}" + (f" on {i['place']}" if i["place"] else ""))
+    if lines:
+        out.append("Reported work — " + "; ".join(lines) + ".")
+    reg = rep["regulatory"]
+    cov = reg["coverage"]
+    if cov["state"] in ("verified", "partial"):
+        bits = []
+        if reg["swo_active"]:
+            bits.append(f"{_n(len(reg['swo_active']), 'stop work or vacate order')} active")
+        others = [r for r in reg["open"] if r["id"] not in {x["id"] for x in reg["swo_active"]}]
+        if others:
+            bits.append(f"{_n(len(others), 'DOB/DOT violation or complaint')} open")
+        if reg["issued"]:
+            bits.append(f"{_n(len(reg['issued']), 'record')} issued in the period")
+        out.append("Regulatory — " + (_join(bits) if bits else
+                   "no DOB/DOT violations, orders or complaints open at the end of the period") + ".")
+    else:
+        out.append("Regulatory — " + cov["note"])
+    plan = rep["schedule"]
+    if plan and plan.get("usable"):
+        proj = plan["project"]
+        s = f"Schedule — per the project schedule dated {_dayy(plan['as_of'])}"
+        if plan["as_of"] is None:
+            s = "Schedule — per the imported project schedule"
+        parts = []
+        c = plan["counts"]
+        if c["activities"]:
+            parts.append(f"{c['complete']} of {c['activities']} scheduled activities complete")
+        if plan["milestones"]["overdue"]:
+            parts.append(f"{_n(len(plan['milestones']['overdue']), 'milestone')} past due")
+        if proj.get("forecast_finish") and proj.get("baseline_finish"):
+            parts.append(f"forecast finish {_dayy(proj['forecast_finish'])} against an original "
+                         f"{_dayy(proj['baseline_finish'])}")
+        out.append(s + (": " + _join(parts) if parts else ".") + ("." if parts else ""))
+    else:
+        out.append("Schedule — no confirmed project schedule is on file, so schedule status and "
+                   "completion are not reported.")
+    return out
+
+
+def limitations(rep: Dict[str, Any]) -> List[str]:
+    """Plain-English notes on what this report does not contain and why: kept
+    short and printed once, at the end."""
+    out = []
+    if not (rep["schedule"] and rep["schedule"].get("usable")):
+        out.append("No confirmed project schedule is on file: completion percentages, planned-versus-actual "
+                   "progress and milestone status are not reported.")
+    else:
+        out.extend(rep["schedule"].get("limitations") or [])
+    if not rep["financials"]:
+        out.append("No confirmed financial data is on file: budget, change-order, cost and draw information "
+                   "is not reported.")
+    out.append("Progress is as reported in the daily logs and site check-ins. It is not independently "
+               "verified, and no percent complete is derived from headcount, log wording or photographs.")
+    out.append("Photographs are supplied in the filed daily logs; their location and date are as filed and "
+               "are not independently verified.")
+    out.append("Internal GC coordination (messages, reminders, punch-list assignments, free-text site "
+               "observations) and individual worker information are not included in this report.")
+    return out
+
+
+def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], worked: List[date]) -> List[str]:
+    """What a careful reader should know about the records behind the numbers:
+    days with no filed log, amended days, gate/log differences."""
+    out = []
+    site, ls, rc = rep["site"], rep["log_set"], rep["recon"]
+    in_period_checkins = [r for r in checkins if base._in(att.local_day(r.get("check_in_time")), rep["start"],
+                                                            rep["end"])]
+    if site["worked"]:
+        missing = [d for d in worked if d not in {base._d(lg.get("date")) for lg in logs}]
+        out.append(f"Daily logs were filed for {ls['filed']} of the {site['worked']} days with site activity"
+                   + (f" (no filed log on {_join([_day(d) for d in missing[:4]])}"
+                      + (f" and {len(missing) - 4} more" if len(missing) > 4 else "") + ")." if missing else "."))
+    if ls["amended"]:
+        out.append(f"{_n(len(ls['amended']), 'day')} ({_join([_day(d) for d in ls['amended'][:4]])}) "
+                   "were amended after filing; the corrected version is used.")
+    if ls["competing"]:
+        out.append(f"{_n(ls['competing'], 'day')} has competing corrections filed; the most recent is used.")
+    if ls["duplicates"]:
+        out.append(f"{_n(ls['duplicates'], 'day')} had more than one daily log filed; the latest is used.")
+    if rc["variance"]:
+        v = rc["variance_days"][0]
+        out.append(f"On {_n(rc['variance'], 'sub-day')}, the daily-log headcount differed from the gate "
+                   f"check-ins by more than {int(AGREE_PCT * 100)}% (e.g. {v['sub']} on {_day(v['date'])}: "
+                   f"{v['gate']} checked in, {v['log']} logged). Gate counts are used.")
+    if rc["log_basis_days"]:
+        out.append(f"On {_n(rc['log_basis_days'], 'sub-day')} the crew appears in the daily log but has no gate "
+                   "check-ins; the logged headcount is used.")
+    if rc["gate_only"]:
+        out.append(f"On {_n(rc['gate_only'], 'sub-day')} workers checked in but the sub is not named in that "
+                   "day's daily log.")
+    if rc["unassigned_checkins"]:
+        out.append(f"{_n(rc['unassigned_checkins'], 'check-in')} had no company assigned; they are counted in "
+                   "site totals but not attributed to a sub.")
+    if rc["log_rows_no_company"]:
+        out.append(f"{_n(rc['log_rows_no_company'], 'daily-log crew row')} named no company and are not "
+                   "attributed to a sub.")
+    if site.get("holidays"):
+        out.append(f"Working days exclude {_join(site['holidays'][:3])}.")
+    return out
+
+
+# ── EVIDENCE: WHAT EVERY NUMBER CAN BE TRACED TO ─────────────────────────────
+
+def evidence(rep: Dict[str, Any], checkins: List[dict], logs: List[dict]) -> List[Dict[str, Any]]:
+    """The index of sources, printed in the report and stored with it: the
+    gate check-in window, each daily log used (with its id, and whether it
+    was amended), each regulatory record cited (number, date, link), and the
+    schedule file. Ids are the system's own, so a reader with access can
+    open the record; the appendix prints the short form."""
+    out: List[Dict[str, Any]] = []
+    n_ck = sum(1 for r in checkins if base._in(att.local_day(r.get("check_in_time")), rep["start"], rep["end"]))
+    out.append({"id": "G", "kind": "checkins", "label": "Site check-ins",
+                "detail": f"{n_ck} check-in records, {_span(rep['start'], rep['end'])} "
+                          "(NFC / QR gate; one worker counts once a day)",
+                "count": n_ck})
+    out.append({"id": "L", "kind": "daily_logs", "label": "Filed daily logs",
+                "detail": f"{len(logs)} daily jobsite logs filed in the period"
+                          + (f", {len(rep['log_set']['amended'])} amended" if rep["log_set"]["amended"] else ""),
+                "refs": [{"id": str(lg.get("_id") or ""), "date": base._d(lg.get("date")),
+                          "amended": int(lg.get("_chain_length") or 1) > 1,
+                          "reason": str(lg.get("_amendment_reason") or lg.get("amendment_reason") or "")[:160] or None} for lg in logs]})
+    reg = rep["regulatory"]
+    seen = set()
+    n = 0
+    for lst in ("swo_active", "open", "swo_lifted", "issued", "changed", "expiring"):
+        for r in reg[lst]:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            n += 1
+            r["ref_id"] = f"R{n}"
+            out.append({"id": f"R{n}", "kind": "regulatory", "label": f"{r['kind']} {r['number']}".strip(),
+                        "detail": f"{r['source'].upper()} record; status {r['status'] or 'not stated'}",
+                        "record": r["id"], "row_id": r["row_id"], "link": r["link"], "issued": r["issued"]})
+    plan = rep["schedule"]
+    if plan and plan.get("usable"):
+        out.append({"id": "S", "kind": "schedule", "label": "Project schedule",
+                    "detail": (plan.get("source_name") or "Imported schedule")
+                              + (f", data date {_dayy(plan['as_of'])}" if plan.get("as_of") else "")
+                              + (f", confirmed by {plan['confirmed_by']}" if plan.get("confirmed_by") else "")})
+    return out
 
 
 # ── THE WHATSAPP MESSAGE ─────────────────────────────────────────────────────
-
-def _is_issue(kind: str) -> bool:
-    """A record that is something to fix (a violation, complaint, stop work
-    order) -- not a permit or a status."""
-    k = kind.lower()
-    return not ("permit" in k or "status" in k)
-
 
 def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Optional[str] = None) -> str:
     """The short message the PDF goes with:
 
         588 Thomas S Boyland · Oct 2–15
-        - Work this period: framing fl 1–4 (Arkon), risers (Quality Plumbing)
-        - Site: worked 9 of 9 days · avg 26 workers/day · busiest Thu Oct 15 (37)
-        - Open: 4 late commitments · 51 punch items
+        - Site: 4 subs · 9 of 9 days · avg 26 workers/day (previous 22)
+        - Work: framing floors 1–4 (Arkon), risers (Quality Plumbing)
+        - Regulatory: no open violations or orders
         Full report (PDF) attached.
-    """
+
+    Only what the report itself prints: no chat, no punch list."""
     lines = [f"{rep['job']} · {rep['period_short']}"]
-    work = []
-    for s in rep["subs"][:5]:
-        w = (s["label"] or s["trade"] or "on site").split(" · ")[0]
-        work.append(f"{w[:1].lower()}{w[1:]} ({short_name(s['name'], w)})")
-    lines.append("- Work this period: " + (", ".join(work) if work else "no crews on site"))
-    site = rep["site"]
+    site, prev = rep["site"], rep["prev"]
     if site["worked"]:
-        lines.append(f"- Site: worked {site['worked']} of {site['possible']} days · avg {site['avg']} "
-                     f"workers/day · busiest {_wday(site['max_day'])} ({site['max']})")
+        bit = f"- Site: {_n(len(rep['subs']), 'sub')} · {site['worked']} of {site['possible']} days · " \
+              f"avg {site['avg']:g} workers/day"
+        if prev["days"]:
+            bit += f" (previous {prev['avg']:g})"
+        lines.append(bit)
     else:
         lines.append("- Site: no check-ins this period")
-    bits = []
-    if rep["late"]:
-        bits.append(f"{len(rep['late'])} late commitment{'s' if len(rep['late']) != 1 else ''}")
-    if rep["punch"].get("open"):
-        bits.append(f"{rep['punch']['open']} punch item{'s' if rep['punch']['open'] != 1 else ''}")
-    issues = [r for r in rep["records"] if r["open"] and _is_issue(r["kind"])]
-    if issues:
-        bits.append(f"{len(issues)} new DOB/DOT violation{'s' if len(issues) != 1 else ''}")
-    lines.append("- Open: " + (" · ".join(bits) if bits else "nothing open"))
+    work = []
+    for w in rep["work"][:3]:
+        if w["items"]:
+            i = w["items"][0]
+            work.append(f"{i['work'].lower()}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
+    if work:
+        lines.append("- Work: " + ", ".join(work))
+    reg = rep["regulatory"]
+    if reg["coverage"]["state"] in ("verified", "partial"):
+        if reg["swo_active"]:
+            lines.append(f"- Regulatory: {_n(len(reg['swo_active']), 'stop work/vacate order')} ACTIVE")
+        elif reg["open"]:
+            lines.append(f"- Regulatory: {_n(len(reg['open']), 'open violation/complaint', 'open violations/complaints')}")
+        else:
+            lines.append("- Regulatory: no open violations or orders")
+    plan = rep["schedule"]
+    if plan and plan.get("usable") and plan["milestones"]["overdue"]:
+        lines.append(f"- Schedule: {_n(len(plan['milestones']['overdue']), 'milestone')} past due")
     if attached:
         lines.append(ATTACHED_LINE)
     elif link:
@@ -827,329 +1167,42 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
     return "\n".join(lines)
 
 
-# ── THE PDF (HTML for WeasyPrint) ────────────────────────────────────────────
-
-CSS = """
-@page { size: Letter; margin: 0.65in 0.6in 0.8in;
-  @top-left { content: "HEADER"; font: 8pt Helvetica, Arial, sans-serif; color: #7a8599; }
-  @bottom-left { content: "SOURCE"; font: 7.5pt Helvetica, Arial, sans-serif; color: #7a8599; }
-  @bottom-right { content: "Page " counter(page) " of " counter(pages);
-                  font: 8pt Helvetica, Arial, sans-serif; color: #7a8599; } }
-@page cover { margin: 0; @top-left { content: none; } @bottom-left { content: none; }
-              @bottom-right { content: none; } }
-body { font: 10pt/1.45 Helvetica, Arial, sans-serif; color: #1c2430; }
-.cover { page: cover; height: 11in; position: relative; background: #1F3A5F; color: #fff; }
-.cover .band { padding: 1.2in 0.8in 0; }
-.cover .brand { font-weight: 800; letter-spacing: 3px; font-size: 13pt; opacity: .85; }
-.cover .gc { margin-top: 1.6in; font-size: 13pt; font-weight: 600; opacity: .9; }
-.cover h1 { font-size: 30pt; line-height: 1.15; margin: 10px 0 6px; }
-.cover .addr { font-size: 12pt; opacity: .85; }
-.cover .kind { margin-top: 28px; font-size: 11pt; letter-spacing: 2px; text-transform: uppercase; opacity: .8; }
-.cover .period { font-size: 18pt; font-weight: 600; margin-top: 4px; }
-.cover .prep { position: absolute; bottom: 0.8in; left: 0.8in; font-size: 9.5pt; opacity: .8; }
-h2 { font-size: 14pt; color: #1F3A5F; margin: 0 0 8px; padding-bottom: 4px;
-     border-bottom: 2px solid #1F3A5F; page-break-after: avoid; }
-h3 { font-size: 11pt; margin: 14px 0 4px; color: #1c2430; page-break-after: avoid; }
-section { page-break-before: always; }
-section.flow { page-break-before: auto; margin-top: 22px; }
-p.lead { font-size: 11pt; line-height: 1.6; }
-.kpis { display: flex; gap: 10px; margin: 14px 0 4px; }
-.kpis div { flex: 1; border: 1px solid #d8dee8; border-radius: 6px; padding: 8px 10px; }
-.kpis b { display: block; font-size: 16pt; color: #1F3A5F; }
-.kpis span { font-size: 8.5pt; color: #5b6676; }
-table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; }
-th, td { border-bottom: 1px solid #e3e7ee; padding: 4px 6px; text-align: left; font-size: 9pt;
-         vertical-align: top; }
-th { background: #f1f4f8; color: #3c4858; font-weight: 600; }
-td.n, th.n { text-align: right; }
-.sub { break-inside: avoid; page-break-inside: avoid; border: 1px solid #e3e7ee; border-radius: 6px;
-       padding: 8px 12px; margin: 0 0 10px; }
-.sub .head { display: flex; justify-content: space-between; align-items: baseline; }
-.sub .name { font-weight: 700; font-size: 11pt; }
-.sub .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
-.sub .meta { color: #5b6676; font-size: 9pt; }
-ul { margin: 4px 0 4px 16px; padding: 0; } li { margin: 2px 0; }
-.issues li { color: #8a1c1c; }
-table.photos { table-layout: fixed; margin: 0 0 4px; }
-table.photos tr { break-inside: avoid; page-break-inside: avoid; }
-td.photo { width: 50%; border: none; padding: 0 6px 10px 0; }
-.photo img { width: 100%; height: 1.9in; object-fit: cover; border-radius: 4px; }
-.photo .cap { font-size: 8.5pt; color: #3c4858; margin-top: 3px; }
-.photo .cap b { color: #1c2430; }
-.tag { display: inline-block; font-size: 7.5pt; padding: 1px 5px; border-radius: 3px;
-       background: #eef2f7; color: #3c4858; margin-left: 4px; }
-.none { color: #5b6676; font-style: italic; }
-.muted { color: #5b6676; font-size: 8.5pt; }
-.chart { width: 100%; }
-.keep { break-inside: avoid; page-break-inside: avoid; }
-"""
+def short_name(name: Any, work: Any = "") -> str:
+    """A sub as people say it: "Arkon Builders" -> "Arkon"; "J&G
+    Scaffolding" -> "J&G" when the work already says scaffolding."""
+    from lib import wa_style
+    words = str(name or "").split()
+    while len(words) > 1 and _fold(words[-1]) in wa_style._CO_TAIL:
+        words.pop()
+    if len(words) > 1 and _fold(words[-1]) in wa_style._TRADE_WORDS \
+            and _fold(words[-1]) in _fold(work).split():
+        words.pop()
+    return " ".join(words) or str(name or "")
 
 
-def gantt_svg(rep: Dict[str, Any], width: int = 700) -> str:
-    """"Actual work (from daily logs)": a row per sub, a bar for each run of
-    days it was on site, labelled with the work; a line at today."""
-    subs, start, end = rep["subs"], rep["start"], rep["end"]
-    if not subs:
-        return ""
-    ndays = (end - start).days + 1
-    left, top, row_h = 150, 26, 34
-    plot = width - left - 10
-    dw = plot / ndays
-    height = top + row_h * len(subs) + 24
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" class="chart" viewBox="0 0 {width} {height}" '
-           f'width="{width}" height="{height}" font-family="Helvetica, Arial, sans-serif">']
-    for i in range(ndays):
-        d = start + timedelta(days=i)
-        x = left + i * dw
-        if d.weekday() >= 5:
-            out.append(f'<rect x="{x:.1f}" y="{top}" width="{dw:.1f}" height="{row_h * len(subs)}" fill="#f4f6f9"/>')
-        if ndays <= 31 or d.weekday() == 0:
-            out.append(f'<text x="{x + dw / 2:.1f}" y="{top - 8}" font-size="8" text-anchor="middle" '
-                       f'fill="#5b6676">{_fmt(d, "%-m/%-d")}</text>')
-    for r, s in enumerate(subs):
-        y = top + r * row_h
-        out.append(f'<line x1="0" y1="{y + row_h}" x2="{width}" y2="{y + row_h}" stroke="#e3e7ee"/>')
-        out.append(f'<text x="4" y="{y + row_h / 2 + 4}" font-size="9.5" font-weight="bold" '
-                   f'fill="#1c2430">{_e(s["name"][:22])}</text>')
-        for run in s["runs"]:
-            x = left + (run["start"] - start).days * dw
-            w = ((run["end"] - run["start"]).days + 1) * dw
-            out.append(f'<rect x="{x + 1:.1f}" y="{y + 6}" width="{max(w - 2, 3):.1f}" height="{row_h - 12}" '
-                       f'rx="3" fill="{s["color"]}"/>')
-            label = run["label"] or s["trade"] or ""
-            if label:
-                fits = int(w / 5.2)
-                txt = label if len(label) <= fits else (label[:max(fits - 1, 0)] + "…" if fits > 6 else "")
-                if txt:
-                    out.append(f'<text x="{x + 5:.1f}" y="{y + row_h / 2 + 3.5}" font-size="8.5" '
-                               f'fill="#fff">{_e(txt)}</text>')
-    today = rep["today"]
-    if start <= today <= end:
-        x = left + ((today - start).days + 0.5) * dw
-        out.append(f'<line x1="{x:.1f}" y1="{top - 4}" x2="{x:.1f}" y2="{top + row_h * len(subs)}" '
-                   f'stroke="#C8102E" stroke-width="1.5" stroke-dasharray="4 3"/>')
-        out.append(f'<text x="{x:.1f}" y="{height - 6}" font-size="8.5" text-anchor="middle" '
-                   f'fill="#C8102E">Today</text>')
-    out.append("</svg>")
-    return "".join(out)
+# ── THE SNAPSHOT ─────────────────────────────────────────────────────────────
 
-
-def activity_svg(rep: Dict[str, Any], width: int = 700, height: int = 200) -> str:
-    """Workers on site per day, stacked by sub, the total on top."""
-    table, subs = rep["site"]["table"], rep["subs"]
-    if not table:
-        return ""
-    top_v = max(r["total"] for r in table) or 1
-    n = len(table)
-    left, base_y = 30, height - 26
-    bw = max(6, (width - left - 10) / n - 6)
-    color = {s["name"]: s["color"] for s in subs}
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" class="chart" viewBox="0 0 {width} {height}" '
-           f'width="{width}" height="{height}" font-family="Helvetica, Arial, sans-serif">']
-    for i, r in enumerate(table):
-        x = left + i * (bw + 6)
-        y = base_y
-        for s in subs:
-            v = r["by_sub"].get(s["name"], 0)
-            if not v:
-                continue
-            h = (base_y - 18) * v / top_v
-            y -= h
-            out.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{color[s["name"]]}"/>')
-        out.append(f'<text x="{x + bw / 2:.1f}" y="{y - 3:.1f}" font-size="8.5" text-anchor="middle" '
-                   f'fill="#1c2430">{r["total"]}</text>')
-        out.append(f'<text x="{x + bw / 2:.1f}" y="{base_y + 12}" font-size="8" text-anchor="middle" '
-                   f'fill="#5b6676">{_fmt(r["day"], "%-m/%-d")}</text>')
-    out.append(f'<line x1="{left - 4}" y1="{base_y}" x2="{width}" y2="{base_y}" stroke="#9aa5b4"/>')
-    out.append("</svg>")
-    legend = "".join(f'<span style="margin-right:12px"><span class="dot" style="display:inline-block;'
-                     f'width:9px;height:9px;border-radius:2px;background:{s["color"]}"></span> '
-                     f'{_e(s["name"])}</span>' for s in subs)
-    return "".join(out) + f'<div class="muted">{legend}</div>'
-
-
-def _cover(rep: Dict[str, Any], prepared: str) -> str:
-    return (f"<div class='cover'><div class='band'><div class='brand'>LEVELOG</div>"
-            f"<div class='gc'>{_e(rep['gc'])}</div>"
-            f"<h1>{_e(rep['job_full'])}</h1><div class='addr'>{_e(rep['address'])}</div>"
-            f"<div class='kind'>Construction progress report</div>"
-            f"<div class='period'>{_e(rep['period'])}</div></div>"
-            f"<div class='prep'>Prepared {_e(prepared)} · {_e(SOURCE_LINE)}</div></div>")
-
-
-def _summary_section(rep: Dict[str, Any]) -> str:
-    site = rep["site"]
-    k = []
-    if site["worked"]:
-        k = [("Days on site", f"{site['worked']} of {site['possible']}"),
-             ("Workers on site / day", f"{site['avg']} avg"),
-             ("Busiest day", f"{site['max']} · {_day(site['max_day'])}")]
-    k.append(("Subs on site", str(len(rep["subs"]))))
-    kp = "".join(f"<div><b>{_e(v)}</b><span>{_e(lbl)}</span></div>" for lbl, v in k)
-    return (f"<section class='first'><h2>Summary</h2><p class='lead'>{_e(rep['summary'])}</p>"
-            f"<div class='kpis'>{kp}</div></section>")
-
-
-def _schedule_section(rep: Dict[str, Any]) -> str:
-    g = gantt_svg(rep)
-    body = g or "<p class='none'>No crews on site in this period.</p>"
-    return (f"<section class='flow keep'><h2>Actual work (from daily logs)</h2>{body}"
-            f"<div class='muted'>Bars are the days each sub was on site (check-ins); labels are the work "
-            f"written in the daily logs. No planned dates — no schedule is on file.</div></section>")
-
-
-def _subs_section(rep: Dict[str, Any]) -> str:
-    if not rep["subs"]:
-        return "<section><h2>Work by sub</h2><p class='none'>None.</p></section>"
-    cards = []
-    for s in rep["subs"]:
-        work = ("<ul>" + "".join(f"<li>{_e(w)}</li>" for w in s["work"]) + "</ul>") if s["work"] \
-            else "<div class='none'>No work description in the daily logs.</div>"
-        issues = ("<b>Issues</b><ul class='issues'>" + "".join(f"<li>{_e(i)}</li>" for i in s["issues"])
-                  + "</ul>") if s["issues"] else ""
-        cards.append(
-            f"<div class='sub'><div class='head'><span class='name'><span class='dot' "
-            f"style='background:{s['color']}'></span>{_e(s['name'])}"
-            f"{('<span class=tag>' + _e(s['trade']) + '</span>') if s['trade'] else ''}</span>"
-            f"<span class='meta'>{len(s['days'])} days on site · {_e(_span(s['first'], s['last']))}"
-            f" · avg {s['avg']:g}, most {s['max']} workers</span></div>"
-            f"{work}{issues}</div>")
-    return "<section><h2>Work by sub</h2>" + "".join(cards) + "</section>"
-
-
-def _photos_section(rep: Dict[str, Any], images: Dict[str, str]) -> str:
-    shown = [p for p in rep["photos"] if images.get(p["key"])]
-    if not shown:
-        return ("<section><h2>Progress photos</h2><p class='none'>No progress photos in the daily "
-                "logs for this period.</p></section>")
-    groups: Dict[str, List[dict]] = defaultdict(list)
-    for p in shown:
-        groups[p.get("sub") or "Daily log"].append(p)
-    out = ["<section><h2>Progress photos</h2><div class='muted'>From the daily logs: each photo "
-           "dated, with the sub's work that day.</div>"]
-    for sub, photos in groups.items():
-        cells = []
-        for p in sorted(photos, key=lambda x: x["date"]):
-            pair = (f"<span class='tag'>{'Earliest' if p['pair'] == 'before' else 'Latest'}</span>"
-                    if p.get("pair") else "")
-            cells.append(f"<td class='photo'><img src='{images[p['key']]}'/>"
-                         f"<div class='cap'><b>{_e(_wday(p['date']))}</b>{pair}<br>"
-                         f"{_e(p['caption'])}</div></td>")
-        rows = "".join("<tr>" + "".join(cells[i:i + 2]) + ("<td class='photo'></td>" if len(cells[i:i + 2]) < 2
-                                                            else "") + "</tr>"
-                       for i in range(0, len(cells), 2))
-        out.append(f"<h3>{_e(sub)}</h3><table class='photos'>{rows}</table>")
-    return "".join(out) + "</section>"
-
-
-def _activity_section(rep: Dict[str, Any]) -> str:
-    site = rep["site"]
-    if not site["worked"]:
-        return "<section class='flow'><h2>Site activity</h2><p class='none'>No check-ins.</p></section>"
-    rows = "".join(f"<tr><td>{_e(s['name'])}</td><td class='n'>{len(s['days'])}</td>"
-                   f"<td class='n'>{s['avg']:g}</td><td class='n'>{s['max']}</td></tr>" for s in rep["subs"])
-    return (f"<section><h2>Site activity</h2>"
-            f"<h3>Workers on site per day</h3>{activity_svg(rep)}"
-            f"<p>Worked {site['worked']} of {site['possible']} working days · average {site['avg']} "
-            f"workers on site a day · busiest {_e(_wday(site['max_day']))} ({site['max']}).</p>"
-            f"<table><tr><th>Sub</th><th class='n'>Days on site</th><th class='n'>Avg workers</th>"
-            f"<th class='n'>Most workers</th></tr>{rows}</table>"
-            f"<div class='muted'>Each worker counted once a day, from site check-ins.</div></section>")
-
-
-def _dob_section(rep: Dict[str, Any]) -> str:
-    recs = rep["records"]
-    body = ("<table><tr><th>Type</th><th>Number</th><th>Date</th><th>Status</th></tr>"
-            + "".join(f"<tr><td>{_e(r['kind'])}</td><td>{_e(r['number'])}</td><td>{_e(_day(r['date']))}</td>"
-                      f"<td>{_e(r['status'])}</td></tr>" for r in recs) + "</table>") if recs \
-        else "<p class='none'>None — no new DOB or DOT records this period.</p>"
-    return f"<section class='flow keep'><h2>DOB / DOT</h2>{body}</section>"
-
-
-def _open_section(rep: Dict[str, Any]) -> str:
-    late = rep["late"]
-    lt = ("<table><tr><th>Who</th><th>What</th><th>Due</th><th>Since</th></tr>"
-          + "".join(f"<tr><td>{_e(c['who'])}</td><td>{_e(c['what'])}</td><td>{_e(_day(c['due']))}"
-                    f" <span class='muted'>({c['days_late']} days late)</span></td>"
-                    f"<td>{_e(_day(c['since']))}</td></tr>" for c in late) + "</table>") if late \
-        else "<p class='none'>None.</p>"
-    p = rep["punch"]
-    pt = ("<p>{} open · {} ready to check · {} closed.</p>".format(p["open"], p["ready"], p["closed"])
-          + "<table><tr><th>Assigned to</th><th class='n'>Open</th><th class='n'>Ready to check</th>"
-          "<th class='n'>Closed</th></tr>"
-          + "".join(f"<tr><td>{_e(a['name'])}</td><td class='n'>{a['open']}</td><td class='n'>{a['ready']}</td>"
-                    f"<td class='n'>{a['closed']}</td></tr>" for a in p["by_assignee"]) + "</table>") if p \
-        else "<p class='none'>None.</p>"
-    return (f"<section><h2>Open items</h2><h3>Late commitments</h3>{lt}"
-            f"<h3>Punch list</h3>{pt}</section>")
-
-
-def _next_section(rep: Dict[str, Any]) -> str:
-    up = rep["coming_up"]
-    body = ("<ul>" + "".join(f"<li><b>{_e(_wday(e['date']))}</b>{(' ' + _e(e['time'])) if e['time'] else ''}"
-                             f" — {_e(e['what'])}</li>" for e in up) + "</ul>") if up \
-        else "<p class='none'>Nothing scheduled in the records for the next 2 weeks.</p>"
-    return f"<section class='flow keep'><h2>Coming up (next 2 weeks)</h2>{body}</section>"
-
-
-def render_html(reps: List[Dict[str, Any]], *, gc: str, title: str, now: datetime,
-                images: Optional[Dict[str, str]] = None) -> str:
-    """The PDF's HTML: per job a cover and the eight sections; page numbers,
-    the job in the page header, the source line in the footer. `images`:
-    photo key -> data URI (the server fetches them)."""
-    images = images or {}
-    prepared = _fmt(now.astimezone(NY), "%B %-d, %Y")
-    head = f"{reps[0]['job']} · {reps[0]['period']}" if len(reps) == 1 else title
-    css = (CSS.replace('"HEADER"', '"' + head.replace('"', "'") + '"')
-           .replace('"SOURCE"', '"' + SOURCE_LINE + '"'))
-    body = []
-    for rep in reps:
-        body.append(_cover(rep, prepared) + _summary_section(rep) + _schedule_section(rep)
-                    + _subs_section(rep) + _photos_section(rep, images) + _activity_section(rep)
-                    + _dob_section(rep) + _open_section(rep) + _next_section(rep))
-    return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
-            f"<style>{css}</style></head><body>{''.join(body)}</body></html>")
-
-
-def title_for(reps: List[Dict[str, Any]]) -> str:
-    if len(reps) == 1:
-        return f"Progress report — {reps[0]['job']} — {reps[0]['period']}"
-    return f"Progress report — {len(reps)} jobs — {reps[0]['period']}"
-
-
-def text_outline(rep: Dict[str, Any]) -> str:
-    """The report as plain text (the snapshot, and what the app previews)."""
-    out = [f"{rep['job_full']} — {rep['period']}", "", "SUMMARY", rep["summary"], "",
-           "ACTUAL WORK (FROM DAILY LOGS)"]
-    for s in rep["subs"]:
-        bars = "; ".join(f"{_span(r['start'], r['end'])}: {r['label'] or s['trade'] or 'on site'}"
-                         for r in s["runs"])
-        out.append(f"  {s['name']}: {bars}")
-    out += ["", "WORK BY SUB"]
-    for s in rep["subs"]:
-        out.append(f"  {s['name']} — {len(s['days'])} days on site ({_span(s['first'], s['last'])}), "
-                   f"avg {s['avg']:g}, most {s['max']} workers")
-        out += [f"    - {w}" for w in s["work"]] or ["    - No work description in the daily logs."]
-        out += [f"    ! {i}" for i in s["issues"]]
-    out += ["", "PROGRESS PHOTOS"]
-    out += [f"  {p['sub']} · {_wday(p['date'])} — {p['caption']}"
-            f"{' [' + p['pair'] + ']' if p.get('pair') else ''}" for p in rep["photos"]] or ["  None."]
-    site = rep["site"]
-    out += ["", "SITE ACTIVITY"]
-    out += ([f"  Worked {site['worked']} of {site['possible']} working days · avg {site['avg']} workers/day"
-             f" · busiest {_wday(site['max_day'])} ({site['max']})"]
-            + [f"  {_wday(r['day'])}: {r['total']} ("
-               + ", ".join(f"{k} {v}" for k, v in sorted(r["by_sub"].items(), key=lambda kv: -kv[1])) + ")"
-               for r in site["table"]]) if site["worked"] else ["  No check-ins."]
-    out += ["", "DOB / DOT"]
-    out += [f"  {r['kind']} {r['number']} — {_day(r['date'])} — {r['status']}" for r in rep["records"]] or ["  None."]
-    out += ["", "OPEN ITEMS", "  Late commitments:"]
-    out += [f"    {c['who']}: {c['what']} — due {_day(c['due'])} ({c['days_late']} days late), since "
-            f"{_day(c['since'])}" for c in rep["late"]] or ["    None."]
-    p = rep["punch"]
-    out.append(f"  Punch: {p['open']} open, {p['ready']} ready to check, {p['closed']} closed" if p else "  Punch: none")
-    out += [f"    {a['name']}: {a['open']} open, {a['ready']} ready, {a['closed']} closed" for a in p.get("by_assignee", [])]
-    out += ["", "COMING UP (NEXT 2 WEEKS)"]
-    out += [f"  {_wday(e['date'])}{' ' + e['time'] if e['time'] else ''} — {e['what']}"
-            for e in rep["coming_up"]] or ["  Nothing scheduled."]
-    return "\n".join(out)
+def snapshot(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """The report's facts as stored with it: JSON-safe (dates as ISO strings),
+    without the photographs' bytes. What was printed, the evidence it rests
+    on, and the engine version -- so a report can be audited, and shown
+    again, exactly as it was sent: its inputs change (a violation is
+    resolved, a log is amended) and a regenerated report would not match."""
+    def clean(v: Any) -> Any:
+        if isinstance(v, datetime):
+            return v.isoformat()
+        if isinstance(v, date):
+            return v.isoformat()
+        if isinstance(v, dict):
+            return {str(k): clean(x) for k, x in v.items() if k != "photo"}
+        if isinstance(v, (list, tuple, set)):
+            return [clean(x) for x in v]
+        return v
+    keep = ("engine", "kind", "job", "job_full", "address", "gc", "start", "end", "generated", "length",
+            "prev_start", "prev_end", "grain", "subs", "work", "site", "prev", "regulatory", "inspections",
+            "schedule", "financials", "photos", "log_set", "recon", "mobilization", "upcoming", "risks",
+            "status", "changes", "overview", "limitations", "data_notes", "evidence", "floor_matrix")
+    snap = {k: clean(rep.get(k)) for k in keep}
+    snap["photos"] = [{k: clean(v) for k, v in p.items() if k in ("key", "date", "sub", "trade", "where", "caption", "log_id")}
+                      for p in rep.get("photos") or []]
+    return snap

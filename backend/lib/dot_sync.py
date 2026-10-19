@@ -211,7 +211,11 @@ def queries(pk: Dict[str, str]) -> List[Dict[str, Any]]:
                 "$where": f"boroughname = '{BORO_NAME[pk['boro']]}' "
                           f"AND permithousenumber = '{_q(pk['house'])}' "
                           f"AND upper(onstreetname) like '%{_q(word)}%'",
-                "$limit": "200"}})
+                # DEFECT MEASURED (2026 audit): a $limit with NO $order returns
+                # an arbitrary 200 rows, so on a busy street the NEWEST permits
+                # could silently be the ones left out. permitissuedate is the
+                # field to_log() stores as issue_date; newest first.
+                "$limit": "200", "$order": "permitissuedate DESC"}})
     return out
 
 

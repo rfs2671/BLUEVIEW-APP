@@ -45,19 +45,47 @@ def ny(y, mo, d, h=8, mi=5):
 
 
 class WhenEachIsDue(unittest.TestCase):
+    """What is due, from 8 AM New York on its due day and for a catch-up
+    window after it (project_report.due_periods). The old rule built a report
+    only in the 8 AM hour, so a deploy or outage across that hour lost it."""
 
     def test_weekly_monday_the_week_before(self):
-        self.assertEqual(R.scheduled_period("weekly", ny(2026, 10, 19)),
-                         (date(2026, 10, 12), date(2026, 10, 18)))
-        self.assertIsNone(R.scheduled_period("weekly", ny(2026, 10, 20)))
-        self.assertIsNone(R.scheduled_period("weekly", ny(2026, 10, 19, 9)))
+        self.assertEqual(R.due_periods("weekly", ny(2026, 10, 19)),
+                         [(date(2026, 10, 12), date(2026, 10, 18), date(2026, 10, 19))])
+        self.assertEqual(R.due_periods("weekly", ny(2026, 10, 19, 7)), [])          # before 8 AM
+        self.assertEqual(R.due_periods("weekly", ny(2026, 10, 20, 3)),               # still Monday's
+                         [(date(2026, 10, 12), date(2026, 10, 18), date(2026, 10, 19))])
+        self.assertEqual(R.due_periods("weekly", ny(2026, 10, 23)), [])              # past the window
+
+    def test_a_missed_hour_is_caught_up(self):
+        # NEGATIVE CONTROL: with the old `hour == 8` rule these all returned None
+        # and the period was never built.
+        for at in (ny(2026, 10, 19, 9, 40), ny(2026, 10, 19, 22), ny(2026, 10, 21, 12)):
+            self.assertEqual(len(R.due_periods("weekly", at)), 1, at)
+        self.assertEqual(len(R.due_periods("quarterly", ny(2026, 10, 7, 12))), 1)    # a week later
+        self.assertEqual(R.due_periods("quarterly", ny(2026, 10, 9, 12)), [])
 
     def test_quarterly_the_quarter_before(self):
-        self.assertEqual(R.scheduled_period("quarterly", ny(2026, 10, 1)),
+        self.assertEqual(R.due_periods("quarterly", ny(2026, 10, 1))[0][:2],
                          (date(2026, 7, 1), date(2026, 9, 30)))
-        self.assertEqual(R.scheduled_period("quarterly", ny(2027, 1, 1)),
+        self.assertEqual(R.due_periods("quarterly", ny(2027, 1, 1))[0][:2],
                          (date(2026, 10, 1), date(2026, 12, 31)))
-        self.assertIsNone(R.scheduled_period("quarterly", ny(2026, 11, 1)))
+        self.assertEqual(R.due_periods("quarterly", ny(2026, 11, 1)), [])
+
+    def test_biweekly_is_every_14_days_with_no_break_at_the_year_end(self):
+        # ISO-week parity skipped Dec 21-27 in a 53-week year (two odd weeks in
+        # a row). Counted from one Monday, it is every second Monday, always.
+        mondays = [date(2026, 1, 5) + timedelta(days=14 * i) for i in range(30)]
+        for m in mondays:
+            self.assertTrue(R.is_due_day("biweekly", m), m)
+            self.assertFalse(R.is_due_day("biweekly", m + timedelta(days=7)), m)
+        self.assertIn(date(2026, 12, 21), mondays)
+        self.assertEqual(R.due_periods("biweekly", ny(2026, 12, 21))[0][:2],
+                         (date(2026, 12, 7), date(2026, 12, 20)))
+        self.assertEqual(R.due_periods("biweekly", ny(2027, 1, 4))[0][:2],
+                         (date(2026, 12, 21), date(2027, 1, 3)))      # no unreported week between
+        # The Mondays that fired before this change still fire.
+        self.assertTrue(R.is_due_day("biweekly", date(2026, 10, 12)))
 
     def test_presets(self):
         now = ny(2026, 10, 15, 16)
