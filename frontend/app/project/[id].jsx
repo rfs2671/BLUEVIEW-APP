@@ -22,7 +22,6 @@ import {
   ClipboardList,
   ClipboardCheck,
   FileBarChart,
-  Settings,
   Wifi,
   ChevronRight,
   HardHat,
@@ -660,9 +659,10 @@ export default function ProjectDetailScreen() {
     // DOB Compliance + Check-in Trades are CORE modules — give them active
     // accent colors (like Plans/Daily Log/Activity) so they don't read as
     // disabled/greyed. They were never gated; the grey was only this hardcoded
-    // semantic.neutral. Report Settings stays neutral (genuinely secondary).
+    // semantic.neutral.
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
-    { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: semantic.neutral },
+    // No Report Settings tile: the daily report's time and email list are on
+    // Reports, with the rest of the job's reports.
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),

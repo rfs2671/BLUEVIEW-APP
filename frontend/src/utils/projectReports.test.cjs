@@ -54,5 +54,24 @@ ok(/can_edit/.test(screen), 'edit only when the server says so');
 ok(!/Bearer \$\{token\}`\s*\)/.test(screen) || /headers: \{ Authorization/.test(screen),
    'the token only in a header');
 
+
+// Report Settings folded into Reports: the daily report's send time and addresses.
+ok(M.SEND_TIMES.length === 8 && M.SEND_TIMES.includes('18:00'), 'the send times offered');
+ok(M.timeLabel('18:00') === '6:00 PM' && M.timeLabel('06:00') === '6:00 AM'
+   && M.timeLabel('12:00') === '12:00 PM' && M.timeLabel('00:30') === '12:30 AM'
+   && M.timeLabel('x') === '', 'times read as AM / PM');
+ok(M.addEmail(['a@b.co'], ' New@Site.com ').list.join() === 'a@b.co,new@site.com', 'an address added, lowercased');
+ok(M.addEmail(['a@b.co'], 'A@B.co').error === 'Already on the list.', 'no duplicates');
+ok(M.addEmail([], 'nope').error === "That isn't an email address.", 'not an address');
+ok(M.addEmail([], '  ').error === 'Enter an email address.', 'nothing typed');
+ok(M.addEmail(null, 'x@y.io').list.join() === 'x@y.io', 'no list yet');
+
+// Only the field that changed is saved (Codex on #809).
+ok(JSON.stringify(M.dailySaveBody({ send_time: '17:00' })) === '{"report_send_time":"17:00"}',
+   'a time change sends the time only — never the list');
+ok(JSON.stringify(M.dailySaveBody({ emails: ['a@b.co'] })) === '{"report_email_list":["a@b.co"]}',
+   'an address change sends the list only');
+ok(JSON.stringify(M.dailySaveBody(null)) === '{}', 'nothing changed, nothing sent');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
