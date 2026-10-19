@@ -17,6 +17,7 @@ import DraftConflictNotice from '../../src/components/DraftConflictNotice';
 import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { readsLogbooksOnly, PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY } from '../../src/utils/pmLogbooks';
 import { logbooksAPI, projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
@@ -1176,6 +1177,35 @@ export default function PreShiftSignIn() {
         <SafeAreaView style={styles.container} edges={['top']}>
           <View style={styles.loadingCenter}>
             <ActivityIndicator size="large" color={colors.text.primary} />
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
+
+  // A Site Manager / PM on "Assigned jobs only" reads a FILED sheet; an open
+  // one is the CP's work in progress, and its Save Draft / Submit would only
+  // meet the server's refusal after he had typed into it. This screen owns no
+  // LogbookStepper, so it says so itself, in the same words.
+  if (readsLogbooksOnly(user) && !locked) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <GlassButton
+                variant="icon"
+                icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => router.push('/logbooks')}
+              />
+              <View>
+                <Text style={styles.headerTitle}>Daily Pre-Shift Sign-In</Text>
+                <Text style={styles.headerSub}>{PM_NOT_FILED_TITLE}</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.scrollContent}>
+            <Text style={styles.headerSub}>{PM_NOT_FILED_BODY}</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>

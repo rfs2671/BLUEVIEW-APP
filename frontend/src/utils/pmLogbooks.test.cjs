@@ -19,7 +19,11 @@ function ok(cond, label) {
 }
 
 // ── who ──
-ok(M.readsLogbooksOnly({ role: 'pm' }) && M.readsLogbooksOnly({ role: ' PM ' }), 'a PM reads log books only');
+ok(M.readsLogbooksOnly({ role: 'pm' }) && M.readsLogbooksOnly({ role: ' PM ', pm_access: 'assigned' }),
+  'a PM on "Assigned jobs only" (or with no level stored) reads log books only');
+ok(!M.readsLogbooksOnly({ role: 'pm', pm_access: 'full' }),
+  'a PM on "Same as admin" is NOT read-only (server: pm_has_full_access exempts him)');
+ok(M.canOpenLogBooksTile({ role: 'pm', pm_access: 'full' }), 'but he still gets the tile');
 ok(!M.readsLogbooksOnly({ role: 'cp' }) && !M.readsLogbooksOnly({ role: 'superintendent' })
   && !M.readsLogbooksOnly({ role: 'admin' }) && !M.readsLogbooksOnly(null), 'filers and admins are unchanged');
 ok(M.canOpenLogBooksTile({ role: 'pm' }) && !M.canOpenLogBooksTile({ role: 'admin' }), 'the project tile is the PM\'s');
@@ -58,7 +62,19 @@ ok(/!readOnly && selectedProject && activations\.length > 0/.test(hub), 'site sw
 ok(/setNotifications\(readOnly \? \{\s*\.\.\.notifs, attestation_gaps: \[\], unaffirmed_logbooks: 0, stale_unsigned_logbooks: 0,/.test(hub),
   '"yours to sign" worklists hidden from the PM');
 ok(/\{!readOnly && \(\s*<GlassButton\s*title="Open Tool Box Talk"/.test(hub), 'no "Open Tool Box Talk" for the PM');
-ok(/\{readOnly \? <FloatingNav \/> : <CpNav \/>\}/.test(hub), 'the PM keeps his own nav');
+ok(/\{canOpenLogBooksTile\(user\) \? <FloatingNav \/> : <CpNav \/>\}/.test(hub), 'every PM keeps his own nav');
+
+// ── the two editors that own no LogbookStepper ──
+const preshift = read('app/logbooks/preshift_signin.jsx');
+ok(/if \(readsLogbooksOnly\(user\) && !locked\) \{\s*return \(/.test(preshift)
+  && preshift.indexOf('if (readsLogbooksOnly(user) && !locked)') < preshift.indexOf("title={saving ? 'Saving...' : 'Save Draft'}"),
+  'pre-shift: an open sheet is the notice, before Save Draft / Submit can render');
+const orient = read('app/logbooks/subcontractor_orientation.jsx');
+ok(/\{!readOnly && \(\s*<GlassButton\s*title="\+ Add Manual Orientation"/.test(orient)
+  && /\{!readOnly && showAddForm && \(/.test(orient), 'orientation: no Add Manual Orientation for him');
+ok(/\{!readOnly && !isSigned && !isLocked && \(\s*<OrientationSignaturePanel/.test(orient)
+  && /\{!readOnly && !isSigned && !isLocked && !String\(d\.worker_trade/.test(orient),
+  'orientation: no sign panel and no Assign trade for him');
 ok(/photoTarget && \(\s*<Pressable\s*onPress=\{\(\) => router\.push\(`\/logbooks\/photos\?logbookId=/.test(hub)
   && !/readOnly[^\n]*photoTarget/.test(hub), 'Photographs row is NOT gated on role');
 

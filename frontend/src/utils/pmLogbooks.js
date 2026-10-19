@@ -8,6 +8,10 @@
  * the client's copy of that one rule, asked by every place that would
  * otherwise invite him to write.
  *
+ * WHICH PM. Only "Assigned jobs only": refuse_if_logbooks_are_read_only
+ * exempts a PM on "Same as admin" (pm_has_full_access), who files, amends and
+ * finalizes like an admin and gets the ordinary hub.
+ *
  * WHICH JOBS. "Assigned jobs only" is his assigned_projects and nothing else;
  * "Same as admin" is every job the company runs. The same split the server's
  * project_access_ok makes, so the picker cannot offer a job that 403s.
@@ -15,14 +19,18 @@
 
 import { ROLE_PM, pmAccessLevel, PM_ACCESS_FULL } from './roleVocabulary';
 
-/** True for the role whose logbooks are view-only (plus photographs). */
-export function readsLogbooksOnly(user) {
+function isPm(user) {
   return String((user || {}).role || '').trim().toLowerCase() === ROLE_PM;
 }
 
-/** The project tile: every PM, whatever his access level. */
+/** True for the PM whose logbooks are view-only (plus photographs). */
+export function readsLogbooksOnly(user) {
+  return isPm(user) && pmAccessLevel(user) !== PM_ACCESS_FULL;
+}
+
+/** The project tile, and the PM's own nav on the hub: every PM. */
 export function canOpenLogBooksTile(user) {
-  return readsLogbooksOnly(user);
+  return isPm(user);
 }
 
 /**
@@ -32,7 +40,6 @@ export function canOpenLogBooksTile(user) {
 export function pmLogbookProjects(user, list) {
   const arr = Array.isArray(list) ? list : [];
   if (!readsLogbooksOnly(user)) return arr;
-  if (pmAccessLevel(user) === PM_ACCESS_FULL) return arr;
   const mine = new Set(((user || {}).assigned_projects || []).map(String));
   return arr.filter((p) => mine.has(String(p.id || p._id)));
 }

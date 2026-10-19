@@ -43,7 +43,7 @@ import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, l
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
 // THE SITE MANAGER / PM READS HERE AND ADDS PHOTOGRAPHS; HE FILES NOTHING.
 import {
-  readsLogbooksOnly, pmLogbookProjects, pmMayOpen,
+  readsLogbooksOnly, canOpenLogBooksTile, pmLogbookProjects, pmMayOpen,
   PM_LOGBOOKS_NOTE, PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY,
 } from '../../src/utils/pmLogbooks';
 // WHOSE LOG IS THIS — the server's answer for THIS caller, from the same read
@@ -1417,8 +1417,8 @@ export default function LogBooksScreen() {
             screen's — see CheckinQrModal. Deliberately not left in both
             places: two entry points to one sheet is how they drift. */}
         {/* A PM's way back is his own nav, not the CP's (whose Dashboard
-            is this screen). */}
-        {readOnly ? <FloatingNav /> : <CpNav />}
+            is this screen) — at either access level. */}
+        {canOpenLogBooksTile(user) ? <FloatingNav /> : <CpNav />}
       </SafeAreaView>
     </AnimatedBackground>
   );
