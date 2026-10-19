@@ -6,6 +6,8 @@ import { finalizeErrorCode, readFinalizeError, clearFinalizeError } from '../uti
 import { discardFinalizedDraft } from '../utils/logbookDrafts';
 import { isImmediateLog } from '../utils/logbookTiming';
 import { useT } from '../i18n';
+import { useAuth } from '../context/AuthContext';
+import { readsLogbooksOnly } from '../utils/pmLogbooks';
 import { useToast, ToastHost } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
@@ -42,6 +44,10 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // Finalize as their explicit end-of-day Submit & Sign.
   const signFreezes = isImmediateLog(logType);
   const toast = useToast();
+  // A Site Manager / PM may not amend or finalize (the server's read-only
+  // ruling), so neither button is offered to him.
+  const { user } = useAuth();
+  const readOnly = readsLogbooksOnly(user);
   const t = useT('finalize');
   const [busy, setBusy] = useState(false);
   const [amendOpen, setAmendOpen] = useState(false);
@@ -244,10 +250,12 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
           <Lock size={16} strokeWidth={2} color={semantic.critical} />
           <Text style={s.bannerText}>FINALIZED — read-only. Corrections require an amendment.</Text>
         </View>
-        <Pressable style={[s.btn, s.amendBtn]} onPress={() => setAmendOpen(true)} disabled={busy}>
-          <FileEdit size={18} strokeWidth={2} color="#ffffff" />
-          <Text style={s.btnText}>Amend</Text>
-        </Pressable>
+        {!readOnly && (
+          <Pressable style={[s.btn, s.amendBtn]} onPress={() => setAmendOpen(true)} disabled={busy}>
+            <FileEdit size={18} strokeWidth={2} color="#ffffff" />
+            <Text style={s.btnText}>Amend</Text>
+          </Pressable>
+        )}
 
         <Modal visible={amendOpen} transparent animationType="fade" onRequestClose={() => setAmendOpen(false)}>
           <View style={s.modalOverlay}>
@@ -298,7 +306,7 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
     );
   }
 
-  if (canFinalize && logId && !signFreezes) {
+  if (canFinalize && logId && !signFreezes && !readOnly) {
     return (
       <View style={s.wrap}>
         {notLockedBanner}

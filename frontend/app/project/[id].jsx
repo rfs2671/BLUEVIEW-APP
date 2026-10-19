@@ -43,6 +43,7 @@ import {
   ListChecks,
   Activity,
   AlertTriangle,
+  BookOpen,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -62,6 +63,7 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { canSeePunch } from '../../src/utils/punchList';
 import { canSeeReports } from '../../src/utils/projectReports';
+import { canOpenLogBooksTile } from '../../src/utils/pmLogbooks';
 import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
@@ -670,6 +672,8 @@ export default function ProjectDetailScreen() {
     ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
     // Admins and PMs: PDF project reports (generate, list, download, schedule).
     ...(canSeeReports(user) ? [{ title: 'Reports', icon: FileBarChart, path: `/projects/${projectId}/reports`, color: '#6366f1' }] : []),
+    // Site Manager / PM: the job's logs, read-only, with photographs.
+    ...(canOpenLogBooksTile(user) ? [{ title: 'Log Books', icon: BookOpen, path: `/logbooks?projectId=${projectId}`, color: '#10b981' }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
