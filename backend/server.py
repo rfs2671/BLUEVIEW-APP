@@ -54089,8 +54089,9 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     # only (Thu 11:35 AM: Arkon was asked, all 37 were answered).
     # Their own words only -- never the answer they replied to, which names
     # every sub (`said`; a challenge recounts the same scope: none).
+    # "How many subs on site": every company, never one named.
     own = question if own_words is None else own_words
-    named = list(companies or []) if challenged else (
+    named = [] if kind == wa_headcount.SUBS else list(companies or []) if challenged else (
         wa_style.company_in(own, _dm_job_companies(rows, job.get("project"))) if own else [])
     company = None
     if named:
@@ -54106,7 +54107,10 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                      names=names)
     fixed = out["short"]
     reply, used = fixed, "fixed"
-    phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) if OPENAI_API_KEY else None
+    # The companies answer goes out as built: `verify` checks worker numbers,
+    # not a count of subs.
+    phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
+        if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
         if wa_headcount.verify(phrased, data, f"{short_job} {job['label']}", since_label) \
                 and len(phrased) <= max(len(fixed), wa_style.MAX_CHARS):
@@ -55418,7 +55422,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     last_hc = await _dm_state_get("dm_last", dm_chat)
     ref = wa_headcount.since_ref(core, now)
     if last_hc and str(last_hc.get("project_id")) in by_id and job is None and (
-            hc == wa_headcount.CHALLENGE
+            hc in (wa_headcount.CHALLENGE, wa_headcount.SUBS)
             or (hc is None and (ref or wa_headcount.refers_back(core)))):
         # A job named in the message wins over the last one counted ("the
         # count at 8 Walworth is wrong").
@@ -55437,11 +55441,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 project_id=str(last_hc["project_id"]),
                 labels=[j["label"] for j in jobs], styled=True)
             return
-        hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT and ref[0] != wa_headcount.AMBIGUOUS) \
-            or re.search(r"\badded|\bnew\b", core, re.IGNORECASE) \
-            else str(last_hc.get("headcount") or wa_headcount.COUNT)
-        if ref and ref[0] == wa_headcount.AT:
-            hc = wa_headcount.ADDED
+        if hc != wa_headcount.SUBS:         # "what's the +1 sub": the job just counted
+            hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT
+                                        and ref[0] != wa_headcount.AMBIGUOUS) \
+                or re.search(r"\badded|\bnew\b", core, re.IGNORECASE) \
+                else str(last_hc.get("headcount") or wa_headcount.COUNT)
+            if ref and ref[0] == wa_headcount.AT:
+                hc = wa_headcount.ADDED
     elif hc == wa_headcount.CHALLENGE:
         hc = None
 
@@ -55464,7 +55470,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 await send_whatsapp_message(dm_chat, refusal)
                 await _dm_log_answer(ident, None, question, refusal, "other_job")
                 return
-        if not named and wa_subs.company_question(core, _dm_sub_names(ident)):
+        if not named and hc != wa_headcount.SUBS and \
+                wa_subs.company_question(core, _dm_sub_names(ident)):
             # The company's subs list: answered for the company, with the
             # jobs each sub is on -- never "Which job?" (Tue Oct 13). After
             # a PM's "not on that job" (Codex on #780).
@@ -55536,7 +55543,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if hc is None and wa_style.asks_presence(core) and wa_style.company_in(
             core, await _dm_today_companies(ident, job)):
         hc = wa_headcount.PRESENCE        # "is J&G on site", "who from Power Direct is here"
-    if hc == wa_headcount.PRESENCE:
+    if hc in (wa_headcount.PRESENCE, wa_headcount.SUBS):
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
             ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
             question=question, labels=[j["label"] for j in jobs], styled=True)
