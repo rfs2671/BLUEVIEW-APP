@@ -46,6 +46,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from lib.datefmt import strftime as _fmt
 from lib import wa_alerts, wa_gc
 
 NY = ZoneInfo("America/New_York")
@@ -196,13 +197,13 @@ def coverage(sync: Optional[Dict[str, Any]], end: date, now: Optional[datetime] 
         through = now - timedelta(hours=FRESH_HOURS)
     if dob < through:
         return {"state": "stale", "dob_through": dob, "dot_through": dot,
-                "note": f"The DOB/DOT feed was last checked {dob.astimezone(NY).strftime('%b %-d, %Y')}, "
+                "note": f"The DOB/DOT feed was last checked {_fmt(dob.astimezone(NY), '%b %-d, %Y')}, "
                         "before the end of this period; later changes are not reflected."}
     partial = not sync.get("dob_complete", True) or (dot is not None and dot < through)
     return {"state": "partial" if partial else "verified", "dob_through": dob, "dot_through": dot,
             "note": ("Some regulatory sources were not fully checked through the end of this period."
                      if partial else
-                     f"DOB/DOT feed checked {dob.astimezone(NY).strftime('%b %-d, %Y')}.")}
+                     f"DOB/DOT feed checked {_fmt(dob.astimezone(NY), '%b %-d, %Y')}.")}
 
 
 def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]], start: date,
