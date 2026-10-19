@@ -51887,8 +51887,15 @@ async def get_project_report_settings(project_id: str, current_user=Depends(get_
             "kinds": [{"key": k, "label": project_report.KIND_LABELS[k]} for k in project_report.KINDS],
             "schedules_old": list(project_report.SCHEDULES),
             "summary": project_report.schedule_summary(settings),
+            # The daily report's own settings live on this screen too (the old
+            # Report Settings screen is folded in): its send time and the
+            # extra addresses it goes to. The addresses only to those who
+            # may change them (PUT /projects/{id}/report-settings: admins);
+            # `email_list` stays a count for an app build from before.
             "daily": {"send_time": project.get("report_send_time") or "18:00",
-                      "email_list": len(project.get("report_email_list") or [])},
+                      "email_list": len(project.get("report_email_list") or []),
+                      **({"emails": list(project.get("report_email_list") or [])}
+                         if is_company_admin(current_user) else {})},
             "can_edit": is_company_admin(current_user)}
 
 

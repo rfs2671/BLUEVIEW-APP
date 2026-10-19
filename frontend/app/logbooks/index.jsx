@@ -219,8 +219,7 @@ export default function LogBooksScreen() {
   // Refetch the selected project's logbook data whenever the hub regains
   // focus. Without this, returning here after submitting a logbook (e.g.
   // pre-shift calls router.back()) shows the stale pre-submit status —
-  // "Draft" where it should now read "Done". Mirrors the useFocusEffect
-  // pattern used by project/[id]/report-settings.jsx.
+  // "Draft" where it should now read "Done".
   useFocusEffect(
     React.useCallback(() => {
       if (isAuthenticated && selectedProject) {

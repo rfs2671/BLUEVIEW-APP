@@ -116,7 +116,7 @@ console.log('\n-- the ten other screens 0e87696 touched are NOT centred --');
   const others = [
     'app/admin/users.jsx', 'app/checkin/index.jsx', 'app/project/[id].jsx',
     'app/project/[id]/dob-logs.jsx', 'app/project/[id]/permit-renewal.jsx',
-    'app/project/[id]/report-settings.jsx', 'app/project/[id]/trades.jsx',
+    'app/project/[id]/trades.jsx',
     'app/workers/[id].jsx',
   ];
   const risky = [];

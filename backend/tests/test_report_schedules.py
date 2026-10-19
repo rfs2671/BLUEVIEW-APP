@@ -249,6 +249,20 @@ class TheApp(_World, unittest.TestCase):
         self.assertEqual({p["id"] for p in out["people"]}, {"u_admin", "u_pm"})
         self.assertEqual([k["key"] for k in out["kinds"]], list(R.KINDS))
 
+    def test_the_daily_email_list_is_on_the_reports_screen(self):
+        """Report Settings is folded into Reports: the daily report's send
+        time and its addresses come with the job's report settings -- the
+        addresses to an admin only, who can change them."""
+        db = self.world()
+        proj = next(p for p in db.projects.rows if p["_id"] == THOMAS)
+        proj.update(report_send_time="17:00", report_email_list=["owner@example.com", "pm@example.com"])
+        out = self.call(server.get_project_report_settings, THOMAS, current_user=ADMIN, db=db)
+        self.assertEqual(out["daily"], {"send_time": "17:00", "email_list": 2,
+                                        "emails": ["owner@example.com", "pm@example.com"]})
+        out = self.call(server.get_project_report_settings, THOMAS, current_user=PM, db=db)
+        self.assertEqual(out["daily"], {"send_time": "17:00", "email_list": 2})
+        self.assertFalse(out["can_edit"])
+
     def test_bad_kind_and_not_an_admin(self):
         db = self.world()
         with self.assertRaises(HTTPException):
