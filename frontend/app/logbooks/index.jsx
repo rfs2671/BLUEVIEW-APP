@@ -11,7 +11,7 @@ import {
 import { logTypeStatus, amendmentSentence, collapseChains } from '../../src/utils/amendmentChain';
 import { typeCarriesActivityPhotos } from '../../src/utils/filedLogSummary';
 import { isPhotoWindowOpen } from '../../src/utils/logbookEditable';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ClipboardList,
@@ -34,12 +34,18 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import CpNav from '../../src/components/CpNav';
+import FloatingNav from '../../src/components/FloatingNav';
 import { CP_NAV_CLEARANCE } from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth, isCompanyAdmin } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, logbookActivationAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
+// THE SITE MANAGER / PM READS HERE AND ADDS PHOTOGRAPHS; HE FILES NOTHING.
+import {
+  readsLogbooksOnly, pmLogbookProjects, pmMayOpen,
+  PM_LOGBOOKS_NOTE, PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY,
+} from '../../src/utils/pmLogbooks';
 // WHOSE LOG IS THIS — the server's answer for THIS caller, from the same read
 // the filing gate makes. See the module header for the nine tiles and the
 // eight refusals that made it necessary.
@@ -112,6 +118,9 @@ export default function LogBooksScreen() {
   // read ["admin", "owner"] on both sides; the role is retired and the
   // platform operator now arrives on the flag instead, here and there.
   const isAdminUser = isCompanyAdmin(user);
+  // A PM arrives from his project's Log Books tile with ?projectId= and reads.
+  const readOnly = readsLogbooksOnly(user);
+  const { projectId: requestedProjectId } = useLocalSearchParams();
   const { isDark, colors } = useTheme();
   const toast = useToast();
   // The `finalize` namespace — the one that owns the wording of every refusal
@@ -232,12 +241,21 @@ export default function LogBooksScreen() {
   // the project(s) they're assigned to, so they can't navigate to an unassigned
   // project's logbook. Other roles (admin/owner/superintendent) see all company
   // projects. Shared by the cache-first read AND the live read below.
+  // A PM gets the server's own split: his assigned jobs, or every job when
+  // he holds "Same as admin".
   const filterVisibleProjects = (list) => {
     const arr = Array.isArray(list) ? list : [];
+    if (readOnly) return pmLogbookProjects(user, arr);
     return user?.role === 'cp'
       ? arr.filter(p => (user?.assigned_projects || []).includes(p.id || p._id))
       : arr;
   };
+
+  // The job he tapped Log Books on, when it is one of his; else the first.
+  const initialProject = (list) => (
+    list.find((p) => requestedProjectId
+      && String(p._id || p.id) === String(requestedProjectId)) || list[0]
+  );
 
   const fetchInitial = async () => {
     // OFFLINE FIX (CP screen): the CP lands here (_layout.jsx routes role 'cp' to
@@ -254,7 +272,7 @@ export default function LogBooksScreen() {
     let picked = null;
     if (cachedVisible.length > 0) {
       setProjects(cachedVisible);
-      picked = cachedVisible[0];
+      picked = initialProject(cachedVisible);
       setSelectedProject(picked);
       // Sub-reads all have their own offline `.catch` fallbacks, so this is safe
       // offline — it just shows empty logs until the CP drafts.
@@ -278,8 +296,9 @@ export default function LogBooksScreen() {
         .catch(() => {});
 
       if (visibleProjects.length > 0 && !picked) {
-        setSelectedProject(visibleProjects[0]);
-        await fetchProjectData(visibleProjects[0]._id || visibleProjects[0].id);
+        const first = initialProject(visibleProjects);
+        setSelectedProject(first);
+        await fetchProjectData(first._id || first.id);
       }
     } catch (error) {
       // Offline / refresh failure — KEEP the cached list already painted above.
@@ -316,7 +335,12 @@ export default function LogBooksScreen() {
         (logMap[log.log_type] = logMap[log.log_type] || []).push(log);
       });
       setTodayLogs(logMap);
-      setNotifications(notifs);
+      // NOT A PM's WORKLIST: every line of the signature card says "yours to
+      // sign", so a read-only viewer is handed none of those rows (nor the
+      // older server's two counts that stand in for them).
+      setNotifications(readOnly ? {
+        ...notifs, attestation_gaps: [], unaffirmed_logbooks: 0, stale_unsigned_logbooks: 0,
+      } : notifs);
 
       // `required_logbooks`, NOT `logbooks`. The endpoint has always returned
       // `{project_id, project_class, classification_assessed, required_logbooks}`
@@ -409,6 +433,19 @@ export default function LogBooksScreen() {
     // that would be a new defect wearing this one's clothes: it is the
     // INVITATION TO FILL A LOG HE CANNOT FILE that is being closed.
     const filed = logTypeStatus(todayLogs[logType]) === 'submitted';
+    // A PM READS FILED LOGS ONLY. The editor would let him type into a form
+    // the server refuses to save (refuse_if_logbooks_are_read_only).
+    if (readOnly && !pmMayOpen(filed ? 'submitted' : null)) {
+      // A weekly talk filed on an earlier day is not missing; today's list
+      // just does not hold it.
+      if (logType === 'toolbox_talk' && toolboxDoneThisWeek) {
+        toast.warning('Filed earlier this week',
+          'Open Reports for the day it was given to read it.');
+        return;
+      }
+      toast.warning(PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY);
+      return;
+    }
     if (!filed && !mayFile(rights, logType)) {
       toast.warning(
         whoFilesTitle(rights, logType),
@@ -818,8 +855,15 @@ export default function LogBooksScreen() {
               <Text style={styles.dateText}>{todayFormatted}</Text>
             </View>
 
+            {readOnly ? (
+              <View style={styles.cpBannerRow}>
+                <Lock size={16} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={styles.cpBannerText}>{PM_LOGBOOKS_NOTE}</Text>
+              </View>
+            ) : null}
+
             {/* CP name banner */}
-            {cpName ? (
+            {!readOnly && cpName ? (
               <View style={styles.cpBannerRow}>
                 <ShieldCheck size={16} strokeWidth={1.5} color="#3b82f6" />
                 <Text style={styles.cpBannerText}>
@@ -881,7 +925,9 @@ export default function LogBooksScreen() {
                 Rendered from the server's `activations`, which come off
                 LOGBOOK_TYPE_REGISTRY, so a fifth conditional type appears here
                 on its own. Was a single hardcoded scaffold row. */}
-            {selectedProject && activations.length > 0 && (
+            {/* The site switches are the CP's and the office's to set; a
+                read-only viewer sees what is on through the tiles below. */}
+            {!readOnly && selectedProject && activations.length > 0 && (
               <>
                 <View style={styles.heroDivider} />
                 <Text style={styles.toggleGroupTitle}>On site today</Text>
@@ -1040,11 +1086,13 @@ export default function LogBooksScreen() {
               {missingToolbox.length > 3 && (
                 <Text style={styles.notifMore}>+{missingToolbox.length - 3} more</Text>
               )}
-              <GlassButton
-                title="Open Tool Box Talk"
-                onPress={() => handleOpenLog('toolbox_talk')}
-                style={styles.notifBtn}
-              />
+              {!readOnly && (
+                <GlassButton
+                  title="Open Tool Box Talk"
+                  onPress={() => handleOpenLog('toolbox_talk')}
+                  style={styles.notifBtn}
+                />
+              )}
             </GlassCard>
           )}
 
@@ -1228,8 +1276,15 @@ export default function LogBooksScreen() {
                   // not filing one. The padlock is about the tap, and the tap
                   // is only refused while there is still a log to fill in.
                   const notHis = !mayFile(rights, logType.key);
-                  const whoseLine = whoFilesLabel(rights, logType.key);
-                  const openable = !notHis || status === 'submitted';
+                  // A PM's tile opens a FILED log and nothing else; until then
+                  // the line says so rather than naming a filer he cannot be.
+                  const whoseLine = readOnly
+                    ? (status === 'submitted' ? 'Filed — tap to read'
+                      : (status === 'period_done' ? 'Filed this week' : 'Not filed yet'))
+                    : whoFilesLabel(rights, logType.key);
+                  const openable = readOnly
+                    ? pmMayOpen(status)
+                    : (!notHis || status === 'submitted');
                   return (
                     <React.Fragment key={logType.key}>
                     <Pressable
@@ -1361,7 +1416,9 @@ export default function LogBooksScreen() {
             the modal resolves its own project rather than borrowing this
             screen's — see CheckinQrModal. Deliberately not left in both
             places: two entry points to one sheet is how they drift. */}
-        <CpNav />
+        {/* A PM's way back is his own nav, not the CP's (whose Dashboard
+            is this screen). */}
+        {readOnly ? <FloatingNav /> : <CpNav />}
       </SafeAreaView>
     </AnimatedBackground>
   );
