@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
+import { PDF_SEARCH_SCRIPT } from './pdfSearchScript';
 
 /**
  * THE ANDROID PDF VIEWER — a locally staged pdf.js.
@@ -266,7 +267,14 @@ const STAMP_NAME = '.stamp';
 //       happened to `14`. `viewerVersion` is on the boot row and the env row,
 //       and the executing suite asserts the page's literal and this constant
 //       are the same stamp.
-const VIEWER_VERSION = '15';
+//   16  SEARCH IN THE DOCUMENT, AND THE VIEWER ON iOS TOO. The page reads
+//       each sheet's text layer on request (`search` / `search-step` /
+//       `search-clear` from the host), posts `pdf-search` with the count and
+//       where the reader is, scrolls to the match and marks it. The words are
+//       found by PDF_SEARCH_SCRIPT (pdfSearchScript.js), its own <script> so
+//       the same string is what the tests run. iOS now draws through this
+//       page as well — Apple's viewer cannot be searched from the app.
+const VIEWER_VERSION = '16';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -318,6 +326,11 @@ function viewerHtml() {
     '.pg canvas.xf.on{opacity:1;}',
     '.pg img.pv{display:block;position:absolute;left:0;top:0;width:100%;height:100%;z-index:0;}',
     '#msg{position:fixed;left:16px;right:16px;top:44%;text-align:center;line-height:1.5;}',
+    // Search marks: every match on the sheet in view, the current one strong.
+    // Placed in fractions of the sheet, so they hold at any pinch zoom and
+    // through a canvas swap (they sit above both tiers).
+    '.pg .hl{position:absolute;z-index:3;pointer-events:none;border-radius:2px;background:rgba(250,204,21,.38);}',
+    '.pg .hl.cur{background:rgba(249,115,22,.5);box-shadow:0 0 0 2px #f97316;}',
     '</style>',
     '</head>',
     '<body>',
@@ -343,6 +356,9 @@ function viewerHtml() {
     // Putting the tag back would silently restore the fake worker whatever
     // `ensureWorker` does, because pdf.js checks the global first.
     '<script src="' + LIB_NAME + '"></script>',
+    '<script>',
+    PDF_SEARCH_SCRIPT,
+    '</script>',
     '<script>',
     VIEWER_SCRIPT,
     '</script>',
@@ -373,7 +389,7 @@ const VIEWER_SCRIPT = [
   // and it is GATED: `pdfjsViewerBoot` asserts this literal and the module's
   // `const VIEWER_VERSION` are the same stamp, so bumping one alone is a red
   // suite rather than a device reporting a version it is not running.
-  '  var VIEWER_VERSION = "15";',
+  '  var VIEWER_VERSION = "16";',
   '  var msgEl = document.getElementById("msg");',
   '  var pagesEl = document.getElementById("pages");',
   '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page, keeps big plans off the OOM killer
@@ -3911,6 +3927,7 @@ const VIEWER_SCRIPT = [
   // remaining job.
   '  function resetDocument(){',
   '    teardown();',
+  '    searchReset();',
   '    slots.length = 0;',
   '    rendered.length = 0;',
   '    pagesEl.innerHTML = "";',
@@ -3966,14 +3983,134 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   // react-native-webview delivers `postMessage` to `document` on Android and
-  // to `window` on iOS. Android is the only platform that reaches this file at
-  // all — iOS hands a PDF to PDFKit and never loads pdf.js — but registering
-  // both costs nothing and the cost of listening on the wrong one is a viewer
-  // that silently never opens anything.
+  // to `window` on iOS — and both platforms load this page now (iOS since
+  // `16`, for search). Listening on both is what makes that work; listening
+  // on the wrong one is a viewer that silently never opens anything.
+  // ── SEARCH IN THE DOCUMENT ─────────────────────────────────────────────
+  //
+  // The host posts `search` (the words), `search-step` (dir 1 / -1) and
+  // `search-clear`. Sheets are read one at a time, in order, each one's text
+  // kept for the life of the document, and the count is posted as it grows
+  // (`done: false`) so the reader sees the first match without waiting for a
+  // 200-sheet set to be read. A newer query, or a new document, retires the
+  // run in flight (`srch.gen`). The finding is PDF_SEARCH_SCRIPT's.
+  '  var srch = { gen: 0, q: "", texts: [], hits: [], cur: -1, chars: 0, done: true, searched: 0 };',
+  '  function searchMarksClear(){',
+  '    var m = document.querySelectorAll ? document.querySelectorAll(".pg .hl") : [];',
+  '    for (var i = 0; i < m.length; i++) { if (m[i].parentNode) m[i].parentNode.removeChild(m[i]); }',
+  '  }',
+  '  function searchReset(){',
+  '    srch.gen += 1; srch.q = ""; srch.texts = []; srch.hits = []; srch.cur = -1;',
+  '    srch.chars = 0; srch.done = true; srch.searched = 0;',
+  '    searchMarksClear();',
+  '  }',
+  '  function searchPost(){',
+  '    post({ type: "pdf-search", query: srch.q, total: srch.hits.length, current: srch.cur + 1,',
+  '           done: srch.done, searched: srch.searched, pages: doc ? doc.numPages : 0,',
+  '           hasText: srch.chars > 0 });',
+  '  }',
+  '  function searchPageText(n){',
+  '    if (srch.texts[n - 1]) return Promise.resolve(srch.texts[n - 1]);',
+  '    return doc.getPage(n).then(function(page){',
+  '      var vp = page.getViewport({ scale: 1 });',
+  '      return page.getTextContent().then(function(tc){',
+  '        var built = pdfSearchBuildPage(tc && tc.items, vp, pdfjsLib.Util.transform, tc && tc.styles);',
+  '        srch.texts[n - 1] = built;',
+  '        return built;',
+  '      });',
+  '    });',
+  '  }',
+  // Every match on the current one's sheet is marked; the current one is
+  // scrolled to a third of the way down the screen.
+  // Where a word starts inside a run: its width in the run's font family,
+  // on a canvas kept for the purpose (one 2D context, never attached).
+  '  var srchCtx = null;',
+  '  function searchMeasure(str, font){',
+  '    try {',
+  '      if (!srchCtx) srchCtx = document.createElement("canvas").getContext("2d");',
+  '      if (!srchCtx) return 0;',
+  '      srchCtx.font = "100px " + (font || "sans-serif");',
+  '      return srchCtx.measureText(str).width || 0;',
+  '    } catch (e) { return 0; }',
+  '  }',
+  '  function searchDraw(){',
+  '    searchMarksClear();',
+  '    var h = srch.hits[srch.cur];',
+  '    if (!h) return;',
+  '    var slot = slots[h.page - 1];',
+  '    var t = srch.texts[h.page - 1];',
+  '    if (!slot || !slot.el || !t) return;',
+  '    var first = null;',
+  '    for (var i = 0; i < srch.hits.length; i++) {',
+  '      var o = srch.hits[i];',
+  '      if (o.page !== h.page) continue;',
+  '      var rs = pdfSearchRects(t, o.a, o.b, searchMeasure);',
+  '      for (var j = 0; j < rs.length; j++) {',
+  '        var d = document.createElement("div");',
+  '        d.className = i === srch.cur ? "hl cur" : "hl";',
+  '        d.style.left = (rs[j].x * 100) + "%";',
+  '        d.style.top = (rs[j].y * 100) + "%";',
+  '        d.style.width = (rs[j].w * 100) + "%";',
+  '        d.style.height = (rs[j].h * 100) + "%";',
+  '        slot.el.appendChild(d);',
+  '        if (i === srch.cur && !first) first = rs[j];',
+  '      }',
+  '    }',
+  '    var r = first || { x: 0, y: 0 };',
+  '    var top = slot.el.offsetTop + r.y * slot.el.offsetHeight - (window.innerHeight || 600) * 0.3;',
+  '    var left = slot.el.offsetLeft + r.x * slot.el.offsetWidth - (window.innerWidth || 320) * 0.3;',
+  '    try { window.scrollTo(Math.max(0, left), Math.max(0, top)); } catch (e) {}',
+  '  }',
+  '  function searchRun(query){',
+  '    var q = pdfSearchNorm(query);',
+  '    var gen = (srch.gen += 1);',
+  '    srch.q = q; srch.hits = []; srch.cur = -1; srch.searched = 0; srch.chars = 0;',
+  '    searchMarksClear();',
+  '    if (!doc || !q) { srch.done = true; searchPost(); return; }',
+  '    srch.done = false;',
+  '    var total = doc.numPages, n = 0;',
+  '    function next(){',
+  '      if (gen !== srch.gen) return;',
+  '      n += 1;',
+  '      if (n > total) { srch.done = true; searchPost(); return; }',
+  '      searchPageText(n).then(function(t){',
+  '        if (gen !== srch.gen) return;',
+  '        srch.searched = n;',
+  '        srch.chars += t.text.length;',
+  '        var m = pdfSearchFind(t, q);',
+  '        for (var i = 0; i < m.length; i++) srch.hits.push({ page: n, a: m[i][0], b: m[i][1] });',
+  '        if (srch.cur < 0 && srch.hits.length) { srch.cur = 0; searchDraw(); }',
+  '        if (m.length || n % 10 === 0) searchPost();',
+  '        next();',
+  '      }, function(){',
+  // A sheet whose text cannot be read is skipped, not the whole search.
+  '        if (gen !== srch.gen) return;',
+  '        srch.searched = n;',
+  '        next();',
+  '      });',
+  '    }',
+  '    next();',
+  '  }',
+  '  function searchStep(dir){',
+  '    if (!srch.hits.length) { searchPost(); return; }',
+  '    var k = srch.hits.length;',
+  '    srch.cur = ((srch.cur + (dir < 0 ? -1 : 1)) % k + k) % k;',
+  '    searchDraw();',
+  '    searchPost();',
+  '  }',
+  '  function searchClear(){',
+  '    srch.gen += 1; srch.q = ""; srch.hits = []; srch.cur = -1; srch.done = true;',
+  '    searchMarksClear();',
+  '  }',
+  '',
   '  function onHostMessage(ev){',
   '    var d = null;',
   '    try { d = JSON.parse((ev && ev.data) || "{}"); } catch (e) { return; }',
-  '    if (!d || d.type !== "open-document" || !d.file) return;',
+  '    if (!d) return;',
+  '    if (d.type === "search") { searchRun(d.query); return; }',
+  '    if (d.type === "search-step") { searchStep(d.dir); return; }',
+  '    if (d.type === "search-clear") { searchClear(); return; }',
+  '    if (d.type !== "open-document" || !d.file) return;',
   '    openDocument(d.file);',
   '  }',
   '  try { document.addEventListener("message", onHostMessage); } catch (e) {}',
@@ -4288,7 +4425,10 @@ export function localViewerHostUrl(viewerUri, opts) {
   return `${viewerUri}${probe}#pagemode=none`;
 }
 
-/** Directory WKWebView must be granted read access to (iOS allowingReadAccessToURL). */
-export function pdfJsViewerDir() {
-  return VIEWER_DIR;
+/** What WKWebView must be granted read access to (iOS allowingReadAccessToURL):
+ *  the app's documents directory, which holds BOTH the staged viewer
+ *  (`pdfjs/`) and the downloaded documents (`documents/`, docCache.js). The
+ *  viewer directory alone would let the page load but not read the PDF. */
+export function pdfJsReadAccessDir() {
+  return FileSystem.documentDirectory || VIEWER_DIR;
 }
