@@ -103,8 +103,8 @@ async def main(start, end, out):
         subprocess.run(["pdftoppm", "-r", "70", "-png", pdf, os.path.join(out, "progress_report_real")], check=True)
     rep = got["reports"][0]
     print(f"wrote {pdf}")
-    print(f"  period {start}..{end}; check-ins days {rep['site']['worked']}; subs {len(rep['subs'])}; "
-          f"photos {len(got['photos'])}; schedule {'confirmed' if rep['schedule'] else 'none'}; "
+    print(f"  period {start}..{end}; check-ins days {rep['site']['worked']}; subs: {', '.join(x['name'] for x in rep['subs']) or 'none'}; "
+          f"photos: {'; '.join(str(x.get('sub')) + ' ' + str(x.get('date')) for x in got['photos']) or 'none'}; schedule {'confirmed' if rep['schedule'] else 'none'}; "
           f"financials {'provided' if rep['financials'] else 'none'}")
     print("  limitations:", *rep["limitations"], sep="\n   - ")
 
