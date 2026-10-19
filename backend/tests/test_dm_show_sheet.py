@@ -93,6 +93,21 @@ class MondayAt588(_Sheets, unittest.TestCase):
         self.assertEqual([p["caption"] for p in sent], ["SSP-013.00 — Fence Details"])
         self.assertEqual(self.agent_calls, [])
 
+    def test_an_open_menu_is_dropped(self):
+        """Codex on #808: a sheet request of its own drops an open "Which
+        job?" menu, so a later "1" or "yes" doesn't answer the old question."""
+        chat = f"{ADMIN_PHONE}@c.us"
+        with _Ctx(db=self.db) as c:
+            _run(server._dm_state_set("dm_menu", chat, 600, options=[THOMAS], question="what's open"))
+            _run(server._dm_state_set("dm_clarify", chat, 600, project_id=THOMAS, options=[]))
+            self.say(c, "show me SSP-013 for 588")
+            menu = _run(server._dm_state_get("dm_menu", chat))
+            clarify = _run(server._dm_state_get("dm_clarify", chat))
+            sent = self.media_sent(c)
+        self.assertEqual([p["caption"] for p in sent], ["SSP-013.00 — Fence Details"])
+        self.assertIsNone(menu)
+        self.assertIsNone(clarify)
+
     def test_not_in_the_drawings(self):
         self.assertEqual(self.ask("show me SSP-099 for 588"),
                          "SSP-099 isn't in the indexed drawings for 588.")

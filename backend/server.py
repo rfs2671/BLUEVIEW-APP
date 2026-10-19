@@ -61668,7 +61668,10 @@ async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
         return False
     job = by_id[jid]
     pid = str(job["id"])
-    await _dm_state_clear("dm_more", dm_chat)
+    # A request of its own: an open offer, "Which job?" menu or "Since 8:07
+    # or since 7am?" is dropped, as a new question drops them (Codex on #808).
+    for kind in ("dm_more", "dm_menu", "dm_clarify"):
+        await _dm_state_clear(kind, dm_chat)
     if not await _bot_project_scope(ident["company_id"], pid):
         await send_whatsapp_message(dm_chat, wa_security.BOT_SCOPE_REFUSAL)
         return True
