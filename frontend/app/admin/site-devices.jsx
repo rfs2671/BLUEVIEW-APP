@@ -354,7 +354,7 @@ export default function SiteDevicesScreen() {
           onRequestClose={() => setShowCreateModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>

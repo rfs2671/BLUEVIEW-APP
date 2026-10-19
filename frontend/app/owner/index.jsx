@@ -1105,7 +1105,7 @@ export default function OwnerPortalScreen() {
           onRequestClose={() => setShowCreateCompanyModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowCreateCompanyModal(false)} />
@@ -1178,7 +1178,7 @@ export default function OwnerPortalScreen() {
           }}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable
@@ -1479,7 +1479,7 @@ export default function OwnerPortalScreen() {
           onRequestClose={() => setShowFilingRepModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowFilingRepModal(false)} />

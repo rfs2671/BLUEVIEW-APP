@@ -212,8 +212,16 @@ export default function FormSheet({
       animationType="slide"
       onRequestClose={onClose}
     >
+      {/* PADDING ON BOTH PLATFORMS, NEVER 'height'. On Android 'height'
+          resized this view by the keyboard while the dialog window could
+          resize too, and the sheet bounced between a full and a squashed
+          layout many times a second (Add New User, Mon 4:49 PM, Android).
+          Padding never changes this view's own frame, so the keyboard
+          maths cannot feed back on itself: where the window already made
+          room, the overlap is 0 and nothing is added.
+          src/utils/keyboardAvoidPadding.test.cjs holds every screen to it. */}
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior="padding"
         style={s.fill}
       >
         <Pressable style={s.backdrop} onPress={onClose}>
@@ -272,12 +280,14 @@ export default function FormSheet({
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
+    // The dim sits on the outer view, not the backdrop, so the strip the
+    // keyboard padding opens below the backdrop is dimmed too.
     fill: {
       flex: 1,
+      backgroundColor: withAlpha('#020617', 0.7),
     },
     backdrop: {
       flex: 1,
-      backgroundColor: withAlpha('#020617', 0.7),
       alignItems: 'center',
       justifyContent: 'center',
       padding: spacing.lg,

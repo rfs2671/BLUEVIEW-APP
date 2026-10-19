@@ -479,7 +479,7 @@ export default function ProjectsScreen() {
           onRequestClose={() => setShowAddModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <Pressable style={s.modalBackdrop} onPress={() => setShowAddModal(false)} />
@@ -566,7 +566,7 @@ export default function ProjectsScreen() {
           onRequestClose={() => setEditTarget(null)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <Pressable style={s.modalBackdrop} onPress={() => setEditTarget(null)} />
