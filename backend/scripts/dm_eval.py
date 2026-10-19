@@ -14,8 +14,11 @@ to label (sounds human 1-5, answered the question y/n). --export writes the
 scrubbed rows as JSONL so the scoring can be re-run with no database.
 
 Nothing is written to the database. Every string printed or written is
-scrubbed of phone numbers, links and email addresses; user, company and
-project ids are not exported.
+scrubbed of phone numbers, links and email addresses, and has the worker and
+company names the log recorded for that answer (plus any run of capitalised
+words) replaced with [name] — --keep-names leaves names in for a review you
+keep to yourself. User, company and project ids are never exported, and
+tool_data is read only to find those names.
 """
 
 from __future__ import annotations
@@ -34,30 +37,37 @@ sys.path.insert(0, str(HERE.parent))
 
 from lib import dm_eval  # noqa: E402
 
-_FIELDS = ("path", "fallback", "reason", "question", "answer", "created_at")
+_FIELDS = ("path", "fallback", "reason", "question", "answer", "created_at", "tool_data")
 
 
-def _row_out(r: dict, key: str) -> dict:
-    """The exportable row: scrubbed text, an opaque per-run user key, no ids."""
+def _row_out(r: dict, key: str, keep_names: bool) -> dict:
+    """The exportable row: scrubbed (and name-masked) text, an opaque per-run
+    user key, no ids, no tool_data."""
     t = dm_eval._ts(r.get("created_at"))
+    names = set() if keep_names else dm_eval.known_names(r.get("tool_data"))
+
+    def clean(v):
+        s = dm_eval.scrub(v)
+        return s if keep_names else dm_eval.mask_names(s, names)
+
     return {
         "user": key,
         "path": r.get("path") or "",
         "fallback": bool(r.get("fallback")),
         "reason": r.get("reason") or "",
-        "question": dm_eval.scrub(r.get("question")),
-        "answer": dm_eval.scrub(r.get("answer")),
+        "question": clean(r.get("question")),
+        "answer": clean(r.get("answer")),
         "created_at": t.isoformat() if t else "",
     }
 
 
-def anonymise(rows) -> list:
+def anonymise(rows, keep_names: bool = False) -> list:
     """Scrubbed rows with user ids replaced by u1, u2 … (stable within a run)."""
     keys, out = {}, []
     for r in rows:
         uid = str(r.get("user_id") or r.get("user") or "")
         k = keys.setdefault(uid, f"u{len(keys) + 1}") if uid else ""
-        row = _row_out(r, k)
+        row = _row_out(r, k, keep_names)
         row["user_id"] = k
         out.append(row)
     return out
@@ -71,9 +81,13 @@ async def _live_rows(days: int, limit: int) -> list:
     db = client[os.environ["DB_NAME"]]
     since = datetime.now(timezone.utc) - timedelta(days=days)
     proj = {f: 1 for f in _FIELDS} | {"user_id": 1, "_id": 0}
+    # NEWEST first so --limit keeps the most recent answers, then back into
+    # time order for scoring.
     cur = db.whatsapp_dm_answers.find({"created_at": {"$gte": since}}, proj) \
-        .sort("created_at", 1).limit(limit)
-    return [r async for r in cur]
+        .sort("created_at", -1).limit(limit)
+    rows = [r async for r in cur]
+    rows.reverse()
+    return rows
 
 
 def _file_rows(path: str) -> list:
@@ -95,10 +109,12 @@ def main(argv=None) -> int:
     ap.add_argument("--sample", help="write a CSV of rows to label")
     ap.add_argument("--sample-size", type=int, default=200)
     ap.add_argument("--export", help="write the scrubbed rows as JSONL")
+    ap.add_argument("--keep-names", action="store_true",
+                    help="leave worker/company names in (for a review you keep yourself)")
     a = ap.parse_args(argv)
 
     raw = _file_rows(a.from_file) if a.from_file else asyncio.run(_live_rows(a.days, a.limit))
-    rows = anonymise(raw)
+    rows = anonymise(raw, keep_names=a.keep_names)
     report = dm_eval.score(rows)
     print(dm_eval.render(report))
 

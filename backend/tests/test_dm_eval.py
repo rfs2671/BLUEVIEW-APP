@@ -119,6 +119,98 @@ class ScoreTest(unittest.TestCase):
         self.assertIn("DM answers: 0", dm_eval.render(r))
 
 
+class ReviewFixesTest(unittest.TestCase):
+    """The five Codex findings on #815."""
+
+    def test_sheet_markers_are_not_model_answers(self):
+        rows = [row(f"u{i}", i, f"show me {w}", f"[Sheet] A-10{i} — Plan", path="sheet")
+                for i, w in enumerate(["one", "two", "three"])]
+        r = dm_eval.score(rows)
+        self.assertEqual(r["canned_answers"], 0)
+        self.assertEqual(r["top_openers"], [])
+        self.assertEqual(r["template_path_answers"], 3)
+
+    def test_a_question_in_between_does_not_hide_a_repeat(self):
+        same = "Window protection is on SSP-011.00."
+        rows = [row("u1", 0, "where is window protection", same),
+                row("u1", 1, "who is on site", "3 people."),
+                row("u1", 2, "Show me", same)]
+        self.assertEqual(dm_eval.score(rows)["repeats"], 1)
+
+    def test_a_question_in_between_does_not_hide_a_reask(self):
+        rows = [row("u1", 0, "how many subs on site", "3 people."),
+                row("u1", 1, "thanks", "Anytime."),
+                row("u1", 2, "how many subs are on site?", "4 subs.")]
+        self.assertEqual(dm_eval.score(rows)["reasks"], 1)
+
+    def test_each_answer_counts_once(self):
+        same = "Same text."
+        rows = [row("u1", 0, "a one", same), row("u1", 1, "b two", same),
+                row("u1", 2, "c three", same)]
+        self.assertEqual(dm_eval.score(rows)["repeats"], 2)
+
+    def test_hebrew_script_has_words(self):
+        q1 = "\u05d5\u05d5\u05d9 \u05e4\u05d9\u05dc\u05e2 \u05de\u05e2\u05e0\u05d8\u05e9\u05df"
+        q2 = q1 + " \u05d3\u05d0"
+        self.assertTrue(dm_eval._words(q1))
+        self.assertGreaterEqual(dm_eval.similarity(q1, q2), 0.5)
+        rows = [row("u1", 0, q1, "3."), row("u1", 1, q2, "4.")]
+        self.assertEqual(dm_eval.score(rows)["reasks"], 1)
+
+    def test_names_from_tool_data_are_masked(self):
+        td = {"company": "Acme Glass", "by_company": [["Bolt Electric", 2]],
+              "workers": [{"name": "Shmuel", "company": "Bolt Electric"}], "added": ["Yossi"]}
+        self.assertEqual(dm_eval.known_names(td), {"Acme Glass", "Bolt Electric", "Shmuel", "Yossi"})
+        out = dm_eval.mask_names("2 on site: Bolt Electric 2 (Shmuel, yossi). Ask Moshe Klein.",
+                                 dm_eval.known_names(td))
+        for n in ("Bolt", "Shmuel", "yossi", "Moshe", "Klein"):
+            self.assertNotIn(n, out)
+        self.assertIn("2 on site", out)
+
+    def test_script_masks_names_unless_kept(self):
+        r = {**row("user-abc", 0, "who is from Bolt Electric", "Shmuel from Bolt Electric."),
+             "tool_data": {"workers": [{"name": "Shmuel", "company": "Bolt Electric"}]}}
+        masked = script.anonymise([r])[0]
+        self.assertNotIn("Shmuel", masked["answer"])
+        self.assertNotIn("Bolt", masked["question"])
+        self.assertNotIn("tool_data", masked)
+        kept = script.anonymise([r], keep_names=True)[0]
+        self.assertIn("Shmuel", kept["answer"])
+
+    def test_live_limit_keeps_the_newest_rows_in_time_order(self):
+        import asyncio
+        import os
+        import types
+        from unittest.mock import patch
+        docs = [{"user_id": "u", "question": f"q{i}", "answer": "a", "path": "general",
+                 "created_at": T0 + timedelta(minutes=i)} for i in range(5)]
+
+        class Cur:
+            def __init__(self, d): self.d = list(d)
+            def sort(self, k, direction):
+                self.d.sort(key=lambda x: x[k], reverse=direction < 0); return self
+            def limit(self, n): self.d = self.d[:n]; return self
+            def __aiter__(self):
+                async def gen():
+                    for x in self.d:
+                        yield x
+                return gen()
+
+        class Coll:
+            def find(self, *a, **k): return Cur(docs)
+
+        class Client:
+            def __init__(self, *a, **k): pass
+            def __getitem__(self, name): return types.SimpleNamespace(whatsapp_dm_answers=Coll())
+
+        fake = types.ModuleType("motor.motor_asyncio")
+        fake.AsyncIOMotorClient = Client
+        with patch.dict(sys.modules, {"motor.motor_asyncio": fake}), \
+                patch.dict(os.environ, {"MONGO_URL": "mongodb://x", "DB_NAME": "d"}):
+            got = asyncio.run(script._live_rows(days=365 * 10, limit=2))
+        self.assertEqual([g["question"] for g in got], ["q3", "q4"])
+
+
 class SampleTest(unittest.TestCase):
     def test_spread_across_paths_and_labelled_columns(self):
         rows = [row("u1", i, f"q{i}", f"a{i}", path=p)

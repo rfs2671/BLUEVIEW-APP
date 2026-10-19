@@ -27,7 +27,9 @@ to label.
 
 NOTHING PERSONAL LEAVES. scrub() removes phone-like digit runs, links (the
 no-login punch/report/calendar links included) and email addresses from
-every string this module returns.
+every string this module returns. mask_names() takes out the worker and
+company names the log itself recorded for that answer (tool_data), and any
+run of two or more capitalised words ("Moshe Klein", "Power Direct").
 """
 
 from __future__ import annotations
@@ -46,16 +48,23 @@ LONG_ANSWER_WORDS = 60
 SHORT_QUESTION_WORDS = 8
 
 # The log's paths whose answer is fixed text by design (see server.py
-# _dm_assistant_reply). They are reported, not counted against the model.
+# _dm_assistant_reply), or, for "sheet", an internal "[Sheet] <label>"
+# marker standing in for the image that was sent. They are reported, not
+# counted against the model.
 TEMPLATE_PATHS = frozenset({
     "more", "menu", "menu_expired", "other_job", "not_a_question", "clarify",
+    "sheet",
 })
 
 _PHONE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
 _URL = re.compile(r"(?i)\b(?:https?://|www\.)\S+|\b[\w.-]+\.(?:com|app|io|net|org)/\S*")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _NUM = re.compile(r"\d+(?:[.:,]\d+)*")
-_WORD = re.compile(r"[a-z0-9']+")
+# Any script's letters and digits, so a Yiddish question in Hebrew letters
+# has words too.
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
+_NAME_RUN = re.compile(r"\b[A-Z][\w'&.-]*(?:\s+[A-Z][\w'&.-]*)+")
+_NAME_KEYS = frozenset({"name", "company", "worker_name", "assignee", "contact_name", "sub"})
 _SENT_START = re.compile(r"(^|[.!?\n]\s*)(\S+)")
 _CAP = re.compile(r"\b[A-Z][\w'&-]*")
 
@@ -73,6 +82,40 @@ def scrub(text: Any) -> str:
     s = _EMAIL.sub("[email]", s)
     s = _PHONE.sub("[number]", s)
     return " ".join(s.split())
+
+
+def known_names(tool_data: Any) -> set:
+    """The people and companies a logged answer's tool_data names: name /
+    company fields, by_company pairs, the "added" list."""
+    out = set()
+
+    def walk(v, key=None):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, k)
+        elif isinstance(v, (list, tuple)):
+            if key == "by_company":
+                for pair in v:
+                    if isinstance(pair, (list, tuple)) and pair and isinstance(pair[0], str):
+                        out.add(pair[0])
+            elif key == "added":
+                out.update(x for x in v if isinstance(x, str))
+            else:
+                for x in v:
+                    walk(x, key)
+        elif isinstance(v, str) and key in _NAME_KEYS:
+            out.add(v)
+
+    walk(tool_data)
+    return {n.strip() for n in out if len(n.strip()) >= 2}
+
+
+def mask_names(text: Any, names: Iterable[str] = ()) -> str:
+    """Known names, then any run of 2+ capitalised words, -> [name]."""
+    s = str(text or "")
+    for n in sorted(set(names), key=len, reverse=True):
+        s = re.sub(rf"(?<!\w){re.escape(n)}(?!\w)", "[name]", s, flags=re.IGNORECASE)
+    return _NAME_RUN.sub("[name]", s)
 
 
 def skeleton(answer: Any) -> str:
@@ -152,24 +195,40 @@ def score(rows: Iterable[dict], *, canned_min: int = CANNED_MIN, top: int = 15) 
     canned.sort(key=lambda c: -c["count"])
 
     # ── per user, in time order: repeats and re-asks ──
+    # Each answer is compared with EVERY earlier answer to the same user in
+    # the window, not only the one before it, so a question in between does
+    # not hide a repeat or a re-ask. Each answer counts at most once.
     repeats, reasks = [], []
     for i in range(1, total):
-        prev, cur = rows[i - 1], rows[i]
-        if (prev.get("user_id") or None) != (cur.get("user_id") or None) or not cur.get("user_id"):
+        cur = rows[i]
+        uid, t1 = cur.get("user_id"), _ts(cur.get("created_at"))
+        if not uid or not t1:
             continue
-        t0, t1 = _ts(prev.get("created_at")), _ts(cur.get("created_at"))
-        if not t0 or not t1:
-            continue
-        gap = t1 - t0
-        a0, a1 = str(prev.get("answer") or "").strip(), str(cur.get("answer") or "").strip()
-        q0, q1 = str(prev.get("question") or ""), str(cur.get("question") or "")
-        if (a0 and a0 == a1 and gap <= REPEAT_WINDOW
-                and " ".join(_words(q0)) != " ".join(_words(q1))):
-            repeats.append({"first": _example(prev), "then": _example(cur),
-                            "minutes": round(gap.total_seconds() / 60, 1)})
-        if gap <= REASK_WINDOW and similarity(q0, q1) >= REASK_SIMILARITY:
-            reasks.append({"first": _example(prev), "then": _example(cur),
-                           "seconds": int(gap.total_seconds())})
+        a1 = str(cur.get("answer") or "").strip()
+        q1 = str(cur.get("question") or "")
+        got_repeat = got_reask = False
+        j = i - 1
+        while j >= 0 and rows[j].get("user_id") == uid and not (got_repeat and got_reask):
+            prev = rows[j]
+            t0 = _ts(prev.get("created_at"))
+            j -= 1
+            if not t0:
+                continue
+            gap = t1 - t0
+            if gap > max(REPEAT_WINDOW, REASK_WINDOW):
+                break
+            a0 = str(prev.get("answer") or "").strip()
+            q0 = str(prev.get("question") or "")
+            if (not got_repeat and a0 and a0 == a1 and gap <= REPEAT_WINDOW
+                    and " ".join(_words(q0)) != " ".join(_words(q1))):
+                got_repeat = True
+                repeats.append({"first": _example(prev), "then": _example(cur),
+                                "minutes": round(gap.total_seconds() / 60, 1)})
+            if (not got_reask and gap <= REASK_WINDOW
+                    and similarity(q0, q1) >= REASK_SIMILARITY):
+                got_reask = True
+                reasks.append({"first": _example(prev), "then": _example(cur),
+                               "seconds": int(gap.total_seconds())})
 
     long_rows = [r for r in model_rows
                  if len(_words(r.get("question"))) <= SHORT_QUESTION_WORDS
