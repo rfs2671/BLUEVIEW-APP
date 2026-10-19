@@ -55301,6 +55301,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if await _upcoming_dm_turn(ident, dm_chat, text, now):
         return
     # (After a reminder's own yes / no.)
+    # "Show me" after an answer citing a sheet, "show me SSP-011": the sheet
+    # itself -- before "Want the names?" takes "show me" (Mon 10:21 AM).
+    if await _dm_sheet_turn(ident, dm_chat, text, history, qbody, qbot):
+        return
     # "Want the names?" -> "yes", "names", "list them": the answer in full.
     more = await _dm_state_get("dm_more", dm_chat)
     if more and more.get("full") and wa_style.wants_more(text):
@@ -61558,6 +61562,140 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
     return rows[:1]
 
 
+# ── "SHOW ME", IN A DM: THE SHEET ITSELF (Mon 10:21 AM, 588) ───────────────
+#
+# "Window protection details are on SSP-011.00" was followed by "Show me" and
+# "Show me details", and both got the same words again: "show me" took the
+# "Want the names?" offer (wa_style.wants_more), and the agent never has
+# query_plan in a DM (it sends straight to WaAPI, outside the DM send gate).
+# A show request now sends the sheet -- the one it names, else the one
+# Levelog's last message in this chat cites -- through the DM gate.
+_DM_SHOW_VERBS = tuple(sorted(set(SHOW_VERBS) | {"let me see", "can i see", "send", "see",
+                                                  "pull it up", "pull that up"},
+                              key=len, reverse=True))
+_DM_SHOW_FILLER = _SHOW_FILLER | {"details", "detail", "pic", "picture", "image", "page",
+                                  "photo", "more", "full"}
+
+
+def _dm_show_words(body: Optional[str]) -> Optional[List[str]]:
+    """The words after a show verb ("show me details" -> ["details"]), or
+    None when the message does not start with one."""
+    s = " ".join(re.sub(r"[^\w\s/.-]", " ", re.sub(r"@\S+", " ", body or "").lower()).split())
+    verb = next((v for v in _DM_SHOW_VERBS if s == v or s.startswith(v + " ")), None)
+    return None if verb is None else s[len(verb):].split()
+
+
+def _dm_show_request(body: Optional[str]) -> bool:
+    """"show me", "show me details", "send it", "let me see": a show verb
+    with nothing else to show."""
+    words = _dm_show_words(body)
+    return words is not None and all(w.strip(".") in _DM_SHOW_FILLER for w in words)
+
+
+def _dm_cited_sheet(history: list, quoted: str = "", quoted_bot: bool = False) -> Optional[str]:
+    """The sheet Levelog's message cites: the one replied to, else its last
+    message in this chat (only that one -- an older answer is not "it")."""
+    if quoted and quoted_bot:
+        return _requested_sheet_id(quoted)
+    for row in reversed(list(history or [])):
+        if str(row.get("sender") or "") == "bot":
+            return _requested_sheet_id(str(row.get("body") or ""))
+    return None
+
+
+async def _dm_send_sheet(dm_chat: str, page: dict) -> bool:
+    """One sheet image to this DM chat, through the DM gate (opt-in or the
+    reply window, paced, in the ledger) -- never straight to WaAPI. Kept in
+    the chat's history as "[Sheet] SSP-011.00 — title"."""
+    label = page.get("sheet_number") or page.get("sheet_title") or "drawing"
+    caption = f"{label} — {page.get('sheet_title') or ''}".strip(" —")
+    verdict = await _dm_send_verdict(dm_chat, f"[sheet {label}]", None)
+    if not verdict["allowed"]:
+        logger.info(f"[wa-assistant] sheet refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
+        return False
+    ledger_id = verdict.get("ledger_id")
+    media_url = await _plan_media_url(dm_chat, page)
+    ok, body, err = False, None, "no image"
+    if media_url:
+        ok, body, err = await _waapi_send_dm_paced(
+            f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
+            {"chatId": dm_chat, "mediaUrl": media_url, "caption": caption},
+            {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"})
+        inner = body.get("data") if isinstance(body, dict) else None
+        if ok and isinstance(inner, dict) and inner.get("status") == "error":
+            ok, err = False, "data.status error"       # WaAPI's 200 that is not a send
+    if ledger_id is not None:
+        await _ledger_finish(ledger_id, ok, err)
+    if not ok:
+        logger.warning(f"[wa-assistant] sheet {label} not sent to {_log_chat(dm_chat)}: {err}")
+        return False
+    try:
+        now = datetime.now(timezone.utc)
+        await db.whatsapp_messages.insert_one({
+            "group_id": dm_chat, "is_dm": True, "sender": "bot", "body": f"[Sheet] {caption}",
+            "has_audio": False, "message_id": "", "from_me": True,
+            "timestamp": now, "created_at": now})
+    except Exception as e:
+        logger.debug(f"[wa-assistant] sheet bot-log skipped: {type(e).__name__}")
+    return True
+
+
+async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
+                         quoted: str = "", quoted_bot: bool = False) -> bool:
+    """A show request in a DM: the sheet it names ("show me SSP-011"), or the
+    one Levelog's last message cites ("Show me", "Show me details"). The job:
+    one named here, else this chat's current job, else their only job; with
+    none, the turn is not this one. True when answered."""
+    words = _dm_show_words(text)
+    if words is None:
+        return False
+    named = _requested_sheet_id(" ".join(words))
+    if not named:
+        if not _dm_show_request(text):
+            return False
+        named = _dm_cited_sheet(history, quoted, quoted_bot)
+        if not named:
+            return False
+    jobs = await _dm_jobs(ident)
+    by_id = {j["id"]: j for j in jobs}
+    jid = wa_assistant.job_named(text, jobs, in_sentence=True)
+    if not jid:
+        current = await _dm_state_get("dm_job", dm_chat)
+        jid = str(current.get("project_id")) if current else None
+    if jid not in by_id:
+        jid = jobs[0]["id"] if len(jobs) == 1 else None
+    if not jid:
+        return False
+    job = by_id[jid]
+    pid = str(job["id"])
+    # A request of its own: an open offer, "Which job?" menu or "Since 8:07
+    # or since 7am?" is dropped, as a new question drops them (Codex on #808).
+    for kind in ("dm_more", "dm_menu", "dm_clarify"):
+        await _dm_state_clear(kind, dm_chat)
+    if not await _bot_project_scope(ident["company_id"], pid):
+        await send_whatsapp_message(dm_chat, wa_security.BOT_SCOPE_REFUSAL)
+        return True
+    short = wa_style.short_job(job["label"])
+    rows = await _find_named_sheet(pid, named)
+    page = rows[0] if rows else None
+    label = (page or {}).get("sheet_number") or named.upper()
+    if not page:
+        reply = f"{named.upper()} isn't in the indexed drawings for {short}."
+    elif not page.get("page_jpeg_r2_key"):
+        reply = (f"{label} is a notes sheet — indexed, can't render yet."
+                 if page.get("is_spec_page") else f"{label} is indexed, but its image isn't available yet.")
+    elif await _dm_send_sheet(dm_chat, page):
+        reply = None
+    else:
+        reply = f"Found {label} but couldn't send the image. It may still be rendering."
+    if reply:
+        await send_whatsapp_message(dm_chat, reply)
+    await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS, project_id=pid)
+    await _dm_log_answer(ident, pid, text, reply or f"[Sheet] {label}", "sheet",
+                         tool_data={"sheet": label, "sent": reply is None})
+    return True
+
+
 def _names_a_sheet(text: str) -> bool:
     """True when the text contains something shaped like a sheet id.
 
@@ -61783,12 +61921,10 @@ def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 4800,
         return src_bytes
 
 
-async def _send_plan_image(
-    group_id: str, page_rec: dict, caption: str,
-) -> bool:
-    """Fetch a page's pre-rendered JPEG from R2, downscale to WhatsApp-safe
-    size, upload to R2 via presigned URL, and send-image to the group.
-    Returns True on success."""
+async def _plan_media_url(chat_id: str, page_rec: dict) -> Optional[str]:
+    """A page's pre-rendered JPEG from R2, downscaled to a WhatsApp-safe
+    size and uploaded as a temporary file: the URL WaAPI's send-media
+    fetches (1 hour), or None."""
     sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
     jpeg_src = await _fetch_page_jpeg(page_rec)
     if not jpeg_src:
@@ -61796,23 +61932,37 @@ async def _send_plan_image(
             f"plan send: jpeg fetch returned empty for sheet={sheet_ref} "
             f"key={page_rec.get('page_jpeg_r2_key')}"
         )
-        return False
+        return None
     jpeg = await asyncio.to_thread(_compress_jpeg_for_whatsapp, jpeg_src)
     logger.info(
         f"plan send: jpeg ok for sheet={sheet_ref} "
         f"src_size={len(jpeg_src)} compressed_size={len(jpeg)}"
     )
     import uuid as _uuid
-    temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
+    # A person's chat is a phone: the temporary key carries a random id, never it.
+    folder = chat_id if wa_dm.is_group_chat(chat_id) else "dm"
+    temp_key = f"temp/whatsapp/{folder}/{_uuid.uuid4()}.jpg"
     try:
         await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
         # WaAPI does a HEAD preflight. R2 presigned URLs are method-scoped
         # (signed GET returns 403 on HEAD), so we hand WaAPI a URL that
         # points to our own backend proxy — it handles HEAD+GET cleanly.
         tok = await _mint_temp_media_token(temp_key, "image/jpeg", ttl_seconds=3600)
-        media_url = _public_temp_media_url(tok)
+        return _public_temp_media_url(tok)
     except Exception as e:
         logger.warning(f"plan send: temp upload failed sheet={sheet_ref}: {e}")
+        return None
+
+
+async def _send_plan_image(
+    group_id: str, page_rec: dict, caption: str,
+) -> bool:
+    """Fetch a page's pre-rendered JPEG from R2, downscale to WhatsApp-safe
+    size, upload to R2 via presigned URL, and send-image to the group.
+    Returns True on success."""
+    sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
+    media_url = await _plan_media_url(group_id, page_rec)
+    if not media_url:
         return False
     # WaAPI endpoint is `send-media` with a `mediaUrl` field (NOT send-image
     # with `image`, which returns 404). Discovered via probe-waapi-endpoints.
@@ -64249,7 +64399,9 @@ AGENT_MODEL = "gpt-4o"
 #   list_workers  reads the WHOLE company's roster, which a PM may not see
 #                 (who_on_site answers for the job);
 #   query_plan    sends sheet images straight to WaAPI, outside the DM send
-#                 gate (search_plans still answers what the drawings say).
+#                 gate (search_plans still answers what the drawings say; a
+#                 DM's "show me" sends the sheet through the gate, in
+#                 _dm_sheet_turn).
 _DM_WRITE_TOOLS = frozenset({"start_permit_renewal", "start_checklist",
                              "list_workers", "query_plan"})
 AGENT_MAX_TOKENS = 800
