@@ -34,7 +34,7 @@ def row(user, minutes, q, a, path="job_agent", fallback=False, reason="agent"):
 class ScrubTest(unittest.TestCase):
     def test_phone_link_email_are_removed(self):
         s = dm_eval.scrub(f"call {FAKE_DIGITS} or open {FAKE_LINK} or mail a.b@example.invalid")
-        self.assertNotIn("999", s)
+        self.assertNotIn(FAKE_DIGITS, s)
         self.assertNotIn("example.invalid", s)
         self.assertIn("[number]", s)
         self.assertIn("[link]", s)
@@ -110,7 +110,7 @@ class ScoreTest(unittest.TestCase):
         bad = f"Ask {FAKE_DIGITS}, see {FAKE_LINK}"
         rows = [row(f"u{i}", i, f"{w} question", bad) for i, w in enumerate(["one", "two", "three"])]
         text = json.dumps(dm_eval.score(rows)) + dm_eval.render(dm_eval.score(rows))
-        self.assertNotIn("999", text)
+        self.assertNotIn(FAKE_DIGITS, text)
         self.assertNotIn("example.invalid", text)
 
     def test_empty_log(self):
@@ -233,7 +233,7 @@ class ScriptTest(unittest.TestCase):
                               "--sample", str(out_csv), "--export", str(out_exp)])
             self.assertEqual(rc, 0)
             blob = out_json.read_text() + out_csv.read_text() + out_exp.read_text()
-            self.assertNotIn("999", blob)
+            self.assertNotIn(FAKE_DIGITS, blob)
             self.assertNotIn("example.invalid", blob)
             self.assertNotIn("user-abc", blob)
             exported = [json.loads(x) for x in out_exp.read_text().splitlines()]
