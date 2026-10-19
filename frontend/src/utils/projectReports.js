@@ -165,3 +165,13 @@ export function addEmail(list, raw) {
   if (current.includes(email)) return { list: current, error: 'Already on the list.' };
   return { list: [...current, email] };
 }
+
+/** The PUT /report-settings body for one change: only the field that changed
+ *  (Codex on #809 — a time change carrying this screen's copy of the list
+ *  would put back an address another admin removed meanwhile). */
+export function dailySaveBody(patch) {
+  const body = {};
+  if (patch && 'send_time' in patch) body.report_send_time = patch.send_time;
+  if (patch && 'emails' in patch) body.report_email_list = patch.emails;
+  return body;
+}

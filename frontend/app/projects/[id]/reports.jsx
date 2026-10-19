@@ -26,9 +26,10 @@ import { toStoredDate } from '../../../src/utils/dateEntry';
 import apiClient, { projectReportsAPI, projectsAPI, getToken } from '../../../src/utils/api';
 import {
   PRESETS, KINDS, periodLabel, pdfName, settingsBody, toggled, rangeProblem, whoLine, madeLabel,
-  shareText, SEND_TIMES, timeLabel, addEmail,
+  shareText, SEND_TIMES, timeLabel, addEmail, dailySaveBody,
 } from '../../../src/utils/projectReports';
 import { isOfflineError } from '../../../src/utils/offlineState';
+import { readCachedProject } from '../../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
@@ -59,6 +60,10 @@ export default function ProjectReportsScreen() {
   const [saving, setSaving] = useState(false);
   const [newEmail, setNewEmail] = useState('');
   const [savingDaily, setSavingDaily] = useState(false);
+  // The daily report's time and addresses from this device's saved copy of
+  // the job, shown read-only when the settings could not be read (offline) —
+  // as the old Report Settings screen did. Never a save target.
+  const [cachedDaily, setCachedDaily] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -70,8 +75,12 @@ export default function ProjectReportsScreen() {
     }
     try {
       setSettings(await projectReportsAPI.settings(projectId));
+      setCachedDaily(null);
     } catch (e) {
       setSettings(null);
+      const saved = await readCachedProject(projectId).catch(() => null);
+      setCachedDaily(saved && Array.isArray(saved.report_email_list)
+        ? { send_time: saved.report_send_time || '18:00', emails: saved.report_email_list } : null);
     }
   }, [projectId]);
 
@@ -212,14 +221,15 @@ export default function ProjectReportsScreen() {
 
   // The daily report's send time and addresses (PUT /report-settings). Saved
   // on each change, like the rest of this card; nothing is queued offline.
+  // ONLY THE FIELD THAT CHANGED IS SENT (Codex on #809): a time change sent
+  // with this screen's copy of the list would put back an address another
+  // admin removed while it was open.
   const saveDaily = async (patch) => {
     const daily = { ...((settings || {}).daily || {}), ...patch };
     setSavingDaily(true);
     setSettings((s) => ({ ...(s || {}), daily: { ...daily, email_list: (daily.emails || []).length } }));
     try {
-      const out = await projectsAPI.updateReportSettings(projectId, {
-        report_email_list: daily.emails || [], report_send_time: daily.send_time,
-      });
+      const out = await projectsAPI.updateReportSettings(projectId, dailySaveBody(patch));
       const emails = out.report_email_list || [];
       setSettings((s) => ({ ...(s || {}),
         daily: { ...daily, send_time: out.report_send_time, emails, email_list: emails.length } }));
@@ -232,16 +242,43 @@ export default function ProjectReportsScreen() {
     }
   };
 
+  // An address is added to, or removed from, the list AS IT IS NOW on the
+  // server — read again first — never this screen's copy from when it opened.
+  const currentEmails = async () => {
+    const fresh = await projectReportsAPI.settings(projectId);
+    setSettings(fresh);
+    return ((fresh || {}).daily || {}).emails || [];
+  };
+
+  const editDailyEmails = async (change) => {
+    setSavingDaily(true);
+    let list;
+    try {
+      list = change(await currentEmails());
+    } catch (e) {
+      setSavingDaily(false);
+      toast?.error?.('Not saved', isOfflineError(e)
+        ? 'You are offline. Nothing was saved — reconnect and try again.' : 'Try again.');
+      return;
+    }
+    if (list) await saveDaily({ emails: list });
+    else setSavingDaily(false);
+  };
+
   const addDailyEmail = () => {
-    const r = addEmail(((settings || {}).daily || {}).emails, newEmail);
-    if (r.error) { toast?.error?.('Email', r.error); return; }
+    const check = addEmail(((settings || {}).daily || {}).emails, newEmail);
+    if (check.error) { toast?.error?.('Email', check.error); return; }
+    const typed = newEmail;
     setNewEmail('');
-    saveDaily({ emails: r.list });
+    editDailyEmails((now) => {
+      const r = addEmail(now, typed);
+      if (r.error) { toast?.error?.('Email', r.error); return null; }
+      return r.list;
+    });
   };
 
   const removeDailyEmail = (email) => {
-    const drop = () => saveDaily({
-      emails: (((settings || {}).daily || {}).emails || []).filter((e) => e !== email) });
+    const drop = () => editDailyEmails((now) => now.filter((e) => e !== email));
     if (Platform.OS === 'web') {
       if (window.confirm(`Remove ${email}?`)) drop();
     } else {
@@ -396,6 +433,27 @@ export default function ProjectReportsScreen() {
               {box(!!(cur.delivery || {}).email, 'Email (the PDF attached)',
                 () => save({ ...cur, delivery: { ...cur.delivery, email: !(cur.delivery || {}).email } }),
                 'd-email')}
+            </GlassCard>
+          )}
+
+          {!settings && cachedDaily && (
+            <GlassCard style={styles.card}>
+              <Text style={[styles.section, text]}>Send automatically</Text>
+              <Text style={[styles.hint, muted]}>
+                Offline — the saved copy on this device, read-only. Reconnect to change it.
+              </Text>
+              <Text style={[styles.label, muted]}>Daily report — time (New York)</Text>
+              <Text style={[styles.line, text]}>{timeLabel(cachedDaily.send_time)}</Text>
+              <Text style={[styles.label, muted]}>Daily report — also email to</Text>
+              {cachedDaily.emails.length === 0 && (
+                <Text style={[styles.hint, muted]}>No extra addresses.</Text>
+              )}
+              {cachedDaily.emails.map((email) => (
+                <View key={email} style={styles.pmRow}>
+                  <Mail size={16} color={muted.color} />
+                  <Text style={[styles.line, text, styles.grow]}>{email}</Text>
+                </View>
+              ))}
             </GlassCard>
           )}
 

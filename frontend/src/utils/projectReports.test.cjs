@@ -66,5 +66,12 @@ ok(M.addEmail([], 'nope').error === "That isn't an email address.", 'not an addr
 ok(M.addEmail([], '  ').error === 'Enter an email address.', 'nothing typed');
 ok(M.addEmail(null, 'x@y.io').list.join() === 'x@y.io', 'no list yet');
 
+// Only the field that changed is saved (Codex on #809).
+ok(JSON.stringify(M.dailySaveBody({ send_time: '17:00' })) === '{"report_send_time":"17:00"}',
+   'a time change sends the time only — never the list');
+ok(JSON.stringify(M.dailySaveBody({ emails: ['a@b.co'] })) === '{"report_email_list":["a@b.co"]}',
+   'an address change sends the list only');
+ok(JSON.stringify(M.dailySaveBody(null)) === '{}', 'nothing changed, nothing sent');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
