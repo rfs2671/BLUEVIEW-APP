@@ -29,19 +29,41 @@ export const PDF_SEARCH_SCRIPT = [
   '}',
   'function pdfSearchBuildPage(items, vp, transform, styles){',
   '  var text = "", spans = [], W = vp.width || 1, H = vp.height || 1, sc = vp.scale || 1;',
-  '  var list = items || [];',
+  '  var list = items || [], prev = null;',
   '  for (var i = 0; i < list.length; i++) {',
   '    var it = list[i];',
   '    if (!it || typeof it.str !== "string") continue;',
   '    var raw = it.str.replace(/\\s+/g, " ");',
   '    var s = raw.toLowerCase();',
+  // A run of only spaces IS a space between words.
+  '    if (s === " " && text && text.charAt(text.length - 1) !== " ") text += " ";',
   '    if (s && s !== " ") {',
-  '      if (text && text.charAt(text.length - 1) !== " " && s.charAt(0) !== " ") text += " ";',
-  '      var start = text.length;',
-  '      text += s;',
   '      var tx = transform(vp.transform, it.transform);',
   '      var len = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]) || 1;',
   '      var adv = (it.width || 0) * sc;',
+  '      var fh = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]) || 1;',
+  // ── A SPACE ONLY WHERE THE PAGE HAS ONE (Codex on #810) ──────────────
+  // A PDF can split one word across runs at a font change ("con" +
+  // "struction") and emit punctuation as its own run; a space between every
+  // pair made "construction" unfindable. A space goes in when this run
+  // starts on another line, or after a real gap along the line (more than
+  // ~15% of the font height, well under a space's width), or back before
+  // the last one ended (a column or a jump) — and not where it touches.
+  '      if (text && text.charAt(text.length - 1) !== " " && s.charAt(0) !== " ") {',
+  '        var gapSep = true;',
+  '        if (prev) {',
+  '          var vx = tx[4] - prev.ex, vy = tx[5] - prev.ey;',
+  '          var along = vx * prev.dx + vy * prev.dy;',
+  '          var across = Math.abs(vy * prev.dx - vx * prev.dy);',
+  '          var em = Math.max(fh, prev.fh);',
+  '          gapSep = across > 0.5 * em || along > 0.15 * em || along < -0.5 * em;',
+  '        }',
+  '        if (gapSep) text += " ";',
+  '      }',
+  '      var start = text.length;',
+  '      text += s;',
+  '      prev = { ex: tx[4] + (tx[0] / len) * adv, ey: tx[5] + (tx[1] / len) * adv,',
+  '               dx: tx[0] / len, dy: tx[1] / len, fh: fh };',
   // The run as a quad: its baseline origin, the advance along it, and the
   // glyph's up vector (the transformed y axis, as long as the font is tall).
   // Any rotation reads right this way, including vertical text on a sheet.

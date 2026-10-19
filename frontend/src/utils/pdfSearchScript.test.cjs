@@ -74,6 +74,30 @@ ok(near(counted.x, (120 * 7 / 12) / 600) && near(measured.x, (120 * 13 / 21) / 6
 ok(fonts.every((f) => f === 'sans-serif'), "measured in the run's own font family");
 ok(near(S.rects(wide, at, at + 5, () => 0)[0].x, counted.x), 'nothing measurable: back to counting');
 
+// A space only where the page has one (Codex on #810): a word split across
+// runs at a font change stays one word, punctuation sits on its word, a new
+// line or a real gap is a space.
+const split = S.build([
+  item('Con', 60, 600, 30),
+  item('struction', 90, 600, 90),             // touches "Con": one word
+  item(',', 180, 600, 4),                      // the comma, right after it
+  item('fire', 186.5, 600, 30),               // a gap after the comma: a space
+  item('stop', 60, 585, 40),                  // the next line
+], vp, transform);
+ok(S.find(split, 'construction').length === 1, 'a word split across two runs is still one word');
+ok(split.text.startsWith('construction,'), 'punctuation stays on its word');
+ok(S.find(split, 'fire stop').length === 1, 'a new line is a space');
+const gap = S.build([item('fire', 0, 600, 30), item('stop', 34, 600, 30)], vp, transform);
+ok(gap.text === 'fire stop', 'a gap of a space or more is a space');
+const tight = S.build([item('fire', 0, 600, 30), item('stop', 31, 600, 30)], vp, transform);
+ok(tight.text === 'firestop', 'a touching run joins');
+const back = S.build([item('right', 300, 600, 40), item('left', 60, 600, 30)], vp, transform);
+ok(back.text === 'right left', 'a run that jumps back is a separate word');
+const spaced = S.build([item('fire', 0, 600, 30), item(' ', 30, 600, 3), item('stop', 30.5, 600, 30)], vp, transform);
+ok(spaced.text === 'fire stop', 'a run of only spaces is a space');
+const [cw] = S.rects(split, 0, 12);
+ok(cw && near(cw.x, 60 / 600), 'a split word is still boxed from its first run');
+
 // Vertical text (rotated 90°): the box stands up.
 const vpage = S.build([{ str: 'GRID A', transform: [0, 10, -10, 0, 500, 100], width: 60 }], vp, transform);
 const [vr] = S.rects(vpage, 0, 6);
