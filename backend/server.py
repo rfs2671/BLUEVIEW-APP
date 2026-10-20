@@ -51884,6 +51884,11 @@ async def _dm_report_turn(ident: dict, dm_chat: str, text: str, now: datetime) -
             picked = [j["project"] for j in jobs]
     start, end, _label = project_report.period_for(text, now)
     try:
+        await _shared_limit("report", str(ident.get("user_id") or ""), REPORT_LIMIT)
+    except HTTPException:
+        await send_whatsapp_message(dm_chat, "That's a lot of reports in a short time -- give it a few minutes.")
+        return True
+    try:
         doc = await build_project_report(ident["company_id"], picked, start, end, now=now,
                                          by=str(ident.get("user_id") or ""), source="dm")
     except ReportSourceUnavailable:
@@ -52178,6 +52183,42 @@ async def _report_names(docs: List[dict]) -> Dict[str, str]:
     return out
 
 
+# ── A LIMIT THAT HOLDS ACROSS INSTANCES ──────────────────────────────────────
+#
+# lib/rate_limits.py counts in process memory: with N backend instances the
+# real ceiling is N times the number written. A report is a database sweep, a
+# PDF render and an R2 upload, so the routes that make one (and the schedule
+# import, which parses a file of up to 20 MB) are ALSO counted in the
+# database, where every instance sees the same number. One row per hit, a TTL
+# on it, a count of the person's rows inside the window: insert-then-count
+# can only over-count a race (two instances both see each other), never
+# under-count it. If the database cannot answer, the in-process limit above
+# still stands and the request is let through -- a limiter that blocks
+# everyone when Mongo is slow is worse than the abuse it guards against.
+
+RATE_WINDOWS = "rate_limit_hits"
+REPORT_LIMIT = (6, 600)          # reports a person may ask for, per 10 minutes
+SCHEDULE_IMPORT_LIMIT = (10, 600)
+
+
+async def _shared_limit(bucket: str, who: str, limit: Tuple[int, int]) -> None:
+    """Raise 429 when `who` has made `limit[0]` `bucket` requests in the last
+    `limit[1]` seconds, counting every instance."""
+    n, window = limit
+    now = datetime.now(timezone.utc)
+    key = f"{bucket}:{who}"
+    try:
+        await db[RATE_WINDOWS].insert_one({"_id": str(uuid.uuid4()), "key": key, "at": now,
+                                           "expires_at": now + timedelta(seconds=window)})
+        seen = await db[RATE_WINDOWS].count_documents({"key": key, "at": {"$gte": now - timedelta(seconds=window)}})
+    except Exception as e:
+        logger.warning(f"[rate] shared counter unavailable: {type(e).__name__}")
+        return
+    if seen > n:
+        raise HTTPException(status_code=429, headers={"Retry-After": str(window)},
+                            detail="That's a lot of reports in a short time -- wait a few minutes and try again.")
+
+
 @api_router.get("/projects/{project_id}/project-reports",
                 dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def list_project_reports(project_id: str, current_user=Depends(get_current_user)):
@@ -52210,6 +52251,7 @@ async def create_project_report(project_id: str, body: ProjectReportRequest,
     """Generate now: a preset (last 7 days, last 2 weeks, this month, last
     month, this quarter, the whole project), a custom range, or words."""
     company_id = await _memory_project(project_id, current_user)
+    await _shared_limit("report", str(current_user.get("id") or current_user.get("_id") or ""), REPORT_LIMIT)
     project = await _bot_project_scope(company_id, project_id)
     now = datetime.now(timezone.utc)
     if body.start and body.end:
@@ -52460,6 +52502,7 @@ async def import_baseline_schedule_from_file(project_id: str, body: ScheduleImpo
     company_id = await _memory_project(project_id, current_user)
     if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
     project = await _bot_project_scope(company_id, project_id)
     f = await db.project_files.find_one({"_id": to_query_id(body.file_id), "project_id": str(project_id),
                                          "is_deleted": {"$ne": True}})
@@ -52483,6 +52526,7 @@ async def upload_baseline_schedule(project_id: str, file: UploadFile = File(...)
     company_id = await _memory_project(project_id, current_user)
     if not is_company_admin(current_user):
         raise HTTPException(status_code=403, detail="Admins import the schedule")
+    await _shared_limit("schedule", str(current_user.get("id") or current_user.get("_id") or ""), SCHEDULE_IMPORT_LIMIT)
     project = await _bot_project_scope(company_id, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -59064,6 +59108,10 @@ async def ensure_whatsapp_phase1_indexes():
     await _ensure_index_resilient(
         db["scheduler_leases"], keys=[("expires_at", 1)],
         name="scheduler_leases_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("expires_at", 1)], name="rate_limit_hits_ttl", expireAfterSeconds=0)
+    await _ensure_index_resilient(
+        db[RATE_WINDOWS], keys=[("key", 1), ("at", 1)], name="rate_limit_hits_key_at")
     await _ensure_index_resilient(
         db[WA_DM_WINDOWS], keys=[("expires_at", 1)],
         name="whatsapp_dm_reply_windows_ttl", expireAfterSeconds=0)

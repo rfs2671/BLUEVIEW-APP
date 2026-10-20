@@ -252,11 +252,13 @@ export default function ProjectReportsScreen() {
 
           <Pressable onPress={() => router.push(`/projects/${projectId}/schedule`)}
             accessibilityRole="link" accessibilityLabel={ts('linkTitle')}>
-            <GlassCard style={[styles.card, styles.rowHead]}>
-              <Calendar size={18} color={text.color} />
-              <View style={styles.grow}>
-                <Text style={[styles.line, text]}>{ts('linkTitle')}</Text>
-                <Text style={[styles.hint, muted]}>{ts('linkBody')}</Text>
+            <GlassCard style={styles.card}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <Calendar size={18} color={text.color} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.line, text]}>{ts('linkTitle')}</Text>
+                  <Text style={[styles.hint, muted]}>{ts('linkBody')}</Text>
+                </View>
               </View>
             </GlassCard>
           </Pressable>

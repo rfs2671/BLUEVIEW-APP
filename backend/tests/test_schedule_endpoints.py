@@ -124,3 +124,50 @@ class OnDemandGenerationIsRateLimited(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheLimitHoldsAcrossInstances(unittest.TestCase):
+    """The counter is in the database, so a second instance sees the first's
+    hits; one person's hits are not another's; a window that has passed no
+    longer counts; an unreachable database lets the request through."""
+
+    def hit(self, db, who, n=1):
+        out = []
+        with _Ctx(db):
+            for _ in range(n):
+                try:
+                    _run(server._shared_limit("report", who, server.REPORT_LIMIT))
+                    out.append(200)
+                except HTTPException as e:
+                    out.append(e.status_code)
+        return out
+
+    def test_the_seventh_request_in_ten_minutes_is_refused(self):
+        db = _world()
+        self.assertEqual(self.hit(db, "u1", 8), [200] * 6 + [429, 429])
+
+    def test_another_person_is_not_limited_by_it(self):
+        db = _world()
+        self.hit(db, "u1", 8)
+        self.assertEqual(self.hit(db, "u2"), [200])
+
+    def test_a_second_instance_shares_the_count(self):
+        db = _world()
+        self.hit(db, "u1", 4)                       # instance A
+        self.assertEqual(self.hit(db, "u1", 3), [200, 200, 429])   # instance B, same database
+
+    def test_old_hits_do_not_count(self):
+        from datetime import timedelta
+        db = _world()
+        old = datetime.now(timezone.utc) - timedelta(seconds=server.REPORT_LIMIT[1] + 5)
+        for i in range(10):
+            _run(db[server.RATE_WINDOWS].insert_one({"_id": f"o{i}", "key": "report:u1", "at": old}))
+        self.assertEqual(self.hit(db, "u1"), [200])
+
+    def test_an_unreachable_database_lets_it_through(self):
+        db = _world()
+
+        async def boom(*a, **k):
+            raise RuntimeError("mongo down")
+        with _Ctx(db), patch.object(db[server.RATE_WINDOWS], "insert_one", boom):
+            _run(server._shared_limit("report", "u1", server.REPORT_LIMIT))
