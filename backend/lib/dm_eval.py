@@ -54,7 +54,7 @@ SHORT_QUESTION_WORDS = 8
 # counted against the model.
 TEMPLATE_PATHS = frozenset({
     "more", "menu", "menu_expired", "other_job", "not_a_question", "clarify",
-    "sheet", "closer", "no_repeat",
+    "sheet", "closer", "no_repeat", "walk_help",
 })
 
 _PHONE = re.compile(r"\+?\d[\d\s().-]{6,}\d")
