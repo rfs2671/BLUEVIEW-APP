@@ -55744,6 +55744,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     except asyncio.TimeoutError:
         eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
         reply = await task
+    repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
         full = reply
@@ -55751,13 +55752,31 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # its names only when asked: never cut, only the job names shortened.
         reply, trimmed = (wa_style.shorten_jobs(reply, labels), False) if styled \
             else wa_style.tighten(reply, asked, labels)
+        # NEVER THE SAME ANSWER TO A DIFFERENT QUESTION (dm_eval, Oct 20):
+        # one short question instead. A headcount (`styled`) is exempt: the
+        # same count for "how many subs" and "how many companies" is right.
+        hist = [] if styled else await _dm_history(dm_chat, datetime.now(timezone.utc))
+        # Compared as it goes out: the send strips a trailing "Need anything
+        # else?", and the history holds the stripped text.
+        repeated = None if styled else wa_assistant.repeat_of_last(
+            _strip_generic_offer(reply), hist, asked, datetime.now(timezone.utc))
+        if repeated:
+            sheet = _requested_sheet_id(repeated) or ""
+            ask = wa_assistant.repeat_question(sheet)
+            asked_already = any(str(r.get("body") or "") == ask for r in hist
+                                if str(r.get("sender") or "") == "bot")
+            reply, trimmed = wa_assistant.repeat_question(sheet, asked_already), False
+            if log:
+                log = (log[0], log[1], log[2], "no_repeat") + tuple(log[4:5])
         if trimmed:
             await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS,
                                 full=wa_style.clean(full, labels))
     if log:
-        # (ident, project_id, question, path[, tool trace])
+        # (ident, project_id, question, path[, tool trace]); a blocked repeat
+        # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
-                             tool_data=log[4] if len(log) > 4 else None)
+                             tool_data=log[4] if len(log) > 4 else None,
+                             **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
         # A voice question answered about a job (the agent's answer or a
