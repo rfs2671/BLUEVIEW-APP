@@ -158,6 +158,22 @@ def _ts(v) -> Optional[datetime]:
     return None
 
 
+def _kind(r: dict) -> str:
+    """A headcount answer's kind (count / subs / list …): the row's own
+    `kind`, else its tool_data's. Empty for every other path."""
+    td = r.get("tool_data")
+    return str(r.get("kind") or (td.get("kind") if isinstance(td, dict) else "") or "")
+
+
+def _same_data_question(a: dict, b: dict) -> bool:
+    """Two headcount answers of the same kind: the same question in other
+    words ("How many subs on site?" / "How many companies on site"), so the
+    same answer is right, not a repeat. A different kind -- a subs question
+    answered with the worker count -- still is one."""
+    return ((a.get("path") or "") == (b.get("path") or "") == "headcount"
+            and _kind(a) and _kind(a) == _kind(b))
+
+
 def _example(r: dict) -> dict:
     return {"path": r.get("path") or "", "question": scrub(r.get("question"))[:200],
             "answer": scrub(r.get("answer"))[:300]}
@@ -219,7 +235,11 @@ def score(rows: Iterable[dict], *, canned_min: int = CANNED_MIN, top: int = 15) 
                 break
             a0 = str(prev.get("answer") or "").strip()
             q0 = str(prev.get("question") or "")
+            # A sheet sent again is the image asked for again, not words
+            # repeated: its logged answer is a "[Sheet]" marker.
             if (not got_repeat and a0 and a0 == a1 and gap <= REPEAT_WINDOW
+                    and (cur.get("path") or "") != "sheet"
+                    and not _same_data_question(prev, cur)
                     and " ".join(_words(q0)) != " ".join(_words(q1))):
                 got_repeat = True
                 repeats.append({"first": _example(prev), "then": _example(cur),

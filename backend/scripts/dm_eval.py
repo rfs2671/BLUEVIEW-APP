@@ -50,9 +50,13 @@ def _row_out(r: dict, key: str, keep_names: bool) -> dict:
         s = dm_eval.scrub(v)
         return s if keep_names else dm_eval.mask_names(s, names)
 
+    td = r.get("tool_data")
     return {
         "user": key,
         "path": r.get("path") or "",
+        # A headcount answer's kind (count / subs …): no one's data, and what
+        # tells a reworded question from a wrong answer (lib/dm_eval).
+        "kind": (r.get("kind") or (td.get("kind") if isinstance(td, dict) else "") or ""),
         "fallback": bool(r.get("fallback")),
         "reason": r.get("reason") or "",
         "question": clean(r.get("question")),
