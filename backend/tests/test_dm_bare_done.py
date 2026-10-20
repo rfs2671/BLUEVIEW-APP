@@ -57,6 +57,29 @@ class TheOct20Messages(_Site, unittest.TestCase):
         self.assertTrue(took)
         self.assertEqual(sends, ["Done with what? Your walk at 588 Thomas is still open."])
 
+    def test_the_action_model_never_sees_cancel_checklist(self):
+        """Codex on #819: with a model key, "Cancel checklist" matched the
+        new-action hint, and the action model could read it as "undo"."""
+        from unittest.mock import patch
+        seen = []
+
+        async def action_model(*a, **k):
+            seen.append(a)
+            return {"action": "undo"}
+        with _Ctx(db=self.db) as c, patch.object(server, "_dm_action_model", action_model):
+            reply = self.say(c, "Cancel checklist", key="k")
+        self.assertEqual(reply, "There's no checklist open here to cancel.")
+        self.assertEqual(seen, [])
+
+    def test_a_voice_done_says_what_was_heard(self):
+        from tests.test_dm_short_answers import CHAT
+        from tests.test_whatsapp_dm_assistant import _run
+        with _Ctx(db=self.db) as c:
+            _run(server._dm_closer_turn({"user_id": "u_admin", "company_id": "co_a"}, CHAT,
+                                        "Done", [], heard="Done"))
+            sends = [p["message"] for p in c.wire.calls if "message" in p]
+        self.assertEqual(sends, ['Heard: "Done"\n\nDone with what?'])
+
     def test_cancel_it_is_still_the_drop(self):
         with _Ctx(db=self.db) as c:
             reply = self.say(c, "cancel it")
@@ -73,6 +96,8 @@ class TheWords(unittest.TestCase):
 
     def test_not_closers(self):
         for text in ["cancel it", "cancel", "Cancel checklist?", "is it done?",
+                     "cancel the brief", "cancel chasing at 588", "cancel the report schedule",
+                     "cancel my reminder", "cancel alerts",
                      "done with the walk at 588", "stop the brief", "how many done today",
                      "what's done at 588"]:
             self.assertIsNone(wa_assistant.closer(text), text)

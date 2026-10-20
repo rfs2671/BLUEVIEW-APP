@@ -429,6 +429,11 @@ _DONE_RE = re.compile(
     r"^(?:ok(?:ay)?\W*)?(?:i'?m |we'?re |all |it'?s |im )?(?:done|finished|all done|done here|"
     r"done with (?:it|that|this|everything)|that'?s it|thats all|that'?s all|listo|terminé|"
     r"termine|fartik)\W*$")
+# Things another flow cancels for real (a chase setting, the brief, a
+# report schedule, a reminder, alerts): never claimed here.
+_CANCEL_OWNED = re.compile(
+    r"\b(chas\w*|brief\w*|report\w*|remind\w*|alert\w*|notification\w*|schedul\w*|"
+    r"setting\w*|sub|subs|job|jobs|person|contact)\b")
 _CANCEL_RE = re.compile(
     r"^(?:please |pls |can you |could you )?cancel "
     r"(?:the |my |this |that |our )?([a-z][a-z'&/ -]{1,40}?)\W*$")
@@ -445,8 +450,9 @@ def closer(text: Any) -> Optional[Tuple[str, str]]:
     if _DONE_RE.match(t):
         return ("done", "")
     m = _CANCEL_RE.match(t)
-    if m and m.group(1).strip() not in ("it", "that", "this", "them"):
-        return ("cancel", m.group(1).strip())
+    thing = m.group(1).strip() if m else ""
+    if m and thing not in ("it", "that", "this", "them") and not _CANCEL_OWNED.search(thing):
+        return ("cancel", thing)
     return None
 
 

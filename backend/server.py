@@ -55327,6 +55327,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     # A change asked in their own words (lib/dm_actions.py): add a job, a
     # sub, a person, a punch contact; a job's settings; undo.
+    # A bare "Done" / "Cancel checklist" that none of the flows above took:
+    # fixed words about what is (not) open, never a model (dm_eval, Oct 20).
+    # BEFORE the new-action classifier: "Cancel checklist" matches its hint,
+    # and the action model may read "cancel" as "undo" and reverse the last
+    # change (Codex on #819). A pending action was asked first (new=False).
+    if not qbody and await _dm_closer_turn(ident, dm_chat, text, history, heard):
+        return
     if await _dm_action_turn(ident, dm_chat, text, new=True, quoted=qbody):
         return
     # Their own settings, asked about (a change was the turn above).
@@ -55334,10 +55341,6 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     # "send me a report for 588 for the last 2 weeks", "report all jobs September".
     if await _dm_report_turn(ident, dm_chat, text, now):
-        return
-    # A bare "Done" / "Cancel checklist" that none of the flows above took:
-    # fixed words about what is (not) open, never the agent (dm_eval, Oct 20).
-    if not qbody and await _dm_closer_turn(ident, dm_chat, text, history):
         return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
@@ -55680,10 +55683,12 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
     await send_whatsapp_message(dm_chat, text)
 
 
-async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list) -> bool:
+async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list,
+                          heard: Optional[str] = None) -> bool:
     """"Done" -> "Done with what?" (the open walk named, else Levelog's last
     message quoted); "Cancel checklist" -> "There's no checklist open here
-    to cancel." True when answered."""
+    to cancel." True when answered. A voice note's reply opens with
+    `Heard: "…"`, as every DM answer does."""
     hit = wa_assistant.closer(text)
     if not hit:
         return False
@@ -55696,8 +55701,10 @@ async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list) -
         reply = wa_assistant.done_reply(walk_job, last_bot)
     else:
         reply = wa_assistant.cancel_reply(thing, walk_job)
-    await send_whatsapp_message(dm_chat, reply)
     await _dm_log_answer(ident, (walk or {}).get("project_id"), text, reply, "closer")
+    if heard:
+        reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+    await send_whatsapp_message(dm_chat, reply)
     return True
 
 
