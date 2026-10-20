@@ -301,12 +301,48 @@ class ThePhotographs(unittest.TestCase):
         self.assertEqual({p["sub"] for p in got}, {"Arkon Builders", "Quality Plumbing", "Power Direct"})
         self.assertEqual(len(got), 6)
 
-    def test_the_caption_is_the_logs_words_not_the_models(self):
-        verdicts = {k: {**v, "caption": "A MODEL CAPTION"} for k, v in F.verdicts().items()}
+    def test_the_caption_is_what_the_photo_shows_not_the_logs_words(self):
+        # AUDIT: a stair photographed under a plumber's log line was captioned
+        # with the log's "install metal stairs". The words under a photo are now
+        # the picture's own; the log supplies only sub, date and place.
         r = F.report()
-        got = P.pick_photos(r["photo_candidates"], verdicts)
-        self.assertTrue(got and not [p for p in got if "MODEL" in p["caption"]])
-        self.assertTrue(any(" — " in p["caption"] for p in got))
+        got = r["photos"]
+        verdicts = F.verdicts()
+        self.assertTrue(got)
+        for p in got:
+            self.assertEqual(p["caption"], verdicts[p["key"]]["caption"])
+        self.assertFalse([p for p in got if p["caption"] == p["sub"]])
+
+    def test_a_photo_of_another_trades_work_is_not_that_subs_evidence(self):
+        cand = {"key": "k1", "date": date(2026, 10, 9), "sub": "Quality Plumbing", "trade": "Plumbing",
+                "where": "floor 2", "words": "Install metal stairs", "work": "Install metal stairs",
+                "source": "daily log", "log_id": "x"}
+        stairs = {"k1": {"ok": True, "kind": "progress", "score": 9, "work": "stairs", "caption": "A metal stair"}}
+        self.assertEqual(P.pick_photos([cand], stairs), [])
+        pipes = {"k1": {"ok": True, "kind": "progress", "score": 9, "work": "plumbing", "caption": "Risers"}}
+        self.assertEqual(len(P.pick_photos([cand], pipes)), 1)
+        unsure = {"k1": {"ok": True, "kind": "progress", "score": 9, "work": "none", "caption": "Pipes"}}
+        self.assertEqual(len(P.pick_photos([cand], unsure)), 1)            # unknown is not a contradiction
+        gc = {**cand, "sub": "Arkon Builders", "trade": ""}
+        self.assertEqual(len(P.pick_photos([gc], stairs)), 1)              # a GC has no one trade
+
+    def test_materials_corridors_and_people_are_not_progress(self):
+        v = P.parse_verdict('{"ok": true, "kind": "materials", "score": 9, "work": "none", "caption": "Pallets"}')
+        self.assertFalse(v["ok"])
+        v = P.parse_verdict('{"ok": true, "kind": "area", "score": 9, "caption": "A corridor"}')
+        self.assertFalse(v["ok"])
+        v = P.parse_verdict('{"ok": true, "kind": "progress", "score": 9, "work": "framing", "caption": "Studs"}')
+        self.assertTrue(v["ok"])
+        self.assertEqual(P.parse_verdict('{"kind":"progress","ok":true,"work":"spaceship"}')["work"], "other")
+
+    def test_four_to_eight_photos(self):
+        self.assertEqual((P.MIN_PHOTOS, P.MAX_PHOTOS), (4, 8))
+
+    def test_the_whole_photograph_is_shown_never_cropped(self):
+        html = RR.render_html([rep()], gc="", title="t", now=F.NOW, images={
+            p["key"]: "data:image/jpeg;base64,AAAA" for p in rep()["photos"]})
+        self.assertIn("object-fit: contain", html)
+        self.assertNotIn("object-fit: cover", html)
 
     def test_unscreened_photos_are_not_shown(self):
         self.assertEqual(P.pick_photos(rep()["photo_candidates"], {}), [])
@@ -321,6 +357,32 @@ class ThePhotographs(unittest.TestCase):
         r = rep()
         r["photos"] = []
         self.assertNotIn("Visual progress", RR.render_html([r], gc="", title="t", now=F.NOW, images={}))
+
+
+class TheWordingIsReadable(unittest.TestCase):
+
+    def test_a_misspelling_is_mended_from_the_logs_own_words(self):
+        texts = ["Pull wire floor 2", "Pull wire floor 3", "Pull wire floor 4", "Pulling wite", "Eletrical rough-in",
+                 "Electrical rough-in", "Electrical rough-in", "Electrical rough-in"]
+        fixes = P.spelling_fixes(texts)
+        self.assertEqual(fixes, {"wite": "wire", "eletrical": "electrical"})
+        self.assertEqual(P._apply_fixes("Pulling wite", fixes), "Pulling wire")
+        self.assertEqual(P._apply_fixes("Eletrical rough-in", fixes), "Electrical rough-in")
+
+    def test_plurals_and_rare_real_words_are_left_alone(self):
+        texts = ["Riser install"] * 4 + ["Risers tested", "Pipe sleeves", "Pipes"]
+        self.assertEqual(P.spelling_fixes(texts), {})              # suffixes are not misspellings
+
+    def test_a_word_used_repeatedly_is_never_changed(self):
+        self.assertEqual(P.spelling_fixes(["wite crew"] * 2 + ["wire crew"] * 5), {})
+
+    def test_the_report_says_it_corrected_and_what(self):
+        logs = F.logbooks()
+        for i in range(3):
+            logs[i]["data"]["activities"][0]["work_description"] = "Electrical wiring"
+        logs[3]["data"]["activities"][0]["work_description"] = "Eletrical wiring"
+        r = F.report(logbooks=logs + F.previous_logbooks())
+        self.assertTrue(any("eletrical → electrical" in n for n in r["data_notes"]), r["data_notes"])
 
 
 class TheScheduleIsTheFilesOrNothing(unittest.TestCase):

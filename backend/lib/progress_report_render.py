@@ -107,9 +107,13 @@ table.floors td { text-align: center; padding: 2px 0; font-size: 7pt; border: 1p
 table.floors th { text-align: center; padding: 2px 0; font-size: 7pt; }
 table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px; font-size: 8pt; border: 0;
                        border-bottom: 1px solid #e3e7ee; }
-.photos { display: flex; flex-wrap: wrap; gap: 10px; }
-.photo { width: 49%; page-break-inside: avoid; margin-bottom: 4px; }
-.photo img { width: 100%; height: 2.1in; object-fit: cover; border-radius: 3px; display: block; }
+.photos { font-size: 0; }
+.photo { display: inline-block; vertical-align: top; width: 48.5%; margin: 0 1.5% 10px 0; page-break-inside: avoid; font-size: 9pt; }
+.photos.three .photo { width: 31.8%; margin-right: 1.1%; }
+/* THE WHOLE PHOTOGRAPH, never a crop: a portrait phone photo keeps its top and bottom. */
+.photo .frame { height: 2.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
+.photos.three .photo .frame { height: 2.0in; }
+.photo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .photo .cap { font-size: 8pt; margin-top: 3px; }
 .photo .cap b { font-size: 8.5pt; }
 .strip { border-radius: 5px; padding: 5px 9px; font-size: 8.3pt; margin: 4px 0 8px; background: #eef3fa; }
@@ -411,7 +415,7 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
         planned = ("<h3>Scheduled for this period vs. reported</h3><div class='two'><div><h4>Scheduled in the schedule</h4>"
                    "<ul class='tight'>" + "".join(f"<li>{_e(a['name'])} <span class='muted'>({_e(_fmt(base._d(a['start']), '%b %-d'))}"
                                                  f"–{_e(_fmt(base._d(a['finish']), '%b %-d'))})</span></li>"
-                                                 for a in plan["scheduled_in_period"][:8]) + "</ul></div>"
+                                                 for a in plan["scheduled_in_period"][:4]) + "</ul></div>"
                    "<div><h4>Reported in daily logs</h4><ul class='tight'>"
                    + "".join(f"<li>{_e(w['name'])}: {_e(w['items'][0]['work'])}</li>" for w in rep["work"] if w["items"])
                    + "</ul></div></div><div class='muted'>Shown side by side for comparison; the report draws no "
@@ -425,10 +429,10 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
                             for g in plan["groups"][:10]) + "</table>")
     floors = ""
     if plan["floors"]:
-        floors = ("<h3>By floor (activities named for a floor)</h3><table class='keep' style='width:55%'><tr><th>Floor</th>"
-                  "<th class='n'>Activities complete</th></tr>"
-                  + "".join(f"<tr><td>{_e(f['floor'])}</td><td class='n'>{f['complete']} of {f['total']}</td></tr>"
-                            for f in plan["floors"][:14]) + "</table>")
+        fl = plan["floors"][:14]
+        floors = ("<h3>By floor (activities named for a floor)</h3><table class='keep'><tr><th>Floor</th>"
+                  + "".join(f"<th class='n'>{_e(f['floor'])}</th>" for f in fl) + "</tr><tr><td>Activities complete</td>"
+                  + "".join(f"<td class='n'>{f['complete']} of {f['total']}</td>" for f in fl) + "</tr></table>")
     pct = (f"<p class='lead'>The schedule file reports the project at <b>{proj['reported_percent']:g}% complete</b>.</p>"
            if proj.get("reported_percent") is not None else "")
     head = (f"Per {_e(plan.get('source_name') or 'the imported schedule')}"
@@ -448,13 +452,16 @@ def _photos(rep: Dict[str, Any], images: Dict[str, str]) -> str:
         return ""
     cells = []
     for p in shown:
-        cells.append(f"<div class='photo'><img src='{images[p['key']]}'/>"
+        see = f"<br><span class='muted'>Shows: {_e(p['caption'])}</span>" if p.get("caption") else ""
+        cells.append(f"<div class='photo'><div class='frame'><img src='{images[p['key']]}'/></div>"
                      f"<div class='cap'><b>{_e(p['sub'])}</b>{' · ' + _e(p['trade']) if p.get('trade') else ''}<br>"
-                     f"{_e(_fmt(p['date'], '%a %b %-d, %Y'))}{' · ' + _e(p['where']) if p.get('where') else ''}<br>"
-                     f"<span class='muted'>{_e(p['caption'])}</span></div></div>")
-    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Photographs supplied in the filed "
-            "daily logs. Date and location are as filed; they are not independently verified.</p>"
-            f"<div class='photos'>{''.join(cells)}</div></section>")
+                     f"{_e(_fmt(p['date'], '%a %b %-d, %Y'))}{' · ' + _e(p['where']) if p.get('where') else ''}"
+                     f"{see}</div></div>")
+    cols = "three" if len(shown) > 4 else ""
+    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Photographs from the filed daily "
+            "logs, chosen for installed work that is clearly visible. Sub, date and location are as filed and are not "
+            "independently verified; “Shows” describes the picture only (automated).</p>"
+            f"<div class='photos {cols}'>{''.join(cells)}</div></section>")
 
 
 def _workforce(rep: Dict[str, Any]) -> str:
@@ -611,7 +618,8 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
                     + f"<section class='keep'><div class='two'>{_coming_block(rep) or '<div></div>'}"
                       f"<div style='display:flex;gap:8px'>{_schedule_card(rep)}{_finance_card(rep)}</div></div></section>"
                     + "<div style='page-break-after:always'></div>"
-                    + _progress(rep) + _schedule_section(rep) + _photos(rep, images) + _workforce(rep)
+                    + _progress(rep) + _schedule_section(rep) + _photos(rep, images)
+                    + ("<div style='page-break-before:always'></div>" if _photos(rep, images) else "") + _workforce(rep)
                     + _regulatory(rep) + _financial(rep) + _basis(rep, report_id))
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
             f"<style>{css}</style></head><body>{''.join(body)}</body></html>")

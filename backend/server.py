@@ -51566,7 +51566,7 @@ async def _photo_verdict(raw: bytes, project_id: Any, endpoint: str) -> Optional
             resp = await client.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {QWEN_API_KEY}", "Content-Type": "application/json"},
-                json={"model": QWEN_MODEL, "max_tokens": 80, "temperature": 0,
+                json={"model": QWEN_MODEL, "max_tokens": 200, "temperature": 0,
                       "messages": [{"role": "user", "content": [
                           {"type": "image_url", "image_url": {
                               "url": "data:image/jpeg;base64," + base64.b64encode(data).decode()}},
@@ -51594,8 +51594,12 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     kind, score, caption}. None (and nothing cached) when it can't be read
     or judged -- such a photo is never shown."""
     key = c["key"]
+    # A verdict is cached under the JUDGE'S VERSION: the group-photo flow shares
+    # this collection with another prompt and shape, and an older report verdict
+    # (progress / other only) would pass a photo of stacked materials.
+    ckey = f"report-v2:{key}"
     try:
-        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": key})
+        cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": ckey})
     except Exception:
         cached = None
     if cached:
@@ -51608,7 +51612,7 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
         return None
     v = await _photo_verdict(raw, project_id, VISION_REPORT_PHOTO)
     if v is not None:
-        await _photo_verdict_cache(key, v)
+        await _photo_verdict_cache(ckey, v)
     return v
 
 

@@ -57,7 +57,7 @@ NY = base.NY
 ENGINE_VERSION = "2026.10.2"
 UPCOMING_DAYS = 30
 #: 4-6 photographs, never more: a few good ones, not a gallery.
-MIN_PHOTOS, MAX_PHOTOS = 4, 6
+MIN_PHOTOS, MAX_PHOTOS = 4, 8
 MAX_PER_SUB = 2
 ATTACHED_LINE = "Full report (PDF) attached."
 SOURCE_LINE = "Source: Levelog records — site check-ins, filed daily logs, DOB/DOT records"
@@ -210,6 +210,51 @@ def _clean_work(text: Any) -> str:
     t = re.sub(r"\s+(?:on|at|in)\s*$", "", t.strip(" .;,-"))
     t = re.sub(r"\s{2,}", " ", t).strip(" .;,-")
     return (t[:1].upper() + t[1:]) if t else ""
+
+
+def _one_edit(a: str, b: str) -> bool:
+    """Exactly one substitution, insertion, deletion or swap apart."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1
+                                  and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    i = 0
+    while i < len(short) and short[i] == long_[i]:
+        i += 1
+    return short[i:] == long_[i + 1:]
+
+
+def spelling_fixes(texts: Iterable[str]) -> Dict[str, str]:
+    """Misspellings in the logs' own wording ("wite", "eletrical"), mended from
+    the logs' own vocabulary: a word seen once, one edit from a word the same
+    logs use three or more times. Never from a dictionary the logs do not use,
+    and never a plural or other suffix of a word ("risers" stays)."""
+    count: Counter = Counter(w for t in texts for w in re.findall(r"[a-z]{4,}", str(t).lower()))
+    common = [w for w, c in count.items() if c >= 3]
+    fixes: Dict[str, str] = {}
+    for w, c in count.items():
+        if c > 1:
+            continue
+        hits = [x for x in common if _one_edit(w, x) and not (x.startswith(w) or w.startswith(x))]
+        if len(hits) == 1:
+            fixes[w] = hits[0]
+    return fixes
+
+
+def _apply_fixes(text: str, fixes: Dict[str, str]) -> str:
+    if not fixes or not text:
+        return text
+
+    def swap(m):
+        w = m.group(0)
+        to = fixes.get(w.lower())
+        if not to:
+            return w
+        return to.capitalize() if w[:1].isupper() else to
+    return re.sub(r"[A-Za-z]{4,}", swap, text)
 
 
 # ── THE LOGS: ONE EFFECTIVE RECORD PER DAY ───────────────────────────────────
@@ -548,28 +593,104 @@ def to_judge(cands: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any
     return picked[:limit]
 
 
+WORK_FAMILIES = ("framing", "plumbing", "electrical", "hvac", "scaffolding", "stairs", "concrete", "masonry",
+                 "demolition", "facade", "other", "none")
+_FAMILY_WORDS = (("scaffolding", ("scaffold", "hoist", "sidewalk shed")), ("hvac", ("hvac", "duct", "mechanical")),
+                 ("plumbing", ("plumb", "pipe", "riser", "sanitary")),
+                 ("electrical", ("electr", "wiring", "low voltage")),
+                 ("stairs", ("stair", "railing", "iron", "structural steel")),
+                 ("framing", ("fram", "stud", "drywall", "sheetrock", "gypsum", "carpent", "partition")),
+                 ("concrete", ("concrete", "slab", "foundation", "rebar", "pour")),
+                 ("masonry", ("mason", "brick", "cmu", "block")), ("demolition", ("demo",)),
+                 ("facade", ("facade", "curtain wall", "window", "glaz", "roof")))
+
+
+def trade_family(*texts: Any) -> str:
+    """The kind of work a sub's name / trade says ("Quality Plumbing" ->
+    plumbing), or "" when it says none. A general contractor says none."""
+    t = " ".join(str(x or "").lower() for x in texts)
+    for fam, words in _FAMILY_WORDS:
+        if any(w in t for w in words):
+            return fam
+    return ""
+
+
+def parse_verdict(said: Any) -> Optional[Dict[str, Any]]:
+    """The vision model's JSON answer, checked: {ok, kind, score, caption,
+    work} or None."""
+    import json
+    m = re.search(r"\{.*\}", str(said or ""), re.DOTALL)
+    if not m:
+        return None
+    try:
+        v = json.loads(m.group(0))
+    except ValueError:
+        return None
+    if not isinstance(v, dict):
+        return None
+    kind = str(v.get("kind") or "other").lower()
+    try:
+        score = max(0.0, min(10.0, float(v.get("score") or 0)))
+    except (TypeError, ValueError):
+        score = 0.0
+    work = str(v.get("work") or "none").lower()
+    caption = " ".join(str(v.get("caption") or "").split())[:100]
+    return {"ok": bool(v.get("ok")) and kind == "progress", "kind": kind, "score": score,
+            "work": work if work in WORK_FAMILIES else "other", "caption": base.no_phone(caption)}
+
+
+JUDGE_PROMPT = (
+    "You choose photos that PROVE CONSTRUCTION PROGRESS in a report an owner or lender will read. "
+    "Look at this jobsite photo and answer in JSON only: {\"ok\": true|false, \"kind\": \"progress\"|"
+    "\"materials\"|\"area\"|\"people\"|\"document\"|\"blurry\"|\"other\", \"score\": 0-10, "
+    "\"work\": \"framing\"|\"plumbing\"|\"electrical\"|\"hvac\"|\"scaffolding\"|\"stairs\"|\"concrete\"|"
+    "\"masonry\"|\"demolition\"|\"facade\"|\"other\"|\"none\", \"caption\": \"...\"}. "
+    "kind is progress ONLY when INSTALLED or BUILT work is clearly visible (framing standing, pipes or "
+    "conduit in place, scaffolding erected, a stair set, a slab poured, a facade). materials: stacked or "
+    "stored materials or equipment. area: an empty room, corridor or general site condition with no "
+    "identifiable work. people: people fill the frame. document: paper, screens, drawings. blurry: out "
+    "of focus or too dark. ok is true only for a sharp, well-lit progress photo. score: how strongly it "
+    "shows completed work (wide view, the work identifiable and complete = 8-10; partial or unclear = "
+    "1-4). work: the one trade whose work you can SEE; none when you cannot tell. caption: one short "
+    "line of ONLY what is visible, plain construction words (e.g. \"Metal stud framing, one floor\"); "
+    "never a name, a number, a date or a location you cannot see.")
+
+
+def _consistent(c: Dict[str, Any], v: Dict[str, Any]) -> bool:
+    """A photo is the sub's evidence only if what it shows is that sub's kind
+    of work: a plumber's log with a photo of a stair is not plumbing progress.
+    Unknown on either side is not a contradiction."""
+    sub_fam = trade_family(c.get("trade"), c.get("sub"))
+    seen = str(v.get("work") or "none")
+    if not sub_fam or seen in ("none", "other"):
+        return True
+    return seen == sub_fam
+
+
 def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],
                 most: int = MAX_PHOTOS) -> List[Dict[str, Any]]:
-    """Up to six photographs, grouped as the logs filed them: only photos
-    vision calls a clear progress shot (never blurry, people-only or a
-    document), the best of each sub first, then the next best, never the same
+    """Four to eight photographs that show INSTALLED work: only photos vision
+    calls a clear progress shot (never materials, a corridor, people, a
+    document or a blur) whose visible work matches the sub's kind of work,
+    the strongest of each sub first, then the next strongest, never the same
     sub, day and place twice and never more than two of one sub.
 
-    NO BEFORE / AFTER. The old pick paired each sub's "earliest" and "latest"
-    photograph and tagged them. Nothing checks that the two show the same
-    place or the same view -- the logs give a location as free text -- so a
-    pair was a claim of progress the report could not support. Each photo is
-    shown for what it is: supplied in a filed log, on a date, for a sub's
-    work, at a place as written. The caption is the sub's own work line from
-    the log, never words a model wrote."""
+    THE CAPTION IS WHAT THE PHOTO SHOWS, not the log's words for the activity
+    row it was attached to: that row's text is a claim about the day's work,
+    and the photo may show something else (an audit found a stair photographed
+    under a plumber's log line). The sub, date and place are as the log filed
+    them; the description is the vision model's, of the picture alone.
+
+    NO BEFORE / AFTER: nothing checks that two photos show the same place."""
     good = []
     for c in cands:
         if c.get("source") != "daily log":
             continue
         v = verdicts.get(c["key"]) or {}
-        if v.get("ok") and v.get("kind", "progress") == "progress":
+        if v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v):
             good.append({**c, "score": float(v.get("score") or 0),
-                         "caption": base.no_phone(c["words"] or "Work on site")[:120]})
+                         "caption": base.no_phone(v.get("caption") or "")[:100],
+                         "work": str(v.get("work") or "none")})
     chosen: List[dict] = []
     per_sub: Counter = Counter()
 
@@ -593,41 +714,6 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
                 pass
     chosen.sort(key=lambda c: (c["date"], c["sub"]))
     return chosen
-
-
-def parse_verdict(said: Any) -> Optional[Dict[str, Any]]:
-    """The vision model's JSON answer, checked: {ok, kind, score, caption}
-    or None."""
-    import json
-    m = re.search(r"\{.*\}", str(said or ""), re.DOTALL)
-    if not m:
-        return None
-    try:
-        v = json.loads(m.group(0))
-    except ValueError:
-        return None
-    if not isinstance(v, dict):
-        return None
-    kind = str(v.get("kind") or "other").lower()
-    try:
-        score = max(0.0, min(10.0, float(v.get("score") or 0)))
-    except (TypeError, ValueError):
-        score = 0.0
-    caption = " ".join(str(v.get("caption") or "").split())[:120]
-    return {"ok": bool(v.get("ok")) and kind == "progress", "kind": kind, "score": score,
-            "caption": base.no_phone(caption)}
-
-
-JUDGE_PROMPT = (
-    "You pick photos for a construction progress report an owner will read. Look at this "
-    "jobsite photo and answer in JSON only: {\"ok\": true|false, \"kind\": \"progress\"|"
-    "\"people\"|\"document\"|\"blurry\"|\"other\", \"score\": 0-10, \"caption\": \"...\"}. "
-    "ok is true only for a clear, well-lit photo that shows the work or the building "
-    "(framing, walls, risers, scaffolding, a floor, the facade). kind is people when people "
-    "fill the frame, document for paper, screens or drawings, blurry when out of focus. "
-    "score: wide, sharp, shows progress = high. caption: one short line, plain construction "
-    "words, ONLY what is visible (e.g. \"Metal stud framing on the 3rd floor\"); never a name, "
-    "a number or a date you cannot see.")
 
 
 # ── COMING UP ────────────────────────────────────────────────────────────────
@@ -718,6 +804,9 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
     log_set = effective_logs(logbooks)
     logs = log_set["items"]
     acts = _log_activities(logs, prev_start, end)
+    fixes = spelling_fixes(a["work"] for a in acts)
+    for a in acts:
+        a["work"] = _apply_fixes(a["work"], fixes)
     days_map = att.by_day(checkins, prev_start, end)
     all_keys = [company_key(co) for by_co in days_map.values() for co in by_co if not is_unassigned(co)]
     canon = canonical_keys(all_keys + [a["key"] for a in acts if a["key"]])
@@ -784,6 +873,7 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
     rep["changes"] = changes(rep)
     rep["overview"] = overview(rep)
     rep["limitations"] = limitations(rep)
+    rep["spelling"] = dict(sorted(fixes.items())[:6])
     rep["data_notes"] = data_notes(rep, [lg for lg in logs if start <= (base._d(lg.get("date")) or start) <= end],
                                    checkins, cur["worked"])
     rep["evidence"] = evidence(rep, checkins, [lg for lg in logs if base._in(base._d(lg.get("date")), start, end)])
@@ -1042,6 +1132,9 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
     days with no filed log, amended days, gate/log differences."""
     out = []
     site, ls, rc = rep["site"], rep["log_set"], rep["recon"]
+    if rep.get("spelling"):
+        out.append("Obvious misspellings in the daily logs' wording were corrected for reading ("
+                   + ", ".join(f"{a} → {b}" for a, b in rep["spelling"].items()) + ").")
     in_period_checkins = [r for r in checkins if base._in(att.local_day(r.get("check_in_time")), rep["start"],
                                                             rep["end"])]
     if site["worked"]:
