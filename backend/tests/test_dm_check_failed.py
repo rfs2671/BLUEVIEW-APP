@@ -46,7 +46,8 @@ class TheCheck(unittest.TestCase):
         for draft in ("12 on site at 588 so far.",
                       "12 on site at 588. Need the names?",
                       "12 on site at 588: Arkon's 9, J&G 3.",
-                      "1 came in since 09:01."):
+                      "1 came in since 09:01.",
+                      "1 arrived since 09:01."):
             self.assertIsNone(wa_headcount.check(draft, _data(), JOB), draft)
             self.assertTrue(wa_headcount.verify(draft, _data(), JOB), draft)
 
@@ -56,6 +57,10 @@ class TheCheck(unittest.TestCase):
                            ("12 on site: Arkon's 3, J&G 9.", "company_count"),
                            ("Need the names? 3 on site at 588.", "on_site_count"),
                            ("9 came in since 09:01.", "since_count"),
+                           # Codex on #821: the arrival words are counts too.
+                           ("9 arrived since 09:01.", "since_count"),
+                           ("9 joined since 09:01.", "since_count"),
+                           ("9 showed up since 09:01.", "since_count"),
                            ("12 on site at 588, 08:05 latest.", "number")):
             self.assertEqual(wa_headcount.check(draft, _data(), JOB), why, draft)
             self.assertFalse(wa_headcount.verify(draft, _data(), JOB), draft)

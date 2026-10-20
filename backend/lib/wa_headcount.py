@@ -535,7 +535,8 @@ def check(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> 
         if int(m.group(1)) != data["total"]:
             return "on_site_count"
     for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?"
-                         r"(?:since|added|new|checked in since|came in)", reply, re.IGNORECASE):
+                         r"(?:since|added|new|checked in since|came in|arrived|joined|showed up|showed)",
+                         reply, re.IGNORECASE):
         if int(m.group(1)) != len(data.get("added") or []):
             return "since_count"
     return None
