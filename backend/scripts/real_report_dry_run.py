@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -83,6 +84,33 @@ def lock_database():
         for n in names:
             if hasattr(cls, n):
                 setattr(cls, n, _refuse(n))
+
+
+def _browser():
+    """A Chromium-family browser that can print a page to PDF headlessly: Edge
+    (every Windows machine has it), Chrome, or Chromium."""
+    cands = [shutil.which(n) for n in ("msedge", "chrome", "google-chrome", "chromium", "chromium-browser")]
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+        if base:
+            cands += [os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+                      os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")]
+    return next((c for c in cands if c and os.path.exists(c)), None)
+
+
+def print_with_browser(html_path, pdf_path):
+    """Best effort: headless Edge / Chrome prints the HTML to a PDF. Its layout
+    is the browser's, not the production engine's (no page footers)."""
+    exe = _browser()
+    if not exe:
+        return False
+    try:
+        subprocess.run([exe, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+                        f"--print-to-pdf={pdf_path}", pathlib.Path(html_path).resolve().as_uri()],
+                       check=True, timeout=90, capture_output=True)
+    except Exception as e:
+        print(f"browser print failed ({type(e).__name__}); open the HTML and use Print -> Save as PDF.")
+        return False
+    return os.path.exists(pdf_path)
 
 
 def parse_args(argv):
@@ -158,19 +186,39 @@ async def main(args):
     out = os.path.abspath(args.out_dir)
     os.makedirs(out, exist_ok=True)
     pdf = os.path.join(out, "progress_report_real.pdf")
-    with open(pdf, "wb") as f:
-        f.write(got["pdf"])
+    html_path = os.path.join(out, "progress_report_real.html")
     with open(os.path.join(out, "progress_report_real.snapshot.json"), "w", encoding="utf-8") as f:
         json.dump(got["snapshot"], f, indent=2, default=str, ensure_ascii=False)
-    if shutil.which("pdftoppm"):
-        subprocess.run(["pdftoppm", "-r", "70", "-png", pdf, os.path.join(out, "progress_report_real")], check=True)
+    photos = got["photos"]
+    photo_lines = [f"{x.get('sub')} | {x.get('date')} | {x.get('where') or ''} | sees: {x.get('work')} | "
+                   f"{x.get('caption')}" for x in photos]
+    with open(os.path.join(out, "progress_report_real.photos.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(photo_lines) + ("\n" if photo_lines else "no photos selected\n"))
+    if got["pdf"]:
+        with open(pdf, "wb") as f:
+            f.write(got["pdf"])
+        if shutil.which("pdftoppm"):
+            subprocess.run(["pdftoppm", "-r", "70", "-png", pdf, os.path.join(out, "progress_report_real")], check=True)
+        else:
+            print("pdftoppm is not installed: no page images (the PDF is enough).")
+        print(f"wrote {pdf}")
     else:
-        print("pdftoppm is not installed: no page images (the PDF is enough).")
+        # No WeasyPrint (its native libraries are missing on Windows): the same
+        # report as one self-contained page -- the CSS is inline and every
+        # photo is embedded -- to print from a browser.
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(got["html"])
+        print(f"wrote {html_path}")
+        if print_with_browser(html_path, pdf):
+            print(f"wrote {pdf} (printed by Edge/Chrome: browser layout, no page footers)")
+        else:
+            print("Open the HTML in Chrome -> Print -> Save as PDF (Margins: Default, Background graphics: ON).")
     rep = got["reports"][0]
-    print(f"wrote {pdf}")
     print(f"  period {args.start}..{args.end}; days with site activity: {rep['site']['worked']}")
     print(f"  subs: {', '.join(x['name'] for x in rep['subs']) or 'none'}")
-    print(f"  photos: {'; '.join(str(x.get('sub')) + ' ' + str(x.get('date')) + ' [' + str(x.get('work')) + '] ' + str(x.get('caption')) for x in got['photos']) or 'none'}")
+    print("  photos:" + ("" if photo_lines else " none"))
+    for line in photo_lines:
+        print("   -", line)
     print(f"  schedule: {'confirmed' if rep['schedule'] else 'none'}; financials: {'provided' if rep['financials'] else 'none'}")
     print("  limitations:")
     for line in rep["limitations"]:

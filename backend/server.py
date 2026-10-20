@@ -51772,7 +51772,12 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
     html_text = progress_report_render.render_html(reps, gc=gc, title=title, now=now, images=images,
                                                    report_id=rid)
     if dry_run:
-        return {"pdf": await asyncio.to_thread(_report_pdf, html_text), "html": html_text, "title": title,
+        try:
+            pdf_bytes = await asyncio.to_thread(_report_pdf, html_text)
+        except (ImportError, OSError) as e:       # WeasyPrint's native libraries are missing (Windows)
+            logger.warning(f"[report] dry run: no PDF engine here ({type(e).__name__})")
+            pdf_bytes = None
+        return {"pdf": pdf_bytes, "html": html_text, "title": title,
                 "snapshot": [progress_report.snapshot(r) for r in reps],
                 "photos": [{k: v for k, v in ph.items() if k != "key"} for r in reps for ph in r["photos"]],
                 "reports": reps}
