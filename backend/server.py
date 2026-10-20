@@ -56513,7 +56513,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
         jobs=[{"id": j["id"], "label": j["label"], "aliases": j.get("aliases") or []} for j in jobs],
         active_job=by_id.get(active) if active else None,
         open_flows=flows if flows is not None else await _dm_brain_flows(ident, dm_chat),
-        now_label=_memory_ny(now).strftime("%a %b %-d %Y, %-I:%M %p"))
+        now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
     system = [{"type": "text", "text": dm_brain.SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
               {"type": "text", "text": context}]
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
@@ -67230,7 +67230,8 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
             return True
         beat = asyncio.create_task(_punch_lease_keep(uid, token)) if token else None
         try:
-            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice, brain=brain)
+            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice,
+                                               **({"brain": True} if brain else {}))
         finally:
             if beat:
                 beat.cancel()
