@@ -54115,17 +54115,22 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     out = wa_headcount.compose_short(kind, data, short_job, since_label, question, company,
                                      names=names)
     fixed = out["short"]
-    reply, used = fixed, "fixed"
-    # The companies answer goes out as built: `verify` checks worker numbers,
-    # not a count of subs.
+    # The companies answer goes out as built: `check` checks worker numbers,
+    # not a count of subs -- fixed by design, not a fallback.
+    reply, used = fixed, "fixed_by_design" if kind == wa_headcount.SUBS else "fixed"
+    rejected = {}
     phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
         if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
-        if wa_headcount.verify(phrased, data, f"{short_job} {job['label']}", since_label) \
-                and len(phrased) <= max(len(fixed), wa_style.MAX_CHARS):
+        why = wa_headcount.check(phrased, data, f"{short_job} {job['label']}", since_label)
+        if why is None and len(phrased) > max(len(fixed), wa_style.MAX_CHARS):
+            why = "too_long"
+        if why is None:
             reply, used = phrased, "phrased"
         else:
+            # The draft and why it was thrown away, so dm_eval can show it.
             used = "fixed_after_check_failed"
+            rejected = {"rejected": _dm_redact(phrased[:1000]), "check": why}
     if out["full"] != fixed:
         # "Want the names?" -> "yes" sends them (10 minutes).
         await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS, full=out["full"])
@@ -54143,7 +54148,7 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                 "at": w["at"].isoformat() if w["at"] else None}
                                for w in data["workers"]],
                    "added": [w["name"] for w in data["added"]]},
-        wording=used, challenged=challenged)
+        wording=used, challenged=challenged, **rejected)
     return reply
 
 
@@ -55327,6 +55332,13 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
         return
     # A change asked in their own words (lib/dm_actions.py): add a job, a
     # sub, a person, a punch contact; a job's settings; undo.
+    # A bare "Done" / "Cancel checklist" that none of the flows above took:
+    # fixed words about what is (not) open, never a model (dm_eval, Oct 20).
+    # BEFORE the new-action classifier: "Cancel checklist" matches its hint,
+    # and the action model may read "cancel" as "undo" and reverse the last
+    # change (Codex on #819). A pending action was asked first (new=False).
+    if not qbody and await _dm_closer_turn(ident, dm_chat, text, history, heard):
+        return
     if await _dm_action_turn(ident, dm_chat, text, new=True, quoted=qbody):
         return
     # Their own settings, asked about (a change was the turn above).
@@ -55674,6 +55686,31 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
     await send_whatsapp_message(dm_chat, text)
+
+
+async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list,
+                          heard: Optional[str] = None) -> bool:
+    """"Done" -> "Done with what?" (the open walk named, else Levelog's last
+    message quoted); "Cancel checklist" -> "There's no checklist open here
+    to cancel." True when answered. A voice note's reply opens with
+    `Heard: "…"`, as every DM answer does."""
+    hit = wa_assistant.closer(text)
+    if not hit:
+        return False
+    kind, thing = hit
+    walk = await _punch_session(ident["user_id"])
+    walk_job = str((walk or {}).get("job_name") or "") if walk else ""
+    if kind == "done":
+        last_bot = next((str(r.get("body") or "") for r in reversed(list(history or []))
+                         if str(r.get("sender") or "") == "bot"), "")
+        reply = wa_assistant.done_reply(walk_job, last_bot)
+    else:
+        reply = wa_assistant.cancel_reply(thing, walk_job)
+    await _dm_log_answer(ident, (walk or {}).get("project_id"), text, reply, "closer")
+    if heard:
+        reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+    await send_whatsapp_message(dm_chat, reply)
+    return True
 
 
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
