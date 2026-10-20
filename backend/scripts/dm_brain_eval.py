@@ -191,6 +191,7 @@ async def _walk_case(server, ident: dict, case: dict) -> dict:
 
     async def _capture(chat, text, *a, **k):
         sent.append(str(text))
+    was = server.send_whatsapp_message
     server.send_whatsapp_message = _capture
     server._WALK_BRAIN.set(True)
     started = time.monotonic()
@@ -198,6 +199,7 @@ async def _walk_case(server, ident: dict, case: dict) -> dict:
         await server._punch_think(ident, sess, "eval@c.us", {}, case["said"], now)
     finally:
         server._WALK_BRAIN.set(False)
+        server.send_whatsapp_message = was
     nxt = punch.new_item(5, "", photo_key="eval/5.jpg", message_id="eval-5", at=now)
     punch.apply_default_location(nxt, sess.get("default_loc"))
     placed = {it["n"]: punch.location_label(it) for it in sess["items"]}

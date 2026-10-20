@@ -67698,7 +67698,8 @@ async def _punch_think(ident: dict, sess: dict, dm_chat: str, parsed: dict, said
     walker = str((ident.get("user") or {}).get("name") or "")
     state = punch_brain.state_for(sess, detail=sess.get("detail") or punch.DEFAULT_DETAIL,
                                   walker=walker, recipients=_punch_recipients_view(sess))
-    got = await _punch_brain_model(state, said, dm_chat)
+    # (dm_chat only with the brain on: stand-ins for the old reader keep its signature.)
+    got = await _punch_brain_model(state, said, **({"dm_chat": dm_chat} if _WALK_BRAIN.get() else {}))
     plan = punch_brain.clean_plan(got, state, said) if got is not None else None
     if plan is None:
         # The model is down: still the plain asks the walk was stuck on.
