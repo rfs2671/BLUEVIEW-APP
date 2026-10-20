@@ -2313,6 +2313,16 @@ export default function DailyJobsiteLog() {
               {basis === 'trade' && (
                 <Text style={s.chipBasisNote}>{t('chipsFromTrade')}</Text>
               )}
+              {/* WHY, when the order comes from THIS CREW'S OWN earlier days on
+                  the project (the server sets `reason` only then): so the super
+                  can see it is a ranking from what they did, not a guess. */}
+              {primary.some((c) => c.reason) && (
+                <Text style={s.chipBasisNote}>
+                  {t('chipsWhy')}{' '}
+                  {primary.filter((c) => c.reason).slice(0, 2)
+                    .map((c) => `${c.label} — ${c.reason}`).join(' · ')}
+                </Text>
+              )}
               <View style={s.chipWrap}>
                 {primary.map((c) => (
                   <Chip

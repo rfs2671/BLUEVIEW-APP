@@ -33768,6 +33768,7 @@ async def get_activity_chips(
     than let the CP assume the app knows.
     """
     from app.scheduling.sequence_ranking import rank_activities
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -33800,7 +33801,33 @@ async def get_activity_chips(
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
         trade=trade,
     )
+    # THE CREW'S OWN HISTORY ON THIS PROJECT (app/scheduling/crew_history.py).
+    # The ranking above keys off the project's single latest day and a fixed
+    # rule table; a crew's own filed days say what it is continuing, what it
+    # usually does next and how long it usually stays on an activity. Only with
+    # a `trade` (no trade, no crew); only reorders and labels, never selects,
+    # removes or blocks; failure-isolated: a read that fails leaves the ranking
+    # exactly as it was.
+    personalized, history_days = False, 0
+    if trade and trades_for_roster(trade):
+        try:
+            from app.scheduling.crew_history import crew_days, personalize
+            from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1, successors_by_id
+            wanted = set(trades_for_roster(trade))
+            recent_logs = await db.logbooks.find(prior_query).sort([("date", -1)]).limit(45).to_list(45)
+            days = crew_days(recent_logs, lambda r: bool(wanted & set(trades_for_roster(r.get("trade")))), day)
+            history_days = len(days)
+            if days:
+                from app.scheduling.trade_taxonomy_v1 import NEW_NODES
+                _graph = build_sequence_rules_v1()
+                ranking = personalize(ranking, days, successors_by_id(_graph),
+                                      {n.id: getattr(n, "scope", n.id) for n in list(_graph.nodes) + list(NEW_NODES)})
+                personalized = True
+        except Exception as e:  # pragma: no cover - a ranking must never fail a day's log
+            logger.warning(f"[activity_chips] crew history skipped: {type(e).__name__}")
     out = ranking.model_dump()
+    out["personalized"] = personalized
+    out["history_days"] = history_days
     # Which day the suggestions were derived from, so the UI can be honest about
     # a stale or absent prior instead of implying the ranking is about today.
     out["prior_date"] = (prior or {}).get("date")
