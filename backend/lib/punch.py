@@ -73,16 +73,25 @@ def start_request(text: Any) -> Optional[Dict[str, Optional[str]]]:
 # ARE the punch list. Said in the first person, with a photo word and a list
 # word; "send me the punch list photos" asks for something, not this.
 _WALK_PHOTO = re.compile(r"\b(?:pictures?|pics?|photos?|fotos?|images?)\b", re.I)
-_WALK_LIST = re.compile(r"\b(?:check\s*-?\s*list|punch(?:\s*list)?|walk\s*-?\s*through|"
-                        r"walk|list|lista|recorrido)\b", re.I)
+# A checklist / punch list / walk -- never a bare "list" ("a list of photos
+# in yesterday's daily log" is a question about the log; Codex on #822).
+_WALK_LIST = re.compile(r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?|walk\s*-?\s*through|"
+                        r"walk|lista|recorrido)\b", re.I)
 _WALK_ME = re.compile(r"\b(?:i'?m|i\s+am|i'?ll|i\s+will|im|gonna|going\s+to|let\s+me|"
                       r"want\s+to|wanna|need\s+to|have\s+to|about\s+to|can\s+i|could\s+i|"
                       r"voy\s+a|quiero|necesito)\b", re.I)
+# ...and about SENDING them: show / send / take / share / upload (not "get").
+_WALK_SEND = re.compile(r"\b(?:show|send|sending|take|taking|share|upload|snap|"
+                        r"mandar|mando|enviar|env[ií]o|tomar)\b", re.I)
 _WALK_DENIES = re.compile(
     r"\b(?:can'?t|cannot|can\s?not|unable to|not able to|don'?t have a way to)\b[^.?!\n]{0,60}"
-    r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?|lists?)\b[^.?!\n]{0,40}"
-    r"\b(?:images?|photos?|pictures?|pics)\b"
-    r"|\buse the (?:levelog )?app to (?:upload|add|send) (?:the |your )?(?:photos|pictures|images)", re.I)
+    r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?)\b[^.?!\n]{0,40}"
+    r"\b(?:images?|photos?|pictures?|pics)\b", re.I)
+# "Use the app to upload the photos" -- a denial only beside a checklist /
+# punch list (to add photos to a daily log, the app IS the answer).
+_WALK_APP = re.compile(r"\buse the (?:levelog )?app to (?:upload|add|send) "
+                       r"(?:the |your )?(?:photos|pictures|images)", re.I)
+_WALK_LISTWORD = re.compile(r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?)\b", re.I)
 
 WALK_HELP = ("Send the photos here, each with a caption or a voice note: where and what. "
              "I'll make it a punch list draft just for you; nothing goes to anyone until "
@@ -93,14 +102,15 @@ def walk_intent(text: Any) -> bool:
     """They are about to send photos for a checklist / punch list."""
     t = str(text or "")
     return bool(_WALK_PHOTO.search(t) and _WALK_LIST.search(t) and _WALK_ME.search(t)
-                and not start_request(t))
+                and _WALK_SEND.search(t) and not start_request(t))
 
 
 def denies_walk(reply: Any) -> bool:
     """The reply claims a checklist / punch list can't be made from photos
     here, or sends them to the app to upload photos (photos sent here are
     the punch list)."""
-    return bool(_WALK_DENIES.search(str(reply or "")))
+    r = str(reply or "")
+    return bool(_WALK_DENIES.search(r) or (_WALK_APP.search(r) and _WALK_LISTWORD.search(r)))
 
 
 def match_project(hint: Optional[str], projects: List[Dict[str, Any]]) -> Tuple[Optional[dict], str]:

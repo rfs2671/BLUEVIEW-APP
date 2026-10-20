@@ -203,14 +203,27 @@ class TheWords(unittest.TestCase):
             self.assertTrue(punch.walk_intent(t), t)
         for t in ("send me the punch list photos", "how many photos in the punch list?",
                   "Show me", "list the subs", "start walkthrough at 588",
-                  "I need the drawing", "picture"):
+                  "I need the drawing", "picture",
+                  # Codex on #822: a question about photos, not sending them.
+                  "Can I get a list of photos in yesterday's daily log?",
+                  "I want to see the photos from the punch list"):
             self.assertFalse(punch.walk_intent(t), t)
 
     def test_denies_walk(self):
         self.assertTrue(punch.denies_walk("I can't create a checklist from images here."))
-        self.assertTrue(punch.denies_walk("Please use the app to upload the photos."))
+        self.assertTrue(punch.denies_walk("I can't create a checklist from images here. Please "
+                                          "use the app to upload the photos and create your "
+                                          "checklist."))
+        # With no checklist / punch list beside it, "use the app" may be right.
+        self.assertFalse(punch.denies_walk("Please use the app to upload the photos."))
         self.assertFalse(punch.denies_walk("Punch list P-588: 4 items, 2 open."))
         self.assertFalse(punch.denies_walk("I can't find that photo."))
+        # Codex on #822: the app is the right answer for a daily log's photos.
+        self.assertFalse(punch.denies_walk(
+            "To add photos to the daily log, use the Levelog app to add photos under Daily Log."))
+        self.assertTrue(punch.denies_walk(
+            "Checklists are made in the app: use the app to upload the photos."))
+        self.assertFalse(punch.denies_walk("I can't list the photos from that daily log."))
 
 
 if __name__ == "__main__":
