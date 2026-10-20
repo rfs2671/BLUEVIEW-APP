@@ -67,6 +67,42 @@ def start_request(text: Any) -> Optional[Dict[str, Optional[str]]]:
     return {"job": job}
 
 
+# "I'm going to show you some pictures, I need to do a checklist, it's not
+# going to be sent to anyone, just for me" (Tue Oct 13, 11:47 AM) got "I can't
+# create a checklist from images here. Please use the app" -- photos sent here
+# ARE the punch list. Said in the first person, with a photo word and a list
+# word; "send me the punch list photos" asks for something, not this.
+_WALK_PHOTO = re.compile(r"\b(?:pictures?|pics?|photos?|fotos?|images?)\b", re.I)
+_WALK_LIST = re.compile(r"\b(?:check\s*-?\s*list|punch(?:\s*list)?|walk\s*-?\s*through|"
+                        r"walk|list|lista|recorrido)\b", re.I)
+_WALK_ME = re.compile(r"\b(?:i'?m|i\s+am|i'?ll|i\s+will|im|gonna|going\s+to|let\s+me|"
+                      r"want\s+to|wanna|need\s+to|have\s+to|about\s+to|can\s+i|could\s+i|"
+                      r"voy\s+a|quiero|necesito)\b", re.I)
+_WALK_DENIES = re.compile(
+    r"\b(?:can'?t|cannot|can\s?not|unable to|not able to|don'?t have a way to)\b[^.?!\n]{0,60}"
+    r"\b(?:check\s*-?\s*lists?|punch(?:\s*lists?)?|lists?)\b[^.?!\n]{0,40}"
+    r"\b(?:images?|photos?|pictures?|pics)\b"
+    r"|\buse the (?:levelog )?app to (?:upload|add|send) (?:the |your )?(?:photos|pictures|images)", re.I)
+
+WALK_HELP = ("Send the photos here, each with a caption or a voice note: where and what. "
+             "I'll make it a punch list draft just for you; nothing goes to anyone until "
+             "you say \"send\". Say \"done\" when they're all in.")
+
+
+def walk_intent(text: Any) -> bool:
+    """They are about to send photos for a checklist / punch list."""
+    t = str(text or "")
+    return bool(_WALK_PHOTO.search(t) and _WALK_LIST.search(t) and _WALK_ME.search(t)
+                and not start_request(t))
+
+
+def denies_walk(reply: Any) -> bool:
+    """The reply claims a checklist / punch list can't be made from photos
+    here, or sends them to the app to upload photos (photos sent here are
+    the punch list)."""
+    return bool(_WALK_DENIES.search(str(reply or "")))
+
+
 def match_project(hint: Optional[str], projects: List[Dict[str, Any]]) -> Tuple[Optional[dict], str]:
     """The one project a hint names ("588" -> "588 Thomas St"), by its number,
     name or address. (project, "") or (None, why): "none" | "several"."""

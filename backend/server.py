@@ -53087,6 +53087,20 @@ async def _dm_answer_job(ident: dict, project: dict, dm_chat: str, body: str,
         admin = holds_rank({**(ident.get("user") or {}), "role": ident.get("role")},
                            COMPANY_ADMIN_ROLES)
         memory = memory.get("full" if admin else "last4") or memory.get("none")
+    said = memory or reply
+    if said and wa_assistant.asks_about_voice_notes(body) \
+            and (str(said).strip() == project_memory.NO_SOURCE
+                 or wa_assistant.denies_voice_access(said)):
+        # NEVER "I can't find that in the project history" for a voice note
+        # (588, Oct 11 2:58 PM: "What was said on the last voicenote"): the
+        # notes are transcribed and stored. The notes themselves go out.
+        logger.info("[wa-assistant] voice question not answered from the notes; sending them")
+        return await _recent_voice_notes(ident["company_id"], str(project.get("_id")), 3)
+    if reply and punch.denies_walk(reply):
+        # NEVER "I can't create a checklist from images here, use the app"
+        # (Tue Oct 13): photos sent here are the punch list.
+        logger.info("[wa-assistant] reply denied a punch list from photos; saying how")
+        return punch.WALK_HELP
     if memory and any(t.get("tool") == "search_project_history" for t in trace):
         # The project-history answer is checked claim by claim against its
         # sources; it goes out as it is, not reworded by the agent.
@@ -66507,6 +66521,13 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     if not sess:
         start = punch.start_request(text) if not parsed.get("has_image") else None
         if not start and not parsed.get("has_image"):
+            if punch.walk_intent(text):
+                # "I'm going to show you some pictures, I need to do a
+                # checklist" (Oct 13): how, in fixed words -- never "use the
+                # app". No walk is opened until the first photo comes.
+                await send_whatsapp_message(dm_chat, punch.WALK_HELP)
+                await _dm_log_answer(ident, None, text, punch.WALK_HELP, "walk_help")
+                return True
             return False
         hint = (start or {}).get("job")
         project, why = punch.match_project(hint, ident.get("projects") or [])
