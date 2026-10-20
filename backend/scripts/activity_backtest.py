@@ -32,7 +32,20 @@ async def main(a):
     print(f"project: {project.get('name')} | id {pid}")
     logs = await server.db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
                                           "is_deleted": {"$ne": True}}).sort([("date", 1)]).to_list(2000)
-    res = BT.backtest(logs, project_id=pid, top=a.top, structural_system=project.get("structural_system"))
+    others = []
+    if a.learn_from != "none":
+        q = {"is_deleted": {"$ne": True}}
+        if a.learn_from == "company":
+            q["company_id"] = server._company_id_filter(str(project.get("company_id")))
+        peers = [str(p["_id"]) for p in await server.db.projects.find(q, {"_id": 1}).to_list(5000) if str(p["_id"]) != pid]
+        for peer in peers:
+            rows = await server.db.logbooks.find({"project_id": peer, "log_type": "daily_jobsite",
+                                                  "is_deleted": {"$ne": True}}).sort([("date", 1)]).to_list(2000)
+            if rows:
+                others.append(rows)
+        print(f"learning from {a.learn_from}: {', '.join(['projects with logs', str(len(others))])}")
+    res = BT.backtest(logs, project_id=pid, top=a.top, structural_system=project.get("structural_system"),
+                      other_projects=others)
     o = res["overall"]
     print(f"daily logs read: {', '.join([str(x.get('date'))[:10] for x in logs[:1]] + ['...'] + [str(x.get('date'))[:10] for x in logs[-1:]])}")
     print(f"\ncrew-days replayed: {o['crew_days']}   activities logged: {o['actual']}   (first {res['top']} chips)")
@@ -49,8 +62,9 @@ async def main(a):
         name = {None: "all", "continuing": "continuing (logged on the crew's previous day)",
                 "new": "new (not logged on the crew's previous day)"}[kind]
         print(f"  {name}: {h['n']} activities")
-        for label, key in (("baseline", "baseline_pos"), ("personalized", "personalized_pos"),
-                           ("personalized, no usual-order signal", "no_order_pos")):
+        for label, key in (("baseline", "baseline_pos"), ("crew history (shelved)", "personalized_pos"),
+                           ("LEARNED next-activity, all lifted", "learned_pos"),
+                           ("LEARNED, first 2 kept", "learned_keep2_pos")):
             cells = "  ".join(f"@{n}: {BT.rate(h[f'{key}@{n}'], h['n']):>4}" for n in (4, 6, 8))
             print(f"      {label:<38} {cells}")
     out = os.path.abspath(a.out)
@@ -61,12 +75,12 @@ async def main(a):
                     f"baseline {r['baseline_top']} ({r['baseline_hits']}) | personalized {r['personalized_top']} "
                     f"({r['personalized_hits']})\n")
     with open(os.path.join(out, "activity_backtest_misses.txt"), "w", encoding="utf-8") as f:
-        f.write("activities NOT in the first chips of the personalized ranking\n")
-        f.write("date | trade | actual (kind) | position in baseline / personalized / no-order (0 = first) | the crew's previous day\n")
+        f.write("activities NOT in the first chips of the LEARNED (keep-2) ranking\n")
+        f.write("date | trade | actual (kind) | position in baseline / crew history / learned / learned-keep-2 (0 = first) | the crew's previous day\n")
         for e in ev:
-            if e["personalized_pos"] is None or e["personalized_pos"] >= res["top"]:
+            if e["learned_keep2_pos"] is None or e["learned_keep2_pos"] >= res["top"]:
                 f.write(f"{e['date']} | {e['trade']} | {e['label']} ({e['kind']}) | {e['baseline_pos']} / "
-                        f"{e['personalized_pos']} / {e['no_order_pos']} | {', '.join(e['previous']) or '-'}\n")
+                        f"{e['personalized_pos']} / {e['learned_pos']} / {e['learned_keep2_pos']} | {', '.join(e['previous']) or '-'}\n")
     print(f"\nwrote {os.path.join(out, 'activity_backtest.txt')} and activity_backtest_misses.txt")
 
 
@@ -75,6 +89,9 @@ if __name__ == "__main__":
     ap.add_argument("--project", required=True)
     ap.add_argument("--company", default="")
     ap.add_argument("--top", type=int, default=4)
+    ap.add_argument("--learn-from", choices=["none", "company", "all"], default="company",
+                    help="whose filed logs teach what comes next: this company's other projects (default), "
+                         "every company's (aggregate counts only), or none (this project's own earlier days)")
     ap.add_argument("--out", default=os.path.join(HERE, "..", "..", "docs", "samples", "real"))
     A = ap.parse_args()
     R.configure_environment()

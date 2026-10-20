@@ -179,3 +179,59 @@ class TheBacktestDiagnostics(unittest.TestCase):
         off = CH.personalize(r, [day("d1", "plmb_sanitary_rough")], SUCC, use_order=False)
         self.assertIn("plmb_vent_rough", [c.id for c in on.chips[:3]])
         self.assertNotIn("plmb_vent_rough", [c.id for c in off.chips[:3]])
+
+
+class LearningWhatComesNext(unittest.TestCase):
+    """The history ranking could not predict an activity a crew had never logged
+    on the job (48% of NEW activities in the first four chips on real data, with
+    or without it). Other projects' filed logs can: after A, crews added B."""
+
+    def project(self, seq):
+        def pl(*ids):
+            return {"trade": "Plumber", "activity_ids": list(ids)}
+        return [{"date": f"2026-0{m}-{d:02d}", "data": {"activities": [pl(*ids)]}} for m, d, ids in seq]
+
+    def peers(self):
+        # on three other jobs the plumbers went from sanitary rough to riser install (far down the catalogue)
+        seq = [(5, 1, ["plmb_sanitary_rough"]), (5, 2, ["plmb_sanitary_rough"]), (5, 3, ["plmb_riser_install"])]
+        return [self.project(seq) for _ in range(3)]
+
+    def test_counts_learn_only_added_activities(self):
+        from app.scheduling.chip_backtest import Transitions
+        m = Transitions()
+        m.learn(self.peers()[0], {"plmb_sanitary_rough", "plmb_riser_install"})
+        tk = "Plumbing"
+        self.assertEqual(m.after[tk]["plmb_sanitary_rough"]["plmb_riser_install"], 1)
+        self.assertEqual(m.total[tk]["plmb_sanitary_rough"], 2)
+        self.assertEqual(m.scores(tk, ["plmb_sanitary_rough"]), {"plmb_riser_install": 0.5})
+
+    def test_what_a_crew_has_never_done_here_is_predicted_from_other_jobs(self):
+        from app.scheduling.chip_backtest import backtest, hit_rates
+        mine = self.project([(6, 1, ["plmb_sanitary_rough"]), (6, 2, ["plmb_riser_install"])])
+        with_peers = backtest(mine, top=4, other_projects=self.peers())
+        alone = backtest(mine, top=4)
+        h1, h0 = hit_rates(with_peers["events"], "new"), hit_rates(alone["events"], "new")
+        self.assertEqual(h1["n"], 2)                     # both days are "new" for the crew
+        self.assertGreater(h1["learned_pos@4"], h0["learned_pos@4"])
+        self.assertGreater(h1["learned_pos@4"], h1["baseline_pos@4"])
+
+    def test_the_learned_ranking_is_the_same_chips_other_last_nothing_selected(self):
+        from app.scheduling.chip_backtest import Transitions, with_learned
+        m = Transitions()
+        for p in self.peers():
+            m.learn(p, {"plmb_sanitary_rough", "plmb_riser_install"})
+        base = rank()
+        out = with_learned(base, ["plmb_sanitary_rough"], "Plumbing", m, {})
+        self.assertEqual(sorted(c.id for c in out.chips), sorted(c.id for c in base.chips))
+        self.assertEqual(out.chips[0].id, "plmb_riser_install")
+        self.assertEqual(out.chips[-1].band, "other")
+        self.assertTrue(all(c.selected is False for c in out.chips))
+        self.assertEqual(with_learned(base, ["plmb_sanitary_rough"], "Plumbing", Transitions(), {}).model_dump(), base.model_dump())
+
+    def test_the_model_keeps_counts_only(self):
+        from app.scheduling.chip_backtest import Transitions
+        m = Transitions()
+        m.learn([{"date": "2026-01-01", "company_id": "SECRET-CO", "project_id": "SECRET-PROJ",
+                  "data": {"activities": [{"trade": "Plumber", "activity_ids": ["plmb_sanitary_rough"], "company": "Acme"}]}}],
+                {"plmb_sanitary_rough"})
+        self.assertNotIn("SECRET", repr(dict(m.after)) + repr(dict(m.total)) + "Acme")
