@@ -57,6 +57,8 @@ def _row_out(r: dict, key: str, keep_names: bool) -> dict:
         # A headcount answer's kind (count / subs …): no one's data, and what
         # tells a reworded question from a wrong answer (lib/dm_eval).
         "kind": (r.get("kind") or (td.get("kind") if isinstance(td, dict) else "") or ""),
+        # An opaque key for the data a headcount read (job, sub, since).
+        "scope": dm_eval.scope_key(r) if (r.get("path") == "headcount") else "",
         "fallback": bool(r.get("fallback")),
         "reason": r.get("reason") or "",
         "question": clean(r.get("question")),

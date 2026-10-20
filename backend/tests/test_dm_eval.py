@@ -233,9 +233,29 @@ class ReplayRulesTest(unittest.TestCase):
                 {**row("u1", 1, "How many subs on site?", same, path="headcount"), "kind": "subs"}]
         self.assertEqual(dm_eval.score(rows)["repeats"], 1)
 
+    def test_a_failed_sheet_send_is_words(self):
+        """Codex on #816: only a SENT sheet is an image."""
+        fail = "Found SSP-011.00 but couldn't send the image. It may still be rendering."
+        rows = [row("u1", 0, "Show me", fail, path="sheet"), row("u1", 1, "send it", fail, path="sheet")]
+        self.assertEqual(dm_eval.score(rows)["repeats"], 1)
+
+    def test_same_kind_other_scope_is_still_a_repeat(self):
+        """Codex on #816: a whole-site count and an Arkon-only count are both
+        "count"; the Arkon question given the whole-site answer is a repeat."""
+        same = "37 on site at 588 now."
+        rows = [{**row("u1", 0, "how many on site at 588", same, path="headcount"),
+                 "tool_data": {"kind": "count", "company": None}},
+                {**row("u1", 1, "how many arkon guys at 588", same, path="headcount"),
+                 "tool_data": {"kind": "count", "company": "Arkon"}}]
+        self.assertEqual(dm_eval.score(rows)["repeats"], 1)
+
     def test_the_export_keeps_the_kind(self):
-        r = {**row("user-abc", 0, "how many subs", "4 subs."), "tool_data": {"kind": "subs"}}
-        self.assertEqual(script.anonymise([r])[0]["kind"], "subs")
+        r = {**row("user-abc", 0, "how many subs", "4 subs.", path="headcount"),
+             "tool_data": {"kind": "subs", "company": "Arkon"}}
+        out = script.anonymise([r])[0]
+        self.assertEqual(out["kind"], "subs")
+        self.assertRegex(out["scope"], r"^[0-9a-f]{12}$")          # opaque, no name
+        self.assertNotIn("Arkon", out["scope"])
 
 
 class SampleTest(unittest.TestCase):

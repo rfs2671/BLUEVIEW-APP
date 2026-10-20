@@ -106,14 +106,15 @@ class _Replay(_Site):
 
 
 def _sent(c, before: int) -> str:
-    """What this turn put on the wire: text, or "[image: caption]"."""
+    """What this turn put on the wire: text, or "[image: caption]"; "" when
+    nothing went out (which the replay test fails on)."""
     out = []
     for p in c.wire.calls[before:]:
         if "mediaUrl" in p:
             out.append(f"[image: {p.get('caption') or ''}]")
         elif "message" in p:
             out.append(p["message"])
-    return " | ".join(out) if out else "(nothing sent)"
+    return " | ".join(out)
 
 
 def replay() -> dict:
@@ -136,7 +137,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     out = replay()
     for t in out["transcript"]:
-        print(f"[{t['scenario']}] {t['q']}\n    -> {t['a']}")
+        print(f"[{t['scenario']}] {t['q']}\n    -> {t['a'] or '(nothing sent)'}")
     print()
     print(dm_eval.render(out["report"]))
     if a.json:

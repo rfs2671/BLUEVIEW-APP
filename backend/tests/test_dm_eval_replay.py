@@ -14,8 +14,9 @@ class ReplayRuns(unittest.TestCase):
         out = replay.replay()
         asked = [t["q"] for t in out["transcript"]]
         self.assertEqual(asked, [q for turns in replay.SCENARIOS.values() for q in turns])
-        self.assertTrue(all(t["a"] for t in out["transcript"]))
-        self.assertGreater(out["report"]["answers"], 0)
+        silent = [t["q"] for t in out["transcript"] if not t["a"]]
+        self.assertEqual(silent, [], "a turn sent nothing")
+        self.assertGreaterEqual(out["report"]["answers"], len(asked) - len(replay.SCENARIOS))
         for key in ("repeats", "canned_answers", "fallbacks", "reasks"):
             self.assertIn(key, out["report"])
 

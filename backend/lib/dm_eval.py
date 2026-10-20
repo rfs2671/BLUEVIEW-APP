@@ -34,6 +34,7 @@ run of two or more capitalised words ("Moshe Klein", "Power Direct").
 
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 from collections import Counter, defaultdict
@@ -165,13 +166,26 @@ def _kind(r: dict) -> str:
     return str(r.get("kind") or (td.get("kind") if isinstance(td, dict) else "") or "")
 
 
+def scope_key(r: dict) -> str:
+    """What data a headcount answer read -- its job, the sub it named and
+    the "since" -- as an opaque key (a row's own `scope`, else derived from
+    its project_id and tool_data). Kind alone does not say it: a whole-site
+    count and an Arkon-only count are both "count" (Codex on #816)."""
+    if r.get("scope"):
+        return str(r["scope"])
+    td = r.get("tool_data") if isinstance(r.get("tool_data"), dict) else {}
+    raw = "|".join(str(x or "") for x in (r.get("project_id"), td.get("company"), td.get("since")))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def _same_data_question(a: dict, b: dict) -> bool:
-    """Two headcount answers of the same kind: the same question in other
-    words ("How many subs on site?" / "How many companies on site"), so the
-    same answer is right, not a repeat. A different kind -- a subs question
-    answered with the worker count -- still is one."""
+    """Two headcount answers of the same kind over the same data (job, sub,
+    since): the same question in other words ("How many subs on site?" /
+    "How many companies on site"), so the same answer is right, not a
+    repeat. A different kind -- a subs question answered with the worker
+    count -- or a different scope still is one."""
     return ((a.get("path") or "") == (b.get("path") or "") == "headcount"
-            and _kind(a) and _kind(a) == _kind(b))
+            and _kind(a) and _kind(a) == _kind(b) and scope_key(a) == scope_key(b))
 
 
 def _example(r: dict) -> dict:
@@ -235,10 +249,11 @@ def score(rows: Iterable[dict], *, canned_min: int = CANNED_MIN, top: int = 15) 
                 break
             a0 = str(prev.get("answer") or "").strip()
             q0 = str(prev.get("question") or "")
-            # A sheet sent again is the image asked for again, not words
-            # repeated: its logged answer is a "[Sheet]" marker.
+            # A sheet SENT again is the image asked for again, not words
+            # repeated: its logged answer is a "[Sheet]" marker. A failure
+            # text ("Found … but couldn't send the image") is words.
             if (not got_repeat and a0 and a0 == a1 and gap <= REPEAT_WINDOW
-                    and (cur.get("path") or "") != "sheet"
+                    and not a1.startswith("[Sheet]")
                     and not _same_data_question(prev, cur)
                     and " ".join(_words(q0)) != " ".join(_words(q1))):
                 got_repeat = True
