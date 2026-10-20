@@ -864,3 +864,29 @@ class TheMorningBriefSeesInPlaceChanges(unittest.TestCase):
         self.assertFalse(wa_brief._is_closed({"current_status": "UNPAID"}))
         self.assertFalse(wa_brief._is_closed({"resolution_state": "NOT CERTIFIED"}))
         self.assertTrue(wa_brief._is_closed({"current_status": "RESOLVED"}))
+
+
+class ACertificateThatWasAcceptedIsClosed(unittest.TestCase):
+    """Real job (588 Thomas S Boyland, Oct 2026): DOB violation 39189039M,
+    status CERTIFICATE ACCEPTED, was printed OPEN and drove a HIGH risk."""
+
+    def test_accepted_certificate_is_closed(self):
+        from lib import wa_alerts
+        for s in ("CERTIFICATE ACCEPTED", "certificate accepted", "CERTIFICATION ACCEPTED",
+                  "CERT ACCEPTED", "V-DOB VIOLATION - CERTIFICATE ACCEPTED"):
+            self.assertTrue(wa_alerts.status_is_closed(s), s)
+
+    def test_the_open_looking_ones_stay_open(self):
+        from lib import wa_alerts
+        for s in ("ACCEPTED", "FILING ACCEPTED", "CERTIFICATE NOT ACCEPTED", "NOT ACCEPTED", "CERTIFICATE REJECTED",
+                  "CERTIFICATE PENDING", "ACTIVE", "UNPAID"):
+            self.assertFalse(wa_alerts.status_is_closed(s), s)
+
+    def test_the_report_does_not_list_it_as_open(self):
+        from lib import report_regulatory as RG
+        from tests import report_588 as F
+        row = {"_id": "v1", "raw_dob_id": "39189039M", "record_type": "violation", "violation_number": "39189039M",
+               "issue_date": "2026-05-18", "violation_date": "2026-05-18", "current_status": "CERTIFICATE ACCEPTED",
+               "detected_at": datetime(2026, 5, 20, tzinfo=timezone.utc), "severity": "Action"}
+        got = RG.build([row], [], F.START, F.END, today=F.END, sync=F.SYNC, now=F.NOW)
+        self.assertEqual([x["number"] for x in got["open"]], [])

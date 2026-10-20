@@ -227,16 +227,34 @@ def _one_edit(a: str, b: str) -> bool:
     return short[i:] == long_[i + 1:]
 
 
+#: Words a construction log uses constantly. A misspelling is mended toward
+#: these as well as toward the logs' own frequent words (a crew that writes
+#: "wite" once and "wire" never would otherwise keep its typo).
+_VOCAB = frozenset("""wire wiring electrical electric conduit switchgear panel plumbing plumber pipe pipes piping riser
+risers fixtures fixture framing studs track drywall sheetrock insulation sprinkler sprinklers ductwork duct ducts hvac
+scaffold scaffolding stairs stair railing concrete slab rebar formwork shoring sheathing masonry brick demolition
+cleaning install installed installation rough finish testing pressure domestic water sanitary drain drains fire
+alarm lighting fixtures cables cable pulling hangers anchors welding bolting steel beams columns decking roofing
+waterproofing windows doors painting taping spackle flooring tile layout inspection mobilization""".split())
+
+
+#: Real short words that sit one edit from a vocabulary word ("wide" / "wire"):
+#: never "corrected".
+_REAL_WORDS = frozenset("""wide wipe wise wine wore tile pile pale pole pose post poor door fire hire tire core care
+bore base case cast cost last list lift loft soft roof room tube tune cube dust just must rust bust beam beams team
+seam seat heat head load road lead leak lean mean meat neat wall well will wind wing wood wool word work worn""".split())
+
+
 def spelling_fixes(texts: Iterable[str]) -> Dict[str, str]:
     """Misspellings in the logs' own wording ("wite", "eletrical"), mended from
     the logs' own vocabulary: a word seen once, one edit from a word the same
     logs use three or more times. Never from a dictionary the logs do not use,
     and never a plural or other suffix of a word ("risers" stays)."""
     count: Counter = Counter(w for t in texts for w in re.findall(r"[a-z]{4,}", str(t).lower()))
-    common = [w for w, c in count.items() if c >= 3]
+    common = sorted({w for w, c in count.items() if c >= 3} | set(_VOCAB))
     fixes: Dict[str, str] = {}
     for w, c in count.items():
-        if c > 1:
+        if c > 1 or w in _VOCAB or w in _REAL_WORDS:
             continue
         hits = [x for x in common if _one_edit(w, x) and not (x.startswith(w) or w.startswith(x))]
         if len(hits) == 1:
@@ -477,37 +495,88 @@ def _sub_rows(win: Dict[str, Any], prev: Dict[str, Any], canon_names: Dict[str, 
 
 # ── THE WORK: BY TRADE AND FLOOR, AGAINST THE PREVIOUS PERIOD ────────────────
 
+_PHRASE_SPLIT = re.compile(r"\s*(?:,|;|\s\+\s|\s&\s|\band\b)\s*", re.IGNORECASE)
+_PHRASE_NOISE = frozenset({"install", "installation", "installing", "installed", "work", "works", "the", "of"})
+
+
+def work_phrases(text: Any) -> List[str]:
+    """The separate activities one log line names: "Electrical wiring, pulling
+    wire" -> two. Commas inside parentheses stay ("Framing (layout, track and
+    studs)" is one)."""
+    t, depth, cur, parts = str(text or ""), 0, [], []
+    for ch in t:
+        depth += (ch == "(") - (ch == ")")
+        if ch in ",;" and depth <= 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    out = []
+    for part in parts:
+        for piece in ([part] if "(" in part else _PHRASE_SPLIT.split(part)):
+            piece = " ".join(piece.split()).strip(" .;,-")
+            if piece:
+                out.append(piece[:1].upper() + piece[1:])
+    return out
+
+
+def _phrase_key(phrase: str) -> str:
+    words = [w for w in re.sub(r"[^a-z0-9 ]+", " ", phrase.lower()).split() if w not in _PHRASE_NOISE]
+    return " ".join(words)
+
+
+def lc_first(text: str) -> str:
+    """Lowercase the first letter of a phrase for use mid-sentence -- unless it
+    starts with an acronym (MEP, HVAC, CMU)."""
+    first = text.split(" ", 1)[0]
+    return text if (len(first) > 1 and first[:2].isupper()) else text[:1].lower() + text[1:]
+
+
 def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str, str],
           subs: List[Dict[str, Any]], comparable: bool = True) -> List[Dict[str, Any]]:
-    """What each sub reported doing, in a few lines, and what is NEW since the
-    previous period: a work type it was not doing, or floors it had not been
-    reported on. Two sentences' worth, never one line per day: the same work
-    on the same floors across ten days is one line with its span.
+    """What each sub reported doing, in a few lines: one line per ACTIVITY
+    (a log line naming two is two), the same activity on any number of days one
+    line with its span and floors, and a line is "advanced" only when the SAME
+    activity is now reported on floors it was not before.
 
-    `comparable` is False when the previous period holds no activity at all
-    (the job's first period): nothing is then "new" or "advanced" -- there
-    is nothing to be new against -- and items are just "reported"."""
+    NOTHING IS "NEW". Logs word the same work differently from one day to the
+    next, so "this activity did not appear last period" is mostly a change of
+    wording; a report that said "NEW" for it claimed a start nobody can
+    support. A sub new to the site is shown as new in the workforce table,
+    where the check-ins prove it. `comparable` is False when the previous
+    period holds no activity at all: nothing is then "advanced"."""
     def keyed(a: Dict[str, Any]) -> str:
         return canon.get(a["key"], a["key"])
+
+    def expand(rows):
+        for a in rows:
+            for ph in work_phrases(a["work"]):
+                k = _phrase_key(ph)
+                if k:
+                    yield k, ph, a
     out = []
     for s in subs:
         mine = [a for a in cur if keyed(a) == s["key"] and a["work"]]
         before = [a for a in prev if keyed(a) == s["key"] and a["work"]]
         before_floors: Dict[str, set] = defaultdict(set)
-        for a in before:
-            before_floors[a["work"].lower()].update(a["floors"])
-        by_work: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for a in sorted(mine, key=lambda x: x["date"]):
-            by_work[a["work"].lower()].append(a)
+        for k, _ph, a in expand(before):
+            before_floors[k].update(a["floors"])
+        by_work: Dict[str, List[Any]] = defaultdict(list)
+        shown: Dict[str, str] = {}
+        for k, ph, a in expand(sorted(mine, key=lambda x: x["date"])):
+            by_work[k].append(a)
+            shown.setdefault(k, ph)
         items = []
-        for _, rows in by_work.items():
+        for k, rows in by_work.items():
             floors = sorted({f for a in rows for f in a["floors"]})
             places = Counter(a["where"] for a in rows if a["where"] and not a["floors"])
-            seen_before = rows[0]["work"].lower() in before_floors
-            new_floors = sorted(set(floors) - before_floors.get(rows[0]["work"].lower(), set()))
-            status = ("reported" if not comparable else "new" if not seen_before else
-                      "advanced" if new_floors and floors else "continued")
-            items.append({"work": rows[0]["work"], "floors": floors,
+            seen_before = k in before_floors
+            new_floors = sorted(set(floors) - before_floors.get(k, set()))
+            status = ("reported" if not comparable else
+                      "advanced" if seen_before and new_floors and floors else
+                      "continued" if seen_before else "reported")
+            items.append({"work": shown[k], "floors": floors,
                           "place": floors_label(floors) or (places.most_common(1)[0][0][:60] if places else ""),
                           "first": rows[0]["date"], "last": rows[-1]["date"], "days": len({a["date"] for a in rows}),
                           "status": status, "new_floors": new_floors if seen_before else [],
@@ -656,10 +725,29 @@ JUDGE_PROMPT = (
     "never a name, a number, a date or a location you cannot see.")
 
 
+#: Crews that do not install work: a photograph of installed work is not
+#: THEIR evidence (a cleaning crew was credited with a framing photo on the
+#: first real 588 report).
+_NON_INSTALL = ("clean", "janitor", "porter", "security", "guard", "trucking", "hauling", "rubbish", "dumpster",
+                "waste", "flagging", "traffic", "delivery", "supervis", "inspector", "engineer", "survey")
+
+#: What a photograph says, by the work the vision model SEES -- fixed words, so
+#: a caption can never name a material or a detail the model got wrong (the
+#: first real report read "wooden stairs" for a steel stair).
+WORK_CAPTION = {"framing": "Framing in place", "plumbing": "Plumbing installed", "electrical": "Electrical work installed",
+                "hvac": "Ductwork installed", "scaffolding": "Scaffolding erected", "stairs": "Stair installed",
+                "concrete": "Concrete work in place", "masonry": "Masonry in place", "demolition": "Demolition work",
+                "facade": "Facade work", "other": "Installed work", "none": "Installed work"}
+
+
 def _consistent(c: Dict[str, Any], v: Dict[str, Any]) -> bool:
     """A photo is the sub's evidence only if what it shows is that sub's kind
-    of work: a plumber's log with a photo of a stair is not plumbing progress.
-    Unknown on either side is not a contradiction."""
+    of work: a plumber's log with a photo of a stair is not plumbing progress,
+    and a crew that installs nothing has no installed-work photo. Unknown on
+    either side is not a contradiction."""
+    label = f"{c.get('trade') or ''} {c.get('sub') or ''}".lower()
+    if any(w in label for w in _NON_INSTALL):
+        return False
     sub_fam = trade_family(c.get("trade"), c.get("sub"))
     seen = str(v.get("work") or "none")
     if not sub_fam or seen in ("none", "other"):
@@ -675,11 +763,12 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
     the strongest of each sub first, then the next strongest, never the same
     sub, day and place twice and never more than two of one sub.
 
-    THE CAPTION IS WHAT THE PHOTO SHOWS, not the log's words for the activity
-    row it was attached to: that row's text is a claim about the day's work,
-    and the photo may show something else (an audit found a stair photographed
-    under a plumber's log line). The sub, date and place are as the log filed
-    them; the description is the vision model's, of the picture alone.
+    THE CAPTION IS WHAT THE PHOTO SHOWS, in FIXED WORDS by the kind of work the
+    model sees (WORK_CAPTION), not the log's words for the activity row it was
+    attached to (an audit found a stair photographed under a plumber's log
+    line) and not the model's free text (the first real report read "wooden
+    stairs" for a steel stair). The sub, date and place are as the log filed
+    them.
 
     NO BEFORE / AFTER: nothing checks that two photos show the same place."""
     good = []
@@ -689,7 +778,7 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
         v = verdicts.get(c["key"]) or {}
         if v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v):
             good.append({**c, "score": float(v.get("score") or 0),
-                         "caption": base.no_phone(v.get("caption") or "")[:100],
+                         "caption": WORK_CAPTION.get(str(v.get("work") or "none"), WORK_CAPTION["none"]),
                          "work": str(v.get("work") or "none")})
     chosen: List[dict] = []
     per_sub: Counter = Counter()
@@ -739,7 +828,12 @@ def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
     seen = {(o["date"], o["what"]) for o in out}
     for p in regulatory.get("expiring") or []:
         what = f"{p['kind']} {p['number']} expires".strip()
-        if p["expires"] and p["expires"] <= horizon and (p["expires"], what) not in seen:
+        num = str(p.get("number") or "").upper()
+        # The same expiry may already be there as a city event worded differently
+        # ("DOB permit expires · #B23173802-S5"): one line, not two (found on
+        # the first real 588 report).
+        dup = bool(num) and any(o["date"] == p["expires"] and num in str(o["what"]).upper() for o in out)
+        if p["expires"] and p["expires"] <= horizon and (p["expires"], what) not in seen and not dup:
             out.append({"date": p["expires"], "what": what, "src": "R", "kind": "permit_expiration"})
     for m in (plan or {}).get("milestones", {}).get("upcoming") or []:
         d = base._d(m.get("date")) or base._d(m.get("current_finish")) or base._d(m.get("baseline_finish"))
@@ -965,10 +1059,10 @@ def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
                     f"to an average of {m['avg']:g} from {m['prev_avg']:g}."})
     adv = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "advanced"]
     for name, i in adv[:3]:
-        out.append({"src": "L", "text": f"{name}: {i['work'].lower()} advanced to {floors_label(i['new_floors'])}."})
+        out.append({"src": "L", "text": f"{name}: {lc_first(i['work'])} advanced to {floors_label(i['new_floors'])}."})
     news = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "new"]
     for name, i in news[:2]:
-        out.append({"src": "L", "text": f"{name} began {i['work'].lower()}"
+        out.append({"src": "L", "text": f"{name} began {lc_first(i['work'])}"
                     + (f" ({i['place']})" if i["place"] else "") + "."})
     return out[:6]
 
@@ -1066,7 +1160,7 @@ def overview(rep: Dict[str, Any]) -> List[str]:
     lines = []
     for w in rep["work"][:4]:
         for i in w["items"][:1]:
-            lines.append(f"{w['name']}: {i['work'].lower()}" + (f" on {i['place']}" if i["place"] else ""))
+            lines.append(f"{w['name']}: {lc_first(i['work'])}" + (f" on {i['place']}" if i["place"] else ""))
     if lines:
         out.append("Reported work — " + "; ".join(lines) + ".")
     reg = rep["regulatory"]
@@ -1132,6 +1226,12 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
     days with no filed log, amended days, gate/log differences."""
     out = []
     site, ls, rc = rep["site"], rep["log_set"], rep["recon"]
+    reg = rep.get("regulatory") or {}
+    bins = sorted({m.group(1) for lst in ("issued", "changed", "open", "swo_active", "swo_lifted", "expiring")
+                   for r in reg.get(lst) or [] for m in [re.search(r"[?&]bin=(\d+)", str(r.get("link") or ""))] if m})
+    if len(bins) > 1:
+        out.append("The regulatory records listed refer to more than one Building Identification Number (BIN "
+                   + ", ".join(bins) + "); confirm that all of them belong to this site.")
     if rep.get("spelling"):
         out.append("Obvious misspellings in the daily logs' wording were corrected for reading ("
                    + ", ".join(f"{a} → {b}" for a, b in rep["spelling"].items()) + ").")
@@ -1239,7 +1339,7 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
     for w in rep["work"][:3]:
         if w["items"]:
             i = w["items"][0]
-            work.append(f"{i['work'].lower()}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
+            work.append(f"{lc_first(i['work'])}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
     if work:
         lines.append("- Work: " + ", ".join(work))
     reg = rep["regulatory"]

@@ -112,11 +112,22 @@ def status_tokens(status: Any) -> List[str]:
 
 def status_is_closed(status: Any) -> bool:
     """True when the status TEXT names a closed outcome (whole words, with
-    negation handled - see the block comment above)."""
+    negation handled - see the block comment above).
+
+    "CERTIFICATE ACCEPTED" (a violation's certificate of correction was
+    accepted: it is resolved) is closed; found on a real job, where the report
+    called it OPEN and HIGH. ACCEPTED alone is not a closed word (a filing can
+    be accepted and still be live), so it counts only right after CERT*, and a
+    negator before either word keeps it open ("NOT ACCEPTED", "CERTIFICATE
+    NOT ACCEPTED")."""
     toks = status_tokens(status)
     for i, t in enumerate(toks):
-        if t in _CLOSED_TOKENS and not (i > 0 and toks[i - 1] in _NEGATORS):
+        before = toks[i - 1] if i > 0 else ""
+        if t in _CLOSED_TOKENS and before not in _NEGATORS:
             return True
+        if t == "ACCEPTED" and before not in _NEGATORS and before.startswith("CERT"):
+            if i < 2 or toks[i - 2] not in _NEGATORS:
+                return True
     return False
 
 

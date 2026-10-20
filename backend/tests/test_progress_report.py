@@ -111,11 +111,13 @@ class TheChangeSinceTheLastPeriod(unittest.TestCase):
         self.assertEqual([x["name"] for x in m["gone"]], ["Metro Demolition"])
         self.assertEqual([(x["name"], x["direction"]) for x in m["changed"]], [("Arkon Builders", "up")])
 
-    def test_what_advanced_and_what_began(self):
+    def test_what_advanced_and_nothing_is_claimed_new(self):
         work = {w["name"]: w for w in rep()["work"]}
         arkon = work["Arkon Builders"]["items"][0]
         self.assertEqual((arkon["status"], arkon["floors"], arkon["new_floors"]), ("advanced", [1, 2, 3, 4], [2, 3, 4]))
-        self.assertEqual(work["Quality Plumbing"]["items"][0]["status"], "new")
+        # NOTHING IS "NEW": logs reword the same work day to day (real 588 data:
+        # every activity read NEW); a sub new to the site is shown by the check-ins.
+        self.assertEqual(work["Quality Plumbing"]["items"][0]["status"], "reported")
         self.assertEqual(work["J&G Scaffolding"]["items"][0]["status"], "continued")
 
     def test_a_first_period_asserts_no_change(self):
@@ -301,17 +303,29 @@ class ThePhotographs(unittest.TestCase):
         self.assertEqual({p["sub"] for p in got}, {"Arkon Builders", "Quality Plumbing", "Power Direct"})
         self.assertEqual(len(got), 6)
 
-    def test_the_caption_is_what_the_photo_shows_not_the_logs_words(self):
-        # AUDIT: a stair photographed under a plumber's log line was captioned
-        # with the log's "install metal stairs". The words under a photo are now
-        # the picture's own; the log supplies only sub, date and place.
-        r = F.report()
-        got = r["photos"]
-        verdicts = F.verdicts()
-        self.assertTrue(got)
-        for p in got:
-            self.assertEqual(p["caption"], verdicts[p["key"]]["caption"])
-        self.assertFalse([p for p in got if p["caption"] == p["sub"]])
+    def test_the_caption_is_fixed_words_for_the_work_seen(self):
+        # AUDIT 1: a stair photographed under a plumber's log line was captioned
+        # with the log's "install metal stairs". REAL 588: the model's free text
+        # said "wooden stairs" for a steel stair. The words under a photo are
+        # now fixed by the kind of work the model sees; the log supplies only
+        # sub, date and place.
+        cands = [{"key": "k1", "date": date(2026, 10, 9), "sub": "MQ Steel", "trade": "Steel / Ironwork",
+                  "where": "floors 3-4", "words": "Install metal stairs", "work": "x", "source": "daily log",
+                  "log_id": "x"}]
+        v = {"k1": {"ok": True, "kind": "progress", "score": 8, "work": "stairs", "caption": "Wooden stairs between floors"}}
+        got = P.pick_photos(cands, v)
+        self.assertEqual(got[0]["caption"], "Stair installed")
+        self.assertNotIn("Wooden", got[0]["caption"])
+        for p in rep()["photos"]:
+            self.assertIn(p["caption"], P.WORK_CAPTION.values())
+
+    def test_a_crew_that_installs_nothing_has_no_installed_work_photo(self):
+        # REAL 588: a cleaning crew (Echo) was shown with a framing photograph.
+        cand = {"key": "k1", "date": date(2026, 10, 7), "sub": "Echo", "trade": "Cleaning", "where": "floors 1-4",
+                "words": "House cleaning", "work": "House cleaning", "source": "daily log", "log_id": "x"}
+        v = {"k1": {"ok": True, "kind": "progress", "score": 9, "work": "framing", "caption": "Studs"}}
+        self.assertEqual(P.pick_photos([cand], v), [])
+        self.assertEqual(len(P.pick_photos([{**cand, "sub": "Arkon Builders", "trade": "Framers"}], v)), 1)
 
     def test_a_photo_of_another_trades_work_is_not_that_subs_evidence(self):
         cand = {"key": "k1", "date": date(2026, 10, 9), "sub": "Quality Plumbing", "trade": "Plumbing",
@@ -357,6 +371,71 @@ class ThePhotographs(unittest.TestCase):
         r = rep()
         r["photos"] = []
         self.assertNotIn("Visual progress", RR.render_html([r], gc="", title="t", now=F.NOW, images={}))
+
+
+class TheRealWorldFindings(unittest.TestCase):
+    """What the first report on real 588 data got wrong."""
+
+    def test_black_bars_are_trimmed_and_the_picture_is_not(self):
+        from PIL import Image
+        from lib import report_image
+        im = Image.new("RGB", (300, 800), (0, 0, 0))
+        im.paste(Image.new("RGB", (300, 400), (150, 160, 170)), (0, 200))
+        out = report_image.trim_black_bars(im)
+        self.assertEqual(out.size, (300, 400))
+        dark = Image.new("RGB", (300, 400), (10, 10, 10))                 # a night photograph is not padding
+        self.assertEqual(report_image.trim_black_bars(dark).size, (300, 400))
+        plain = Image.new("RGB", (300, 400), (150, 160, 170))
+        self.assertEqual(report_image.trim_black_bars(plain).size, (300, 400))
+
+    def test_orientation(self):
+        import base64
+        import io
+        from PIL import Image
+        from lib import report_image
+
+        def uri(w, h):
+            b = io.BytesIO()
+            Image.new("RGB", (w, h)).save(b, "JPEG")
+            return "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
+        self.assertEqual([report_image.orientation(uri(*d)) for d in ((300, 600), (600, 300), (400, 410))],
+                         ["portrait", "landscape", "square"])
+        self.assertIsNone(report_image.orientation("not an image"))
+
+    def test_portrait_photos_get_four_columns(self):
+        import base64
+        import io
+        from PIL import Image
+        b = io.BytesIO()
+        Image.new("RGB", (300, 600), (120, 130, 140)).save(b, "JPEG")
+        uri = "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
+        r = rep()
+        cands = r["photo_candidates"]
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 5, "work": "none"} for c in cands}
+        r["photos"] = P.pick_photos(P.to_judge(cands), ver, 8)
+        self.assertGreater(len(r["photos"]), 4)
+        html = RR.render_html([r], gc="", title="t", now=F.NOW, images={p["key"]: uri for p in r["photos"]})
+        self.assertIn("class='photos four'", html)
+
+    def test_the_same_expiry_is_one_line(self):
+        reg = {"expiring": [{"kind": "DOB permit", "number": "B23173802-S5", "expires": date(2026, 11, 1)}]}
+        ev = [{"source": "city", "date": "2026-11-01", "title": "DOB permit expires · #B23173802-S5",
+               "kind": "permit_expiration"}]
+        got = P.coming_up(ev, date(2026, 10, 19), None, reg)
+        self.assertEqual(len(got), 1)
+
+    def test_records_from_two_buildings_are_flagged(self):
+        r = rep()
+        r["regulatory"]["issued"] = [{"link": "https://x/PropertyProfileOverviewServlet?bin=3430621"}]
+        r["regulatory"]["expiring"] = [{"link": "https://x/PropertyProfileOverviewServlet?bin=3255362"}]
+        notes = P.data_notes(r, [], [], [])
+        self.assertTrue(any("3255362" in n and "3430621" in n for n in notes), notes)
+
+    def test_a_typo_is_mended_without_touching_real_words(self):
+        fixes = P.spelling_fixes(["Pulling wite", "Electrical wiring", "Wide flange beams", "Eletrical rough-in"])
+        self.assertEqual(fixes.get("wite"), "wire")
+        self.assertEqual(fixes.get("eletrical"), "electrical")
+        self.assertNotIn("wide", fixes)
 
 
 class TheWordingIsReadable(unittest.TestCase):
@@ -578,3 +657,44 @@ class TheTextSnapshot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActivitiesAreSplitAndGrouped(unittest.TestCase):
+    """Real 588 data: one sub showed four lines for 'Electrical wiring' because
+    each day's wording differed ("Electrical wiring, Pulling wire", ...)."""
+
+    def test_a_line_naming_two_activities_is_two(self):
+        self.assertEqual(P.work_phrases("Electrical wiring, Pulling wire"), ["Electrical wiring", "Pulling wire"])
+        self.assertEqual(P.work_phrases("Fixtures, domestic water rough, Install metal stairs"),
+                         ["Fixtures", "Domestic water rough", "Install metal stairs"])
+        self.assertEqual(P.work_phrases("Framing (layout, track and studs)"), ["Framing (layout, track and studs)"])
+        self.assertEqual(P.work_phrases("Pipe and fittings"), ["Pipe", "Fittings"])
+
+    def test_the_same_activity_on_many_days_is_one_line(self):
+        def act(day, work, floors):
+            return {"date": date(2026, 10, day), "key": "pd", "company": "Power Direct", "trade": "Electrician",
+                    "workers": 5, "work": work, "where": floors, "floors": P.floors_in(floors), "photos": [],
+                    "log": f"l{day}", "log_id": f"l{day}", "amended": False}
+        cur = [act(9, "Electrical wiring", "floors 1-4"), act(14, "Electrical wiring, switchgear", "floors 1-3"),
+               act(16, "Electrical wiring, Pulling wire", "floors 2-3")]
+        got = P._work(cur, [], {"pd": "pd"}, [{"key": "pd", "name": "Power Direct", "trade": "Electrician"}], True)
+        items = {i["work"]: i for i in got[0]["items"]}
+        self.assertEqual(sorted(items), ["Electrical wiring", "Pulling wire", "Switchgear"])
+        self.assertEqual(items["Electrical wiring"]["days"], 3)
+        self.assertEqual(items["Electrical wiring"]["floors"], [1, 2, 3, 4])
+
+    def test_advanced_needs_the_same_activity_on_new_floors(self):
+        def act(day, work, floors):
+            return {"date": date(2026, 10, day), "key": "k", "company": "K", "trade": "", "workers": 5, "work": work,
+                    "where": floors, "floors": P.floors_in(floors), "photos": [], "log": f"l{day}", "log_id": "x",
+                    "amended": False}
+        prev = [act(1, "Framing", "floors 1-2")]
+        cur = [act(8, "Install framing", "floors 1-3")]
+        got = P._work(cur, prev, {"k": "k"}, [{"key": "k", "name": "K", "trade": ""}], True)
+        self.assertEqual((got[0]["items"][0]["status"], got[0]["items"][0]["new_floors"]), ("advanced", [3]))
+
+    def test_an_acronym_keeps_its_capitals_mid_sentence(self):
+        self.assertEqual(P.lc_first("MEP rough-in"), "MEP rough-in")
+        self.assertEqual(P.lc_first("HVAC ductwork"), "HVAC ductwork")
+        self.assertEqual(P.lc_first("Framing (layout)"), "framing (layout)")
+        self.assertEqual(P.lc_first("Install metal stairs"), "install metal stairs")

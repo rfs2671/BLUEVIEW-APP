@@ -97,6 +97,7 @@ from lib import wa_facts  # noqa: E402
 from lib import attendance  # noqa: E402
 from lib import project_report  # noqa: E402
 from lib import progress_report  # noqa: E402
+from lib import report_image  # noqa: E402
 from lib import progress_report_render  # noqa: E402
 from lib import report_regulatory  # noqa: E402
 from lib import schedule_import  # noqa: E402
@@ -51719,6 +51720,7 @@ def _report_image(c: dict) -> Optional[str]:
         from PIL import Image, ImageOps
         with Image.open(io.BytesIO(raw)) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
+            im = report_image.trim_black_bars(im)       # padding, never picture
             im.thumbnail((900, 900))
             out = io.BytesIO()
             im.save(out, "JPEG", quality=78)

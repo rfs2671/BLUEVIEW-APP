@@ -47,8 +47,9 @@ body { font: 9.4pt/1.42 Helvetica, Arial, sans-serif; color: #1c2430; margin: 0;
 .mast .brand { font-size: 7.5pt; letter-spacing: 3px; font-weight: 700; opacity: .75; }
 .mast h1 { font-size: 21pt; line-height: 1.1; margin: 6px 0 2px; font-weight: 700; }
 .mast .addr { font-size: 9.5pt; opacity: .82; }
-.mast .row { display: flex; justify-content: space-between; align-items: flex-end; }
-.mast .right { text-align: right; }
+.mast .row { display: flex; justify-content: space-between; align-items: flex-start; }
+.mast .row > div:first-child { flex: 1 1 auto; min-width: 0; padding-right: 14px; }
+.mast .right { text-align: right; flex: 0 0 auto; white-space: nowrap; }
 .mast .period { font-size: 13pt; font-weight: 700; }
 .mast .meta { font-size: 8pt; opacity: .8; margin-top: 2px; }
 .flag { display: inline-block; font-size: 8pt; font-weight: 700; padding: 2px 9px; border-radius: 10px;
@@ -110,9 +111,11 @@ table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px
 .photos { font-size: 0; }
 .photo { display: inline-block; vertical-align: top; width: 48.5%; margin: 0 1.5% 10px 0; page-break-inside: avoid; font-size: 9pt; }
 .photos.three .photo { width: 31.8%; margin-right: 1.1%; }
+.photos.four .photo { width: 23.6%; margin-right: 1.1%; }
 /* THE WHOLE PHOTOGRAPH, never a crop: a portrait phone photo keeps its top and bottom. */
 .photo .frame { height: 2.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
 .photos.three .photo .frame { height: 2.0in; }
+.photos.four .photo .frame { height: 3.1in; }
 .photo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .photo .cap { font-size: 8pt; margin-top: 3px; }
 .photo .cap b { font-size: 8.5pt; }
@@ -216,7 +219,7 @@ def _mast(rep: Dict[str, Any]) -> str:
             f"<div class='row'><div><h1>{_e(rep['job'])}</h1><div class='addr'>{_e(rep['address'])}"
             f"{' · ' + _e(rep['gc']) if rep['gc'] else ''}</div></div>"
             f"<div class='right'><div class='period'>{_e(rep['period'])}</div>"
-            f"<div class='meta'>{kind} report · prepared {_e(_fmt(rep['generated'].astimezone(P.NY), '%B %-d, %Y'))}</div>"
+            f"<div class='meta'>{kind} · prepared {_e(_fmt(rep['generated'].astimezone(P.NY), '%b %-d, %Y'))}</div>"
             f"<span class='flag' style='background:{LEVEL_COLOR[st['level']]}'>{_e(st['label'])}</span></div>"
             f"</div></div>")
 
@@ -457,7 +460,13 @@ def _photos(rep: Dict[str, Any], images: Dict[str, str]) -> str:
                      f"<div class='cap'><b>{_e(p['sub'])}</b>{' · ' + _e(p['trade']) if p.get('trade') else ''}<br>"
                      f"{_e(_fmt(p['date'], '%a %b %-d, %Y'))}{' · ' + _e(p['where']) if p.get('where') else ''}"
                      f"{see}</div></div>")
-    cols = "three" if len(shown) > 4 else ""
+    from lib import report_image
+    ors = [report_image.orientation(images[p["key"]]) for p in shown]
+    portrait = sum(1 for o in ors if o == "portrait")
+    # Mostly-portrait phone photographs: four across at full height, so a
+    # portrait photograph is large instead of a sliver in a wide cell.
+    cols = ("four" if len(shown) > 4 and portrait * 10 >= len(shown) * 6 else
+            "three" if len(shown) > 4 else "")
     return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Photographs from the filed daily "
             "logs, chosen for installed work that is clearly visible. Sub, date and location are as filed and are not "
             "independently verified; “Shows” describes the picture only (automated).</p>"
@@ -548,7 +557,7 @@ def _regulatory(rep: Dict[str, Any]) -> str:
     if up:
         parts.append("<h3>Further deadlines</h3><ul class='tight'>" + "".join(
             f"<li><b>{_e(_fmt(u['date'], '%a %b %-d, %Y'))}</b> — {_e(u['what'])}{_tag(u['src'])}</li>" for u in up) + "</ul>")
-    return f"<section><h2>Regulatory and material risks {_tag('R')}</h2>{''.join(parts)}</section>"
+    return f"<section class='keep'><h2>Regulatory and material risks {_tag('R')}</h2>{''.join(parts)}</section>"
 
 
 def _n(n: int, word: str) -> str:
@@ -618,8 +627,7 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
                     + f"<section class='keep'><div class='two'>{_coming_block(rep) or '<div></div>'}"
                       f"<div style='display:flex;gap:8px'>{_schedule_card(rep)}{_finance_card(rep)}</div></div></section>"
                     + "<div style='page-break-after:always'></div>"
-                    + _progress(rep) + _schedule_section(rep) + _photos(rep, images)
-                    + ("<div style='page-break-before:always'></div>" if _photos(rep, images) else "") + _workforce(rep)
+                    + _progress(rep) + _schedule_section(rep) + _workforce(rep) + _photos(rep, images)
                     + _regulatory(rep) + _financial(rep) + _basis(rep, report_id))
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
             f"<style>{css}</style></head><body>{''.join(body)}</body></html>")
