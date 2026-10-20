@@ -440,6 +440,7 @@ export default {
     // what he inspected and the note IS the record.
     phInspectionOther: 'What else did you inspect?',
     chipsFromTrade: 'This trade’s work — not ranked off yesterday.',
+    chipsWhy: 'Ranked from where this crew left off:',
     chipsRemembered: 'Used on this project',
     chipOther: 'Other',
     chipOtherPrompt: 'What was the activity?',

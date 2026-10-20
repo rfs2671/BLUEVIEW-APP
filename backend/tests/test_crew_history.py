@@ -80,7 +80,7 @@ class Personalize(unittest.TestCase):
         self.assertEqual(len([c for c in out.chips if c.band == "other"]), 1)
 
     def test_a_crew_that_moved_on_before_is_offered_the_same_move_again(self):
-        # earlier on this project: sanitary rough, then (a gap day) vent rough; now sanitary rough again
+        # earlier on this project: sanitary rough, then vent rough; now sanitary rough again
         days = [day("d4", "plmb_sanitary_rough"), day("d3", "plmb_sanitary_rough"), day("d2", "plmb_vent_rough"),
                 day("d1", "plmb_sanitary_rough")]
         out = CH.personalize(rank(), days, SUCC)
@@ -89,12 +89,36 @@ class Personalize(unittest.TestCase):
         vent = next(c for c in out.chips if c.id == "plmb_vent_rough")
         self.assertIn("moved from sanitary rough to vent rough before", vent.reason)
 
-    def test_the_next_in_the_trades_usual_order_is_offered_when_nothing_else_says(self):
-        out = CH.personalize(rank(), [day("d1", "plmb_sanitary_rough")], SUCC)
-        ids = [c.id for c in out.chips[:3]]
-        self.assertEqual(ids[0], "plmb_sanitary_rough")
-        self.assertIn("plmb_vent_rough", ids)
-        self.assertIn("usual order", next(c.reason for c in out.chips if c.id == "plmb_vent_rough"))
+    def test_a_crew_back_after_a_week_is_ranked_from_where_it_left_off(self):
+        # the operator's case: last week's work was under-slab MEP; today the plumbers
+        # are back -- the project's latest day says nothing about them
+        from app.scheduling.trade_sequence import stages_for
+        out = CH.personalize(rank(), [day("2026-10-06", "under_slab_mep")], SUCC, stages=stages_for(["Plumbing"]))
+        ids = [c.id for c in out.chips[:5]]
+        self.assertIn("mep_rough_in", ids)
+        self.assertIn("plmb_sanitary_rough", ids)
+        reason = next(c.reason for c in out.chips if c.id == "mep_rough_in")
+        self.assertIn("next stage after under-slab MEP", reason)
+        self.assertIn("last on site 2026-10-06", reason)
+
+    def test_the_rest_of_the_current_stage_is_offered_as_concurrent_work(self):
+        from app.scheduling.trade_sequence import stages_for
+        out = CH.personalize(rank(), [day("d1", "mep_rough_in")], SUCC, stages=stages_for(["Plumbing"]))
+        self.assertIn("same stage as MEP rough-in", next(c.reason for c in out.chips if c.id == "plmb_sanitary_rough"))
+        self.assertIn("next stage after MEP rough-in", next(c.reason for c in out.chips if c.id == "plmb_domestic_water_rough"))
+
+    def test_stages_can_be_switched_off(self):
+        from app.scheduling.trade_sequence import stages_for
+        on = CH.personalize(rank(), [day("d1", "under_slab_mep")], SUCC, stages=stages_for(["Plumbing"]))
+        off = CH.personalize(rank(), [day("d1", "under_slab_mep")], SUCC, stages=stages_for(["Plumbing"]), use_order=False)
+        self.assertIn("mep_rough_in", [c.id for c in on.chips[:4]])
+        self.assertNotIn("mep_rough_in", [c.id for c in off.chips[:2]])
+
+    def test_a_schedule_hint_lifts_a_chip_even_for_a_crew_with_no_history(self):
+        out = CH.personalize(rank(), [], SUCC, scheduled={"plmb_riser_install": "scheduled: Riser install (Oct 19–Oct 23)"})
+        self.assertEqual(out.chips[0].id, "plmb_riser_install")
+        self.assertEqual(out.chips[0].reason, "scheduled: Riser install (Oct 19–Oct 23)")
+        self.assertEqual(out.chips[-1].band, "other")
 
     def test_the_rule_tables_successors_still_count(self):
         graph = build_sequence_rules_v1()
@@ -173,13 +197,6 @@ class TheBacktestDiagnostics(unittest.TestCase):
         self.assertEqual(hit_rates(ev, "continuing")["n"], 1)
         self.assertGreaterEqual(h["personalized_pos@8"], h["personalized_pos@4"])
 
-    def test_the_usual_order_signal_can_be_switched_off(self):
-        r = rank()
-        on = CH.personalize(r, [day("d1", "plmb_sanitary_rough")], SUCC)
-        off = CH.personalize(r, [day("d1", "plmb_sanitary_rough")], SUCC, use_order=False)
-        self.assertIn("plmb_vent_rough", [c.id for c in on.chips[:3]])
-        self.assertNotIn("plmb_vent_rough", [c.id for c in off.chips[:3]])
-
 
 class LearningWhatComesNext(unittest.TestCase):
     """The history ranking could not predict an activity a crew had never logged
@@ -234,4 +251,5 @@ class LearningWhatComesNext(unittest.TestCase):
         m.learn([{"date": "2026-01-01", "company_id": "SECRET-CO", "project_id": "SECRET-PROJ",
                   "data": {"activities": [{"trade": "Plumber", "activity_ids": ["plmb_sanitary_rough"], "company": "Acme"}]}}],
                 {"plmb_sanitary_rough"})
-        self.assertNotIn("SECRET", repr(dict(m.after)) + repr(dict(m.total)) + "Acme")
+        import re
+        self.assertIsNone(re.search(r"SECRET|Acme", repr(dict(m.after)) + repr(dict(m.total))))

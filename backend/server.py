@@ -33768,6 +33768,7 @@ async def get_activity_chips(
     than let the CP assume the app knows.
     """
     from app.scheduling.sequence_ranking import rank_activities
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -33800,7 +33801,45 @@ async def get_activity_chips(
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
         trade=trade,
     )
+    # THE CREW'S OWN HISTORY, ITS TRADE'S SEQUENCE AND THE CONFIRMED SCHEDULE
+    # (app/scheduling/crew_history.py, trade_sequence.py, schedule_hints.py).
+    # The ranking above keys off the project's single latest day and a fixed rule
+    # table. A crew that was away a week is ranked from where IT left off: after
+    # under-slab MEP, MEP rough-in; after framing, its next stage. A confirmed
+    # schedule's activities planned for the date lift too, in the file's own words.
+    # Only with a `trade` and only with history or a schedule hit; it reorders and
+    # labels, never selects, removes or blocks (Other last); and a read that fails
+    # leaves the ranking exactly as it was.
+    personalized, history_days = False, 0
+    if trade and trades_for_roster(trade):
+        try:
+            from app.scheduling.crew_history import crew_days, personalize
+            from app.scheduling.schedule_hints import hints_for
+            from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1, successors_by_id
+            from app.scheduling.trade_sequence import stages_for
+            from app.scheduling.trade_taxonomy_v1 import NEW_NODES
+            resolved = trades_for_roster(trade)
+            wanted = set(resolved)
+            recent_logs = await db.logbooks.find(prior_query).sort([("date", -1)]).limit(60).to_list(60)
+            days = crew_days(recent_logs, lambda r: bool(wanted & set(trades_for_roster(r.get("trade")))), day)
+            history_days = len(days)
+            hints: dict = {}
+            sched = await db[PROJECT_SCHEDULES].find_one(
+                {"company_id": _company_id_filter(project.get("company_id")), "project_id": str(project_id),
+                 "status": "confirmed"})
+            if sched:
+                hints = hints_for((sched.get("doc") or {}).get("activities") or [], day, ranking.chips)
+            if days or hints:
+                _graph = build_sequence_rules_v1()
+                ranking = personalize(ranking, days, successors_by_id(_graph),
+                                      {n.id: getattr(n, "scope", n.id) for n in list(_graph.nodes) + list(NEW_NODES)},
+                                      stages=stages_for(resolved), scheduled=hints)
+                personalized = True
+        except Exception as e:  # pragma: no cover - a ranking must never fail a day's log
+            logger.warning(f"[activity_chips] crew history skipped: {type(e).__name__}")
     out = ranking.model_dump()
+    out["personalized"] = personalized
+    out["history_days"] = history_days
     # Which day the suggestions were derived from, so the UI can be honest about
     # a stale or absent prior instead of implying the ranking is about today.
     out["prior_date"] = (prior or {}).get("date")

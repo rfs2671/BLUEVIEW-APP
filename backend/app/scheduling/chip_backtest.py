@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from app.scheduling.crew_history import crew_days, personalize
 from app.scheduling.sequence_ranking import rank_activities
 from app.scheduling.sequence_rules_v1 import build_sequence_rules_v1, successors_by_id
+from app.scheduling.trade_sequence import stages_for
 from app.scheduling.trade_taxonomy_v1 import NEW_NODES, trades_for_roster
 
 TOP = 4
@@ -92,7 +93,8 @@ def backtest(logs: Iterable[Dict[str, Any]], *, project_id: str = "p", top: int 
             days = crew_days(before, lambda r, w=wanted: bool(w & set(trades_for_roster(r.get("trade")))), day)
             base = rank_activities(project_id=project_id, prior_activity_ids=prior_ids,
                                    structural_system=structural_system, trade=trade)
-            pers = personalize(base, days, succ, labels) if days else base
+            stages = stages_for(slot["trades"])
+            pers = personalize(base, days, succ, labels, stages=stages) if days else base
             noord = personalize(base, days, succ, labels, use_order=False) if days else base
             b, p = set(_first(base.chips, top)), set(_first(pers.chips, top))
             hits_b = sum(1 for a in slot["actual"] if a in b)

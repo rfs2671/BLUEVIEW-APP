@@ -28,11 +28,13 @@ THE RULES, in the order they weigh:
     project usually last (the median length of its earlier runs).
   * HABIT: where this crew went after the same activity earlier on this
     project ("moved from A to B before").
-  * USUAL ORDER: the next activities in the trade's own catalogue order, which
-    the taxonomy declares in the order the work is normally done (sanitary rough,
-    vent rough, domestic water rough, riser install, fixture set, trim out): a
-    weaker signal than the others, used only where the rule table has no
-    successors (most trades' activities have none).
+  * STAGE: the trade's own sequence (app/scheduling/trade_sequence.py): the crew's
+    furthest stage on its last worked day -- however long ago -- gives the rest of
+    that stage and the next stage ("after underground plumbing: MEP rough-in").
+    A crew that was away a week is ranked from where it left off, not from the
+    project's latest day.
+  * SCHEDULED: an activity a confirmed schedule has planned for the date and
+    whose name matches (the caller passes these; nothing is guessed here).
   * RECENT: anything the crew logged lately, weighted by how recently (each
     earlier worked day counts 0.6 of the one after it).
 A crew with no history on the project is ranked exactly as before.
@@ -53,7 +55,9 @@ CONTINUING_BONUS = 2.0
 NEXT_BONUS = 1.2
 RUN_REACHED_BONUS = 0.8  # added to the successors of an activity run as long as usual
 HABIT_BONUS = 1.0        # per earlier observation of "from A to B", at most twice
-ORDER_BONUS = (0.9, 0.5) # the next, and the one after, in the trade's usual order
+STAGE_NEXT_BONUS = 1.5   # the stage after the crew's furthest stage
+STAGE_SAME_BONUS = 0.9   # the rest of the crew's current stage (concurrent work)
+SCHEDULED_BONUS = 1.4    # planned for today in a confirmed schedule
 _PROMOTABLE_BANDS = ("suggested", "catalog", "remembered_other", "always_available")
 
 
@@ -157,23 +161,29 @@ def _plural(n: int, word: str) -> str:
 
 def personalize(ranking: ActivityRanking, days: Sequence[Tuple[str, List[str]]],
                 successors: Dict[str, List[str]], labels: Optional[Dict[str, str]] = None,
-                use_order: bool = True) -> ActivityRanking:
+                use_order: bool = True, stages: Sequence[Sequence[str]] = (),
+                scheduled: Optional[Dict[str, str]] = None) -> ActivityRanking:
     """`ranking` reordered by the crew's own history; the same chips, the same
     set, "Other" last. With no usable history the ranking is returned as it was."""
     try:
-        return _personalize(ranking, list(days or []), successors or {}, labels or {}, use_order)
+        return _personalize(ranking, list(days or []), successors or {}, labels or {}, use_order,
+                            [list(x) for x in stages or []], dict(scheduled or {}))
     except Exception:                      # the rules must never stop a day being logged
         return ranking
 
 
 def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
-                 successors: Dict[str, List[str]], labels: Dict[str, str], use_order: bool = True) -> ActivityRanking:
-    if not days:
+                 successors: Dict[str, List[str]], labels: Dict[str, str], use_order: bool = True,
+                 stages: Optional[List[List[str]]] = None, scheduled: Optional[Dict[str, str]] = None
+                 ) -> ActivityRanking:
+    # A confirmed schedule's activities for the date count even for a crew with
+    # no history on the project; everything else needs the crew's own days.
+    if not days and not scheduled:
         return ranking
     chips = list(ranking.chips)
     by_id = {c.id: c for c in chips}
     label = {**labels, **{c.id: c.label for c in chips}}
-    last_day, last_ids = days[0]
+    last_day, last_ids = days[0] if days else ("", [])
     score: Dict[str, float] = {}
     why: Dict[str, str] = {}
     best: Dict[str, float] = {}
@@ -188,7 +198,6 @@ def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
             why[chip_id] = reason
 
     habit = transitions(days)
-    catalog_order = [c.id for c in chips if c.band == "catalog"]
     # RECENT: every activity the crew logged lately, newer worked days heavier.
     for n, (day, ids) in enumerate(days):
         for i in ids:
@@ -212,12 +221,19 @@ def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
             if x == a and y in by_id and y not in last_ids:
                 lift(y, HABIT_BONUS * min(n, 2) + extra,
                      f"this crew moved from {label.get(a, a)} to {label.get(y, y)} before" + tail)
-        if use_order and a in catalog_order:
-            k = catalog_order.index(a)
-            for step, pts in enumerate(ORDER_BONUS, start=1):
-                if k + step < len(catalog_order) and catalog_order[k + step] not in last_ids:
-                    lift(catalog_order[k + step], pts + extra,
-                         f"next in the usual order after {label.get(a, a)}" + tail)
+    if use_order and stages and days:
+        from app.scheduling.trade_sequence import next_work
+        extra_run = {}
+        for a in last_ids:
+            cur, completed = runs_of(days, a)
+            extra_run[a] = RUN_REACHED_BONUS if (completed and cur >= _median(completed) >= 2) else 0.0
+        for chip_id, kind, anchor in next_work(stages, last_ids):
+            pts = (STAGE_NEXT_BONUS if kind == "next" else STAGE_SAME_BONUS) + extra_run.get(anchor, 0.0)
+            what = label.get(anchor, anchor)
+            lift(chip_id, pts, (f"next stage after {what}" if kind == "next" else f"same stage as {what}")
+                 + f" (last on site {last_day})")
+    for chip_id, why_text in (scheduled or {}).items():
+        lift(chip_id, SCHEDULED_BONUS, why_text)
     ranked = sorted((i for i in score if score[i] > 0), key=lambda i: (-score[i], by_id[i].rank))[:MAX_PERSONAL]
     if not ranked:
         return ranking

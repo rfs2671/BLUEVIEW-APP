@@ -292,7 +292,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
         # ── interior fit-out ─────────────────────────────────────────
         _wp("building_envelope_closed", "gc",
             "building envelope closed / dried-in"),
-        _wp("interior_framing", "carpentry", "framing (layout, track and studs)"),
+        _wp("interior_framing", "carpentry", "interior framing"),
         # OPERATOR RULING: insulation_prep is DELETED. Its only edge came from
         # the "building envelope closed -> framing, insulation prep" rule the
         # operator corrected away, which left the node edgeless; the operator

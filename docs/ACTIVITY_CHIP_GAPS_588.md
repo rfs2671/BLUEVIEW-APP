@@ -49,3 +49,14 @@ The taxonomy and sequence rules are signed-off content, so none of these was cha
 3. **Sequence edges for framing and plumbing:** `layout -> wall framing -> sheathing`, `MEP rough-in -> domestic water
    rough -> water heater -> fixtures`: the rule table has none, so nothing is suggested next.
 4. **Names:** a framer's "layout" (new activity) and "framing (layout, track and studs)" read as different activities.
+
+## Decided by the operator (2026-10) and built
+1. **Concrete / foundation crews** now also offer excavation, shoring and piles (site prep, shoring, piles ...).
+   **Under-slab MEP is not foundation work** and was not added: it stays with the plumbers, electricians and HVAC.
+2. **The list follows where each trade left off.** A crew back after a week (last logged under-slab MEP) is ranked
+   from there -- MEP rough-in, then the rest of that stage and the stage after -- not from the project's latest day.
+3. **Trade sequences** (`app/scheduling/trade_sequence.py`): stages for excavation, shoring, piles, concrete, wood /
+   CFS / interior framing, plumbing, electrical, HVAC, drywall. A **confirmed schedule's** activities planned for the date
+   lift too, in the file's own words (`schedule_hints.py`; strict name match, nothing inferred).
+4. **Framing is three activities**: structural framing, interior framing, ceiling drops. "Layout" is no longer a
+   framing step (marking track and studs is part of framing); other trades keep their own layout.

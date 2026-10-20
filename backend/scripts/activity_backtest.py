@@ -62,7 +62,7 @@ async def main(a):
         name = {None: "all", "continuing": "continuing (logged on the crew's previous day)",
                 "new": "new (not logged on the crew's previous day)"}[kind]
         print(f"  {name}: {h['n']} activities")
-        for label, key in (("baseline", "baseline_pos"), ("crew history (shelved)", "personalized_pos"),
+        for label, key in (("baseline", "baseline_pos"), ("crew history + trade sequence", "personalized_pos"), ("crew history, no sequence", "no_order_pos"),
                            ("LEARNED next-activity, all lifted", "learned_pos"),
                            ("LEARNED, first 2 kept", "learned_keep2_pos")):
             cells = "  ".join(f"@{n}: {BT.rate(h[f'{key}@{n}'], h['n']):>4}" for n in (4, 6, 8))
