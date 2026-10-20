@@ -89,7 +89,7 @@ import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import * as ImagePicker from 'expo-image-picker';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import {
-  composeChipBands,
+  composeChipBands, searchChips,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, newActivityId, buildCrewsFromRoster,
   rosterIdIndex,
   composeSelection, cameraReady,
@@ -473,6 +473,7 @@ export default function DailyJobsiteLog() {
   // Null until it loads, and on any failure -- the stored name then prints.
   const [tradeVocab, setTradeVocab] = useState(null);
   const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
+  const [chipSearch, setChipSearch] = useState({});           // activity_id -> what was typed
   const [equipmentOpen, setEquipmentOpen] = useState(false);
 
   const rosterIdsRef = useRef(new Map());
@@ -2355,6 +2356,44 @@ export default function DailyJobsiteLog() {
                 </>
               )}
 
+              {/* SEARCH EVERY ACTIVITY. The card offers this crew's own trade
+                  (operator ruling), which put other trades' work out of reach
+                  except as free text. Nothing is listed until two letters are
+                  typed; the default four and the trade's list are untouched. */}
+              {(chipsByTrade[''] || []).length > 0 && (
+                <>
+                  <TextInput
+                    style={s.chipSearchInput}
+                    value={chipSearch[a.activity_id] || ''}
+                    onChangeText={(v) => setChipSearch((p) => ({ ...p, [a.activity_id]: v }))}
+                    editable={!locked}
+                    placeholder={t('chipsSearchPlaceholder')}
+                    placeholderTextColor={outdoor.textSoft}
+                    accessibilityLabel={t('chipsSearchPlaceholder')}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                  />
+                  {(() => {
+                    const typed = chipSearch[a.activity_id] || '';
+                    const found = searchChips(chipsByTrade[''], typed, [...primary, ...rest].map((c) => c.id));
+                    if (typed.trim().length < 2) return null;
+                    return found.length > 0 ? (
+                      <View style={s.chipWrap}>
+                        {found.map((c) => (
+                          <Chip
+                            key={c.id} label={c.label}
+                            selected={(a.activity_ids || []).includes(c.id)}
+                            onPress={() => toggleActivityChip(i, c.id)}
+                          />
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={s.lockedHint}>{t('chipsSearchNone')}</Text>
+                    );
+                  })()}
+                </>
+              )}
+
               {/* LOCATION */}
               <Text style={s.question}>{t('locationQuestion')}</Text>
               {locationsAreDefault && (
@@ -3031,6 +3070,14 @@ function buildStyles() {
     },
     headcountLabel: {
       fontSize: typography.sizes.sm, fontWeight: '600', color: outdoor.textDim,
+    },
+    chipSearchInput: {
+      minHeight: touchTarget.min, marginTop: spacing.sm,
+      paddingHorizontal: spacing.sm,
+      borderWidth: 1, borderColor: outdoor.lineStrong,
+      borderRadius: borderRadius.md,
+      backgroundColor: outdoor.surfaceSunk,
+      color: outdoor.text, fontSize: typography.sizes.md,
     },
     headcountInput: {
       minWidth: 64, minHeight: touchTarget.min,

@@ -429,6 +429,8 @@ export default {
     chipsSuggested: 'Suggested from yesterday',
     chipsAlwaysAvailable: 'Always available',
     chipsCatalog: 'All activities',
+    chipsSearchPlaceholder: 'Search every activity…',
+    chipsSearchNone: 'Nothing matches — use Other and type it.',
     // Shown when a crew's four come from its TRADE rather than from the
     // sequence. Most trades' activities carry no edges in the graph, so a
     // crew with a real prior can still get no sequenced chips — and
