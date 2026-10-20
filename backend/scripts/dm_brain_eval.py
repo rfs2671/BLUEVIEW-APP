@@ -409,6 +409,16 @@ def _q(run: dict) -> str:
     return f"{sum(q.values())}/{len(q)}" if q else "-"
 
 
+def _fully_ok(run: dict) -> bool:
+    """Every quality check of one run passed (eval results, not a collection)."""
+    q = run.get("quality") or {}
+    return bool(q) and all(q.values())
+
+
+def _passed(run: dict) -> bool:
+    return bool(run.get("pass"))
+
+
 def _stats(results: list, fixed: list, models: List[str]) -> List[str]:
     lines = ["| Model | Required fixed cases | All fixed cases | DMs fully OK | Median s | P90 s | "
              "Total cost |", "|---|---|---|---|---|---|---|"]
@@ -417,11 +427,11 @@ def _stats(results: list, fixed: list, models: List[str]) -> List[str]:
         fruns = [(f, f["runs"].get(m) or {}) for f in fixed]
         secs = sorted(x.get("seconds") or 0 for x in runs + [fr for _, fr in fruns])
         costs = [x.get("cost_usd") for x in runs + [fr for _, fr in fruns] if x.get("cost_usd") is not None]
-        ok = sum(1 for x in runs if x.get("quality") and all(x["quality"].values()))
-        req = [fr.get("pass") for f, fr in fruns if f["required"]]
+        ok = len([x for x in runs if _fully_ok(x)])
+        req = [_passed(fr) for f, fr in fruns if f["required"]]
         p90 = secs[max(0, int(round(0.9 * len(secs))) - 1)] if secs else 0
         lines.append(f"| {m} | {sum(bool(x) for x in req)}/{len(req)} | "
-                     f"{sum(bool(fr.get('pass')) for _, fr in fruns)}/{len(fruns)} | {ok}/{len(runs)} | "
+                     f"{len([fr for _, fr in fruns if _passed(fr)])}/{len(fruns)} | {ok}/{len(runs)} | "
                      f"{statistics.median(secs) if secs else 0:.1f} | {p90:.1f} | "
                      f"{_money(sum(costs)) if costs else 'n/a'} |")
     return lines
