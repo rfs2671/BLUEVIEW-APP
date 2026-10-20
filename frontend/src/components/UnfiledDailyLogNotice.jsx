@@ -116,7 +116,7 @@ export default function UnfiledDailyLogNotice() {
 
   const text = noticeText({ projectName, date: draft.date });
   const bg = isDark ? '#0f172a' : '#ffffff';
-  const fg = isDark ? '#e2e8f0' : '#0A1929';
+  const fg = isDark ? '#e2e8f0' : '#151A1D';
   const quiet = isDark ? '#94a3b8' : '#475569';
 
   return (
@@ -186,7 +186,7 @@ const s = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm,
   },
   primary: { backgroundColor: colors.primary || '#0A1929' },
-  primaryText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  primaryText: { color: colors.onPrimary, fontSize: 15, fontWeight: '700' },
   secondary: { borderWidth: 1, borderColor: '#cbd5e1' },
   secondaryText: { fontSize: 15, fontWeight: '600' },
   quiet: {},

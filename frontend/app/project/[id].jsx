@@ -125,7 +125,7 @@ const deskStyles = StyleSheet.create({
     flex: 1, minWidth: 150, borderWidth: 1, borderRadius: borderRadius.lg,
     paddingVertical: spacing.md, paddingHorizontal: spacing.md,
   },
-  tileNumber: { fontSize: 32, fontWeight: '300', letterSpacing: -0.5 },
+  tileNumber: { fontSize: 32, fontFamily: typography.num, fontWeight: '600', letterSpacing: -0.5 },
   tileLabel: { fontSize: typography.sizes.sm, marginTop: 2 },
   qaItem: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 44,
@@ -644,7 +644,7 @@ export default function ProjectDetailScreen() {
   const hasValidBin = isValidBin(project?.nyc_bin);
 
   const quickActions = [
-    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: '#3b82f6' },
+    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: colors.primary },
     // THE DAILY LOG TILE IS GONE, AND NO CAPABILITY WENT WITH IT.
     // It opened app/daily-log.jsx, which wrote to db.daily_logs -- a
     // collection whose last row is dated 16 April 2026. The daily record
@@ -662,18 +662,18 @@ export default function ProjectDetailScreen() {
     // accent colors (like Plans/Daily Log/Activity) so they don't read as
     // disabled/greyed. They were never gated; the grey was only this hardcoded
     // semantic.neutral.
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
+    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.critical, warn: !hasValidBin },
     // No Report Settings tile: the daily report's time and email list are on
     // Reports, with the rest of the job's reports.
-    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
+    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.attention },
     // Admins: the GC WhatsApp group and the DOB alerts Levelog posts there.
     ...(isAdmin ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' /* brand: WhatsApp */ }] : []),
     // Admins and PMs: punch items from walkthroughs in WhatsApp.
     ...(canSeePunch(user) ? [{ title: 'Punch list', icon: ClipboardCheck, path: `/projects/${projectId}/punch`, color: '#f97316' }] : []),
     // Admins and PMs: PDF project reports (generate, list, download, schedule).
-    ...(canSeeReports(user) ? [{ title: 'Reports', icon: FileBarChart, path: `/projects/${projectId}/reports`, color: '#6366f1' }] : []),
+    ...(canSeeReports(user) ? [{ title: 'Reports', icon: FileBarChart, path: `/projects/${projectId}/reports`, color: colors.primary }] : []),
     // Site Manager / PM: the job's logs, read-only, with photographs.
-    ...(canOpenLogBooksTile(user) ? [{ title: 'Log Books', icon: BookOpen, path: `/logbooks?projectId=${projectId}`, color: '#10b981' }] : []),
+    ...(canOpenLogBooksTile(user) ? [{ title: 'Log Books', icon: BookOpen, path: `/logbooks?projectId=${projectId}`, color: semantic.verified }] : []),
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
@@ -879,7 +879,8 @@ export default function ProjectDetailScreen() {
                 </View>
                 {project?.project_class && project.project_class !== 'regular' && (
                   <View style={[s.projectClassBadge, {
-                    backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : semantic.attentionBg,
+                    backgroundColor: project.project_class === 'major_b' ? 'transparent' : semantic.attentionBg,
+                    ...(project.project_class === 'major_b' && { borderWidth: 1.5, borderColor: colors.text.muted }),
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
@@ -928,28 +929,19 @@ export default function ProjectDetailScreen() {
 
           {/* Stats Row */}
           <View style={s.statsRow}>
-            <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Users size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
+            <StatCard style={[s.statCard, { borderTopColor: colors.accent }]}>
               {/* "—" when the check-in read failed: unknown, never a 0 that
                   claims the site is empty. */}
               <Text style={s.statValue}>{onSiteState === 'ok' ? stats.onSiteWorkers : '—'}</Text>
               <Text style={s.statLabel}>ON SITE</Text>
             </StatCard>
             <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
               <Text style={s.statValue}>
                 {nfcState !== 'ok' && nfcTags.length === 0 ? '—' : nfcTags.length}
               </Text>
               <Text style={s.statLabel}>NFC TAGS</Text>
             </StatCard>
             <StatCard style={s.statCard}>
-              <IconPod style={s.statIcon}>
-                <Smartphone size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
               <Text style={s.statValue}>{devicesState === 'ok' ? siteDevices.length : '—'}</Text>
               <Text style={s.statLabel}>DEVICES</Text>
             </StatCard>
@@ -969,8 +961,8 @@ export default function ProjectDetailScreen() {
                     pressed && s.actionCardPressed,
                   ]}
                 >
-                  <View style={[s.actionIcon, { backgroundColor: `${action.color}20` }]}>
-                    <Icon size={24} strokeWidth={1.5} color={action.color} />
+                  <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
+                    <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
                   <Text style={s.actionTitle}>{action.title}</Text>
                   {action.warn && (
@@ -1066,15 +1058,15 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push(`/projects/${projectId}/whatsapp-checklists`)}
               style={({ pressed }) => [
                 { flexDirection: 'row', alignItems: 'center', padding: spacing.md,
-                  borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.08)',
-                  borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                  borderRadius: 12, backgroundColor: withAlpha(colors.primary, 0.08),
+                  borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
                   marginBottom: spacing.md },
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <ListChecks size={20} strokeWidth={1.5} color="#3b82f6" />
+              <ListChecks size={20} strokeWidth={1.5} color={colors.primary} />
               <View style={{ flex: 1, marginLeft: spacing.sm }}>
-                <Text style={{ color: '#3b82f6', fontSize: 13, fontWeight: '600' }}>
+                <Text style={{ color: colors.primary, fontSize: 13, fontWeight: '600' }}>
                   Action Items
                 </Text>
                 <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
@@ -1528,7 +1520,7 @@ export default function ProjectDetailScreen() {
                     <>
                       <View style={s.scanSection}>
                         <View style={s.scanHeader}>
-                          <Radio size={20} strokeWidth={1.5} color="#3b82f6" />
+                          <Radio size={20} strokeWidth={1.5} color={colors.primary} />
                           <Text style={s.scanTitle}>Scan NFC Tag</Text>
                         </View>
 
@@ -1546,7 +1538,7 @@ export default function ProjectDetailScreen() {
                             <Zap 
                               size={20} 
                               strokeWidth={1.5} 
-                              color={scanningNfc ? '#4ade80' : colors.text.primary} 
+                              color={scanningNfc ? semantic.verified : colors.text.primary} 
                             />
                           }
                           onPress={handleScanNfcTag}
@@ -1768,8 +1760,10 @@ function buildStyles(colors, isDark) {
     minWidth: 0,
   },
   projectName: {
-    fontSize: 28,
-    fontWeight: '300',
+    fontFamily: typography.display,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.6,
     color: colors.text.primary,
     marginBottom: spacing.xs,
     flexShrink: 1,
@@ -1793,7 +1787,7 @@ function buildStyles(colors, isDark) {
     flex: 1,
     minWidth: 0,
     fontSize: 14,
-    color: colors.text.muted,
+    color: colors.text.secondary,
   },
   statsRow: {
     flexDirection: 'row',
@@ -1802,19 +1796,23 @@ function buildStyles(colors, isDark) {
   },
   statCard: {
     flex: 1,
+    borderTopWidth: 3,
+    borderTopColor: colors.glass.border,
   },
   statIcon: {
     marginBottom: spacing.sm,
   },
   statValue: {
-    fontSize: 28,
-    fontWeight: '200',
+    fontFamily: typography.num,
+    fontSize: 40,
+    fontWeight: '600',
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
   statLabel: {
     ...typography.label,
-    fontSize: 9,
+    fontSize: 10,
+    fontWeight: '600',
     color: colors.text.muted,
   },
   sectionLabel: {
@@ -1880,14 +1878,14 @@ function buildStyles(colors, isDark) {
     height: 22,
     borderRadius: 11,
     paddingHorizontal: 6,
-    backgroundColor: 'rgba(96, 165, 250, 0.25)',
+    backgroundColor: withAlpha(colors.primary, 0.25),
     borderWidth: 1,
-    borderColor: 'rgba(96, 165, 250, 0.6)',
+    borderColor: withAlpha(colors.primary, 0.6),
     alignItems: 'center',
     justifyContent: 'center',
   },
   notificationsBadgeText: {
-    color: '#60a5fa',
+    color: colors.primary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -1903,24 +1901,24 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
-    padding: spacing.lg,
-    alignItems: 'center',
-    gap: spacing.sm,
+    padding: spacing.md,
+    alignItems: 'flex-start',
+    gap: spacing.md,
   },
   actionCardPressed: {
     opacity: 0.8,
     transform: [{ scale: 0.98 }],
   },
   actionIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: borderRadius.lg,
+    width: 40,
+    height: 40,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionTitle: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '700',
     color: colors.text.primary,
   },
   actionWarnBadge: {
@@ -2247,8 +2245,8 @@ function buildStyles(colors, isDark) {
     marginTop: spacing.md,
   },
   scanButton: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderColor: 'rgba(59, 130, 246, 0.3)',
+    backgroundColor: withAlpha(colors.primary, 0.1),
+    borderColor: withAlpha(colors.primary, 0.3),
   },
   scanButtonActive: {
     backgroundColor: semantic.verifiedBg,

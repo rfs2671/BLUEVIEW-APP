@@ -206,7 +206,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
     if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
-    if (creatorId === currentUserId) return '#1565C0';
+    if (creatorId === currentUserId) return '#243746';
     return semantic.neutral;
   };
 
@@ -229,9 +229,9 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
         <View style={{ flex: 1 }} />
         <Pressable
           onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNotePanel(false); }}
-          style={[styles.closeBtn, pinModeActive && { backgroundColor: '#3b82f6' }]}
+          style={[styles.closeBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
         >
-          <MapPin size={20} strokeWidth={1.5} color="#fff" />
+          <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
         </Pressable>
         {url && (
           <Pressable onPress={() => window.open(url, '_blank')} style={styles.closeBtn}>
@@ -242,7 +242,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
 
       {loading && (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#3b82f6" />
+          <ActivityIndicator size="large" color={'#E3C27A'} />
           <Text style={styles.loadingText}>Loading document...</Text>
         </View>
       )}
@@ -289,7 +289,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
             {pinModeActive && (
               <div style={{
                 position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                backgroundColor: withAlpha('#E3C27A', 0.08),
                 display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
                 paddingBottom: 32,
                 zIndex: 10,
@@ -360,7 +360,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
                   }}
                 >
-                  <Users size={16} strokeWidth={1.5} color="#93c5fd" />
+                  <Users size={16} strokeWidth={1.5} color={'#E3C27A'} />
                   <Text style={{ color: '#e2e8f0', fontSize: 14, marginLeft: 8, flex: 1 }}>
                     {selectedRecipientIds.length === 0
                       ? 'Everyone on the project'
@@ -376,7 +376,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                     style={{
                       marginTop: 6, maxHeight: 220,
                       borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-                      borderRadius: 8, backgroundColor: '#0b1220',
+                      borderRadius: 8, backgroundColor: '#0E161D',
                     }}
                   >
                     <ScrollView style={{ maxHeight: 220 }}>
@@ -391,8 +391,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                       >
                         <View style={{
                           width: 18, height: 18, borderRadius: 4,
-                          borderWidth: 1, borderColor: '#3b82f6',
-                          backgroundColor: selectedRecipientIds.length === 0 ? '#3b82f6' : 'transparent',
+                          borderWidth: 1, borderColor: '#E3C27A',
+                          backgroundColor: selectedRecipientIds.length === 0 ? '#E3C27A' : 'transparent',
                           marginRight: 10,
                         }} />
                         <Text style={{ color: '#e2e8f0', fontSize: 14 }}>Everyone</Text>
@@ -411,8 +411,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                           >
                             <View style={{
                               width: 18, height: 18, borderRadius: 4,
-                              borderWidth: 1, borderColor: '#3b82f6',
-                              backgroundColor: checked ? '#3b82f6' : 'transparent',
+                              borderWidth: 1, borderColor: '#E3C27A',
+                              backgroundColor: checked ? '#E3C27A' : 'transparent',
                               marginRight: 10,
                             }} />
                             <View style={{ flex: 1 }}>
@@ -525,7 +525,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
 }
 
 const styles = StyleSheet.create({
-  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, backgroundColor: '#050a12', display: 'flex', flexDirection: 'column' },
+  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, backgroundColor: '#131E27', display: 'flex', flexDirection: 'column' },
   topBar: { flexDirection: 'row', alignItems: 'center', padding: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.1), gap: 12 },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: withAlpha('#ffffff', 0.1), alignItems: 'center', justifyContent: 'center' },
   fileName: { color: '#e2e8f0', fontSize: 15, fontWeight: '600', maxWidth: 400 },
@@ -533,8 +533,8 @@ const styles = StyleSheet.create({
   loadingText: { color: '#94a3b8', marginTop: 12, fontSize: 14 },
   errorTitle: { color: '#e2e8f0', fontSize: 18, fontWeight: '600', marginTop: 16 },
   errorSub: { color: '#64748b', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  retryBtn: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#3b82f6', borderRadius: 8 },
-  retryText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  retryBtn: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#E3C27A', borderRadius: 8 },
+  retryText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
 
   // Side panel
   sidePanel: { width: 340, backgroundColor: '#0f172a', borderLeftWidth: 1, borderLeftColor: withAlpha('#ffffff', 0.1), padding: 20 },
@@ -543,20 +543,20 @@ const styles = StyleSheet.create({
   panelSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 16 },
   textInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 80, textAlignVertical: 'top' },
   panelActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  sendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#3b82f6', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
-  sendBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  sendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E3C27A', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
+  sendBtnText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
   cancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
   cancelBtnText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
 
   // Thread
   threadScroll: { flex: 1, marginTop: 12 },
   threadEntry: { marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06) },
-  threadAuthor: { color: '#93c5fd', fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  threadAuthor: { color: '#E3C27A', fontSize: 13, fontWeight: '600', marginBottom: 4 },
   threadMessage: { color: '#e2e8f0', fontSize: 14, lineHeight: 20 },
   threadTime: { color: '#475569', fontSize: 11, marginTop: 4 },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
-  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
+  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
   threadActions: { flexDirection: 'row', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },

@@ -27,12 +27,13 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { chrome } from '../../../src/styles/semanticColors';
 
 const CATEGORY_COLORS = {
-  safety: semantic.neutral,
-  materials: semantic.neutral,
-  coordination: '#3b82f6',
-  inspection: '#a855f7',
+  get safety() { return semantic.neutral; },
+  get materials() { return semantic.neutral; },
+  get coordination() { return chrome.brand; },
+  get inspection() { return chrome.brand; },
   other: '#6b7280',
 };
 
@@ -261,7 +262,7 @@ export default function WhatsAppChecklistsScreen() {
                                     it.completed && { backgroundColor: colors.primary, borderColor: colors.primary },
                                   ]}
                                 >
-                                  {it.completed && <Check size={12} strokeWidth={3} color="#fff" />}
+                                  {it.completed && <Check size={12} strokeWidth={3} color={colors.onPrimary} />}
                                 </View>
                                 <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: catColor }} />
                                 <View style={{ flex: 1 }}>
@@ -275,7 +276,7 @@ export default function WhatsAppChecklistsScreen() {
                                   </Text>
                                   <View style={s.metaRow}>
                                     {prio && (
-                                      <Text style={[s.metaPrio, { color: it.priority === 'high' ? '#ef4444' : it.priority === 'medium' ? semantic.attention : colors.text.muted }]}>
+                                      <Text style={[s.metaPrio, { color: it.priority === 'high' ? semantic.critical : it.priority === 'medium' ? semantic.attention : colors.text.muted }]}>
                                         {prio}
                                       </Text>
                                     )}
@@ -330,8 +331,8 @@ const buildStyles = (colors) =>
       marginBottom: spacing.sm,
     },
     titleText: {
-      fontSize: 36,
-      fontWeight: '200',
+      fontSize: 30,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -0.5,
     },

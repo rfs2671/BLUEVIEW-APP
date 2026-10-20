@@ -209,7 +209,7 @@ export default function PeopleCard({ projectId }) {
               </Pressable>
               <Pressable onPress={save} disabled={saving}
                 style={[s.save, saving && s.disabled]} accessibilityRole="button">
-                {saving ? <ActivityIndicator size="small" color="#fff" />
+                {saving ? <ActivityIndicator size="small" color={colors.onPrimary} />
                   : <Text style={s.saveText}>Save</Text>}
               </Pressable>
             </View>
@@ -271,7 +271,7 @@ function buildStyles(colors) {
       flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',
       borderRadius: borderRadius.lg, backgroundColor: colors.primary || '#2563eb',
     },
-    saveText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+    saveText: { color: colors.onPrimary, fontSize: 14, fontWeight: '700' },
     clear: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
     clearText: { color: semantic.attention, fontSize: 14, fontWeight: '600' },
     disabled: { opacity: 0.5 },

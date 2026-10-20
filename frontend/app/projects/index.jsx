@@ -888,8 +888,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     letterSpacing: -1,
     color: colors.text.primary,
   },
@@ -1056,7 +1056,7 @@ function buildStyles(colors, isDark) {
     // GlassCard variant="modal" has no gradient layer — just blur — so
     // on mobile you can still read the page behind it. Add a solid
     // theme-aware fill so the card is fully opaque.
-    backgroundColor: isDark ? '#121826' : '#ffffff',
+    backgroundColor: isDark ? '#1C2B38' : '#ffffff',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1149,7 +1149,7 @@ function buildStyles(colors, isDark) {
   },
   levelToggleOn: {
     backgroundColor: semantic.verifiedBg,
-    borderColor: '#4ade80',
+    borderColor: semantic.verified,
   },
   levelToggleText: {
     fontSize: 11,
@@ -1157,7 +1157,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   levelToggleTextOn: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   toggleRow: {
     flexDirection: 'row',
@@ -1177,7 +1177,7 @@ function buildStyles(colors, isDark) {
   },
   toggleBoxActive: {
     backgroundColor: semantic.verifiedBg,
-    borderColor: '#4ade80',
+    borderColor: semantic.verified,
   },
   toggleLabel: {
     fontSize: 14,
@@ -1187,7 +1187,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(59,130,246,0.15)',
+    backgroundColor: withAlpha(colors.primary, 0.15),
     flexShrink: 0,
   },
   classificationMajor: {
@@ -1196,7 +1196,7 @@ function buildStyles(colors, isDark) {
   classificationText: {
     fontSize: 10,
     fontWeight: '600',
-    color: '#60a5fa',
+    color: colors.primary,
   },
   classificationTextMajor: {
     color: semantic.neutralStrong,

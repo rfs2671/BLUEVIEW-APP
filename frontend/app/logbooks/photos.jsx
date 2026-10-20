@@ -224,12 +224,12 @@ export default function LogbookPhotosScreen() {
   const header = (
     <View style={s.header}>
       <Pressable
-        style={s.headerBack}
+        style={s.barBack}
         accessibilityRole="button"
         accessibilityLabel={t('back')}
         onPress={() => router.back()}
       >
-        <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+        <ArrowLeft size={24} strokeWidth={2} color={outdoor.onBar} />
       </Pressable>
       <View style={s.headerText}>
         <Text style={s.headerTitle}>{t('screenTitle')}</Text>

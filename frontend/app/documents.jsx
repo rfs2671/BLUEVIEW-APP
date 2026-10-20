@@ -44,7 +44,7 @@ import {
   UNFILED, folderLabel, groupByFolder, collidingNames, isColliding, indexFailureNote,
   indexGapNote, treeHeadline, COLLISION_NOTE,
 } from '../src/utils/dropboxTree';
-import { semantic, withAlpha } from '../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
@@ -61,7 +61,7 @@ const getFileIcon = (fileName) => {
   const ext = fileName?.split('.').pop()?.toLowerCase();
 
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic'].includes(ext)) {
-    return { Icon: Image, color: '#f472b6' };
+    return { Icon: Image, color: chrome.brand };
   }
   if (['pdf'].includes(ext)) {
     return { Icon: FileText, color: semantic.neutral };
@@ -70,7 +70,7 @@ const getFileIcon = (fileName) => {
     return { Icon: FileSpreadsheet, color: semantic.neutral };
   }
   if (['doc', 'docx', 'txt', 'rtf'].includes(ext)) {
-    return { Icon: FileText, color: '#3b82f6' };
+    return { Icon: FileText, color: chrome.brand };
   }
   if (['dwg', 'dxf', 'skp'].includes(ext)) {
     return { Icon: FileCode, color: semantic.neutral };
@@ -509,12 +509,12 @@ export default function DocumentsScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
                     {isCompanyAdmin(user) && (
                       <Pressable
-                        style={[s.refreshBtn, { backgroundColor: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.3)', borderWidth: 1 }]}
+                        style={[s.refreshBtn, { backgroundColor: withAlpha(colors.primary, 0.15), borderColor: withAlpha(colors.primary, 0.3), borderWidth: 1 }]}
                         onPress={handleUploadFile}
                         disabled={uploading}
                       >
-                        <Upload size={14} strokeWidth={1.5} color="#3b82f6" />
-                        <Text style={[s.refreshText, { color: '#3b82f6' }]}>
+                        <Upload size={14} strokeWidth={1.5} color={colors.primary} />
+                        <Text style={[s.refreshText, { color: colors.primary }]}>
                           {uploading ? 'Uploading...' : 'Upload PDF'}
                         </Text>
                       </Pressable>
@@ -727,8 +727,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -766,7 +766,7 @@ function buildStyles(colors, isDark) {
     borderBottomWidth: 1,
     borderBottomColor: withAlpha('#ffffff', 0.05),
   },
-  dropdownItemActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
+  dropdownItemActive: { backgroundColor: withAlpha(colors.primary, 0.1) },
   dropdownItemText: { fontSize: 15, color: colors.text.primary },
   refreshRow: {
     flexDirection: 'row',

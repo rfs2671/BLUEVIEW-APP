@@ -151,7 +151,7 @@ export default function PendingDeletionScreen() {
         <SafeAreaView style={s.container} edges={['top']}>
           <OwnerNav />
           <GlassCard style={s.emptyCard}>
-            <ShieldAlert size={28} strokeWidth={1.5} color="#f87171" />
+            <ShieldAlert size={28} strokeWidth={1.5} color={semantic.criticalText} />
             <Text style={s.emptyText}>Platform operator access required</Text>
           </GlassCard>
         </SafeAreaView>
@@ -259,7 +259,7 @@ export default function PendingDeletionScreen() {
                   <Trash2
                     size={15}
                     strokeWidth={2}
-                    color={p.purge_blocked ? colors.text.subtle : '#f87171'}
+                    color={p.purge_blocked ? colors.text.subtle : semantic.criticalText}
                   />
                   <Text
                     style={[
@@ -283,7 +283,7 @@ export default function PendingDeletionScreen() {
           <View style={s.modalBackdrop}>
             <GlassCard variant="modal" style={s.modalCard}>
               <View style={s.itemHeader}>
-                <AlertTriangle size={18} strokeWidth={2} color="#f87171" />
+                <AlertTriangle size={18} strokeWidth={2} color={semantic.criticalText} />
                 <Text style={s.modalTitle}>Permanently delete?</Text>
               </View>
               <Text style={s.modalBody}>
@@ -388,7 +388,7 @@ function buildStyles(colors) {
       borderWidth: 1, borderColor: semantic.criticalBorder,
       backgroundColor: semantic.criticalBg,
     },
-    purgeText: { fontSize: 13, fontWeight: '600', color: '#f87171' },
+    purgeText: { fontSize: 13, fontWeight: '600', color: semantic.criticalText },
     // Blocked reads as INERT, not as a red button that failed. The red
     // affordance is removed entirely so the control does not invite a tap
     // the server is going to refuse.
@@ -401,7 +401,7 @@ function buildStyles(colors) {
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
     },
     modalCard: { padding: spacing.lg, gap: spacing.sm, width: '100%', maxWidth: 440 },
-    modalTitle: { fontSize: 17, fontWeight: '700', color: '#f87171' },
+    modalTitle: { fontSize: 17, fontWeight: '700', color: semantic.criticalText },
     modalBody: { fontSize: 14, color: colors.text.primary, lineHeight: 20 },
     modalPrompt: { fontSize: 13, color: colors.text.muted, marginTop: spacing.xs },
     confirmInput: {
@@ -420,7 +420,7 @@ function buildStyles(colors) {
     cancelText: { fontSize: 14, color: colors.text.secondary },
     confirmBtn: {
       flex: 1, paddingVertical: spacing.sm, alignItems: 'center',
-      borderRadius: borderRadius.lg, backgroundColor: '#dc2626',
+      borderRadius: borderRadius.lg, backgroundColor: semantic.criticalFill,
     },
     btnDisabled: { opacity: 0.4 },
     confirmBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },

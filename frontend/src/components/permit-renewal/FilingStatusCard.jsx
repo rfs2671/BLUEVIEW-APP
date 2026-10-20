@@ -64,7 +64,7 @@ import {
   ShieldCheck,
 } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
-import { semantic } from '../../styles/semanticColors';
+import { semantic, withAlpha } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
 const formatDate = (value) => {
@@ -164,7 +164,7 @@ const FilingStatusCard = ({
     return (
       <View style={s.card}>
         <View style={[s.banner, s.bannerInfo]}>
-          <Clock size={16} color="#3b82f6" />
+          <Clock size={16} color={colors.primary} />
           <Text style={[s.bannerText, s.bannerTextInfo]}>
             Filing in progress — refresh after submitting at DOB NOW.
           </Text>
@@ -221,14 +221,14 @@ const FilingStatusCard = ({
           >
             {starting ? (
               <>
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={colors.onPrimary} />
                 <Text style={[s.startButtonText, s.startButtonTextActive]}>
                   Starting…
                 </Text>
               </>
             ) : (
               <>
-                <Send size={14} color="#fff" />
+                <Send size={14} color={colors.onPrimary} />
                 <Text style={[s.startButtonText, s.startButtonTextActive]}>
                   Start Renewal
                 </Text>
@@ -313,8 +313,8 @@ function buildStyles(colors) {
       borderColor: semantic.verifiedBorder,
     },
     bannerInfo: {
-      backgroundColor: '#3b82f615',
-      borderColor: '#3b82f640',
+      backgroundColor: withAlpha(colors.primary, 0.08),
+      borderColor: withAlpha(colors.primary, 0.25),
     },
     bannerText: {
       flex: 1,
@@ -326,7 +326,7 @@ function buildStyles(colors) {
       color: '#065f46',
     },
     bannerTextInfo: {
-      color: '#1e3a8a',
+      color: '#204358',
     },
 
     // ── helper text ───────────────────────────────────────────────
@@ -376,7 +376,7 @@ function buildStyles(colors) {
       borderRadius: borderRadius.md,
     },
     startButtonActive: {
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
     },
     startButtonDisabled: {
       backgroundColor: colors.glass.background,
@@ -391,7 +391,7 @@ function buildStyles(colors) {
       letterSpacing: 0.3,
     },
     startButtonTextActive: {
-      color: '#fff',
+      color: colors.onPrimary,
     },
     buttonDisabled: {
       opacity: 0.6,

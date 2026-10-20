@@ -385,7 +385,7 @@ const buildInnerStyles = (colors) =>
       color: colors.text.secondary,
     },
     dayTextActive: {
-      color: colors.white || '#fff',
+      color: colors.onPrimary,
       fontWeight: '600',
     },
     // Frequency pills

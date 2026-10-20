@@ -167,8 +167,8 @@ const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false 
             !ch.enabled && styles.channelChipDisabled,
           ]}
         >
-          <ch.Icon size={13} strokeWidth={1.5} color={isOn ? '#fff' : colors.text.muted} />
-          <Text style={[styles.channelChipLabel, isOn && { color: '#fff' }, !ch.enabled && { color: colors.text.muted }]}>
+          <ch.Icon size={13} strokeWidth={1.5} color={isOn ? colors.onPrimary : colors.text.muted} />
+          <Text style={[styles.channelChipLabel, isOn && { color: colors.onPrimary }, !ch.enabled && { color: colors.text.muted }]}>
             {ch.label}
           </Text>
           {ch.badge && <Text style={styles.channelBadge}>{ch.badge}</Text>}
@@ -812,7 +812,7 @@ export default function ProjectNotificationPreferencesScreen() {
           )}
           {saveError && (
             <View style={styles.errorBlock}>
-              <AlertCircle size={14} strokeWidth={1.5} color="#ef4444" />
+              <AlertCircle size={14} strokeWidth={1.5} color={semantic.critical} />
               <Text style={styles.errorBlockText}>{saveError}</Text>
             </View>
           )}
@@ -840,9 +840,9 @@ export default function ProjectNotificationPreferencesScreen() {
               ]}
             >
               {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={colors.onPrimary} />
               ) : (
-                <Save size={14} strokeWidth={1.5} color="#fff" />
+                <Save size={14} strokeWidth={1.5} color={colors.onPrimary} />
               )}
               <Text style={styles.mobilePrimaryBtnText}>
                 {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
@@ -893,9 +893,9 @@ const PreviewCard = ({ preview, loading, project, styles, colors }) => {
     );
   }
   const stats = [
-    { key: 'i', Icon: Mail, c: '#ef4444', bg: 'rgba(239,68,68,0.10)', count: summary.immediate_emails || 0, label: 'immediate emails' },
+    { key: 'i', Icon: Mail, c: semantic.critical, bg: withAlpha(semantic.critical, 0.10), count: summary.immediate_emails || 0, label: 'immediate emails' },
     { key: 'd', Icon: Mailbox, c: semantic.neutral, bg: semantic.neutralBg, count: summary.digest_daily_signals || 0, label: 'daily digest' },
-    { key: 'w', Icon: Mailbox, c: '#3b82f6', bg: 'rgba(59,130,246,0.10)', count: summary.digest_weekly_signals || 0, label: 'weekly digest' },
+    { key: 'w', Icon: Mailbox, c: colors.primary, bg: withAlpha(colors.primary, 0.10), count: summary.digest_weekly_signals || 0, label: 'weekly digest' },
     { key: 'f', Icon: Inbox, c: '#6b7280', bg: withAlpha('#6b7280', 0.1), count: summary.suppressed_signals || 0, label: 'feed-only' },
   ];
   return (
@@ -1035,16 +1035,16 @@ function buildStyles(colors) {
       alignItems: 'flex-start',
     },
     presetCardSelected: {
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.08)',
+      borderColor: colors.primary,
+      backgroundColor: withAlpha(colors.primary, 0.08),
     },
     presetRadio: {
       width: 18, height: 18, borderRadius: 9,
       borderWidth: 2, borderColor: colors.glass.border,
       alignItems: 'center', justifyContent: 'center', marginTop: 2,
     },
-    presetRadioSelected: { borderColor: '#3b82f6' },
-    presetRadioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#3b82f6' },
+    presetRadioSelected: { borderColor: colors.primary },
+    presetRadioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.primary },
     presetTextBlock: { flex: 1 },
     presetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
     presetTitle: {
@@ -1056,8 +1056,8 @@ function buildStyles(colors) {
       fontFamily: typography.semibold,
       fontSize: 10,
       letterSpacing: 0.6,
-      color: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      color: colors.primary,
+      backgroundColor: withAlpha(colors.primary, 0.12),
       paddingHorizontal: 6, paddingVertical: 2,
       borderRadius: 4, textTransform: 'uppercase',
     },
@@ -1205,7 +1205,7 @@ function buildStyles(colors) {
       borderColor: colors.glass.border,
       backgroundColor: 'transparent',
     },
-    channelChipOn: { backgroundColor: '#3b82f6', borderColor: '#3b82f6' },
+    channelChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
     channelChipDisabled: { opacity: 0.55 },
     channelChipLabel: { fontFamily: typography.medium, fontSize: 12, color: colors.text.primary },
     channelBadge: {
@@ -1247,14 +1247,14 @@ function buildStyles(colors) {
       flexDirection: 'row', gap: spacing.sm,
       padding: spacing.md,
       borderTopWidth: 1, borderTopColor: colors.glass.border,
-      backgroundColor: colors.background?.start || withAlpha('#050a12', 0.95),
+      backgroundColor: colors.background?.start || withAlpha('#131E27', 0.95),
     },
     mobilePrimaryBtn: {
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: 6, paddingVertical: spacing.sm + 2,
-      borderRadius: borderRadius.md, backgroundColor: '#3b82f6',
+      borderRadius: borderRadius.md, backgroundColor: colors.primary,
     },
-    mobilePrimaryBtnText: { fontFamily: typography.semibold, fontSize: 14, color: '#fff' },
+    mobilePrimaryBtnText: { fontFamily: typography.semibold, fontSize: 14, color: colors.onPrimary },
     mobileSecondaryBtn: {
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: 6, paddingVertical: spacing.sm + 2,

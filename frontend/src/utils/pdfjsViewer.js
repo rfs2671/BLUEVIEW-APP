@@ -294,7 +294,7 @@ function viewerHtml() {
     '<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=8, user-scalable=yes">',
     '<title>Document</title>',
     '<style>',
-    'html,body{margin:0;padding:0;background:#050a12;-webkit-text-size-adjust:100%;}',
+    'html,body{margin:0;padding:0;background:#131E27;-webkit-text-size-adjust:100%;}',
     'body{font:14px -apple-system,Roboto,"Helvetica Neue",sans-serif;color:#94a3b8;}',
     '#pages{padding:8px 0 24px;}',
     '.pg{position:relative;margin:0 auto 10px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.55);}',

@@ -238,7 +238,7 @@ export default function OwnerCompanyScreen() {
                     style={({ pressed }) => [s.primaryBtn, adding && s.disabled, pressed && s.pressed]}
                   >
                     {adding
-                      ? <ActivityIndicator size="small" color="#fff" />
+                      ? <ActivityIndicator size="small" color={colors.onPrimary} />
                       : <Text style={s.primaryText}>Add admin</Text>}
                   </Pressable>
                 </GlassCard>
@@ -328,10 +328,10 @@ function buildStyles(colors) {
       minHeight: 48, alignItems: 'center', justifyContent: 'center',
       borderRadius: borderRadius.lg, backgroundColor: colors.primary || '#2563eb',
     },
-    primaryText: { fontSize: 15, fontWeight: '600', color: '#fff' },
+    primaryText: { fontSize: 15, fontWeight: '600', color: colors.onPrimary },
     dangerBtn: {
       flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',
-      borderRadius: borderRadius.lg, backgroundColor: '#dc2626',
+      borderRadius: borderRadius.lg, backgroundColor: semantic.criticalFill,
     },
     backdrop: {
       flex: 1, backgroundColor: withAlpha('#000000', 0.6),

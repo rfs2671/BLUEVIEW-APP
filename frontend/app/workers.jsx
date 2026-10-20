@@ -391,7 +391,7 @@ export default function WorkersScreen() {
                       <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
                     </IconPod>
                     <Text style={s.statValue}>{stat.value}</Text>
-                    <Text style={s.statLabel} numberOfLines={1}>{stat.label.toUpperCase()}</Text>
+                    <Text style={s.statLabel} numberOfLines={2}>{stat.label.toUpperCase()}</Text>
                   </StatCard>
                 );
               })
@@ -657,8 +657,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -704,6 +704,7 @@ function buildStyles(colors, isDark) {
   },
   statCard: {
     flex: 1,
+    minWidth: 0,
     alignItems: 'center',
   },
   statIcon: {
@@ -711,7 +712,7 @@ function buildStyles(colors, isDark) {
   },
   statValue: {
     fontSize: 28,
-    fontWeight: '200',
+    fontFamily: typography.num, fontWeight: '600',
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
@@ -720,6 +721,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
     fontSize: 9,
     letterSpacing: 0.8,
+    textAlign: 'center',
   },
   checkinsList: {
     gap: spacing.sm,

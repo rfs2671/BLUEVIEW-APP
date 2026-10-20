@@ -264,7 +264,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
       </View>
 
       <Pressable style={s.dobButton} onPress={onReopenDob}>
-        <ExternalLink size={14} color="#fff" />
+        <ExternalLink size={14} color={colors.onPrimary} />
         <Text style={s.dobButtonText}>Open DOB NOW (new tab)</Text>
       </Pressable>
 
@@ -405,12 +405,12 @@ function buildStyles(colors) {
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
       borderRadius: borderRadius.md,
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
     },
     dobButtonText: {
       fontFamily: typography.semibold,
       fontSize: 13,
-      color: '#fff',
+      color: colors.onPrimary,
       letterSpacing: 0.3,
     },
     body: {

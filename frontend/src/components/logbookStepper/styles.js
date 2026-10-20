@@ -53,6 +53,7 @@ export function buildStepperStyles() {
     header: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.md,
       paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+      backgroundColor: outdoor.bar,
     },
     // GlassButton's icon variant is a 44x44 circular pill. Same look here, but
     // the 56pt floor wins over the visual size: the constraint is a gloved
@@ -64,11 +65,19 @@ export function buildStepperStyles() {
       backgroundColor: outdoor.surface,
       borderWidth: 1, borderColor: outdoor.line,
     },
+    // The same circular button on the navy top bar: outlined, no fill.
+    barBack: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.full,
+      backgroundColor: 'transparent',
+      borderWidth: 1, borderColor: outdoor.barLine,
+    },
     headerText: { flex: 1 },
     headerTitle: {
-      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+      fontFamily: typography.display, fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.onBar,
     },
-    headerSub: { fontSize: typography.sizes.fine, color: outdoor.textDim },
+    headerSub: { fontSize: typography.sizes.fine, color: outdoor.barSub },
 
     progressRow: {
       flexDirection: 'row', gap: spacing.xs, paddingHorizontal: spacing.md,
@@ -97,7 +106,7 @@ export function buildStepperStyles() {
       letterSpacing: spacing.xs / 4, textTransform: 'uppercase',
     },
     stepTitle: {
-      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
+      fontFamily: typography.display, fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
     },
 
     // Shadow on the outer view, gradient on the inner - see Card.
@@ -111,7 +120,7 @@ export function buildStepperStyles() {
       borderRadius: borderRadius.xxl,
       borderWidth: 1,
       borderColor: outdoor.line,
-      padding: spacing.xl,
+      padding: spacing.md,
       gap: spacing.sm,
       overflow: 'hidden',
     },
@@ -166,12 +175,12 @@ export function buildStepperStyles() {
       borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
     },
     chipSelected: {
-      backgroundColor: outdoor.surfaceSelected, borderColor: outdoor.surfaceSelected,
+      backgroundColor: outdoor.selected, borderColor: outdoor.selected,
     },
     chipText: {
       fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
     },
-    chipTextSelected: { color: outdoor.textOnSelected },
+    chipTextSelected: { color: outdoor.onSelected },
 
     input: {
       minHeight: touchTarget.min, borderRadius: borderRadius.lg, borderWidth: 1,
@@ -265,7 +274,7 @@ export function buildStepperStyles() {
       backgroundColor: outdoor.scrim, padding: spacing.md,
     },
     modalCard: {
-      width: '100%', backgroundColor: outdoor.cardTop,
+      width: '100%', backgroundColor: outdoor.surface,
       borderRadius: borderRadius.xxl,
       padding: spacing.xl, gap: spacing.sm, ...outdoorShadow,
     },

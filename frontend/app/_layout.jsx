@@ -98,7 +98,7 @@ const errorStyles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#050a12',
+    backgroundColor: '#131E27',
     padding: 32,
   },
   title: {
@@ -115,13 +115,13 @@ const errorStyles = StyleSheet.create({
     lineHeight: 22,
   },
   button: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: '#E3C27A',
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 8,
   },
   buttonText: {
-    color: '#fff',
+    color: '#141A1F',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -374,10 +374,28 @@ function AdminPlanPrefetch() {
   return null;
 }
 
+/**
+ * A SITE DEVICE ACCOUNT IS DRAWN IN THE LIGHT THEME ON EVERY PAGE.
+ *
+ * The tablet is bolted to a wall or handed to an inspector; whoever is looking at it never chose a theme, and a gate
+ * tablet in daylight reads better on paper. The mode is forced for the length of the site session and released the
+ * moment it ends, at which point the browser or phone returns to whatever its owner had chosen (that choice is never
+ * overwritten). Held until the session has been read: ThemeProvider already forces it from the stored principal as soon
+ * as that is read back, and an ordinary account is released here once auth says it is not a site device.
+ */
+function SiteDeviceLightMode() {
+  const { siteMode, isLoading } = useAuth();
+  const { forceTheme } = useTheme();
+  useEffect(() => {
+    if (!isLoading) forceTheme(siteMode ? 'light' : null);
+  }, [siteMode, isLoading, forceTheme]);
+  return null;
+}
+
 function AppShell() {
   const { isDark, themeKey } = useTheme();
   const toast = useToast();
-  const bg = isDark ? '#050a12' : '#D6E4F7';
+  const bg = isDark ? '#131E27' : '#ECEDE9';
   // RN-Web desktop presentation layer. False on native and on web < 1024,
   // where the tree below is byte-identical to what it was before this hook.
   const isDesktop = useIsDesktop();
@@ -441,6 +459,7 @@ function AppShell() {
     <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RouteGuard />
+      <SiteDeviceLightMode />
       <SiteManifestSync />
       <AdminPlanPrefetch />
       {/* Tells a man ONCE that a daily log saved on this device was never

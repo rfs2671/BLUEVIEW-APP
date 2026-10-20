@@ -437,7 +437,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
-    if (creatorId === currentUserId) return '#1565C0';
+    if (creatorId === currentUserId) return '#243746';
     return semantic.neutral;
   };
 
@@ -451,7 +451,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
-      <View style={[styles.container, { backgroundColor: '#050a12' }]}>
+      <View style={[styles.container, { backgroundColor: '#131E27' }]}>
         {/* Top Bar */}
         <View style={styles.topBar}>
           <Pressable onPress={onClose} style={styles.iconBtn}>
@@ -464,16 +464,16 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               onPress={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
               accessibilityRole="button"
               accessibilityLabel="Search this document"
-              style={[styles.iconBtn, searchOpen && { backgroundColor: '#3b82f6' }]}
+              style={[styles.iconBtn, searchOpen && { backgroundColor: '#E3C27A' }]}
             >
-              <Search size={20} strokeWidth={1.5} color="#fff" />
+              <Search size={20} strokeWidth={1.5} color={searchOpen ? '#141A1F' : '#fff'} />
             </Pressable>
           )}
           <Pressable
             onPress={() => { setPinModeActive(!pinModeActive); setSelectedAnnotation(null); setShowNoteSheet(false); }}
-            style={[styles.iconBtn, pinModeActive && { backgroundColor: '#3b82f6' }]}
+            style={[styles.iconBtn, pinModeActive && { backgroundColor: '#E3C27A' }]}
           >
-            <MapPin size={20} strokeWidth={1.5} color="#fff" />
+            <MapPin size={20} strokeWidth={1.5} color={pinModeActive ? '#141A1F' : '#fff'} />
           </Pressable>
           {/* A cached `file://` can't be handed to another app (Android throws
               FileUriExposedException), and there's nothing to open externally
@@ -537,7 +537,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
         {loading && (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color="#3b82f6" />
+            <ActivityIndicator size="large" color={'#E3C27A'} />
             <Text style={styles.loadingText}>Loading document...</Text>
           </View>
         )}
@@ -580,7 +580,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               {
                 ref: webViewRef,
                 source: webViewSource,
-                style: { flex: 1, backgroundColor: '#050a12' },
+                style: { flex: 1, backgroundColor: '#131E27' },
                 originWhitelist: ['*', 'file://'],
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
@@ -696,7 +696,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 startInLoadingState: true,
                 renderLoading: () => (
                   <View style={[styles.center, { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }]}>
-                    <ActivityIndicator size="large" color="#3b82f6" />
+                    <ActivityIndicator size="large" color={'#E3C27A'} />
                   </View>
                 ),
               }
@@ -767,7 +767,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                   borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
                 }}
               >
-                <Users size={16} strokeWidth={1.5} color="#93c5fd" />
+                <Users size={16} strokeWidth={1.5} color={'#E3C27A'} />
                 <Text style={{ color: '#e2e8f0', fontSize: 14, marginLeft: 8, flex: 1 }}>
                   {selectedRecipientIds.length === 0
                     ? 'Everyone on the project'
@@ -783,7 +783,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                   style={{
                     marginTop: 6, maxHeight: 180,
                     borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-                    borderRadius: 8, backgroundColor: '#0b1220',
+                    borderRadius: 8, backgroundColor: '#0E161D',
                   }}
                 >
                   <ScrollView style={{ maxHeight: 180 }}>
@@ -797,8 +797,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                     >
                       <View style={{
                         width: 18, height: 18, borderRadius: 4,
-                        borderWidth: 1, borderColor: '#3b82f6',
-                        backgroundColor: selectedRecipientIds.length === 0 ? '#3b82f6' : 'transparent',
+                        borderWidth: 1, borderColor: '#E3C27A',
+                        backgroundColor: selectedRecipientIds.length === 0 ? '#E3C27A' : 'transparent',
                         marginRight: 10,
                       }} />
                       <Text style={{ color: '#e2e8f0', fontSize: 14 }}>Everyone</Text>
@@ -817,8 +817,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                         >
                           <View style={{
                             width: 18, height: 18, borderRadius: 4,
-                            borderWidth: 1, borderColor: '#3b82f6',
-                            backgroundColor: checked ? '#3b82f6' : 'transparent',
+                            borderWidth: 1, borderColor: '#E3C27A',
+                            backgroundColor: checked ? '#E3C27A' : 'transparent',
                             marginRight: 10,
                           }} />
                           <View style={{ flex: 1 }}>
@@ -942,13 +942,13 @@ const styles = StyleSheet.create({
   loadingText: { color: '#94a3b8', marginTop: 12, fontSize: 14 },
   errorTitle: { color: '#e2e8f0', fontSize: 18, fontWeight: '600', marginTop: 16 },
   errorSub: { color: '#64748b', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  actionBtn: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#3b82f6', borderRadius: 8 },
-  actionText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  actionBtn: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, backgroundColor: '#E3C27A', borderRadius: 8 },
+  actionText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
 
   // Pin mode overlay
   pinOverlay: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(59, 130, 246, 0.08)',
+    backgroundColor: 'rgba(227, 194, 122, 0.08)',
     justifyContent: 'flex-end', alignItems: 'center',
     paddingBottom: 32,
     zIndex: 10,
@@ -984,20 +984,20 @@ const styles = StyleSheet.create({
   sheetSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 12 },
   sheetInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 70, textAlignVertical: 'top' },
   sheetActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  sheetSendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#3b82f6', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
-  sheetSendText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  sheetSendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E3C27A', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
+  sheetSendText: { color: '#141A1F', fontSize: 14, fontWeight: '600' },
   sheetCancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
   sheetCancelText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
 
   // Thread
   threadScroll: { maxHeight: 180, marginVertical: 8 },
   threadEntry: { marginBottom: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06) },
-  threadAuthor: { color: '#93c5fd', fontSize: 13, fontWeight: '600', marginBottom: 3 },
+  threadAuthor: { color: '#E3C27A', fontSize: 13, fontWeight: '600', marginBottom: 3 },
   threadMessage: { color: '#e2e8f0', fontSize: 14, lineHeight: 20 },
   threadTime: { color: '#475569', fontSize: 11, marginTop: 3 },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
-  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
+  replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#E3C27A', alignItems: 'center', justifyContent: 'center' },
   threadActions: { flexDirection: 'row', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },

@@ -82,7 +82,7 @@ export default function CompanyWhatsAppPanel() {
                   onPress={() => change(c, o.value)}
                   style={[s.option, on && { backgroundColor: colors.primary, borderColor: colors.primary }]}
                 >
-                  <Text style={[s.optionText, on && { color: colors.white }]}>{o.label}</Text>
+                  <Text style={[s.optionText, on && { color: colors.onPrimary }]}>{o.label}</Text>
                 </Pressable>
               );
             })}

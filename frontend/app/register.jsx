@@ -243,7 +243,7 @@ function buildStyles(colors, isDark) {
     card: { padding: spacing.xl },
     welcomeSection: { marginBottom: spacing.xl },
     welcomeLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
-    welcomeTitle: { fontSize: 32, fontWeight: '200', color: colors.text.primary },
+    welcomeTitle: { fontSize: 28, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary },
     form: { gap: spacing.md },
     inputGroup: { gap: spacing.xs },
     inputLabel: { ...typography.label, color: colors.text.muted },

@@ -5,7 +5,7 @@ import GlassButton from './GlassButton';
 import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useToast } from './Toast';
-import { colors, spacing, typography } from '../styles/theme';
+import { colors, spacing, typography, borderRadius } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
 export default function SyncButton({ showLabel = true, size = 'md' }) {
@@ -82,34 +82,6 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
 
   return (
     <View style={styles.container}>
-      {/* title=, NOT children. GlassButton renders {title} in its own <Text>
-          and never reads children, so the label was discarded and this
-          rendered as an icon beside an EMPTY text slot - not an icon-only
-          control, just a default-variant button missing its title.
-          variant="secondary" is not the icon variant; GlassButton
-          special-cases only "icon", so this always took the default path.
-
-          It matters most when disabled: the button greys out offline, and
-          with no label there was nothing telling anyone why it would not
-          respond. */}
-      <GlassButton
-        variant="secondary"
-        title={isSyncing ? 'Syncing...' : 'Sync Now'}
-        icon={
-          isSyncing ? (
-            <ActivityIndicator size="small" color={colors.text.primary} />
-          ) : (
-            <RefreshCw 
-              size={18} 
-              strokeWidth={1.5} 
-              color={isOnline ? colors.text.primary : colors.text.secondary}
-            />
-          )
-        }
-        onPress={handleSync}
-        disabled={!isOnline || isSyncing}
-      />
-      
       <View style={styles.info}>
         <Text style={[styles.infoText, { color: colors.text.secondary }]}>
           Last sync: {getLastSyncText()}
@@ -120,16 +92,55 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
           </Text>
         )}
       </View>
+
+      {/* title=, NOT children. GlassButton renders {title} in its own <Text>
+          and never reads children, so the label was discarded and this
+          rendered as an icon beside an EMPTY text slot - not an icon-only
+          control, just a default-variant button missing its title.
+          The variant here is a filled action (GlassButton special-cases "icon" and the filled variants).
+
+          It matters most when disabled: the button greys out offline, and
+          with no label there was nothing telling anyone why it would not
+          respond. */}
+      <GlassButton
+        variant="filled"
+        title={isSyncing ? 'Syncing...' : 'Sync Now'}
+        icon={
+          isSyncing ? (
+            <ActivityIndicator size="small" color={colors.onPrimary} />
+          ) : (
+            <RefreshCw 
+              size={18} 
+              strokeWidth={1.5} 
+              color={colors.onPrimary}
+            />
+          )
+        }
+        onPress={handleSync}
+        disabled={!isOnline || isSyncing}
+      />
     </View>
   );
 }
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
+  // The concept draws the sync line as one card: the status on the left, the action on the right.
   container: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: spacing.sm,
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md - 4,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
   },
   info: {
+    flex: 1,
+    flexShrink: 1,
     gap: spacing.xs,
   },
   infoText: {

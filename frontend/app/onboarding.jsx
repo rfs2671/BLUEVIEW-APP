@@ -971,7 +971,7 @@ function buildStyles(colors, isDark) {
     presetBadgeText: {
       fontSize: 10,
       fontWeight: '700',
-      color: colors.text.inverse || '#fff',
+      color: colors.onPrimary,
       letterSpacing: 0.5,
     },
     presetCardSubtitle: {

@@ -63,6 +63,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import BuildMarker from '../../src/components/BuildMarker';
+import { chrome } from '../../src/styles/semanticColors';
 
 
 // Icon mapping for dynamic logbook types from API
@@ -75,12 +76,12 @@ const FALLBACK_LOG_TYPES = [
   // P3: these two are CORE CP logbooks and were never role-gated — the grey was
   // only this hardcoded semantic.neutral, which read as disabled. Give them active
   // accents like the other logbook types so the CP sees them enabled.
-  { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', color: '#10b981', frequency: 'daily' },
-  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', subtitle: 'Daily sign-in', icon: 'Users', color: '#f59e0b', frequency: 'daily' },
-  { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', color: '#3b82f6', frequency: 'weekly' },
-  { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', color: '#8b5cf6', frequency: 'as_needed' },
-  { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', color: '#06b6d4', frequency: 'daily' },
-  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', color: semantic.neutral, frequency: 'daily', conditional: 'scaffold_erected' },
+  { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', get color() { return chrome.brand; }, frequency: 'daily' },
+  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', subtitle: 'Daily sign-in', icon: 'Users', get color() { return chrome.brand; }, frequency: 'daily' },
+  { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', get color() { return chrome.brand; }, frequency: 'weekly' },
+  { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', get color() { return chrome.brand; }, frequency: 'as_needed' },
+  { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', get color() { return chrome.brand; }, frequency: 'daily' },
+  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', get color() { return semantic.neutral; }, frequency: 'daily', conditional: 'scaffold_erected' },
 ];
 
 /**
@@ -865,7 +866,7 @@ export default function LogBooksScreen() {
             {/* CP name banner */}
             {!readOnly && cpName ? (
               <View style={styles.cpBannerRow}>
-                <ShieldCheck size={16} strokeWidth={1.5} color="#3b82f6" />
+                <ShieldCheck size={16} strokeWidth={1.5} color={colors.primary} />
                 <Text style={styles.cpBannerText}>
                   Signing as <Text style={styles.cpBannerName}>{cpName}</Text>
                 </Text>
@@ -1348,8 +1349,8 @@ export default function LogBooksScreen() {
                   onPress={() => handleOpenLog('toolbox_talk')}
                   style={({ pressed }) => [styles.logCard, styles.logCardDone, pressed && styles.logCardPressed]}
                 >
-                  <View style={[styles.logIcon, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
-                    <BookOpen size={22} strokeWidth={1.5} color="#3b82f6" />
+                  <View style={[styles.logIcon, { backgroundColor: withAlpha(colors.primary, 0.15) }]}>
+                    <BookOpen size={22} strokeWidth={1.5} color={colors.primary} />
                   </View>
                   <View style={styles.logInfo}>
                     <Text style={styles.logLabel}>Tool Box Talk</Text>
@@ -1445,7 +1446,7 @@ function buildStyles(colors, isDark) {
     // ── Hero card (single merged card) ──
     heroCard: { marginBottom: spacing.md },
     titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
-    titleText: { fontSize: 32, fontWeight: '200', color: colors.text.primary, marginBottom: spacing.xs },
+    titleText: { fontSize: 28, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary, marginBottom: spacing.xs },
     dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     dateText: { fontSize: 13, color: colors.text.muted },
 
@@ -1477,7 +1478,7 @@ function buildStyles(colors, isDark) {
       padding: spacing.md,
       borderBottomWidth: 1, borderBottomColor: divider,
     },
-    projectOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
+    projectOptionActive: { backgroundColor: withAlpha(colors.primary, 0.1) },
     projectOptionText: { fontSize: 15, color: colors.text.primary },
 
     // ── Scaffold toggle (inside hero card) ──
@@ -1570,7 +1571,7 @@ function buildStyles(colors, isDark) {
     badgePending: { backgroundColor: isDark ? withAlpha('#ffffff', 0.06) : withAlpha('#000000', 0.04) },
     badgeText: { fontSize: 11, fontWeight: '500' },
     badgeTextSubmitted: { color: semantic.verified },
-    badgeTextDraft: { color: '#fbbf24' },
+    badgeTextDraft: { color: semantic.attention },
     badgeTextPending: { color: colors.text.muted },
 
     emptyCard: { alignItems: 'center', padding: spacing.xl, gap: spacing.md },

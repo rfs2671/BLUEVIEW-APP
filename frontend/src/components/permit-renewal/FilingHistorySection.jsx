@@ -25,7 +25,7 @@ import {
 } from 'react-native';
 import { ChevronDown, ChevronUp, History } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
-import { semantic } from '../../styles/semanticColors';
+import { semantic, chrome } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
 // Status palette mirrors FilingStatusCard's STATUS_BADGE — same color
@@ -34,11 +34,11 @@ import { useTheme } from '../../context/ThemeContext';
 // surface is dense.
 const STATUS_PALETTE = {
   queued:      { label: 'Queued',           color: '#6b7280' },
-  claimed:     { label: 'Claimed',          color: '#3b82f6' },
-  in_progress: { label: 'In Progress',      color: semantic.attention },
-  filed:       { label: 'Filed',            color: semantic.verified },
-  completed:   { label: 'Completed',        color: semantic.verified },
-  failed:      { label: 'Failed',           color: semantic.critical, textColor: semantic.criticalText },
+  get claimed() { return { label: 'Claimed',          get color() { return chrome.brand; } }; },
+  in_progress: { label: 'In Progress',      get color() { return semantic.attention; } },
+  filed:       { label: 'Filed',            get color() { return semantic.verified; } },
+  completed:   { label: 'Completed',        get color() { return semantic.verified; } },
+  failed:      { label: 'Failed',           get color() { return semantic.critical; }, get textColor() { return semantic.criticalText; } },
   cancelled:   { label: 'Cancelled',        color: '#6b7280' },
 };
 
