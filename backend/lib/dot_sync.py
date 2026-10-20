@@ -254,6 +254,43 @@ def queries(pk: Dict[str, str]) -> List[Dict[str, Any]]:
     return out
 
 
+# ── Is the summons settled? ─────────────────────────────────────────────────
+
+def _money(v: Any) -> Optional[float]:
+    try:
+        return float(re.sub(r"[^0-9.\-]", "", str(v))) if str(v or "").strip() else None
+    except ValueError:
+        return None
+
+
+_NEGATED = re.compile(r"\b(?:NOT|NON|NEVER|WITHOUT|UN)\s*[- ]?\s*(?:PAID|IN\s+COMPLIANCE|COMPLIED|DISMISSED)\b")
+
+
+def closed_reason(rec: Dict[str, Any]) -> Optional[str]:
+    """Why an OATH summons is settled, from what the record SAYS -- or None.
+
+    The stored status is the hearing's (NEW, SCHEDULED, HEARING COMPLETED), and
+    a summons paid after its hearing is still "hearing completed": the payment
+    is in the penalty and balance fields. Without this a paid ticket would be
+    reported open for ever. Only positive evidence closes it:
+      * the record's own words (hearing result / compliance / status) say paid,
+        dismissed, not guilty, or in compliance;
+      * a penalty was imposed and nothing is owed (balance 0).
+    A summons with a balance still due, or no outcome yet, is open."""
+    words = " ".join(_v(rec, k).upper() for k in ("hearing_result", "compliance_status", "hearing_status"))
+    clean = _NEGATED.sub(" ", words)
+    if re.search(r"\bPAID\b", clean):
+        return "PAID IN FULL"
+    if re.search(r"\bDISMISS", clean) or "NOT GUILTY" in clean or re.search(r"\bNOT\s+IN\s+VIOLATION\b", clean):
+        return "DISMISSED"
+    if re.search(r"\bIN\s+COMPLIANCE\b", clean) or re.search(r"\bCOMPLIED\b", clean):
+        return "COMPLIED"
+    penalty, balance = _money(rec.get("penalty_imposed")), _money(rec.get("balance_due"))
+    if penalty is not None and penalty > 0 and balance is not None and balance <= 0:
+        return "PAID IN FULL"
+    return None
+
+
 # ── A stored record ─────────────────────────────────────────────────────────
 
 def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -268,7 +305,11 @@ def to_log(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         desc = _v(rec, "charge_1_code_description") or None
         return {"record_type": "dot_violation", "raw_id": f"oath:{num}",
                 "number": num, "issue_date": _v(rec, "violation_date") or None,
-                "status": _v(rec, "hearing_status") or None,
+                # The status is the hearing's UNLESS the summons is settled, then
+                # what settled it: a change of status is how the history (and
+                # "resolved this period") learns of a payment.
+                "status": closed_reason(rec) or _v(rec, "hearing_status") or None,
+                "hearing_status": _v(rec, "hearing_status") or None,
                 "hearing_result": _v(rec, "hearing_result") or None,
                 "hearing_date": _v(rec, "hearing_date") or None,
                 "compliance_status": _v(rec, "compliance_status") or None,

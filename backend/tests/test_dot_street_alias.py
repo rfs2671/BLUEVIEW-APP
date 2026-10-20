@@ -82,3 +82,56 @@ class ARenamedStreet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ASettledSummonsIsKnownToBeSettled(unittest.TestCase):
+    """The stored status is the hearing's; a summons paid after its hearing is
+    still 'hearing completed'. The record's payment fields say it is settled,
+    and the status then says so -- so the report (and its history) learn of it."""
+
+    def test_open_until_something_settles_it(self):
+        for rec in (oath(hearing_status="NEW"), oath(hearing_status="SCHEDULED"),
+                    oath(hearing_status="HEARING COMPLETED", hearing_result="IN VIOLATION", penalty_imposed="250.00",
+                         balance_due="250.00"),
+                    oath(hearing_status="DEFAULT", penalty_imposed="750", balance_due="750"),
+                    oath(hearing_status="HEARING COMPLETED", compliance_status="NOT IN COMPLIANCE"),
+                    oath(hearing_status="X", compliance_status="UNPAID")):
+            self.assertIsNone(D.closed_reason(rec), rec)
+            self.assertEqual(D.to_log("dot_violation", rec)["status"], rec["hearing_status"])
+
+    def test_paid_dismissed_and_complied_are_settled(self):
+        cases = ((oath(hearing_status="HEARING COMPLETED", penalty_imposed="250.00", balance_due="0.00"), "PAID IN FULL"),
+                 (oath(hearing_status="HEARING COMPLETED", compliance_status="PAID IN FULL"), "PAID IN FULL"),
+                 (oath(hearing_status="HEARING COMPLETED", hearing_result="DISMISSED"), "DISMISSED"),
+                 (oath(hearing_status="HEARING COMPLETED", hearing_result="NOT GUILTY"), "DISMISSED"),
+                 (oath(hearing_status="HEARING COMPLETED", hearing_result="NOT IN VIOLATION"), "DISMISSED"),
+                 (oath(hearing_status="HEARING COMPLETED", compliance_status="IN COMPLIANCE"), "COMPLIED"))
+        for rec, why in cases:
+            self.assertEqual(D.closed_reason(rec), why, rec)
+            self.assertEqual(D.to_log("dot_violation", rec)["status"], why)
+            self.assertEqual(D.to_log("dot_violation", rec)["hearing_status"], "HEARING COMPLETED")
+
+    def test_no_penalty_and_no_balance_is_not_paid(self):
+        self.assertIsNone(D.closed_reason(oath(hearing_status="SCHEDULED", penalty_imposed="", balance_due="0")))
+        self.assertIsNone(D.closed_reason(oath(hearing_status="SCHEDULED", penalty_imposed="0", balance_due="0")))
+
+    def test_the_report_stops_listing_it_open_once_it_is_paid(self):
+        from lib import report_regulatory as RG
+        from tests import report_588 as F
+        from datetime import datetime, timezone
+        seen = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        row = {"_id": "d1", "record_type": "dot_violation", "raw_dob_id": "oath:0704345548", "number": "0704345548",
+               "issue_date": "2026-09-29", "status": "PAID IN FULL", "detected_at": seen,
+               "status_changed_at": datetime(2026, 10, 12, tzinfo=timezone.utc), "previous_status": "HEARING COMPLETED",
+               "status_history": [{"status": "HEARING COMPLETED", "at": seen, "source": "first_seen"},
+                                  {"status": "PAID IN FULL", "at": datetime(2026, 10, 12, tzinfo=timezone.utc), "source": "sync"}]}
+        got = RG.build([], [row], F.START, F.END, today=F.END, sync=F.SYNC, now=F.NOW)
+        self.assertEqual(got["open"], [])
+        self.assertEqual([c["number"] for c in got["changed"]], ["0704345548"])
+        self.assertEqual(got["changed"][0]["status"], "PAID IN FULL")
+
+    def test_the_sync_reads_the_projects_own_aliases(self):
+        import re
+        src = open("server.py", encoding="utf-8").read()
+        block = src[src.index("async def _dot_sync_tick"):src.index("async def _dot_sync_job")]
+        self.assertIn('"street_aliases": 1', block)

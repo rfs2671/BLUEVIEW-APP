@@ -47711,7 +47711,7 @@ async def _dot_sync_tick(now: Optional[datetime] = None, fetch=None,
         only = {"_id": {"$in": [to_query_id(i) for i in project_ids]}} if project_ids else {}
         projects = await db.projects.find(
             await unattended_project_filter({**ACTIVE_PROJECT_FILTER, **only}),
-            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1,
+            {"address": 1, "nyc_bin": 1, "bbl": 1, "nyc_bbl": 1, "street_aliases": 1,
              "company_id": 1}).to_list(5000)
         projects = [p for p in projects if str(p.get("company_id") or "").strip()]
     except Exception as e:
