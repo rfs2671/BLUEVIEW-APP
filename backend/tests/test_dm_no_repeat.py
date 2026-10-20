@@ -130,6 +130,41 @@ class TheRule(unittest.TestCase):
         h = self.hist("q one", "A.", 5) + self.hist("q two", "B.", 1)
         self.assertEqual(wa_assistant.repeat_of_last("A.", h, "q three", self.now), "A.")
 
+    def test_the_question_behind_a_job_pick(self):
+        """Codex on #820: "Which job?" -> "588" -> the answer. The same
+        question again is the same question, not a different one ("588")."""
+        q = "any info about window protection?"
+        h = [{"sender": "15550001111", "body": q, "created_at": self.now - timedelta(minutes=3)},
+             {"sender": "bot", "body": "Which job? 1) 588 Thomas S Boyland St 2) 8 Walworth St",
+              "created_at": self.now - timedelta(minutes=3)},
+             {"sender": "15550001111", "body": "588", "created_at": self.now - timedelta(minutes=2)},
+             {"sender": "bot", "body": "A.", "created_at": self.now - timedelta(minutes=2)}]
+        self.assertIsNone(wa_assistant.repeat_of_last("A.", h, q, self.now))
+        self.assertEqual(wa_assistant.repeat_of_last("A.", h, "Show me", self.now), "A.")
+
+
+class AsSent(_Agent, unittest.TestCase):
+    def test_a_trailing_offer_does_not_hide_a_repeat(self):
+        """Codex on #820: the send strips "Need anything else?", so the
+        history holds the answer without it."""
+        self.words = WINDOW + " Need anything else?"
+        with _Ctx(db=self.db) as c:
+            self.say(c, "Any info about window protection at ssp for 588?")
+            second = self.say(c, "what about the details at 588")
+        self.assertTrue(second.startswith("That's what I just sent."), second)
+
+    def test_the_held_back_answer_is_redacted(self):
+        """Codex on #820: `repeated` is logged as `answer` is, no numbers."""
+        digits = "".join(["5"] * 3 + ["0"] * 3 + ["1"] * 4)
+        self.words = f"Call the super at {digits}."
+        with _Ctx(db=self.db) as c:
+            self.say(c, "who is the super at 588")
+            self.say(c, "what about the details at 588")
+        log = self.db[server.DM_ANSWERS].rows[-1]
+        self.assertEqual(log["path"], "no_repeat")
+        self.assertNotIn(digits, log["repeated"])
+        self.assertIn("[number]", log["repeated"])
+
 
 if __name__ == "__main__":
     unittest.main()

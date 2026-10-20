@@ -464,10 +464,29 @@ def repeat_of_last(reply: Any, history: Iterable[dict], question: Any,
         last = " ".join(_HEARD_RE.sub("", str(row.get("body") or "")).split())
         if last != text:
             continue
-        asked_then = next((str(r.get("body") or "") for r in reversed(rows[:i])
-                           if str(r.get("sender") or "") != "bot"), "")
-        return None if _same_question(asked_then, question) else last
+        return None if any(_same_question(q, question) for q in _asked_for(rows, i)) \
+            else last
     return None
+
+
+def _asked_for(rows: List[dict], i: int) -> List[str]:
+    """What was asked for Levelog's answer at rows[i]: the nearest message of
+    theirs before it -- and when that was only a pick from a "Which job?"
+    menu ("588", "1"), the question the menu was asked for too."""
+    out = []
+    j = i - 1
+    while j >= 0:
+        if str(rows[j].get("sender") or "") == "bot":
+            j -= 1
+            continue
+        out.append(str(rows[j].get("body") or ""))
+        k = j - 1
+        while k >= 0 and str(rows[k].get("sender") or "") != "bot":
+            k -= 1
+        if k < 0 or not is_menu_message(rows[k].get("body")):
+            break
+        j = k - 1
+    return out
 
 
 def repeat_question(sheet: str = "", asked_already: bool = False) -> str:

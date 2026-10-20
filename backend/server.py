@@ -55705,8 +55705,10 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # one short question instead. A headcount (`styled`) is exempt: the
         # same count for "how many subs" and "how many companies" is right.
         hist = [] if styled else await _dm_history(dm_chat, datetime.now(timezone.utc))
+        # Compared as it goes out: the send strips a trailing "Need anything
+        # else?", and the history holds the stripped text.
         repeated = None if styled else wa_assistant.repeat_of_last(
-            reply, hist, asked, datetime.now(timezone.utc))
+            _strip_generic_offer(reply), hist, asked, datetime.now(timezone.utc))
         if repeated:
             sheet = _requested_sheet_id(repeated) or ""
             ask = wa_assistant.repeat_question(sheet)
@@ -55723,7 +55725,7 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
         # keeps the answer it would have sent, for the next dm_eval.
         await _dm_log_answer(log[0], log[1], log[2], reply, log[3],
                              tool_data=log[4] if len(log) > 4 else None,
-                             **({"repeated": repeated} if reply and repeated else {}))
+                             **({"repeated": _dm_redact(repeated)} if reply and repeated else {}))
     job_id = (log[1] if log else None) or project_id
     if heard and message_id and job_id:
         # A voice question answered about a job (the agent's answer or a
