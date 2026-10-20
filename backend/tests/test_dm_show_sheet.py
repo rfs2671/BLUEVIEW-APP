@@ -62,6 +62,17 @@ class _Sheets(_Site):
         return [p for p in c.wire.calls if "mediaUrl" in p]
 
 
+def _db_fresh(case):
+    """A new database for one sub-case: each starts its own conversation."""
+    from tests.test_dm_short_answers import _crew
+    from tests.test_whatsapp_dm_assistant import _optin
+    case.db = _db()
+    _optin(case.db, "u_admin", ADMIN_PHONE)
+    _crew(case.db)
+    case.n = 0
+    return case.db
+
+
 class MondayAt588(_Sheets, unittest.TestCase):
 
     def test_the_conversation(self):
@@ -85,6 +96,33 @@ class MondayAt588(_Sheets, unittest.TestCase):
         # Kept in the chat, so the next "show me" has it.
         self.assertTrue(any(r.get("body") == "[Sheet] SSP-011.00 — Window Protection Details"
                             for r in self.db.whatsapp_messages.rows))
+
+    def test_the_oct_20_words_send_the_sheet_too(self):
+        """dm_eval, Oct 20: after a plans answer, "send it", "the drawing",
+        "picture" (and "show it", "drawing?") are the sheet -- never the same
+        words again."""
+        for ask in ["send it", "the drawing", "picture", "show it", "drawing?", "the drawing pls"]:
+            with self.subTest(ask=ask), _Ctx(db=_db_fresh(self)) as c:
+                self.say(c, "Any info about window protection at ssp for 588?")
+                text_before = [p["message"] for p in c.wire.calls if "message" in p]
+                self.say(c, ask)
+                sent = self.media_sent(c)
+                text_after = [p["message"] for p in c.wire.calls if "message" in p]
+                self.assertEqual([p["caption"] for p in sent],
+                                 ["SSP-011.00 — Window Protection Details"], ask)
+                self.assertEqual(text_after, text_before, f"{ask}: no words again")
+
+    def test_a_bare_picture_with_no_sheet_before_is_not_a_sheet(self):
+        """With no plans answer to point at, "picture" is not this turn."""
+        with _Ctx(db=self.db) as c:
+            self.say(c, "picture")
+            sent = self.media_sent(c)
+        self.assertEqual(sent, [])
+        self.assertEqual([r for r in self.db[server.DM_ANSWERS].rows if r.get("path") == "sheet"], [])
+
+    def test_words_that_are_not_a_show_request(self):
+        for text in ["picture of the crew", "what drawing is that on", "show up time at 588"]:
+            self.assertFalse(server._dm_show_request(text), text)
 
     def test_a_sheet_named(self):
         with _Ctx(db=self.db) as c:
