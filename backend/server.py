@@ -55335,6 +55335,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     # "send me a report for 588 for the last 2 weeks", "report all jobs September".
     if await _dm_report_turn(ident, dm_chat, text, now):
         return
+    # A bare "Done" / "Cancel checklist" that none of the flows above took:
+    # fixed words about what is (not) open, never the agent (dm_eval, Oct 20).
+    if not qbody and await _dm_closer_turn(ident, dm_chat, text, history):
+        return
     if not ident["projects"]:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
         return
@@ -55674,6 +55678,27 @@ async def _dm_ask_which(dm_chat: str, jobs: list, question: str,
     if again:
         text += "\n" + wa_assistant.MENU_AGAIN_TEXT
     await send_whatsapp_message(dm_chat, text)
+
+
+async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list) -> bool:
+    """"Done" -> "Done with what?" (the open walk named, else Levelog's last
+    message quoted); "Cancel checklist" -> "There's no checklist open here
+    to cancel." True when answered."""
+    hit = wa_assistant.closer(text)
+    if not hit:
+        return False
+    kind, thing = hit
+    walk = await _punch_session(ident["user_id"])
+    walk_job = str((walk or {}).get("job_name") or "") if walk else ""
+    if kind == "done":
+        last_bot = next((str(r.get("body") or "") for r in reversed(list(history or []))
+                         if str(r.get("sender") or "") == "bot"), "")
+        reply = wa_assistant.done_reply(walk_job, last_bot)
+    else:
+        reply = wa_assistant.cancel_reply(thing, walk_job)
+    await send_whatsapp_message(dm_chat, reply)
+    await _dm_log_answer(ident, (walk or {}).get("project_id"), text, reply, "closer")
+    return True
 
 
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
