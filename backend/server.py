@@ -54115,17 +54115,22 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
     out = wa_headcount.compose_short(kind, data, short_job, since_label, question, company,
                                      names=names)
     fixed = out["short"]
-    reply, used = fixed, "fixed"
-    # The companies answer goes out as built: `verify` checks worker numbers,
-    # not a count of subs.
+    # The companies answer goes out as built: `check` checks worker numbers,
+    # not a count of subs -- fixed by design, not a fallback.
+    reply, used = fixed, "fixed_by_design" if kind == wa_headcount.SUBS else "fixed"
+    rejected = {}
     phrased = await _dm_llm(wa_headcount.PHRASE_PROMPT, fixed) \
         if OPENAI_API_KEY and kind != wa_headcount.SUBS else None
     if phrased:
-        if wa_headcount.verify(phrased, data, f"{short_job} {job['label']}", since_label) \
-                and len(phrased) <= max(len(fixed), wa_style.MAX_CHARS):
+        why = wa_headcount.check(phrased, data, f"{short_job} {job['label']}", since_label)
+        if why is None and len(phrased) > max(len(fixed), wa_style.MAX_CHARS):
+            why = "too_long"
+        if why is None:
             reply, used = phrased, "phrased"
         else:
+            # The draft and why it was thrown away, so dm_eval can show it.
             used = "fixed_after_check_failed"
+            rejected = {"rejected": _dm_redact(phrased[:1000]), "check": why}
     if out["full"] != fixed:
         # "Want the names?" -> "yes" sends them (10 minutes).
         await _dm_state_set("dm_more", dm_chat, wa_style.MORE_SECONDS, full=out["full"])
@@ -54143,7 +54148,7 @@ async def _dm_answer_headcount(ident: dict, job: dict, question: str, kind: str,
                                 "at": w["at"].isoformat() if w["at"] else None}
                                for w in data["workers"]],
                    "added": [w["name"] for w in data["added"]]},
-        wording=used, challenged=challenged)
+        wording=used, challenged=challenged, **rejected)
     return reply
 
 

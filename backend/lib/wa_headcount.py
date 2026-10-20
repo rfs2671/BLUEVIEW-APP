@@ -473,6 +473,8 @@ ok okay sure sorry correct you per by first then latest earlier later list
 everyone all one two three four five six seven eight nine ten twelve
 note noted again checking checked-in onsite
 want names more subs sub came yes isn't left
+far need full other others rest arrived joined showed send see number like
+back around gone away
 """.split())
 
 
@@ -490,17 +492,18 @@ total count headcount brief your new added extra plus checked check
 """.split())
 
 
-def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> bool:
-    """A rephrasing goes out only if it says the same facts:
+def check(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> Optional[str]:
+    """Why a rephrasing may NOT go out, or None when it says the same facts:
 
       * every word in it is from this turn's data or plain English (so no
-        invented name, in any case);
-      * every number is one of the data's;
+        invented name, in any case; "Arkon's" is Arkon) -- "word";
+      * every number is one of the data's ("09" is 9) -- "number";
       * each company's number is ITS count ("Arkon 12", "12 from Arkon"),
         and a number "on site" is the total, a number "since" the added --
-        so swapping verified numbers between facts is caught.
+        so swapping verified numbers between facts is caught --
+        "company_count", "on_site_count", "since_count".
 
-    False = send the fixed answer instead."""
+    The reason is logged with the rejected draft (dm_eval shows both)."""
     reply = reply or ""
     allowed_text = " ".join(
         [job, since_label, str(data["total"]), str(len(data.get("added") or []))]
@@ -508,34 +511,39 @@ def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") ->
         + [f"{w['name']} {w['company']} {clock(w['at'])}"
            for w in list(data["workers"]) + list(data.get("added") or [])]
         + [hhmm(data.get("since"))])
-    nums = set(re.findall(r"\d+", allowed_text))
+    nums = {str(int(n)) for n in re.findall(r"\d+", allowed_text)}
     words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", allowed_text)}
     for n in re.findall(r"\d+", reply):
-        if n not in nums:
-            return False
+        if str(int(n)) not in nums:
+            return "number"
     for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", reply):
         lw = w.lower().strip(".'’-")
-        if lw and lw not in words and lw not in _PLAIN and lw not in _COMMON:
-            return False
+        if lw and not ({lw, re.sub(r"['’]s$", "", lw)} & (words | _PLAIN | _COMMON)):
+            return "word"
     counts = dict(data["by_company"])
     for company, n in counts.items():
         c = re.escape(company)
-        for m in re.finditer(rf"{c}\W{{1,3}}(\d+)(?![\d:])", reply, re.IGNORECASE):
+        for m in re.finditer(rf"{c}(?:['’]s)?\W{{1,3}}(\d+)(?![\d:])", reply, re.IGNORECASE):
             if int(m.group(1)) != n:
-                return False
+                return "company_count"
         for m in re.finditer(rf"(?<![\d:])(\d+)\s+(?:from |at |with |of |workers? from )?{c}",
                              reply, re.IGNORECASE):
             if int(m.group(1)) != n:
-                return False
+                return "company_count"
     for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?on\s?-?site",
                          reply, re.IGNORECASE):
         if int(m.group(1)) != data["total"]:
-            return False
+            return "on_site_count"
     for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?"
                          r"(?:since|added|new|checked in since|came in)", reply, re.IGNORECASE):
         if int(m.group(1)) != len(data.get("added") or []):
-            return False
-    return True
+            return "since_count"
+    return None
+
+
+def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> bool:
+    """True = the rephrasing may go out; False = send the fixed answer."""
+    return check(reply, data, job, since_label) is None
 
 
 PHRASE_PROMPT = (

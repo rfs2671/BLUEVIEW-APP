@@ -278,6 +278,10 @@ def answer_outcome(path: str, answer, wording=None):
             return True, "check_failed"
         if wording == "fixed":
             return True, "no_model_wording"
+        if wording == "fixed_by_design":
+            # The subs answer: built, never reworded (a count of companies
+            # the check can't verify).
+            return False, "fixed_by_design"
         return False, "phrased"
     if path == "job_agent":
         if a.startswith(RECORDS_PREFIX):

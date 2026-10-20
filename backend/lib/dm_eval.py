@@ -250,6 +250,10 @@ def score(rows: Iterable[dict], *, canned_min: int = CANNED_MIN, top: int = 15) 
         "repeats": len(repeats), "repeat_examples": repeats[:top],
         "reasks": len(reasks), "reask_pct": _pct(len(reasks), total),
         "reask_examples": reasks[:top],
+        "check_failed_examples": [
+            {**_example(r), "rejected": scrub(r.get("rejected"))[:300],
+             "check": str(r.get("check") or "")}
+            for r in rows if r.get("reason") == "check_failed"][:top],
         "long_answers": len(long_rows),
         "long_examples": [_example(r) for r in long_rows[:top]],
         "top_openers": [{"opener": o, "count": n} for o, n in openers.most_common(10) if o],
@@ -309,5 +313,10 @@ def render(report: dict) -> str:
     for x in r["reask_examples"]:
         lines.append(f"  Q1: {x['first']['question']}  ->  A: {x['first']['answer'][:120]}")
         lines.append(f"      Q2 ({x['seconds']}s later): {x['then']['question']}")
+    lines += ["", "CHECK FAILED (the model's wording, thrown away)"]
+    for x in r.get("check_failed_examples", []):
+        lines.append(f"  Q: {x['question']}  [{x['check'] or 'not logged'}]")
+        lines.append(f"      rejected: {x['rejected'] or '(not logged before this change)'}")
+        lines.append(f"      sent: {x['answer'][:160]}")
     lines += ["", "OPENERS: " + ", ".join(f"\"{o['opener']}\" {o['count']}" for o in r["top_openers"])]
     return "\n".join(lines)

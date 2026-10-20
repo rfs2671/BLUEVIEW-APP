@@ -37,7 +37,8 @@ sys.path.insert(0, str(HERE.parent))
 
 from lib import dm_eval  # noqa: E402
 
-_FIELDS = ("path", "fallback", "reason", "question", "answer", "created_at", "tool_data")
+_FIELDS = ("path", "fallback", "reason", "question", "answer", "created_at", "tool_data",
+           "rejected", "check")
 
 
 def _row_out(r: dict, key: str, keep_names: bool) -> dict:
@@ -57,6 +58,9 @@ def _row_out(r: dict, key: str, keep_names: bool) -> dict:
         "reason": r.get("reason") or "",
         "question": clean(r.get("question")),
         "answer": clean(r.get("answer")),
+        # A headcount rewording the check threw away, and why.
+        "rejected": clean(r.get("rejected")) if r.get("rejected") else "",
+        "check": r.get("check") or "",
         "created_at": t.isoformat() if t else "",
     }
 
