@@ -155,3 +155,27 @@ class TheBacktest(unittest.TestCase):
     def test_garbage_logs_are_skipped(self):
         from app.scheduling.chip_backtest import backtest
         self.assertEqual(backtest([None, {}, {"date": "2026-10-01", "data": 5}])["overall"]["crew_days"], 0)
+
+
+class TheBacktestDiagnostics(unittest.TestCase):
+
+    def test_each_logged_activity_is_continuing_or_new_with_its_positions(self):
+        from app.scheduling.chip_backtest import backtest, hit_rates
+        pl = lambda *ids: {"trade": "Plumber", "activity_ids": list(ids)}  # noqa: E731
+        logs = [{"date": f"2026-10-0{d}", "data": {"activities": [pl(*ids)]}} for d, ids in
+                ((1, ["plmb_sanitary_rough"]), (2, ["plmb_sanitary_rough"]), (3, ["plmb_vent_rough"]))]
+        res = backtest(logs, top=4)
+        ev = res["events"]
+        self.assertEqual([e["kind"] for e in ev], ["new", "continuing", "new"])
+        self.assertTrue(all(set(e) >= {"baseline_pos", "personalized_pos", "no_order_pos", "previous"} for e in ev))
+        h = hit_rates(ev)
+        self.assertEqual(h["n"], 3)
+        self.assertEqual(hit_rates(ev, "continuing")["n"], 1)
+        self.assertGreaterEqual(h["personalized_pos@8"], h["personalized_pos@4"])
+
+    def test_the_usual_order_signal_can_be_switched_off(self):
+        r = rank()
+        on = CH.personalize(r, [day("d1", "plmb_sanitary_rough")], SUCC)
+        off = CH.personalize(r, [day("d1", "plmb_sanitary_rough")], SUCC, use_order=False)
+        self.assertIn("plmb_vent_rough", [c.id for c in on.chips[:3]])
+        self.assertNotIn("plmb_vent_rough", [c.id for c in off.chips[:3]])

@@ -156,17 +156,18 @@ def _plural(n: int, word: str) -> str:
 
 
 def personalize(ranking: ActivityRanking, days: Sequence[Tuple[str, List[str]]],
-                successors: Dict[str, List[str]], labels: Optional[Dict[str, str]] = None) -> ActivityRanking:
+                successors: Dict[str, List[str]], labels: Optional[Dict[str, str]] = None,
+                use_order: bool = True) -> ActivityRanking:
     """`ranking` reordered by the crew's own history; the same chips, the same
     set, "Other" last. With no usable history the ranking is returned as it was."""
     try:
-        return _personalize(ranking, list(days or []), successors or {}, labels or {})
+        return _personalize(ranking, list(days or []), successors or {}, labels or {}, use_order)
     except Exception:                      # the rules must never stop a day being logged
         return ranking
 
 
 def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
-                 successors: Dict[str, List[str]], labels: Dict[str, str]) -> ActivityRanking:
+                 successors: Dict[str, List[str]], labels: Dict[str, str], use_order: bool = True) -> ActivityRanking:
     if not days:
         return ranking
     chips = list(ranking.chips)
@@ -211,7 +212,7 @@ def _personalize(ranking: ActivityRanking, days: List[Tuple[str, List[str]]],
             if x == a and y in by_id and y not in last_ids:
                 lift(y, HABIT_BONUS * min(n, 2) + extra,
                      f"this crew moved from {label.get(a, a)} to {label.get(y, y)} before" + tail)
-        if a in catalog_order:
+        if use_order and a in catalog_order:
             k = catalog_order.index(a)
             for step, pts in enumerate(ORDER_BONUS, start=1):
                 if k + step < len(catalog_order) and catalog_order[k + step] not in last_ids:

@@ -35,21 +35,39 @@ async def main(a):
     res = BT.backtest(logs, project_id=pid, top=a.top, structural_system=project.get("structural_system"))
     o = res["overall"]
     print(f"daily logs read: {', '.join([str(x.get('date'))[:10] for x in logs[:1]] + ['...'] + [str(x.get('date'))[:10] for x in logs[-1:]])}")
-    print(f"\\ncrew-days replayed: {o['crew_days']}   activities logged: {o['actual']}   (first {res['top']} chips)")
+    print(f"\ncrew-days replayed: {o['crew_days']}   activities logged: {o['actual']}   (first {res['top']} chips)")
     print(f"  baseline      {BT.rate(o['baseline_hits'], o['actual'])}  ({o['baseline_hits']} of {o['actual']})")
     print(f"  personalized  {BT.rate(o['personalized_hits'], o['actual'])}  ({o['personalized_hits']} of {o['actual']})")
-    print("\\nby trade:")
+    print("\nby trade:")
     for trade, s in sorted(res["by_trade"].items()):
         print(f"  {trade:<28} days {s['crew_days']:>3}  baseline {BT.rate(s['baseline_hits'], s['actual']):>5}  "
               f"personalized {BT.rate(s['personalized_hits'], s['actual']):>5}")
+    ev = res["events"]
+    print("\nBY KIND OF ACTIVITY (share of the activities really logged found in the first N chips)")
+    for kind in (None, "continuing", "new"):
+        h = BT.hit_rates(ev, kind)
+        name = {None: "all", "continuing": "continuing (logged on the crew's previous day)",
+                "new": "new (not logged on the crew's previous day)"}[kind]
+        print(f"  {name}: {h['n']} activities")
+        for label, key in (("baseline", "baseline_pos"), ("personalized", "personalized_pos"),
+                           ("personalized, no usual-order signal", "no_order_pos")):
+            cells = "  ".join(f"@{n}: {BT.rate(h[f'{key}@{n}'], h['n']):>4}" for n in (4, 6, 8))
+            print(f"      {label:<38} {cells}")
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "activity_backtest.txt"), "w", encoding="utf-8") as f:
         for r in res["rows"]:
             f.write(f"{r['date']} | {r['trade']} | history {r['had_history']} | actual {r['actual']} | "
                     f"baseline {r['baseline_top']} ({r['baseline_hits']}) | personalized {r['personalized_top']} "
-                    f"({r['personalized_hits']})\\n")
-    print(f"\\nwrote {os.path.join(out, 'activity_backtest.txt')} (one line per crew-day)")
+                    f"({r['personalized_hits']})\n")
+    with open(os.path.join(out, "activity_backtest_misses.txt"), "w", encoding="utf-8") as f:
+        f.write("activities NOT in the first chips of the personalized ranking\n")
+        f.write("date | trade | actual (kind) | position in baseline / personalized / no-order (0 = first) | the crew's previous day\n")
+        for e in ev:
+            if e["personalized_pos"] is None or e["personalized_pos"] >= res["top"]:
+                f.write(f"{e['date']} | {e['trade']} | {e['label']} ({e['kind']}) | {e['baseline_pos']} / "
+                        f"{e['personalized_pos']} / {e['no_order_pos']} | {', '.join(e['previous']) or '-'}\n")
+    print(f"\nwrote {os.path.join(out, 'activity_backtest.txt')} and activity_backtest_misses.txt")
 
 
 if __name__ == "__main__":
