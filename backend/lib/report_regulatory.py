@@ -223,29 +223,52 @@ def row_bin(r: Dict[str, Any]) -> str:
     return m.group(1) if m else ""
 
 
-def split_by_bin(dob_rows: Iterable[Dict[str, Any]], bins: Iterable[Any]):
-    """(kept, excluded, unverified) for a project whose BIN(s) are `bins`.
+_JOB_BASE = re.compile(r"^[A-Za-z]?\d{8,9}")
 
-    A record whose own BIN is known and is NOT one of the project's is another
-    building's (the address search can return a neighbour's): EXCLUDED, and
-    listed for review. A record with no readable BIN cannot be shown to belong
-    or not: KEPT and counted as unverified, never dropped quietly. With no
-    project BIN there is nothing to compare: all kept, none verified."""
+
+def job_base(r: Dict[str, Any]) -> str:
+    """The job a filing belongs to, without its filing suffix: "B01141294-S5"
+    and "B01141294-P8" are the same job B01141294."""
+    if _rtype(r) not in ("permit", "job_status"):      # a violation number is not a job
+        return ""
+    m = _JOB_BASE.match(_t(wa_alerts.record_number(r)).upper())
+    return m.group(0) if m else ""
+
+
+def split_by_bin(dob_rows: Iterable[Dict[str, Any]], bins: Iterable[Any]):
+    """(kept, excluded, unverified, inferred) for a project whose BIN(s) are `bins`.
+
+    A record whose own BIN is the project's belongs. A record under ANOTHER BIN
+    belongs too when its JOB also appears under the project's BIN: one DOB job
+    (B01141294) can be filed against more than one building of a lot, so that
+    BIN is part of the site (the real 588 data: jobs B01141294 and B01409772
+    each appear under BINs 3255362 and 3430621). Such BINs are `inferred`, and
+    all their records are kept.
+
+    Only a record under a BIN that shares NO job with the project's is another
+    building's -- a neighbour's, from the address search: EXCLUDED and listed
+    for review. A record with no readable BIN cannot be shown to belong or
+    not: KEPT and counted as unverified, never dropped quietly. With no
+    project BIN there is nothing to compare: all kept."""
     want = {re.sub(r"\D", "", str(b or "")) for b in bins if re.sub(r"\D", "", str(b or ""))}
     rows = list(dob_rows)
     if not want:
-        return rows, [], 0
+        return rows, [], 0, []
+    own_jobs = {job_base(r) for r in rows if row_bin(r) in want and job_base(r)}
+    inferred = sorted({row_bin(r) for r in rows if row_bin(r) and row_bin(r) not in want
+                       and job_base(r) and job_base(r) in own_jobs})
+    site = want | set(inferred)
     kept, excluded, unverified = [], [], 0
     for r in rows:
         b = row_bin(r)
         if not b:
             kept.append(r)
             unverified += 1
-        elif b in want:
+        elif b in site:
             kept.append(r)
         else:
             excluded.append(r)
-    return kept, excluded, unverified
+    return kept, excluded, unverified, inferred
 
 
 def _excluded_entries(rows: List[Dict[str, Any]], want: Iterable[str]) -> List[Dict[str, Any]]:
@@ -274,15 +297,16 @@ def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]]
     cov = coverage(sync, end, now)
     out: Dict[str, Any] = {"coverage": cov, "issued": [], "changed": [], "open": [], "swo_active": [],
                            "swo_lifted": [], "expiring": [], "uncertain": 0, "excluded": [],
-                           "bin_unverified": 0, "bins": sorted({re.sub(r"\D", "", str(b)) for b in project_bins if b}),
+                           "bin_unverified": 0, "bins_inferred": [], "bins": sorted({re.sub(r"\D", "", str(b)) for b in project_bins if b}),
                            "counts": {"records": 0}}
     if cov["state"] in ("not_tracked", "unknown"):
         return out
     today = today or end
     end_at, start_at = _day_end(end), _day_end(start - timedelta(days=1))
-    dob_rows, left_out, unverified = split_by_bin(dob_rows, project_bins)
+    dob_rows, left_out, unverified, inferred = split_by_bin(dob_rows, project_bins)
     out["excluded"] = _excluded_entries(left_out, out["bins"])
     out["bin_unverified"] = unverified
+    out["bins_inferred"] = inferred
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for r in list(dob_rows) + list(dot_rows):
         if r.get("is_deleted") or _is_311(r):

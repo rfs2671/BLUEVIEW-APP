@@ -43,7 +43,7 @@ CSS = """
 @page :first { @top-left { content: none; } }
 * { box-sizing: border-box; }
 body { font: 9.4pt/1.42 Helvetica, Arial, sans-serif; color: #1c2430; margin: 0; }
-.mast { background: #12263F; color: #fff; margin: -0.6in -0.6in 10px; padding: 0.34in 0.6in 12px; }
+.mast { background: #12263F; color: #fff; margin: 0 0 8px; padding: 0.15in 0.3in 8px; border-radius: 6px; }
 .mast .brand { font-size: 7.5pt; letter-spacing: 3px; font-weight: 700; opacity: .75; }
 .mast h1 { font-size: 21pt; line-height: 1.1; margin: 6px 0 2px; font-weight: 700; }
 .mast .addr { font-size: 9.5pt; opacity: .82; }
@@ -115,7 +115,7 @@ table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px
 /* THE WHOLE PHOTOGRAPH, never a crop: a portrait phone photo keeps its top and bottom. */
 .photo .frame { height: 2.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
 .photos.three .photo .frame { height: 2.0in; }
-.photos.four .photo .frame { height: 3.1in; }
+.photos.four .photo .frame { height: 2.7in; }
 .photo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .photo .cap { font-size: 8pt; margin-top: 3px; }
 .photo .cap b { font-size: 8.5pt; }
@@ -366,21 +366,7 @@ def _progress(rep: Dict[str, Any]) -> str:
             f"{trade_chip} "
             f"<span class='meta'>{len(s['days'])} days on site</span>{_tag('L')}"
             f"</div>{work}</div>")
-    matrix = ""
-    fm = rep["floor_matrix"]
-    if fm:
-        head = "".join(f"<th>{f}</th>" for f in fm["floors"])
-        body = ""
-        for r in fm["rows"]:
-            cells = ""
-            for f in fm["floors"]:
-                st = r["cells"][f]
-                bg = r["color"] if st == "now" else _hex_to_rgba(r["color"], 0.22) if st == "before" else "#f4f6f9"
-                cells += f"<td style='background:{bg}'></td>"
-            body += f"<tr><td class='name'><span class='dot' style='background:{r['color']}'></span>{_e(r['name'])}</td>{cells}</tr>"
-        matrix = ("<h3>Where work was reported, by floor</h3><table class='floors keep'><tr><th></th>" + head
-                  + "</tr>" + body + "</table><div class='legend'>Solid: reported in this period · light: "
-                  "reported only in the previous period. Reported activity, not a measure of completion.</div>")
+    matrix = ""      # reported floors are a column of the workforce table, not a second block
     return (f"<section><h2>Construction progress</h2><p class='muted'>Documented work: what each subcontractor reported "
             f"in the filed daily logs, not measured completion and not verified on site. ADVANCED marks the same activity "
             f"reported on floors it was not reported on before. CHECK marks work that does not match the sub's trade.</p>{''.join(rows)}"
@@ -491,8 +477,10 @@ def _workforce(rep: Dict[str, Any]) -> str:
         note = f" <span class='muted'>({s['log_days']} from log)</span>" if s["log_days"] else ""
         prev_days = str(s["prev_days"]) if s["prev_days"] else "—"
         prev_avg = f"{s['prev_avg']:g}" if s["prev_days"] else "—"
+        fl = sorted({f for w in rep["work"] if w["key"] == s["key"] for i in w["items"] for f in i["floors"]})
         rows.append(f"<tr><td><span class='dot' style='background:{s['color']}'></span>{_e(s['name'])}{tag}</td>"
-                    f"<td>{_e(s['trade'])}</td><td class='n'>{len(s['days'])}{note}</td>"
+                    f"<td>{_e(s['trade'])}</td><td>{_e(P.floors_label(fl) or '—')}</td>"
+                    f"<td class='n'>{len(s['days'])}{note}</td>"
                     f"<td class='n'>{prev_days}</td><td class='n'>{s['avg']:g}</td>"
                     f"<td class='n'>{prev_avg}</td><td class='n'>{s['max']}</td></tr>")
     callouts = []
@@ -501,9 +489,9 @@ def _workforce(rep: Dict[str, Any]) -> str:
             callouts.append(f"{g['name']} not on site this period (last seen {_fmt(g['last'], '%b %-d')}).")
     call = ("<h3>Not on site this period</h3><ul class='tight'>" + "".join(f"<li>{_e(c)}{_tag('G')}</li>" for c in callouts)
             + "</ul>") if callouts else ""
-    return (f"<section><h2>Workforce and site activity {_tag('G')}</h2><p class='muted'>Workers counted once per day from "
+    return (f"<section class='keep'><h2>Workforce and site activity {_tag('G')}</h2><p class='muted'>Workers counted once per day from "
             f"site check-ins; working days are {_e(rep['site']['basis'])}.</p>{call}"
-            "<table class='keep'><tr><th>Subcontractor</th><th>Trade</th><th class='n'>Days on site</th>"
+            "<table class='keep'><tr><th>Subcontractor</th><th>Trade</th><th>Floors reported</th><th class='n'>Days on site</th>"
             "<th class='n'>Previous</th><th class='n'>Avg workers</th><th class='n'>Previous avg</th>"
             "<th class='n'>Peak</th></tr>" + "".join(rows) + "</table></section>")
 

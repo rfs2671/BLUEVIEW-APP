@@ -257,9 +257,11 @@ def spelling_fixes(texts: Iterable[str]) -> Dict[str, str]:
     common = sorted({w for w, c in count.items() if c >= 3} | set(_VOCAB))
     fixes: Dict[str, str] = {}
     for w, c in count.items():
-        if c > 1 or w in _VOCAB or w in _REAL_WORDS:
+        if c > 2 or w in _VOCAB or w in _REAL_WORDS:
             continue
         hits = [x for x in common if _one_edit(w, x) and not (x.startswith(w) or w.startswith(x))]
+        if c == 2:                      # a word used twice is mended only toward the curated vocabulary
+            hits = [x for x in hits if x in _VOCAB]
         if len(hits) == 1:
             fixes[w] = hits[0]
     return fixes
@@ -576,8 +578,9 @@ def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str
             places = Counter(a["where"] for a in rows if a["where"] and not a["floors"])
             seen_before = k in before_floors
             new_floors = sorted(set(floors) - before_floors.get(k, set()))
+            installs = not any(w in f"{s.get('trade') or ''} {s.get('name') or ''}".lower() for w in _NON_INSTALL)
             status = ("reported" if not comparable else
-                      "advanced" if seen_before and new_floors and floors else
+                      "advanced" if installs and seen_before and new_floors and floors else
                       "continued" if seen_before else "reported")
             fam_sub, fam_work = trade_family(s.get("trade"), s.get("name")), trade_family(shown[k])
             items.append({"work": shown[k], "floors": floors,
@@ -1246,6 +1249,10 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
         out.append(f"{len(left)} DOB record{'s' if len(left) != 1 else ''} for another building {verb} left out "
                    f"({parts}); this project's BIN is {', '.join(reg.get('bins') or []) or 'unknown'}. They are listed "
                    "in the report's stored snapshot for review; if they belong to this site, add the BIN to the project.")
+    if reg.get("bins_inferred"):
+        out.append("Records filed under BIN " + ", ".join(reg["bins_inferred"]) + " are included because their jobs also "
+                   "appear under this project's BIN " + ", ".join(reg.get("bins") or []) + " (one DOB job can cover more than "
+                   "one building of a lot); add the BIN to the project to confirm it.")
     if reg.get("bin_unverified"):
         out.append(f"{reg['bin_unverified']} DOB record row{'s' if reg['bin_unverified'] != 1 else ''} carry no building "
                    "number (BIN), so whether they belong to this site could not be checked; they are included.")
@@ -1441,4 +1448,10 @@ def photo_review(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]
             why = "not needed (per-sub / per-day limit or page full)"
         out.append({"sub": c["sub"], "trade": c.get("trade") or "", "date": c["date"], "where": c.get("where") or "",
                     "kind": v.get("kind"), "work": v.get("work"), "score": float(v.get("score") or 0), "why": why})
-    return sorted(out, key=lambda r: (r["why"] != "used", r["sub"], str(r["date"])))
+    seen, unique = set(), []
+    for r in out:                       # one photo can be filed twice (original and enhanced): list it once
+        k = (r["sub"], str(r["date"]), r["where"], r["kind"], r["work"], r["score"], r["why"])
+        if k not in seen:
+            seen.add(k)
+            unique.append(r)
+    return sorted(unique, key=lambda r: (r["why"] != "used", r["sub"], str(r["date"])))

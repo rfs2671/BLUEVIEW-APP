@@ -446,7 +446,7 @@ class TheWordingIsReadable(unittest.TestCase):
         self.assertEqual(P.spelling_fixes(texts), {})              # suffixes are not misspellings
 
     def test_a_word_used_repeatedly_is_never_changed(self):
-        self.assertEqual(P.spelling_fixes(["wite crew"] * 2 + ["wire crew"] * 5), {})
+        self.assertEqual(P.spelling_fixes(["wite crew"] * 3 + ["wire crew"] * 5), {})
 
     def test_the_report_says_it_corrected_and_what(self):
         logs = F.logbooks()
@@ -744,3 +744,43 @@ class TradeMismatchAndPhotoMinimum(unittest.TestCase):
         self.assertTrue(why["Quality Plumbing"].startswith("trade mismatch"))
         self.assertTrue(why["Power Direct"].startswith("not installed work"))
         self.assertTrue(why["J&G"].startswith("score 3 below"))
+
+
+class RealDataRound2(unittest.TestCase):
+
+    def test_a_typo_used_twice_is_mended_toward_the_curated_vocabulary_only(self):
+        # REAL 588: "Pulling wite" on two days was left alone (used twice).
+        self.assertEqual(P.spelling_fixes(["Pulling wite", "Pulling wite", "Electrical wiring"]).get("wite"), "wire")
+        # ... but a twice-used word near a word the logs merely use often is NOT touched.
+        self.assertEqual(P.spelling_fixes(["Hoist plan", "Hoist plan"] + ["Hoist plat"] * 3), {})
+
+    def test_a_cleaning_crew_never_advances(self):
+        # REAL 588: "Echo: cleaning advanced to floor 4."
+        def act(day, floors):
+            return {"date": date(2026, 10, day), "key": "e", "company": "Echo", "trade": "Cleaning", "workers": 5,
+                    "work": "Cleaning", "where": floors, "floors": P.floors_in(floors), "photos": [], "log": f"l{day}",
+                    "log_id": "x", "amended": False}
+        got = P._work([act(7, "floors 1-4")], [act(1, "floors 1-3")], {"e": "e"},
+                      [{"key": "e", "name": "Echo", "trade": "Cleaning"}], True)
+        self.assertNotEqual(got[0]["items"][0]["status"], "advanced")
+
+    def test_reported_floors_are_a_column_not_a_second_block(self):
+        html = RR.render_html([rep()], gc="", title="t", now=F.NOW, images={})
+        self.assertIn("Floors reported", html)
+        self.assertNotIn("Where work was reported, by floor", html)
+
+    def test_a_dark_seam_at_a_photo_edge_is_shaved(self):
+        from PIL import Image
+        from lib import report_image
+        im = Image.new("RGB", (400, 600), (140, 150, 160))
+        im.paste(Image.new("RGB", (400, 3), (12, 12, 12)), (0, 597))          # a thin dark seam under the picture
+        self.assertEqual(report_image.trim_black_bars(im).size, (400, 597))
+        self.assertEqual(report_image.trim_black_bars(Image.new("RGB", (400, 600), (140, 150, 160))).size, (400, 600))
+
+    def test_the_review_lists_a_double_filed_photo_once(self):
+        c = {"key": "a", "date": date(2026, 10, 8), "sub": "Arkon Builders", "trade": "Framers", "where": "floors 1-4",
+             "words": "x", "work": "x", "source": "daily log", "log_id": "x"}
+        ver = {"a": {"ok": True, "kind": "progress", "score": 8, "work": "framing"},
+               "b": {"ok": True, "kind": "progress", "score": 8, "work": "framing"}}
+        review = P.photo_review([c, {**c, "key": "b"}], ver, [])
+        self.assertEqual(len(review), 1)

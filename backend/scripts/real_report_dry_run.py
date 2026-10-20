@@ -188,9 +188,10 @@ async def bin_analysis(server, project):
         from lib import wa_alerts
         sample = ", ".join(f"{wa_alerts.record_number(x) or '?'} [{wa_alerts.record_status(x) or '?'}]" for x in rs[:4])
         lines.append(f"{rb} | {rn} | {rt} | {sum(1 for _ in rs)} | {sample}")
-    kept, left, unverified = RG.split_by_bin(rows, [b for b in have if b])
+    kept, left, unverified, inferred = RG.split_by_bin(rows, [b for b in have if b])
     lines += ["", f"with the project's BIN(s) {[b for b in have if b]}: kept {sum(1 for _ in kept)}, "
-              f"excluded {sum(1 for _ in left)}, BIN unreadable {unverified}"]
+              f"excluded {sum(1 for _ in left)}, BIN unreadable {unverified}; BINs inferred as part of the site "
+              f"(their jobs also appear under the project's BIN): {inferred}"]
     return "\n".join(lines) + "\n"
 
 

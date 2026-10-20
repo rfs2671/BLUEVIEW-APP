@@ -102,3 +102,42 @@ class OnlyThisBuildingsRecords(unittest.TestCase):
         self.assertIn("no building number", notes)
         self.assertNotIn("B-THEIRS", " ".join(e["number"] for e in rep["regulatory"]["open"] + rep["regulatory"]["issued"]))
         self.assertEqual([e["number"] for e in rep["regulatory"]["excluded"]], ["B-THEIRS"])
+
+
+class AJobFiledUnderTwoBuildingsIsOneSite(unittest.TestCase):
+    """REAL 588 DATA (BIN analysis, Oct 2026): project BIN 3255362; jobs B01141294
+    and B01409772 each appear under BIN 3255362 AND BIN 3430621. One DOB job
+    can be filed against more than one building of a lot, so 3430621 is part of
+    the site -- the first BIN guard excluded nine of its own records, among them
+    the permit issued Oct 14 and the one expiring Nov 1."""
+
+    def row(self, number, bin_, status="PERMIT ISSUED", issued="2026-10-14"):
+        return {"_id": number + bin_, "raw_dob_id": f"permit:{number}:{bin_}", "record_type": "permit",
+                "permit_status": status, "job_number": number, "issuance_date": issued,
+                "expiration_date": "2026-11-01", "detected_at": F.NOW, "nyc_bin": "3255362",
+                "dob_link": f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin_}"}
+
+    def test_the_job_is_the_filing_without_its_suffix(self):
+        self.assertEqual(RG.job_base({"job_number": "B01141294-S5", "record_type": "permit"}), "B01141294")
+        self.assertEqual(RG.job_base({"job_filing_number": "B01141294-P8", "record_type": "job_status"}), "B01141294")
+        self.assertEqual(RG.job_base({"violation_number": "39189039M", "record_type": "violation"}), "")
+
+    def test_a_second_bin_sharing_a_job_with_the_projects_is_part_of_the_site(self):
+        rows = [self.row("B01141294-S5", "3255362"), self.row("B01141294-S6", "3430621"),
+                self.row("B23173802-S5", "3430621")]          # a record of the same second BIN, a different job
+        kept, left, unverified, inferred = RG.split_by_bin(rows, ["3255362"])
+        self.assertEqual(inferred, ["3430621"])
+        self.assertEqual((len(kept), left), (3, []))          # ALL of 3430621's records are the site's
+
+    def test_a_bin_sharing_no_job_stays_out_and_is_listed(self):
+        rows = [self.row("B01141294-S5", "3255362"), self.row("B99999999-I1", "1111111")]
+        kept, left, _, inferred = RG.split_by_bin(rows, ["3255362"])
+        self.assertEqual((inferred, [x["job_number"] for x in left]), ([], ["B99999999-I1"]))
+
+    def test_the_report_keeps_the_oct_14_permit_and_says_why(self):
+        rows = [self.row("B01141294-S5", "3255362", issued="2026-07-15"), self.row("B01141294-S6", "3430621", issued="2026-09-08"),
+                self.row("B23173802-S5", "3430621")]
+        rep = F.report(dob_rows=rows, dot_rows=[], project_bins=["3255362"])
+        self.assertEqual([e["number"] for e in rep["regulatory"]["issued"]], ["B23173802-S5"])
+        self.assertEqual(rep["regulatory"]["excluded"], [])
+        self.assertTrue(any("3430621" in n and "also appear under this project" in n for n in rep["data_notes"]), rep["data_notes"])

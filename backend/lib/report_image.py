@@ -37,8 +37,47 @@ def trim_black_bars(im: Any) -> Any:
     kept = ((right - left) * (bottom - top)) / float(w * h)
     trimmed = 1.0 - kept
     if kept < MIN_KEEP or trimmed < MIN_TRIM:
-        return im
-    return im.crop(box)
+        left, top, right, bottom = 0, 0, w, h          # not padded: only the soft-edge shave below
+    box = _shave(gray, (left, top, right, bottom))
+    return im if box == (0, 0, w, h) else im.crop(box)
+
+
+#: An edge line whose AVERAGE brightness is this low is still padding (a
+#: compressed black bar leaves a few brighter pixels, a thin dark seam stays
+#: after the hard trim): shave it, a few lines at a time.
+EDGE_MEAN = 38
+MAX_SHAVE = 0.06
+
+
+def _shave(gray: Any, box):
+    from PIL import ImageStat
+    left, top, right, bottom = box
+    w, h = gray.size
+    mx, my = int(w * MAX_SHAVE), int(h * MAX_SHAVE)
+
+    def dark(b):
+        return ImageStat.Stat(gray.crop(b)).mean[0] < EDGE_MEAN
+    for _ in range(my):
+        if bottom - top > 2 and dark((left, bottom - 1, right, bottom)):
+            bottom -= 1
+        else:
+            break
+    for _ in range(my):
+        if bottom - top > 2 and dark((left, top, right, top + 1)):
+            top += 1
+        else:
+            break
+    for _ in range(mx):
+        if right - left > 2 and dark((left, top, left + 1, bottom)):
+            left += 1
+        else:
+            break
+    for _ in range(mx):
+        if right - left > 2 and dark((right - 1, top, right, bottom)):
+            right -= 1
+        else:
+            break
+    return (left, top, right, bottom)
 
 
 def orientation(data_uri: str) -> Optional[str]:
