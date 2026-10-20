@@ -416,6 +416,66 @@ def is_nudge(text: Any) -> bool:
     return 0 < len(words) <= 2 and all(w in _NUDGE for w in words)
 
 
+# ── A BARE "DONE" / "CANCEL <THING>" THAT NO FLOW TOOK (dm_eval, Oct 20) ──
+#
+# "Cancel checklist" and "Done" both reached the job agent, which answered
+# both with "Checklist creation or cancellation is done in the app." -- a
+# claim about a feature, made twice, to two different messages. Nothing was
+# open: every flow that owns a "done" or a "cancel" (a walk, a pending
+# action, a reminder, an open question) runs before this and took nothing.
+# So the answer is about THAT, in fixed words: what is done, or that there
+# is nothing of that name to cancel. Never the model.
+_DONE_RE = re.compile(
+    r"^(?:ok(?:ay)?\W*)?(?:i'?m |we'?re |all |it'?s |im )?(?:done|finished|all done|done here|"
+    r"done with (?:it|that|this|everything)|that'?s it|thats all|that'?s all|listo|terminé|"
+    r"termine|fartik)\W*$")
+# Things another flow cancels for real (a chase setting, the brief, a
+# report schedule, a reminder, alerts): never claimed here.
+_CANCEL_OWNED = re.compile(
+    r"\b(chas\w*|brief\w*|report\w*|remind\w*|alert\w*|notification\w*|schedul\w*|"
+    r"setting\w*|sub|subs|job|jobs|person|contact)\b")
+_CANCEL_RE = re.compile(
+    r"^(?:please |pls |can you |could you )?cancel "
+    r"(?:the |my |this |that |our )?([a-z][a-z'&/ -]{1,40}?)\W*$")
+
+
+def closer(text: Any) -> Optional[Tuple[str, str]]:
+    """("done", "") for a bare "Done" / "all done" / "finished";
+    ("cancel", "checklist") for "Cancel checklist" / "cancel the walk".
+    None for anything else -- a question, or "cancel it" / "never mind",
+    which are dm_actions.is_drop's."""
+    t = " ".join(str(text or "").strip().lower().split())
+    if not t or "?" in t:
+        return None
+    if _DONE_RE.match(t):
+        return ("done", "")
+    m = _CANCEL_RE.match(t)
+    thing = m.group(1).strip() if m else ""
+    if m and thing not in ("it", "that", "this", "them") and not _CANCEL_OWNED.search(thing):
+        return ("cancel", thing)
+    return None
+
+
+def done_reply(walk_job: str = "", last_bot: str = "") -> str:
+    """"Done with what?" -- with the open walk named, else Levelog's last
+    message quoted, so they can say which."""
+    if walk_job:
+        return f"Done with what? Your walk at {walk_job} is still open."
+    last = " ".join(str(last_bot or "").split())
+    # Its own last reply is no context ("There's no checklist open here…").
+    if last and not (last.startswith("Done with what?") or last.endswith("open here to cancel.")):
+        last = last if len(last) <= 60 else last[:57].rstrip() + "…"
+        return f"Done with what? My last message was: “{last}”"
+    return "Done with what?"
+
+
+def cancel_reply(thing: str, walk_job: str = "") -> str:
+    """Nothing of that name is open here."""
+    if walk_job and re.search(r"\b(walk|walkthrough|punch|list)\b", thing):
+        return f"Your walk at {walk_job} is still open — nothing else to cancel."
+    return f"There's no {thing} open here to cancel."
+
+
 _MEDIA = {"image": "photo", "video": "video", "document": "document", "sticker": "sticker",
           "ptt": "voice note", "audio": "voice note", "voice": "voice note",
           "location": "location", "vcard": "contact card"}
