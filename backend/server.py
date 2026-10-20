@@ -29,6 +29,8 @@ import bcrypt
 from bson import ObjectId
 import httpx
 import asyncio
+import contextvars
+import difflib
 from concurrent.futures import ThreadPoolExecutor
 import io
 import sys
@@ -81,6 +83,7 @@ from lib import punch_brain  # noqa: E402
 from lib import punch_batch  # noqa: E402
 from lib import dm_actions  # noqa: E402
 from lib import trades as lib_trades  # noqa: E402
+from lib import dm_brain  # noqa: E402
 from lib import wa_voice  # noqa: E402
 from lib import wa_mention  # noqa: E402
 from lib import wa_gc  # noqa: E402
@@ -52710,6 +52713,12 @@ async def _dm_jobs(ident: dict) -> list:
              "project": p} for p in ident["projects"]]
 
 
+#: The DM brain runs the change flow with its messages captured here instead
+#: of sent (it rephrases them), and in the eval with no state written.
+_DM_CAPTURE: contextvars.ContextVar = contextvars.ContextVar("dm_capture", default=None)
+_DM_DRY: contextvars.ContextVar = contextvars.ContextVar("dm_dry", default=False)
+
+
 async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
     try:
         row = await db[_DM_STATE].find_one(
@@ -52727,6 +52736,8 @@ async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
 
 
 async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
+    if _DM_DRY.get():
+        return
     now = datetime.now(timezone.utc)
     try:
         await db[_DM_STATE].update_one(
@@ -52741,6 +52752,8 @@ async def _dm_state_set(kind: str, chat: str, seconds: int, **fields) -> None:
 async def _dm_state_bump(kind: str, chat: str, **fields) -> None:
     """Update an open question WITHOUT moving its expiry: asking it again
     does not keep it alive (it expires 30 min after it was first asked)."""
+    if _DM_DRY.get():
+        return
     try:
         await db[_DM_STATE].update_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""},
@@ -52766,6 +52779,8 @@ async def _dm_drop_pending(chat: str) -> bool:
 
 
 async def _dm_state_clear(kind: str, chat: str) -> None:
+    if _DM_DRY.get():
+        return
     try:
         await db[_DM_STATE].delete_one(
             {"kind": kind, "group_id": wa_dm.phone_digits(chat), "sender": ""})
@@ -54207,7 +54222,7 @@ def _dm_is_admin(ident: dict) -> bool:
 #: ident["projects"] are those jobs): save people, put subs on a job, set a
 #: sub's punch contact. A new job and a job's settings need an admin (or a
 #: PM with full access).
-_DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact")
+_DM_PM_ACTIONS = ("add_person", "add_sub", "set_punch_contact", "set_trade")
 
 
 async def _dm_action_model(text: str, jobs: List[str]) -> Optional[dict]:
@@ -54329,6 +54344,10 @@ async def _dm_company_subs(ident: dict) -> List[Tuple[dict, dict]]:
 
 
 async def _dm_say(dm_chat: str, lang: str, key: str, **kw) -> None:
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": key, "text": dm_actions.say(lang, key, **kw)})
+        return
     await send_whatsapp_message(dm_chat, dm_actions.say(lang, key, **kw))
 
 
@@ -54336,6 +54355,10 @@ async def _dm_ask(dm_chat: str, p: dict, step: str, text: str,
                   options: Optional[list] = None) -> None:
     await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
                         p=p, step=step, options=options or [], asked=text, misses=0)
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": step, "text": text})
+        return
     await send_whatsapp_message(dm_chat, text)
 
 
@@ -54480,6 +54503,10 @@ async def _dm_action_answer(ident: dict, dm_chat: str, text: str, pending: dict)
 
 
 async def _dm_say_raw(dm_chat: str, text: str) -> None:
+    cap = _DM_CAPTURE.get()
+    if cap is not None:
+        cap.append({"kind": "raw", "text": text})
+        return
     await send_whatsapp_message(dm_chat, text)
 
 
@@ -55019,6 +55046,14 @@ async def _dm_action_do(ident: dict, dm_chat: str, p: dict) -> None:
     """Make the change, only as the code confirms it; say what changed."""
     lang = p.get("lang") or "en"
     a = p["action"]
+    if _DM_CAPTURE.get() is not None:
+        # The brain never makes a change: held for the person's own "yes".
+        asked = (f"{a.replace('_', ' ')} on {p.get('_job') or p.get('job') or 'the job'}"
+                 + (f" ({p.get('days')}, {'off' if p.get('off') else 'on'})" if p.get("setting") == "rest" else ""))
+        await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS, p=p,
+                            step="confirm", options=[], asked=f"Change {asked}?", misses=0)
+        _DM_CAPTURE.get().append({"kind": "confirm", "text": f"Ready to change {asked}. Needs their yes."})
+        return
     if not _dm_is_approved(ident):
         await _dm_say(dm_chat, lang, "not_approved")
         return
@@ -55177,7 +55212,8 @@ async def _dm_do_set_setting(ident: dict, p: dict):
 
 
 _DM_DO = {"add_job": _dm_do_add_job, "add_sub": _dm_do_add_sub, "add_person": _dm_do_add_person,
-          "set_punch_contact": _dm_do_set_punch_contact, "set_setting": _dm_do_set_setting}
+          "set_punch_contact": _dm_do_set_punch_contact, "set_setting": _dm_do_set_setting,
+          "set_trade": lambda ident, p: _dm_do_set_trade(ident, p)}
 
 
 async def _dm_restore_person(ident: dict, jid: str, before: Optional[dict]) -> None:
@@ -55204,7 +55240,7 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
         await _dm_say(dm_chat, lang, "not_approved")
         return
     if not _dm_is_admin(ident) and not (
-            u.get("kind") in ("person", "roster")
+            u.get("kind") in ("person", "roster", "roster_multi")
             or (u.get("kind") == "settings" and u.get("field") == "punch_contacts")):
         await _dm_say(dm_chat, lang, "admin_only")
         return
@@ -55216,6 +55252,10 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
                 {"$set": {"marked_for_deletion": True, "marked_by": ident["user_id"], "marked_at": now,
                           "updated_at": now, "delete_batch_id": owner_portal.new_batch_id()}})
             what = dm_actions.say(lang, "undo_job", job=u["job"])
+        elif u["kind"] == "roster_multi":
+            for item in u.get("items") or []:
+                await _save_roster(item["project_id"], item["before"])
+            what = f"{u.get('company')}'s trade on {u.get('job')}"
         elif u["kind"] == "roster":
             await _save_roster(u["project_id"], u["before"])
             what = dm_actions.say(lang, "undo_sub", company=u["company"], job=u["job"])
@@ -55274,7 +55314,7 @@ async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetim
 
 async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                               message_id: str, heard: Optional[str] = None,
-                              quoted: Optional[dict] = None) -> None:
+                              quoted: Optional[dict] = None, brain: bool = False) -> None:
     """Answer one DM from an Admin/PM (see the block comment above).
 
     A conversation, not a string of new chats: the last 20 messages of this
@@ -55290,6 +55330,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     the request or question needs an existing job and none can be inferred
     (their only job, one named, or the one picked in the last 30 minutes). A
     new job never asks it."""
+    if brain:
+        # The DM brain (flag dm_brain_v2): one model, tools, guardrails.
+        await _dm_brain_reply(ident, dm_chat, body, message_id, heard=heard, quoted=quoted)
+        return
     text = (body or "").strip()
     if not text:
         return
@@ -55785,6 +55829,780 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
             await db.whatsapp_voice_events.update_one(
                 {"message_id_serialized": message_id, "where": "dm"},
                 {"$set": {"project_id": str(job_id)}})
+        except Exception as e:
+            logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
+    if reply:
+        if heard:
+            reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
+        await send_whatsapp_message(dm_chat, reply)
+    elif eyes:
+        await _react_to_message(dm_chat, message_id, "")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# THE DM BRAIN (lib/dm_brain.py) -- per company, flag `dm_brain_v2`.
+#
+# One model (Claude Sonnet-class) answers every free-text DM, with this
+# chat's last 20 messages, who they are and their jobs, the chat's current
+# job and any open flow, and tools over the real records. It replaces the
+# routers, keyword matchers, reply templates, the length cutter and the
+# same-answer blocker above (all still there, for companies without the
+# flag). What stays in code:
+#   * exact commands to an open flow: "yes" / "no" to a pending change or
+#     reminder, the job's address typed back for live punch sends, "cancel"
+#     -- and the walkthrough itself (_punch_dm_turn: photos, "done P-588-1",
+#     "P23 ok", "start walkthrough at 588", and the walk's own text while one
+#     is open);
+#   * a change is only ever PROPOSED by the model: the existing change flow
+#     runs with its messages captured (_DM_CAPTURE) and its write held for
+#     the person's own "yes";
+#   * numbers and record ids must come from the tools, the chat or the
+#     context, or the model is asked again (never cut);
+#   * no phone numbers; every tool scoped to their company and jobs.
+# ══════════════════════════════════════════════════════════════════════════
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_DM_BRAIN_CLIENT: Any = None
+DM_BRAIN_BETAS = ["server-side-fallback-2026-07-01"]
+#: A tool result is data for the model, not the answer: generous, bounded.
+DM_BRAIN_TOOL_CHARS = 9000
+
+# The read tools the job agent already has, now for any of their jobs.
+_DM_BRAIN_JOB_TOOLS = (
+    "who_on_site", "site_headcount", "sub_attendance", "daily_log", "dob_status",
+    "open_items", "active_permits", "material_status", "check_drawing_set", "search_plans",
+    "project_info", "search_project_history", "recent_voice_notes", "punch_status",
+    "follow_ups", "upcoming_events")
+
+_JOB_PROP = {"type": "string", "description": (
+    "Which of their jobs: its id from the context, or as they said it (\"588\", "
+    "\"walworth\"). Leave it out to use the chat's current job.")}
+
+_DM_BRAIN_EXTRA_TOOLS = [
+    {"name": "headcount", "description": (
+        "Today's check-ins at a job: how many are on site now, by sub, each person and the time "
+        "they came in, who came since the morning brief (or a time), who left. For 'how many on "
+        "site', 'who's here', 'is Arkon on site', 'update on workers', 'subs on site'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP,
+         "company": {"type": "string", "description": "Only this sub (its name as on the subs list)."},
+         "since": {"type": "string", "description": "'brief' (their morning brief, the default), "
+                                                    "'start' (start of the work day) or a time like '9:30'."}},
+         "required": []}},
+    {"name": "dot_status", "description": (
+        "NYC DOT records for a job: street/sidewalk permits, violations, hearings, what's due."),
+     "input_schema": {"type": "object", "properties": {"job": _JOB_PROP}, "required": []}},
+    {"name": "list_subs", "description": (
+        "The subs list: every sub on their jobs (or one job), its trade and the jobs it is on. "
+        "Use it to match a misspelled or misheard company name."),
+     "input_schema": {"type": "object", "properties": {"job": {
+         "type": "string", "description": "Only this job (id or as said). Leave out for all jobs."}},
+         "required": []}},
+    {"name": "find_sub", "description": (
+        "Search the subs list by trade or company name (\"plumber\", \"low voltage\", \"J&G\")."),
+     "input_schema": {"type": "object", "properties": {
+         "trade_or_name": {"type": "string"},
+         "job": {"type": "string", "description": "Only this job. Leave out for all their jobs."}},
+         "required": ["trade_or_name"]}},
+    {"name": "brief_status", "description": (
+        "Their own morning brief: whether it was sent today (and when) or why not."),
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "my_settings", "description": "Their own Levelog Assistant settings (brief time, alerts).",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "resend_my_brief", "description": "Send them today's morning brief again, here.",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "send_sheet", "description": (
+        "Send a drawing sheet's image here (to them), e.g. after a plans answer cites SSP-011.00 "
+        "and they say 'show me'."),
+     "input_schema": {"type": "object", "properties": {
+         "job": _JOB_PROP, "sheet": {"type": "string", "description": "The sheet number, e.g. 'SSP-011.00'."}},
+         "required": ["sheet"]}},
+    {"name": "send_report", "description": (
+        "Build a project report PDF and send it here (to them)."),
+     "input_schema": {"type": "object", "properties": {
+         "jobs": {"type": "array", "items": {"type": "string"},
+                  "description": "Job ids or names; [\"all\"] for all their jobs."},
+         "period": {"type": "string", "description": "As they said it: 'last 2 weeks', "
+                                                    "'September', 'last month', 'this week'."}},
+         "required": ["jobs", "period"]}},
+    {"name": "propose_change", "description": (
+        "PROPOSE a change: add a job, put a sub on a job (with its trade), save a person, set a "
+        "sub's punch contact, change a job's punch-send mode or chase rest days. Nothing is "
+        "changed: the result says what the system still needs to know or the confirm question; "
+        "ask them, and they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["add_job", "add_sub", "add_person",
+                                               "set_punch_contact", "set_setting"]},
+         "address": {"type": "string"}, "borough": {"type": "string"}, "zip": {"type": "string"},
+         "company": {"type": "string"}, "trade": {"type": "string"}, "job": {"type": "string"},
+         "name": {"type": "string"}, "phone": {"type": "string"}, "role": {"type": "string"},
+         "setting": {"type": "string", "enum": ["punch_sends", "rest"]},
+         "value": {"type": "string", "enum": ["shadow", "live"]},
+         "days": {"type": "string", "enum": ["shabbos", "sunday", "both"]},
+         "off": {"type": "boolean", "description": "rest: true = no chasing on those days."}},
+         "required": ["action"]}},
+    {"name": "answer_pending_change", "description": (
+        "Pass their answer to the open question of a pending change (a company, a trade, a pick "
+        "from the options, a phone, a borough). Not for the final yes -- that is theirs."),
+     "input_schema": {"type": "object", "properties": {"answer": {"type": "string"}},
+                      "required": ["answer"]}},
+    {"name": "cancel_pending_change", "description": "Drop the pending change or reminder.",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "set_sub_trade", "description": (
+        "PROPOSE saving a sub's trade on the subs list (\"Arkon is framer\"). Nothing is changed "
+        "until they say yes."),
+     "input_schema": {"type": "object", "properties": {
+         "company": {"type": "string", "description": "The sub, as on the subs list if you can match it."},
+         "trade": {"type": "string"},
+         "job": {"type": "string", "description": "Only on this job. Leave out for every job it's on."}},
+         "required": ["company", "trade"]}},
+    {"name": "undo_last_change", "description": (
+        "PROPOSE undoing the last change made in this chat (within 10 minutes); they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "remind_me", "description": (
+        "PROPOSE a reminder for them (the morning of the date); they confirm with yes."),
+     "input_schema": {"type": "object", "properties": {
+         "what": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+         "time": {"type": "string", "description": "HH:MM, 24h, if they gave one."}},
+         "required": ["what", "date"]}},
+]
+
+_DM_BRAIN_TOOL_CACHE: Optional[list] = None
+
+
+def _dm_brain_tools() -> list:
+    """Every tool the brain can call: the agent's read tools (with a `job`)
+    and the brain's own, in a fixed order (the prompt cache is a prefix)."""
+    global _DM_BRAIN_TOOL_CACHE
+    if _DM_BRAIN_TOOL_CACHE is not None:
+        return _DM_BRAIN_TOOL_CACHE
+    out = []
+    for t in _AGENT_TOOLS:
+        f = t.get("function") or {}
+        name = f.get("name")
+        if name not in _DM_BRAIN_JOB_TOOLS:
+            continue
+        schema = json.loads(json.dumps(f.get("parameters") or {"type": "object", "properties": {}}))
+        schema["type"] = "object"
+        schema.setdefault("properties", {})["job"] = _JOB_PROP
+        schema.setdefault("required", [])
+        out.append({"name": name, "description": f.get("description") or "", "input_schema": schema})
+    out += _DM_BRAIN_EXTRA_TOOLS
+    out.sort(key=lambda t: t["name"])
+    _DM_BRAIN_TOOL_CACHE = out
+    return out
+
+
+def _dm_brain_client():
+    global _DM_BRAIN_CLIENT
+    if _DM_BRAIN_CLIENT is None:
+        import anthropic
+        _DM_BRAIN_CLIENT = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None,
+                                                    timeout=90.0, max_retries=2)
+    return _DM_BRAIN_CLIENT
+
+
+async def _dm_brain_on(ident: Optional[dict]) -> bool:
+    """The brain answers this person: their company (or they) has the flag,
+    and the model can be reached."""
+    if not ident or not ANTHROPIC_API_KEY:
+        return False
+    try:
+        return await feature_flags.is_feature_enabled(
+            db, dm_brain.FLAG, company_id=str(ident.get("company_id") or ""),
+            user_id=str(ident.get("user_id") or ""))
+    except Exception as e:
+        logger.warning(f"[dm-brain] flag read failed: {type(e).__name__}")
+        return False
+
+
+async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[datetime] = None) -> list:
+    """This chat's last messages (HISTORY_TURNS within HISTORY_DAYS), oldest
+    first. `before`: as the chat was at that moment (the eval)."""
+    q: Dict[str, Any] = {"group_id": {"$in": _dm_chat_ids(dm_chat)}, "is_dm": True,
+                         "created_at": {"$gte": now - timedelta(days=dm_brain.HISTORY_DAYS)}}
+    if before:
+        q["created_at"]["$lt"] = before
+    try:
+        rows = await db.whatsapp_messages.find(q).sort([("created_at", -1)]).to_list(
+            dm_brain.HISTORY_TURNS)
+    except Exception as e:
+        logger.warning(f"[dm-brain] history read failed: {type(e).__name__}")
+        return []
+    rows.reverse()
+    return rows
+
+
+async def _dm_brain_flows(ident: dict, dm_chat: str) -> List[str]:
+    """Open flows, in words for the model."""
+    out = []
+    walk = await _punch_session(ident["user_id"])
+    if walk and walk.get("status") not in ("sent", "dropped", "closed"):
+        out.append(f"A walkthrough (punch list) is open at {walk.get('job_name') or 'a job not yet named'}: "
+                   f"stage {walk.get('status')}, {len(walk.get('items') or [])} items so far.")
+    pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    if pending:
+        p = pending.get("p") or {}
+        step = str(pending.get("step") or "")
+        what = p.get("action")
+        if step == "confirm":
+            out.append(f"A change ({what}) is waiting for their yes. The system asked: "
+                       f"\"{pending.get('asked')}\"")
+        elif step == "type_address":
+            out.append(f"A change ({what}) is waiting for them to type the job's address to confirm.")
+        else:
+            opts = [o.get("label") for o in pending.get("options") or [] if o.get("label")]
+            out.append(f"A change ({what}) needs an answer. The system asked: \"{pending.get('asked')}\""
+                       + (f" Options: {'; '.join(opts)}." if opts else ""))
+    remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if remind:
+        out.append(f"A reminder is waiting for their yes: \"{remind.get('what')}\" on {remind.get('date')}.")
+    return out
+
+
+def _dm_brain_find_job(ctx: dict, said: Any) -> Tuple[Optional[dict], str]:
+    """(job, "") for a job reference, or (None, why) to tell the model."""
+    jobs, by_id = ctx["jobs"], ctx["by_id"]
+    s = str(said or "").strip()
+    names = "; ".join(f"{j['id']}: {j['label']}" for j in jobs)
+    if not s:
+        if ctx.get("active") in by_id:
+            return by_id[ctx["active"]], ""
+        if len(jobs) == 1:
+            return jobs[0], ""
+        return None, f"No job given and no current job in this chat. Their jobs: {names}."
+    if s in by_id:
+        return by_id[s], ""
+    ids = wa_assistant.find_jobs(s, jobs)
+    if not ids:
+        jid = wa_assistant.job_named(s, jobs, in_sentence=True)
+        ids = [jid] if jid else []
+    if len(ids) == 1:
+        return by_id[ids[0]], ""
+    if len(ids) > 1:
+        return None, f"'{s}' matches more than one job: " + "; ".join(
+            f"{i}: {by_id[i]['label']}" for i in ids) + "."
+    return None, f"None of their jobs matches '{s}'. Their jobs: {names}."
+
+
+async def _dm_brain_headcount(ctx: dict, job: dict, args: dict) -> str:
+    ident = ctx["ident"]
+    now = datetime.now(timezone.utc)
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    start, end = wa_brief_day_range(now)
+    rows = await db.checkins.find({
+        "project_id": pid, "company_id": _company_id_filter(ident["company_id"]),
+        "check_in_time": {"$gte": start, "$lt": end},
+        "is_deleted": {"$ne": True}}).to_list(2000)
+    want = str(args.get("company") or "").strip()
+    if want:
+        key = wa_headcount.company_key(want)
+        rows = [r for r in rows if wa_headcount.company_key(wa_facts.checkin_company(r)) == key
+                or multilang.fold(want) in multilang.fold(wa_facts.checkin_company(r) or "")]
+    since_said = str(args.get("since") or "brief").strip().lower()
+    since, label = None, ""
+    if since_said in ("", "brief"):
+        since = await _dm_brief_sent_today(ident["user_id"], now)
+        label = f"their {wa_headcount.hhmm(since)} brief" if since else ""
+    elif since_said == "start":
+        work = wa_gc.work_start((await _whatsapp_project_settings(pid)).get("send_window"))
+        since, label = wa_headcount.day_start(now, work), "the start of the day"
+    else:
+        since = wa_headcount.parse_since(f"since {since_said}", now)
+        label = since_said if since else ""
+    data = wa_headcount.summarize(rows, since)
+    out = {
+        "job": job["label"], "as_of": wa_headcount.clock(now),
+        "only_sub": want or None,
+        "on_site_now": data["total"],
+        "subs_on_site": len(data["by_company"]),
+        "by_sub": [{"sub": c, "on_site": n} for c, n in data["by_company"]],
+        "people_on_site": [{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
+                           for w in data["workers"]],
+        "since": label or None,
+        "came_in_since": ([{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
+                           for w in data.get("added") or []] if since else None),
+        "checked_in_today_and_left": data.get("checked_out") or 0,
+    }
+    if not since and since_said in ("", "brief"):
+        out["note"] = "No morning brief went to them today; 'since' not applied."
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
+async def _dm_brain_dot(ident: dict, job: dict) -> str:
+    pid = str(job["id"])
+    if not await _bot_project_scope(ident["company_id"], pid):
+        return wa_security.BOT_SCOPE_REFUSAL
+    rows = await db.dot_logs.find({"project_id": pid,
+                                   "company_id": _company_id_filter(ident["company_id"])}
+                                  ).sort([("issue_date", -1)]).to_list(40)
+    if not rows:
+        return f"No DOT records on file for {job['label']}."
+    keys = ("record_type", "number", "status", "issue_date", "description", "hearing_date",
+            "hearing_result", "compliance_status", "penalty_imposed", "balance_due")
+    lines = [f"DOT records for {job['label']} (newest first):"]
+    for r in rows:
+        lines.append("- " + "; ".join(f"{k}: {r.get(k)}" for k in keys if r.get(k) not in (None, "")))
+    return "\n".join(lines)
+
+
+async def _dm_brain_change(ctx: dict, run) -> str:
+    """Run part of the existing change flow with its messages captured (and,
+    in the eval, no state written): what it would have asked, and where the
+    change now stands."""
+    dm_chat = ctx["dm_chat"]
+    said: list = []
+    token_c = _DM_CAPTURE.set(said)
+    token_d = _DM_DRY.set(bool(ctx.get("dry_run")))
+    try:
+        await run()
+    finally:
+        _DM_CAPTURE.reset(token_c)
+        _DM_DRY.reset(token_d)
+    pending = None if ctx.get("dry_run") else await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    step = str((pending or {}).get("step") or "")
+    if ctx.get("dry_run"):
+        status = "dry_run"
+    elif step == "confirm":
+        status = "waiting_for_their_yes"
+    elif step == "type_address":
+        status = "waiting_for_them_to_type_the_job_address"
+    elif pending:
+        status = "needs_an_answer"
+    else:
+        status = "not_pending"
+    opts = [o.get("label") for o in (pending or {}).get("options") or [] if o.get("label")]
+    return json.dumps({"status": status, "system_says": [s["text"] for s in said],
+                       "options": opts or None,
+                       "note": "Nothing has been changed. Ask them in your own words."
+                       if status != "not_pending" else
+                       "Nothing is pending. If the system said it can't, tell them why."},
+                      ensure_ascii=False)
+
+
+def _dm_brain_lang(text: str) -> str:
+    return dm_actions.reply_lang(text)
+
+
+async def _dm_brain_set_trade(ctx: dict, args: dict) -> str:
+    ident, dm_chat = ctx["ident"], ctx["dm_chat"]
+    want = str(args.get("company") or "").strip()
+    trade_said = str(args.get("trade") or "").strip()
+    if not want or not trade_said:
+        return "Need both the company and the trade."
+    if not _dm_is_approved(ident):
+        return "Their account isn't approved for changes yet."
+    subs = await _dm_company_subs(ident)
+    if args.get("job"):
+        job, why = _dm_brain_find_job(ctx, args.get("job"))
+        if not job:
+            return why
+        subs = [(p, r) for p, r in subs if str(p["_id"]) == str(job["id"])]
+    fw = multilang.fold(want)
+    names = sorted({str(r.get("company") or "") for _p, r in subs if r.get("company")})
+    # As typed or misheard ("Akron" for Arkon Builders): the whole name, then
+    # its first word, close enough.
+    cores = {multilang.fold(n).split()[0]: n for n in names if multilang.fold(n).split()}
+    hit = [n for n in names if multilang.fold(n) == fw] or \
+        [n for n in names if fw and (fw in multilang.fold(n) or multilang.fold(n) in fw)] or \
+        difflib.get_close_matches(want, names, n=1, cutoff=0.75) or \
+        [cores[k] for k in difflib.get_close_matches(fw.split()[0] if fw.split() else fw,
+                                                     list(cores), n=1, cutoff=0.75)]
+    if not hit:
+        return json.dumps({"status": "not_on_subs_list", "company": want,
+                           "subs_on_list": names[:40],
+                           "note": "Not on any of their jobs' rosters. To add it to a job with "
+                                   "that trade, use propose_change add_sub."}, ensure_ascii=False)
+    company = hit[0]
+    known = await _company_trade_list(ident["company_id"])
+    trade = lib_trades.resolve(trade_said, known) or lib_trades.new_label(trade_said) or trade_said
+    targets = []
+    for p, r in subs:
+        if str(r.get("company") or "") != company:
+            continue
+        targets.append({"project_id": str(p["_id"]), "row_id": str(r.get("id") or ""),
+                        "job": _dm_job_label(p), "before": str(r.get("trade") or "")})
+    if all(_roster_key(t["before"]) == _roster_key(trade) for t in targets):
+        return json.dumps({"status": "already", "company": company, "trade": trade,
+                           "jobs": [t["job"] for t in targets]}, ensure_ascii=False)
+    jobs = ", ".join(t["job"] for t in targets)
+    was = ", ".join(sorted({t["before"] or "no trade" for t in targets}))
+    asked = f"Save {company} as {trade} on {jobs}? (now: {was})"
+    p = {"action": "set_trade", "company": company, "trade": trade, "_targets": targets,
+         "lang": _dm_brain_lang(ctx["text"]), "said": dm_actions.redact(ctx["text"])[:300]}
+    if not ctx.get("dry_run"):
+        await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                            p=p, step="confirm", options=[], asked=asked, misses=0)
+    return json.dumps({"status": "dry_run" if ctx.get("dry_run") else "waiting_for_their_yes",
+                       "would_change": asked,
+                       "note": "Nothing is saved yet. Ask them to confirm with yes."}, ensure_ascii=False)
+
+
+async def _dm_do_set_trade(ident: dict, p: dict):
+    """A sub's trade on every roster row named (set_sub_trade, confirmed)."""
+    items, jobs = [], []
+    for t in p.get("_targets") or []:
+        project = await db.projects.find_one({"_id": to_query_id(t["project_id"]),
+                                              "company_id": _company_id_filter(ident["company_id"])})
+        if not project:
+            continue
+        before = [dict(r) for r in _active_assignments(project)]
+        after = []
+        for r in before:
+            r2 = dict(r)
+            if (t["row_id"] and str(r.get("id") or "") == t["row_id"]) or (
+                    not t["row_id"] and str(r.get("company") or "") == p["company"]):
+                r2["trade"] = p["trade"]
+            after.append(r2)
+        await _save_roster(t["project_id"], after)
+        items.append({"project_id": t["project_id"], "before": before})
+        jobs.append(t["job"])
+        await _dm_audit(ident, p, "project", t["project_id"], {"trade": t["before"]},
+                        {"company": p["company"], "trade": p["trade"]})
+    if not items:
+        raise RuntimeError("no roster rows")
+    return ({"kind": "roster_multi", "items": items, "company": p["company"], "job": ", ".join(jobs)},
+            f"Saved: {p['company']} — {p['trade']} on {', '.join(jobs)}.")
+
+
+async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
+    """One tool call from the brain. Every result is text for the model."""
+    ident, dm_chat = ctx["ident"], ctx["dm_chat"]
+    args = dict(args or {})
+    dry = bool(ctx.get("dry_run"))
+    now = datetime.now(timezone.utc)
+    if name in _DM_BRAIN_JOB_TOOLS or name in ("headcount", "dot_status", "send_sheet"):
+        job, why = _dm_brain_find_job(ctx, args.pop("job", None))
+        if not job:
+            return why
+        ctx["used_job"] = job["id"]
+        if name == "headcount":
+            return await _dm_brain_headcount(ctx, job, args)
+        if name == "dot_status":
+            return await _dm_brain_dot(ident, job)
+        if name == "send_sheet":
+            pid = str(job["id"])
+            if not await _bot_project_scope(ident["company_id"], pid):
+                return wa_security.BOT_SCOPE_REFUSAL
+            rows = await _find_named_sheet(pid, str(args.get("sheet") or ""))
+            page = rows[0] if rows else None
+            if not page:
+                return f"{str(args.get('sheet') or '').upper()} isn't in the indexed drawings for {job['label']}."
+            label = page.get("sheet_number") or str(args.get("sheet")).upper()
+            title = page.get("sheet_title") or page.get("title") or ""
+            if not page.get("page_jpeg_r2_key"):
+                return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
+            if dry:
+                ctx["sent"].append(f"[sheet {label}]")
+                return f"(eval) Would send the image of {label} {title} here."
+            if await _dm_send_sheet(dm_chat, page):
+                ctx["sent"].append(f"[sheet {label}]")
+                return f"Sent the image of {label} {title} to them."
+            return f"Found {label} but the image couldn't be sent (may still be rendering)."
+        if name == "search_project_history" and _memory_disabled():
+            return "Project history search is off."
+        return await _dispatch_agent_tool(
+            name, args, project_id=str(job["id"]), group_id=dm_chat,
+            company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
+            reply_to=None, user_body=ctx["text"], record_sink=[])
+    if name in ("list_subs", "find_sub"):
+        project = None
+        if args.get("job"):
+            job, why = _dm_brain_find_job(ctx, args.pop("job"))
+            if not job:
+                return why
+            project = job["project"]
+        return await _dm_subs_tool(ident, name, args, project)
+    if name == "brief_status":
+        return await _brief_status_for(str(ident["user_id"]), None, now)
+    if name == "my_settings":
+        uid = str(ident["user_id"])
+        settings = await _brief_settings(uid)
+        optin = await db[WA_OPTINS].find_one({"user_id": uid, "status": "active"}, {"_id": 1})
+        enabled = bool((await get_whatsapp_prefs(uid, None)).get("enabled"))
+        return wa_facts.settings_text(settings, bool(optin), enabled)
+    if name == "resend_my_brief":
+        if dry:
+            return "(eval) Would resend today's brief here."
+        user = await db.users.find_one({"_id": to_query_id(ident["user_id"]), "is_deleted": {"$ne": True}})
+        out = await _brief_resend(user, dm_chat, now) if user else "error"
+        if out not in ("error", "failed"):
+            ctx["sent"].append("[brief]")
+        return f"Brief resend: {out}."
+    if name == "send_report":
+        jobs = ctx["jobs"]
+        said = [str(x) for x in args.get("jobs") or []]
+        if not jobs:
+            return "They have no jobs."
+        if not said or any(s.lower() == "all" for s in said):
+            picked = jobs
+        else:
+            picked = []
+            for s in said:
+                job, why = _dm_brain_find_job(ctx, s)
+                if not job:
+                    return why
+                picked.append(job)
+        start, end, label = project_report.period_for(str(args.get("period") or ""), now)
+        names = ", ".join(j["label"] for j in picked)
+        if dry:
+            ctx["sent"].append("[report]")
+            return f"(eval) Would build and send the report for {names}, {label}."
+        try:
+            doc = await build_project_report(ident["company_id"], [j["project"] for j in picked],
+                                             start, end, now=now, by=str(ident.get("user_id") or ""),
+                                             source="dm")
+        except ReportSourceUnavailable:
+            return REPORT_UNAVAILABLE
+        if not await _send_report_media(dm_chat, doc, caption=_report_message(doc)):
+            await send_whatsapp_message(dm_chat, _report_message(doc, attached=False))
+        ctx["sent"].append("[report]")
+        return f"Sent the report PDF for {names}, {label}, with this summary on it:\n{_report_message(doc)}"
+    if name == "propose_change":
+        raw = {k: v for k, v in args.items() if v not in (None, "")}
+        p = dm_actions.clean(raw)
+        if p.get("action") in (None, "none", "unsupported", "undo"):
+            return "That isn't a change this chat can make."
+        p["lang"] = _dm_brain_lang(ctx["text"])
+        p["said"] = dm_actions.redact(ctx["text"])[:300]
+        if not _dm_is_approved(ident):
+            return "Their account isn't approved for changes yet."
+        return await _dm_brain_change(ctx, lambda: _dm_action_step(ident, dm_chat, p))
+    if name == "answer_pending_change":
+        pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+        if not pending:
+            return "No change is waiting for an answer."
+        if str(pending.get("step") or "") in ("confirm", "type_address"):
+            return "That step is theirs: they confirm with their own yes (or type the address)."
+        return await _dm_brain_change(ctx, lambda: _dm_action_answer(
+            ident, dm_chat, str(args.get("answer") or ""), pending))
+    if name == "cancel_pending_change":
+        if dry:
+            return "(eval) Would drop the pending change."
+        had = await _dm_drop_pending(dm_chat)
+        return "Dropped." if had else "Nothing was pending."
+    if name == "set_sub_trade":
+        return await _dm_brain_set_trade(ctx, args)
+    if name == "undo_last_change":
+        last = await _dm_state_get(DM_ACTION_LAST, dm_chat)
+        if not last or not last.get("undo"):
+            return "Nothing was changed here in the last 10 minutes."
+        u = last["undo"]
+        what = f"{u.get('kind')}: {u.get('company') or u.get('name') or u.get('job') or ''}".strip()
+        if not dry:
+            await _dm_state_set(DM_ACTION_STATE, dm_chat, dm_actions.PENDING_SECONDS,
+                                p={"action": "undo", "lang": _dm_brain_lang(ctx["text"])},
+                                step="confirm", options=[], asked=f"Undo the last change ({what})?",
+                                misses=0)
+        return json.dumps({"status": "dry_run" if dry else "waiting_for_their_yes",
+                           "would_undo": what}, ensure_ascii=False)
+    if name == "remind_me":
+        if _upcoming_disabled():
+            return "Reminders are off."
+        try:
+            day = _Date.fromisoformat(str(args.get("date") or ""))
+        except ValueError:
+            return "The date must be YYYY-MM-DD."
+        what = str(args.get("what") or "Reminder")[:120]
+        if not dry:
+            await _dm_state_set(UPCOMING_REMIND_STATE, dm_chat, UPCOMING_REMIND_SECONDS,
+                                what=what, date=day.isoformat(), time=args.get("time"),
+                                asked=ctx["text"][:300])
+        return json.dumps({"status": "dry_run" if dry else "waiting_for_their_yes",
+                           "reminder": what, "morning_of": upcoming.day_label(day.isoformat())},
+                          ensure_ascii=False)
+    return f"Unknown tool {name}."
+
+
+def _dm_brain_block_text(b: Any) -> str:
+    t = getattr(b, "type", None)
+    if t == "text":
+        return getattr(b, "text", "") or ""
+    return ""
+
+
+async def _dm_brain_run(ctx: dict, messages: list, system: list) -> dict:
+    """The model, its tool calls, and the number check, until an answer.
+    {reply, trace, rounds, retries, unverified, stop}."""
+    client = _dm_brain_client()
+    tools = _dm_brain_tools()
+    trace: List[dict] = []
+    sources = [b.get("text", "") for b in system] + [
+        m["content"] if isinstance(m["content"], str) else "" for m in messages]
+    retries, last_text, missing = 0, "", []
+    usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+
+    def done(**kw):
+        return {"trace": trace, "retries": retries, "usage": usage, **kw}
+    for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
+        resp = await client.beta.messages.create(
+            model=dm_brain.MODEL, max_tokens=dm_brain.MAX_TOKENS, system=system, tools=tools,
+            messages=messages, output_config={"effort": dm_brain.EFFORT},
+            betas=DM_BRAIN_BETAS, fallbacks="default")
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            usage["input"] += int(getattr(u, "input_tokens", 0) or 0)
+            usage["output"] += int(getattr(u, "output_tokens", 0) or 0)
+            usage["cache_read"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
+            usage["cache_write"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+        if resp.stop_reason == "refusal":
+            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="refusal")
+        if resp.stop_reason in ("tool_use", "pause_turn"):
+            messages.append({"role": "assistant", "content": resp.content})
+            if resp.stop_reason == "pause_turn":
+                continue
+            results = []
+            for b in resp.content:
+                if getattr(b, "type", None) != "tool_use":
+                    continue
+                try:
+                    out = await _dm_brain_exec(ctx, b.name, dict(b.input or {}))
+                    err = False
+                except Exception as e:
+                    logger.warning(f"[dm-brain] tool {b.name} failed: {type(e).__name__}: {e}")
+                    out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
+                out = str(out)[:DM_BRAIN_TOOL_CHARS]
+                trace.append({"tool": b.name, "args": dict(b.input or {}), "result": out[:3000]})
+                sources.append(out)
+                results.append({"type": "tool_result", "tool_use_id": b.id, "content": out,
+                                **({"is_error": True} if err else {})})
+            messages.append({"role": "user", "content": results})
+            continue
+        last_text = dm_brain.final_text(resp.content)
+        missing = dm_brain.unverified(last_text, sources)
+        if missing and retries < dm_brain.VERIFY_RETRIES:
+            retries += 1
+            logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
+            messages.append({"role": "assistant", "content": resp.content})
+            messages.append({"role": "user", "content": "[Levelog check, not from them] "
+                                                         + dm_brain.verify_note(missing)})
+            continue
+        if missing:
+            return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
+                        stop="unverified", draft=last_text)
+        return done(reply=last_text, rounds=rounds, unverified=[], stop=resp.stop_reason)
+    return done(reply=last_text or dm_brain.FAILED_TEXT, rounds=dm_brain.MAX_ROUNDS,
+                unverified=missing, stop="max_rounds")
+
+
+async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: list,
+                           now: datetime, dry_run: bool = False,
+                           flows: Optional[List[str]] = None,
+                           active: Optional[str] = None) -> dict:
+    """Build the context and run the brain for one message (the live path
+    and the eval). {reply, trace, ...} plus `sent` (what tools sent)."""
+    jobs = await _dm_jobs(ident) if ident.get("projects") else []
+    by_id = {j["id"]: j for j in jobs}
+    if active is None and not dry_run:
+        cur = await _dm_state_get("dm_job", dm_chat)
+        active = str(cur.get("project_id")) if cur else None
+    user = ident.get("user") or {}
+    company = user.get("company_name") or ""
+    if not company:
+        try:
+            co = await db.companies.find_one({"_id": to_query_id(ident["company_id"])}, {"name": 1})
+            company = (co or {}).get("name") or ""
+        except Exception:
+            company = ""
+    context = dm_brain.context_block(
+        user={"name": user.get("name") or user.get("full_name") or "",
+              "role": "admin" if ident.get("role") == "admin" else "project manager",
+              "company": company},
+        jobs=[{"id": j["id"], "label": j["label"], "aliases": j.get("aliases") or []} for j in jobs],
+        active_job=by_id.get(active) if active else None,
+        open_flows=flows if flows is not None else await _dm_brain_flows(ident, dm_chat),
+        now_label=_memory_ny(now).strftime("%a %b %-d %Y, %-I:%M %p"))
+    system = [{"type": "text", "text": dm_brain.SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+              {"type": "text", "text": context}]
+    messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
+    ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
+           "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
+           "used_job": None}
+    try:
+        out = await _dm_brain_run(ctx, messages, system)
+    except Exception as e:
+        logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
+        out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
+               "unverified": [], "stop": f"error:{type(e).__name__}"}
+    out["sent"] = ctx["sent"]
+    out["used_job"] = ctx["used_job"]
+    if out.get("reply"):
+        out["reply"] = dm_brain.redact_phones(out["reply"])
+    return out
+
+
+async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
+                          heard: Optional[str] = None, quoted: Optional[dict] = None) -> None:
+    """Answer one DM with the brain (flag on). Exact commands to an open
+    flow are answered in code first; everything else is the model's."""
+    text = (text or "").strip()
+    if not text:
+        return
+    quoted = quoted or {}
+    qbody = str(quoted.get("body") or "").strip()
+    qtype = str(quoted.get("type") or "").strip()
+    if not qbody and wa_assistant.media_word(qtype):
+        qbody = wa_assistant.NO_CAPTION
+    now = datetime.now(timezone.utc)
+    history = await _dm_brain_history(dm_chat, now)
+    await _dm_store_inbound(ident, dm_chat, text, message_id)
+    lang = dm_actions.reply_lang(text)
+
+    # ── EXACT COMMANDS to an open flow: the person's own yes / no.
+    pending = await _dm_state_get(DM_ACTION_STATE, dm_chat)
+    if pending:
+        step = str(pending.get("step") or "")
+        if step == "type_address":
+            # Live punch sends: only the job's address typed back turns it on.
+            await _dm_action_answer(ident, dm_chat, text, pending)
+            return
+        if step == "confirm" and dm_brain.is_yes(text):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            p = dict(pending.get("p") or {})
+            if p.get("action") == "undo":
+                await _dm_action_undo(ident, dm_chat, p.get("lang") or lang)
+            else:
+                await _dm_action_do(ident, dm_chat, p)
+            await _dm_log_answer(ident, None, text, f"[confirmed {p.get('action')}]", "brain_confirm")
+            return
+        if dm_brain.is_no(text):
+            await _dm_state_clear(DM_ACTION_STATE, dm_chat)
+            await _dm_say(dm_chat, lang, "cancelled")
+            await _dm_log_answer(ident, None, text, "[cancelled]", "brain_confirm")
+            return
+    remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
+    if remind and (upcoming.is_yes(text) or upcoming.is_no(text)):
+        await _upcoming_dm_turn(ident, dm_chat, text, now)
+        return
+
+    question = wa_assistant.with_quoted(text, qbody, bool(quoted.get("from_bot")), qtype) \
+        if (qbody or wa_assistant.media_word(qtype)) else text
+    if heard:
+        question = f"[voice note] {question}"
+
+    task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
+    eyes = False
+    try:
+        out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
+    except asyncio.TimeoutError:
+        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
+        out = await task
+    reply = out.get("reply")
+    if out.get("used_job"):
+        await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
+                            project_id=out["used_job"])
+    await _dm_log_answer(
+        ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
+        tool_data=out.get("trace"), model=dm_brain.MODEL, rounds=out.get("rounds"),
+        verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
+        stop=out.get("stop"), **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+    if heard and message_id and out.get("used_job"):
+        try:
+            await db.whatsapp_voice_events.update_one(
+                {"message_id_serialized": message_id, "where": "dm"},
+                {"$set": {"project_id": str(out["used_job"])}})
         except Exception as e:
             logger.warning(f"[voice] dm job stamp failed: {type(e).__name__}")
     if reply:
@@ -66387,7 +67205,7 @@ _PUNCH_LOCKS: Dict[tuple, asyncio.Lock] = {}
 
 
 async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
-                         voice: Optional[dict] = None) -> bool:
+                         voice: Optional[dict] = None, brain: bool = False) -> bool:
     """A walkthrough turn in the walker's DM, or False when this message is
     not about one (the assistant answers it as before).
 
@@ -66412,7 +67230,7 @@ async def _punch_dm_turn(ident: dict, dm_chat: str, parsed: dict, body: str,
             return True
         beat = asyncio.create_task(_punch_lease_keep(uid, token)) if token else None
         try:
-            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice)
+            return await _punch_dm_turn_locked(ident, dm_chat, parsed, body, voice, brain=brain)
         finally:
             if beat:
                 beat.cancel()
@@ -66487,7 +67305,7 @@ def _punch_time(at: Any) -> str:
 
 
 async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: str,
-                                voice: Optional[dict] = None) -> bool:
+                                voice: Optional[dict] = None, brain: bool = False) -> bool:
     now = datetime.now(timezone.utc)
     msg_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
     text = _punch_caption(parsed, body)
@@ -66504,7 +67322,8 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
                 await send_whatsapp_message(dm_chat, reply)
                 return True
     if not parsed.get("has_image") and not voice:
-        q = punch.parse_query(text)
+        # (The DM brain answers punch questions with punch_status.)
+        q = None if brain else punch.parse_query(text)
         if q:
             await send_whatsapp_message(dm_chat, await _punch_answer(ident, q, dm_chat, text))
             return True
@@ -66540,7 +67359,7 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
     if not sess:
         start = punch.start_request(text) if not parsed.get("has_image") else None
         if not start and not parsed.get("has_image"):
-            if punch.walk_intent(text):
+            if not brain and punch.walk_intent(text):
                 # "I'm going to show you some pictures, I need to do a
                 # checklist" (Oct 13): how, in fixed words -- never "use the
                 # app". No walk is opened until the first photo comes.
@@ -70595,6 +71414,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
+        # The DM brain answers this person (flag dm_brain_v2, per company).
+        dm_brain_on = await _dm_brain_on(ident)
 
         # Transcribe audio if present.
         # Phase F1: voice notes go through the orchestration module
@@ -70787,7 +71608,8 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # edits, assigning, the due day, send; and punch questions / "P23 ok".
         if parsed.get("has_image") or body:
             try:
-                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice):
+                if await _punch_dm_turn(ident, dm_chat, parsed, body or "", voice=dm_voice,
+                                        brain=dm_brain_on):
                     return
             except Exception as e:
                 logger.warning(f"[punch] dm turn failed: {type(e).__name__}")
@@ -70799,7 +71621,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
         # question is visible (it replaces the old "Reply CORRECT" cue,
         # which confirmed a write this assistant no longer makes).
         await _dm_assistant_reply(
-            ident, dm_chat, body, parsed.get("message_id_serialized") or "",
+            ident, dm_chat, body, parsed.get("message_id_serialized") or "", brain=dm_brain_on,
             heard=body if parsed.get("has_audio") else None,
             quoted={"body": parsed.get("quoted_body") or "",
                     "type": parsed.get("quoted_type") or "",
