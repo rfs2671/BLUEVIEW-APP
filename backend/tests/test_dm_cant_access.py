@@ -133,12 +133,24 @@ class TheExportQuestions(_Site, unittest.TestCase):
         self.assertEqual(len(self.notes_read), 1)
 
     def test_cant_find_any_voicenotes(self):
-        """The follow-up, as it came: live, "I can't access voice notes
-        directly." """
+        """Live: "I can't access voice notes directly." On its own (no job
+        yet): "Which job?", then the notes."""
         with _Ctx(db=self.db) as c:
-            self.ask(c, "What was said on the last voicenote on 588 group")
-            reply = self.ask(c, "U can't find any voicenotes?")
+            menu = self.ask(c, "U can't find any voicenotes?")
+            reply = self.ask(c, "588")
+        self.assertTrue(menu.startswith("Which job?"), menu)
         self.assertEqual(reply, NOTES)
+
+    def test_the_follow_up_after_the_notes(self):
+        """In the live order the first question now gets the notes, so the
+        follow-up would be the same notes again: never sent twice (#820),
+        one short question instead -- and never a false claim."""
+        with _Ctx(db=self.db) as c:
+            first = self.ask(c, "What was said on the last voicenote on 588 group")
+            then = self.ask(c, "U can't find any voicenotes?")
+        self.assertEqual(first, NOTES)
+        self.assertTrue(then.startswith("That's what I just sent."), then)
+        self.assertTrue_(then)
 
     def test_a_reply_to_a_photo(self):
         with _Ctx(db=self.db) as c:
