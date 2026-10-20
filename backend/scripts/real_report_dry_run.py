@@ -195,6 +195,44 @@ async def bin_analysis(server, project):
     return "\n".join(lines) + "\n"
 
 
+def _soda_get(dataset, params):
+    import urllib.parse
+    import urllib.request
+    url = f"https://data.cityofnewyork.us/resource/{dataset}.json?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=40) as r:       # a read of public open data; nothing is sent
+        return json.loads(r.read().decode("utf-8"))
+
+
+async def dot_probe(server, project):
+    """DOT violations and permits for the project, asked of NYC Open Data NOW
+    with the same requests and the same matching the DOT sync uses, next to what
+    is stored in dot_logs. Shows whether the sync would find a summons the
+    report does not list (e.g. one written under a street's old name). A read."""
+    from lib import dot_sync
+    pk = dot_sync.project_keys(project)
+    stored = await server.db.dot_logs.find({"project_id": str(project.get("_id")), "is_deleted": {"$ne": True}}).to_list(2000)
+    lines = [f"project keys: {pk}",
+             "stored in dot_logs: " + (", ".join(f"{x.get('record_type')} {x.get('number')} [{x.get('status')}]" for x in stored[:40]) or "none"), ""]
+    for q in dot_sync.queries(pk):
+        try:
+            recs = await asyncio.to_thread(_soda_get, q["dataset"], q["params"])
+        except Exception as e:
+            lines.append(f"{q['dataset']} {q['kind']}: request failed ({type(e).__name__}: {e})")
+            continue
+        hits = []
+        for rec in recs:
+            if isinstance(rec, dict):
+                how = dot_sync.match(q["kind"], pk, rec)
+                if how:
+                    log = dot_sync.to_log(q["kind"], rec)
+                    if log:
+                        hits.append(f"{log['number']} via {how} | issued {log.get('issue_date')} | status {log.get('status')} | "
+                                    f"hearing {log.get('hearing_date')} | {str(log.get('description') or '')[:70]}")
+        lines.append(f"{q['dataset']} {q['kind']}: {', '.join(['returned', str(len(recs))])} rows, matched {len(hits)}")
+        lines += ["   " + h for h in hits]
+    return "\n".join(lines) + "\n"
+
+
 async def main(args):
     import server
 
@@ -221,6 +259,9 @@ async def main(args):
     with open(os.path.join(out, "progress_report_real.bin_analysis.txt"), "w", encoding="utf-8") as f:
         f.write(await bin_analysis(server, project))
     print("wrote progress_report_real.bin_analysis.txt")
+    with open(os.path.join(out, "progress_report_real.dot_probe.txt"), "w", encoding="utf-8") as f:
+        f.write(await dot_probe(server, project))
+    print("wrote progress_report_real.dot_probe.txt")
     photos = got["photos"]
     photo_lines = [f"{x.get('sub')} | {x.get('date')} | {x.get('where') or ''} | sees: {x.get('work')} | "
                    f"{x.get('caption')}" for x in photos]

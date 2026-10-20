@@ -28,6 +28,16 @@ Street Construction Permits 2022–present — tqtj-sjs8 (daily)
 
 Never fuzzy: "588 THOMAS S BOYLAND ST" does not match "586 …" or "THOMAS
 BOYLAND ST", and a different BBL is a different lot whatever the address.
+
+THE ONE EXCEPTION IS A STREET'S OTHER NAME, and it is exact too: a street
+renamed by the city is still written with its old name by inspectors and in
+the datasets. DOT wrote two OATH summonses (Sept 29, 2026) for "588 HOPKINSON
+AVENUE btwn Blake and Sutter Avenues" -- that is 588 Thomas S. Boyland Street
+(Hopkinson Avenue was renamed for Thomas S. Boyland) -- and the report showed
+no DOT violations, because "HOPKINSON AVE" is not "THOMAS S BOYLAND ST". A
+project's other street names are `RENAMED_STREETS` (a curated, documented
+table) plus the project's own `street_aliases`; the house number, borough (and
+BBL when the record has one) must still agree.
 """
 
 from __future__ import annotations
@@ -96,8 +106,30 @@ def norm_name(v: Any) -> str:
     return " ".join(re.sub(r"[^A-Z0-9 ]", " ", str(v or "").upper()).split())
 
 
-def project_keys(project: Dict[str, Any]) -> Dict[str, str]:
-    """BBL, borough and street address of a project, normalized."""
+#: Streets the city renamed, by their CURRENT normalized name -> the old names
+#: records may still carry. Add a street only with its source; a wrong entry
+#: would attach another street's summonses to a project.
+RENAMED_STREETS: Dict[str, List[str]] = {
+    # Hopkinson Avenue (Brooklyn) was renamed Thomas S. Boyland Street. Seen on
+    # real DOT summonses 0704345548 / 0704345557: "588 HOPKINSON AVENUE btwn
+    # BLAKE AVENUE and SUTTER AVENUE", for a job at 588 Thomas S Boyland Street.
+    "THOMAS S BOYLAND ST": ["HOPKINSON AVE"],
+}
+
+
+def street_names(street: str, aliases: Iterable[Any] = ()) -> List[str]:
+    """A street's normalized names: its own, the old names the city renamed it
+    from, and any a person added to the project -- never a fuzzy guess."""
+    out = [street] if street else []
+    for a in list(RENAMED_STREETS.get(street, [])) + [norm_street(x) for x in aliases or []]:
+        if a and a not in out:
+            out.append(a)
+    return out
+
+
+def project_keys(project: Dict[str, Any]) -> Dict[str, Any]:
+    """BBL, borough and street address of a project, normalized; `streets`
+    is every name the street goes by."""
     addr = str(project.get("address") or "").split(",")[0].strip()
     m = re.match(r"^\s*([0-9][0-9A-Za-z-]*)\s+(.+)$", addr)
     # The borough only when the address names one ("New York" does not: it
@@ -111,10 +143,12 @@ def project_keys(project: Dict[str, Any]) -> Dict[str, str]:
     bbl = norm_bbl(project.get("bbl") or project.get("nyc_bbl"))
     if not boro and bbl:
         boro = bbl[0]
+    street = norm_street(m.group(2)) if m else ""
     return {
         "bbl": bbl,
         "house": norm_house(m.group(1)) if m else "",
-        "street": norm_street(m.group(2)) if m else "",
+        "street": street,
+        "streets": street_names(street, project.get("street_aliases") or []),
         "boro": boro,
     }
 
@@ -148,7 +182,7 @@ def match_oath(pk: Dict[str, str], rk: Dict[str, str]) -> Optional[str]:
     if pk.get("house") and pk.get("street") and rk.get("house") and rk.get("street"):
         if pk.get("boro") and rk.get("boro") and pk["boro"] != rk["boro"]:
             return None
-        if pk["house"] == rk["house"] and pk["street"] == rk["street"]:
+        if pk["house"] == rk["house"] and rk["street"] in (pk.get("streets") or [pk["street"]]):
             return "address"
     return None
 
@@ -159,7 +193,7 @@ def match_permit(pk: Dict[str, str], rk: Dict[str, str]) -> Optional[str]:
         return None
     if not (rk.get("boro") and rk.get("house") and rk.get("street")):
         return None
-    if (pk["boro"], pk["house"], pk["street"]) == (rk["boro"], rk["house"], rk["street"]):
+    if (pk["boro"], pk["house"]) == (rk["boro"], rk["house"]) and rk["street"] in (pk.get("streets") or [pk["street"]]):
         return "address"
     return None
 
@@ -206,11 +240,12 @@ def queries(pk: Dict[str, str]) -> List[Dict[str, Any]]:
             "$where": f"{_AGENCY_WHERE} AND violation_location_house = '{_q(pk['house'])}'",
             "$limit": "200", "$order": "violation_date DESC"}})
         if pk.get("boro"):
-            word = max(pk["street"].split(), key=len)
+            words = [max(name.split(), key=len) for name in (pk.get("streets") or [pk["street"]])]
+            like = " OR ".join(f"upper(onstreetname) like '%{_q(w)}%'" for w in dict.fromkeys(words))
             out.append({"dataset": PERMIT_DATASET, "kind": "dot_permit", "params": {
                 "$where": f"boroughname = '{BORO_NAME[pk['boro']]}' "
                           f"AND permithousenumber = '{_q(pk['house'])}' "
-                          f"AND upper(onstreetname) like '%{_q(word)}%'",
+                          f"AND ({like})",
                 # DEFECT MEASURED (2026 audit): a $limit with NO $order returns
                 # an arbitrary 200 rows, so on a busy street the NEWEST permits
                 # could silently be the ones left out. permitissuedate is the
