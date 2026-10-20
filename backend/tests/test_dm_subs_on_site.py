@@ -26,7 +26,8 @@ from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A  # noqa: E4
 # 588 at 9:01: 31 on site, 13 of them after the 8:01 brief.
 CREW = [("Arkon Builders", 17), ("Quality Plumbing", 6), ("J&G", 4), ("Power Direct", 4)]
 LATE = {"Arkon Builders": 8, "J&G": 4, "Power Direct": 1}
-ALL = "4 subs on site at 588 now: Arkon Builders 17, Quality Plumbing 6, J&G 4, Power Direct 4."
+# dm_eval, Oct 20: a subs question gets the subs, by name -- not their counts.
+ALL = "4 subs on site at 588: Arkon Builders, Quality Plumbing, J&G, Power Direct."
 
 
 def _crew(db):
@@ -65,6 +66,8 @@ class MondayAt588(_Site, unittest.TestCase):
         self.assertEqual(plus, "The other sub: Power Direct 4.\n" + ALL)
         self.assertEqual(subs, ALL)
         self.assertEqual(cos, ALL)
+        for answer in (subs, cos):                          # never the worker count
+            self.assertNotIn("31", answer)
         self.assertEqual(self.agent_calls, [])                 # never the job agent
         kinds = [r["tool_data"]["kind"] for r in self.db[server.DM_ANSWERS].rows
                  if r.get("path") == "headcount"]
@@ -85,6 +88,10 @@ class MondayAt588(_Site, unittest.TestCase):
             reply = self.say(c, "how many subs are on site across all my jobs?")
         self.assertEqual(reply, "All jobs: 2 subs on site.")
         self.assertEqual(asked, ["how many subs are on site across all my jobs?"])
+
+    def test_a_workers_question_is_still_the_worker_count(self):
+        reply = self.ask("How many workers on site at 588?")
+        self.assertTrue(reply.startswith("31 on site at 588"), reply)
 
     def test_with_the_job_named(self):
         self.assertEqual(self.ask("which subs are on site at 588?"), ALL)
@@ -128,13 +135,13 @@ class TheWords(unittest.TestCase):
     def test_compose(self):
         data = self._data([("Arkon", 9), ("Quality", 6), ("Power Direct", 3)])
         self.assertEqual(wa_headcount.compose_subs(data, "588"),
-                         "3 subs on site at 588 now: Arkon 9, Quality 6, Power Direct 3.")
+                         "3 subs on site at 588: Arkon, Quality, Power Direct.")
         # Nothing was left out: no "other sub" line.
         self.assertEqual(wa_headcount.compose_subs(data, "588", "what's the other sub"),
-                         "3 subs on site at 588 now: Arkon 9, Quality 6, Power Direct 3.")
+                         "3 subs on site at 588: Arkon, Quality, Power Direct.")
         one = self._data([("Arkon", 2), (wa_headcount.NO_COMPANY, 1)])
         self.assertEqual(wa_headcount.compose_subs(one, "588"),
-                         "1 sub on site at 588 now: Arkon 2. Plus 1 with no company on record.")
+                         "1 sub on site at 588: Arkon. Plus 1 with no company on record.")
         self.assertEqual(wa_headcount.compose_subs(self._data([]), "588"),
                          "Nobody has checked in at 588 today.")
         self.assertIsNone(re.search(r"\+\d", wa_headcount.compose_subs(data, "588")))

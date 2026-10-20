@@ -365,10 +365,11 @@ def _companies_line(by_co: List[tuple]) -> str:
 
 
 def compose_subs(data: Dict[str, Any], job: str, question: str = "") -> str:
-    """Every company on site now, with its count: "4 subs on site at 588
-    now: Arkon Builders 17, Quality Plumbing 6, J&G 4, Power Direct 4." Asked
-    about the ones the short answer left out ("what's the +1 sub"): those
-    first."""
+    """Every company on site now, by name: "4 subs on site at 588: Arkon
+    Builders, Quality Plumbing, J&G, Power Direct." -- a question about the
+    subs is answered with the subs, not their head counts (dm_eval, Oct 20).
+    Asked about the ones the short answer left out ("what's the +1 sub"):
+    those first, with their counts."""
     by_co = list(data["by_company"])
     if not data["total"]:
         return f"Nobody has checked in at {job} today."
@@ -377,8 +378,8 @@ def compose_subs(data: Dict[str, Any], job: str, question: str = "") -> str:
     tail = (f" Plus {unknown} with no company on record." if unknown else "")
     if not subs:
         return f"No company on record for the {unknown} on site at {job} now."
-    line = (f"{len(subs)} sub{'s' if len(subs) != 1 else ''} on site at {job} now: "
-            + ", ".join(f"{c} {n}" for c, n in subs) + "." + tail)
+    line = (f"{len(subs)} sub{'s' if len(subs) != 1 else ''} on site at {job}: "
+            + ", ".join(c for c, _n in subs) + "." + tail)
     rest = [(c, n) for c, n in by_co[TOP_COMPANIES:] if c != NO_COMPANY]
     if rest and _SUBS_MORE_RE.search(str(question or "")):
         head = (f"The other sub{'s' if len(rest) != 1 else ''}: "
