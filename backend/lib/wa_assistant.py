@@ -406,6 +406,105 @@ def likely_first(jobs: List[Dict[str, Any]], likely_id: Optional[str]) -> Tuple[
     return [likely] + rest, f"Which job — {likely['label']}? Or another:"
 
 
+# ── NEVER THE SAME ANSWER TO A DIFFERENT QUESTION (dm_eval, Oct 20) ──────
+#
+# "Show me" after a plans answer got the plans text again, 16 s later; "the
+# drawing" and "picture" did too; "Cancel checklist" and "Done" got one
+# sentence twice. An answer identical to the last one, sent for a
+# different question inside REPEAT_WINDOW, is the assistant not having
+# understood: it is not sent, and one short question goes instead.
+REPEAT_WINDOW = timedelta(minutes=30)
+_HEARD_RE = re.compile(r"^Heard: .*?\n\n", re.DOTALL)
+
+
+_Q_STOP = frozenset(
+    "a an the is are was were be to of in on at for and or how many much what who whats "
+    "what's which do does did i me my we our you your it its this that there here now "
+    "today please pls can could would will any about".split())
+
+
+def _q_words(text: Any) -> set:
+    return {w for w in re.findall(r"[^\W_]+", str(text or "").lower()) if w not in _Q_STOP}
+
+
+def _same_question(a: Any, b: Any) -> bool:
+    """The same question in other words: identical, or half its content
+    words shared ("open items at 8 walworth" / "and the open items?")."""
+    wa, wb = _q_words(a), _q_words(b)
+    if wa == wb:
+        return True
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.5
+
+
+def _aware(v: Any) -> Optional[datetime]:
+    if not isinstance(v, datetime):
+        return None
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
+
+def repeat_of_last(reply: Any, history: Iterable[dict], question: Any,
+                   now: datetime) -> Optional[str]:
+    """The earlier answer `reply` repeats word for word -- any of Levelog's
+    text answers in this chat inside REPEAT_WINDOW, given for a DIFFERENT
+    question -- else None. Not just the last one: a sheet or a question in
+    between does not make the same words new ("the drawing", then
+    "picture", Oct 20).
+
+    Not a repeat: the same question asked again or reworded (half its
+    words shared), or a reply-to -- pointing at a message is context, and
+    the same answer about it can be right ("The list", replying to it)."""
+    text = " ".join(str(reply or "").split())
+    if not text or "(This is a reply to " in str(question or ""):
+        return None
+    rows = list(history or [])
+    for i in range(len(rows) - 1, -1, -1):
+        row = rows[i]
+        # A sheet sent ("[Sheet] SSP-011.00 — …") is an image, not words.
+        if str(row.get("sender") or "") != "bot" or str(row.get("body") or "").startswith("[Sheet]"):
+            continue
+        at = _aware(row.get("created_at") or row.get("timestamp"))
+        if not at or now - at > REPEAT_WINDOW:
+            return None
+        last = " ".join(_HEARD_RE.sub("", str(row.get("body") or "")).split())
+        if last != text:
+            continue
+        return None if any(_same_question(q, question) for q in _asked_for(rows, i)) \
+            else last
+    return None
+
+
+def _asked_for(rows: List[dict], i: int) -> List[str]:
+    """What was asked for Levelog's answer at rows[i]: the nearest message of
+    theirs before it -- and when that was only a pick from a "Which job?"
+    menu ("588", "1"), the question the menu was asked for too."""
+    out = []
+    j = i - 1
+    while j >= 0:
+        if str(rows[j].get("sender") or "") == "bot":
+            j -= 1
+            continue
+        out.append(str(rows[j].get("body") or ""))
+        k = j - 1
+        while k >= 0 and str(rows[k].get("sender") or "") != "bot":
+            k -= 1
+        if k < 0 or not is_menu_message(rows[k].get("body")):
+            break
+        j = k - 1
+    return out
+
+
+def repeat_question(sheet: str = "", asked_already: bool = False) -> str:
+    """The one short question that goes instead of a repeated answer -- and,
+    when it has just been asked, other words (never the same question
+    twice either)."""
+    if asked_already:
+        return ("I'm not getting it — say it another way"
+                + (", or “show me” for the drawing." if sheet else "."))
+    if sheet:
+        return f"That's what I just sent. Want the drawing — {sheet}? Say “show me”."
+    return "That's what I just sent. What should I look at differently?"
+
+
 _EMPTY_RE = re.compile(r"^[\s.?!…,;:-]*$")
 _NUDGE = {"hello", "hi", "hey", "ping", "bump", "anyone", "and", "so", "well", "hello?"}
 
