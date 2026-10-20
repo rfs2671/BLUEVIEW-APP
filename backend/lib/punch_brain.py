@@ -26,7 +26,8 @@ from lib import punch
 
 #: Each action the model may answer with, and what it means.
 ACTIONS = ("simple", "detailed", "send", "assign", "due", "trade", "location", "drop",
-           "words", "note", "add", "undo", "show", "cancel", "answer")
+           "words", "note", "add", "undo", "show", "cancel", "answer", "default_location",
+           "describe")
 
 PROMPT = (
     "You help a construction superintendent run a punch-list walkthrough over WhatsApp. "
@@ -47,8 +48,16 @@ PROMPT = (
     "- {\"do\": \"due\", \"when\": \"<asap | no date | a day>\", \"trade\": null | \"<trade>\"}.\n"
     "- {\"do\": \"trade\", \"items\": [numbers], \"trade\": \"<trade>\"}.\n"
     "- {\"do\": \"location\", \"items\": [numbers] | \"since_last\" | \"missing\", \"place\": "
-    "\"<their words for the place>\"}: since_last = the photos sent since their last "
-    "location message (\"these are all roof\"); missing = every item with no location.\n"
+    "\"<their words for the place>\"}: since_last = EVERY photo since their last location "
+    "message that has no place of its own (STATE.since_last_location lists them) -- \"these "
+    "are all roof\", \"all of the above is for 3rd floor\", \"everything so far is cellar\" -- "
+    "even when other texts came in between; missing = every item with no location.\n"
+    "- {\"do\": \"default_location\", \"place\": \"<place>\" | null}: where the NEXT photos are "
+    "(\"moving up to 4th now\", \"going to the roof\", \"now on 5\"): each photo after this gets "
+    "that place unless its own caption says another. null: stop.\n"
+    "- {\"do\": \"describe\", \"text\": \"...\"}: while taking photos, words about what is wrong "
+    "in the recent photos (\"cracked tiles\", \"missing outlet covers\"); text = those words "
+    "only, without the place.\n"
     "- {\"do\": \"drop\", \"items\": [numbers]}.\n"
     "- {\"do\": \"words\", \"item\": n, \"text\": \"...\"}: replace what item n says.\n"
     "- {\"do\": \"note\", \"item\": n, \"text\": \"...\"}: more words about item n (during "
@@ -58,6 +67,11 @@ PROMPT = (
     "- {\"do\": \"show\"}: show the list / where things stand.\n"
     "- {\"do\": \"cancel\"}: ONLY when they clearly say to cancel or throw away the walkthrough.\n"
     "- {\"do\": \"answer\"}: a question or small talk; the reply answers it.\n"
+    "A message that only says where photos are (and where they go next) is location / "
+    "default_location ONLY -- never a note, never describe, never words for a photo. One message "
+    "can need several actions: \"All of the above is for 3rd floor moving up to 4th now\" = "
+    "location since_last \"3rd floor\" + default_location \"4th floor\". Earlier messages in the "
+    "chat are context for what they mean now.\n"
     "Rules: use only item numbers in STATE.numbers. Never invent a name: copy the name they "
     "said. Never send unless they ask to send, finish or go on. If you are not sure what "
     "they mean, use no action and ask ONE short question in the reply.\n"
@@ -110,6 +124,9 @@ def state_for(sess: Dict[str, Any], *, detail: str, walker: str = "",
         **({"asked_where_is": int(sess["asking"])}
            if status == "locating" and sess.get("asking") and not sess.get("where_asked") else {}),
         "numbers": [it.get("n") for it in live],
+        "since_last_location": [it.get("n") for it in punch.group_targets(
+            live, int(sess.get("loc_mark") or 0))] if status == "capturing" else [],
+        "next_photos_place": punch.loc_phrase(sess["default_loc"]) if sess.get("default_loc") else None,
         "recipients": recipients or {},
         "trades": list(punch.TRADES),
         "items": items,
@@ -226,6 +243,17 @@ def clean_plan(got: Any, state: Dict[str, Any], said: str) -> Optional[Dict[str,
                 ns = _nums(scope, known)
                 if ns:
                     out.append({"do": "location", "scope": "numbers", "items": ns, "place": loc})
+        elif do == "default_location":
+            if a.get("place") in (None, "", "none", "null"):
+                out.append({"do": "default_location", "place": None})
+                continue
+            loc = punch.free_location(a.get("place"))
+            if loc.get("floor") or loc.get("area"):
+                out.append({"do": "default_location", "place": loc})
+        elif do == "describe":
+            text = " ".join(str(a.get("text") or "").split())[:300]
+            if text and stage == "capturing":
+                out.append({"do": "describe", "text": text})
         elif do == "drop":
             ns = _nums(a.get("items"), known)
             if ns:

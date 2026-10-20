@@ -69,6 +69,12 @@ in this conversation. Call tools for anything factual -- several at once when th
 - If no tool has it, say so in one line and say what you can check instead. Never invent, round or \
 estimate. Never say you can't access something a tool covers: voice notes, the subs list, \
 attendance history, photos or messages they replied to, drawings, the brief.
+- They ARE the site manager / PM / admin: never tell them to check with, ask or reach out to anyone \
+else (the site manager, the super, the office, the sub) for something a tool could hold.
+- Never answer "I'm not sure", "I don't have that" or "check with X" before you have called EVERY tool \
+that could hold it (a trade, e.g. "how many days hvac worked in 588": sub_attendance with trade; a sub \
+you can't place: find_sub / list_subs, then its tool). If after that nothing has it, say in one line \
+what you checked.
 - Don't repeat an earlier answer word for word to a different question: answer what they asked now, \
 or ask one short question if you can't tell what they want.
 
@@ -230,6 +236,45 @@ def verify_note(missing: Sequence[str]) -> str:
     return ("Before this goes out: these figures in your answer are not in any tool result, message or "
             f"the context: {', '.join(missing[:12])}. Check them with a tool, or answer without them. "
             "Don't compute new figures; use the ones the tools return.")
+
+
+# "check with the site manager", "ask the super", "I'm not sure", "I don't
+# have that", "not in the records" (Tue 12:28 PM: an HVAC days question got
+# "check with the site manager" -- the asker IS the site manager).
+_REFER_RE = re.compile(
+    r"\b(?:check|confirm|verify)\s+with\b|\b(?:ask|contact|call|reach\s+out\s+to|talk\s+to|text)\s+"
+    r"(?:your|the|their|a|an)\s+(?:site\s+manager|super(?:intendent)?|foreman|office|pm|project\s+manager|"
+    r"gc|sub(?:contractor)?|team|admin)\b", re.IGNORECASE)
+_UNSURE_RE = re.compile(
+    r"\bi'?m\s+not\s+sure\b|\bi\s+am\s+not\s+sure\b|\bi\s+(?:don'?t|do\s+not)\s+(?:know|have)\b|"
+    r"\bi\s+(?:can'?t|cannot|couldn'?t)\s+(?:tell|find|see|answer|say)\b|\bno\s+(?:data|records?|info(?:rmation)?)\b|"
+    r"\bnot\s+in\s+(?:the|my)\s+records\b|\bdon'?t\s+have\s+(?:that|this|any)\b", re.IGNORECASE)
+
+#: Times the model is asked again when it deflects ("check with X") or says
+#: it can't answer.
+DEFLECT_RETRIES = 1
+
+
+def refers_elsewhere(reply: Any) -> bool:
+    """Sends them to someone else for the answer."""
+    return bool(_REFER_RE.search(str(reply or "")))
+
+
+def cant_answer(reply: Any) -> bool:
+    """A "can't answer": sends them elsewhere, or says it doesn't know /
+    doesn't have it."""
+    t = str(reply or "")
+    return refers_elsewhere(t) or bool(_UNSURE_RE.search(t))
+
+
+def deflect_note(tools_tried: Sequence[str]) -> str:
+    """What the model is told when its answer deflects."""
+    tried = ", ".join(tools_tried) if tools_tried else "none"
+    return ("Before this goes out: your answer sends them to someone else or says you can't answer. "
+            "They are the site manager / PM -- never send them elsewhere. Tools called so far: "
+            f"{tried}. Call every tool that could hold this first (sub_attendance takes a trade; "
+            "find_sub / list_subs place a sub). If nothing has it after that, say in one line what "
+            "you checked.")
 
 
 def redact_phones(text: str) -> str:

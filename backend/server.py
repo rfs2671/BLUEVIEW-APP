@@ -52717,6 +52717,8 @@ async def _dm_jobs(ident: dict) -> list:
 #: of sent (it rephrases them), and in the eval with no state written.
 _DM_CAPTURE: contextvars.ContextVar = contextvars.ContextVar("dm_capture", default=None)
 _DM_DRY: contextvars.ContextVar = contextvars.ContextVar("dm_dry", default=False)
+#: The walk reads free text with the DM brain's model (flag dm_brain_v2).
+_WALK_BRAIN: contextvars.ContextVar = contextvars.ContextVar("walk_brain", default=False)
 
 
 async def _dm_state_get(kind: str, chat: str) -> Optional[dict]:
@@ -56431,11 +56433,13 @@ async def _dm_brain_run(ctx: dict, messages: list, system: list) -> dict:
     trace: List[dict] = []
     sources = [b.get("text", "") for b in system] + [
         m["content"] if isinstance(m["content"], str) else "" for m in messages]
-    retries, last_text, missing = 0, "", []
+    retries, deflects, last_text, missing = 0, 0, "", []
     usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
     def done(**kw):
-        return {"trace": trace, "retries": retries, "usage": usage, **kw}
+        return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
+                "tools_tried": [f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})"
+                                for t in trace], **kw}
     for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
         resp = await client.beta.messages.create(
             model=dm_brain.MODEL, max_tokens=dm_brain.MAX_TOKENS, system=system, tools=tools,
@@ -56482,7 +56486,17 @@ async def _dm_brain_run(ctx: dict, messages: list, system: list) -> dict:
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
                         stop="unverified", draft=last_text)
-        return done(reply=last_text, rounds=rounds, unverified=[], stop=resp.stop_reason)
+        if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
+            # Never "check with the site manager" / "not sure" before the
+            # tools (Tue 12:28 PM): asked again, with what it tried.
+            deflects += 1
+            logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
+            messages.append({"role": "assistant", "content": resp.content})
+            messages.append({"role": "user", "content": "[Levelog check, not from them] "
+                                                         + dm_brain.deflect_note([t["tool"] for t in trace])})
+            continue
+        return done(reply=last_text, rounds=rounds, unverified=[], stop=resp.stop_reason,
+                    cant_answer=dm_brain.cant_answer(last_text))
     return done(reply=last_text or dm_brain.FAILED_TEXT, rounds=dm_brain.MAX_ROUNDS,
                 unverified=missing, stop="max_rounds")
 
@@ -56597,7 +56611,12 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
         tool_data=out.get("trace"), model=dm_brain.MODEL, rounds=out.get("rounds"),
         verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
-        stop=out.get("stop"), **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+        stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
+        tools_tried=out.get("tools_tried") or [],
+        **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
+    if out.get("cant_answer"):
+        # Every "can't answer" is logged with the tools it tried (rule 3).
+        logger.info(f"[dm-brain] cant_answer tools={out.get('tools_tried')}")
     if heard and message_id and out.get("used_job"):
         try:
             await db.whatsapp_voice_events.update_one(
@@ -65719,6 +65738,26 @@ async def _attendance_fallback(project: dict, body: str, now: Optional[datetime]
                              wa_assistant.street_label(project), body)
 
 
+async def _attendance_by_trade(company_id: str, project: dict, rows: list, args: dict,
+                               question: str, now: datetime, job: str) -> str:
+    """A trade's subs on the job -- the job's subs list rows for it, and the
+    check-in companies whose name says it ("Arctic Mechanical") -- and
+    each one's days on site (lib/attendance.trade_text)."""
+    said = str(args.get("trade") or "").strip()
+    label = lib_trades.resolve(said, await _company_trade_list(company_id)) or said
+    listed = []
+    for r in _active_assignments(project):
+        t = str(r.get("trade") or "").strip()
+        c = str(r.get("company") or "").strip()
+        if c and t and (_roster_key(t) == _roster_key(label)
+                        or _roster_key(lib_trades.resolve(t, [label]) or "") == _roster_key(label)):
+            listed.append(c)
+    named = sorted({c for c in (wa_facts.checkin_company(r) for r in rows)
+                    if c and lib_trades.resolve(c, [label])})
+    a, b, range_label = attendance.resolve_range(args, question, now)
+    return attendance.trade_text(rows, now, label, listed, named, job, a, b, range_label)
+
+
 def _fact_day(v: Any) -> Optional[_Date]:
     try:
         return _Date.fromisoformat(str(v).strip()[:10]) if v else None
@@ -65745,6 +65784,11 @@ async def _facts_tool(name: str, args: dict, *, company_id: str, project_id: str
         since = datetime.combine(frm, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1) \
             if frm else now - timedelta(days=1100)
         rows = await _attendance_rows(project_id, since)
+        if name == "sub_attendance" and str(args.get("trade") or "").strip() \
+                and not str(args.get("sub") or "").strip():
+            # "how many days hvac worked in 588" (Tue 12:28 PM: "check with the
+            # site manager"): the trade's subs on this job, then their days.
+            return await _attendance_by_trade(company_id, project, rows, args, question, now, job)
         return attendance.answer(name, args, rows, now, job, question)
     if name == "punch_status":
         rows = await db[punch.COLLECTION].find(
@@ -67308,6 +67352,7 @@ def _punch_time(at: Any) -> str:
 async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: str,
                                 voice: Optional[dict] = None, brain: bool = False) -> bool:
     now = datetime.now(timezone.utc)
+    _WALK_BRAIN.set(bool(brain))
     msg_id = parsed.get("message_id_serialized") or parsed.get("message_id") or ""
     text = _punch_caption(parsed, body)
     sess = await _punch_session(ident["user_id"])
@@ -67480,6 +67525,14 @@ async def _punch_dm_turn_locked(ident: dict, dm_chat: str, parsed: dict, body: s
         done = await _punch_think(ident, sess, dm_chat, parsed, said, now)
         if done is not None:
             return done
+    if brain and sess["status"] == "capturing" and not parsed.get("has_image") and said.strip() \
+            and not _punch_capture_command(sess, said, text, voice):
+        # THE BRAIN READS THE WALK WHILE PHOTOS COME IN (Tue 12:28 PM: "All of
+        # the above is for 3rd floor moving up to 4th now" set #2-#4 only and
+        # became a note). Exact commands stay in code.
+        done = await _punch_think(ident, sess, dm_chat, parsed, said, now)
+        if done is not None:
+            return done
     if sess["status"] == "capturing":
         return await _punch_capture(ident, sess, dm_chat, parsed, text, voice, msg_id, now)
     if sess["status"] in ("locating", "draft") and sess.get("loc_undo") and not parsed.get("has_image") \
@@ -67550,9 +67603,62 @@ async def _punch_fast(sess: dict, said: str, text: str, voice: Optional[dict]) -
     return True
 
 
-async def _punch_brain_model(state: dict, said: str) -> Optional[dict]:
+def _punch_capture_command(sess: dict, said: str, text: str, voice: Optional[dict]) -> bool:
+    """While photos come in, with the brain on: the exact commands the code
+    reads itself -- the job, send / done / cancel / undo, "add: ...", "#n
+    words", the number answering "Add to which photo?", "#12-20 roof".
+    Everything else is the brain's."""
+    if not sess.get("project_id"):
+        return True
+    low = " ".join(str(said or "").lower().split()).strip(".!")
+    if not low or low in punch.SEND_WORDS or low in punch.DONE_WORDS or low in punch.CANCEL_WORDS \
+            or low in ("undo", "undo that", "undo it", "send", "send it", "send it now", "send now",
+                       "go ahead", "finish") or punch.is_escape(said):
+        return True
+    if re.match(r"^\s*add\s*[:\-–]", said or "", re.IGNORECASE):
+        return True
+    if not voice and (punch.target_ref(text) or re.fullmatch(r"#?\s*\d{1,3}", low)):
+        return True
+    grp = punch.read_group_location(said)
+    return bool(grp and grp["scope"] == "numbers")
+
+
+async def _walk_claude_json(system: str, user: str, dm_chat: Optional[str] = None,
+                            max_tokens: int = 1500) -> Optional[dict]:
+    """The DM brain's model reading for the walk: the instructions, this DM's
+    last turns (when `dm_chat`), then the message; the answer is one JSON
+    object, given through the one tool it must call. None on any error."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        now = datetime.now(timezone.utc)
+        history = dm_brain.history_messages(await _dm_brain_history(dm_chat, now), now) if dm_chat else []
+        messages = dm_brain.turn_messages(history, user)
+        resp = await _dm_brain_client().beta.messages.create(
+            model=dm_brain.MODEL, max_tokens=max_tokens,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            tools=[_WALK_ANSWER_TOOL], tool_choice={"type": "tool", "name": "answer"},
+            messages=messages, betas=DM_BRAIN_BETAS, fallbacks="default")
+        for b in resp.content:
+            if getattr(b, "type", None) == "tool_use" and isinstance(getattr(b, "input", None), dict):
+                return dict(b.input)
+        return None
+    except Exception as e:
+        logger.warning(f"[punch] brain (claude) read failed: {type(e).__name__}")
+        return None
+
+
+_WALK_ANSWER_TOOL = {
+    "name": "answer", "description": "Your answer: the JSON object the instructions describe.",
+    "input_schema": {"type": "object", "additionalProperties": True}}
+
+
+async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = None) -> Optional[dict]:
     """The model's reading (punch_brain.PROMPT): one JSON object, or None
-    without a key, on any error, or when it is not one."""
+    without a key, on any error, or when it is not one. With the DM brain on,
+    the brain's model reads it with the chat's last turns."""
+    if _WALK_BRAIN.get():
+        return await _walk_claude_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
     if not OPENAI_API_KEY:
         return None
     try:
@@ -67592,7 +67698,7 @@ async def _punch_think(ident: dict, sess: dict, dm_chat: str, parsed: dict, said
     walker = str((ident.get("user") or {}).get("name") or "")
     state = punch_brain.state_for(sess, detail=sess.get("detail") or punch.DEFAULT_DETAIL,
                                   walker=walker, recipients=_punch_recipients_view(sess))
-    got = await _punch_brain_model(state, said)
+    got = await _punch_brain_model(state, said, dm_chat)
     plan = punch_brain.clean_plan(got, state, said) if got is not None else None
     if plan is None:
         # The model is down: still the plain asks the walk was stuck on.
@@ -67619,7 +67725,18 @@ async def _punch_apply_plan(ident: dict, sess: dict, dm_chat: str, parsed: dict,
     late: List[dict] = []
     changed = False
     nxt: Optional[Tuple[str, dict]] = None
+    # Words about the recent photos first: their batch is the photos since
+    # the previous text, before a location in the same message moves it.
+    for a in [a for a in plan["actions"] if a["do"] == "describe"]:
+        lines.append(await _punch_batch_apply(sess, a["text"], now))
     for a in plan["actions"]:
+        if a["do"] == "describe":
+            continue
+        if a["do"] == "default_location":
+            await _punch_save(sess, default_loc=a["place"])
+            lines.append(f"Next photos: {punch.loc_phrase(a['place'])}." if a["place"]
+                         else "Next photos: no set place.")
+            continue
         do = a["do"]
         if do == "cancel":
             await _punch_save(sess, status="cancelled")
@@ -67939,6 +68056,8 @@ async def _punch_photo_item(sess, parsed, words, voice, msg_id, now, *,
         parsed, _punch_photo_key(sess.get("project_id") or "unassigned", sess["_id"], captured))
     it = punch.new_item(n or captured, words, photo_key=key, message_id=msg_id, voice=voice, at=now)
     it["captured"] = captured
+    # "Moving up to 4th now": the next photos' place, unless theirs says another.
+    punch.apply_default_location(it, sess.get("default_loc"))
     it["photo_failed"] = key is None
     it["photo_quality"] = quality
     # How it was had (the diag shows it) and where the original lives on
@@ -68055,6 +68174,9 @@ async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optiona
     """The model's reading of a text about a batch (punch_batch.BATCH_PROMPT,
     or `prompt`); None without a key, on any error, or when it is not one
     JSON object."""
+    if _WALK_BRAIN.get():
+        return await _walk_claude_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
+                                       max_tokens=600)
     if not OPENAI_API_KEY:
         return None
     try:
@@ -68110,6 +68232,17 @@ async def _punch_batch_text(ident, sess, dm_chat, parsed, words, now) -> bool:
         await send_whatsapp_message(dm_chat, "I can't do that right now — your photos are as they "
                                              "were. Keep going, or say done when you're finished.")
         return True
+    await send_whatsapp_message(dm_chat, await _punch_batch_apply(sess, words, now, ann))
+    return True
+
+
+async def _punch_batch_apply(sess: dict, words: str, now: datetime, ann: Optional[dict] = None) -> str:
+    """Apply what a text says about its batch; the line to say back."""
+    items = sess["items"]
+    if ann is None:
+        ann = await _punch_read_batch(words)
+        if ann.get("kind") == "command":
+            ann = {"kind": "annotation", **punch_batch.read_batch(words)}
     if punch_batch.is_empty(ann):
         ann["description"] = punch.capitalize(" ".join(str(words or "").split()))[:120]
     # The previous text's end: a batch text, or a location message (#783).
@@ -68123,9 +68256,8 @@ async def _punch_batch_text(ident, sess, dm_chat, parsed, words, now) -> bool:
                       loc_undo={"items": undo, "mark": sess.get("loc_mark") or 0,
                                 "batch": {"mark": sess.get("batch_mark") or 0,
                                           "prev": sess.get("batch_prev")}})
-    await send_whatsapp_message(dm_chat, punch_batch.confirm(ann, changed) if changed else
-                                "Those photos already have that. Reply to a photo to change one.")
-    return True
+    return (punch_batch.confirm(ann, changed) if changed else
+            "Those photos already have that. Reply to a photo to change one.")
 
 
 # ── A WALK TAKEN UNDER THE OLD RULE, PUT RIGHT (scripts/repair_punch_walk.py) ─

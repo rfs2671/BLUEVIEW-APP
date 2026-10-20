@@ -294,6 +294,8 @@ def answer_outcome(path: str, answer, wording=None):
         from lib import dm_brain
         if a == dm_brain.UNVERIFIED_TEXT:
             return True, "unverified"
+        if dm_brain.cant_answer(a):
+            return True, "cant_answer"
     if path == "menu_expired":
         return True, "menu_expired"
     return False, _OK_REASON.get(path, path or "answer")

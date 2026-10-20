@@ -51,5 +51,51 @@ class Replay(unittest.TestCase):
         self.assertIn("Save Arkon Builders as Framing", md)
 
 
+    def test_fixed_cases_with_checks(self):
+        from tests.test_dm_brain_tue1228 import SAID, _days, answer
+        db = _db()
+        _optin(db, "u_admin", ADMIN_PHONE, chat=CHAT)
+        for p in db.projects.rows:
+            if p["_id"] == THOMAS:
+                p["trade_assignments"] = [{"id": "r9", "company": "Cool Air Corp", "trade": "HVAC"}]
+        _days(db, "Cool Air Corp", (3, 4, 6))
+        db.whatsapp_dm_answers.rows.append({
+            "_id": "a1", "user_id": "u_admin", "path": "job_agent",
+            "question": "How many days hvac worked in 588",
+            "answer": "I don't have that. Check with the site manager.",
+            "created_at": datetime.now(timezone.utc) - timedelta(hours=1)})
+
+        def walk(kw):
+            self.assertIn(SAID, kw["messages"][-1]["content"])
+            return answer({"actions": [{"do": "location", "items": "since_last", "place": "3rd floor"},
+                                       {"do": "default_location", "place": "4th floor"}], "reply": ""})
+
+        def hvac(kw):
+            res = kw["messages"][-1]["content"][0]["content"]
+            line = next(ln for ln in res.splitlines() if ln.startswith("Cool Air Corp:"))
+            return resp(text(line))
+        claude = FakeClaude(walk, resp(use("sub_attendance", {"job": "588", "trade": "hvac"})), hvac,
+                            resp(use("sub_attendance", {"job": "588", "trade": "elevator"})),
+                            resp(text("No elevator sub on 588's list, and none checked in by name.")))
+        with _Ctx(db=db):
+            ro = ev.ReadOnlyDb(server.db)
+            with patch.object(server, "db", ro), patch.object(server, "_dm_brain_client", lambda: claude), \
+                    patch.object(server, "ANTHROPIC_API_KEY", "k"):
+                fixed = _run(ev._fixed(server, [], {}, ""))
+        by = {r["id"]: r for r in fixed}
+        self.assertEqual({k: r.get("pass") for k, r in by.items()},
+                         {"walk_location": True, "hvac_days": True, "no_deflect": True}, fixed)
+        self.assertIn("#1 Floor 3", by["walk_location"]["detail"])
+        self.assertIn("next photo #5: Floor 4", by["walk_location"]["detail"])
+        self.assertEqual(by["hvac_days"]["old_answer"], "I don't have that. Check with the site manager.")
+        self.assertEqual(db.projects.rows[0]["trade_assignments"][0]["company"], "Cool Air Corp")
+        md = ev._md([], "claude-sonnet-5-5", ro.dropped,
+                    {"input": 1, "output": 2, "cache_read": 0, "cache_write": 0}, fixed)
+        self.assertIn("## Fixed cases", md)
+        self.assertIn("### walk_location: PASS", md)
+        self.assertIn("**Expected:**", md)
+        self.assertIn("## Can't answer (new)", md)
+
+
 if __name__ == "__main__":
     unittest.main()
