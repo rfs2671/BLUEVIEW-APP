@@ -1,6 +1,11 @@
 /**
  * CP_NAV_CLEARANCE — the derivation, and the prop that keeps it honest.
  *
+ * THE NAV IS NOW A SOLID, FULL-WIDTH BAR flush to the bottom edge (it was a
+ * floating pill). Its height without the safe-area inset is
+ * CP_NAV_PILL_HEIGHT (name kept: three screens and another test import or
+ * read it), and the screens still owe `insets.bottom + CP_NAV_CLEARANCE`.
+ *
  * THE BUG THIS REPLACED did not look like a bug. Three CP screens cleared the
  * floating nav with a hardcoded paddingBottom — 120 on /logbooks and
  * /documents, 140 on /settings — and none of the three was a measurement
@@ -58,16 +63,34 @@ function decl(name) {
   return m[0].replace(/^export /, '');
 }
 
-const { spacing, NAV_ICON_SIZE, CP_NAV_BOTTOM_OFFSET, CP_NAV_PILL_HEIGHT, CP_NAV_CLEARANCE } =
+// The shipped StyleSheet, evaluated against the shipped tokens, so the bar
+// height can be MEASURED from what the component renders rather than read back
+// from the constants that are supposed to describe it.
+const stylesSrc = CODE.match(/^const styles = StyleSheet\.create\(\{[\s\S]*?^\}\);$/m);
+if (!stylesSrc) throw new Error('styles not found in CpNav.js');
+
+const {
+  spacing, NAV_ICON_SIZE, NAV_ITEM_HEIGHT, CP_NAV_BOTTOM_OFFSET, CP_NAV_PILL_HEIGHT,
+  CP_NAV_BREATHING_ROOM, CP_NAV_CLEARANCE, styles,
+} =
   // eslint-disable-next-line no-new-func
   new Function(`
     ${spacingSrc[0].replace('export const', 'const')}
     ${decl('NAV_ICON_SIZE')}
+    ${decl('NAV_ITEM_RULE')}
+    ${decl('NAV_ITEM_PAD_TOP')}
+    ${decl('NAV_ITEM_GAP')}
+    ${decl('NAV_LABEL_LINE_HEIGHT')}
+    ${decl('NAV_ITEM_PAD_BOTTOM')}
+    ${decl('NAV_ITEM_HEIGHT')}
     ${decl('CP_NAV_BOTTOM_OFFSET')}
     ${decl('CP_NAV_PILL_HEIGHT')}
     ${decl('CP_NAV_BREATHING_ROOM')}
     ${decl('CP_NAV_CLEARANCE')}
-    return { spacing, NAV_ICON_SIZE, CP_NAV_BOTTOM_OFFSET, CP_NAV_PILL_HEIGHT, CP_NAV_CLEARANCE };
+    const StyleSheet = { create: (o) => o };
+    ${stylesSrc[0]}
+    return { spacing, NAV_ICON_SIZE, NAV_ITEM_HEIGHT, CP_NAV_BOTTOM_OFFSET, CP_NAV_PILL_HEIGHT,
+             CP_NAV_BREATHING_ROOM, CP_NAV_CLEARANCE, styles };
   `)();
 
 let passed = 0, failed = 0;
@@ -76,31 +99,57 @@ function ok(cond, label) {
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
 
-// ── The derivation matches the device ────────────────────────────────────────
-// 58 was measured on the rendered component at 375pt AND 320pt, three items.
-// If a spacing token moves, this fails — and it SHOULD: the pill really did
-// change size and someone has to re-measure rather than trust the arithmetic.
-ok(CP_NAV_PILL_HEIGHT === 58,
-   `derived pill height matches the measured 58 (got ${CP_NAV_PILL_HEIGHT})`);
-ok(CP_NAV_CLEARANCE === CP_NAV_BOTTOM_OFFSET + CP_NAV_PILL_HEIGHT + spacing.lg,
-   'clearance = offset + pill + breathing room');
-ok(CP_NAV_CLEARANCE === 106, `clearance is 106 (got ${CP_NAV_CLEARANCE})`);
+// ── The derivation matches what the styles render ───────────────────────────
+// The bar's height WITHOUT the inset, MEASURED from the shipped stylesheet:
+// the container's top and bottom padding + the item's rule, top padding, icon,
+// gap, one label line and bottom padding. If a style token moves, this and the
+// derived constant disagree and the test fails — the bar really did change
+// size and someone has to look, rather than trust the arithmetic.
+const c = styles.container, it = styles.navItem, lbl = styles.navLabel;
+const MEASURED_BAR_HEIGHT =
+  c.paddingTop + c.paddingBottom
+  + it.borderTopWidth + it.paddingTop + NAV_ICON_SIZE + it.gap + lbl.lineHeight
+  + it.paddingBottom;
+ok(MEASURED_BAR_HEIGHT === 65,
+   `the bar measures 65 from its own styles (got ${MEASURED_BAR_HEIGHT})`);
+ok(CP_NAV_PILL_HEIGHT === MEASURED_BAR_HEIGHT,
+   `derived bar height equals the measured one (${CP_NAV_PILL_HEIGHT} vs ${MEASURED_BAR_HEIGHT})`);
+ok(NAV_ITEM_HEIGHT === 49, `one item is 49 tall (got ${NAV_ITEM_HEIGHT})`);
+ok(CP_NAV_CLEARANCE === CP_NAV_PILL_HEIGHT + spacing.lg && CP_NAV_BREATHING_ROOM === spacing.lg,
+   'clearance = bar height + breathing room (the inset is added by the screen)');
+ok(CP_NAV_CLEARANCE >= MEASURED_BAR_HEIGHT + spacing.md,
+   `clearance clears the measured bar with room to spare (${CP_NAV_CLEARANCE} >= ${MEASURED_BAR_HEIGHT} + ${spacing.md})`);
+ok(CP_NAV_CLEARANCE === 89, `clearance is 89 (got ${CP_NAV_CLEARANCE})`);
+
+// The bar's bottom padding constant is the SAME 8 as its top padding, which is
+// what lets the height formula count spacing.sm twice. If one drifts, the
+// formula is wrong without any shape check noticing.
+ok(CP_NAV_BOTTOM_OFFSET === spacing.sm && c.paddingTop === spacing.sm,
+   'bottom padding constant == top padding == spacing.sm');
+ok(c.bottom === 0 && c.left === 0 && c.right === 0 && c.position === 'absolute',
+   'the bar is absolute, flush to the bottom edge and full width');
+ok(!('borderRadius' in c) && !/BlurView/.test(CODE),
+   'a flat strip: no rounded container, no blur layer');
 
 // ── It is DERIVED, not written down ─────────────────────────────────────────
-ok(/spacing\.sm \* 2 \+ \(spacing\.sm \+ 4\) \* 2 \+ NAV_ICON_SIZE/.test(SRC),
-   'the pill height is composed from the same tokens the styles use');
-ok(!/CP_NAV_PILL_HEIGHT = \d+/.test(SRC),
-   'the pill height is never a bare literal');
+ok(/spacing\.sm \* 2 \+ NAV_ITEM_HEIGHT/.test(SRC),
+   'the bar height is composed from the item height and the padding token');
+ok(/NAV_ITEM_RULE \+ NAV_ITEM_PAD_TOP \+ NAV_ICON_SIZE \+ NAV_ITEM_GAP\s*\+ NAV_LABEL_LINE_HEIGHT \+ NAV_ITEM_PAD_BOTTOM/.test(SRC),
+   'the item height is composed from the same tokens the styles use');
+ok(!/CP_NAV_PILL_HEIGHT = \d+/.test(SRC) && !/CP_NAV_CLEARANCE = \d+/.test(SRC),
+   'neither the bar height nor the clearance is ever a bare literal');
+ok(/CP_NAV_CLEARANCE =\s*CP_NAV_PILL_HEIGHT \+ CP_NAV_BREATHING_ROOM/.test(SRC),
+   'the clearance is derived from the bar height, not typed beside it');
 
 // ── The component renders what the constants claim ──────────────────────────
 ok(SRC.includes('<Icon size={NAV_ICON_SIZE}'),
    'the icon renders at the size the derivation assumes');
-ok(SRC.includes('bottom: insets.bottom + CP_NAV_BOTTOM_OFFSET'),
-   'the pill floats at the offset the clearance assumes');
-ok(SRC.includes('paddingVertical: spacing.sm, paddingHorizontal: spacing.sm'),
-   "blurContent's padding is the term the derivation uses");
-ok(SRC.includes('paddingVertical: spacing.sm + 4'),
-   "navItem's padding is the term the derivation uses");
+ok(SRC.includes('paddingBottom: insets.bottom + CP_NAV_BOTTOM_OFFSET'),
+   'the bar pads its bottom by the inset plus the offset the clearance assumes');
+ok(/paddingBottom: CP_NAV_BOTTOM_OFFSET/.test(CODE) && !/\binsets\b/.test(stylesSrc[0]),
+   'and the stylesheet carries only the constant — the inset is added at render');
+ok(it.borderTopWidth === 3 && it.opacity === 0.72 && lbl.fontSize === 11,
+   'item: 3pt top rule, 72% inactive opacity, 11pt label');
 
 // ── numberOfLines is what keeps the height true ─────────────────────────────
 // Without it a squeezed label wraps, the item is two lines tall, the pill
@@ -123,15 +172,15 @@ ok(/pill 70/.test(SRC),
 {
   const items = SRC.match(/^\s*\{ path: /gm) || [];
   ok(items.length === 3,
-     `the nav ships three items (got ${items.length}) — 58 and 106 were `
-     + 'measured at three, and a fourth makes them arguments rather than '
-     + 'measurements');
+     `the nav ships three items (got ${items.length}) — the label-wrap `
+     + 'measurements were taken at three, and a fourth makes the one-line '
+     + 'assumption an argument rather than a measurement');
 
   const pill = decl('CP_NAV_PILL_HEIGHT');
   ok(!/CP_NAV_ITEMS|\.length|label/.test(pill),
      'the pill height names no item count, no list and no label');
-  ok(CP_NAV_PILL_HEIGHT === 58 && CP_NAV_CLEARANCE === 106,
-     'pill 58, clearance 106 — the measured values at the measured count');
+  ok(CP_NAV_PILL_HEIGHT === 65 && CP_NAV_CLEARANCE === 89,
+     'bar 65, clearance 89 — the derived values at three items');
 
   ok(/path: CHECKIN_QR_ACTION/.test(SRC),
      'Check-In holds the middle slot: it is reached at a gate with a worker '

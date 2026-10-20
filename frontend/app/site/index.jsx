@@ -174,8 +174,8 @@ export default function SiteDeviceHomeScreen() {
               onPress={() => handleNavigate('/site/logbooks')}
             >
               <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: 'rgba(59, 130, 246, 0.2)' }]}>
-                  <ClipboardList size={64} strokeWidth={1.5} color="#3b82f6" />
+                <View style={[s.iconContainer, { backgroundColor: withAlpha(colors.primary, 0.2) }]}>
+                  <ClipboardList size={64} strokeWidth={1.5} color={colors.primary} />
                 </View>
                 <Text style={s.buttonLabel}>Log Books</Text>
                 {!loading && logsState !== 'ok' ? (
@@ -296,8 +296,8 @@ function buildStyles(colors, isDark) {
     },
     siteBadgeText: {
       ...typography.label,
-      fontSize: 14,
-      color: '#4ade80',
+      fontSize: 12,
+      color: semantic.verified,
       letterSpacing: 1,
     },
     projectName: {
@@ -323,20 +323,22 @@ function buildStyles(colors, isDark) {
       flex: 1,
       alignItems: 'center',
       justifyContent: 'center',
-      padding: spacing.xl,
+      padding: spacing.md,
       position: 'relative',
     },
     iconContainer: {
-      width: 120,
-      height: 120,
+      width: '100%',
+      maxWidth: 120,
+      aspectRatio: 1,
       borderRadius: borderRadius.xxl,
       alignItems: 'center',
       justifyContent: 'center',
       marginBottom: spacing.lg,
     },
     buttonLabel: {
-      fontSize: 24,
-      fontWeight: '300',
+      fontFamily: typography.display,
+      fontSize: 20,
+      fontWeight: '700',
       color: colors.text.primary,
       textAlign: 'center',
     },
@@ -359,11 +361,11 @@ function buildStyles(colors, isDark) {
     // Count could not be read — visually distinct from a real count so nobody
     // reads it as data.
     badgeUnknown: {
-      backgroundColor: withAlpha('#f59e0b', 0.12),
-      borderColor: withAlpha('#f59e0b', 0.35),
+      backgroundColor: withAlpha(semantic.attention, 0.12),
+      borderColor: withAlpha(semantic.attention, 0.35),
     },
     badgeTextUnknown: {
-      color: '#fbbf24',
+      color: semantic.attention,
     },
     offlineBanner: {
       marginTop: 0,
@@ -376,8 +378,8 @@ function buildStyles(colors, isDark) {
     },
     lockBtn: {
       alignSelf: 'stretch',
-      backgroundColor: withAlpha('#f59e0b', 0.12),
-      borderColor: withAlpha('#f59e0b', 0.35),
+      backgroundColor: withAlpha(semantic.attention, 0.12),
+      borderColor: withAlpha(semantic.attention, 0.35),
       minHeight: 56,
     },
   });

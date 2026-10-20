@@ -46,6 +46,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import { useT } from '../../src/i18n';
+import { chrome } from '../../src/styles/semanticColors';
 
 // EVERY submitted log type this project can file. The list used to stop at
 // three, and the tab filter is `l.log_type === activeTab` — so the other eight
@@ -69,22 +70,22 @@ import { useT } from '../../src/i18n';
 // keys out of server.py now and holds a COUNT, so a thirteenth type fails
 // there rather than being inherited by omission here.
 const LOG_TABS = [
-  { key: 'daily_jobsite', labelKey: 'tabDailyJobsite', icon: ClipboardList, color: '#3b82f6' },
-  { key: 'toolbox_talk', labelKey: 'tabToolboxTalk', icon: BookOpen, color: '#8b5cf6' },
-  { key: 'preshift_signin', labelKey: 'tabPreshift', icon: Users, color: semantic.neutral },
-  { key: 'hot_work', labelKey: 'tabHotWork', icon: AlertTriangle, color: '#8b5cf6' },
-  { key: 'crane_operations', labelKey: 'tabCrane', icon: Truck, color: '#3b82f6' },
-  { key: 'excavation_monitoring', labelKey: 'tabExcavation', icon: Eye, color: semantic.neutral },
-  { key: 'concrete_operations', labelKey: 'tabConcrete', icon: Wrench, color: '#3b82f6' },
-  { key: 'scaffold_maintenance', labelKey: 'tabScaffold', icon: ShieldCheck, color: '#8b5cf6' },
-  { key: 'ssc_daily_safety_log', labelKey: 'tabSsc', icon: ClipboardList, color: semantic.neutral },
-  { key: 'osha_log', labelKey: 'tabOsha', icon: FileText, color: '#3b82f6' },
-  { key: 'subcontractor_orientation', labelKey: 'tabOrientation', icon: Users, color: '#8b5cf6' },
-  { key: 'fall_protection', labelKey: 'tabFallProtection', icon: ShieldCheck, color: semantic.neutral },
+  { key: 'daily_jobsite', labelKey: 'tabDailyJobsite', icon: ClipboardList, get color() { return chrome.brand; } },
+  { key: 'toolbox_talk', labelKey: 'tabToolboxTalk', icon: BookOpen, get color() { return chrome.brand; } },
+  { key: 'preshift_signin', labelKey: 'tabPreshift', icon: Users, get color() { return semantic.neutral; } },
+  { key: 'hot_work', labelKey: 'tabHotWork', icon: AlertTriangle, get color() { return chrome.brand; } },
+  { key: 'crane_operations', labelKey: 'tabCrane', icon: Truck, get color() { return chrome.brand; } },
+  { key: 'excavation_monitoring', labelKey: 'tabExcavation', icon: Eye, get color() { return semantic.neutral; } },
+  { key: 'concrete_operations', labelKey: 'tabConcrete', icon: Wrench, get color() { return chrome.brand; } },
+  { key: 'scaffold_maintenance', labelKey: 'tabScaffold', icon: ShieldCheck, get color() { return chrome.brand; } },
+  { key: 'ssc_daily_safety_log', labelKey: 'tabSsc', icon: ClipboardList, get color() { return semantic.neutral; } },
+  { key: 'osha_log', labelKey: 'tabOsha', icon: FileText, get color() { return chrome.brand; } },
+  { key: 'subcontractor_orientation', labelKey: 'tabOrientation', icon: Users, get color() { return chrome.brand; } },
+  { key: 'fall_protection', labelKey: 'tabFallProtection', icon: ShieldCheck, get color() { return semantic.neutral; } },
   // BC 3301.13.13 -- the construction superintendent's own record. Without a
   // tab the type is registered and UNREACHABLE: this filter is the only way
   // into a log on the site device, which is the device he signs from.
-  { key: 'site_superintendent_log', labelKey: 'tabSuperintendent', icon: ClipboardList, color: '#f59e0b' },
+  { key: 'site_superintendent_log', labelKey: 'tabSuperintendent', icon: ClipboardList, get color() { return chrome.brand; } },
 ];
 
 // THIS SCREEN NO LONGER STORES A WINDOW OF DAYS, AND THAT IS THE POINT.
@@ -1189,14 +1190,14 @@ export default function SiteLogbooksViewer() {
 
         {data.general_description && (
           <>
-            <DocSectionLabel icon={FileText} label="General Description" color="#3b82f6" />
+            <DocSectionLabel icon={FileText} label="General Description" color={colors.primary} />
             <Text style={s.docParagraph}>{data.general_description}</Text>
           </>
         )}
 
         {activities.length > 0 && (
           <>
-            <DocSectionLabel icon={Wrench} label="Activity Details" color="#3b82f6" />
+            <DocSectionLabel icon={Wrench} label="Activity Details" color={colors.primary} />
             <DocTableRow isHeader cells={[
               { text: 'Crew / Company', flex: 1.5 }, { text: 'Workers', flex: 0.6 },
               { text: 'Description', flex: 2 }, { text: 'Location', flex: 1 },
@@ -1236,7 +1237,7 @@ export default function SiteLogbooksViewer() {
           </>
         )}
 
-        {visitorsDeliveries ? (<><DocSectionLabel icon={Truck} label="Visitors / Deliveries" color="#8b5cf6" /><Text style={s.docParagraph}>{visitorsDeliveries}</Text></>) : null}
+        {visitorsDeliveries ? (<><DocSectionLabel icon={Truck} label="Visitors / Deliveries" color={colors.primary} /><Text style={s.docParagraph}>{visitorsDeliveries}</Text></>) : null}
 
         <View style={s.signatureSection}>
           <View style={s.signatureDivider} />
@@ -1266,19 +1267,19 @@ export default function SiteLogbooksViewer() {
           {data.meeting_time && <DocInfoRow icon={Clock} text={`Time: ${data.meeting_time}`} />}
         </View>
 
-        <DocSectionLabel icon={BookOpen} label={`Topics (${topicList.length})`} color="#8b5cf6" />
+        <DocSectionLabel icon={BookOpen} label={`Topics (${topicList.length})`} color={colors.primary} />
         {topicList.length > 0 ? (
           <View style={s.topicChips}>
             {topicList.map((topic, i) => (
               <View key={i} style={s.topicChip}>
-                <CheckCircle size={10} strokeWidth={2} color="#8b5cf6" />
+                <CheckCircle size={10} strokeWidth={2} color={colors.primary} />
                 <Text style={s.topicChipText}>{topic}</Text>
               </View>
             ))}
           </View>
         ) : <Text style={s.docParagraph}>None</Text>}
 
-        <DocSectionLabel icon={Users} label={`Attendees (${attendees.length})`} color="#8b5cf6" />
+        <DocSectionLabel icon={Users} label={`Attendees (${attendees.length})`} color={colors.primary} />
         {attendees.length > 0 && (
           <>
             {/* PRESENT AND CONFIRMED ARE GONE FROM THIS TABLE, AND NEITHER
@@ -2318,7 +2319,7 @@ export default function SiteLogbooksViewer() {
         {/* Inspector Mode banner — read-only notice + exit control. */}
         {isLocked && (
           <View style={s.inspectorBanner}>
-            <Lock size={16} strokeWidth={1.5} color="#f59e0b" />
+            <Lock size={16} strokeWidth={1.5} color={semantic.attention} />
             <Text style={s.inspectorBannerText}>Inspector Mode — read only</Text>
             <Pressable
               style={s.exitBtn}
@@ -2458,7 +2459,7 @@ export default function SiteLogbooksViewer() {
                     <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
                     <Text style={s.dateText}>{formatDate(date)}</Text>
                     <View style={s.dateBadge}>
-                      <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
+                      <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />
                       <Text style={s.dateBadgeText}>{logs.length}</Text>
                     </View>
                     <ChevronRight
@@ -2524,7 +2525,7 @@ export default function SiteLogbooksViewer() {
                                   onPress={() => handleViewLogPdf(log, date)}
                                   onLongPress={() => handleShareLogPdf(log, date)}
                                 >
-                                  <Download size={14} strokeWidth={1.5} color="#3b82f6" />
+                                  <Download size={14} strokeWidth={1.5} color={colors.primary} />
                                   <Text style={s.pdfActionText}>PDF</Text>
                                 </Pressable>
                               )}
@@ -2573,14 +2574,14 @@ export default function SiteLogbooksViewer() {
                                 onPress={() => handleViewLogPdf(log, date)}
                                 onLongPress={() => handleShareLogPdf(log, date)}
                               >
-                                <Download size={14} strokeWidth={1.5} color="#3b82f6" />
+                                <Download size={14} strokeWidth={1.5} color={colors.primary} />
                                 <Text style={s.pdfActionText}>PDF</Text>
                               </Pressable>
                               <Pressable
                                 style={s.pdfActionBtn}
                                 onPress={() => handleShareLogPdf(log, date)}
                               >
-                                <Share2 size={14} strokeWidth={1.5} color="#3b82f6" />
+                                <Share2 size={14} strokeWidth={1.5} color={colors.primary} />
                                 <Text style={s.pdfActionText}>Share</Text>
                               </Pressable>
                             </View>
@@ -2671,7 +2672,7 @@ function buildStyles(colors, isDark) {
     backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 2,
     borderRadius: borderRadius.full,
   },
-  dateBadgeText: { fontSize: 14, fontWeight: '600', color: '#4ade80' },
+  dateBadgeText: { fontSize: 14, fontWeight: '600', color: semantic.verified },
 
   // Opening a day: the detail lives on the filesystem, so there is a read
   // between the tap and the record.
@@ -2722,7 +2723,7 @@ function buildStyles(colors, isDark) {
   docHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
     marginBottom: spacing.md, paddingBottom: spacing.sm,
-    borderBottomWidth: 2, borderBottomColor: 'rgba(59,130,246,0.3)',
+    borderBottomWidth: 2, borderBottomColor: withAlpha(colors.primary, 0.3),
   },
   docHeaderLeft: { flex: 1 },
   docHeaderRight: { alignItems: 'flex-end', gap: 4 },
@@ -2784,7 +2785,7 @@ function buildStyles(colors, isDark) {
   topicChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   topicChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(139,92,246,0.1)', borderWidth: 1, borderColor: 'rgba(139,92,246,0.2)',
+    backgroundColor: withAlpha(colors.primary, 0.1), borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
     borderRadius: borderRadius.full, paddingHorizontal: spacing.sm, paddingVertical: 4,
   },
   topicChipText: { fontSize: 15, color: '#c4b5fd', fontWeight: '500' },
@@ -2818,7 +2819,7 @@ function buildStyles(colors, isDark) {
 
   // PDF buttons
   pdfRow: { paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginTop: spacing.xs },
-  pdfBtn: { backgroundColor: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.25)' },
+  pdfBtn: { backgroundColor: withAlpha(colors.primary, 0.1), borderColor: withAlpha(colors.primary, 0.25) },
   pdfActions: {
     flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.sm,
     borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.06),
@@ -2829,10 +2830,10 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs,
     minHeight: 48, minWidth: 96,
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
-    backgroundColor: 'rgba(59,130,246,0.08)', borderRadius: borderRadius.full,
-    borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+    backgroundColor: withAlpha(colors.primary, 0.08), borderRadius: borderRadius.full,
+    borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
   },
-  pdfActionText: { fontSize: 16, fontWeight: '600', color: '#3b82f6' },
+  pdfActionText: { fontSize: 16, fontWeight: '600', color: colors.primary },
 
   // Legacy
   logField: { fontSize: 16, color: colors.text.secondary, lineHeight: 24 },
@@ -2848,15 +2849,15 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.md,
-    backgroundColor: withAlpha('#f59e0b', 0.12),
+    backgroundColor: withAlpha(semantic.attention, 0.12),
     borderWidth: 1,
-    borderColor: withAlpha('#f59e0b', 0.35),
+    borderColor: withAlpha(semantic.attention, 0.35),
   },
   inspectorBannerText: {
     flex: 1,
     fontSize: 15,
     fontWeight: '700',
-    color: '#f59e0b',
+    color: semantic.attention,
     letterSpacing: 0.3,
   },
   exitBtn: {
@@ -2866,10 +2867,10 @@ function buildStyles(colors, isDark) {
     justifyContent: 'center',
     paddingHorizontal: spacing.lg,
     borderRadius: borderRadius.full,
-    backgroundColor: withAlpha('#f59e0b', 0.18),
+    backgroundColor: withAlpha(semantic.attention, 0.18),
     borderWidth: 1,
-    borderColor: withAlpha('#f59e0b', 0.4),
+    borderColor: withAlpha(semantic.attention, 0.4),
   },
-  exitBtnText: { fontSize: 15, fontWeight: '700', color: '#f59e0b' },
+  exitBtnText: { fontSize: 15, fontWeight: '700', color: semantic.attention },
 });
 }

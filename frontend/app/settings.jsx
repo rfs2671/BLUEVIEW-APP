@@ -81,9 +81,9 @@ const INSURANCE_LABELS = {
 // Grey is 'blank' AND 'unreadable'; the card also prints which, because those
 // need different fixes and colour cannot say.
 const INSURANCE_STATE_COLOR = {
-  expired: semantic.critical,
-  soon: semantic.attention,
-  ok: semantic.verified,
+  get expired() { return semantic.critical; },
+  get soon() { return semantic.attention; },
+  get ok() { return semantic.verified; },
   unreadable: '#6b7280',
   blank: '#6b7280',
 };
@@ -124,7 +124,7 @@ const formatDate = (dateStr) => {
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, updateUser } = useAuth();
-  const { isDark, toggleTheme, colors } = useTheme();
+  const { isDark, toggleTheme, themeForced, colors } = useTheme();
   const datePalette = { error: colors.status.error, hint: colors.text.muted };
   const toast = useToast();
 
@@ -668,6 +668,7 @@ export default function SettingsScreen() {
               <Switch
                 value={isDark}
                 onValueChange={toggleTheme}
+                disabled={themeForced}
                 trackColor={{ false: colors.glass.border, true: colors.primary }}
                 thumbColor={colors.white}
               />
@@ -713,9 +714,9 @@ export default function SettingsScreen() {
           >
             <GlassCard style={s.card}>
               <View style={s.settingRow}>
-                <View style={s.settingLeft}>
+                <View style={[s.settingLeft, { flex: 1, minWidth: 0 }]}>
                   <Bell size={20} strokeWidth={1.5} color={colors.text.secondary} />
-                  <View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.settingTitle}>Notification Preferences</Text>
                     <Text style={s.settingSubtitle}>
                       Tune which DOB compliance signals reach you and how
@@ -1198,7 +1199,7 @@ export default function SettingsScreen() {
             <GlassButton
               title="Sign Out"
               onPress={handleLogout}
-              icon={<LogOut size={16} strokeWidth={1.5} color="#f87171" />}
+              icon={<LogOut size={16} strokeWidth={1.5} color={semantic.criticalText} />}
               style={s.signOutBtn}
             />
           </GlassCard>
@@ -1262,7 +1263,7 @@ export default function SettingsScreen() {
                     accessibilityLabel="Request account deletion"
                     style={s.delRow}
                   >
-                    <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                    <Trash2 size={16} strokeWidth={1.5} color={semantic.criticalText} />
                     <Text style={s.delRowText}>Request account deletion</Text>
                   </Pressable>
                 )}
@@ -1442,7 +1443,7 @@ function buildStyles(colors) {
       flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
       minHeight: 56, paddingHorizontal: spacing.xs,
     },
-    delRowText:        { fontSize: 15, color: '#f87171', fontWeight: '500' },
+    delRowText:        { fontSize: 15, color: semantic.criticalText, fontWeight: '500' },
     delRequestedTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
     delSheetTitle:     { fontSize: 18, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
     // The app's warning-block treatment, not a variant of it. Identical to

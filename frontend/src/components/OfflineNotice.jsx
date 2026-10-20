@@ -2,7 +2,8 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { CloudOff, AlertTriangle } from 'lucide-react-native';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { spacing, borderRadius } from '../styles/theme';
+import { spacing, borderRadius, outdoor } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 /**
  * The honest replacement for a false empty state.
@@ -19,7 +20,10 @@ import { spacing, borderRadius } from '../styles/theme';
  * `cachedCount` is for the cache-first screens: when we CAN show cached data
  * offline, say that instead of blocking.
  */
-export default function OfflineNotice({ mode = 'offline', detail, cachedCount, style }) {
+export default function OfflineNotice({ mode = 'offline', detail, cachedCount, style, pinned = false }) {
+  // The body text follows the theme; on a pinned (paper) editor it is the paper ink instead.
+  const { colors: liveColors } = useTheme();
+  const colors = pinned ? { text: { secondary: outdoor.textSoft } } : liveColors;
   const offline = mode === 'offline';
   const Icon = offline ? CloudOff : AlertTriangle;
   const tint = offline ? semantic.attention : semantic.critical;
@@ -47,7 +51,7 @@ export default function OfflineNotice({ mode = 'offline', detail, cachedCount, s
       <Icon size={22} strokeWidth={1.8} color={tint} />
       <View style={s.textWrap}>
         <Text style={[s.title, { color: tint }]}>{title}</Text>
-        <Text style={s.body}>{body}</Text>
+        <Text style={[s.body, { color: colors.text.secondary }]}>{body}</Text>
       </View>
     </View>
   );

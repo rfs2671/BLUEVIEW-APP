@@ -497,12 +497,12 @@ export default function ReportsScreen() {
                       {/* Summary Cards */}
                       <View style={s.summaryRow}>
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
-                          <Users size={18} strokeWidth={1.5} color="#3b82f6" />
+                          <Users size={18} strokeWidth={1.5} color={colors.primary} />
                           <Text style={s.summaryValue}>{preview.checkin_count}</Text>
                           <Text style={s.summaryLabel} numberOfLines={2}>Workers</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
-                          <ClipboardList size={18} strokeWidth={1.5} color="#8b5cf6" />
+                          <ClipboardList size={18} strokeWidth={1.5} color={colors.primary} />
                           <Text style={s.summaryValue}>{preview.logbooks?.length || 0}</Text>
                           <Text style={s.summaryLabel} numberOfLines={2}>Logbooks</Text>
                         </GlassCard>
@@ -736,8 +736,8 @@ function buildStyles(colors, isDark) {
       marginBottom: spacing.sm,
     },
     titleText: {
-      fontSize: 48,
-      fontWeight: '200',
+      fontSize: 32,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -1,
     },
@@ -789,7 +789,7 @@ function buildStyles(colors, isDark) {
       borderBottomColor: withAlpha('#ffffff', 0.05),
     },
     dropdownItemActive: {
-      backgroundColor: 'rgba(59, 130, 246, 0.15)',
+      backgroundColor: withAlpha(colors.primary, 0.15),
     },
     dropdownText: {
       fontSize: 15,
@@ -813,9 +813,9 @@ function buildStyles(colors, isDark) {
       borderRadius: borderRadius.lg,
     },
     tabActive: {
-      backgroundColor: 'rgba(59, 130, 246, 0.2)',
+      backgroundColor: withAlpha(colors.primary, 0.2),
       borderWidth: 1,
-      borderColor: 'rgba(59, 130, 246, 0.3)',
+      borderColor: withAlpha(colors.primary, 0.3),
     },
     tabText: {
       fontSize: 13,
@@ -824,7 +824,7 @@ function buildStyles(colors, isDark) {
       letterSpacing: 0.3,
     },
     tabTextActive: {
-      color: '#60a5fa',
+      color: colors.primary,
     },
 
     // ── Date Navigator ──
@@ -861,7 +861,7 @@ function buildStyles(colors, isDark) {
     liveBadgeText: {
       fontSize: 10,
       fontWeight: '700',
-      color: '#4ade80',
+      color: semantic.verified,
       letterSpacing: 1,
     },
 
@@ -899,7 +899,7 @@ function buildStyles(colors, isDark) {
     },
     summaryValue: {
       fontSize: 24,
-      fontWeight: '300',
+      fontFamily: typography.num, fontWeight: '600',
       color: colors.text.primary,
     },
     summaryLabel: {
@@ -1029,7 +1029,7 @@ function buildStyles(colors, isDark) {
       color: semantic.verified,
     },
     statusBadgeTextDraft: {
-      color: '#fbbf24',
+      color: semantic.attention,
     },
 
     // ── Preview Button ──
@@ -1122,22 +1122,22 @@ function buildStyles(colors, isDark) {
       width: 44,
       height: 44,
       borderRadius: borderRadius.md,
-      backgroundColor: 'rgba(59, 130, 246, 0.1)',
+      backgroundColor: withAlpha(colors.primary, 0.1),
       borderWidth: 1,
-      borderColor: 'rgba(59, 130, 246, 0.2)',
+      borderColor: withAlpha(colors.primary, 0.2),
       alignItems: 'center',
       justifyContent: 'center',
     },
     historyDateDay: {
       fontSize: 16,
       fontWeight: '600',
-      color: '#60a5fa',
+      color: colors.primary,
       lineHeight: 18,
     },
     historyDateMonth: {
       fontSize: 9,
       fontWeight: '700',
-      color: '#60a5fa',
+      color: colors.primary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
     },

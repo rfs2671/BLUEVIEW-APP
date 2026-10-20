@@ -207,12 +207,12 @@ const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false 
           <ch.Icon
             size={13}
             strokeWidth={1.5}
-            color={isOn ? '#fff' : colors.text.muted}
+            color={isOn ? colors.onPrimary : colors.text.muted}
           />
           <Text
             style={[
               styles.channelChipLabel,
-              isOn && { color: '#fff' },
+              isOn && { color: colors.onPrimary },
               !ch.enabled && { color: colors.text.muted },
             ]}
           >
@@ -958,7 +958,7 @@ export default function NotificationPreferencesScreen() {
           )}
           {saveError && (
             <View style={styles.errorBlock}>
-              <AlertCircle size={14} strokeWidth={1.5} color="#ef4444" />
+              <AlertCircle size={14} strokeWidth={1.5} color={semantic.critical} />
               <Text style={styles.errorBlockText}>{saveError}</Text>
             </View>
           )}
@@ -987,9 +987,9 @@ export default function NotificationPreferencesScreen() {
               ]}
             >
               {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={colors.onPrimary} />
               ) : (
-                <Save size={14} strokeWidth={1.5} color="#fff" />
+                <Save size={14} strokeWidth={1.5} color={colors.onPrimary} />
               )}
               <Text style={styles.mobilePrimaryBtnText}>
                 {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
@@ -1044,8 +1044,8 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
     {
       key: 'immediate',
       Icon: Mail,
-      iconColor: '#ef4444',
-      bg: 'rgba(239, 68, 68, 0.10)',
+      iconColor: semantic.critical,
+      bg: withAlpha(semantic.critical, 0.10),
       count: summary.immediate_emails || 0,
       label: 'immediate emails',
       tip: 'Sent right when each signal lands.',
@@ -1062,8 +1062,8 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
     {
       key: 'digest_weekly',
       Icon: Mailbox,
-      iconColor: '#3b82f6',
-      bg: 'rgba(59, 130, 246, 0.10)',
+      iconColor: colors.primary,
+      bg: withAlpha(colors.primary, 0.10),
       count: summary.digest_weekly_signals || 0,
       label: 'in weekly digest',
       tip: 'Batched into one Monday email per week.',
@@ -1181,13 +1181,13 @@ const ProjectsList = ({
             ]}
           >
             {p.has_override ? (
-              <CheckCircle2 size={11} strokeWidth={1.5} color="#3b82f6" />
+              <CheckCircle2 size={11} strokeWidth={1.5} color={colors.primary} />
             ) : null}
             <Text
               style={[
                 styles.projectBadgeText,
                 p.has_override
-                  ? { color: '#3b82f6' }
+                  ? { color: colors.primary }
                   : { color: colors.text.muted },
               ]}
             >
@@ -1309,8 +1309,8 @@ function buildStyles(colors) {
       alignItems: 'flex-start',
     },
     presetCardSelected: {
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.08)',
+      borderColor: colors.primary,
+      backgroundColor: withAlpha(colors.primary, 0.08),
     },
     presetRadio: {
       width: 18, height: 18,
@@ -1320,9 +1320,9 @@ function buildStyles(colors) {
       alignItems: 'center', justifyContent: 'center',
       marginTop: 2,
     },
-    presetRadioSelected: { borderColor: '#3b82f6' },
+    presetRadioSelected: { borderColor: colors.primary },
     presetRadioInner: {
-      width: 10, height: 10, borderRadius: 5, backgroundColor: '#3b82f6',
+      width: 10, height: 10, borderRadius: 5, backgroundColor: colors.primary,
     },
     presetTextBlock: { flex: 1 },
     presetTitleRow: {
@@ -1337,8 +1337,8 @@ function buildStyles(colors) {
       fontFamily: typography.semibold,
       fontSize: 10,
       letterSpacing: 0.6,
-      color: '#3b82f6',
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      color: colors.primary,
+      backgroundColor: withAlpha(colors.primary, 0.12),
       paddingHorizontal: 6,
       paddingVertical: 2,
       borderRadius: 4,
@@ -1512,8 +1512,8 @@ function buildStyles(colors) {
       backgroundColor: 'transparent',
     },
     projectBadgeOverride: {
-      borderColor: 'rgba(59, 130, 246, 0.4)',
-      backgroundColor: 'rgba(59, 130, 246, 0.10)',
+      borderColor: withAlpha(colors.primary, 0.4),
+      backgroundColor: withAlpha(colors.primary, 0.10),
     },
     projectBadgeText: {
       fontFamily: typography.semibold,
@@ -1690,8 +1690,8 @@ function buildStyles(colors) {
       backgroundColor: 'transparent',
     },
     channelChipOn: {
-      backgroundColor: '#3b82f6',
-      borderColor: '#3b82f6',
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
     },
     channelChipDisabled: { opacity: 0.55 },
     channelChipLabel: {
@@ -1776,7 +1776,7 @@ function buildStyles(colors) {
       padding: spacing.md,
       borderTopWidth: 1,
       borderTopColor: colors.glass.border,
-      backgroundColor: colors.background?.start || withAlpha('#050a12', 0.95),
+      backgroundColor: colors.background?.start || withAlpha('#131E27', 0.95),
     },
     mobilePrimaryBtn: {
       flex: 1,
@@ -1786,12 +1786,12 @@ function buildStyles(colors) {
       gap: 6,
       paddingVertical: spacing.sm + 2,
       borderRadius: borderRadius.md,
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
     },
     mobilePrimaryBtnText: {
       fontFamily: typography.semibold,
       fontSize: 14,
-      color: '#fff',
+      color: colors.onPrimary,
     },
     mobileSecondaryBtn: {
       flex: 1,

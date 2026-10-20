@@ -28,7 +28,7 @@ import {
   Lock,
   Check,
 } from 'lucide-react-native';
-import { colors, borderRadius, spacing } from '../styles/theme';
+import { colors, spacing } from '../styles/theme';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
@@ -42,6 +42,13 @@ const navItems = [
   { path: '/reports', icon: FileText, label: 'Reports' },
 ];
 
+// The bar is a solid, full-width strip flush to the bottom of the screen. Its
+// bottom padding is `insets.bottom + NAV_BOTTOM_PADDING`, applied inline at
+// render (see FloatingNav) because a StyleSheet is built before any inset
+// exists. The inset clears the system navigation bar; this constant is the
+// small breathing room under the labels on top of it.
+export const NAV_BOTTOM_PADDING = 8;
+
 /**
  * SettingsModal
  * - Name change (all users)
@@ -49,7 +56,7 @@ const navItems = [
  * - Light / Dark mode toggle — wired to ThemeContext
  */
 const SettingsModal = ({ visible, onClose, user, onToast }) => {
-  const { isDark, toggleTheme } = useTheme();
+  const { isDark, toggleTheme, themeForced } = useTheme();
 
   const [name, setName] = useState(user?.full_name || user?.name || '');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -159,6 +166,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
                 <Switch
                   value={isDark}
                   onValueChange={toggleTheme}
+                  disabled={themeForced}
                   trackColor={{ false: colors.glass.border, true: colors.primary }}
                   thumbColor={colors.white}
                 />
@@ -289,15 +297,12 @@ const modalStyles = StyleSheet.create({
 
 // ─── NavItem ─────────────────────────────────────────────────────────────────
 
-const NavItem = ({ item, isActive, onPress }) => {
+// One tab: icon stacked above a one-line label. Inactive tabs sit at 72%
+// opacity, the active tab at full opacity with a brass rule across its top.
+const NavTab = ({ icon: Icon, label, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
-  const Icon = item.icon;
-
-  // active: bg-blue-50 (#EFF6FF) in light, rgba(255,255,255,0.15) in dark
-  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
-  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -306,71 +311,37 @@ const NavItem = ({ item, isActive, onPress }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && { backgroundColor: activeBg },
-        isHovered && !isActive && { backgroundColor: hoverBg },
+        isActive && styles.navItemActive,
+        isHovered && !isActive && styles.navItemHover,
       ]}
     >
-      <Icon
-        size={18}
-        strokeWidth={1.5}
-        color={isActive || isHovered ? colors.text.primary : colors.text.muted}
-      />
-      <Text
-        style={[
-          styles.navLabel,
-          { color: (isActive || isHovered) ? colors.text.primary : colors.text.muted },
-        ]}
-        numberOfLines={1}
-      >
-        {item.label}
+      <Icon size={18} strokeWidth={1.8} color={colors.onBar} />
+      {/* numberOfLines IS LOAD-BEARING: five equal columns share the width, and
+          a squeezed label must ellipsize rather than wrap into a taller bar. */}
+      <Text style={styles.navLabel} numberOfLines={1}>
+        {label}
       </Text>
     </Pressable>
   );
 };
+
+const NavItem = ({ item, isActive, onPress }) => (
+  <NavTab icon={item.icon} label={item.label} isActive={isActive} onPress={onPress} />
+);
 
 // ─── SettingsNavItem ──────────────────────────────────────────────────────────
 
-const SettingsNavItem = ({ onPress, isActive }) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const { colors, isDark } = useTheme();
-  const styles = buildStyles(colors, isDark);
-
-  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
-  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
-
-  return (
-    <Pressable
-      onPress={onPress}
-      onHoverIn={() => setIsHovered(true)}
-      onHoverOut={() => setIsHovered(false)}
-      style={[
-        styles.navItem,
-        isActive && { backgroundColor: activeBg },
-        isHovered && !isActive && { backgroundColor: hoverBg },
-      ]}
-    >
-      <Settings
-        size={18}
-        strokeWidth={1.5}
-        color={isActive || isHovered ? colors.text.primary : colors.text.muted}
-      />
-      <Text
-        style={[styles.navLabel, { color: (isActive || isHovered) ? colors.text.primary : colors.text.muted }]}
-        numberOfLines={1}
-      >
-        Settings
-      </Text>
-    </Pressable>
-  );
-};
+const SettingsNavItem = ({ onPress, isActive }) => (
+  <NavTab icon={Settings} label="Settings" isActive={isActive} onPress={onPress} />
+);
 
 // ─── FloatingNav ──────────────────────────────────────────────────────────────
 
 /**
- * Nav bar spec (light):
- *   bg-white/90  backdrop-blur-2xl  rounded-[28px]
- *   border border-blue-200/60
- *   shadow-xl shadow-blue-900/10
+ * Nav bar spec:
+ *   solid colors.bar strip, full width, flush to the bottom edge
+ *   equal-width columns, icon over a one-line 11pt label
+ *   inactive 72% opacity; active full opacity + 3pt colors.barActive top rule
  */
 const FloatingNav = () => {
   const router = useRouter();
@@ -379,11 +350,6 @@ const FloatingNav = () => {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const isDesktop = useIsDesktop();
-
-  // bg-white/90 in light, glass.background in dark
-  const navBg = isDark
-    ? colors.glass.background
-    : withAlpha('#ffffff', 0.9);
 
   // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
   // floating tab bar must not render. Suppressed here rather than in each
@@ -394,50 +360,24 @@ const FloatingNav = () => {
 
   return (
     <>
-      <View style={[styles.container, { bottom: insets.bottom + 24 }]}>
-        <View style={[styles.innerContainer, !isDark && {
-          // shadow-xl shadow-blue-900/10
-          shadowColor: 'rgba(30, 58, 138, 0.10)',
-          shadowOffset: { width: 0, height: 8 },
-          shadowOpacity: 0.1,
-          shadowRadius: 24,
-          elevation: 8,
-        }]}>
-          <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-            <View style={[styles.blurContent, { backgroundColor: navBg }]}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.scrollContent}
-                style={styles.scrollView}
-              >
-                <View style={styles.nav}>
-                  {navItems.map((item) => {
-                    const isActive = pathname === item.path;
-                    return (
-                      <NavItem
-                        key={item.path}
-                        item={item}
-                        isActive={isActive}
-                        onPress={() => router.push(item.path)}
-                      />
-                    );
-                  })}
+      <View style={[styles.container, { paddingBottom: insets.bottom + NAV_BOTTOM_PADDING }]}>
+        {navItems.map((item) => {
+          const isActive = pathname === item.path;
+          return (
+            <NavItem
+              key={item.path}
+              item={item}
+              isActive={isActive}
+              onPress={() => router.push(item.path)}
+            />
+          );
+        })}
 
-                  {/* Separator */}
-                  <View style={[styles.separator, { backgroundColor: colors.border.subtle }]} />
-
-                  {/* Settings button — navigates to /settings */}
-                  <SettingsNavItem
-                    isActive={pathname === '/settings'}
-                    onPress={() => router.push('/settings')}
-                  />
-                </View>
-              </ScrollView>
-            </View>
-          </BlurView>
-          <View style={styles.border} />
-        </View>
+        {/* Settings button — navigates to /settings */}
+        <SettingsNavItem
+          isActive={pathname === '/settings'}
+          onPress={() => router.push('/settings')}
+        />
       </View>
     </>
   );
@@ -447,78 +387,51 @@ function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
     // OVERRIDDEN AT RENDER. The component passes
-    // { bottom: insets.bottom + 24 } inline, which REPLACES this value — it
-    // does not add to it. The 24 below is therefore a fallback that only
-    // applies if these styles are used without the component.
+    // { paddingBottom: insets.bottom + NAV_BOTTOM_PADDING } inline, which
+    // REPLACES the fallback below — it does not add to it.
     //
     // It has to be done inline: a StyleSheet is built once at module load,
     // before any inset exists. And it has to be done at all because
     // absolute positioning puts this outside the inset flow — neither the
     // screen's SafeAreaView nor its paddingBottom: 120 reaches it, so a
-    // hardcoded 24 leaves the nav under the buttons on 3-button navigation.
+    // hardcoded padding leaves the labels under the buttons on 3-button
+    // navigation. The bar is flush to the bottom edge (bottom: 0) and grows
+    // upward by the inset, so its background runs under the system bar.
     position: 'absolute',
-    bottom: 24,
+    bottom: 0,
     left: 0,
     right: 0,
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-  },
-  innerContainer: {
-    // Phase V2.1.4 — pill sizes to content. Was `width: '100%'`
-    // which stretched the pill to the full container width and
-    // left visual empty space after the last nav item ("Settings").
-    // alignSelf:'center' lets the parent's alignItems:'center' do
-    // the horizontal centering of an intrinsically-sized child.
-    alignSelf: 'center',
-    maxWidth: 700,
-    borderRadius: borderRadius.full,
-    overflow: 'hidden',
-  },
-  blur: {
-    borderRadius: borderRadius.full,
-  },
-  blurContent: {},
-  scrollView: {
-    flexGrow: 0,
-  },
-  scrollContent: {
-    paddingVertical: spacing.sm,
+    flexDirection: 'row',
+    paddingTop: spacing.sm,
     paddingHorizontal: spacing.sm,
+    paddingBottom: NAV_BOTTOM_PADDING,
+    backgroundColor: colors.bar,
   },
-  nav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
-  separator: {
-    width: 1,
-    height: 20,
-    marginHorizontal: 4,
-  },
-  border: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.15),
-    pointerEvents: 'none',
-  },
+  // Equal-width columns. minWidth: 0 lets a flex child shrink below its
+  // content so the label ellipsizes instead of widening its column.
   navItem: {
-    flexDirection: 'row',
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.sm + 4,
-    paddingHorizontal: spacing.md,
-    borderRadius: borderRadius.lg,
-    transition: 'all 0.2s ease',
+    gap: 3,
+    paddingTop: 6,
+    paddingBottom: 5,
+    borderTopWidth: 3,
+    borderTopColor: 'transparent',
+    opacity: 0.72,
+  },
+  navItemActive: {
+    opacity: 1,
+    borderTopColor: colors.barActive,
+  },
+  navItemHover: {
+    opacity: 1,
   },
   navLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: withAlpha('#ffffff', 0.4),
-    transition: 'color 0.2s ease',
-  },
-  navLabelActive: {
-    color: colors.text.primary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '600',
+    color: colors.onBar,
   },
   });
 }

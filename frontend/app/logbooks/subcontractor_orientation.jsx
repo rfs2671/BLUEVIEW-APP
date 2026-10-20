@@ -1198,12 +1198,12 @@ export default function SubcontractorOrientation() {
                             flexDirection: 'row', alignItems: 'center', gap: 4,
                             marginTop: spacing.xs, marginBottom: spacing.sm,
                             paddingHorizontal: spacing.sm, paddingVertical: 3,
-                            backgroundColor: 'rgba(59,130,246,0.1)',
+                            backgroundColor: withAlpha(colors.primary, 0.1),
                             borderRadius: borderRadius.full,
-                            borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                            borderWidth: 1, borderColor: withAlpha(colors.primary, 0.2),
                             alignSelf: 'flex-start',
                           }}>
-                            <Text style={{ fontSize: 11, fontWeight: '600', color: '#60a5fa' }}>
+                            <Text style={{ fontSize: 11, fontWeight: '600', color: colors.primary }}>
                               🌐 Orientation in: {d.language_provided === 'es' ? 'Español' : 'English'}
                             </Text>
                           </View>
@@ -1573,8 +1573,8 @@ function buildStyles(colors, isDark) {
   cancelBtn: { flex: 1 },
   saveBtn: {
     flex: 2,
-    backgroundColor: 'rgba(139,92,246,0.2)',
-    borderColor: 'rgba(139,92,246,0.4)',
+    backgroundColor: withAlpha(colors.primary, 0.2),
+    borderColor: withAlpha(colors.primary, 0.4),
   },
   emptyCard: {
     alignItems: 'center',
@@ -1631,9 +1631,9 @@ function buildStyles(colors, isDark) {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(139,92,246,0.15)',
+    backgroundColor: withAlpha(colors.primary, 0.15),
     borderWidth: 1,
-    borderColor: 'rgba(139,92,246,0.3)',
+    borderColor: withAlpha(colors.primary, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1683,7 +1683,7 @@ function buildStyles(colors, isDark) {
   },
   checklistBarFill: {
     height: '100%',
-    backgroundColor: '#8b5cf6',
+    backgroundColor: colors.primary,
     borderRadius: 2,
   },
   signPanel: { marginTop: spacing.md },
@@ -1693,8 +1693,8 @@ function buildStyles(colors, isDark) {
   },
   signBtn: {
     marginTop: spacing.md,
-    backgroundColor: 'rgba(139,92,246,0.2)',
-    borderColor: 'rgba(139,92,246,0.4)',
+    backgroundColor: withAlpha(colors.primary, 0.2),
+    borderColor: withAlpha(colors.primary, 0.4),
   },
   signedBanner: {
     flexDirection: 'row',

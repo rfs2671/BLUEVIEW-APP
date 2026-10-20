@@ -653,7 +653,7 @@ export default function WorkerDetailScreen() {
               </View>
               {editMode && (
                 <View style={s.editBadge}>
-                  <Edit3 size={12} color="#fff" />
+                  <Edit3 size={12} color={colors.onPrimary} />
                 </View>
               )}
             </View>
@@ -914,7 +914,7 @@ export default function WorkerDetailScreen() {
                                 s.checkIcon,
                                 val?.checked && s.checkIconChecked,
                               ]}>
-                                {val?.checked && <Check size={12} color="#fff" />}
+                                {val?.checked && <Check size={12} color={colors.onPrimary} />}
                               </View>
                               <Text style={s.checklistItemText}>{item}</Text>
                             </View>
@@ -1204,14 +1204,14 @@ function buildStyles(colors, isDark) {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#3b82f6',
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarText: {
     fontSize: 42,
-    fontWeight: '300',
-    color: '#fff',
+    fontFamily: typography.num, fontWeight: '600',
+    color: colors.onPrimary,
   },
   editBadge: {
     position: 'absolute',
@@ -1228,8 +1228,8 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
   },
   workerName: {
-    fontSize: 28,
-    fontWeight: '300',
+    fontSize: 24,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },

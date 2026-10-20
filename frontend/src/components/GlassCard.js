@@ -29,16 +29,21 @@ function glassShadow() {
 /* ── Gradient presets ─────────────────────────────────────────────────────────
    Both modes use a vertical gradient so the fill covers every pixel.
    Dark:  subtle white-frosted glass
-   Light: white → blue-100 tint
+   Light: white → paper tint
    ────────────────────────────────────────────────────────────────────────── */
 const DARK_GRADIENT = [
-  withAlpha('#ffffff', 0.1),   // brighter at top
-  withAlpha('#ffffff', 0.04),   // fades toward bottom
+  withAlpha('#243746', 0.86),   // chip tone at top
+  withAlpha('#1C2B38', 0.80),   // card tone at bottom
 ];
 
+// The modal variant keeps the frost but draws a near-solid fill over it, so a dialog reads as the palette's card tone
+// instead of the saturated tint the frost alone gives it.
+const MODAL_DARK_GRADIENT = [withAlpha('#1C2B38', 0.94), withAlpha('#1C2B38', 0.94)];
+const MODAL_LIGHT_GRADIENT = [withAlpha('#ffffff', 0.95), withAlpha('#ffffff', 0.95)];
+
 const LIGHT_GRADIENT = [
-  withAlpha('#ffffff', 0.92),   // white at top
-  'rgba(219, 234, 254, 0.65)',   // blue-100 at bottom
+  withAlpha('#ffffff', 0.84),   // white at top
+  'rgba(250, 251, 248, 0.80)',   // paper at bottom
 ];
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -70,7 +75,9 @@ export const GlassCard = ({
       };
 
   const blurIntensity = variant === 'modal' ? 80 : intensity;
-  const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
+  const gradientColors = variant === 'modal'
+    ? (isDark ? MODAL_DARK_GRADIENT : MODAL_LIGHT_GRADIENT)
+    : (isDark ? DARK_GRADIENT : LIGHT_GRADIENT);
 
   return (
     <CardWrapper
@@ -82,16 +89,10 @@ export const GlassCard = ({
         isHovered && hoverEffect && styles.cardHovered,
       ]}
     >
-      {/* Layer 1: gradient fills the entire card */}
-      {variant !== 'modal' && (
-        <LinearGradient
-          colors={gradientColors}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
-          style={StyleSheet.absoluteFillObject}
-        />
-      )}
-      {/* Layer 2: frosted blur on web; on native we fall back to a
+      {/* The fill sits ABOVE the frost (it used to sit under it). expo-blur's web view applies saturate(180%) to everything
+          behind it, which pushed the card's fill toward a saturated blue; drawn on top, the fill keeps the exact tone the
+          palette names while the frost still shows through it. */}
+      {/* Layer 1: frosted blur on web; on native we fall back to a
           plain semi-opaque View. expo-blur's native BlurView was
           throwing a render exception on device (the web JS shim is
           unaffected), and a plain View cannot crash. The fill is
@@ -107,22 +108,27 @@ export const GlassCard = ({
         <View
           style={[
             StyleSheet.absoluteFillObject,
-            { backgroundColor: isDark ? withAlpha('#111827', 0.6) : withAlpha('#ffffff', 0.5) },
+            { backgroundColor: isDark ? withAlpha('#1C2B38', 0.6) : withAlpha('#ffffff', 0.5) },
           ]}
         />
       )}
+      {/* Layer 2: gradient fills the entire card */}
+      <LinearGradient
+        colors={gradientColors}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
       {/* Layer 3: content. `contentStyle` (optional) overrides the default
           padding — e.g. narrow summary bubbles that can't afford 32px insets. */}
       <View style={[styles.cardContent, contentStyle]}>{children}</View>
-      {/* Layer 4: border overlay — dark only */}
-      {isDark && (
-        <View
-          style={[
-            styles.borderOverlay,
-            isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
-          ]}
-        />
-      )}
+      {/* Layer 4: border overlay — hairline in both themes (the concept draws one on paper too) */}
+      <View
+        style={[
+          styles.borderOverlay,
+          isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
+        ]}
+      />
     </CardWrapper>
   );
 };
@@ -270,6 +276,7 @@ export const IconPod = ({ children, size = 52, style }) => {
           height: size,
           backgroundColor: colors.iconPod.background,
           borderColor: colors.iconPod.border,
+          borderRadius: Math.round(size * 0.28),
         },
         style,
       ]}
@@ -292,7 +299,7 @@ function buildStyles(colors, isDark) {
     transition: 'all 0.2s ease',
   },
   cardContent: {
-    padding: spacing.xl,
+    padding: spacing.md,
   },
   borderOverlay: {
     ...StyleSheet.absoluteFillObject,

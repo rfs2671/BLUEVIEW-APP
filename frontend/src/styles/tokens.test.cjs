@@ -204,7 +204,9 @@ ok(sum(measured.fontSize) > 100,
 // broken regex and defeat the purpose of the guard.
 ok(sum(measured.withAlphaPairs) > 30,
   `scanner still finds withAlpha() calls (${sum(measured.withAlphaPairs)})`);
-ok(sum(measured.opaqueHex) > 30,
+// The website-palette restyle moved the CP screens' steel-blue literals onto the theme (colors.primary), so the
+// opaque-hex count fell from 30 to 5 once the state colours also moved onto semantic tokens. The floor comes down with it, for the same reason as every drop above.
+ok(sum(measured.opaqueHex) > 2,
   `scanner still finds opaque hex literals (${sum(measured.opaqueHex)})`);
 
 // ── COVERAGE + HONESTY, per scale ────────────────────────────────────────────
@@ -291,7 +293,7 @@ ok(staleInList.length === 0,
 
 const viaCounts = T.MEASURED_TINTS.reduce((a, e) => {
   a[e.via] = (a[e.via] || 0) + e.uses; return a;
-}, {});
+}, { rgba: 0 });
 ok(viaCounts.withAlpha === sum(measured.withAlphaPairs),
   `MEASURED_TINTS: withAlpha occurrence count matches source (${viaCounts.withAlpha} vs ${sum(measured.withAlphaPairs)})`);
 ok(viaCounts.rgba === sum(measured.rgbaPairs),
@@ -372,8 +374,8 @@ const colourMatches = distinctOpaque.filter((h) => themeHexes.has(expand(h))
 // that could not run, because it read a response key the server has never sent.
 // The literal existed, the palette carried a token for it, and no CP has ever
 // seen the pixel. Removing the dead branch removed the only use.
-ok(distinctOpaque.length === 14,
-  `finding (c): 14 distinct opaque hex literals (got ${distinctOpaque.length})`);
+ok(distinctOpaque.length === 3,
+  `finding (c): 3 distinct opaque hex literals (got ${distinctOpaque.length})`);
 // Was 5. The U1 restyle added `outdoor.accent: '#60a5fa'` to theme.js — the
 // blue the app's count and status pills are drawn in — so that literal now has
 // a token where it did not before. The finding's POINT is unchanged (the
@@ -382,10 +384,13 @@ ok(distinctOpaque.length === 14,
 // Was 6 of 17. Now 5 of 15: '#ef4444' was one of the six (an exact match for
 // theme state.critical) and left the measured set with osha_log. The finding's
 // POINT is unchanged — the original research claimed 9, and it was never 9.
-ok(exactMatches.length === 5,
-  `finding (c): 5 of 15 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
-ok(colourMatches.length === 6,
-  `finding (c): 6 of 15 match by colour once #fff is expanded (got ${colourMatches.length})`);
+// Now 0 of 12 (1 by colour, white): the website-palette restyle moved the CP screens' blue literals onto
+// colors.primary, and colors.primary itself is now brass (dark) / navy (light), so no measured literal
+// equals a theme.js value any more. The finding's POINT stands: it was never 9.
+ok(exactMatches.length === 0,
+  `finding (c): 0 of 3 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
+ok(colourMatches.length === 1,
+  `finding (c): 1 of 3 match by colour once #fff is expanded (got ${colourMatches.length})`);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -655,8 +655,8 @@ function buildStyles(colors, isDark) {
       marginBottom: spacing.sm,
     },
     titleText: {
-      fontSize: 36,
-      fontWeight: '200',
+      fontSize: 30,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -0.5,
     },
@@ -829,7 +829,7 @@ function buildStyles(colors, isDark) {
     },
     countdownText: {
       fontSize: 28,
-      fontWeight: '300',
+      fontFamily: typography.num, fontWeight: '600',
       color: colors.text.primary,
       letterSpacing: 2,
     },

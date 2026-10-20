@@ -17,6 +17,9 @@ const GlassButton = ({
   const [isHovered, setIsHovered] = useState(false);
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
+  // The concept's filled action: the primary action of a screen. 'primary' is that; 'filled' is the same look under a name
+  // that no other call site already uses. 'secondary' and the default stay the translucent glass button they always were.
+  const filled = variant === 'primary' || variant === 'filled';
 
   if (variant === 'icon') {
     return (
@@ -53,9 +56,10 @@ const GlassButton = ({
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
         styles.button,
+        filled && styles.buttonFilled,
         isHovered && {
-          backgroundColor: colors.glass.backgroundHover,
-          borderColor: colors.glass.borderHover,
+          backgroundColor: filled ? colors.primary : colors.glass.backgroundHover,
+          borderColor: filled ? colors.primary : colors.glass.borderHover,
           transform: [{ scale: 1.03 }],
         },
         pressed && styles.pressed,
@@ -64,11 +68,11 @@ const GlassButton = ({
       ]}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={colors.text.primary} />
+        <ActivityIndicator size="small" color={filled ? colors.onPrimary : colors.text.primary} />
       ) : (
         <View style={styles.content}>
           {icon && <View style={styles.iconLeft}>{icon}</View>}
-          <Text style={[styles.text, textStyle]}>{title}</Text>
+          <Text style={[styles.text, filled && styles.textFilled, textStyle]}>{title}</Text>
           {iconRight && <View style={styles.iconRight}>{iconRight}</View>}
         </View>
       )}
@@ -89,6 +93,20 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       justifyContent: 'center',
       transition: 'all 0.2s ease',
+    },
+    buttonFilled: {
+      // The app's tap floor is 44pt even for a compact action; padding alone would leave this ~33pt.
+      minHeight: 44,
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+      borderRadius: borderRadius.md - 1,
+      paddingHorizontal: spacing.md - 4,
+      paddingVertical: spacing.sm - 1,
+    },
+    textFilled: {
+      color: colors.onPrimary,
+      fontSize: 13,
+      fontWeight: '700',
     },
     iconButton: {
       width: 44,

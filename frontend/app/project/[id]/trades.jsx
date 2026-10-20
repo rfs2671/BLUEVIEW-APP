@@ -543,7 +543,7 @@ export default function ProjectTradesScreen() {
               onPress={addAssignment}
               disabled={readOnly}
             >
-              <Plus size={18} strokeWidth={2} color="#fff" />
+              <Plus size={18} strokeWidth={2} color={colors.onPrimary} />
               <Text style={s.addBtnText}>Add Assignment</Text>
             </Pressable>
             {readOnly && (
@@ -671,8 +671,8 @@ function buildStyles(colors, isDark) {
       marginBottom: spacing.sm,
     },
     titleText: {
-      fontSize: 38,
-      fontWeight: '200',
+      fontSize: 32,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -1,
     },
@@ -804,13 +804,13 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       justifyContent: 'center',
       gap: spacing.xs,
-      backgroundColor: '#3b82f6',
+      backgroundColor: colors.primary,
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderRadius: borderRadius.lg,
     },
     addBtnText: {
-      color: '#fff',
+      color: colors.onPrimary,
       fontSize: 14,
       fontWeight: '600',
     },

@@ -306,7 +306,7 @@ function buildStyles(colors) {
       flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center',
       borderRadius: borderRadius.lg, backgroundColor: colors.primary || '#2563eb',
     },
-    okText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+    okText: { fontSize: 14, fontWeight: '700', color: colors.onPrimary },
     pressed: { opacity: 0.8 },
   });
 }

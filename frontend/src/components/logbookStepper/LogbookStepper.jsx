@@ -220,12 +220,12 @@ export default function LogbookStepper({
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.header}>
             <Pressable
-              style={s.headerBack}
+              style={s.barBack}
               accessibilityRole="button"
               accessibilityLabel="Back"
               onPress={onExit}
             >
-              <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+              <ArrowLeft size={24} strokeWidth={2} color={outdoor.onBar} />
             </Pressable>
             <View style={s.headerText}>
               <Text style={s.headerTitle}>{title}</Text>
@@ -266,12 +266,12 @@ export default function LogbookStepper({
       <SafeAreaView style={s.container} edges={['top']}>
         <View style={s.header}>
           <Pressable
-            style={s.headerBack}
+            style={s.barBack}
             accessibilityRole="button"
             accessibilityLabel={a11yProgressLabel ? undefined : 'Back'}
             onPress={() => ((locked || step === 1) ? onExit() : onStepChange(step - 1))}
           >
-            <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+            <ArrowLeft size={24} strokeWidth={2} color={outdoor.onBar} />
           </Pressable>
           <View style={s.headerText}>
             <Text style={s.headerTitle}>{title}</Text>
@@ -413,6 +413,7 @@ export default function LogbookStepper({
           )}
 
           <LogbookLockBar
+            pinned
             logType={logType}
             locked={locked}
             logId={logId}

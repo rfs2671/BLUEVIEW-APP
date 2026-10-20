@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable, Text, ScrollView } from 'react-native';
+import { View, StyleSheet, Pressable, Text } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LayoutDashboard, Users, FileText } from 'lucide-react-native';
-import { colors, borderRadius, spacing } from '../styles/theme';
+import { spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
-import { withAlpha } from '../styles/semanticColors';
 import { useIsWide } from '../hooks/useIsDesktop';
 
 /**
@@ -26,14 +25,17 @@ const siteNavItems = [
   { path: '/site/checkins', icon: Users, label: 'Check-Ins' },
 ];
 
+// The bar is a solid, full-width strip. Its bottom padding is
+// `insets.bottom + SITE_NAV_BOTTOM_PADDING`, applied inline at render because
+// a StyleSheet is built before any inset exists. The screens that mount this
+// inset only the top edge, so the bar clears the system navigation bar itself.
+export const SITE_NAV_BOTTOM_PADDING = 8;
+
 const SiteNavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const Icon = item.icon;
-
-  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
-  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -42,22 +44,12 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && { backgroundColor: activeBg },
-        isHovered && !isActive && { backgroundColor: hoverBg },
+        isActive && styles.navItemActive,
+        isHovered && !isActive && styles.navItemHover,
       ]}
     >
-      <Icon
-        size={18}
-        strokeWidth={1.5}
-        color={isActive || isHovered ? colors.text.primary : colors.text.muted}
-      />
-      <Text
-        style={[
-          styles.navLabel,
-          (isActive || isHovered) && styles.navLabelActive,
-        ]}
-        numberOfLines={1}
-      >
+      <Icon size={18} strokeWidth={1.8} color={colors.onBar} />
+      <Text style={styles.navLabel} numberOfLines={1}>
         {item.label}
       </Text>
     </Pressable>
@@ -70,117 +62,90 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
 const SiteNav = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const isWide = useIsWide();
   const styles = buildStyles(colors, isDark);
 
-  const navBg = isDark ? colors.glass.background : withAlpha('#ffffff', 0.9);
-
-  // DOCKED ON A TABLET, floating on a phone. Floating over a 390px column
-  // covers a margin; floating over a 1280px document covers the middle of the
-  // activity table — on /site/logbooks it sat squarely on the WORKERS and
-  // DESCRIPTION cells. Docked, it takes its own strip and obscures nothing.
+  // DOCKED ON A TABLET, absolute on a phone. Overlaid on a 1280px document the
+  // bar sat squarely on the WORKERS and DESCRIPTION cells of the activity
+  // table on /site/logbooks. Docked, it takes its own strip and obscures
+  // nothing. Either way it is a solid, full-width bar flush to the bottom.
   return (
     <View
-      style={[styles.container, isWide && styles.containerDocked]}
-      pointerEvents="box-none"
+      style={[
+        styles.container,
+        isWide && styles.containerDocked,
+        { paddingBottom: insets.bottom + SITE_NAV_BOTTOM_PADDING },
+      ]}
     >
-      <View style={styles.pill}>
-      <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-        <View style={[styles.nav, { backgroundColor: navBg }]}>
-          {siteNavItems.map((item) => {
-            // EXACT match for the dashboard. `startsWith` made '/site' true on
-            // every child route, so "Dashboard" was permanently lit alongside
-            // whichever item was actually active.
-            const isActive = item.path === '/site'
-              ? pathname === '/site'
-              : pathname === item.path || pathname.startsWith(`${item.path}/`);
-            return (
-              <SiteNavItem
-                key={item.path}
-                item={item}
-                isActive={isActive}
-                onPress={() => router.push(item.path)}
-              />
-            );
-          })}
-        </View>
-      </BlurView>
-      <View style={styles.border} />
-      </View>
+      {siteNavItems.map((item) => {
+        // EXACT match for the dashboard. `startsWith` made '/site' true on
+        // every child route, so "Dashboard" was permanently lit alongside
+        // whichever item was actually active.
+        const isActive = item.path === '/site'
+          ? pathname === '/site'
+          : pathname === item.path || pathname.startsWith(`${item.path}/`);
+        return (
+          <SiteNavItem
+            key={item.path}
+            item={item}
+            isActive={isActive}
+            onPress={() => router.push(item.path)}
+          />
+        );
+      })}
     </View>
   );
 };
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
-  // SIZES TO ITS CONTENT. This was `width: 360` centred by a hardcoded
-  // `translateX(-180)`, which clipped the third label mid-word ("Worker…") at
-  // every viewport — the bar could not fit its own three items. Now it spans
-  // the parent and centres an intrinsically-sized pill, the same construction
-  // FloatingNav uses, so the pill is as wide as its labels need and no wider.
-  // pointerEvents box-none on the full-width container so it does not swallow
-  // taps on the content either side of the pill.
+  // A solid colors.bar strip, full width, flush to the bottom edge, three
+  // equal-width columns (icon over a one-line label). The bottom padding is
+  // OVERRIDDEN AT RENDER with `insets.bottom + SITE_NAV_BOTTOM_PADDING`; the
+  // value here is only the fallback when the styles are used without the
+  // component.
   container: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 0,
     left: 0,
     right: 0,
-    alignItems: 'center',
+    flexDirection: 'row',
+    paddingTop: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingBottom: SITE_NAV_BOTTOM_PADDING,
+    backgroundColor: colors.bar,
   },
   containerDocked: {
     position: 'relative',
-    bottom: 0,
-    paddingVertical: spacing.sm,
   },
-  // The pill is what the border traces. Keeping the border a sibling of the
-  // blur INSIDE this wrapper (rather than of the full-width container) is what
-  // stops the outline stretching edge to edge.
-  pill: {
-    alignSelf: 'center',
-    maxWidth: '96%',
-    borderRadius: borderRadius.full,
-    position: 'relative',
-  },
-  blur: {
-    borderRadius: borderRadius.full,
-    overflow: 'hidden',
-  },
-  nav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    gap: spacing.sm,
-  },
-  border: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    pointerEvents: 'none',
-  },
-  // 16 + 18 + 16 = 50pt tall. Was 42 — under the 44 minimum, on a device
-  // operated with work gloves.
+  // minWidth: 0 lets a flex child shrink below its content so the label
+  // ellipsizes instead of widening its column. 6 + 18 + 3 + 14 + 5 + the 3pt
+  // rule = 49pt tall, over the 44 minimum for a device operated with gloves.
   navItem: {
-    flexDirection: 'row',
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
-    gap: spacing.sm,
-    minHeight: 44,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: borderRadius.lg,
-    transition: 'all 0.2s ease',
+    gap: 3,
+    paddingTop: 6,
+    paddingBottom: 5,
+    borderTopWidth: 3,
+    borderTopColor: 'transparent',
+    opacity: 0.72,
+  },
+  navItemActive: {
+    opacity: 1,
+    borderTopColor: colors.barActive,
+  },
+  navItemHover: {
+    opacity: 1,
   },
   navLabel: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.muted,
-    transition: 'color 0.2s ease',
-  },
-  navLabelActive: {
-    color: colors.text.primary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '600',
+    color: colors.onBar,
   },
   });
 }
