@@ -166,6 +166,34 @@ async def find_project(server, needle, company):
     return hits[0]
 
 
+async def bin_analysis(server, project):
+    """Which buildings the project's DOB records belong to: the project's own
+    BIN(s), then each record group by the BIN the RECORD carries (read from its
+    link / fields), with sample numbers -- to decide which records are this
+    site's. Read-only."""
+    from lib import report_regulatory as RG
+    pid = str(project.get("_id"))
+    rows = await server.db.dob_logs.find({"project_id": pid, "is_deleted": {"$ne": True}}).to_list(20000)
+    have = [project.get("nyc_bin"), *(project.get("additional_bins") or [])]
+    lines = [f"project address: {project.get('address')}",
+             f"project nyc_bin: {project.get('nyc_bin')} | additional_bins: {project.get('additional_bins') or []} | "
+             f"bbl: {project.get('bbl') or project.get('nyc_bbl')}",
+             f"dob_logs rows for the project: {sum(1 for _ in rows)}", ""]
+    groups = {}
+    for r in rows:
+        key = (RG.row_bin(r) or "(no BIN readable)", str(r.get("nyc_bin") or ""), str(r.get("record_type") or ""))
+        groups.setdefault(key, []).append(r)
+    lines.append("record BIN | row.nyc_bin (project BIN when synced) | type | rows | sample numbers / status")
+    for (rb, rn, rt), rs in sorted(groups.items()):
+        from lib import wa_alerts
+        sample = ", ".join(f"{wa_alerts.record_number(x) or '?'} [{wa_alerts.record_status(x) or '?'}]" for x in rs[:4])
+        lines.append(f"{rb} | {rn} | {rt} | {sum(1 for _ in rs)} | {sample}")
+    kept, left, unverified = RG.split_by_bin(rows, [b for b in have if b])
+    lines += ["", f"with the project's BIN(s) {[b for b in have if b]}: kept {sum(1 for _ in kept)}, "
+              f"excluded {sum(1 for _ in left)}, BIN unreadable {unverified}"]
+    return "\n".join(lines) + "\n"
+
+
 async def main(args):
     import server
 
@@ -189,11 +217,17 @@ async def main(args):
     html_path = os.path.join(out, "progress_report_real.html")
     with open(os.path.join(out, "progress_report_real.snapshot.json"), "w", encoding="utf-8") as f:
         json.dump(got["snapshot"], f, indent=2, default=str, ensure_ascii=False)
+    with open(os.path.join(out, "progress_report_real.bin_analysis.txt"), "w", encoding="utf-8") as f:
+        f.write(await bin_analysis(server, project))
+    print("wrote progress_report_real.bin_analysis.txt")
     photos = got["photos"]
     photo_lines = [f"{x.get('sub')} | {x.get('date')} | {x.get('where') or ''} | sees: {x.get('work')} | "
                    f"{x.get('caption')}" for x in photos]
+    review = [f"{x['why']:<60} | {x['sub']} ({x['trade']}) | {x['date']} | {x['where']} | kind {x['kind']} | "
+              f"sees {x['work']} | score {x['score']:g}" for x in got.get("photo_review") or []]
     with open(os.path.join(out, "progress_report_real.photos.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(photo_lines) + ("\n" if photo_lines else "no photos selected\n"))
+        f.write("USED IN THE REPORT\n" + ("\n".join(photo_lines) if photo_lines else "no photos selected") +
+                "\n\nEVERY PHOTO JUDGED (used first)\n" + ("\n".join(review) if review else "none") + "\n")
     if got["pdf"]:
         with open(pdf, "wb") as f:
             f.write(got["pdf"])
@@ -220,6 +254,16 @@ async def main(args):
     for line in photo_lines:
         print("   -", line)
     print(f"  schedule: {'confirmed' if rep['schedule'] else 'none'}; financials: {'provided' if rep['financials'] else 'none'}")
+    reg = rep["regulatory"]
+    print(f"  regulatory (project BIN(s): {reg.get('bins') or 'unknown'}):")
+    for lst in ("issued", "changed", "open", "expiring"):
+        for e in reg[lst]:
+            print(f"   {lst:<8} {e['kind']} {e['number']} | status: {e['status']} | closed: {e['closed']} | issued {e['issued']}")
+    for e in reg.get("excluded") or []:
+        print(f"   EXCLUDED  {e['kind']} {e['number']} | BIN {e['bin']} | status: {e['status']} | {e['reason']}")
+    print("  data notes:")
+    for line in rep["data_notes"]:
+        print("   -", line)
     print("  limitations:")
     for line in rep["limitations"]:
         print("   -", line)

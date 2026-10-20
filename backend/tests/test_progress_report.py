@@ -297,7 +297,7 @@ class ThePhotographs(unittest.TestCase):
                 cands.append({"key": f"{sub}{i}", "date": date(2026, 10, 2) + timedelta(days=i), "sub": sub,
                               "trade": "", "where": f"floor {i}", "words": "x", "work": "x", "source": "daily log",
                               "log_id": "l"})
-        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 9 if c["sub"] == "Arkon Builders" else 5}
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 9 if c["sub"] == "Arkon Builders" else 6}
                for c in cands}
         got = P.pick_photos(cands, ver)
         self.assertEqual({p["sub"] for p in got}, {"Arkon Builders", "Quality Plumbing", "Power Direct"})
@@ -411,7 +411,7 @@ class TheRealWorldFindings(unittest.TestCase):
         uri = "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
         r = rep()
         cands = r["photo_candidates"]
-        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 5, "work": "none"} for c in cands}
+        ver = {c["key"]: {"ok": True, "kind": "progress", "score": 7, "work": "none"} for c in cands}
         r["photos"] = P.pick_photos(P.to_judge(cands), ver, 8)
         self.assertGreater(len(r["photos"]), 4)
         html = RR.render_html([r], gc="", title="t", now=F.NOW, images={p["key"]: uri for p in r["photos"]})
@@ -423,13 +423,6 @@ class TheRealWorldFindings(unittest.TestCase):
                "kind": "permit_expiration"}]
         got = P.coming_up(ev, date(2026, 10, 19), None, reg)
         self.assertEqual(len(got), 1)
-
-    def test_records_from_two_buildings_are_flagged(self):
-        r = rep()
-        r["regulatory"]["issued"] = [{"link": "https://x/PropertyProfileOverviewServlet?bin=3430621"}]
-        r["regulatory"]["expiring"] = [{"link": "https://x/PropertyProfileOverviewServlet?bin=3255362"}]
-        notes = P.data_notes(r, [], [], [])
-        self.assertTrue(any("3255362" in n and "3430621" in n for n in notes), notes)
 
     def test_a_typo_is_mended_without_touching_real_words(self):
         fixes = P.spelling_fixes(["Pulling wite", "Electrical wiring", "Wide flange beams", "Eletrical rough-in"])
@@ -698,3 +691,56 @@ class ActivitiesAreSplitAndGrouped(unittest.TestCase):
         self.assertEqual(P.lc_first("HVAC ductwork"), "HVAC ductwork")
         self.assertEqual(P.lc_first("Framing (layout)"), "framing (layout)")
         self.assertEqual(P.lc_first("Install metal stairs"), "install metal stairs")
+
+
+class TradeMismatchAndPhotoMinimum(unittest.TestCase):
+
+    def _acts(self):
+        def act(day, work):
+            return {"date": date(2026, 10, day), "key": "q", "company": "Quality Plumbing", "trade": "Plumber",
+                    "workers": 5, "work": work, "where": "floors 1-4", "floors": P.floors_in("floors 1-4"),
+                    "photos": [], "log": f"l{day}", "log_id": "x", "amended": False}
+        return [act(9, "Domestic water rough"), act(19, "Fixtures, domestic water rough, Install metal stairs")]
+
+    def test_work_that_is_not_the_subs_trade_is_flagged_not_hidden(self):
+        got = P._work(self._acts(), [], {"q": "q"}, [{"key": "q", "name": "Quality Plumbing", "trade": "Plumber"}], True)
+        items = {i["work"]: i for i in got[0]["items"]}
+        self.assertTrue(items["Install metal stairs"]["trade_mismatch"])
+        self.assertFalse(items["Domestic water rough"]["trade_mismatch"])
+        self.assertFalse(items["Fixtures"]["trade_mismatch"])
+
+    def test_a_flagged_line_is_marked_noted_and_not_used_in_the_summary(self):
+        logs = F.logbooks()
+        logs[0]["data"]["activities"][0].update(company="Quality Plumbing", trade="Plumber",
+                                                work_description="Install metal stairs")
+        r = F.report(logbooks=logs + F.previous_logbooks())
+        self.assertTrue(any("does not match" in n and "metal stairs" in n for n in r["data_notes"]), r["data_notes"])
+        self.assertNotIn("metal stairs", " ".join(r["overview"]).lower())
+        html = RR.render_html([r], gc="", title="t", now=F.NOW, images={})
+        self.assertIn("CHECK", html)
+
+    def test_a_weak_photo_is_not_used_to_fill_the_page(self):
+        cand = {"key": "k1", "date": date(2026, 10, 9), "sub": "Arkon Builders", "trade": "Framers", "where": "floor 2",
+                "words": "Framing", "work": "Framing", "source": "daily log", "log_id": "x"}
+        weak = {"k1": {"ok": True, "kind": "progress", "score": 4, "work": "framing"}}
+        self.assertEqual(P.pick_photos([cand], weak), [])
+        strong = {"k1": {"ok": True, "kind": "progress", "score": 7, "work": "framing"}}
+        self.assertEqual(len(P.pick_photos([cand], strong)), 1)
+
+    def test_every_judged_photo_has_a_reason(self):
+        c = lambda k, sub, trade: {"key": k, "date": date(2026, 10, 9), "sub": sub, "trade": trade, "where": "floor 2",  # noqa: E731
+                                   "words": "x", "work": "x", "source": "daily log", "log_id": "x"}
+        cands = [c("a", "Arkon Builders", "Framers"), c("b", "Echo", "Cleaning"), c("c", "Quality Plumbing", "Plumber"),
+                 c("d", "Power Direct", "Electrician"), c("e", "J&G", "Scaffolding")]
+        ver = {"a": {"ok": True, "kind": "progress", "score": 8, "work": "framing"},
+               "b": {"ok": True, "kind": "progress", "score": 9, "work": "framing"},
+               "c": {"ok": True, "kind": "progress", "score": 9, "work": "stairs"},
+               "d": {"ok": False, "kind": "materials", "score": 9, "work": "none"},
+               "e": {"ok": True, "kind": "progress", "score": 3, "work": "scaffolding"}}
+        chosen = P.pick_photos(cands, ver)
+        why = {r["sub"]: r["why"] for r in P.photo_review(cands, ver, chosen)}
+        self.assertEqual(why["Arkon Builders"], "used")
+        self.assertTrue(why["Echo"].startswith("trade mismatch"))
+        self.assertTrue(why["Quality Plumbing"].startswith("trade mismatch"))
+        self.assertTrue(why["Power Direct"].startswith("not installed work"))
+        self.assertTrue(why["J&G"].startswith("score 3 below"))

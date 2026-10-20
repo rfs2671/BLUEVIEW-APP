@@ -59,6 +59,9 @@ UPCOMING_DAYS = 30
 #: 4-6 photographs, never more: a few good ones, not a gallery.
 MIN_PHOTOS, MAX_PHOTOS = 4, 8
 MAX_PER_SUB = 2
+#: A photograph must show installed work STRONGLY to appear: fewer than four
+#: photographs is better than a weak one used to fill the page.
+MIN_SCORE = 6.0
 ATTACHED_LINE = "Full report (PDF) attached."
 SOURCE_LINE = "Source: Levelog records — site check-ins, filed daily logs, DOB/DOT records"
 
@@ -576,7 +579,9 @@ def _work(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: Dict[str
             status = ("reported" if not comparable else
                       "advanced" if seen_before and new_floors and floors else
                       "continued" if seen_before else "reported")
+            fam_sub, fam_work = trade_family(s.get("trade"), s.get("name")), trade_family(shown[k])
             items.append({"work": shown[k], "floors": floors,
+                          "trade_mismatch": bool(fam_sub and fam_work and fam_sub != fam_work),
                           "place": floors_label(floors) or (places.most_common(1)[0][0][:60] if places else ""),
                           "first": rows[0]["date"], "last": rows[-1]["date"], "days": len({a["date"] for a in rows}),
                           "status": status, "new_floors": new_floors if seen_before else [],
@@ -776,7 +781,8 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
         if c.get("source") != "daily log":
             continue
         v = verdicts.get(c["key"]) or {}
-        if v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v):
+        if (v.get("ok") and v.get("kind", "progress") == "progress" and _consistent(c, v)
+                and float(v.get("score") or 0) >= MIN_SCORE):
             good.append({**c, "score": float(v.get("score") or 0),
                          "caption": WORK_CAPTION.get(str(v.get("work") or "none"), WORK_CAPTION["none"]),
                          "work": str(v.get("work") or "none")})
@@ -884,7 +890,7 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
             dob_rows: Iterable[dict] = (), dot_rows: Iterable[dict] = (),
             events: Iterable[dict] = (), schedule: Optional[Dict[str, Any]] = None,
             schedule_meta: Optional[Dict[str, Any]] = None, financials: Optional[Dict[str, Any]] = None, sync: Optional[Dict[str, Any]] = None,
-            first_activity: Optional[date] = None, **_ignored: Any) -> Dict[str, Any]:
+            first_activity: Optional[date] = None, project_bins: Iterable[Any] = (), **_ignored: Any) -> Dict[str, Any]:
     """Everything of one job's report for [start, end], from its rows.
 
     `checkins` and `logbooks` span the period AND the previous period of the
@@ -923,7 +929,8 @@ def compute(*, job: str, address: str, gc: str, start: date, end: date, now: dat
     cur_acts = [a for a in acts if start <= a["date"] <= end]
     prev_acts = [a for a in acts if prev_start <= a["date"] <= prev_end]
     work = _work(cur_acts, prev_acts, canon, subs, comparable=bool(prv["worked"] or prev_acts))
-    reg = report_regulatory.build(list(dob_rows), list(dot_rows), start, end, today=today, sync=sync, now=now)
+    reg = report_regulatory.build(list(dob_rows), list(dot_rows), start, end, today=today, sync=sync, now=now,
+                                  project_bins=project_bins)
     plan = None
     if schedule:
         try:
@@ -1057,13 +1064,10 @@ def changes(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     for m in mob["changed"][:2]:
         out.append({"src": "G", "text": f"{m['name']} crew {'increased' if m['direction'] == 'up' else 'decreased'} "
                     f"to an average of {m['avg']:g} from {m['prev_avg']:g}."})
-    adv = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "advanced"]
+    adv = [(w["name"], i) for w in rep["work"] for i in w["items"]
+           if i["status"] == "advanced" and not i.get("trade_mismatch")]
     for name, i in adv[:3]:
         out.append({"src": "L", "text": f"{name}: {lc_first(i['work'])} advanced to {floors_label(i['new_floors'])}."})
-    news = [(w["name"], i) for w in rep["work"] for i in w["items"] if i["status"] == "new"]
-    for name, i in news[:2]:
-        out.append({"src": "L", "text": f"{name} began {lc_first(i['work'])}"
-                    + (f" ({i['place']})" if i["place"] else "") + "."})
     return out[:6]
 
 
@@ -1159,7 +1163,7 @@ def overview(rep: Dict[str, Any]) -> List[str]:
         out.append("No site check-ins or filed crew reports were recorded in this period.")
     lines = []
     for w in rep["work"][:4]:
-        for i in w["items"][:1]:
+        for i in [x for x in w["items"] if not x.get("trade_mismatch")][:1]:
             lines.append(f"{w['name']}: {lc_first(i['work'])}" + (f" on {i['place']}" if i["place"] else ""))
     if lines:
         out.append("Reported work — " + "; ".join(lines) + ".")
@@ -1226,12 +1230,25 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
     days with no filed log, amended days, gate/log differences."""
     out = []
     site, ls, rc = rep["site"], rep["log_set"], rep["recon"]
+    odd = [(w["name"], i["work"]) for w in rep.get("work") or [] for i in w["items"] if i.get("trade_mismatch")]
+    if odd:
+        out.append("Listed under a sub whose trade does not match the work: "
+                   + "; ".join(f"{n}: {t}" for n, t in odd[:4])
+                   + ". Shown as filed, marked CHECK, and not used in the summary; the daily log may have the wrong company on that line.")
     reg = rep.get("regulatory") or {}
-    bins = sorted({m.group(1) for lst in ("issued", "changed", "open", "swo_active", "swo_lifted", "expiring")
-                   for r in reg.get(lst) or [] for m in [re.search(r"[?&]bin=(\d+)", str(r.get("link") or ""))] if m})
-    if len(bins) > 1:
-        out.append("The regulatory records listed refer to more than one Building Identification Number (BIN "
-                   + ", ".join(bins) + "); confirm that all of them belong to this site.")
+    left = reg.get("excluded") or []
+    if left:
+        by_bin: Dict[str, List[str]] = defaultdict(list)
+        for e in left:
+            by_bin[e["bin"] or "?"].append(e["number"] or e["kind"])
+        parts = "; ".join(f"BIN {b}: {', '.join(n[:6])}{' and more' if len(n) > 6 else ''}" for b, n in sorted(by_bin.items()))
+        verb = "was" if len(left) == 1 else "were"
+        out.append(f"{len(left)} DOB record{'s' if len(left) != 1 else ''} for another building {verb} left out "
+                   f"({parts}); this project's BIN is {', '.join(reg.get('bins') or []) or 'unknown'}. They are listed "
+                   "in the report's stored snapshot for review; if they belong to this site, add the BIN to the project.")
+    if reg.get("bin_unverified"):
+        out.append(f"{reg['bin_unverified']} DOB record row{'s' if reg['bin_unverified'] != 1 else ''} carry no building "
+                   "number (BIN), so whether they belong to this site could not be checked; they are included.")
     if rep.get("spelling"):
         out.append("Obvious misspellings in the daily logs' wording were corrected for reading ("
                    + ", ".join(f"{a} → {b}" for a, b in rep["spelling"].items()) + ").")
@@ -1337,8 +1354,9 @@ def whatsapp_message(rep: Dict[str, Any], *, attached: bool = True, link: Option
         lines.append("- Site: no check-ins this period")
     work = []
     for w in rep["work"][:3]:
-        if w["items"]:
-            i = w["items"][0]
+        good = [x for x in w["items"] if not x.get("trade_mismatch")]
+        if good:
+            i = good[0]
             work.append(f"{lc_first(i['work'])}{' ' + i['place'] if i['place'] else ''} ({short_name(w['name'], i['work'])})")
     if work:
         lines.append("- Work: " + ", ".join(work))
@@ -1399,3 +1417,28 @@ def snapshot(rep: Dict[str, Any]) -> Dict[str, Any]:
     snap["photos"] = [{k: clean(v) for k, v in p.items() if k in ("key", "date", "sub", "trade", "where", "caption", "log_id")}
                       for p in rep.get("photos") or []]
     return snap
+
+
+def photo_review(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]],
+                 chosen: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Every photograph the vision model judged, and why it was or was not
+    used -- for the people checking the report (never printed in it)."""
+    picked = {c["key"] for c in chosen}
+    out = []
+    for c in cands:
+        v = verdicts.get(c["key"])
+        if v is None:
+            continue
+        if c["key"] in picked:
+            why = "used"
+        elif not v.get("ok"):
+            why = f"not installed work ({v.get('kind')})"
+        elif not _consistent(c, v):
+            why = f"trade mismatch (sub: {c.get('trade') or c.get('sub')}; photo shows: {v.get('work')})"
+        elif float(v.get("score") or 0) < MIN_SCORE:
+            why = f"score {float(v.get('score') or 0):g} below {MIN_SCORE:g}"
+        else:
+            why = "not needed (per-sub / per-day limit or page full)"
+        out.append({"sub": c["sub"], "trade": c.get("trade") or "", "date": c["date"], "where": c.get("where") or "",
+                    "kind": v.get("kind"), "work": v.get("work"), "score": float(v.get("score") or 0), "why": why})
+    return sorted(out, key=lambda r: (r["why"] != "used", r["sub"], str(r["date"])))

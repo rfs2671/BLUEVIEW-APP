@@ -42,6 +42,7 @@ Pure: no I/O.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -206,9 +207,61 @@ def coverage(sync: Optional[Dict[str, Any]], end: date, now: Optional[datetime] 
                      f"DOB/DOT feed checked {_fmt(dob.astimezone(NY), '%b %-d, %Y')}.")}
 
 
+_BIN_IN_LINK = re.compile(r"[?&](?:all)?bin=(\d{6,7})\b")
+
+
+def row_bin(r: Dict[str, Any]) -> str:
+    """The Building Identification Number the RECORD itself belongs to: its own
+    `bin` / `bin__` field, else the one in its DOB link (built from the
+    record). NOT the row's `nyc_bin`, which is the PROJECT's BIN when it was
+    synced and says nothing about which building the record is for."""
+    for k in ("bin", "bin__", "bin_number"):
+        v = re.sub(r"\D", "", _t(r.get(k)))
+        if v:
+            return v
+    m = _BIN_IN_LINK.search(_t(r.get("dob_link") or r.get("link")))
+    return m.group(1) if m else ""
+
+
+def split_by_bin(dob_rows: Iterable[Dict[str, Any]], bins: Iterable[Any]):
+    """(kept, excluded, unverified) for a project whose BIN(s) are `bins`.
+
+    A record whose own BIN is known and is NOT one of the project's is another
+    building's (the address search can return a neighbour's): EXCLUDED, and
+    listed for review. A record with no readable BIN cannot be shown to belong
+    or not: KEPT and counted as unverified, never dropped quietly. With no
+    project BIN there is nothing to compare: all kept, none verified."""
+    want = {re.sub(r"\D", "", str(b or "")) for b in bins if re.sub(r"\D", "", str(b or ""))}
+    rows = list(dob_rows)
+    if not want:
+        return rows, [], 0
+    kept, excluded, unverified = [], [], 0
+    for r in rows:
+        b = row_bin(r)
+        if not b:
+            kept.append(r)
+            unverified += 1
+        elif b in want:
+            kept.append(r)
+        else:
+            excluded.append(r)
+    return kept, excluded, unverified
+
+
+def _excluded_entries(rows: List[Dict[str, Any]], want: Iterable[str]) -> List[Dict[str, Any]]:
+    seen: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        key = _record_key(r) or _t(r.get("_id"))
+        issued = wa_alerts.record_issue_date(r)
+        seen[key] = {"type": _rtype(r), "kind": _kind_label(r), "number": wa_alerts.record_number(r) or "",
+                     "issued": issued, "status": wa_alerts.record_status(r), "bin": row_bin(r),
+                     "link": _link(r), "reason": "belongs to a different BIN than this project"}
+    return sorted(seen.values(), key=lambda e: (e["bin"], str(e["issued"] or ""), e["number"]))
+
+
 def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]], start: date,
           end: date, *, today: Optional[date] = None, sync: Optional[Dict[str, Any]] = None,
-          now: Optional[datetime] = None) -> Dict[str, Any]:
+          now: Optional[datetime] = None, project_bins: Iterable[Any] = ()) -> Dict[str, Any]:
     """The regulatory facts of a period.
 
     -> {"coverage": {...}, "issued": [...], "changed": [...], "open": [...],
@@ -220,12 +273,16 @@ def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]]
     caller prints `coverage["note"]` instead of "none"."""
     cov = coverage(sync, end, now)
     out: Dict[str, Any] = {"coverage": cov, "issued": [], "changed": [], "open": [], "swo_active": [],
-                           "swo_lifted": [], "expiring": [], "uncertain": 0,
+                           "swo_lifted": [], "expiring": [], "uncertain": 0, "excluded": [],
+                           "bin_unverified": 0, "bins": sorted({re.sub(r"\D", "", str(b)) for b in project_bins if b}),
                            "counts": {"records": 0}}
     if cov["state"] in ("not_tracked", "unknown"):
         return out
     today = today or end
     end_at, start_at = _day_end(end), _day_end(start - timedelta(days=1))
+    dob_rows, left_out, unverified = split_by_bin(dob_rows, project_bins)
+    out["excluded"] = _excluded_entries(left_out, out["bins"])
+    out["bin_unverified"] = unverified
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for r in list(dob_rows) + list(dot_rows):
         if r.get("is_deleted") or _is_311(r):

@@ -349,8 +349,9 @@ def _progress(rep: Dict[str, Any]) -> str:
         w = by.get(s["key"]) or {"items": []}
         items = []
         for i in w["items"]:
-            chip = {"new": "<span class='chip new'>NEW</span> ", "advanced": "<span class='chip adv'>ADVANCED</span> "
-                    }.get(i["status"], "")
+            chip = {"advanced": "<span class='chip adv'>ADVANCED</span> "}.get(i["status"], "")
+            if i.get("trade_mismatch"):
+                chip = "<span class='chip warn'>CHECK</span> " + chip
             amended = " <span class='muted'>(amended log)</span>" if i["amended"] else ""
             items.append(f"<li>{chip}{_e(i['work'])}" + (f" — {_e(i['place'])}" if i["place"] else "")
                          + f" <span class='muted'>({_e(P._span(i['first'], i['last']))})</span>{amended}</li>")
@@ -380,8 +381,9 @@ def _progress(rep: Dict[str, Any]) -> str:
         matrix = ("<h3>Where work was reported, by floor</h3><table class='floors keep'><tr><th></th>" + head
                   + "</tr>" + body + "</table><div class='legend'>Solid: reported in this period · light: "
                   "reported only in the previous period. Reported activity, not a measure of completion.</div>")
-    return (f"<section><h2>Construction progress</h2><p class='muted'>Work as reported by each subcontractor in "
-            f"the filed daily logs. NEW / ADVANCED compares with the previous period.</p>{''.join(rows)}"
+    return (f"<section><h2>Construction progress</h2><p class='muted'>Documented work: what each subcontractor reported "
+            f"in the filed daily logs, not measured completion and not verified on site. ADVANCED marks the same activity "
+            f"reported on floors it was not reported on before. CHECK marks work that does not match the sub's trade.</p>{''.join(rows)}"
             f"{matrix}</section>")
 
 
@@ -597,7 +599,13 @@ def _basis(rep: Dict[str, Any], report_id: str) -> str:
         else:
             ev.append(f"<tr><td><b>{e['id']}</b></td><td>{_e(e['label'])}</td><td>{_e(e['detail'])}</td></tr>")
     stamp = hashlib.sha256(f"{report_id}|{rep['engine']}|{rep['generated'].isoformat()}".encode()).hexdigest()[:10]
-    return (f"<section class='keep'><h2>Basis, data notes and evidence</h2>"
+    levels = ("<div class='strip'><b>How to read the progress in this report.</b> "
+              "<b>Documented</b> — work the subs reported in daily logs. "
+              "<b>Measurable</b> — counts or a percent exactly as a confirmed schedule file states them"
+              f"{'' if rep.get('schedule') else ' (none on file for this report)'}. "
+              "<b>Verified physical progress</b> — not claimed: nothing here is independently verified on site, and no "
+              "completion percentage is calculated from headcount, log wording or photographs.</div>")
+    return (f"<section class='keep'><h2>Basis, data notes and evidence</h2>{levels}"
             f"<div class='two'><div><h4>What this report does not contain</h4><ul class='tight'>{lim}</ul></div>"
             f"<div><h4>Data notes</h4><ul class='tight'>{notes or '<li>No discrepancies to note.</li>'}</ul></div></div>"
             f"<h3>Evidence index</h3><table><tr><th>ID</th><th>Source</th><th>Detail</th></tr>{''.join(ev)}</table>"

@@ -51518,6 +51518,10 @@ async def _report_rows(project: dict, company_id: str, start: _Date, end: _Date,
     fin = (await _q(db[PROJECT_FINANCIALS], {"_id": pid, "company_id": cf}, 1) or [None])[0]
     return {"checkins": in_window, "logbooks": heads, "dob_rows": dob_rows, "dot_rows": dot_rows,
             "events": events, "sync": _report_sync(project, state),
+            # The building(s) this job is: its own BIN plus any a person added.
+            # DOB records for another BIN are left out of the report (and listed
+            # for review): the address search can return a neighbour's.
+            "project_bins": [b for b in [project.get("nyc_bin"), *(project.get("additional_bins") or [])] if b],
             "first_activity": min(firsts) if firsts else None,
             "schedule": (sched or {}).get("doc"),
             "schedule_meta": ({"source_name": sched.get("source_name"),
@@ -51708,7 +51712,9 @@ async def _report_photos(rep: dict, project_id: str) -> List[dict]:
             if v:
                 verdicts[c["key"]] = v
     await asyncio.gather(*(one(c) for c in todo))
-    return progress_report.pick_photos(todo, verdicts)
+    chosen = progress_report.pick_photos(todo, verdicts)
+    rep["photo_review"] = progress_report.photo_review(todo, verdicts, chosen)
+    return chosen
 
 
 def _report_image(c: dict) -> Optional[str]:
@@ -51782,6 +51788,7 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
         return {"pdf": pdf_bytes, "html": html_text, "title": title,
                 "snapshot": [progress_report.snapshot(r) for r in reps],
                 "photos": [{k: v for k, v in ph.items() if k != "key"} for r in reps for ph in r["photos"]],
+                "photo_review": [x for r in reps for x in r.get("photo_review") or []],
                 "reports": reps}
     r2_key = f"reports/{company_id}/{rid}.pdf"
     stored, error = False, None
