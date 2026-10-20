@@ -61580,18 +61580,30 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
 # A show request now sends the sheet -- the one it names, else the one
 # Levelog's last message in this chat cites -- through the DM gate.
 _DM_SHOW_VERBS = tuple(sorted(set(SHOW_VERBS) | {"let me see", "can i see", "send", "see",
-                                                  "pull it up", "pull that up"},
+                                                  "pull it up", "pull that up", "show"},
                               key=len, reverse=True))
 _DM_SHOW_FILLER = _SHOW_FILLER | {"details", "detail", "pic", "picture", "image", "page",
-                                  "photo", "more", "full"}
+                                  "photo", "more", "full", "pics", "pictures", "images", "photos"}
+# The thing itself, said with no verb: "the drawing", "picture", "drawing?"
+# (dm_eval, Oct 20: after a plans answer these got the same words again).
+_DM_SHOW_NOUNS = frozenset({"drawing", "drawings", "picture", "pictures", "pic", "pics",
+                            "image", "images", "photo", "photos", "sheet", "sheets", "page",
+                            "plan", "plans"})
 
 
 def _dm_show_words(body: Optional[str]) -> Optional[List[str]]:
-    """The words after a show verb ("show me details" -> ["details"]), or
-    None when the message does not start with one."""
+    """The words after a show verb ("show me details" -> ["details"]); a
+    message that is only the thing itself ("the drawing", "picture") is its
+    own words. None otherwise."""
     s = " ".join(re.sub(r"[^\w\s/.-]", " ", re.sub(r"@\S+", " ", body or "").lower()).split())
     verb = next((v for v in _DM_SHOW_VERBS if s == v or s.startswith(v + " ")), None)
-    return None if verb is None else s[len(verb):].split()
+    if verb is not None:
+        return s[len(verb):].split()
+    toks = [t.strip(".") for t in s.split()]
+    if toks and len(toks) <= 4 and any(t in _DM_SHOW_NOUNS for t in toks) \
+            and all(t in _DM_SHOW_FILLER for t in toks):
+        return toks
+    return None
 
 
 def _dm_show_request(body: Optional[str]) -> bool:
