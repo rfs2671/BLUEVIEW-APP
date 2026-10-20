@@ -51391,10 +51391,25 @@ def _report_image(c: dict) -> Optional[str]:
         return None
 
 
-async def _report_summary(rep: dict) -> str:
+async def _report_summary(rep: dict, company_id: Optional[str] = None) -> str:
     """The summary: the model writes it from the report's facts; it goes out
     only when every number and name in it is in them, else the summary
-    written from the records alone."""
+    written from the records alone. A company on the DM brain: written by
+    dm_brain.ESCALATE_MODEL on DeepInfra."""
+    if company_id and await _dm_brain_on({"company_id": company_id, "user_id": ""}):
+        try:
+            resp = await _dm_brain_client().chat.completions.create(
+                model=dm_brain.ESCALATE_MODEL, temperature=0.2, max_tokens=600,
+                messages=[{"role": "system", "content": progress_report.SUMMARY_PROMPT},
+                          {"role": "user", "content": f"Job: {rep['job']}. Period: {rep['period']}.\n"
+                                                      + "\n".join(progress_report.facts(rep))}])
+            text = dm_brain.final_text(resp.choices[0].message.content)
+            if text and progress_report.check_summary(text, rep):
+                return " ".join(text.split())
+            logger.info("[report] model summary failed the check; the records' summary is used")
+        except Exception as e:
+            logger.warning(f"[report] summary call failed: {type(e).__name__}")
+        return progress_report.summary_fallback(rep)
     if OPENAI_API_KEY:
         try:
             async with ServerHttpClient(timeout=40) as client_http:
@@ -51436,7 +51451,7 @@ async def build_project_report(company_id: str, projects: List[dict], start: _Da
             job=wa_assistant.street_label(p), address=str(p.get("address") or ""), gc=gc,
             start=start, end=end, now=now, **rows)
         rep["photos"] = await _report_photos(rep, str(p.get("_id")))
-        rep["summary"] = await _report_summary(rep)
+        rep["summary"] = await _report_summary(rep, company_id)
         reps.append(rep)
     images = {}
     for rep in reps:
@@ -55844,7 +55859,8 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
 # ══════════════════════════════════════════════════════════════════════════
 # THE DM BRAIN (lib/dm_brain.py) -- per company, flag `dm_brain_v2`.
 #
-# One model (Claude Sonnet-class) answers every free-text DM, with this
+# One model (Qwen 3.8 Flash on DeepInfra; a stronger DeepInfra model for the
+# evidence-check retry and report summaries) answers every free-text DM, with this
 # chat's last 20 messages, who they are and their jobs, the chat's current
 # job and any open flow, and tools over the real records. It replaces the
 # routers, keyword matchers, reply templates, the length cutter and the
@@ -55863,9 +55879,11 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
 #   * no phone numbers; every tool scoped to their company and jobs.
 # ══════════════════════════════════════════════════════════════════════════
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+#: DeepInfra's key: the one already on Railway for the vision calls.
+DM_BRAIN_API_KEY = QWEN_API_KEY
 _DM_BRAIN_CLIENT: Any = None
-DM_BRAIN_BETAS = ["server-side-fallback-2026-07-01"]
+#: The model this turn uses (the eval runs each DM on both models).
+_DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=None)
 #: A tool result is data for the model, not the answer: generous, bounded.
 DM_BRAIN_TOOL_CHARS = 9000
 
@@ -55974,7 +55992,7 @@ _DM_BRAIN_TOOL_CACHE: Optional[list] = None
 
 def _dm_brain_tools() -> list:
     """Every tool the brain can call: the agent's read tools (with a `job`)
-    and the brain's own, in a fixed order (the prompt cache is a prefix)."""
+    and the brain's own, in a fixed order, as OpenAI function tools."""
     global _DM_BRAIN_TOOL_CACHE
     if _DM_BRAIN_TOOL_CACHE is not None:
         return _DM_BRAIN_TOOL_CACHE
@@ -55991,23 +56009,26 @@ def _dm_brain_tools() -> list:
         out.append({"name": name, "description": f.get("description") or "", "input_schema": schema})
     out += _DM_BRAIN_EXTRA_TOOLS
     out.sort(key=lambda t: t["name"])
-    _DM_BRAIN_TOOL_CACHE = out
-    return out
+    # OpenAI-compatible function tools (DeepInfra).
+    _DM_BRAIN_TOOL_CACHE = [{"type": "function", "function": {
+        "name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+        for t in out]
+    return _DM_BRAIN_TOOL_CACHE
 
 
 def _dm_brain_client():
     global _DM_BRAIN_CLIENT
     if _DM_BRAIN_CLIENT is None:
-        import anthropic
-        _DM_BRAIN_CLIENT = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None,
-                                                    timeout=90.0, max_retries=2)
+        from openai import AsyncOpenAI
+        _DM_BRAIN_CLIENT = AsyncOpenAI(base_url=dm_brain.API_BASE, api_key=DM_BRAIN_API_KEY or "none",
+                                       timeout=60.0, max_retries=2)
     return _DM_BRAIN_CLIENT
 
 
 async def _dm_brain_on(ident: Optional[dict]) -> bool:
     """The brain answers this person: their company (or they) has the flag,
     and the model can be reached."""
-    if not ident or not ANTHROPIC_API_KEY:
+    if not ident or not DM_BRAIN_API_KEY:
         return False
     try:
         return await feature_flags.is_feature_enabled(
@@ -56418,70 +56439,104 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     return f"Unknown tool {name}."
 
 
-def _dm_brain_block_text(b: Any) -> str:
-    t = getattr(b, "type", None)
-    if t == "text":
-        return getattr(b, "text", "") or ""
-    return ""
+def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
+    """Add one model call's tokens, cost (DeepInfra's estimated_cost, when it
+    sends one) and time to the turn's totals."""
+    u = getattr(resp, "usage", None)
+    usage["calls"] = usage.get("calls", 0) + 1
+    usage["seconds"] = round(usage.get("seconds", 0.0) + (_time.monotonic() - started), 2)
+    usage.setdefault("models", [])
+    if model not in usage["models"]:
+        usage["models"].append(model)
+    if u is None:
+        return
+    usage["input"] = usage.get("input", 0) + int(getattr(u, "prompt_tokens", 0) or 0)
+    usage["output"] = usage.get("output", 0) + int(getattr(u, "completion_tokens", 0) or 0)
+    cost = getattr(u, "estimated_cost", None)
+    if cost is None and isinstance(getattr(u, "model_extra", None), dict):
+        cost = u.model_extra.get("estimated_cost")
+    if cost is not None:
+        try:
+            usage["cost_usd"] = round(usage.get("cost_usd", 0.0) + float(cost), 6)
+        except (TypeError, ValueError):
+            pass
 
 
-async def _dm_brain_run(ctx: dict, messages: list, system: list) -> dict:
-    """The model, its tool calls, and the number check, until an answer.
-    {reply, trace, rounds, retries, unverified, stop}."""
+async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
+    """The model, its tool calls (one after another, at most
+    dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
+    The evidence-check retry goes to dm_brain.ESCALATE_MODEL.
+    {reply, trace, rounds, retries, unverified, stop, usage}."""
     client = _dm_brain_client()
     tools = _dm_brain_tools()
+    use = model or _DM_MODEL.get() or dm_brain.MODEL
+    msgs = [{"role": "system", "content": system}] + [dict(m) for m in messages]
     trace: List[dict] = []
-    sources = [b.get("text", "") for b in system] + [
-        m["content"] if isinstance(m["content"], str) else "" for m in messages]
-    retries, deflects, last_text, missing = 0, 0, "", []
-    usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
+    retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
+    usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
 
     def done(**kw):
         return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
-                "tools_tried": [f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})"
-                                for t in trace], **kw}
+                "model": use, "tools_tried": [
+                    f"{t['tool']}({json.dumps(t.get('args') or {}, ensure_ascii=False)})" for t in trace],
+                **kw}
     for rounds in range(1, dm_brain.MAX_ROUNDS + 1):
-        resp = await client.beta.messages.create(
-            model=dm_brain.MODEL, max_tokens=dm_brain.MAX_TOKENS, system=system, tools=tools,
-            messages=messages, output_config={"effort": dm_brain.EFFORT},
-            betas=DM_BRAIN_BETAS, fallbacks="default")
-        u = getattr(resp, "usage", None)
-        if u is not None:
-            usage["input"] += int(getattr(u, "input_tokens", 0) or 0)
-            usage["output"] += int(getattr(u, "output_tokens", 0) or 0)
-            usage["cache_read"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
-            usage["cache_write"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
-        if resp.stop_reason == "refusal":
-            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="refusal")
-        if resp.stop_reason in ("tool_use", "pause_turn"):
-            messages.append({"role": "assistant", "content": resp.content})
-            if resp.stop_reason == "pause_turn":
-                continue
-            results = []
-            for b in resp.content:
-                if getattr(b, "type", None) != "tool_use":
-                    continue
+        can_call = calls < dm_brain.MAX_TOOL_CALLS
+        t0 = _time.monotonic()
+        resp = await client.chat.completions.create(
+            model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
+            temperature=dm_brain.TEMPERATURE, max_tokens=dm_brain.MAX_TOKENS)
+        _dm_usage(usage, resp, use, t0)
+        choice = resp.choices[0]
+        m = choice.message
+        asked = list(getattr(m, "tool_calls", None) or []) if can_call else []
+        if asked:
+            # SEQUENTIAL: each call runs after the one before it; past the cap
+            # the rest are not run (and not shown as asked).
+            asked = asked[:dm_brain.MAX_TOOL_CALLS - calls]
+            msgs.append({"role": "assistant", "content": m.content or "", "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"}}
+                for tc in asked]})
+            for tc in asked:
+                calls += 1
+                name = tc.function.name
                 try:
-                    out = await _dm_brain_exec(ctx, b.name, dict(b.input or {}))
-                    err = False
-                except Exception as e:
-                    logger.warning(f"[dm-brain] tool {b.name} failed: {type(e).__name__}: {e}")
-                    out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
+                    args = json.loads(tc.function.arguments or "{}")
+                    if not isinstance(args, dict):
+                        raise ValueError("not an object")
+                except ValueError:
+                    args, out, err = {}, "The arguments were not a JSON object. Call it again.", True
+                else:
+                    try:
+                        out, err = await _dm_brain_exec(ctx, name, dict(args)), False
+                    except Exception as e:
+                        logger.warning(f"[dm-brain] tool {name} failed: {type(e).__name__}: {e}")
+                        out, err = f"The tool failed ({type(e).__name__}). Say so plainly if it matters.", True
                 out = str(out)[:DM_BRAIN_TOOL_CHARS]
-                trace.append({"tool": b.name, "args": dict(b.input or {}), "result": out[:3000]})
+                trace.append({"tool": name, "args": args, "result": out[:3000], **({"error": True} if err else {})})
                 sources.append(out)
-                results.append({"type": "tool_result", "tool_use_id": b.id, "content": out,
-                                **({"is_error": True} if err else {})})
-            messages.append({"role": "user", "content": results})
+                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
             continue
-        last_text = dm_brain.final_text(resp.content)
+        if choice.finish_reason == "content_filter":
+            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="content_filter")
+        last_text = dm_brain.final_text(m.content)
+        if not last_text:
+            if rounds < dm_brain.MAX_ROUNDS:
+                msgs.append({"role": "user", "content": "[Levelog check, not from them] Answer them now, "
+                                                         "in a few short lines."})
+                continue
+            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="empty")
         missing = dm_brain.unverified(last_text, sources)
         if missing and retries < dm_brain.VERIFY_RETRIES:
+            # The one retry, on the stronger model.
             retries += 1
-            logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
-            messages.append({"role": "assistant", "content": resp.content})
-            messages.append({"role": "user", "content": "[Levelog check, not from them] "
-                                                         + dm_brain.verify_note(missing)})
+            use = dm_brain.ESCALATE_MODEL
+            logger.info(f"[dm-brain] re-asked on {use}: unverified {missing[:6]}")
+            msgs.append({"role": "assistant", "content": last_text})
+            msgs.append({"role": "user", "content": "[Levelog check, not from them] "
+                                                     + dm_brain.verify_note(missing)})
             continue
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
@@ -56491,11 +56546,11 @@ async def _dm_brain_run(ctx: dict, messages: list, system: list) -> dict:
             # tools (Tue 12:28 PM): asked again, with what it tried.
             deflects += 1
             logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
-            messages.append({"role": "assistant", "content": resp.content})
-            messages.append({"role": "user", "content": "[Levelog check, not from them] "
-                                                         + dm_brain.deflect_note([t["tool"] for t in trace])})
+            msgs.append({"role": "assistant", "content": last_text})
+            msgs.append({"role": "user", "content": "[Levelog check, not from them] "
+                                                     + dm_brain.deflect_note([t["tool"] for t in trace])})
             continue
-        return done(reply=last_text, rounds=rounds, unverified=[], stop=resp.stop_reason,
+        return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
                     cant_answer=dm_brain.cant_answer(last_text))
     return done(reply=last_text or dm_brain.FAILED_TEXT, rounds=dm_brain.MAX_ROUNDS,
                 unverified=missing, stop="max_rounds")
@@ -56528,8 +56583,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
         active_job=by_id.get(active) if active else None,
         open_flows=flows if flows is not None else await _dm_brain_flows(ident, dm_chat),
         now_label=datefmt.strftime(_memory_ny(now), "%a %b %-d %Y, %-I:%M %p"))
-    system = [{"type": "text", "text": dm_brain.SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-              {"type": "text", "text": context}]
+    system = dm_brain.SYSTEM_PROMPT + "\n\n" + context
     messages = dm_brain.turn_messages(dm_brain.history_messages(history, now), text)
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
@@ -56609,7 +56663,8 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
                             project_id=out["used_job"])
     await _dm_log_answer(
         ident, out.get("used_job"), question, reply or " | ".join(out.get("sent") or []), "brain",
-        tool_data=out.get("trace"), model=dm_brain.MODEL, rounds=out.get("rounds"),
+        tool_data=out.get("trace"), model=out.get("model") or dm_brain.MODEL, rounds=out.get("rounds"),
+        usage=out.get("usage"),
         verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
         stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
         tools_tried=out.get("tools_tried") or [],
@@ -67623,34 +67678,24 @@ def _punch_capture_command(sess: dict, said: str, text: str, voice: Optional[dic
     return bool(grp and grp["scope"] == "numbers")
 
 
-async def _walk_claude_json(system: str, user: str, dm_chat: Optional[str] = None,
-                            max_tokens: int = 1500) -> Optional[dict]:
+async def _walk_brain_json(system: str, user: str, dm_chat: Optional[str] = None,
+                           max_tokens: int = 1200) -> Optional[dict]:
     """The DM brain's model reading for the walk: the instructions, this DM's
     last turns (when `dm_chat`), then the message; the answer is one JSON
-    object, given through the one tool it must call. None on any error."""
-    if not ANTHROPIC_API_KEY:
+    object. None on any error."""
+    if not DM_BRAIN_API_KEY:
         return None
     try:
         now = datetime.now(timezone.utc)
         history = dm_brain.history_messages(await _dm_brain_history(dm_chat, now), now) if dm_chat else []
-        messages = dm_brain.turn_messages(history, user)
-        resp = await _dm_brain_client().beta.messages.create(
-            model=dm_brain.MODEL, max_tokens=max_tokens,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            tools=[_WALK_ANSWER_TOOL], tool_choice={"type": "tool", "name": "answer"},
-            messages=messages, betas=DM_BRAIN_BETAS, fallbacks="default")
-        for b in resp.content:
-            if getattr(b, "type", None) == "tool_use" and isinstance(getattr(b, "input", None), dict):
-                return dict(b.input)
-        return None
+        resp = await _dm_brain_client().chat.completions.create(
+            model=_DM_MODEL.get() or dm_brain.MODEL, max_tokens=max_tokens, temperature=0,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system}] + dm_brain.turn_messages(history, user))
+        return dm_brain.json_object(resp.choices[0].message.content)
     except Exception as e:
-        logger.warning(f"[punch] brain (claude) read failed: {type(e).__name__}")
+        logger.warning(f"[punch] brain read failed: {type(e).__name__}")
         return None
-
-
-_WALK_ANSWER_TOOL = {
-    "name": "answer", "description": "Your answer: the JSON object the instructions describe.",
-    "input_schema": {"type": "object", "additionalProperties": True}}
 
 
 async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = None) -> Optional[dict]:
@@ -67658,7 +67703,7 @@ async def _punch_brain_model(state: dict, said: str, dm_chat: Optional[str] = No
     without a key, on any error, or when it is not one. With the DM brain on,
     the brain's model reads it with the chat's last turns."""
     if _WALK_BRAIN.get():
-        return await _walk_claude_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
+        return await _walk_brain_json(punch_brain.PROMPT, punch_brain.user_message(state, said), dm_chat)
     if not OPENAI_API_KEY:
         return None
     try:
@@ -68176,7 +68221,7 @@ async def _punch_batch_model(text: str, prompt: Optional[str] = None) -> Optiona
     or `prompt`); None without a key, on any error, or when it is not one
     JSON object."""
     if _WALK_BRAIN.get():
-        return await _walk_claude_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
+        return await _walk_brain_json(prompt or punch_batch.BATCH_PROMPT, str(text)[:4000],
                                        max_tokens=600)
     if not OPENAI_API_KEY:
         return None

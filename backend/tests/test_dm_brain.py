@@ -1,7 +1,8 @@
 """The DM brain (lib/dm_brain.py, flag dm_brain_v2): one model with tools
 answers every free-text DM; code keeps only the guardrails.
 
-The model here is scripted (FakeClaude): each test says which tools it
+The model here is scripted (FakeLLM, the OpenAI-compatible client DeepInfra
+is called through): each test says which tools it
 calls and what it answers, and checks what the code around it does with
 that -- the routing, the context it is given, the tools' scoping, the
 number check, the confirm gate. The real model is measured by
@@ -38,19 +39,26 @@ def use(name, inp, i="t1"):
 
 
 def resp(*blocks, stop=None):
-    stop = stop or ("tool_use" if any(b.type == "tool_use" for b in blocks) else "end_turn")
-    return SimpleNamespace(stop_reason=stop, content=list(blocks))
+    """A chat.completions response: the text, and the tool calls."""
+    calls = [SimpleNamespace(id=b.id, type="function",
+                             function=SimpleNamespace(name=b.name, arguments=json.dumps(b.input)))
+             for b in blocks if b.type == "tool_use"]
+    words = "\n".join(b.text for b in blocks if b.type == "text")
+    msg = SimpleNamespace(content=words or None, tool_calls=calls or None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=msg, finish_reason=stop or ("tool_calls" if calls else "stop"))],
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20, estimated_cost=0.0001))
 
 
-class FakeClaude:
-    """client.beta.messages.create, scripted. Each step is a response or a
-    function of the request (to look at the tool results)."""
+class FakeLLM:
+    """client.chat.completions.create, scripted. Each step is a response or
+    a function of the request (to look at the tool results)."""
 
     def __init__(self, *script):
         self.script = list(script)
         self.calls = []
-        self.beta = self
-        self.messages = self
+        self.chat = self
+        self.completions = self
 
     async def create(self, **kw):
         self.calls.append(json.loads(json.dumps(kw, default=lambda o: getattr(o, "__dict__", str(o)))))
@@ -59,8 +67,13 @@ class FakeClaude:
 
 
 def last_tool_results(call):
-    m = call["messages"][-1]
-    return [c["content"] for c in m["content"]] if isinstance(m["content"], list) else []
+    """The tool results the request ends with."""
+    out = []
+    for m in reversed(call["messages"]):
+        if m.get("role") != "tool":
+            break
+        out.insert(0, m["content"])
+    return out
 
 
 class _Brain(unittest.TestCase):
@@ -84,7 +97,7 @@ class _Brain(unittest.TestCase):
         return next(r.get("trade") for r in server._active_assignments(project)
                     if r.get("company") == company)
 
-    def say(self, c, body, claude, quoted=None):
+    def say(self, c, body, llm, quoted=None):
         self.n += 1
         before = len([p for p in c.wire.calls if "message" in p])
 
@@ -95,7 +108,7 @@ class _Brain(unittest.TestCase):
             self.reactions.append(emoji)
             return True
         with patch.object(server, "_dm_brain_on", on), \
-                patch.object(server, "_dm_brain_client", lambda: claude), \
+                patch.object(server, "_dm_brain_client", lambda: llm), \
                 patch.object(server, "_react_to_message", react), \
                 patch.object(server, "OPENAI_API_KEY", None):
             _run(server._process_whatsapp_message(_payload(CHAT, body, f"b{self.n}", quoted)))
@@ -116,9 +129,9 @@ class TheTuesdayThree(_Brain):
             res = " ".join(last_tool_results(kw))
             self.assertIn('"on_site_now": 31', res)
             return resp(text(answer.replace("2 punch items", "punch items")))
-        claude = FakeClaude(resp(use("headcount", {"job": "588"})), answer_from)
+        llm = FakeLLM(resp(use("headcount", {"job": "588"})), answer_from)
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "Update on 588", claude)
+            out = self.say(c, "Update on 588", llm)
         self.assertEqual(out, [answer.replace("2 punch items", "punch items")])
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual((log["path"], log["tool_data"][0]["tool"]), ("brain", "headcount"))
@@ -135,10 +148,10 @@ class TheTuesdayThree(_Brain):
             self.assertIn("Arkon Builders", res)
             self.assertIn("M01-2026123", res)
             return resp(text("DOT: permit M01-2026123, issued. Arkon Builders is on 588."))
-        claude = FakeClaude(resp(use("list_subs", {}, "a"), use("dot_status", {"job": "588"}, "b")),
+        llm = FakeLLM(resp(use("list_subs", {}, "a"), use("dot_status", {"job": "588"}, "b")),
                             answer)
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "Dot and Akron", claude)
+            out = self.say(c, "Dot and Akron", llm)
         self.assertEqual(out, ["DOT: permit M01-2026123, issued. Arkon Builders is on 588."])
 
     def test_arkon_is_framer_saved_only_on_yes(self):
@@ -147,12 +160,12 @@ class TheTuesdayThree(_Brain):
             self.assertEqual(res["status"], "waiting_for_their_yes")
             self.assertIn("Arkon Builders", res["would_change"])
             return resp(text("Got it — save Arkon Builders as Framing on 588? Reply yes."))
-        claude = FakeClaude(resp(use("set_sub_trade", {"company": "Akron", "trade": "framer"})), proposed)
+        llm = FakeLLM(resp(use("set_sub_trade", {"company": "Akron", "trade": "framer"})), proposed)
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "Arkon is framer", claude)
+            out = self.say(c, "Arkon is framer", llm)
             self.assertEqual(self.trade("Arkon Builders"), "General Construction")   # nothing saved yet
             self.assertEqual(out, ["Got it — save Arkon Builders as Framing on 588? Reply yes."])
-            done = self.say(c, "yes", FakeClaude())                  # the model is not asked
+            done = self.say(c, "yes", FakeLLM())                  # the model is not asked
         self.assertEqual(self.trade("Arkon Builders"), "Framing")
         self.assertTrue(done[0].startswith("Saved: Arkon Builders"), done)
 
@@ -165,16 +178,17 @@ class TheContext(_Brain):
                 "_id": f"h{i}", "group_id": CHAT, "is_dm": True, "body": f"old {i}",
                 "sender": "bot" if i % 2 else "15550001111",
                 "created_at": now - timedelta(minutes=60 - i)})
-        claude = FakeClaude(resp(text("ok")))
+        llm = FakeLLM(resp(text("ok")))
         with _Ctx(db=self.db) as c:
-            self.say(c, "what's open", claude)
-        call = claude.calls[0]
-        context = call["system"][1]["text"]
+            self.say(c, "what's open", llm)
+        call = llm.calls[0]
+        context = call["messages"][0]["content"]
         self.assertIn("Their jobs", context)
         self.assertIn("588 Thomas", context)
         self.assertIn("Open flows: none.", context)
-        self.assertEqual(call["system"][0]["cache_control"], {"type": "ephemeral"})
-        bodies = "\n".join(m["content"] for m in call["messages"] if isinstance(m["content"], str))
+        self.assertEqual(call["messages"][0]["role"], "system")
+        self.assertIn("Levelog Assistant", context)
+        bodies = "\n".join(m["content"] for m in call["messages"][1:] if isinstance(m["content"], str))
         self.assertIn("old 24", bodies)
         self.assertNotIn("old 4\n", bodies + "\n")                  # only the last 20
         self.assertEqual(call["messages"][-1]["role"], "user")
@@ -184,58 +198,60 @@ class TheContext(_Brain):
     def test_an_open_change_is_in_the_context(self):
         _run(server._dm_state_set(server.DM_ACTION_STATE, CHAT, 600, p={"action": "add_sub"},
                                   step="ask:trade", options=[], asked="What trade is J&G?", misses=0))
-        claude = FakeClaude(resp(text("Which trade?")))
+        llm = FakeLLM(resp(text("Which trade?")))
         with _Ctx(db=self.db) as c:
             _run(server._dm_state_set(server.DM_ACTION_STATE, CHAT, 600, p={"action": "add_sub"},
                                       step="ask:trade", options=[], asked="What trade is J&G?", misses=0))
-            self.say(c, "hmm", claude)
-        self.assertIn("What trade is J&G?", claude.calls[0]["system"][1]["text"])
+            self.say(c, "hmm", llm)
+        self.assertIn("What trade is J&G?", llm.calls[0]["messages"][0]["content"])
 
 
 class TheGuardrails(_Brain):
     def test_a_number_no_tool_gave_is_asked_again_not_cut(self):
-        claude = FakeClaude(
+        llm = FakeLLM(
             resp(use("headcount", {"job": "588"})),
             resp(text("588: 45 on site.")),                       # 45 is nowhere
             lambda kw: (self.assertIn("45", kw["messages"][-1]["content"]),
                         resp(text("588: 31 on site.")))[1])
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "how many at 588", claude)
+            out = self.say(c, "how many at 588", llm)
         self.assertEqual(out, ["588: 31 on site."])
         self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["verify_retries"], 1)
 
     def test_still_unverified_after_retries_is_said_plainly(self):
-        claude = FakeClaude(resp(text("45 on site.")), resp(text("46 on site.")), resp(text("47 on site.")))
+        llm = FakeLLM(resp(text("45 on site.")), resp(text("46 on site.")))
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "how many at 588", claude)
+            out = self.say(c, "how many at 588", llm)
         self.assertEqual(out, [dm_brain.UNVERIFIED_TEXT])
-        self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["draft"], "47 on site.")
+        self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["draft"], "46 on site.")
+        # The one retry is on the stronger model.
+        self.assertEqual([c_["model"] for c_ in llm.calls], [dm_brain.MODEL, dm_brain.ESCALATE_MODEL])
 
     def test_no_phone_numbers(self):
-        claude = FakeClaude(resp(text("Call him at 718-555-0123.")))
+        llm = FakeLLM(resp(text("Call him at 718-555-0123.")))
         with patch.object(dm_brain, "unverified", lambda r, s: []):
             with _Ctx(db=self.db) as c:
-                out = self.say(c, "who's the super's number", claude)
+                out = self.say(c, "who's the super's number", llm)
         self.assertEqual(out, ["Call him at [number]."])
 
     def test_another_companys_job_is_not_theirs(self):
         def answer(kw):
             self.assertIn("None of their jobs matches", last_tool_results(kw)[0])
             return resp(text("That job isn't one of yours."))
-        claude = FakeClaude(resp(use("open_items", {"job": "99 Bedford"})), answer)
+        llm = FakeLLM(resp(use("open_items", {"job": "99 Bedford"})), answer)
         with _Ctx(db=self.db) as c:
-            self.say(c, "what's open at 99 bedford", claude)
+            self.say(c, "what's open at 99 bedford", llm)
 
     def test_a_proposed_change_changes_nothing(self):
         def proposed(kw):
             res = json.loads(last_tool_results(kw)[0])
             self.assertIn(res["status"], ("waiting_for_their_yes", "needs_an_answer"))
             return resp(text("Add Power Direct to 588 as Electrical? Reply yes."))
-        claude = FakeClaude(resp(use("propose_change", {"action": "add_sub", "company": "Power Direct",
+        llm = FakeLLM(resp(use("propose_change", {"action": "add_sub", "company": "Power Direct",
                                                         "trade": "Electrical", "job": "588"})), proposed)
         before = [dict(r) for r in self.db.projects.rows[0]["trade_assignments"]]
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "put power direct on 588 as electrician", claude)
+            out = self.say(c, "put power direct on 588 as electrician", llm)
         self.assertEqual(self.db.projects.rows[0]["trade_assignments"], before)
         self.assertEqual(out, ["Add Power Direct to 588 as Electrical? Reply yes."])
 
@@ -246,50 +262,109 @@ class TheGuardrails(_Brain):
         def refused(kw):
             self.assertIn("theirs", last_tool_results(kw)[0])
             return resp(text("Reply yes to add it."))
-        claude = FakeClaude(resp(use("answer_pending_change", {"answer": "yes"})), refused)
+        llm = FakeLLM(resp(use("answer_pending_change", {"answer": "yes"})), refused)
         with _Ctx(db=self.db) as c:
             _run(server._dm_state_set(server.DM_ACTION_STATE, CHAT, 600, p={"action": "add_sub"},
                                       step="confirm", options=[], asked="Add it?", misses=0))
-            self.say(c, "go for it i guess", claude)
+            self.say(c, "go for it i guess", llm)
 
     def test_undo_needs_a_yes_too(self):
         with _Ctx(db=self.db) as c:
-            self.say(c, "Arkon is framer", FakeClaude(
+            self.say(c, "Arkon is framer", FakeLLM(
                 resp(use("set_sub_trade", {"company": "Arkon", "trade": "Framing"})),
                 resp(text("Save it? Reply yes."))))
-            self.say(c, "yes", FakeClaude())
+            self.say(c, "yes", FakeLLM())
             self.assertEqual(self.trade("Arkon Builders"), "Framing")
-            self.say(c, "undo that", FakeClaude(resp(use("undo_last_change", {})),
+            self.say(c, "undo that", FakeLLM(resp(use("undo_last_change", {})),
                                                 resp(text("Undo it? Reply yes."))))
             self.assertEqual(self.trade("Arkon Builders"), "Framing")
-            self.say(c, "yes", FakeClaude())
+            self.say(c, "yes", FakeLLM())
         self.assertEqual(self.trade("Arkon Builders"), "General Construction")
 
     def test_no_after_a_proposal_cancels(self):
         with _Ctx(db=self.db) as c:
-            self.say(c, "Arkon is framer", FakeClaude(
+            self.say(c, "Arkon is framer", FakeLLM(
                 resp(use("set_sub_trade", {"company": "Arkon", "trade": "Framing"})),
                 resp(text("Save it? Reply yes."))))
-            out = self.say(c, "no", FakeClaude())
+            out = self.say(c, "no", FakeLLM())
         self.assertEqual(self.trade("Arkon Builders"), "General Construction")
         self.assertEqual(len(out), 1, out)                          # one plain "won't do it"
+
+
+class TheLoop(_Brain):
+    def test_tools_run_one_after_another_and_stop_at_six(self):
+        order = []
+        real = server._dm_brain_exec
+
+        async def exec_(ctx, name, args):
+            order.append(name)
+            return await real(ctx, name, args)
+        many = [resp(use("list_subs", {}, f"c{i}")) for i in range(6)]
+        llm = FakeLLM(*many, lambda kw: (self.assertEqual(kw["tool_choice"], "none"),
+                                           resp(text("Arkon Builders is on 588.")))[1])
+        with _Ctx(db=self.db) as c, patch.object(server, "_dm_brain_exec", exec_):
+            out = self.say(c, "who's on the subs list", llm)
+        self.assertEqual(out, ["Arkon Builders is on 588."])
+        self.assertEqual(order, ["list_subs"] * dm_brain.MAX_TOOL_CALLS)
+        self.assertEqual([c_["tool_choice"] for c_ in llm.calls], ["auto"] * 6 + ["none"])
+
+    def test_two_calls_in_one_response_run_in_order(self):
+        order = []
+        real = server._dm_brain_exec
+
+        async def exec_(ctx, name, args):
+            order.append(name)
+            return await real(ctx, name, args)
+        llm = FakeLLM(resp(use("dot_status", {"job": "588"}, "a"), use("list_subs", {}, "b")),
+                         lambda kw: (self.assertEqual([m["tool_call_id"] for m in kw["messages"][-2:]],
+                                                      ["a", "b"]), resp(text("DOT: nothing open.")))[1])
+        with _Ctx(db=self.db) as c, patch.object(server, "_dm_brain_exec", exec_):
+            self.say(c, "dot?", llm)
+        self.assertEqual(order, ["dot_status", "list_subs"])
+
+    def test_thinking_is_not_sent(self):
+        llm = FakeLLM(resp(text("<think>they want the subs</think>Arkon Builders is on 588.")))
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "subs?", llm)
+        self.assertEqual(out, ["Arkon Builders is on 588."])
+
+    def test_cost_and_time_are_logged(self):
+        llm = FakeLLM(resp(text("Arkon Builders is on 588.")))
+        with _Ctx(db=self.db) as c:
+            self.say(c, "subs?", llm)
+        log = self.db[server.DM_ANSWERS].rows[-1]
+        self.assertEqual((log["model"], log["usage"]["cost_usd"], log["usage"]["input"]),
+                         (dm_brain.MODEL, 0.0001, 100))
+
+    def test_report_summary_on_the_stronger_model(self):
+        rep = {"job": "588 Thomas", "period": "Oct 1 – Oct 14"}
+
+        async def on(ident):
+            return True
+        llm = FakeLLM(resp(text("A quiet two weeks at 588 Thomas.")))
+        with patch.object(server, "_dm_brain_on", on), patch.object(server, "_dm_brain_client", lambda: llm), \
+                patch.object(server.progress_report, "facts", lambda r: ["Job 588 Thomas"]), \
+                patch.object(server.progress_report, "check_summary", lambda t, r: True):
+            got = _run(server._report_summary(rep, CO_A))
+        self.assertEqual(got, "A quiet two weeks at 588 Thomas.")
+        self.assertEqual(llm.calls[0]["model"], dm_brain.ESCALATE_MODEL)
 
 
 class TheWalkthrough(_Brain):
     def test_photo_talk_goes_to_the_brain_not_a_regex(self):
         q = ("I'm going to show you some pictures, I need to do a checklist, it's not going to be "
              "sent to anyone, just for me.")
-        claude = FakeClaude(resp(text("Send them here with a caption each; nothing goes out until you say send.")))
+        llm = FakeLLM(resp(text("Send them here with a caption each; nothing goes out until you say send.")))
         with _Ctx(db=self.db) as c:
-            out = self.say(c, q, claude)
-        self.assertEqual(len(claude.calls), 1)
+            out = self.say(c, q, llm)
+        self.assertEqual(len(llm.calls), 1)
         self.assertEqual(out, ["Send them here with a caption each; nothing goes out until you say send."])
 
     def test_exact_walk_commands_stay_in_code(self):
-        claude = FakeClaude()
+        llm = FakeLLM()
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "start walkthrough at 588", claude)
-        self.assertEqual(claude.calls, [])
+            out = self.say(c, "start walkthrough at 588", llm)
+        self.assertEqual(llm.calls, [])
         self.assertTrue(out[0].startswith("Walkthrough at"), out)
 
 
@@ -302,9 +377,9 @@ class TheEvalMode(unittest.TestCase):
         ident = {"user": {"name": "Admin"}, "user_id": "u_admin", "company_id": CO_A,
                  "role": "admin", "projects": [p for p in db.projects.rows
                                                if p["_id"] in (THOMAS, WALWORTH)]}
-        claude = FakeClaude(resp(use("set_sub_trade", {"company": "Arkon", "trade": "Framing"})),
+        llm = FakeLLM(resp(use("set_sub_trade", {"company": "Arkon", "trade": "Framing"})),
                             resp(text("Save it?")))
-        with _Ctx(db=db), patch.object(server, "_dm_brain_client", lambda: claude):
+        with _Ctx(db=db), patch.object(server, "_dm_brain_client", lambda: llm):
             out = _run(server._dm_brain_answer(ident, CHAT, "Arkon is framer", history=[],
                                                now=datetime.now(timezone.utc), dry_run=True,
                                                flows=[], active=None))
@@ -323,10 +398,10 @@ class TheFlag(unittest.TestCase):
         other = {"company_id": "co_other", "user_id": "u_x"}
         with _Ctx(db=db):
             feature_flags.cache_invalidate()
-            with patch.object(server, "ANTHROPIC_API_KEY", "k"):
+            with patch.object(server, "DM_BRAIN_API_KEY", "k"):
                 self.assertTrue(_run(server._dm_brain_on(mine)))
                 self.assertFalse(_run(server._dm_brain_on(other)))
-            with patch.object(server, "ANTHROPIC_API_KEY", ""):
+            with patch.object(server, "DM_BRAIN_API_KEY", ""):
                 self.assertFalse(_run(server._dm_brain_on(mine)))      # no key: the old pipeline
             feature_flags.cache_invalidate()
 
@@ -352,6 +427,22 @@ class TheLib(unittest.TestCase):
                 {"sender": "1", "body": "old", "created_at": now - timedelta(days=9)}]
         self.assertEqual(dm_brain.history_messages(rows, now),
                          [{"role": "user", "content": "a\nb"}, {"role": "assistant", "content": "c"}])
+
+    def test_final_text_and_json(self):
+        self.assertEqual(dm_brain.final_text("<think>x</think>\nok"), "ok")
+        self.assertEqual(dm_brain.json_object('```json\n{"a": 1}\n```'), {"a": 1})
+        self.assertEqual(dm_brain.json_object('<think>hm</think> Sure: {"a": 2} done'), {"a": 2})
+        self.assertIsNone(dm_brain.json_object("no json"))
+
+    def test_language(self):
+        self.assertEqual(dm_brain.language("וויפל ארבעטער זענען היינט אויף 588?"), "yi")
+        self.assertEqual(dm_brain.language("¿Cuántos trabajadores hay hoy?"), "es")
+        self.assertEqual(dm_brain.language("How many on site at 588?"), "en")
+
+    def test_deepinfra_defaults(self):
+        self.assertEqual(dm_brain.API_BASE, "https://api.deepinfra.com/v1/openai")
+        self.assertEqual(dm_brain.MAX_TOOL_CALLS, 6)
+        self.assertEqual(server.DM_BRAIN_API_KEY, server.QWEN_API_KEY)     # no new key
 
     def test_exact_yes_no_only(self):
         for t in ("yes", "Yes!", "ok", "sí", "👍"):

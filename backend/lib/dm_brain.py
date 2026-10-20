@@ -19,6 +19,10 @@ What stays in code (server.py glue + this module) is only the guardrails:
   * no phone numbers go out;
   * every tool is scoped to the asking user's company and jobs.
 
+The model is Qwen 3.8 Flash on DeepInfra (OpenAI-compatible chat completions,
+tool calling); a stronger DeepInfra model (ESCALATE_MODEL) gets the one
+retry when the evidence check fails, and writes report summaries.
+
 This module is pure (no server import): prompt, context, history, checks.
 """
 
@@ -30,18 +34,25 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 FLAG = "dm_brain_v2"
-#: Claude Sonnet-class. Overridable for an eval or a rollback without a deploy.
-MODEL = os.environ.get("DM_BRAIN_MODEL") or "claude-sonnet-5-5"
-#: Effort for a chat turn with tool use (Sonnet 5.5 levels).
-EFFORT = os.environ.get("DM_BRAIN_EFFORT") or "medium"
-MAX_TOKENS = 4000
+#: DeepInfra, OpenAI-compatible; the key is the one the vision calls use
+#: (QWEN_API_KEY). Overridable for an eval or a rollback without a deploy.
+API_BASE = (os.environ.get("DM_BRAIN_API_BASE") or "https://api.deepinfra.com/v1/openai").rstrip("/")
+#: Every turn: Qwen 3.8 Flash (fast, cheap, tool calling).
+MODEL = os.environ.get("DM_BRAIN_MODEL") or "Qwen/Qwen3.8-Flash"
+#: A stronger DeepInfra model: report summaries, and the one retry when the
+#: evidence check fails.
+ESCALATE_MODEL = os.environ.get("DM_BRAIN_ESCALATE_MODEL") or "Qwen/Qwen3.8-Max"
+MAX_TOKENS = 1500
+TEMPERATURE = 0.2
 HISTORY_TURNS = 20
 HISTORY_DAYS = 7
-#: Model rounds in one turn (each may call several tools at once).
-MAX_ROUNDS = 8
-#: Times the model is asked again when its answer has a number or id that no
-#: tool result, message or context holds.
-VERIFY_RETRIES = 2
+#: Tool calls in one turn, run one after another; then it must answer.
+MAX_TOOL_CALLS = 6
+#: Model calls in one turn (tool rounds + the answer + the retries).
+MAX_ROUNDS = MAX_TOOL_CALLS + 4
+#: Times the model is asked again (on ESCALATE_MODEL) when its answer has a
+#: number or id that no tool result, message or context holds.
+VERIFY_RETRIES = 1
 UNVERIFIED_TEXT = ("I couldn't check that against the records just now. "
                    "Ask me again and I'll pull it fresh.")
 FAILED_TEXT = "Levelog Assistant couldn't answer that right now. Try again in a minute."
@@ -60,7 +71,8 @@ Plain construction language. No greeting, no preamble, no "Great question", no s
 - WhatsApp formatting only: *bold* sparingly, "- " bullets, no headings, no tables, no markdown links.
 - Never send an empty heading or a label with nothing under it. You decide the length; nothing will \
 cut your answer, so make it complete and short.
-- Reply in the language they write in (English, Spanish, Yiddish).
+- Reply in the language they write in: English, Spanish, or Yiddish (Yiddish is written in Hebrew letters --
+answer in Yiddish, never Hebrew). Names, job numbers and record ids stay as they are.
 
 Facts
 - Every number, name, date, time, permit/violation/record id you state must come from a tool result \
@@ -282,14 +294,47 @@ def redact_phones(text: str) -> str:
     return _PHONE_RE.sub("[number]", text or "")
 
 
-def final_text(blocks: Iterable[Any]) -> str:
-    """The text of a model response (its text blocks, joined)."""
-    parts = []
-    for b in blocks:
-        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
-        if t == "text":
-            parts.append((b.get("text") if isinstance(b, dict) else getattr(b, "text", "")) or "")
-    return "\n".join(p for p in parts if p.strip()).strip()
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def final_text(content: Any) -> str:
+    """The text of a model message: its content, without any <think> block."""
+    if isinstance(content, list):
+        content = "\n".join(str((c.get("text") if isinstance(c, dict) else getattr(c, "text", "")) or "")
+                            for c in content)
+    return _THINK_RE.sub("", str(content or "")).strip()
+
+
+def json_object(content: Any) -> Optional[Dict[str, Any]]:
+    """One JSON object from a model message (fences and <think> removed;
+    the first {...} if there is text around it), else None."""
+    import json
+    t = final_text(content)
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t.strip())
+    for cand in (t, t[t.find("{"):t.rfind("}") + 1] if "{" in t else ""):
+        try:
+            got = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(got, dict):
+            return got
+    return None
+
+
+# What a reply's language should be: Hebrew script (Yiddish), Spanish, or English.
+_HEB = re.compile(r"[\u0590-\u05FF]")
+_ES = re.compile(r"[¿¡ñáéíóú]|\b(?:cu[aá]nt[oa]s?|hoy|trabajadores|qu[eé]|d[oó]nde|est[aá]n?|hay|"
+                 r"semana|d[ií]as?|obra)\b", re.IGNORECASE)
+
+
+def language(text: Any) -> str:
+    """"yi", "es" or "en" -- the script and words, for the eval's check."""
+    t = str(text or "")
+    if _HEB.search(t):
+        return "yi"
+    if len(_ES.findall(t)) >= 1 and not re.search(r"\b(?:the|how|many|what|is|are)\b", t, re.I):
+        return "es"
+    return "en"
 
 
 # ── FAST PATHS: exact commands only ──────────────────────────────────────────

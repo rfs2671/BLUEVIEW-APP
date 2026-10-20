@@ -10,7 +10,7 @@
 3. The brain never says "check with X" / "not sure" before the tools: it is
    asked again with what it tried; a can't-answer is logged with the tools.
 
-The model is scripted (FakeClaude); the real one is in scripts/dm_brain_eval.py
+The model is scripted (FakeLLM); the real one is in scripts/dm_brain_eval.py
 (FIXED_CASES).
 """
 
@@ -25,7 +25,7 @@ from unittest.mock import patch
 import server  # noqa: E402
 from lib import attendance, dm_brain, punch, punch_brain, wa_assistant  # noqa: E402
 from tests import _punch_detailed  # noqa: E402
-from tests.test_dm_brain import FakeClaude, _Brain, last_tool_results, resp, text, use  # noqa: E402
+from tests.test_dm_brain import FakeLLM, _Brain, last_tool_results, resp, text, use  # noqa: E402
 from tests.test_punch_walkthrough_1821 import CHAT as WALK_CHAT, P588, _Walk  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import CO_A, _Ctx  # noqa: E402
@@ -36,8 +36,8 @@ SAID = "All of the above is for 3rd floor moving up to 4th now"
 
 
 def answer(obj, i="w1"):
-    """The walk brain's one tool call: its JSON answer."""
-    return resp(use("answer", obj, i))
+    """The walk brain's answer: one JSON object."""
+    return resp(text(json.dumps(obj)))
 
 
 class TheWalk(_Walk):
@@ -45,14 +45,14 @@ class TheWalk(_Walk):
 
     def setUp(self):
         super().setUp()
-        self.claude = FakeClaude()
+        self.llm = FakeLLM()
 
     def _deliver(self, parsed, text_):
         async def go():
             if not await server._punch_dm_turn(self.ident, WALK_CHAT, parsed, text_, brain=True):
                 await server._dm_assistant_reply(self.ident, WALK_CHAT, text_, parsed["message_id"])
-        with patch.object(server, "ANTHROPIC_API_KEY", "k"), \
-                patch.object(server, "_dm_brain_client", lambda: self.claude), \
+        with patch.object(server, "DM_BRAIN_API_KEY", "k"), \
+                patch.object(server, "_dm_brain_client", lambda: self.llm), \
                 patch.object(server, "OPENAI_API_KEY", None):
             asyncio.run(go())
 
@@ -60,7 +60,7 @@ class TheWalk(_Walk):
         self._turn("starting walkthrough at 588")
         self._turn("", photo=True)
         # A text after #1: words about it (the brain says so; the batch reader applies them).
-        self.claude.script += [answer({"actions": [{"do": "describe", "text": "Cracked tile"}], "reply": ""}),
+        self.llm.script += [answer({"actions": [{"do": "describe", "text": "Cracked tile"}], "reply": ""}),
                                answer({"kind": "annotation", "description": "Cracked tile"}, "b1")]
         self._turn("cracked tile")
         for _ in range(3):
@@ -70,13 +70,13 @@ class TheWalk(_Walk):
             state = json.loads(kw["messages"][-1]["content"].split("STATE:\n", 1)[1].split("\n\nMESSAGE:")[0])
             self.assertEqual(state["stage"], "capturing")
             self.assertEqual(state["since_last_location"], [1, 2, 3, 4])   # not #2-#4
-            self.assertEqual(kw["tool_choice"], {"type": "tool", "name": "answer"})
+            self.assertEqual(kw["response_format"], {"type": "json_object"})
             return answer({"actions": [{"do": "location", "items": "since_last", "place": "3rd floor"},
                                        {"do": "default_location", "place": "4th floor"}],
                            "reply": "Got it."})
-        self.claude.script.append(plan)
+        self.llm.script.append(plan)
         out = self._turn(SAID)
-        self.assertEqual(len(self.claude.calls), 3)
+        self.assertEqual(len(self.llm.calls), 3)
         self.assertEqual(out, ["Set 3rd floor for #1–#4 (4 photos).\nNext photos: 4th floor."])
         self.assertEqual([self.item(n)["floor"] for n in (1, 2, 3, 4)], ["3"] * 4)
         self.assertFalse(any(self.item(n).get("notes") for n in (1, 2, 3, 4)))   # never a note
@@ -86,7 +86,7 @@ class TheWalk(_Walk):
         self.assertEqual(self.item(5)["floor"], "4")
         self.assertEqual(self.item(5)["loc_src"], "default")
         # A later "these are roof" is free to set it again.
-        self.claude.script.append(answer({"actions": [{"do": "location", "items": "since_last",
+        self.llm.script.append(answer({"actions": [{"do": "location", "items": "since_last",
                                                        "place": "roof"}], "reply": ""}))
         out = self._turn("that one is the roof actually")
         self.assertEqual(self.item(5)["area"], "roof")
@@ -96,9 +96,9 @@ class TheWalk(_Walk):
         self._turn("tile cracked", photo=True)
         for said in ("#1 lobby", "#1-1 roof"):
             self._turn(said)
-        self.assertEqual(self.claude.calls, [])
+        self.assertEqual(self.llm.calls, [])
         out = self._turn("done")
-        self.assertEqual(self.claude.calls, [])
+        self.assertEqual(self.llm.calls, [])
         self.assertTrue(out)
 
     def test_the_chats_last_turns_go_with_it(self):
@@ -110,9 +110,9 @@ class TheWalk(_Walk):
              "created_at": now - timedelta(minutes=2)}])
         self._turn("starting walkthrough at 588")
         self._turn("", photo=True)
-        self.claude.script.append(answer({"actions": [], "reply": "Which floor?"}))
+        self.llm.script.append(answer({"actions": [], "reply": "Which floor?"}))
         self._turn("same as before")
-        msgs = self.claude.calls[0]["messages"]
+        msgs = self.llm.calls[0]["messages"]
         self.assertIn("we're on the 3rd floor now", json.dumps(msgs))
         self.assertTrue(msgs[-1]["content"].startswith("we're on the 3rd floor now")
                         or "STATE:" in msgs[-1]["content"])
@@ -170,9 +170,9 @@ class TheHvacDays(_Brain):
             self.assertIn("Cool Air Corp: 3 days", res)
             self.assertIn("6 man-days", res)
             return resp(text("HVAC on 588 is Cool Air Corp: 3 days on site, 6 man-days."))
-        claude = FakeClaude(resp(use("sub_attendance", {"job": "588", "trade": "hvac"})), answer_)
+        llm = FakeLLM(resp(use("sub_attendance", {"job": "588", "trade": "hvac"})), answer_)
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "How many days hvac worked in 588", claude)
+            out = self.say(c, "How many days hvac worked in 588", llm)
         self.assertEqual(out, ["HVAC on 588 is Cool Air Corp: 3 days on site, 6 man-days."])
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual((log["fallback"], log["tools_tried"][0][:14]), (False, "sub_attendance"))
@@ -198,26 +198,26 @@ class TheNoDeflectRule(_Brain):
             self.assertIn("never send them elsewhere", note)
             self.assertIn("Tools called so far: none", note)
             return resp(use("sub_attendance", {"job": "588", "trade": "plumber"}))
-        claude = FakeClaude(resp(text("Check with the site manager on that.")), again,
+        llm = FakeLLM(resp(text("Check with the site manager on that.")), again,
                             lambda kw: resp(text("Quality Plumbing: no check-ins at 588 in that time.")))
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "how many days did the plumber work", claude)
+            out = self.say(c, "how many days did the plumber work", llm)
         self.assertEqual(out, ["Quality Plumbing: no check-ins at 588 in that time."])
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual(log["deflect_retries"], 1)
 
     def test_a_cant_answer_after_the_tools_is_logged_with_them(self):
-        claude = FakeClaude(resp(use("find_sub", {"trade_or_name": "elevator"})),
+        llm = FakeLLM(resp(use("find_sub", {"trade_or_name": "elevator"})),
                             resp(text("I don't have an elevator sub on your list.")),
                             resp(text("I checked the subs list: no elevator sub on it.")))
         with _Ctx(db=self.db) as c:
-            out = self.say(c, "how many days did the elevator guys work", claude)
+            out = self.say(c, "how many days did the elevator guys work", llm)
         self.assertEqual(out, ["I checked the subs list: no elevator sub on it."])
-        claude2 = FakeClaude(resp(use("find_sub", {"trade_or_name": "elevator"})),
+        llm2 = FakeLLM(resp(use("find_sub", {"trade_or_name": "elevator"})),
                              resp(text("I don't have an elevator sub.")),
                              resp(text("I don't have an elevator sub on the subs list.")))
         with _Ctx(db=self.db) as c:
-            self.say(c, "and the elevator?", claude2)
+            self.say(c, "and the elevator?", llm2)
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual((log["fallback"], log["reason"]), (True, "cant_answer"))
         self.assertTrue(log["tools_tried"][0].startswith("find_sub("), log["tools_tried"])

@@ -9,7 +9,7 @@ Writes the feature_flags row (enabled_for_companies) and a
 feature_flag_audit_log row, as the admin endpoint does; every write is also
 recorded in audit_logs with actor "script:dm_brain_flag" (prod_guard).
 Nothing else changes: companies not on the list keep the old DM pipeline.
-The brain also needs ANTHROPIC_API_KEY on the service; without it everyone
+The brain also needs QWEN_API_KEY (DeepInfra) on the service; without it everyone
 gets the old one.
 """
 
