@@ -50412,10 +50412,13 @@ async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
     if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
         return False
     digits = wa_dm.phone_digits(chat)
+    # The same keys STOP writes: the chat, the phone, and the person.
+    keys = [{"phone": phone}, {"user_id": str(users[0].get("_id") or "")}]
+    if digits:
+        keys += [{"phone": digits}, {"chat_digits": digits}]
+    keys = [k for k in keys if all(k.values())]
     try:
-        if await db[WA_OPTINS].find_one(
-                {"$or": [{"phone": {"$in": _contact_phone_variants(phone)}},
-                         {"chat_digits": digits}]}, {"_id": 1}):
+        if await db[WA_OPTINS].find_one({"$or": keys}, {"_id": 1}):
             return False                     # opted out (or in another way): no hint
     except Exception:
         return False
