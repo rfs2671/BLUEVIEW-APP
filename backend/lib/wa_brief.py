@@ -1,7 +1,8 @@
 """Morning brief — the pure parts (no database, no network).
 
-One WhatsApp DM a day to each opted-in Admin (all company jobs) and PM
-(assigned jobs): what needs action today, then who is on site so far.
+WhatsApp DMs once a day to each opted-in Admin (all company jobs) and PM
+(assigned jobs), one message per job: what needs action today, then who is
+on site so far.
 
 DETERMINISTIC. Every line comes from a stored record, with that record's own
 number, date and status. Nothing is inferred and no urgency is invented: a
@@ -16,11 +17,11 @@ record without the value a line needs is left out, never filled in.
   (inspections: no stored scheduled date exists, so there is no 🔴 line for
    them — none is guessed)
 
-Sort: DOB/regulatory, then permits. At most 7 items in all.
+Sort: DOB/regulatory, then permits. At most 7 items per job.
 
-THE LAYOUT is a fixed template (compose, at the bottom): per job, in this
-order, WhatsApp *bold* headers, one line per item, a blank line between
-sections, an empty section left out --
+THE LAYOUT is a fixed template (compose_messages, at the bottom): one
+message per job, in this order, WhatsApp *bold* headers, one line per item,
+a blank line between sections, an empty section left out --
 
   📅 Today · 🏛 DOB / DOT · ✅ You · ⏳ Waiting on others · 🔍 Check ·
   👷 who is on site · 📆 Later this week
@@ -32,7 +33,9 @@ sections, an empty section left out --
       assignee ("Chris: 4 punch items (oldest 2 days)")
   Today / Later this week: Upcoming events, today's under Today
 
-"No action needed today." only when no job has anything to say.
+A last short message holds the recipient's own reminders, the quiet jobs
+("No check-ins yet: A, B.") and "No action needed today." when no job has
+anything to say.
 """
 
 from __future__ import annotations
@@ -574,12 +577,11 @@ def _event_day(e: Dict[str, Any]) -> Optional[date]:
         return None
 
 
-def event_sections(events: Iterable[Dict[str, Any]], today: date,
-                   keep: Optional[set] = None) -> Tuple[List[str], List[str]]:
+def event_sections(events: Iterable[Dict[str, Any]], today: date
+                   ) -> Tuple[List[str], List[str]]:
     """Today: ['• 7am Concrete pour']; Later this week: ['• Thu 9am
     Electrical inspection']. Events in date and time order. Later events
-    are capped at MAX_LATER, or, given `keep` (ids of the later events the
-    whole brief has room for), limited to those; the rest are '+N more'."""
+    are capped at MAX_LATER; the rest are '+N more'."""
     now_, later, extra = [], [], 0
     for e in sorted(events, key=_event_key):
         d = _event_day(e)
@@ -589,7 +591,7 @@ def event_sections(events: Iterable[Dict[str, Any]], today: date,
         t = _time(e.get("time"))
         if d == today:
             now_.append(" ".join(x for x in ("•", t, title) if x))
-        elif (len(later) < MAX_LATER) if keep is None else (id(e) in keep):
+        elif len(later) < MAX_LATER:
             later.append(" ".join(x for x in ("•", d.strftime("%a"), t, title) if x))
         else:
             extra += 1
@@ -598,25 +600,22 @@ def event_sections(events: Iterable[Dict[str, Any]], today: date,
 
 def events_by_job(events: Iterable[Dict[str, Any]], today: date
                   ) -> Dict[Optional[str], Tuple[List[str], List[str]]]:
-    """{project_id (None for one's own reminders): (today, later)}. Later
-    this week holds at most MAX_LATER events across the whole brief, the
-    soonest first; a job with events cut says '+N more'."""
-    events = list(events)
-    later = sorted((e for e in events if (_event_day(e) or today) > today
-                    and str(e.get("title") or "").strip()), key=_event_key)
-    keep = {id(e) for e in later[:MAX_LATER]}
+    """{project_id (None for one's own reminders): (today, later)}. Each
+    job's Later this week holds at most MAX_LATER events, the soonest
+    first; a job with events cut says '+N more'."""
     groups: Dict[Optional[str], List[Dict[str, Any]]] = {}
     for e in events:
         pid = e.get("project_id")
         groups.setdefault(str(pid) if pid else None, []).append(e)
-    return {k: event_sections(v, today, keep) for k, v in groups.items()}
+    return {k: event_sections(v, today) for k, v in groups.items()}
 
 
-# ── The message: a fixed template ───────────────────────────────────────────
+# ── The messages: a fixed template ──────────────────────────────────────────
 #
-#   *Tue Oct 13*
+# One WhatsApp message per job that has something to say:
 #
-#   *588 Thomas S Boyland*
+#   *Tue Oct 13* · *588 Thomas S Boyland*
+#
 #   📅 *Today*            events today
 #   🏛 *DOB / DOT*        new violations, status changes, permits, hearings
 #   ✅ *You*              your items due today / late
@@ -625,6 +624,10 @@ def events_by_job(events: Iterable[Dict[str, Any]], today: date
 #   👷 24 on site · …     who checked in
 #   📆 *Later this week*  events after today
 #
+# then, when there is any, one last short message: "No action needed
+# today." (no job had anything to act on), the recipient's own reminders,
+# and "No check-ins yet: A, B." for the quiet jobs.
+#
 # One line per item, a blank line between sections, an empty section left
 # out. Every line is a stored record's own values; nothing is written by a
 # model here.
@@ -632,6 +635,9 @@ def events_by_job(events: Iterable[Dict[str, Any]], today: date
 NOTHING_TODAY = "No action needed today."
 H_TODAY, H_DOB, H_YOU = "📅 *Today*", "🏛 *DOB / DOT*", "✅ *You*"
 H_WAITING, H_CHECK, H_LATER = "⏳ *Waiting on others*", "🔍 *Check*", "📆 *Later this week*"
+#: The part key of the last message (reminders, quiet jobs, nothing today);
+#: a job's message is keyed by the job's id.
+REST = "rest"
 
 
 def header(now_utc: datetime) -> str:
@@ -639,9 +645,9 @@ def header(now_utc: datetime) -> str:
     return f"*{now.strftime('%a %b')} {now.day}*"
 
 
-def job_block(job: Dict[str, Any], dob: List[str]) -> List[str]:
-    """One job's lines: '*label*' then its non-empty sections; [] when it has
-    nothing to say."""
+def job_sections(job: Dict[str, Any], dob: List[str]) -> List[str]:
+    """One job's non-empty sections, a blank line between them; [] when it
+    has nothing to say."""
     sections = [
         [H_TODAY] + list(job.get("today") or []) if job.get("today") else [],
         [H_DOB] + dob if dob else [],
@@ -651,59 +657,54 @@ def job_block(job: Dict[str, Any], dob: List[str]) -> List[str]:
         [job["headcount"]] if job.get("headcount") and job["headcount"] != NO_CHECKINS else [],
         [H_LATER] + list(job.get("later") or []) if job.get("later") else [],
     ]
-    sections = [sec for sec in sections if sec]
-    if not sections:
-        return []
-    out = [f"*{job['label']}*"]
-    for i, sec in enumerate(sections):
-        out += ([] if i == 0 else [""]) + sec
+    out: List[str] = []
+    for sec in (sec for sec in sections if sec):
+        out += ([""] if out else []) + sec
     return out
 
 
-def compose(now_utc: datetime, jobs: List[Dict[str, Any]],
-            own: Optional[Dict[str, List[str]]] = None) -> str:
-    """jobs: [{label, items, today, you, waiting, check, headcount,
-    uses_checkins, later}] in display order; `own`: {today, later} for the
-    recipient's own reminders (no job). At most MAX_ITEMS DOB / DOT lines
-    across all jobs, the most pressing first.
+def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
+                     own: Optional[Dict[str, List[str]]] = None) -> List[Tuple[str, str]]:
+    """[(part, text)]: one message per job with something to say (part: the
+    job's id), then at most one more (part REST). jobs: [{id, label, items,
+    today, you, waiting, check, headcount, uses_checkins, later}] in display
+    order; `own`: {today, later} for the recipient's own reminders (no job).
 
-    A job with something to say gets its block; a job that uses check-ins
-    with nothing at all is named in 'No check-ins yet: A, B.'; any other job
-    is left out."""
-    ranked: List[Tuple[Tuple, int, str]] = []
-    for j_idx, job in enumerate(jobs):
-        for it in job.get("items") or []:
-            ranked.append(((it["rank"], it["order"], j_idx), j_idx, it["text"]))
-    ranked.sort(key=lambda t: t[0])
-    kept = ranked[:MAX_ITEMS]
-    extra = len(ranked) - len(kept)
-    dob: Dict[int, List[str]] = {}
-    for _k, j_idx, text in kept:
-        dob.setdefault(j_idx, []).append(text)
-
-    blocks: List[Tuple[Tuple, List[str]]] = []
+    Each job shows at most MAX_ITEMS DOB / DOT lines, the most pressing
+    first, and says '+N more' for the rest. Jobs with DOB / DOT lines come
+    first, the most pressing first; then the others in display order. A job
+    that uses check-ins with nothing at all is named in the last message's
+    'No check-ins yet: A, B.'; any other job is left out. The last message
+    also holds the reminders, and "No action needed today." when no job has
+    anything to act on (a headcount alone is not)."""
+    day = header(now_utc)
+    msgs: List[Tuple[Tuple, str, str]] = []
     quiet = []
     for j, job in enumerate(jobs):
-        block = job_block(job, dob.get(j, []))
-        if block:
-            first = min((r[0] for r in kept if r[1] == j), default=(9,))
-            blocks.append(((0, first) if j in dob else (1, (j,)), block))
-        elif job.get("uses_checkins", True):
-            quiet.append(job["label"])
-    blocks.sort(key=lambda b: b[0])
-    mine = job_block({"label": "Your reminders", "today": (own or {}).get("today"),
-                      "later": (own or {}).get("later")}, [])
+        items = sorted(job.get("items") or [], key=lambda i: (i["rank"], i["order"]))
+        dob = [it["text"] for it in items[:MAX_ITEMS]]
+        body = job_sections(job, dob)
+        if not body:
+            if job.get("uses_checkins", True):
+                quiet.append(job["label"])
+            continue
+        if len(items) > MAX_ITEMS:
+            body += ["", f"+{len(items) - MAX_ITEMS} more DOB / DOT in the Levelog app."]
+        key = (0, items[0]["rank"], items[0]["order"], j) if dob else (1, j)
+        part = str(job.get("id") or j)
+        msgs.append((key, part, "\n".join([f"{day} · *{job['label']}*", ""] + body)))
+    msgs.sort(key=lambda m: m[0])
+    out = [(part, text) for _k, part, text in msgs]
 
-    # Anything to act on (a headcount alone is not); else the line says so.
-    acting = bool(dob or mine) or any(
-        job.get(k) for job in jobs for k in ("today", "you", "waiting", "check", "later"))
-    lines = [header(now_utc)] + ([] if acting else [NOTHING_TODAY])
-    for _key, block in blocks:
-        lines += [""] + block
+    mine = job_sections({"today": (own or {}).get("today"),
+                         "later": (own or {}).get("later")}, [])
+    acting = bool(mine) or any(job.get(k) for job in jobs for k in
+                               ("items", "today", "you", "waiting", "check", "later"))
+    rest = [] if acting else [NOTHING_TODAY]
     if mine:
-        lines += [""] + mine
+        rest += ([""] if rest else []) + ["*Your reminders*"] + mine
     if quiet:
-        lines += ["", "No check-ins yet: " + ", ".join(quiet) + "."]
-    if extra > 0:
-        lines += ["", f"+{extra} more DOB / DOT in the Levelog app."]
-    return "\n".join(lines)
+        rest += ([""] if rest else []) + ["No check-ins yet: " + ", ".join(quiet) + "."]
+    if rest:
+        out.append((REST, "\n".join([day] + ([""] if acting else []) + rest)))
+    return out

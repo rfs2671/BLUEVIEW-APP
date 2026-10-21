@@ -32,7 +32,9 @@ import server  # noqa: E402
 from lib import wa_assistant, wa_dm, wa_facts  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A, _Ctx, _Wire  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS, _Harness, _optin  # noqa: E402
-from tests.test_whatsapp_morning_brief import THU_7, _run, _sends, _tick, _world  # noqa: E402
+from tests.test_whatsapp_morning_brief import (  # noqa: E402
+    THU_7, WALWORTH, _run, _sends, _texts, _tick, _world,
+)
 
 NY = wa_facts.NY
 # Wed Oct 14 2026, 10:12 AM New York.
@@ -46,7 +48,15 @@ def _log(db, uid="u_admin", day=THU):
 
 
 def _ledger(db, uid="u_admin", day=THU):
+    """The whole brief's row."""
     key = wa_dm.ledger_key(uid, None, server.MORNING_BRIEF_KIND, day)
+    return next((r for r in db[server.WA_LEDGER].rows if r["_id"] == key), None)
+
+
+def _part(db, part, uid="u_admin", day=THU):
+    """One message's row (a job's id, or wa_brief.REST)."""
+    key = wa_dm.ledger_key(uid, None, server.MORNING_BRIEF_KIND,
+                           server._brief_part_window(day, part))
     return next((r for r in db[server.WA_LEDGER].rows if r["_id"] == key), None)
 
 
@@ -62,7 +72,11 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
         with _Ctx(db, wire=_Wire([(400, {}, None)])) as c:
             r1 = _tick(c, THU_7)
             self.assertEqual(r1["failed"], 1)
-            self.assertEqual(_ledger(db)["status"], "failed")
+            # The first message (8 Walworth St) failed, the second went out;
+            # the brief is not "sent" until both are.
+            self.assertEqual(_part(db, WALWORTH)["status"], "failed")
+            self.assertEqual(_part(db, THOMAS)["status"], "sent")
+            self.assertIsNone(_ledger(db))
             log = _log(db)
             self.assertEqual((log["status"], log["reason"], log["attempts"]),
                              ("failed", "send_failed", 1))
@@ -70,7 +84,10 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
             # Before the fix: "already", and nothing more that day.
             r2 = _tick(c, THU_7 + timedelta(minutes=10))
         self.assertEqual((r2["sent"], r2["retried"], r2["already"]), (1, 1, 0))
-        self.assertEqual(len(_sends(c)), 2)
+        texts = _texts(c)
+        self.assertEqual(len(texts), 3)             # the retry: the failed one alone
+        self.assertEqual(texts[2], texts[0])
+        self.assertIn("8 Walworth St", texts[2])
         self.assertEqual(_ledger(db)["status"], "sent")
         log = _log(db)
         self.assertEqual((log["status"], log["attempts"]), ("sent", 2))
@@ -88,7 +105,62 @@ class TheBriefIsRetriedAndLogged(unittest.TestCase):
                                           "created_at": THU_7 - timedelta(minutes=30)})
         with _Ctx(db) as c:
             r = _tick(c, THU_7)
-        self.assertEqual((r["sent"], len(_sends(c))), (1, 1))
+        self.assertEqual((r["sent"], len(_sends(c))), (1, 2))
+        self.assertEqual(_ledger(db)["status"], "sent")
+
+    def test_since_your_brief_is_its_first_message(self):
+        db = _world()
+        rows = [(f"{THU}:{WALWORTH}", 7), (f"{THU}:{THOMAS}", 9), (THU, 7)]
+        db[server.WA_LEDGER].rows.extend(
+            {"_id": f"r{m}{w}", "user_id": "u_admin", "kind": server.MORNING_BRIEF_KIND,
+             "window": w, "status": "sent", "created_at": THU_7 + timedelta(minutes=m)}
+            for w, m in rows)
+        with _Ctx(db):
+            at = _run(server._dm_brief_sent_today("u_admin", THU_7 + timedelta(hours=2)))
+        self.assertEqual(at, THU_7 + timedelta(minutes=7))
+
+    def test_a_failed_second_message_is_retried_alone(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        ok = (200, {"status": "success"}, None)
+        with _Ctx(db, wire=_Wire([ok, (400, {}, None)])) as c:
+            r1 = _tick(c, THU_7)
+            self.assertEqual((r1["sent"], r1["failed"]), (0, 1))
+            self.assertEqual(_part(db, WALWORTH)["status"], "sent")
+            self.assertEqual(_part(db, THOMAS)["status"], "failed")
+            self.assertIsNone(_ledger(db))           # not all out yet
+            # Before its next try: nothing.
+            _tick(c, THU_7 + timedelta(minutes=2))
+            self.assertEqual(len(_sends(c)), 2)
+            r2 = _tick(c, THU_7 + timedelta(minutes=10))
+        self.assertEqual((r2["sent"], r2["retried"]), (1, 1))
+        texts = _texts(c)
+        self.assertEqual(len(texts), 3)
+        self.assertEqual(texts[2], texts[1])         # the Thomas message, again
+        self.assertIn("588 Thomas", texts[2])
+        self.assertNotIn("Walworth", texts[2])
+        # All out: the whole brief's row, stamped with its first message.
+        row = _ledger(db)
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(row["created_at"], _part(db, WALWORTH)["created_at"])
+        self.assertEqual(_log(db)["status"], "sent")
+        with _Ctx(db) as c2:
+            r3 = _tick(c2, THU_7 + timedelta(minutes=20))
+        self.assertEqual((r3["already"], len(_sends(c2))), (1, 0))
+
+    def test_new_is_since_the_last_whole_brief_not_a_message(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        yesterday = THU_7 - timedelta(days=1)
+        db[server.WA_LEDGER].rows.extend([
+            {"_id": "whole", "user_id": "u_admin", "kind": server.MORNING_BRIEF_KIND,
+             "window": "2026-10-07", "status": "sent", "created_at": yesterday},
+            {"_id": "part", "user_id": "u_admin", "kind": server.MORNING_BRIEF_KIND,
+             "window": f"{THU}:{WALWORTH}", "status": "sent",
+             "created_at": THU_7 - timedelta(minutes=5)}])
+        with _Ctx(db):
+            since = _run(server._brief_since("u_admin", THU_7))
+        self.assertEqual(since, yesterday)
 
     def test_a_send_in_flight_is_left_alone(self):
         db = _world()
@@ -436,6 +508,26 @@ class UserLevel(_Harness, unittest.TestCase):
         today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
         self.assertEqual(_log(db, day=today)["status"], "resent")
         # The morning tick finds it sent.
+        self.assertEqual(_ledger(db, day=today)["status"], "sent")
+
+    def test_send_me_my_brief_sends_every_message(self):
+        # More messages than the reply window's sends: the rest go out
+        # through the opt-in, each with its own ledger row.
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        n = wa_dm.REPLY_WINDOW_MAX_SENDS + 2
+
+        async def brief(user, now):
+            return [(f"p{i}", f"message {i}") for i in range(n)] + [("rest", "the rest")]
+        with _Ctx(db) as c, patch.object(server, "_brief_for_user", brief):
+            self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief")
+            # Asked again the same day: every message again.
+            self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief", mid="D2")
+        texts = _texts(c)
+        want = [f"message {i}" for i in range(n)] + ["the rest"]
+        self.assertEqual([t for t in texts if t in want], want + want)
+        today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
+        self.assertEqual(_log(db, day=today)["status"], "resent")
         self.assertEqual(_ledger(db, day=today)["status"], "sent")
 
     def test_settings(self):
