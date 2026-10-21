@@ -249,6 +249,46 @@ async def bin_probe(server, project):
     return "\n".join(lines) + "\n"
 
 
+async def photo_census(server, project, start, end):
+    """Every photo the project's daily logs hold for the period, by day and sub: in
+    the activity rows (what the report reads), in any OTHER photo-bearing field of
+    the log (what it does not), and how many of each have a stored file. Shows
+    whether the report is missing photos the crews filed. Read-only."""
+    pid = str(project.get("_id"))
+    logs = await server.db.logbooks.find({"project_id": pid, "log_type": "daily_jobsite",
+                                          "is_deleted": {"$ne": True},
+                                          "date": {"$gte": start, "$lte": end}}).to_list(2000)
+    per_sub, lines, other_fields = {}, [], {}
+    for lg in sorted(logs, key=lambda x: str(x.get("date"))):
+        data = lg.get("data") if isinstance(lg.get("data"), dict) else {}
+        day = {}
+        for row in data.get("activities") or []:
+            if not isinstance(row, dict):
+                continue
+            who = str(row.get("company") or row.get("subcontractor") or row.get("trade") or "(no company)")
+            for ph in row.get("photos") or []:
+                if not isinstance(ph, dict):
+                    continue
+                stored = bool(ph.get("enhanced_r2_key") or ph.get("original_r2_key") or ph.get("thumb_r2_key"))
+                inline = bool(ph.get("base64") or ph.get("thumb_base64"))
+                day[who] = day.get(who, 0) + 1
+                tot = per_sub.setdefault(who, {"photos": 0, "stored": 0, "inline only": 0, "unreadable": 0})
+                tot["photos"] += 1
+                tot["stored" if stored else "inline only" if inline else "unreadable"] += 1
+        for k, v in data.items():
+            if k != "activities" and "photo" in str(k).lower() and isinstance(v, list):
+                for _ in v:
+                    other_fields[k] = other_fields.get(k, 0) + 1
+        lines.append(f"{str(lg.get('date'))[:10]} | status {lg.get('status')} | "
+                     + (", ".join(f"{w}: {n}" for w, n in sorted(day.items())) or "no photos in activity rows"))
+    out = ["PHOTOS IN THE PERIOD'S DAILY LOGS (activity rows: what the report reads)", ""] + lines
+    out += ["", "BY SUB (photos | with a stored file | inline copy only | unreadable)"]
+    out += [f"{w}: {t['photos']} | {t['stored']} | {t['inline only']} | {t['unreadable']}" for w, t in sorted(per_sub.items())]
+    out += ["", "PHOTO FIELDS OUTSIDE THE ACTIVITY ROWS (the report does not read these): "
+            + ("; ".join(f"{k}: {n}" for k, n in sorted(other_fields.items())) or "none")]
+    return "\n".join(out) + "\n"
+
+
 def _soda_get(dataset, params):
     import urllib.parse
     import urllib.request
@@ -381,6 +421,9 @@ async def main(args):
     with open(os.path.join(out, "progress_report_real.bin_probe.txt"), "w", encoding="utf-8") as f:
         f.write(await bin_probe(server, project))
     print("wrote progress_report_real.bin_probe.txt")
+    with open(os.path.join(out, "progress_report_real.photo_census.txt"), "w", encoding="utf-8") as f:
+        f.write(await photo_census(server, project, args.start, args.end))
+    print("wrote progress_report_real.photo_census.txt")
     photos = got["photos"]
     photo_lines = [f"{x.get('sub')} | {x.get('date')} | {x.get('where') or ''} | sees: {x.get('work')} | "
                    f"{x.get('caption')}" for x in photos]
