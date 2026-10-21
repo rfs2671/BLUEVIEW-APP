@@ -69,6 +69,18 @@ class StripReferrals(unittest.TestCase):
         self.assertEqual(out, "I don't have framer counts.")
         self.assertFalse(dm_brain.refers_elsewhere(out))
 
+    def test_an_answer_from_the_records_is_kept(self):
+        """Codex on #840: "confirm with the Levelog records" answers; nobody
+        is sent anywhere, so nothing is removed."""
+        for t in ("I can confirm with the Levelog records that 4 workers are on site.",
+                  "Verified with the daily log: 12 on site at 588.",
+                  "We checked with the sign-ins: Arkon had 6 today."):
+            with self.subTest(t=t):
+                self.assertEqual(dm_brain.no_referral(t, "588"), (t, False))
+        mixed = "I can confirm with the records that 4 are on site. Check with the super for framers."
+        self.assertEqual(dm_brain.no_referral(mixed, "588"),
+                         ("I can confirm with the records that 4 are on site.", True))
+
     def test_empty(self):
         self.assertEqual(dm_brain.no_referral(None), ("", False))
         self.assertEqual(dm_brain.strip_referrals(""), "")

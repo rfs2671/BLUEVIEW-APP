@@ -320,21 +320,44 @@ NOT_FOUND_JOB_TEXT = "I couldn't find that in Levelog for {job}."
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+# For REMOVING a sentence (strip_referrals): only a sentence that sends the
+# reader to a person. "I can confirm with the Levelog records that 4 are on
+# site" is an answer, not a referral (Codex on #840); the broad
+# refers_elsewhere stays the retry detector.
+_SELF_CHECK_RE = re.compile(
+    r"\b(?:i|we)\s+(?:can|could|will|'ll|did|have|just)?\s*(?:check|confirm|verify)(?:ed)?\s+with\b",
+    re.IGNORECASE)
+_RECORDS_TARGET_RE = re.compile(
+    r"\b(?:check|confirm|verify)\s+with\s+(?:the\s+|our\s+|your\s+)?(?:levelog|records?|logs?|data|app|"
+    r"system|daily\s+logs?|sign[- ]?ins?|check[- ]?ins?)\b", re.IGNORECASE)
+
+
+def _sends_elsewhere(text: Any) -> bool:
+    """refers_elsewhere, minus "check / confirm with <the records>" and the
+    assistant's own "I can confirm with ..." -- those answer, they don't
+    refer."""
+    t = str(text or "")
+    if not refers_elsewhere(t):
+        return False
+    rest = _RECORDS_TARGET_RE.sub(" ", _SELF_CHECK_RE.sub(" ", t))
+    return refers_elsewhere(rest)
+
+
 def strip_referrals(reply: Any) -> str:
     """The reply without the sentence(s) that send them elsewhere
     (refers_elsewhere): every other sentence kept as written, line breaks
     kept. "" when nothing with a letter or digit is left. Pure."""
     t = str(reply or "")
-    if not refers_elsewhere(t):
+    if not _sends_elsewhere(t):
         return t
     lines = []
     for line in t.splitlines():
-        if not refers_elsewhere(line):
+        if not _sends_elsewhere(line):
             lines.append(line)
             continue
         lead = re.match(r"^\s*(?:[-*•]\s+|\d+[.)]\s+)?", line).group(0)    # a bullet stays
         kept = [s for s in _SENTENCE_END_RE.split(line[len(lead):].strip())
-                if s and not refers_elsewhere(s)]
+                if s and not _sends_elsewhere(s)]
         if any(re.search(r"[^\W_]", s) for s in kept):
             lines.append(lead + " ".join(kept))
     out = "\n".join(lines).strip()
@@ -348,7 +371,7 @@ def no_referral(reply: Any, job_label: Optional[str] = None) -> tuple:
     "I couldn't find that in Levelog[ for <job>]." line. A reply with no
     referral comes back unchanged (removed False)."""
     t = str(reply or "")
-    if not refers_elsewhere(t):
+    if not _sends_elsewhere(t):
         return t, False
     kept = strip_referrals(t)
     if kept:
