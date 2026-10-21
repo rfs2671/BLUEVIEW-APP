@@ -461,6 +461,30 @@ class TheFlashFixes(_Brain):
         self.assertGreaterEqual(seen.count(True), 2)                 # refreshed while it worked
         self.assertEqual(seen[-1], False)                            # and stopped
 
+    def test_read_then_typing_like_a_person(self):
+        """Blue ticks first (send-seen), then typing…, then stop -- and a
+        failed action is logged without their number."""
+        posted = []
+
+        async def post(url, payload, headers):
+            posted.append(url.rsplit("/", 1)[-1])
+            return (500, {}, None) if posted[-1] == "send-seen" else (200, {"data": {"status": "success"}}, None)
+        dm = "17185550100@c.us"
+        with _Ctx(db=self.db), patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            done = asyncio.Event()
+
+            async def run():
+                task = asyncio.ensure_future(server._dm_typing_while(dm, done))
+                await asyncio.sleep(0.01)
+                done.set()
+                await task
+            _run(run())
+        self.assertEqual(posted, ["send-seen", "send-typing", "send-stop-typing"])
+        self.assertIn("send-seen failed: status=500", logs.output[0])
+        self.assertNotIn("5550100", " ".join(logs.output))
+
 
 class TheCodexFindings(_Brain):
     """Codex on #824 (9cdc3e6)."""
