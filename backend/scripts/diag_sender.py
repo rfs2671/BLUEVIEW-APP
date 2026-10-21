@@ -42,9 +42,11 @@ async def run(a) -> int:
     if not os.environ.get("MONGO_URL") or not os.environ.get("DB_NAME"):
         sys.exit("MONGO_URL / DB_NAME are not set — run under `railway run`.")
     db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
-    me = await db.users.find_one({"email": a.email.strip().lower(), "is_deleted": {"$ne": True}})
+    who = a.email.strip()
+    me = await db.users.find_one({"email": who.lower(), "is_deleted": {"$ne": True}} if "@" in who
+                                 else {"name": {"$regex": "(?i)" + re.escape(who)}, "is_deleted": {"$ne": True}})
     if not me:
-        sys.exit("No user with that email.")
+        sys.exit("No user with that email or name.")
     company = str(me.get("company_id") or "")
     optins = await db.whatsapp_optins.find({"user_id": str(me["_id"])}).to_list(10)
     mine = {wa_dm.phone_digits(me.get("phone"))[-10:]} - {""}
@@ -92,7 +94,7 @@ async def run(a) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True, help="the sender name, or part of it")
-    ap.add_argument("--email", required=True, help="the asker's login email")
+    ap.add_argument("--email", required=True, help="the asker: login email or name")
     ap.add_argument("--limit", type=int, default=10)
     return asyncio.run(run(ap.parse_args(argv)))
 

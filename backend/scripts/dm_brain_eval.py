@@ -381,9 +381,14 @@ async def _fixed(server, rows: list, cache: dict, email: str, models: List[str])
         {"question": {"$regex": "(?i)hvac"}}, sort=[("created_at", -1)])
     if hit:
         uid, live_old = str(hit.get("user_id") or ""), _clean(hit.get("answer"))
-    if not uid and email:
-        u = await server.db.users.find_one({"email": email.strip().lower()})
-        uid = str((u or {}).get("_id") or "")
+    if email:
+        # --email wins over the logged question's asker: a login email, or a name.
+        who = email.strip()
+        q = ({"email": who.lower()} if "@" in who
+             else {"name": {"$regex": "(?i)" + re.escape(who)}, "is_deleted": {"$ne": True}})
+        u = await server.db.users.find_one(q)
+        if u:
+            uid = str(u.get("_id") or "")
     if not uid and rows:
         uid = str(rows[0].get("user_id") or "")
     chat, ident = await _identity(server, uid, cache) if uid else ("", None)
@@ -618,8 +623,8 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--user", default="", help="only this user id")
     ap.add_argument("--out", default="dm_brain_eval")
-    ap.add_argument("--email", default="", help="run the fixed cases as this person (if the live "
-                                                 "HVAC question isn't in the log)")
+    ap.add_argument("--email", default="", help="run the fixed cases as this person: a login email or "
+                                                 "a name (default: whoever asked the live HVAC question)")
     ap.add_argument("--models", default="", help="comma-separated DeepInfra ids (default: DM_BRAIN_MODEL; "
                                                   "add DM_BRAIN_ESCALATE_MODEL to compare)")
     ap.add_argument("--fixed-only", action="store_true", help="only the fixed cases")
