@@ -1199,6 +1199,12 @@ class ThePacing(unittest.TestCase):
         async def dm(uid, text, **kw):
             sent.append((uid, clock[0]))
             return True
+        # Clear this module's own pacing state too: in the full suite the
+        # conftest reset can reach a different `server` module object than
+        # the one this file imported, and a stamp left by an earlier test on
+        # the real monotonic clock would read as a wait of hundreds of seconds.
+        server._BRIEF_LAST_SEND.clear()
+        server._BRIEF_SEND_LOCKS.clear()
         return clock, sleeps, sent, (
             patch.object(server, "BRIEF_SEND_GAP_SECONDS", 3),
             patch.object(server, "send_whatsapp_dm", dm),
