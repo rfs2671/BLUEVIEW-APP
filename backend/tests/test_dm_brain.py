@@ -483,7 +483,7 @@ class TheFlashFixes(_Brain):
             _run(run())
         self.assertEqual(posted, ["send-seen", "send-typing", "send-stop-typing"])
         self.assertIn("send-seen failed: status=500", logs.output[0])
-        self.assertNotIn("5550100", " ".join(logs.output))
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # no phone number logged
 
 
 class TheCodexFindings(_Brain):
