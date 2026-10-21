@@ -596,22 +596,45 @@ class TheEvalMode(unittest.TestCase):
 
 
 class TheFlag(unittest.TestCase):
-    def test_per_company_and_needs_a_key(self):
+    def test_on_for_everyone_unless_switched_off(self):
+        """Oct 21: no trial -- the brain is the default for every company.
+        dm_brain_off switches a company (or everyone) back to the old one."""
         from lib import feature_flags
         db = _db()
-        db.feature_flags.rows.append({"_id": "f1", "flag": dm_brain.FLAG, "enabled_globally": False,
-                                      "enabled_for_companies": [CO_A], "enabled_for_users": [],
-                                      "enabled_percentage": 0})
         mine = {"company_id": CO_A, "user_id": "u_admin"}
         other = {"company_id": "co_other", "user_id": "u_x"}
-        with _Ctx(db=db):
+        with _Ctx(db=db), patch.object(server, "DM_BRAIN_API_KEY", "k"):
             feature_flags.cache_invalidate()
-            with patch.object(server, "DM_BRAIN_API_KEY", "k"):
-                self.assertTrue(_run(server._dm_brain_on(mine)))
-                self.assertFalse(_run(server._dm_brain_on(other)))
-            with patch.object(server, "DM_BRAIN_API_KEY", ""):
-                self.assertFalse(_run(server._dm_brain_on(mine)))      # no key: the old pipeline
+            self.assertTrue(_run(server._dm_brain_on(mine)))           # no flag row: on
+            self.assertTrue(_run(server._dm_brain_on(other)))
+            db.feature_flags.rows.append({"_id": "f1", "flag": dm_brain.OFF_FLAG, "enabled_globally": False,
+                                          "enabled_for_companies": [CO_A], "enabled_for_users": [],
+                                          "enabled_percentage": 0})
             feature_flags.cache_invalidate()
+            self.assertFalse(_run(server._dm_brain_on(mine)))          # switched off for one company
+            self.assertTrue(_run(server._dm_brain_on(other)))
+            db.feature_flags.rows[-1]["enabled_globally"] = True
+            feature_flags.cache_invalidate()
+            self.assertFalse(_run(server._dm_brain_on(other)))         # off for everyone
+            feature_flags.cache_invalidate()
+        with _Ctx(db=_db()), patch.object(server, "DM_BRAIN_API_KEY", ""):
+            self.assertFalse(_run(server._dm_brain_on(mine)))          # no key: the old pipeline
+        feature_flags.cache_invalidate()
+
+
+    def test_the_script_never_says_on_under_the_kill_switch(self):
+        """Codex on #831: with everyone switched off, --on for one company
+        left it off (the global switch wins) but printed ON. Refused now."""
+        from scripts.dm_brain_flag import plan
+        killed = {"enabled_globally": True, "enabled_for_companies": ["co_a"]}
+        off_all, companies, refused = plan(killed, on=True, everyone=False, company="co_a")
+        self.assertIn("--everyone --on", refused)
+        self.assertEqual((off_all, companies), (True, ["co_a"]))          # unchanged
+        self.assertEqual(plan(killed, on=True, everyone=True), (False, ["co_a"], None))
+        self.assertEqual(plan(None, on=False, everyone=False, company="co_a"), (False, ["co_a"], None))
+        self.assertEqual(plan({"enabled_for_companies": ["co_a", "co_b"]}, on=True, everyone=False,
+                              company="co_a"), (False, ["co_b"], None))
+        self.assertEqual(plan(None, on=False, everyone=True), (True, [], None))
 
 
 class TheLib(unittest.TestCase):
