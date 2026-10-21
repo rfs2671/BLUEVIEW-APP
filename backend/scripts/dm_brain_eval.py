@@ -559,6 +559,10 @@ async def main_async(a) -> int:
     server._react_to_message = _no_send
 
     rows = await _rows(server, a.days, a.limit, a.user)
+    print(f"Database: {os.environ.get('DB_NAME')} · {len(rows)} logged DM answers in the last {a.days} days",
+          flush=True)
+    if not rows:
+        print("  (none: is `railway link` on the production environment and the backend service?)")
     numbered = list(enumerate(rows, 1))
     if a.pick:
         want = {int(x) for x in a.pick.split(",") if x.strip().isdigit()}
@@ -569,6 +573,12 @@ async def main_async(a) -> int:
     for r in fixed:
         print(f"[fixed {r['id']}] " + ", ".join(
             f"{m}: {'PASS' if (r['runs'].get(m) or {}).get('pass') else 'FAIL'}" for m in models), flush=True)
+        for m in models:
+            run = r["runs"].get(m) or {}
+            if not run.get("pass"):
+                bad = [k for k, ok in (run.get("checks") or {}).items() if not ok]
+                print(f"   {m}: {str(run.get('answer'))[:160]!r}"
+                      + (f" — failed: {', '.join(bad)}" if bad else ""), flush=True)
     if a.fixed_only:
         numbered = []
     print(f"{len(numbered)} logged DMs to replay …", flush=True)
