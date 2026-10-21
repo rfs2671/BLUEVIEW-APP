@@ -45,6 +45,7 @@ anything to say.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -787,8 +788,47 @@ def job_sections(job: Dict[str, Any], dob: List[str]) -> List[str]:
     return out
 
 
+#: At most this many job messages a morning; the rest wait for "brief all".
+MAX_JOB_MESSAGES = 6
+#: The part key of the "+N more jobs" line when there is no REST message.
+MORE = "more"
+BRIEF_ALL = "brief all"
+_BRIEF_ALL_RE = re.compile(r"^\s*brief\s+all\s*[.!]*\s*$", re.IGNORECASE)
+_LATE_RE = re.compile(r" — ⚠️ \d+ days? late$")
+SOON_DAYS = 7
+
+
+BRIEF_ALL_NOTHING = "That's everything in today's brief — every job has been sent."
+
+
+def is_brief_all(text: Any) -> bool:
+    """The exact reply "brief all" (any case, a trailing . or !)."""
+    return bool(_BRIEF_ALL_RE.match(str(text or "")))
+
+
+def more_jobs_line(n: int) -> str:
+    return f"+{n} more job{'s' if n != 1 else ''} — reply '{BRIEF_ALL}'"
+
+
+def job_severity(job: Dict[str, Any]) -> Tuple:
+    """Sort key, most severe first: new DOB / DOT violations (new since the
+    last brief), then permits expiring in under 7 days, then overdue open
+    items (due before today, not ASAP); more of the same first; then the
+    job's label (and id), so the order is stable."""
+    items = job.get("items") or []
+    new = sum(1 for it in items if str(it.get("text") or "").startswith("🔴 New "))
+    soon = sum(1 for it in items if it.get("rank") == RANK_PERMIT
+               and 0 <= (it.get("order") or (-1,))[0] < SOON_DAYS)
+    overdue = sum(1 for k in ("you", "waiting") for line in job.get(k) or []
+                  if _LATE_RE.search(str(line)))
+    return (-new, -soon, -overdue, str(job.get("label") or "").casefold(),
+            str(job.get("id") or ""))
+
+
 def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
-                     own: Optional[Dict[str, List[str]]] = None) -> List[Tuple[str, str]]:
+                     own: Optional[Dict[str, List[str]]] = None,
+                     max_jobs: Optional[int] = MAX_JOB_MESSAGES,
+                     already: Optional[Iterable[str]] = None) -> List[Tuple[str, str]]:
     """[(part, text)]: one message per job with something to say (part: the
     job's id), then at most one more (part REST). jobs: [{id, label, items,
     open, today, you, waiting, check, headcount, uses_checkins, later}] in display
@@ -800,7 +840,14 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
     that uses check-ins with nothing at all is named in the last message's
     'No check-ins yet: A, B.'; any other job is left out. The last message
     also holds the reminders, and "No action needed today." when no job has
-    anything to act on (a headcount alone is not)."""
+    anything to act on (a headcount alone is not).
+
+    More than `max_jobs` job messages: only the `max_jobs` most severe
+    (job_severity) are kept, in the order above, and the last message says
+    "+N more jobs — reply 'brief all'" (its own message, part MORE, when
+    there is no other last message). max_jobs=None: every job ("brief all").
+    `already`: parts sent today by another way ("brief all" before the
+    morning); a cut job among them is not counted in "+N more"."""
     day = header(now_utc)
     msgs: List[Tuple[Tuple, str, str]] = []
     quiet = []
@@ -816,9 +863,16 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
             body += ["", f"+{len(items) - MAX_ITEMS} more DOB / DOT in the Levelog app."]
         key = (0, items[0]["rank"], items[0]["order"], j) if dob else (1, j)
         part = str(job.get("id") or j)
-        msgs.append((key, part, "\n".join([f"{day} · *{job['label']}*", ""] + body)))
+        msgs.append((key, part, "\n".join([f"{day} · *{job['label']}*", ""] + body), j))
+    cut = 0
+    if max_jobs is not None and len(msgs) > max_jobs:
+        keep = sorted(msgs, key=lambda m: job_severity(jobs[m[3]]))[:max_jobs]
+        kept = {m[1] for m in keep}
+        done = set(already or ())
+        cut = sum(1 for m in msgs if m[1] not in kept and m[1] not in done)
+        msgs = keep
     msgs.sort(key=lambda m: m[0])
-    out = [(part, text) for _k, part, text in msgs]
+    out = [(part, text) for _k, part, text, _j in msgs]
 
     mine = job_sections({"today": (own or {}).get("today"),
                          "later": (own or {}).get("later")}, [])
@@ -831,5 +885,9 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
     if quiet:
         rest += ([""] if rest else []) + ["No check-ins yet: " + ", ".join(quiet) + "."]
     if rest:
+        if cut:
+            rest += ["", more_jobs_line(cut)]
         out.append((REST, "\n".join([day] + ([""] if acting else []) + rest)))
+    elif cut:
+        out.append((MORE, "\n".join([day, "", more_jobs_line(cut)])))
     return out

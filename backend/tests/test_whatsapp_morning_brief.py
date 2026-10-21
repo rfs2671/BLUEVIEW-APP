@@ -1043,6 +1043,238 @@ class Budgets(unittest.TestCase):
         self.assertEqual(line, "👷 4 on site · ABC Plumbing 2 · ABC Electrical 1 · Arkon 1")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# The top 6: more than 6 jobs to report, the 6 most severe; "brief all"
+# ══════════════════════════════════════════════════════════════════════════
+
+def _sev_job(label, new=0, soon=0, later_permits=0, late=0, ontime=0):
+    """A job with `new` new violations, `soon` permits expiring in < 7 days,
+    `later_permits` expiring in 7-14 days, `late` overdue items of theirs
+    and `ontime` due today."""
+    items = [{"rank": wa_brief.RANK_REGULATORY, "order": (0, -1),
+              "text": f"🔴 New violation {label}{i}, issued 10/7, ACTIVE. DOB."} for i in range(new)]
+    items += [{"rank": wa_brief.RANK_PERMIT, "order": (3,),
+               "text": f"🟠 Permit P{i} expires 10/16 (3 days). DOB."} for i in range(soon)]
+    items += [{"rank": wa_brief.RANK_PERMIT, "order": (10,),
+               "text": f"🟠 Permit Q{i} expires 10/23 (10 days). DOB."} for i in range(later_permits)]
+    you = [f"• Task {i}" + wa_brief.lateness(date(2026, 10, 11), TUE) for i in range(late)]
+    you += [f"• Today {i}" + wa_brief.lateness(TUE, TUE) for i in range(ontime)]
+    return {"id": f"id_{label}", "label": label, "items": items, "you": you,
+            "headcount": wa_brief.NO_CHECKINS, "uses_checkins": False}
+
+
+class TheTopSix(unittest.TestCase):
+
+    def test_severity_order(self):
+        jobs = [_sev_job("Overdue 2", late=2), _sev_job("Permit", soon=1),
+                _sev_job("Later permit", later_permits=3), _sev_job("New 1", new=1),
+                _sev_job("Overdue 1", late=1), _sev_job("New 2", new=2),
+                _sev_job("Today only", ontime=4), _sev_job("A new 1", new=1)]
+        ranked = [j["label"] for j in sorted(jobs, key=wa_brief.job_severity)]
+        self.assertEqual(ranked, ["New 2", "A new 1", "New 1", "Permit", "Overdue 2",
+                                  "Overdue 1", "Later permit", "Today only"])
+
+    def test_a_new_violation_outranks_any_number_of_permits_and_late_items(self):
+        a, b = _sev_job("Z", new=1), _sev_job("A", soon=5, late=9)
+        self.assertLess(wa_brief.job_severity(a), wa_brief.job_severity(b))
+
+    def test_ties_break_by_label_then_id(self):
+        a, b = _sev_job("same", new=1), _sev_job("same", new=1)
+        b["id"] = "id_0"
+        self.assertEqual(sorted([a, b], key=wa_brief.job_severity), [b, a])
+
+    def test_more_than_six_keeps_the_six_most_severe(self):
+        jobs = [_sev_job(f"Quiet {i}", ontime=1) for i in range(3)] \
+            + [_sev_job(f"New {i}", new=1) for i in range(5)] + [_sev_job("Permit", soon=1)]
+        msgs = wa_brief.compose_messages(TUE_8, jobs)
+        parts = [p for p, _t in msgs]
+        self.assertEqual(parts[:-1], [f"id_New {i}" for i in range(5)] + ["id_Permit"])
+        self.assertEqual(msgs[-1], (wa_brief.MORE,
+                                    "*Tue Oct 13*\n\n+3 more jobs — reply 'brief all'"))
+        # "brief all": every job.
+        self.assertEqual(len(wa_brief.compose_messages(TUE_8, jobs, max_jobs=None)), 9)
+
+    def test_the_line_goes_in_the_last_message_when_there_is_one(self):
+        jobs = [_sev_job(f"New {i}", new=1) for i in range(7)]
+        jobs.append({"id": "q", "label": "Quiet St", "items": [], "uses_checkins": True})
+        msgs = wa_brief.compose_messages(TUE_8, jobs)
+        self.assertEqual(len(msgs), 7)
+        self.assertEqual(msgs[-1][0], wa_brief.REST)
+        self.assertTrue(msgs[-1][1].endswith(
+            "No check-ins yet: Quiet St.\n\n+1 more job — reply 'brief all'"), msgs[-1][1])
+
+    def test_six_or_fewer_jobs_to_report_are_all_sent(self):
+        # Jobs with nothing to report are not counted.
+        jobs = [_sev_job(f"New {i}", new=1) for i in range(6)]
+        jobs += [{"id": f"q{i}", "label": f"Quiet {i}", "items": [], "uses_checkins": False}
+                 for i in range(4)]
+        msgs = wa_brief.compose_messages(TUE_8, jobs)
+        self.assertEqual(len(msgs), 6)
+        self.assertFalse(any(t.endswith("reply 'brief all'") for _p, t in msgs))
+
+    def test_cut_jobs_already_sent_today_are_not_counted(self):
+        jobs = [_sev_job(f"New {i}", new=1) for i in range(6)] \
+            + [_sev_job("Permit", soon=1), _sev_job("Late", late=1)]
+        msgs = wa_brief.compose_messages(TUE_8, jobs, already={"id_Permit"})
+        self.assertEqual(msgs[-1][1], "*Tue Oct 13*\n\n+1 more job — reply 'brief all'")
+        msgs = wa_brief.compose_messages(TUE_8, jobs, already={"id_Permit", "id_Late"})
+        self.assertEqual(len(msgs), 6)
+        self.assertNotIn(wa_brief.MORE, [p for p, _t in msgs])
+
+    def test_brief_all_is_an_exact_command(self):
+        for t in ("brief all", "Brief All", " BRIEF ALL. ", "brief  all!"):
+            self.assertTrue(wa_brief.is_brief_all(t), t)
+        for t in ("brief all jobs", "send the brief all again", "brief", "all"):
+            self.assertFalse(wa_brief.is_brief_all(t), t)
+
+
+def _eight_jobs():
+    """_world() plus six more jobs, each with a new violation: 8 to report."""
+    db = _world()
+    for i in range(6):
+        pid = f"proj_x{i}"
+        db.projects.rows.append({"_id": pid, "company_id": CO_A, "name": f"X{i}",
+                                 "address": f"1{i} Test St, Brooklyn, NY"})
+        db[server.SOURCE_SYNC_STATE].rows.append(synced_state(pid, (pid, CO_A)))
+        db.dob_logs.rows.append(_violation(pid, f"4000000{i}"))
+    return db
+
+
+class BriefAll(unittest.TestCase):
+
+    def test_the_morning_sends_six_and_brief_all_the_rest_once(self):
+        db = _eight_jobs()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        chat = f"{ADMIN_PHONE}@c.us"
+        with _Ctx(db) as c:
+            _tick(c, THU_7)
+            texts = _texts(c)
+            self.assertEqual(len(texts), 7)
+            for i in range(6):
+                self.assertIn(f"*1{i} Test St*", "\n".join(texts[:6]))
+            self.assertEqual(texts[6], "*Thu Oct 8*\n\n+2 more jobs — reply 'brief all'")
+            user = next(u for u in db.users.rows if u["_id"] == "u_admin")
+            later = THU_7 + timedelta(hours=1)
+            self.assertEqual(_run(server._brief_resend(user, chat, later, every_job=True)), "sent")
+            rest = "\n".join(_texts(c)[7:])
+            self.assertEqual(len(_texts(c)), 9)
+            # As of the brief before today's: still the new violation.
+            self.assertIn("🔴 New violation 35123456", rest)
+            self.assertIn("*588 Thomas S Boyland St*", rest)
+            # Asked again: nothing is sent twice.
+            self.assertEqual(_run(server._brief_resend(user, chat, later, every_job=True)),
+                             "nothing")
+            self.assertEqual(_texts(c)[9:], [wa_brief.BRIEF_ALL_NOTHING])
+            # And the next tick sends nothing.
+            _tick(c, THU_7 + timedelta(minutes=30))
+            self.assertEqual(len(_texts(c)), 10)
+
+    def test_brief_all_before_the_morning_leaves_no_stale_more_line(self):
+        db = _eight_jobs()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        user = next(u for u in db.users.rows if u["_id"] == "u_admin")
+        with _Ctx(db) as c:
+            early = THU_7 - timedelta(minutes=30)
+            self.assertEqual(_run(server._brief_resend(user, f"{ADMIN_PHONE}@c.us", early,
+                                                       every_job=True)), "sent")
+            self.assertEqual(len(_texts(c)), 8)
+            r = _tick(c, THU_7)
+        # Every job already out; no "+2 more jobs" for jobs they have.
+        self.assertEqual(len(_texts(c)), 8)
+        self.assertFalse(any("reply 'brief all'" in t for t in _texts(c)))
+        self.assertEqual(r["sent"], 1)
+
+
+class ThePacing(unittest.TestCase):
+
+    def _paced(self):
+        """A clock that moves only when the brief sleeps; the sleeps and the
+        send times, per person."""
+        clock, sleeps, sent = [1000.0], [], []
+
+        async def sleep(s):
+            sleeps.append(s)
+            clock[0] += s
+
+        async def dm(uid, text, **kw):
+            sent.append((uid, clock[0]))
+            return True
+        # Clear this module's own pacing state too: in the full suite the
+        # conftest reset can reach a different `server` module object than
+        # the one this file imported, and a stamp left by an earlier test on
+        # the real monotonic clock would read as a wait of hundreds of seconds.
+        server._BRIEF_LAST_SEND.clear()
+        server._BRIEF_SEND_LOCKS.clear()
+        return clock, sleeps, sent, (
+            patch.object(server, "BRIEF_SEND_GAP_SECONDS", 3),
+            patch.object(server, "send_whatsapp_dm", dm),
+            patch.object(server, "_brief_clock", lambda: clock[0]),
+            patch.object(server.asyncio, "sleep", sleep))
+
+    def test_parts_to_one_person_are_at_least_3_seconds_apart(self):
+        _clock, sleeps, sent, ps = self._paced()
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
+            out = _run(server._brief_send_parts(
+                "u_admin", "2026-10-08", [("a", "1"), ("b", "2"), ("c", "3")]))
+        self.assertEqual(out["sent"], 3)
+        self.assertEqual(len(sleeps), 2)                  # between parts, not before the first
+        self.assertTrue(all(s >= 3 for s in sleeps), sleeps)
+
+    def test_the_gap_holds_across_calls(self):
+        # "brief all" right after the morning's "+N more": the next call's
+        # first message still waits 3 s after the last one.
+        _clock, sleeps, sent, ps = self._paced()
+
+        async def both():
+            await server._brief_send_parts("u_admin", "2026-10-08", [("a", "1"), ("b", "2")])
+            await server._brief_send_parts("u_admin", "2026-10-08", [("c", "3")])
+            # Someone else is not held up by it.
+            await server._brief_send_parts("u_pm", "2026-10-08", [("a", "1")])
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
+            _run(both())
+        self.assertEqual(sleeps, [3, 3])
+        times = [t for uid, t in sent if uid == "u_admin"]
+        self.assertTrue(all(b - a >= 3 for a, b in zip(times, times[1:])), times)
+        self.assertEqual(len(sent), 4)
+
+    def test_overlapping_calls_to_one_person_are_paced_too(self):
+        _clock, sleeps, sent, ps = self._paced()
+
+        async def both():
+            await asyncio.gather(
+                server._brief_send_parts("u_admin", "2026-10-08", [("a", "1"), ("b", "2")]),
+                server._brief_send_parts("u_admin", "2026-10-08", [("c", "3"), ("d", "4")]))
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
+            _run(both())
+        times = [t for _uid, t in sent]
+        self.assertEqual(len(times), 4)
+        self.assertTrue(all(b - a >= 3 for a, b in zip(times, times[1:])), times)
+
+    def test_people_are_not_held_up_behind_each_other(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        _optin(db, "u_pm", PM_PHONE)
+        events, real_sleep = [], asyncio.sleep
+
+        async def sleep(s):
+            events.append(("sleep", s))
+            await real_sleep(0)
+
+        async def dm(uid, text, **kw):
+            events.append(("send", uid))
+            return True
+        with _Ctx(db), patch.object(server, "BRIEF_SEND_GAP_SECONDS", 3), \
+                patch.object(server, "send_whatsapp_dm", dm), \
+                patch.object(server.asyncio, "sleep", sleep):
+            _tick(None, THU_7)
+        sends = [e[1] for e in events if e[0] == "send"]
+        self.assertEqual(sends.count("u_admin"), 2)
+        self.assertTrue(any(e[0] == "sleep" and e[1] > 2.9 for e in events), events)
+        # The PM's brief went out while the admin's was pacing, not after it.
+        last_admin = len(sends) - 1 - sends[::-1].index("u_admin")
+        self.assertLess(sends.index("u_pm"), last_admin)
+
+
 # ── Mondays: the job's open violations ───────────────────────────────────────
 
 MON = date(2026, 10, 12)
