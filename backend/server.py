@@ -50769,7 +50769,9 @@ async def _dm_welcome(u: dict, chat: str, outcome: str) -> bool:
                 f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
     sent = await send_whatsapp_message(
         chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card))
-    if sent is None:
+    inner = sent.get("data") if isinstance(sent, dict) else None
+    if sent is None or (isinstance(inner, dict) and inner.get("status") == "error"):
+        # WaAPI's 200 with data.status "error" is not a delivery either.
         logger.warning(f"[wa-welcome] welcome NOT delivered after {outcome}; claim released")
         try:
             await db[WA_DM_WELCOMES].delete_one({"_id": uid, "welcomed_at": claimed_at})

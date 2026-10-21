@@ -167,6 +167,25 @@ class TheFirstStart(unittest.TestCase):
         self.assertEqual(_texts(c), [NO_CARD])
         self.assertEqual(len(c.db[server.WA_DM_WELCOMES].rows), 1)
 
+    def test_a_200_error_envelope_is_not_a_welcome(self):
+        """Codex on #833: WaAPI rejects some sends with HTTP 200 and
+        data.status "error" -- not delivered, so the claim is given back."""
+        real = server.send_whatsapp_message
+        calls = []
+
+        async def first_rejected(chat, message, *a, **k):
+            calls.append(message)
+            if len(calls) == 1:
+                return {"data": {"status": "error", "message": "rejected"}}
+            return await real(chat, message, *a, **k)
+        with _Ctx() as c, patch.object(server, "send_whatsapp_message", first_rejected):
+            _start(c, mid="D1")
+            self.assertEqual(c.db[server.WA_DM_WELCOMES].rows, [])
+            c.wire.calls.clear()
+            _start(c, mid="D2")
+        self.assertEqual(_texts(c), [NO_CARD])
+        self.assertEqual(len(c.db[server.WA_DM_WELCOMES].rows), 1)
+
     def test_a_lid_chat_gets_the_welcome_and_the_card_there(self):
         # The first post is the WaAPI contact lookup for the @lid (no phone).
         wire = _Wire(responses=[OK, OK, CARD_OK])
