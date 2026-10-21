@@ -53903,6 +53903,13 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
         lines.append(f"  open violations: {len(open_v)}; new in the last 7 days: {len(new_v)}")
         for r in new_v[:5]:
             facts = wa_gc.violation_facts(r)
+            if r.get("record_type") == "swo":
+                # A stop-work order keeps its number in its own field (Codex on #841).
+                num = str(r.get("stop_work_order_number") or r.get("violation_number") or "").strip()
+                lines.append(f"    new stop-work order {num or 'number not on record'} "
+                             f"issued {facts.get('violation_date', 'date not on record')}: "
+                             f"{facts.get('description', '')[:120]}")
+                continue
             lines.append(f"    new violation {facts.get('violation_number', '')} "
                          f"issued {facts.get('violation_date', 'date not on record')}: "
                          f"{facts.get('description', '')[:120]}")

@@ -1056,6 +1056,18 @@ class OpenRule(unittest.TestCase):
         self.assertIn("  open violations: 2;", w)   # 35123456, 34000001
         self.assertIn("  open violations: 1;", t)   # the stop-work order
 
+    def test_a_recent_stop_work_order_is_named_as_one(self):
+        """Codex on #841: an SWO found this week keeps its number (it lives in
+        stop_work_order_number, not violation_number)."""
+        db = _monday_world(MON_8)
+        db.dob_logs.rows.append(dict(_swo(THOMAS, "SWO88", detected_at=MON_8 - timedelta(days=1)),
+                                     company_id=CO_A))
+        thomas = next(p for p in db.projects.rows if p["_id"] == THOMAS)
+        with _Ctx(db):
+            t = _run(server._dm_job_facts(CO_A, thomas, MON_8))
+        self.assertIn("    new stop-work order SWO88 issued 2026-08-20:", t)
+        self.assertNotRegex(t, r"new violation\s+issued")
+
 
 class OpenItems(unittest.TestCase):
 
