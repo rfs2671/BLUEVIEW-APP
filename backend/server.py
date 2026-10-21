@@ -57440,9 +57440,11 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
 
     def acted() -> set:
         # A plans answer's picture goes right after the words (_dm_plan_shots),
-        # so "here's the sheet" is true of it.
+        # so "here's the sheet" is true of it -- but only of the picture: a
+        # "sent the report" with no send this turn is still caught.
+        picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
         return set(ctx.get("acted") or set()) | (
-            {"sent"} if ctx.get("sent") or ctx.get("plan_image_due") else set())
+            {"sent"} if ctx.get("sent") or picture else set())
 
     def fix(note: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})

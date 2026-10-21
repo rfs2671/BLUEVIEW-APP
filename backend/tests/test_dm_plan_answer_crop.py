@@ -183,6 +183,23 @@ class TheAnswerComesWithWhereItCameFrom(_Plans):
         self.assertEqual(out, [answer])
         self.assertEqual(imgs, [])
 
+    def test_a_false_sent_the_report_is_still_caught(self):
+        """The coming picture makes "sent" true of the picture only: a
+        "sent you the report" with no send_report this turn is rewritten."""
+        bad = "EF-3 is the 800 CFM exhaust fan on A-201. I've sent you the September report too."
+        good = "EF-3 is an exhaust fan, 800 CFM — on A-201."
+        seen = []
+
+        def second(kw):
+            seen.append(kw["messages"][-1]["content"])
+            return resp(text(good))
+        llm = FakeLLM(resp(use("search_plans", {"job": "588", "subject": "exhaust fan"})),
+                      resp(text(bad)), second)
+        with _Ctx(db=self.db) as c:
+            out = self.ask(c, "what's EF-3 on 588", llm, [FAN])
+        self.assertEqual(out, [good])
+        self.assertIn("no tool this turn", seen[0])
+
     def test_no_plans_search_no_picture(self):
         with _Ctx(db=self.db) as c:
             self.ask(c, "hi", FakeLLM(resp(text("Hi — what do you need?"))), [FAN])

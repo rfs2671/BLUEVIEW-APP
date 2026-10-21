@@ -372,6 +372,15 @@ def action_claims(reply: Any) -> List[str]:
     return [k for k, rx in _CLAIMS if rx.search(t)]
 
 
+_NOT_A_PICTURE = re.compile(r"\b(?:report|brief|pdf|summary|list|message|text)\b", re.I)
+
+
+def sends_only_a_picture(reply: Any) -> bool:
+    """A "sent" in this reply can be about the plans picture that follows it:
+    it names no report, brief, PDF, list or message."""
+    return not _NOT_A_PICTURE.search(str(reply or ""))
+
+
 def claim_note(claims: Sequence[str], tools: Sequence[str]) -> str:
     return (f"Before this goes out: your answer says it was {', '.join(claims)}, but no tool this turn "
             f"did that (tools called: {', '.join(tools) or 'none'}). Rewrite it: say what you found, or "
