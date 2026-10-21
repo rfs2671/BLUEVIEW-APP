@@ -498,8 +498,20 @@ class TheFlashFixes(_Brain):
                 await task
             _run(run())
         self.assertEqual(posted, ["send-seen", "send-typing", "send-stop-typing"])
-        self.assertIn("send-seen failed: status=500", logs.output[0])
+        self.assertIn("send-seen failed: http 500 (send-seen)", logs.output[0])
         self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # no phone number logged
+
+    def test_a_200_error_envelope_is_a_failure(self):
+        """Codex on #828: WaAPI answers some failures with HTTP 200 and
+        data.status "error" -- that is not typing, and it is logged."""
+        async def post(url, payload, headers):
+            return 200, {"data": {"status": "error", "message": "chat 17185550100@c.us not found"}}, None
+        with patch.object(server, "_waapi_post_raw", post), \
+                patch.object(server, "WAAPI_INSTANCE_ID", "i"), patch.object(server, "WAAPI_TOKEN", "t"), \
+                self.assertLogs("server", "WARNING") as logs:
+            self.assertFalse(_run(server._wa_typing("17185550100@c.us", True)))
+        self.assertIn("send-typing failed: http 200 (send-typing)", logs.output[0])
+        self.assertNotRegex(" ".join(logs.output), r"\d{7,}")          # the number in WaAPI's text is scrubbed
 
 
 class TheCodexFindings(_Brain):

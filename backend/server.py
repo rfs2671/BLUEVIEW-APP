@@ -55920,9 +55920,13 @@ async def _wa_chat_action(chat_id: str, action: str) -> bool:
         url, {"chatId": chat_id}, {"Authorization": f"Bearer {WAAPI_TOKEN}",
                                    "Content-Type": "application/json"})
     ok = exc is None and code is not None and code < 400
+    inner = _body.get("data") if isinstance(_body, dict) else None
+    if ok and isinstance(inner, dict) and inner.get("status") == "error":
+        ok = False                                   # WaAPI's 200 that did not happen
     if not ok:
-        logger.warning(f"[dm-brain] WaAPI {action} failed: status={code} "
-                       f"error={type(exc).__name__ if exc else ''}")
+        # waapi_error scrubs numbers out of what WaAPI said.
+        logger.warning(f"[dm-brain] WaAPI {action} failed: "
+                       f"{send_retry.waapi_error(action, code, _body, exc)}")
     return ok
 
 
