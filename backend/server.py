@@ -53322,6 +53322,8 @@ async def _recent_voice_notes(company_id: str, project_id: str, n: int = 3,
                else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
         if sender and not wa_voice.name_matches(sender, who, r.get("sender_name")):
             continue
+        if _dm_is_asker(jid, person):
+            who = f"{who} {dm_brain.SELF_MARK}".strip()
         at = r.get("timestamp") if isinstance(r.get("timestamp"), datetime) else r.get("created_at")
         notes.append(wa_voice.voice_note_lines(r, who, gnames.get(r.get("group_id")) or "",
                                                _memory_ny(at)))
@@ -53901,6 +53903,8 @@ async def _memory_present(rows: List[dict], company_id: str, project_id: str) ->
             person = await _attention_resolve(jid, company_id, project_id, cache) if jid else {}
             src["who"] = ((person or {}).get("name") if (person or {}).get("status") == "resolved"
                           else "") or wa_sender_map.label(r.get("sender_name") or "", jid)
+            if _dm_is_asker(jid, person):
+                src["who"] = f"{src['who']} {dm_brain.SELF_MARK}".strip()
             src["phone"] = phone_of.get(str(r.get("source_id") or ""))
         elif r.get("source") == project_memory.SOURCE_DAILY:
             src["who"] = r.get("author") or ""
@@ -55884,6 +55888,49 @@ DM_BRAIN_API_KEY = QWEN_API_KEY
 _DM_BRAIN_CLIENT: Any = None
 #: The model this turn uses (the eval runs each DM on both models).
 _DM_MODEL: contextvars.ContextVar = contextvars.ContextVar("dm_model", default=None)
+#: Who is asking this turn ({"user_id", "phone"}): a record they sent is
+#: marked dm_brain.SELF_MARK in the tool results; no other is.
+_DM_ASKER: contextvars.ContextVar = contextvars.ContextVar("dm_asker", default=None)
+#: How often the "typing…" indicator is sent again while the brain works.
+DM_TYPING_EVERY_SECONDS = 8.0
+
+
+def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
+    """Is this sender the person asking? Their user id (resolved), or the
+    same phone digits as their DM -- never a name match."""
+    asker = _DM_ASKER.get()
+    if not asker:
+        return False
+    if (person or {}).get("kind") == "user" and str((person or {}).get("id") or "") == str(asker.get("user_id") or ""):
+        return True
+    digits = wa_dm.phone_digits(jid or "")
+    return bool(digits) and digits == str(asker.get("phone") or "")
+
+
+async def _wa_typing(chat_id: str, on: bool = True) -> bool:
+    """WaAPI send-typing / send-stop-typing {chatId}. Never raises."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and chat_id):
+        return False
+    action = "send-typing" if on else "send-stop-typing"
+    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/{action}"
+    code, _body, exc = await _waapi_post_raw(
+        url, {"chatId": chat_id}, {"Authorization": f"Bearer {WAAPI_TOKEN}",
+                                   "Content-Type": "application/json"})
+    return exc is None and code is not None and code < 400
+
+
+async def _dm_typing_while(chat_id: str, done: asyncio.Event) -> None:
+    """"typing…" in their chat until `done`, sent again every
+    DM_TYPING_EVERY_SECONDS (WhatsApp drops it after a while)."""
+    try:
+        while not done.is_set():
+            await _wa_typing(chat_id, True)
+            try:
+                await asyncio.wait_for(done.wait(), DM_TYPING_EVERY_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        await _wa_typing(chat_id, False)
 #: A tool result is data for the model, not the answer: generous, bounded.
 DM_BRAIN_TOOL_CHARS = 9000
 
@@ -56403,8 +56450,11 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             ident, dm_chat, str(args.get("answer") or ""), pending))
     if name == "cancel_pending_change":
         if dry:
+            ctx.setdefault("acted", set()).add("cancelled")
             return "(eval) Would drop the pending change."
         had = await _dm_drop_pending(dm_chat)
+        if had:
+            ctx.setdefault("acted", set()).add("cancelled")
         return "Dropped." if had else "Nothing was pending."
     if name == "set_sub_trade":
         return await _dm_brain_set_trade(ctx, args)
@@ -56452,6 +56502,10 @@ def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
         return
     usage["input"] = usage.get("input", 0) + int(getattr(u, "prompt_tokens", 0) or 0)
     usage["output"] = usage.get("output", 0) + int(getattr(u, "completion_tokens", 0) or 0)
+    details = getattr(u, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None) if details is not None else None
+    if reasoning:
+        usage["reasoning"] = usage.get("reasoning", 0) + int(reasoning)
     cost = getattr(u, "estimated_cost", None)
     if cost is None and isinstance(getattr(u, "model_extra", None), dict):
         cost = u.model_extra.get("estimated_cost")
@@ -56465,7 +56519,7 @@ def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
 async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[str] = None) -> dict:
     """The model, its tool calls (one after another, at most
     dm_brain.MAX_TOOL_CALLS a turn), and the number check, until an answer.
-    The evidence-check retry goes to dm_brain.ESCALATE_MODEL.
+    Every retry (cut, evidence, claims, "you", deflect) is on the same model.
     {reply, trace, rounds, retries, unverified, stop, usage}."""
     client = _dm_brain_client()
     tools = _dm_brain_tools()
@@ -56474,7 +56528,16 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     trace: List[dict] = []
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
+    cuts, claimed, yous = 0, 0, 0
+    budget = dm_brain.MAX_TOKENS
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
+
+    def acted() -> set:
+        return set(ctx.get("acted") or set()) | ({"sent"} if ctx.get("sent") else set())
+
+    def fix(note: str) -> None:
+        msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
+        msgs.append({"role": "user", "content": "[Levelog check, not from them] " + note})
 
     def done(**kw):
         return {"trace": trace, "retries": retries, "deflect_retries": deflects, "usage": usage,
@@ -56486,7 +56549,9 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         t0 = _time.monotonic()
         resp = await client.chat.completions.create(
             model=use, messages=msgs, tools=tools, tool_choice="auto" if can_call else "none",
-            temperature=dm_brain.TEMPERATURE, max_tokens=dm_brain.MAX_TOKENS)
+            temperature=dm_brain.TEMPERATURE, max_tokens=budget,
+            **({"extra_body": {"reasoning_effort": dm_brain.REASONING_EFFORT}}
+               if dm_brain.REASONING_EFFORT else {}))
         _dm_usage(usage, resp, use, t0)
         choice = resp.choices[0]
         m = choice.message
@@ -56522,36 +56587,58 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
         if choice.finish_reason == "content_filter":
             return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="content_filter")
         last_text = dm_brain.final_text(m.content)
-        if not last_text:
-            if rounds < dm_brain.MAX_ROUNDS:
-                msgs.append({"role": "user", "content": "[Levelog check, not from them] Answer them now, "
-                                                         "in a few short lines."})
+        if dm_brain.truncated(last_text, choice.finish_reason, bool(trace)):
+            # NEVER A CUT REPLY ("*Ark", 26 s): once more with a bigger budget.
+            if cuts < 1:
+                cuts += 1
+                budget = dm_brain.RETRY_MAX_TOKENS
+                logger.info(f"[dm-brain] cut answer ({choice.finish_reason}, {len(last_text)} chars): retried")
+                fix(dm_brain.cut_note())
                 continue
-            return done(reply=dm_brain.FAILED_TEXT, rounds=rounds, unverified=[], stop="empty")
+            if last_text and choice.finish_reason != "length" and not dm_brain._bold_unbalanced(last_text):
+                pass                                     # short, but whole: it goes
+            else:
+                return done(reply=dm_brain.TRUNCATED_TEXT, rounds=rounds, unverified=[],
+                            stop="truncated", draft=last_text)
         missing = dm_brain.unverified(last_text, sources)
         if missing and retries < dm_brain.VERIFY_RETRIES:
-            # The one retry, on the stronger model.
+            # The one retry, on the same model.
             retries += 1
-            use = dm_brain.ESCALATE_MODEL
-            logger.info(f"[dm-brain] re-asked on {use}: unverified {missing[:6]}")
-            msgs.append({"role": "assistant", "content": last_text})
-            msgs.append({"role": "user", "content": "[Levelog check, not from them] "
-                                                     + dm_brain.verify_note(missing)})
+            logger.info(f"[dm-brain] re-asked: unverified {missing[:6]}")
+            fix(dm_brain.verify_note(missing))
             continue
         if missing:
             return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=missing,
                         stop="unverified", draft=last_text)
+        unsupported = [c for c in dm_brain.action_claims(last_text) if c not in acted()]
+        if unsupported:
+            # "Sent" / "saved" / "cancelled" / "done" only when a tool did it.
+            if claimed < 1:
+                claimed += 1
+                logger.info(f"[dm-brain] re-asked: claimed {unsupported} with no tool doing it")
+                fix(dm_brain.claim_note(unsupported, [t["tool"] for t in trace]))
+                continue
+            return done(reply=dm_brain.ACTION_UNVERIFIED_TEXT, rounds=rounds, unverified=[],
+                        stop="unsupported_claim", draft=last_text)
+        if dm_brain.says_from_you(last_text) and not any(dm_brain.SELF_MARK in str(x) for x in sources[1:]):
+            # "From you" only when a record's sender is the person asking.
+            if yous < 1:
+                yous += 1
+                logger.info("[dm-brain] re-asked: said 'from you' with no record marked theirs")
+                fix(dm_brain.you_note())
+                continue
+            return done(reply=dm_brain.UNVERIFIED_TEXT, rounds=rounds, unverified=["from you"],
+                        stop="unverified_sender", draft=last_text)
         if dm_brain.cant_answer(last_text) and deflects < dm_brain.DEFLECT_RETRIES:
             # Never "check with the site manager" / "not sure" before the
             # tools (Tue 12:28 PM): asked again, with what it tried.
             deflects += 1
             logger.info(f"[dm-brain] re-asked: deflected after {[t['tool'] for t in trace]}")
-            msgs.append({"role": "assistant", "content": last_text})
-            msgs.append({"role": "user", "content": "[Levelog check, not from them] "
-                                                     + dm_brain.deflect_note([t["tool"] for t in trace])})
+            fix(dm_brain.deflect_note([t["tool"] for t in trace]))
             continue
         return done(reply=last_text, rounds=rounds, unverified=[], stop=choice.finish_reason,
-                    cant_answer=dm_brain.cant_answer(last_text))
+                    cant_answer=dm_brain.cant_answer(last_text), cut_retries=cuts,
+                    claim_retries=claimed, you_retries=yous)
     return done(reply=last_text or dm_brain.FAILED_TEXT, rounds=dm_brain.MAX_ROUNDS,
                 unverified=missing, stop="max_rounds")
 
@@ -56588,6 +56675,7 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
            "used_job": None}
+    _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phone": wa_dm.phone_digits(dm_chat)})
     try:
         out = await _dm_brain_run(ctx, messages, system)
     except Exception as e:
@@ -56651,12 +56739,22 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         question = f"[voice note] {question}"
 
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
+    # "typing…" in their chat while the brain works, sent again every 8 s.
+    thinking = asyncio.Event()
+    typing = asyncio.ensure_future(_dm_typing_while(dm_chat, thinking))
     eyes = False
     try:
-        out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
-    except asyncio.TimeoutError:
-        eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
-        out = await task
+        try:
+            out = await asyncio.wait_for(asyncio.shield(task), wa_react.WORKING_AFTER_SECONDS)
+        except asyncio.TimeoutError:
+            eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
+            out = await task
+    finally:
+        thinking.set()
+        try:
+            await asyncio.wait_for(typing, 10)
+        except Exception:
+            pass
     reply = out.get("reply")
     if out.get("used_job"):
         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,

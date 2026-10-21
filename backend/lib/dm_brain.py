@@ -42,19 +42,32 @@ MODEL = os.environ.get("DM_BRAIN_MODEL") or "Qwen/Qwen3.8-Flash"
 #: A stronger DeepInfra model: report summaries, and the one retry when the
 #: evidence check fails.
 ESCALATE_MODEL = os.environ.get("DM_BRAIN_ESCALATE_MODEL") or "Qwen/Qwen3.8-Max"
-MAX_TOKENS = 1500
+#: The output budget per model call -- Qwen 3.8 Flash's reasoning tokens
+#: count against it (Tue: a reply of "*Ark" after 26 s was a budget spent on
+#: reasoning), so it is generous; a cut answer is retried once at
+#: RETRY_MAX_TOKENS and never sent.
+MAX_TOKENS = int(os.environ.get("DM_BRAIN_MAX_TOKENS") or 6000)
+RETRY_MAX_TOKENS = int(os.environ.get("DM_BRAIN_RETRY_MAX_TOKENS") or 12000)
+#: DeepInfra's reasoning_effort ("low" / "medium" / "high"), sent only when set.
+REASONING_EFFORT = (os.environ.get("DM_BRAIN_REASONING_EFFORT") or "").strip()
 TEMPERATURE = 0.2
 HISTORY_TURNS = 20
 HISTORY_DAYS = 7
 #: Tool calls in one turn, run one after another; then it must answer.
 MAX_TOOL_CALLS = 6
 #: Model calls in one turn (tool rounds + the answer + the retries).
-MAX_ROUNDS = MAX_TOOL_CALLS + 4
-#: Times the model is asked again (on ESCALATE_MODEL) when its answer has a
+MAX_ROUNDS = MAX_TOOL_CALLS + 7
+#: Times the model is asked again (the same model) when its answer has a
 #: number or id that no tool result, message or context holds.
 VERIFY_RETRIES = 1
 UNVERIFIED_TEXT = ("I couldn't check that against the records just now. "
                    "Ask me again and I'll pull it fresh.")
+#: Sent instead of an answer that came back cut off twice.
+TRUNCATED_TEXT = "My answer came out cut off. Ask me again and I'll send it whole."
+#: Sent instead of an answer that twice said something was done that wasn't.
+ACTION_UNVERIFIED_TEXT = "I haven't done that yet. Tell me again and I'll do it."
+#: How a record whose sender is the person asking is marked in tool results.
+SELF_MARK = "(you)"
 FAILED_TEXT = "Levelog Assistant couldn't answer that right now. Try again in a minute."
 
 SYSTEM_PROMPT = """\
@@ -112,6 +125,9 @@ Context, history
 - Messages starting "[voice note]" were transcribed and may be misheard; read them generously.
 - Earlier messages in this chat are context: follow-ups like "and Walworth?", "those 3", "send it" refer \
 back to them.
+- A message or voice note is "from you" / "you said" ONLY when the tool result marks its sender "(you)"; \
+otherwise name the sender as the record does.
+- Say something was sent, saved, cancelled or done ONLY when a tool result this turn says it was.
 - Never give out phone numbers. Never discuss another company's data.
 """
 
@@ -287,6 +303,70 @@ def deflect_note(tools_tried: Sequence[str]) -> str:
             f"{tried}. Call every tool that could hold this first (sub_attendance takes a trade; "
             "find_sub / list_subs place a sub). If nothing has it after that, say in one line what "
             "you checked.")
+
+
+# ── CUT, CLAIMED, "YOU" ──────────────────────────────────────────────────────
+
+def _bold_unbalanced(text: str) -> bool:
+    """An odd number of WhatsApp bold stars ("*Ark"), bullets aside."""
+    stars = 0
+    for line in str(text or "").splitlines():
+        body = re.sub(r"^\s*\*\s+", "", line)          # "* item" is a bullet
+        stars += body.count("*")
+    return stars % 2 == 1
+
+
+def truncated(text: Any, finish_reason: Any = None, after_tools: bool = False) -> bool:
+    """A reply that must not go out as it is: the budget ran out
+    (finish_reason "length"), nothing came back, the bold is left open, or
+    under 20 characters after tools were called."""
+    t = str(text or "").strip()
+    if finish_reason == "length" or not t or _bold_unbalanced(t):
+        return True
+    return bool(after_tools and len(t) < 20)
+
+
+def cut_note() -> str:
+    return ("Before this goes out: your answer came back cut off. Answer again, complete, in a few "
+            "short lines -- no long thinking, the tool results above have what you need.")
+
+
+_CLAIMS = (
+    ("sent", re.compile(r"\b(?:i(?:'ve| have)?\s+(?:just\s+)?sent|i'?m\s+sending|sending\s+(?:it|you|the|now)|"
+                        r"(?:just\s+)?sent\s+(?:it|you|the|that|this|over)|^sent\b)", re.I | re.M)),
+    ("saved", re.compile(r"\b(?:i(?:'ve| have)?\s+saved|(?:it'?s|that'?s|is|are|been)\s+saved|^saved\b)",
+                         re.I | re.M)),
+    ("cancelled", re.compile(r"\b(?:i(?:'ve| have)?\s+cancell?ed|(?:it'?s|that'?s|is|been)\s+cancell?ed|"
+                             r"^cancell?ed\b)", re.I | re.M)),
+    ("done", re.compile(r"\b(?:i(?:'ve| have)?\s+done\s+(?:it|that)|all\s+done|^done\b(?!\s+P-))",
+                        re.I | re.M)),
+)
+
+
+def action_claims(reply: Any) -> List[str]:
+    """What the reply says was done: "sent", "saved", "cancelled", "done"."""
+    t = str(reply or "")
+    return [k for k, rx in _CLAIMS if rx.search(t)]
+
+
+def claim_note(claims: Sequence[str], tools: Sequence[str]) -> str:
+    return (f"Before this goes out: your answer says it was {', '.join(claims)}, but no tool this turn "
+            f"did that (tools called: {', '.join(tools) or 'none'}). Rewrite it: say what you found, or "
+            "what will happen when they say yes. Nothing is sent or saved unless a tool result says so.")
+
+
+_FROM_YOU = re.compile(r"\bfrom\s+you\b|\byou\s+(?:said|sent|posted|mentioned|recorded|asked)\b|"
+                       r"\byour\s+(?:own\s+)?(?:voice\s+note|message|note|recording)\b", re.I)
+
+
+def says_from_you(reply: Any) -> bool:
+    """Says a record is the asker's own ("from you", "you said")."""
+    return bool(_FROM_YOU.search(str(reply or "")))
+
+
+def you_note() -> str:
+    return ("Before this goes out: your answer says a message or voice note is from them, but no record "
+            f"this turn is marked {SELF_MARK}. Name the sender as the record does, and answer again.")
 
 
 def redact_phones(text: str) -> str:

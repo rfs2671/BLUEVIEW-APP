@@ -6,7 +6,8 @@
 Needs MONGO_URL / DB_NAME and QWEN_API_KEY (DeepInfra -- the key the vision
 calls already use; `railway run` brings all three). The models are
 DM_BRAIN_MODEL (default Qwen/Qwen3.8-Flash) and DM_BRAIN_ESCALATE_MODEL
-(default Qwen/Qwen3.8-Max); --models a,b runs others.
+(default Qwen/Qwen3.8-Max). Only DM_BRAIN_MODEL runs unless --models names
+more (--models Qwen/Qwen3.8-Flash,Qwen/Qwen3.8-Max compares both).
 
 FIRST, A PREFLIGHT (nothing else runs if it fails, unless --skip-check):
   * GET {base}/models: each model id must be on DeepInfra's list (the Qwen
@@ -28,8 +29,10 @@ then (the old pipeline), and each model's answer -- with the tools it called,
 its quality checks, seconds and cost.
 
 QUALITY (per DM, per model; automatic -- the side-by-side is for your eyes):
-  answered      not "can't answer" / sent elsewhere, not the failure text
+  answered      not "can't answer" / sent elsewhere, not a failure text
   evidence      every number and id came from the tools (or it said so)
+  whole         not cut off (finish "length", an open *, nothing after tools)
+  actions       "sent / saved / cancelled / done" only with the tool that did it
   language      the answer is in the language of the question (EN/ES/YI)
 plus each fixed case's own checks. COST is DeepInfra's own estimated_cost
 from each response's usage (shown as "n/a" if it sends none); SECONDS is the
@@ -181,11 +184,21 @@ def _case_checks(case_id: str, reply: str, trace: list) -> Dict[str, bool]:
     return {}
 
 
+_ACTING = {"send_sheet": "sent", "send_report": "sent", "resend_my_brief": "sent",
+           "cancel_pending_change": "cancelled"}
+
+
 def _quality(question: str, reply: str, res: dict) -> Dict[str, bool]:
     """The automatic quality checks for any DM."""
     from lib import dm_brain
-    return {"answered": bool(reply) and reply not in (dm_brain.FAILED_TEXT,) and not dm_brain.cant_answer(reply),
+    did = {_ACTING[t["tool"]] for t in res.get("trace") or []
+           if t["tool"] in _ACTING and not t.get("error")}
+    return {"answered": bool(reply) and reply not in (dm_brain.FAILED_TEXT, dm_brain.TRUNCATED_TEXT,
+                                                       dm_brain.ACTION_UNVERIFIED_TEXT)
+            and not dm_brain.cant_answer(reply),
             "evidence": not res.get("unverified"),
+            "whole": res.get("stop") != "truncated" and not dm_brain.truncated(reply),
+            "actions": all(c in did for c in dm_brain.action_claims(reply)),
             "language": dm_brain.language(question) == dm_brain.language(reply) or not reply}
 
 
@@ -261,7 +274,10 @@ def _one(res: dict, started: float) -> dict:
             "rounds": res.get("rounds"), "verify_retries": res.get("retries"),
             "deflect_retries": res.get("deflect_retries"), "unverified": res.get("unverified") or [],
             "stop": res.get("stop"), "models_used": usage.get("models") or [],
+            "cut_retries": res.get("cut_retries"), "claim_retries": res.get("claim_retries"),
+            "you_retries": res.get("you_retries"), "draft": _clean(res.get("draft") or ""),
             "input_tokens": usage.get("input"), "output_tokens": usage.get("output"),
+            "reasoning_tokens": usage.get("reasoning"),
             "cost_usd": usage.get("cost_usd"),
             "seconds": round(time.monotonic() - started, 1)}
 
@@ -491,7 +507,7 @@ def _md(results: list, models: List[str], dropped: list, fixed: Optional[list] =
                      f"(tools: {', '.join(run.get('tools') or []) or 'none'})")
     lines += ["", "## Replayed DMs", ""]
     for i, r in enumerate(results, 1):
-        lines += [f"### {i}. {r['when'][:16].replace('T', ' ')} — {r['question'][:120]}", "",
+        lines += [f"### {r.get('n', i)}. {r['when'][:16].replace('T', ' ')} — {r['question'][:120]}", "",
                   f"**Old** ({r.get('old_path')}):", "", _quote(r["old_answer"]), ""]
         if r.get("skipped"):
             lines += [f"_(skipped: {r['skipped']})_", ""]
@@ -506,8 +522,10 @@ def _md(results: list, models: List[str], dropped: list, fixed: Optional[list] =
                       _quote(run.get("answer")), ""]
             if run.get("tools"):
                 lines.append("Tools: " + "; ".join(run["tools"]))
-            if run.get("verify_retries"):
-                lines.append(f"_re-asked on {dm_brain.ESCALATE_MODEL} for {run.get('unverified') or 'figures'}_")
+            retried = [f"{k} ×{run[k + '_retries']}" for k in ("verify", "cut", "claim", "you", "deflect")
+                       if run.get(k + "_retries")]
+            if retried:
+                lines.append(f"_re-asked (same model): {', '.join(retried)}; finish: {run.get('stop')}_")
             lines.append("")
     return "\n".join(lines)
 
@@ -519,8 +537,7 @@ async def main_async(a) -> int:
         sys.exit("QWEN_API_KEY (DeepInfra) is not set — run under `railway run`.")
     import server
     from lib import dm_brain
-    models = [m.strip() for m in (a.models or f"{dm_brain.MODEL},{dm_brain.ESCALATE_MODEL}").split(",")
-              if m.strip()]
+    models = [m.strip() for m in (a.models or dm_brain.MODEL).split(",") if m.strip()]
     check = None
     if not a.skip_check:
         print(f"Preflight: {', '.join(models)} on {dm_brain.API_BASE} …", flush=True)
@@ -542,21 +559,28 @@ async def main_async(a) -> int:
     server._react_to_message = _no_send
 
     rows = await _rows(server, a.days, a.limit, a.user)
+    numbered = list(enumerate(rows, 1))
+    if a.pick:
+        want = {int(x) for x in a.pick.split(",") if x.strip().isdigit()}
+        numbered = [(i, r) for i, r in numbered if i in want]
     cache: dict = {}
     print(f"Fixed cases ({len(FIXED_CASES)}) on {', '.join(models)} …", flush=True)
     fixed = await _fixed(server, rows, cache, a.email, models)
     for r in fixed:
         print(f"[fixed {r['id']}] " + ", ".join(
             f"{m}: {'PASS' if (r['runs'].get(m) or {}).get('pass') else 'FAIL'}" for m in models), flush=True)
-    print(f"{len(rows)} logged DMs to replay …", flush=True)
+    if a.fixed_only:
+        numbered = []
+    print(f"{len(numbered)} logged DMs to replay …", flush=True)
     results = []
-    for i, row in enumerate(rows, 1):
+    for i, row in numbered:
         try:
             r = await _replay_one(server, row, cache, models)
         except Exception as e:
             r = {"when": str(row.get("created_at")), "question": _clean(row.get("question")),
                  "old_path": row.get("path"), "old_answer": _clean(row.get("answer")),
                  "runs": {}, "skipped": f"error: {type(e).__name__}: {e}"}
+        r["n"] = i
         results.append(r)
         print(f"[{i}/{len(rows)}] {r['question'][:60]!r}\n   old: {r['old_answer'][:90]!r}" + "".join(
             f"\n   {m.split('/')[-1]}: {str((r['runs'].get(m) or {}).get('answer'))[:90]!r} "
@@ -586,8 +610,11 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default="dm_brain_eval")
     ap.add_argument("--email", default="", help="run the fixed cases as this person (if the live "
                                                  "HVAC question isn't in the log)")
-    ap.add_argument("--models", default="", help="comma-separated DeepInfra ids (default: "
-                                                  "DM_BRAIN_MODEL,DM_BRAIN_ESCALATE_MODEL)")
+    ap.add_argument("--models", default="", help="comma-separated DeepInfra ids (default: DM_BRAIN_MODEL; "
+                                                  "add DM_BRAIN_ESCALATE_MODEL to compare)")
+    ap.add_argument("--fixed-only", action="store_true", help="only the fixed cases")
+    ap.add_argument("--pick", default="", help="only these logged DMs, by their number in the "
+                                                "side-by-side (e.g. 37 or 30,31,32)")
     ap.add_argument("--skip-check", action="store_true", help="skip the /models + tool-calling preflight")
     return asyncio.run(main_async(ap.parse_args(argv)))
 

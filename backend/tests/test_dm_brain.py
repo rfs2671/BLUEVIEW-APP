@@ -16,6 +16,7 @@ Tue 9:02 AM, live:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -210,12 +211,12 @@ class TheGuardrails(_Brain):
     def test_a_number_no_tool_gave_is_asked_again_not_cut(self):
         llm = FakeLLM(
             resp(use("headcount", {"job": "588"})),
-            resp(text("588: 45 on site.")),                       # 45 is nowhere
+            resp(text("588: 45 on site right now.")),                       # 45 is nowhere
             lambda kw: (self.assertIn("45", kw["messages"][-1]["content"]),
-                        resp(text("588: 31 on site.")))[1])
+                        resp(text("588: 31 on site right now.")))[1])
         with _Ctx(db=self.db) as c:
             out = self.say(c, "how many at 588", llm)
-        self.assertEqual(out, ["588: 31 on site."])
+        self.assertEqual(out, ["588: 31 on site right now."])
         self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["verify_retries"], 1)
 
     def test_still_unverified_after_retries_is_said_plainly(self):
@@ -224,8 +225,8 @@ class TheGuardrails(_Brain):
             out = self.say(c, "how many at 588", llm)
         self.assertEqual(out, [dm_brain.UNVERIFIED_TEXT])
         self.assertEqual(self.db[server.DM_ANSWERS].rows[-1]["draft"], "46 on site.")
-        # The one retry is on the stronger model.
-        self.assertEqual([c_["model"] for c_ in llm.calls], [dm_brain.MODEL, dm_brain.ESCALATE_MODEL])
+        # The one retry is on the same model (Max only writes report summaries).
+        self.assertEqual([c_["model"] for c_ in llm.calls], [dm_brain.MODEL, dm_brain.MODEL])
 
     def test_no_phone_numbers(self):
         llm = FakeLLM(resp(text("Call him at 718-555-0123.")))
@@ -350,6 +351,115 @@ class TheLoop(_Brain):
         self.assertEqual(llm.calls[0]["model"], dm_brain.ESCALATE_MODEL)
 
 
+class TheFlashFixes(_Brain):
+    """Eval of Oct 20 (Qwen 3.8 Flash): #37 "*Ark" after 26 s; "from you" on
+    someone else's voice note; "sent" with no send; the retry on Max."""
+
+    def test_a_cut_reply_is_asked_again_with_a_bigger_budget(self):
+        llm = FakeLLM(resp(use("list_subs", {})), resp(text("*Ark"), stop="length"),
+                      resp(text("*Arkon Builders* is on 588.")))
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "who's the framer", llm)
+        self.assertEqual(out, ["*Arkon Builders* is on 588."])
+        self.assertEqual([c_["max_tokens"] for c_ in llm.calls],
+                         [dm_brain.MAX_TOKENS] * 2 + [dm_brain.RETRY_MAX_TOKENS])
+        self.assertIn("cut off", llm.calls[2]["messages"][-1]["content"])
+
+    def test_cut_twice_is_never_sent(self):
+        llm = FakeLLM(resp(use("list_subs", {})), resp(text("*Ark")), resp(text("*Arkon")))
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "who's the framer", llm)
+        self.assertEqual(out, [dm_brain.TRUNCATED_TEXT])
+        log = self.db[server.DM_ANSWERS].rows[-1]
+        self.assertEqual((log["stop"], log["draft"]), ("truncated", "*Arkon"))
+
+    def test_a_short_whole_answer_after_one_retry_goes(self):
+        llm = FakeLLM(resp(use("list_subs", {})), resp(text("Arkon.")), resp(text("Arkon.")))
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "framer?", llm)
+        self.assertEqual(out, ["Arkon."])
+
+    def test_sent_with_no_send_is_rewritten(self):
+        def again(kw):
+            self.assertIn("no tool this turn did that", kw["messages"][-1]["content"])
+            return resp(text("SSP-011.00 is in the drawings for 588. Want me to send it?"))
+        llm = FakeLLM(resp(text("Sent you the sheet.")), again)
+        with patch.object(dm_brain, "unverified", lambda r, s_: []):
+            with _Ctx(db=self.db) as c:
+                out = self.say(c, "show me the sheet", llm)
+        self.assertEqual(out, ["SSP-011.00 is in the drawings for 588. Want me to send it?"])
+
+    def test_sent_twice_with_no_send_is_never_sent(self):
+        llm = FakeLLM(resp(text("Sent you the sheet.")), resp(text("Sent it over.")))
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "show me the sheet", llm)
+        self.assertEqual(out, [dm_brain.ACTION_UNVERIFIED_TEXT])
+
+    def test_cancelled_after_the_tool_did_it_goes(self):
+        _run(server._dm_state_set(server.DM_ACTION_STATE, CHAT, 600, p={"action": "add_sub"},
+                                  step="ask:trade", options=[], asked="What trade?", misses=0))
+        llm = FakeLLM(resp(use("cancel_pending_change", {})), resp(text("Cancelled — nothing was added.")))
+        with _Ctx(db=self.db) as c:
+            _run(server._dm_state_set(server.DM_ACTION_STATE, CHAT, 600, p={"action": "add_sub"},
+                                      step="ask:trade", options=[], asked="What trade?", misses=0))
+            out = self.say(c, "forget the J&G thing", llm)
+        self.assertEqual(out, ["Cancelled — nothing was added."])
+
+    def test_from_you_only_when_the_record_is_theirs(self):
+        async def notes(company_id, project_id, n=3, sender=""):
+            return "🎤 Tue Oct 20, 9:14 AM · Meilich Friedman · 588 Site\nSaid: “core drill on 3”"
+        llm = FakeLLM(resp(use("recent_voice_notes", {"job": "588"})),
+                      resp(text("Your voice note: core drill on 3.")),
+                      lambda kw: (self.assertIn("(you)", kw["messages"][-1]["content"]),
+                                  resp(text("Meilich Friedman's voice note: core drill on 3.")))[1])
+        with _Ctx(db=self.db) as c, patch.object(server, "_recent_voice_notes", notes):
+            out = self.say(c, "what was the last voice note", llm)
+        self.assertEqual(out, ["Meilich Friedman's voice note: core drill on 3."])
+
+    def test_from_you_stays_when_marked(self):
+        async def notes(company_id, project_id, n=3, sender=""):
+            return "🎤 Tue Oct 20, 9:14 AM · Roy (you) · 588 Site\nSaid: “core drill on 3”"
+        llm = FakeLLM(resp(use("recent_voice_notes", {"job": "588"})),
+                      resp(text("Your voice note: core drill on 3.")))
+        with _Ctx(db=self.db) as c, patch.object(server, "_recent_voice_notes", notes):
+            out = self.say(c, "what was my last voice note", llm)
+        self.assertEqual(out, ["Your voice note: core drill on 3."])
+
+    def test_who_is_the_asker(self):
+        tok = server._DM_ASKER.set({"user_id": "u_admin", "phone": "17185550100"})
+        try:
+            self.assertTrue(server._dm_is_asker("17185550100@c.us", None))
+            self.assertTrue(server._dm_is_asker("123@lid", {"kind": "user", "id": "u_admin"}))
+            self.assertFalse(server._dm_is_asker("17185550199@c.us", {"kind": "user", "id": "u_meilich",
+                                                                      "name": "Meilich Friedman"}))
+            self.assertFalse(server._dm_is_asker("", {"kind": "worker", "id": "u_admin"}))
+        finally:
+            server._DM_ASKER.reset(tok)
+        self.assertFalse(server._dm_is_asker("17185550100@c.us", None))      # no asker: never "you"
+
+    def test_typing_while_it_thinks(self):
+        seen = []
+
+        async def typing(chat, on=True):
+            seen.append(on)
+            return True
+
+        class Slow:
+            def __init__(self):
+                self.chat = self
+                self.completions = self
+
+            async def create(self, **kw):
+                await asyncio.sleep(0.05)
+                return resp(text("Arkon Builders is on 588."))
+        with _Ctx(db=self.db) as c, patch.object(server, "_wa_typing", typing), \
+                patch.object(server, "DM_TYPING_EVERY_SECONDS", 0.01):
+            out = self.say(c, "subs?", Slow())
+        self.assertEqual(out, ["Arkon Builders is on 588."])
+        self.assertGreaterEqual(seen.count(True), 2)                 # refreshed while it worked
+        self.assertEqual(seen[-1], False)                            # and stopped
+
+
 class TheWalkthrough(_Brain):
     def test_photo_talk_goes_to_the_brain_not_a_regex(self):
         q = ("I'm going to show you some pictures, I need to do a checklist, it's not going to be "
@@ -378,12 +488,12 @@ class TheEvalMode(unittest.TestCase):
                  "role": "admin", "projects": [p for p in db.projects.rows
                                                if p["_id"] in (THOMAS, WALWORTH)]}
         llm = FakeLLM(resp(use("set_sub_trade", {"company": "Arkon", "trade": "Framing"})),
-                            resp(text("Save it?")))
+                            resp(text("Save Arkon as Framing? Reply yes.")))
         with _Ctx(db=db), patch.object(server, "_dm_brain_client", lambda: llm):
             out = _run(server._dm_brain_answer(ident, CHAT, "Arkon is framer", history=[],
                                                now=datetime.now(timezone.utc), dry_run=True,
                                                flows=[], active=None))
-        self.assertEqual(out["reply"], "Save it?")
+        self.assertEqual(out["reply"], "Save Arkon as Framing? Reply yes.")
         self.assertEqual(db[server._DM_STATE].rows, [])
 
 
@@ -427,6 +537,19 @@ class TheLib(unittest.TestCase):
                 {"sender": "1", "body": "old", "created_at": now - timedelta(days=9)}]
         self.assertEqual(dm_brain.history_messages(rows, now),
                          [{"role": "user", "content": "a\nb"}, {"role": "assistant", "content": "c"}])
+
+    def test_cut_claims_you(self):
+        self.assertTrue(dm_brain.truncated("*Ark"))
+        self.assertTrue(dm_brain.truncated("All good", "length"))
+        self.assertTrue(dm_brain.truncated("Ok", after_tools=True))
+        self.assertFalse(dm_brain.truncated("* Arkon\n* J&G\n*2* on site"))
+        self.assertFalse(dm_brain.truncated("*Arkon Builders* — 12 on site."))
+        self.assertEqual(dm_brain.action_claims("Sent you the sheet."), ["sent"])
+        self.assertEqual(dm_brain.action_claims("I've saved it. All done."), ["saved", "done"])
+        self.assertEqual(dm_brain.action_claims("Want me to send it? Reply yes to save."), [])
+        self.assertEqual(dm_brain.action_claims("3 items done P-588-1 open"), [])
+        self.assertTrue(dm_brain.says_from_you("Voice note from you at 9:14"))
+        self.assertFalse(dm_brain.says_from_you("Meilich said core drill on 3"))
 
     def test_final_text_and_json(self):
         self.assertEqual(dm_brain.final_text("<think>x</think>\nok"), "ok")

@@ -51,7 +51,8 @@ class Replay(unittest.TestCase):
         self.assertEqual(out["old_answer"], "I don't have that in the records.")
         run = out["runs"][M]
         self.assertEqual(run["answer"], "Save Arkon Builders as Framing on 588? Reply yes.")
-        self.assertEqual(run["quality"], {"answered": True, "evidence": True, "language": True})
+        self.assertEqual(run["quality"], {"answered": True, "evidence": True, "whole": True,
+                                          "actions": True, "language": True})
         self.assertEqual((run["input_tokens"], run["cost_usd"]), (200, 0.0002))
         self.assertEqual(out["history_turns"], 1)                      # "hi", not the question
         self.assertTrue(run["tools"][0].startswith("set_sub_trade("))
@@ -59,7 +60,7 @@ class Replay(unittest.TestCase):
         self.assertEqual(db.projects.rows[0]["trade_assignments"][0]["trade"], "General Construction")
         md = ev._md([out], [M, "Qwen/Qwen3.8-Max"], ro.dropped)
         self.assertIn("**Old** (job_agent)", md)
-        self.assertIn(f"**{M}** — quality 3/3", md)
+        self.assertIn(f"**{M}** — quality 5/5", md)
         self.assertIn("$0.0002", md)
         self.assertIn("| Model | Required fixed cases", md)
 
