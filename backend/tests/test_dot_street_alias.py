@@ -135,3 +135,44 @@ class ASettledSummonsIsKnownToBeSettled(unittest.TestCase):
         src = open("server.py", encoding="utf-8").read()
         block = src[src.index("async def _dot_sync_tick"):src.index("async def _dot_sync_job")]
         self.assertIn('"street_aliases": 1', block)
+
+
+class TheLocationTextOfARealOathRow(unittest.TestCase):
+    """The probe of real OATH rows (2026-10): the street field holds the whole
+    location -- house number first, cross street after."""
+
+    def setUp(self):
+        self.pk = D.project_keys(PROJECT)
+
+    def row(self, street, **kw):
+        return oath(violation_location_street_name=street, **kw)
+
+    def test_house_number_and_cross_street_are_removed(self):
+        self.assertEqual(D.oath_street("588 HOPKINSON AVENUE BTWN BLAKE", "588"), "HOPKINSON AVE")
+        self.assertEqual(D.oath_street("MYRTLE AVE BET CLASSON AVE T", "588"), "MYRTLE AVE")
+        self.assertEqual(D.oath_street("588 5 STREET BTWN 8 AVENUE", "588"), "5 ST")
+        self.assertEqual(D.oath_street("MYRTLE AVENUE", "588"), "MYRTLE AVE")      # nothing to remove
+
+    def test_the_two_real_summonses_and_the_older_one_match(self):
+        for n in ("0704345557", "0704345548", "0704294416"):
+            rec = self.row("588 HOPKINSON AVENUE BTWN BLAKE", ticket_number=n,
+                           violation_location_block_no=None, violation_location_lot_no=None)
+            self.assertEqual(D.match("dot_violation", self.pk, rec), "address", n)
+
+    def test_the_same_house_number_on_another_street_is_not_this_site(self):
+        for street in ("588 5 STREET BTWN 8 AVENUE", "588 LIVONIA AVENUE BTWN GEORGIA",
+                       "588 MARCY AVENUE BTWN VERNON", "588 PARKSIDE AVENUE BTWN BED"):
+            rec = self.row(street, violation_location_block_no=None, violation_location_lot_no=None)
+            self.assertIsNone(D.match("dot_violation", self.pk, rec), street)
+
+    def test_a_row_with_a_block_and_lot_still_matches_by_them_only(self):
+        other = self.row("MYRTLE AVENUE", violation_location_block_no="01910", violation_location_lot_no="0023")
+        self.assertIsNone(D.match("dot_violation", self.pk, other))
+
+    def test_the_new_issuance_is_open_and_the_paid_one_is_closed(self):
+        new = self.row("588 HOPKINSON AVENUE BTWN BLAKE", hearing_status="NEW ISSUANCE", penalty_imposed="750",
+                       balance_due="750", paid_amount="0")
+        paid = self.row("588 HOPKINSON AVENUE BTWN BLAKE", hearing_status="PAID IN FULL", hearing_result="DEFAULTED",
+                        penalty_imposed="780", balance_due="0", paid_amount="780")
+        self.assertIsNone(D.closed_reason(new))
+        self.assertEqual(D.closed_reason(paid), "PAID IN FULL")

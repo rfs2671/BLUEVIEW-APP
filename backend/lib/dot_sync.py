@@ -155,13 +155,31 @@ def project_keys(project: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── Matching ────────────────────────────────────────────────────────────────
 
+_CROSS = re.compile(r"\s+(?:BTWN|BTW|BTWEEN|BETWEEN|BET|B/T|BT)\b.*$")
+
+
+def oath_street(raw: Any, house: Any = "") -> str:
+    """The street NAME of an OATH location. The field often holds the whole
+    location text -- "588 HOPKINSON AVENUE BTWN BLAKE", "MYRTLE AVE BET CLASSON
+    AVE T" -- so the house number in front and the cross streets behind are
+    removed. Real DOT summonses 0704345548 / 0704345557 were never matched while
+    the whole string was compared with the street name."""
+    s = re.sub(r"\s+", " ", str(raw or "").strip().upper())
+    h = norm_house(house)
+    if h:
+        m = re.match(r"^(\S+)\s+(.+)$", s)
+        if m and norm_house(m.group(1)) == h:
+            s = m.group(2)
+    return norm_street(_CROSS.sub("", s))
+
+
 def oath_keys(rec: Dict[str, Any]) -> Dict[str, str]:
     return {
         "bbl": bbl_from_parts(_v(rec, "violation_location_borough"),
                               _v(rec, "violation_location_block_no"),
                               _v(rec, "violation_location_lot_no")),
         "house": norm_house(_v(rec, "violation_location_house")),
-        "street": norm_street(_v(rec, "violation_location_street_name")),
+        "street": oath_street(_v(rec, "violation_location_street_name"), _v(rec, "violation_location_house")),
         "boro": boro_code(_v(rec, "violation_location_borough")),
     }
 

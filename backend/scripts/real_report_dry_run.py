@@ -120,6 +120,9 @@ def parse_args(argv):
     ap.add_argument("out_dir", nargs="?", default=os.path.join(HERE, "..", "..", "docs", "samples", "real"))
     ap.add_argument("--project", default=os.environ.get("REAL_REPORT_PROJECT", ""),
                     help='job name or address to match, e.g. "588"')
+    ap.add_argument("--live-dot", action="store_true",
+                    help="run the real DOT sync against NYC Open Data, keep what it would store IN MEMORY only, and "
+                         "build the report with those rows (nothing is written; first-seen is the issue date)")
     ap.add_argument("--company", default=os.environ.get("REAL_REPORT_COMPANY_ID", ""),
                     help="company id, only to narrow the match")
     a = ap.parse_intermixed_args(argv)
@@ -249,6 +252,40 @@ async def dot_probe(server, project):
     return "\n".join(lines) + "\n"
 
 
+async def live_dot(server, project, now):
+    """What the DOT sync WOULD store for this project, by running the real sync
+    tick against the public datasets with its two writes replaced by an
+    in-memory collector. Returns (rows shaped like dot_logs, the tick's report)."""
+    from lib import status_history as SH
+    store = {}
+
+    def when(text, fallback):
+        try:
+            return datetime.fromisoformat(str(text)[:10]).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return fallback
+
+    async def collect(project_id, company_id, log, how, now_):
+        at = when(log.get("issue_date"), now_)
+        store[log["raw_id"]] = {**log, "project_id": project_id, "company_id": company_id, "matched_by": how,
+                                "previous_status": None, "status_history": SH.new_row_history(log.get("status"), at),
+                                "detected_at": at, "created_at": at, "updated_at": at}
+        return "new"
+
+    async def no_state(*a, **k):
+        return None
+
+    async def fetch(dataset, params):
+        try:
+            return await asyncio.to_thread(_soda_get, dataset, params)
+        except Exception:
+            return None
+
+    server._dot_store, server._mark_sources_synced = collect, no_state
+    report = await server._dot_sync_tick(now=now, fetch=fetch, project_ids=[str(project.get("_id"))])
+    return list(store.values()), report
+
+
 async def main(args):
     import server
 
@@ -264,6 +301,18 @@ async def main(args):
     print(f"project: {project.get('name')} | {project.get('address')} | id {project.get('_id')} | company {company}")
     print(f"DOB/DOT tracking on: {bool(project.get('track_dob_status'))}")
     now = datetime.now(timezone.utc)
+    if args.live_dot:
+        rows, tick = await live_dot(server, project, now)
+        print(f"live DOT (in memory only): {tick}")
+        print("   " + "\n   ".join(f"{r['record_type']} {r['number']} | {r.get('status')} | issued {str(r.get('issue_date'))[:10]}"
+                                   for r in rows if r["record_type"] == "dot_violation") or "   no DOT summonses")
+        real_rows = server._report_rows
+
+        async def with_live_dot(*a, **k):
+            out = await real_rows(*a, **k)
+            out["dot_rows"] = rows
+            return out
+        server._report_rows = with_live_dot
     got = await server.build_project_report(company, [project], args.start, args.end, now=now, by="dry-run",
                                             source="dry_run", dry_run=True)
     out = os.path.abspath(args.out_dir)
