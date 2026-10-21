@@ -15,7 +15,8 @@ send START the way WhatsApp now delivers it and fail on the code before the
 fix: the reply goes to an @c.us address built from @lid digits.
 
 THE RULE AFTER THE FIX: every START gets exactly one reply, to the chat it
-came from — the intro, or one plain line saying what to do.
+came from — the welcome (their first START ever) or the intro, or one plain
+line saying what to do.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
-from lib import wa_dm  # noqa: E402
+from lib import wa_dm, wa_welcome  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import (  # noqa: E402
     ADMIN_PHONE, CO_A, _Ctx, _db, _Wire,
 )
@@ -44,6 +45,9 @@ LID = "205842133426370"          # a privacy id, not a phone
 LID_CHAT = f"{LID}@lid"
 OTHER_LID_CHAT = "998877665544332@lid"
 BOT = "+15165494475"
+# The admin's first START is answered with the welcome (no bot number is
+# configured here, so no contact card follows it: still one reply).
+WELCOME = wa_welcome.welcome_text("Ada Admin", with_card=False)
 
 
 def _run(coro):
@@ -107,7 +111,7 @@ class TheBugAsReported(unittest.TestCase):
             self.assertEqual((row["chat_id"], row["chat_digits"]), (LID_CHAT, LID))
             self.assertFalse(row["phone_verified"])
             self.assertEqual([(p["chatId"], p["message"]) for p in _sends(c)],
-                             [(LID_CHAT, wa_dm.INTRO_TEXT)])
+                             [(LID_CHAT, WELCOME)])
             with patch.dict(os.environ, {"WAAPI_DISPLAY_NUMBER": BOT}):
                 me = _run(server.whatsapp_me(current_user=_admin(c)))
             self.assertEqual(me["state"], "connected")
@@ -129,7 +133,7 @@ class TheBugAsReported(unittest.TestCase):
             _process(c, LID_CHAT, "START")
         self.assertEqual(c.wire.calls[0], {"contactId": LID_CHAT})
         self.assertEqual(c.db[server.WA_OPTINS].rows[0]["user_id"], "u_admin")
-        self.assertEqual(_sends(c)[0]["message"], wa_dm.INTRO_TEXT)
+        self.assertEqual(_sends(c)[0]["message"], WELCOME)
 
 
 class AfterOptingInFromALid(unittest.TestCase):
@@ -197,7 +201,7 @@ class EveryStartGetsAPlainReply(unittest.TestCase):
 
     def test_plain_start_from_a_phone_still_works(self):
         msg, c = self._reply(f"{ADMIN_PHONE}@c.us", "START")
-        self.assertEqual(msg, wa_dm.INTRO_TEXT)
+        self.assertEqual(msg, WELCOME)
         self.assertEqual(c.db[server.WA_OPTINS].rows[0]["chat_id"],
                          f"{ADMIN_PHONE}@c.us")
 
@@ -241,7 +245,10 @@ class TheCodeIsSingleUseAndShortLived(unittest.TestCase):
             new = _mint(c)
             self.assertNotEqual(old, new)
             _process(c, LID_CHAT, f"START {old}", "L1")
-            self.assertEqual(_sends(c)[-1]["message"], wa_dm.INTRO_TEXT)
+            self.assertEqual(_sends(c)[-1]["message"], WELCOME)
+            _process(c, LID_CHAT, f"START {new}", "L3")
+            self.assertEqual(_sends(c)[-1]["message"], wa_dm.INTRO_TEXT,
+                             "welcomed once: a second START gets the intro")
             _process(c, OTHER_LID_CHAT, f"START {old}", "L2")
             self.assertEqual(_sends(c)[-1]["message"], wa_dm.CODE_EXPIRED_TEXT)
 

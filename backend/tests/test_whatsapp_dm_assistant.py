@@ -65,13 +65,19 @@ def _db():
     )
 
 
-def _optin(db, user_id, phone, chat=None):
+def _optin(db, user_id, phone, chat=None, *, welcomed=True):
+    """An active opt-in, as START leaves it: welcomed already (the welcome
+    is tested in test_whatsapp_dm_welcome.py), unless `welcomed=False`."""
     chat = chat or f"{phone}@c.us"
+    company = CO_A if user_id != "u_b" else CO_B
     db[server.WA_OPTINS].rows.append({
         "_id": f"o_{user_id}", "phone": phone, "user_id": user_id,
-        "company_id": CO_A if user_id != "u_b" else CO_B, "status": "active",
+        "company_id": company, "status": "active",
         "chat_id": chat, "chat_digits": "".join(c for c in chat if c.isdigit()),
         "phone_verified": True})
+    if welcomed:
+        db[server.WA_DM_WELCOMES].rows.append({
+            "_id": user_id, "company_id": company, "card": "vcard"})
 
 
 def _payload(chat, body, mid="D1"):

@@ -115,6 +115,7 @@ from lib import dob_site_bins  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
+from lib import wa_welcome  # noqa: E402
 from lib import wa_assistant  # noqa: E402
 from lib import wa_subs  # noqa: E402
 from lib import waapi_monitor  # noqa: E402
@@ -50706,7 +50707,88 @@ async def _record_optin(u: dict, phone: str, chat: str, chat_digits: str, *,
         return
     _security_event("whatsapp_optin", user_id=uid, company_id=cid,
                     jid_kind=wa_dm.jid_kind(chat), source=source)
+    # Their first START ever: the welcome (and the card) instead of the
+    # intro. Every START after that: the intro, as before.
+    if await _dm_welcome(u, chat, "start_welcomed"):
+        return
     await _reply_dm(chat, wa_dm.INTRO_TEXT, "start_opted_in")
+
+
+# ── THE WELCOME: ONCE PER PERSON (lib/wa_welcome.py) ────────────────────
+#
+# The first time Levelog Assistant talks to someone, it says hello by name,
+# says what they can ask, and sends its contact card.
+#
+#   whatsapp_dm_welcomes   one row per USER, _id = user id:
+#                          {_id, company_id, welcomed_at, card}. The insert
+#                          is the claim, so two STARTs racing welcome once.
+#
+# WHY ITS OWN COLLECTION. whatsapp_optins is keyed by phone (a new number,
+# or a STOP and START, is a new row, not a new person), and ledger rows
+# expire after WA_LEDGER_RETENTION_DAYS. This row has no TTL: once welcomed,
+# never again. Written and read only here.
+WA_DM_WELCOMES = "whatsapp_dm_welcomes"
+
+
+async def _dm_welcome_claim(u: dict) -> Optional[datetime]:
+    """Claim this person's welcome, atomically: the claim time when it is
+    ours, None when they were welcomed already (or the write failed -- the
+    plain intro is the safe answer then)."""
+    uid = str(u.get("_id") or "")
+    if not uid:
+        return None
+    now = datetime.now(timezone.utc)
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[WA_DM_WELCOMES].insert_one({
+            "_id": uid, "company_id": str(u.get("company_id") or ""),
+            "welcomed_at": now, "card": None})
+    except DuplicateKeyError:
+        return None
+    except Exception as e:
+        logger.warning(f"[wa-welcome] claim failed: {type(e).__name__}")
+        return None
+    return now
+
+
+async def _dm_welcome(u: dict, chat: str, outcome: str) -> bool:
+    """Welcome this person in this chat if they never were: the welcome,
+    then the contact card. True when the welcome went (the caller then
+    sends no intro of its own).
+
+    The welcome text is what counts: a card that fails is logged and the
+    person stays welcomed ("contact" gets the card any time). A welcome
+    text that fails gives the claim back, so a later START welcomes them."""
+    claimed_at = await _dm_welcome_claim(u)
+    if claimed_at is None:
+        return False
+    uid = str(u.get("_id") or "")
+    chat = wa_dm.dm_chat_id(chat)
+    with_card = bool(_wa_bot_digits() and WAAPI_INSTANCE_ID and WAAPI_TOKEN)
+    logger.info(f"[wa-dm] {outcome} kind={wa_dm.jid_kind(chat) or 'unknown'} "
+                f"chat=...{wa_dm.phone_digits(chat)[-4:]}")
+    sent = await send_whatsapp_message(
+        chat, wa_welcome.welcome_text(u.get("name"), with_card=with_card))
+    if sent is None:
+        logger.warning(f"[wa-welcome] welcome NOT delivered after {outcome}; claim released")
+        try:
+            await db[WA_DM_WELCOMES].delete_one({"_id": uid, "welcomed_at": claimed_at})
+        except Exception as e:
+            logger.warning(f"[wa-welcome] claim release failed: {type(e).__name__}")
+        return False
+    card = await _send_contact_card(chat) if with_card else None
+    if not with_card:
+        logger.warning("[wa-welcome] contact card not sent: WhatsApp number or "
+                       "WaAPI not configured")
+    elif card not in ("vcard", "document"):
+        logger.warning(f"[wa-welcome] contact card not sent ({card or 'failed'}); "
+                       f"the welcome still counts")
+    try:
+        await db[WA_DM_WELCOMES].update_one(
+            {"_id": uid}, {"$set": {"card": card or "not_sent"}})
+    except Exception as e:
+        logger.warning(f"[wa-welcome] card result not saved: {type(e).__name__}")
+    return True
 
 
 async def _handle_dm_stop(chat_id: str, raw: Any = None) -> None:
@@ -72601,6 +72683,9 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
+        # Opted in but never welcomed (START before the welcome existed):
+        # welcomed now, once, and their message is still answered below.
+        await _dm_welcome(ident["user"], dm_chat, "dm_welcomed")
         # The DM brain answers this person (everyone, unless dm_brain_off).
         dm_brain_on = await _dm_brain_on(ident)
 
