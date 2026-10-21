@@ -224,7 +224,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
 
   // OPEN IN BROWSER. `url` is what the <iframe> loads, and for our own proxy
   // that carries the session token, so it must never be opened as a page of
-  // its own. A stored file gets a 120-second signed link instead; anything
+  // its own. A stored file gets a 15-minute signed link instead; anything
   // else (a Dropbox link) never had a token and opens as it is.
   const openInBrowser = async () => {
     try {

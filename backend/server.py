@@ -29469,7 +29469,7 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
 
 
-# ── A DOWNLOAD LINK WORTH TWO MINUTES, NOT THIRTY DAYS ─────────────────────
+# ── A DOWNLOAD LINK WORTH FIFTEEN MINUTES, NOT THIRTY DAYS ─────────────────
 #
 # WHAT WAS WRONG. The Download button built `/content?token=<JWT>` from
 # window.localStorage. A phone has no window.localStorage, so the token was
@@ -29480,7 +29480,7 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
 #
 # WHAT REPLACES IT. The app calls GET /files/{id}/signed-url with its bearer
 # header and gets back a link to /api/files/{id}/download whose HMAC names the
-# file, the principal and an expiry 120 seconds out. NOT SINGLE-USE, ON
+# file, the principal and an expiry 15 minutes out. NOT SINGLE-USE, ON
 # PURPOSE: a PDF viewer comes back for byte ranges of the same document, and a
 # link that died on its first use would break the second range.
 #
@@ -29488,11 +29488,11 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
 # to this principal for this file. The download re-loads the principal (a
 # deleted user, a pending account, a removed device all refuse) and re-runs the
 # project, company and device allow-list checks the /content route runs, so
-# access revoked inside the two minutes is revoked.
+# access revoked inside the fifteen minutes is revoked.
 #
 # THE KEY IS DERIVED FROM JWT_SECRET UNDER ITS OWN LABEL, so a MAC from here
 # can never be presented as anything else signed with that secret.
-FILE_DOWNLOAD_LINK_TTL_SECONDS = 120
+FILE_DOWNLOAD_LINK_TTL_SECONDS = 900
 _FILE_DOWNLOAD_KEY_LABEL = b"levelog/file-download-link/v1"
 _FILE_DOWNLOAD_FILE_ID = re.compile(r"^[0-9a-f]{24}$")
 _FILE_DOWNLOAD_SUBJECT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -29502,13 +29502,15 @@ _FILE_DOWNLOAD_SIG = re.compile(r"^[0-9a-f]{64}$")
 # is served whole (200), which every client must accept.
 _SINGLE_BYTE_RANGE = re.compile(r"^bytes=(\d+-\d*|-\d+)$")
 
-# REFUSED LINKS ARE COUNTED PER ADDRESS, GOOD ONES ARE NOT. A PDF viewer asks
-# one good link for many byte ranges, so a cap on every request would be tuned
-# against the user; a stream of forged or stale links is the shape worth
-# stopping. After this many refusals in a minute an address gets a 429 BEFORE
-# any signature is computed. A forged MAC is not reachable by guessing at any
-# rate -- this bounds the noise, not the odds. The per-address cap on all
-# requests to the route is the middleware's (lib/rate_limits.py).
+# FORGED SIGNATURES ARE COUNTED PER ADDRESS, AND NOTHING ELSE IS. The MAC is
+# checked first; only a link whose signature does not verify is counted, and
+# after this many in a minute that address's further forgeries get a 429. An
+# expired link this server did sign is a 401 and never counted; a valid,
+# unexpired link is never refused here, so a PDF viewer's byte ranges -- or an
+# office behind one NAT where another tab sent junk -- always get through. A
+# forged MAC is not reachable by guessing at any rate: this bounds the noise,
+# not the odds. The per-address cap on ALL requests to the route is the
+# middleware's (lib/rate_limits.py).
 SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE = 20
 signed_download_refusal_limiter = RateLimiter(
     max_requests=SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE, window_seconds=60)
@@ -29625,7 +29627,7 @@ async def _project_file_for(file_id: str, current_user: dict) -> dict:
 
 @api_router.get("/files/{file_id}/signed-url")
 async def get_file_signed_url(file_id: str, current_user = Depends(get_current_user)):
-    """A 120-second link to one stored file, for the caller only. See the
+    """A 15-minute link to one stored file, for the caller only. See the
     note above FILE_DOWNLOAD_LINK_TTL_SECONDS."""
     rec = await _project_file_for(file_id, current_user)
     if not rec.get("r2_key"):
@@ -29643,7 +29645,8 @@ async def get_file_signed_url(file_id: str, current_user = Depends(get_current_u
 # Shown in a browser tab, where the app's locale is not known, so both
 # languages are on the page. (status, EN title, EN hint, ES title, ES hint)
 _DOWNLOAD_REFUSAL_COPY = {
-    "expired": (403,
+    # 401, not 403: the link was genuine and has lapsed -- ask again.
+    "expired": (401,
                 "This download link has expired.",
                 "Go back to Levelog and tap Download again.",
                 "Este enlace de descarga ha caducado.",
@@ -29706,16 +29709,23 @@ async def download_signed_file(file_id: str, request: Request,
     the link IS the credential, and it is checked here before anything else.
     Honours a single `Range`, so a PDF viewer can fetch the pages it needs.
     `dl=1` asks for an attachment instead of inline display."""
-    from lib.rate_limits import _client_ip
-    client_ip = _client_ip(request)
-    if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
-        logger.warning("[signed-download] throttled ip=%s", client_ip)
-        page = _download_refusal_page("throttled")
-        page.headers["Retry-After"] = "60"
-        return page
+    # THE SIGNATURE FIRST, THEN THE LIMITER, AND ONLY FOR A FORGERY. An HMAC
+    # is cheap; refusing a real link is not. An expired link this server
+    # signed is a person who was slow (401, never counted), and a valid,
+    # unexpired one is served whatever its address has been doing -- an
+    # office behind one NAT must not lose its download to somebody else's
+    # junk requests.
     reason = _check_file_download_signature(file_id, k, u, e, s)
+    if reason == "invalid":
+        from lib.rate_limits import _client_ip
+        client_ip = _client_ip(request)
+        if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
+            logger.warning("[signed-download] throttled ip=%s", client_ip)
+            page = _download_refusal_page("throttled")
+            page.headers["Retry-After"] = "60"
+            return page
+        signed_download_refusal_limiter.is_allowed(client_ip)  # records the forgery
     if reason:
-        signed_download_refusal_limiter.is_allowed(client_ip)  # records the refusal
         logger.info("[signed-download] refused file=%s reason=%s", file_id[:24], reason)
         return _download_refusal_page(reason)
     try:

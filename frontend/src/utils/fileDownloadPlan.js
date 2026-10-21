@@ -6,7 +6,7 @@
  *
  * THE LINK NEVER CARRIES A TOKEN.
  *   web    — the app asks /files/{id}/signed-url with its bearer header and
- *            opens the 120-second link that comes back.
+ *            opens the 15-minute link that comes back.
  *   native — the bytes are fetched with the token in the Authorization
  *            HEADER, then handed to the share sheet as a local file.
  * The old button built `/content?token=` from window.localStorage, which a

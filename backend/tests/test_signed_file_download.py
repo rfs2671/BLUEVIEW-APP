@@ -1,4 +1,4 @@
-"""A DOWNLOAD LINK NAMES ONE FILE, ONE PRINCIPAL AND TWO MINUTES.
+"""A DOWNLOAD LINK NAMES ONE FILE, ONE PRINCIPAL AND FIFTEEN MINUTES.
 
 WHAT WAS BROKEN. Plans & Files' Download built `/content?token=<JWT>` from
 window.localStorage. A phone has no window.localStorage, so the token was
@@ -8,7 +8,7 @@ non-webhook `token=` lines in the retained Railway logs are exactly those
 
 WHAT REPLACES IT. GET /api/files/{id}/signed-url (bearer header) returns a
 link to /api/files/{id}/download carrying an HMAC over file id, principal and
-an expiry 120s out. Asserted here, over real HTTP through server.app (every
+an expiry 900s out. Asserted here, over real HTTP through server.app (every
 middleware, the real JWT, only the database and R2 replaced):
 
   * the link works with NO header, and keeps working for a second byte range
@@ -168,7 +168,7 @@ class TheLinkWorksWithoutAHeader(unittest.TestCase):
         body, r = run(go)
         self.assertEqual(r.status_code, 200, r.text[:300])
         self.assertEqual(r.content, BYTES)
-        self.assertEqual(body["expires_in"], 120)
+        self.assertEqual(body["expires_in"], 900)
         self.assertNotIn("token=", body["path"])
         self.assertTrue(body["url"].endswith(body["path"]))
         self.assertIn("inline", r.headers["content-disposition"])
@@ -240,24 +240,24 @@ class EverySignedFieldIsBound(unittest.TestCase):
         async def go(c, db, r2):
             principal = {"id": str(ADMIN_A), "role": "admin"}
             path, _ = server._sign_file_download_path(
-                str(FILE_A), principal, now=time.time() - 121)
+                str(FILE_A), principal, now=time.time() - 901)
             return await c.get(path)
         r = run(go)
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.status_code, 401)
         self.assertIn("expired", r.text)
         self.assertIn("caducado", r.text)
 
-    def test_the_lifetime_is_120_seconds(self):
-        self.assertEqual(server.FILE_DOWNLOAD_LINK_TTL_SECONDS, 120)
+    def test_the_lifetime_is_900_seconds(self):
+        self.assertEqual(server.FILE_DOWNLOAD_LINK_TTL_SECONDS, 900)
         now = 1_800_000_000
         path, exp = server._sign_file_download_path(
             str(FILE_A), {"id": str(ADMIN_A)}, now=now)
-        self.assertEqual(exp, now + 120)
+        self.assertEqual(exp, now + 900)
         q = dict(kv.split("=") for kv in path.split("?")[1].split("&"))
         self.assertIsNone(server._check_file_download_signature(
-            str(FILE_A), q["k"], q["u"], q["e"], q["s"], now=now + 120))
+            str(FILE_A), q["k"], q["u"], q["e"], q["s"], now=now + 900))
         self.assertEqual(server._check_file_download_signature(
-            str(FILE_A), q["k"], q["u"], q["e"], q["s"], now=now + 121), "expired")
+            str(FILE_A), q["k"], q["u"], q["e"], q["s"], now=now + 901), "expired")
 
 
 class TheSignatureIsNotThePermission(unittest.TestCase):
@@ -398,15 +398,18 @@ class TheQueryTokenIsStillAcceptedAndCounted(unittest.TestCase):
 
 
 class RefusedLinksAreRateLimitedPerAddress(unittest.TestCase):
-    """Forged or stale links: 20 a minute per address, then 429 before any
-    MAC is computed. Good links are not counted -- a PDF viewer's ranges."""
+    """Only FORGED signatures count: 20 a minute per address, then 429 for
+    further forgeries. The MAC is checked first, so an expired link that this
+    server really signed is a 401 and is never counted, and a valid unexpired
+    link is never refused by this limiter -- a PDF viewer's byte ranges, or an
+    office behind one NAT where somebody else's tab sent junk."""
 
     def setUp(self):
         server.signed_download_refusal_limiter.reset()
 
     tearDown = setUp
 
-    def test_the_21st_refusal_from_one_address_is_429_and_storage_is_untouched(self):
+    def test_the_21st_forgery_from_one_address_is_429_and_storage_is_untouched(self):
         cap = server.SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE
 
         async def go(c, db, r2):
@@ -415,20 +418,53 @@ class RefusedLinksAreRateLimitedPerAddress(unittest.TestCase):
             ip = {"X-Forwarded-For": "203.0.113.7"}
             refused = [(await c.get(bad, headers=ip)).status_code for _ in range(cap)]
             throttled = await c.get(bad, headers=ip)
-            # A GOOD link from the same address is throttled too: the cap is
-            # on the address, read before the signature.
-            good_after = await c.get(good, headers=ip)
-            other_ip = await c.get(good, headers={"X-Forwarded-For": "198.51.100.9"})
-            return refused, throttled, good_after, other_ip, len(r2.calls)
-        refused, throttled, good_after, other_ip, r2_calls = run(go)
+            return refused, throttled, len(r2.calls)
+        refused, throttled, r2_calls = run(go)
         self.assertEqual(refused, [403] * cap)
         self.assertEqual(throttled.status_code, 429)
         self.assertEqual(throttled.headers.get("retry-after"), "60")
         self.assertIn("Too many download attempts", throttled.text)
         self.assertIn("Demasiados intentos", throttled.text)
-        self.assertEqual(good_after.status_code, 429)
-        self.assertEqual(other_ip.status_code, 200, "another address is unaffected")
-        self.assertEqual(r2_calls, 1, "only the other address's good link reached storage")
+        self.assertEqual(r2_calls, 0, "no forgery reached storage")
+
+    def test_a_valid_link_from_a_tripped_address_still_serves(self):
+        """(b) The bucket is tripped with forgeries; the real link from the
+        SAME address is served, whole and by range."""
+        cap = server.SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE
+
+        async def go(c, db, r2):
+            good = (await _link(c))["path"]
+            bad = _swap(good, "s", "f" * 64)
+            ip = {"X-Forwarded-For": "203.0.113.9"}
+            for _ in range(cap + 3):
+                await c.get(bad, headers=ip)
+            tripped = await c.get(bad, headers=ip)
+            whole = await c.get(good, headers=ip)
+            ranged = await c.get(good, headers={**ip, "Range": "bytes=0-9"})
+            return tripped.status_code, whole, ranged
+        tripped, whole, ranged = run(go)
+        self.assertEqual(tripped, 429, "precondition: the address is tripped")
+        self.assertEqual((whole.status_code, whole.content), (200, BYTES))
+        self.assertEqual((ranged.status_code, ranged.content), (206, BYTES[:10]))
+
+    def test_expired_but_validly_signed_links_are_401_and_never_counted(self):
+        """(a) 25 expired links this server really signed, from one address:
+        every one is a 401 'expired', none a 429, and the bucket stays empty."""
+        ip_addr = "203.0.113.10"
+
+        async def go(c, db, r2):
+            principal = {"id": str(ADMIN_A), "role": "admin"}
+            ttl = server.FILE_DOWNLOAD_LINK_TTL_SECONDS
+            out = []
+            for i in range(25):
+                path, _ = server._sign_file_download_path(
+                    str(FILE_A), principal, now=time.time() - ttl - 1 - i)
+                out.append(await c.get(path, headers={"X-Forwarded-For": ip_addr}))
+            return out
+        out = run(go)
+        self.assertEqual([r.status_code for r in out], [401] * 25)
+        self.assertTrue(all("expired" in r.text and "caducado" in r.text for r in out))
+        self.assertEqual(server.signed_download_refusal_limiter.recent(ip_addr), 0)
 
     def test_good_links_are_not_counted(self):
         cap = server.SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE

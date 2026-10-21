@@ -932,7 +932,7 @@ export const dropboxAPI = {
     return response.data;
   },
 
-  // A 120-second link to one stored file, signed for this account. The bearer
+  // A 15-minute link to one stored file, signed for this account. The bearer
   // token rides in the header of THIS request only; the link it returns
   // carries no token. `{ url }` is absolute, joined to the API base the app
   // already talks to.

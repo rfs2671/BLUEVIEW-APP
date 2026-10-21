@@ -27,7 +27,7 @@ function downloadError(code) {
 // ── WEB ─────────────────────────────────────────────────────────────────────
 
 /**
- * Open a 120-second signed link to one stored file in a new tab.
+ * Open a 15-minute signed link to one stored file in a new tab.
  *
  * THE TAB IS OPENED BEFORE THE AWAIT. A window.open that runs after a network
  * round trip is no longer inside the click, and popup blockers eat it; an

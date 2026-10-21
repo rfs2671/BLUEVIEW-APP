@@ -833,7 +833,7 @@ export default function ProjectFilesScreen() {
       try {
         const source = downloadSource(file);
         if (source === 'stored') {
-          // A 120-second link signed for this account, opened in a new tab.
+          // A 15-minute link signed for this account, opened in a new tab.
           await openSignedDownload(file.id || file._id, { attachment: true });
         } else if (source === 'dropbox') {
           // Dropbox's own short-lived link; it never carried our token.
