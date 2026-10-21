@@ -963,7 +963,9 @@ export default function ProjectDetailScreen() {
                     pressed && s.actionCardPressed,
                   ]}
                 >
-                  <CardSheen radius={borderRadius.xl} />
+                  {({ hovered, pressed }) => (
+                  <>
+                  <CardSheen radius={borderRadius.xl} active={!!(hovered || pressed)} />
                   <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
                     <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
@@ -973,6 +975,8 @@ export default function ProjectDetailScreen() {
                       <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
                       <Text style={s.actionWarnText}>No BIN</Text>
                     </View>
+                  )}
+                  </>
                   )}
                 </Pressable>
               );
