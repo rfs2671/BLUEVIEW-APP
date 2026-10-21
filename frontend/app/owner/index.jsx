@@ -64,9 +64,9 @@ import {
 // badge says the word as well — colour alone cannot distinguish "no date" from
 // "a date nobody can read", and those need different fixes.
 const INSURANCE_STATE_COLOR = {
-  expired: semantic.criticalText,
-  soon: semantic.attention,
-  ok: semantic.verified,
+  get expired() { return semantic.criticalText; },
+  get soon() { return semantic.attention; },
+  get ok() { return semantic.verified; },
   unreadable: '#6b7280',
   blank: '#6b7280',
 };
@@ -1105,7 +1105,7 @@ export default function OwnerPortalScreen() {
           onRequestClose={() => setShowCreateCompanyModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowCreateCompanyModal(false)} />
@@ -1178,7 +1178,7 @@ export default function OwnerPortalScreen() {
           }}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable
@@ -1479,7 +1479,7 @@ export default function OwnerPortalScreen() {
           onRequestClose={() => setShowFilingRepModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowFilingRepModal(false)} />
@@ -1644,8 +1644,8 @@ function buildStyles(colors, isDark) {
     padding: spacing.xxl,
   },
   loginTitle: {
-    fontSize: 24,
-    fontWeight: '300',
+    fontSize: 20,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     marginTop: spacing.lg,
   },
@@ -1941,15 +1941,15 @@ function buildStyles(colors, isDark) {
     backgroundColor: withAlpha('#ffffff', 0.03),
   },
   filingRepClassChipActive: {
-    borderColor: '#3b82f680',
-    backgroundColor: '#3b82f615',
+    borderColor: withAlpha(colors.primary, 0.5),
+    backgroundColor: withAlpha(colors.primary, 0.08),
   },
   filingRepClassChipText: {
     fontSize: 11,
     color: colors.text.muted,
   },
   filingRepClassChipTextActive: {
-    color: '#3b82f6',
+    color: colors.primary,
     fontFamily: typography.medium,
   },
   filingRepPrimaryToggle: {
@@ -2205,7 +2205,7 @@ function buildStyles(colors, isDark) {
   },
   deleteButton: {
     backgroundColor: semantic.criticalBg,
-    borderColor: '#ef4444',
+    borderColor: semantic.critical,
   },
   });
 }

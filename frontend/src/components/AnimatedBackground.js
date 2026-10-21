@@ -61,12 +61,12 @@ const AnimatedBackground = ({ children, pinned = false }) => {
   // Light: subtle primary-blue scanline mimicking the CSS radial-gradient accents
   //   radial-gradient(ellipse at top, rgba(21,101,192,0.08) …)
   const scanlineColor = isDark
-    ? withAlpha('#ffffff', 0.02)
-    : 'rgba(21, 101, 192, 0.04)';
+    ? withAlpha('#ffffff', 0)
+    : 'rgba(36, 55, 70, 0)';
 
   return (
     <View style={[styles.container, { backgroundColor: stops[0] }]}>
-      {/* Main gradient: linear-gradient(180deg, #d0dcf0 0%, #D6E4F7 50%, #ccd8ee 100%) */}
+      {/* Main gradient: linear-gradient(180deg, #e6e8e3 0%, #ECEDE9 50%, #e6e8e3 100%) */}
       <LinearGradient
         colors={stops}
         style={styles.gradient}
@@ -77,7 +77,7 @@ const AnimatedBackground = ({ children, pinned = false }) => {
       {/* Light mode: extra radial-like overlay for the blue tint at top */}
       {!isDark && (
         <LinearGradient
-          colors={['rgba(21, 101, 192, 0.08)', 'transparent']}
+          colors={['rgba(36, 55, 70, 0)', 'transparent']}
           style={styles.radialTop}
           start={{ x: 0.5, y: 0 }}
           end={{ x: 0.5, y: 0.5 }}
@@ -87,7 +87,7 @@ const AnimatedBackground = ({ children, pinned = false }) => {
       {/* Light mode: extra radial-like overlay for the blue tint at bottom */}
       {!isDark && (
         <LinearGradient
-          colors={['transparent', 'rgba(2, 119, 189, 0.06)']}
+          colors={['transparent', 'rgba(2, 119, 189, 0)']}
           style={styles.radialBottom}
           start={{ x: 0.5, y: 0.5 }}
           end={{ x: 0.5, y: 1 }}

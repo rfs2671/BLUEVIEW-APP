@@ -75,7 +75,7 @@ import {
   warmDocCache,
 } from '../../../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic, withAlpha } from '../../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
@@ -170,14 +170,14 @@ const getFileTypeInfo = (filename) => {
   
   const typeMap = {
     pdf: { icon: FileText, color: semantic.neutral, label: 'PDF' },
-    doc: { icon: FileText, color: '#3b82f6', label: 'DOC' },
-    docx: { icon: FileText, color: '#3b82f6', label: 'DOCX' },
+    doc: { icon: FileText, color: chrome.brand, label: 'DOC' },
+    docx: { icon: FileText, color: chrome.brand, label: 'DOCX' },
     xls: { icon: FileText, color: semantic.neutral, label: 'XLS' },
     xlsx: { icon: FileText, color: semantic.neutral, label: 'XLSX' },
-    png: { icon: ImageIcon, color: '#8b5cf6', label: 'PNG' },
-    jpg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPG' },
-    jpeg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPEG' },
-    gif: { icon: ImageIcon, color: '#8b5cf6', label: 'GIF' },
+    png: { icon: ImageIcon, color: chrome.brand, label: 'PNG' },
+    jpg: { icon: ImageIcon, color: chrome.brand, label: 'JPG' },
+    jpeg: { icon: ImageIcon, color: chrome.brand, label: 'JPEG' },
+    gif: { icon: ImageIcon, color: chrome.brand, label: 'GIF' },
     dwg: { icon: File, color: semantic.neutral, label: 'DWG' },
     dxf: { icon: File, color: semantic.neutral, label: 'DXF' },
   };
@@ -952,14 +952,14 @@ export default function ProjectFilesScreen() {
                     disabled={uploading}
                     style={({ pressed }) => [
                       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                        paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.15)',
-                        borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)' },
+                        paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha(colors.primary, 0.15),
+                        borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3) },
                       pressed && { opacity: 0.7 },
                       uploading && { opacity: 0.5 },
                     ]}
                   >
-                    <Upload size={18} strokeWidth={1.5} color="#3b82f6" />
-                    <Text style={{ color: '#3b82f6', fontSize: 14, fontWeight: '600' }}>
+                    <Upload size={18} strokeWidth={1.5} color={colors.primary} />
+                    <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '600' }}>
                       {uploading ? 'Uploading...' : 'Upload PDF'}
                     </Text>
                   </Pressable>
@@ -1764,8 +1764,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 36,
-    fontWeight: '200',
+    fontSize: 30,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -0.5,
   },
@@ -1894,10 +1894,10 @@ function buildStyles(colors, isDark) {
   saveAllBtn: {
     minHeight: 44, justifyContent: 'center',
     paddingHorizontal: spacing.md, borderRadius: 999,
-    borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)',
-    backgroundColor: 'rgba(59,130,246,0.15)',
+    borderWidth: 1, borderColor: withAlpha(colors.primary, 0.3),
+    backgroundColor: withAlpha(colors.primary, 0.15),
   },
-  saveAllText: { fontSize: 13, fontWeight: '700', color: '#3b82f6' },
+  saveAllText: { fontSize: 13, fontWeight: '700', color: colors.primary },
   readyUnsavable: {
     fontSize: 12, color: colors.text.muted, lineHeight: 17,
     marginBottom: spacing.sm,
@@ -1907,6 +1907,7 @@ function buildStyles(colors, isDark) {
   },
   fileItem: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.md,
     backgroundColor: colors.glass.background,
@@ -1950,6 +1951,8 @@ function buildStyles(colors, isDark) {
   },
   fileInfo: {
     flex: 1,
+    // On a narrow phone the three action buttons would leave the name a few pixels; below this width they wrap under it.
+    minWidth: 110,
   },
   fileName: {
     fontSize: 15,

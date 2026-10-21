@@ -26,6 +26,7 @@ import { DashboardSkeleton, StatCardSkeleton } from '../src/components/GlassSkel
 import FloatingNav from '../src/components/FloatingNav';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
+import { auraRim, auraShadow } from '../src/styles/aura';
 import { useToast } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
@@ -112,7 +113,9 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         s.actionTile,
-        { width: tileWidth, backgroundColor: colors.glass.background, borderColor: colors.glass.border },
+        { width: tileWidth, backgroundColor: colors.glass.background },
+        auraRim(colors),
+        auraShadow(colors, undefined, { translucent: true }),
         isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
       ]}
     >
@@ -120,7 +123,7 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
       <Text style={[s.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
-      <Text style={[s.actionSubtitle, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
+      <Text style={[s.actionSubtitle, { color: colors.text.muted }]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
     </Pressable>
   );
 };
@@ -144,7 +147,7 @@ const deskStyles = StyleSheet.create({
     flex: 1, minWidth: 190, borderWidth: 1, borderRadius: borderRadius.lg,
     paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
   },
-  rollupNumber: { fontSize: 40, fontWeight: '300', letterSpacing: -1 },
+  rollupNumber: { fontSize: 40, fontFamily: typography.num, fontWeight: '600', letterSpacing: -1 },
   rollupLabel: { fontSize: typography.sizes.sm, marginTop: spacing.xs },
   // Expand affordance — only rendered on cards that actually have something
   // to expand (count > 0), so a zero card carries no interactive signal.
@@ -1006,12 +1009,20 @@ export default function DashboardScreen() {
             renderDesktopDashboard()
           ) : loading ? (
             <DashboardSkeleton />
-          ) : isDark ? (
+          ) : (
             /* ══════════════════════════════════════════════════════════════
-               DARK MODE — original flat layout (unchanged)
+               ONE LAYOUT FOR BOTH THEMES — the approved concept draws the
+               same flat greeting on paper and on navy. The light theme used
+               to render a hero card here instead; every element it showed
+               (day, date, name, email) is still shown, and every element
+               below the greeting is untouched and in the same order.
                ══════════════════════════════════════════════════════════════ */
             <>
+              {/* B3: 24h first-poll banner — above the greeting in light, below it in dark, as before */}
+              {!isDark && renderFirstPollBanner()}
+
               <View style={s.greetingSection}>
+                <View style={[s.accentTab, { backgroundColor: colors.accent }]} />
                 <Text style={[s.greetingSmall, { color: colors.text.muted }]}>WELCOME BACK</Text>
                 <Text style={[s.greetingLarge, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
                 <View style={s.dateRow}>
@@ -1019,50 +1030,20 @@ export default function DashboardScreen() {
                   <Text style={s.dateDivider}>•</Text>
                   <Text style={s.fullDate}>{fullDate}</Text>
                 </View>
+                {!isDark && getUserEmail() ? (
+                  <Text style={[s.heroEmailInline, { color: colors.text.muted, marginTop: spacing.xs }]} numberOfLines={1}>
+                    {getUserEmail()}
+                  </Text>
+                ) : null}
               </View>
 
               {/* B3: 24h first-poll banner */}
-              {renderFirstPollBanner()}
+              {isDark && renderFirstPollBanner()}
 
               {/* Failed supporting reads — visible, not swallowed. */}
               {renderDataNotice()}
 
               {/* PR #48 L9 — 3-metric strip removed. */}
-
-              {/* B3: empty state when no projects */}
-              {renderProjectsEmptyState()}
-
-              <SyncButton onSyncComplete={fetchData} />
-
-              {renderAdminTools()}
-            </>
-          ) : (
-            /* ══════════════════════════════════════════════════════════════
-               LIGHT MODE — hero card layout (target design)
-               ══════════════════════════════════════════════════════════════ */
-            <>
-              {/* B3: 24h first-poll banner */}
-              {renderFirstPollBanner()}
-
-              <GlassCard style={s.heroCard}>
-                {/* Date on top */}
-                <Text style={[s.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
-                <Text style={[s.heroDate, { color: colors.text.secondary }]}>{fullDate}</Text>
-
-                {/* PR #48 L9 — identity compressed to a single line
-                    (name + muted email) and the 3-metric strip removed. */}
-                <View style={s.heroIdentityRow}>
-                  <Text style={[s.heroName, { color: colors.text.primary }]} numberOfLines={1} ellipsizeMode="tail">{getUserFirstName()}</Text>
-                  {getUserEmail() ? (
-                    <Text style={[s.heroEmailInline, { color: colors.text.muted }]} numberOfLines={1}>
-                      {getUserEmail()}
-                    </Text>
-                  ) : null}
-                </View>
-              </GlassCard>
-
-              {/* Failed supporting reads — visible, not swallowed. */}
-              {renderDataNotice()}
 
               {/* B3: empty state when no projects */}
               {renderProjectsEmptyState()}
@@ -1148,19 +1129,27 @@ function buildStyles(colors, isDark) {
 
   /* ── Dark mode: original flat greeting ─────────────────────────────────── */
   greetingSection: {
-    marginTop: spacing.lg,
-    marginBottom: spacing.xl,
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  // The concept's 44x4 accent tab above the title.
+  accentTab: {
+    width: 44,
+    height: 4,
+    marginBottom: spacing.md,
   },
   greetingSmall: {
     fontFamily: typography.regular,
     fontSize: 11,
     color: colors.text.muted,
-    letterSpacing: 1.5,
+    letterSpacing: 1.8,
     marginBottom: spacing.xs,
   },
   greetingLarge: {
-    fontFamily: typography.semibold,
+    fontFamily: typography.display,
     fontSize: 32,
+    fontWeight: '800',
+    letterSpacing: -1,
     color: colors.text.primary,
     marginBottom: spacing.sm,
   },
@@ -1351,11 +1340,10 @@ function buildStyles(colors, isDark) {
   },
   actionTile: {
     borderRadius: borderRadius.lg,
-    padding: spacing.lg,
-    alignItems: 'center',
+    padding: spacing.md,
+    alignItems: 'flex-start',
     justifyContent: 'center',
     gap: spacing.xs,
-    borderWidth: 1,
   },
   actionIcon: {
     marginBottom: spacing.xs,
@@ -1363,12 +1351,13 @@ function buildStyles(colors, isDark) {
   actionTitle: {
     fontFamily: typography.medium,
     fontSize: 14,
-    textAlign: 'center',
+    fontWeight: '700',
+    textAlign: 'left',
   },
   actionSubtitle: {
     fontFamily: typography.regular,
     fontSize: 11,
-    textAlign: 'center',
+    textAlign: 'left',
   },
   });
 }

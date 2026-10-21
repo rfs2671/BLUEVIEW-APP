@@ -137,3 +137,41 @@ export function scheduleBody(schedule, pmIds) {
     pm_ids: Array.from(new Set((pmIds || []).map(String))),
   };
 }
+
+// ── THE DAILY REPORT'S OWN SETTINGS (folded in from Report Settings) ────────
+// Its send time (New York) and the extra addresses it is emailed to, as the
+// old Report Settings screen had them; saved with PUT /report-settings.
+
+/** The send times offered, "HH:MM" 24-hour. */
+export const SEND_TIMES = ['06:00', '12:00', '15:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
+
+/** "18:00" -> "6:00 PM". */
+export function timeLabel(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+  if (!m) return '';
+  const h = Number(m[1]);
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** One address added to the list: { list } or { error } (the list unchanged). */
+export function addEmail(list, raw) {
+  const current = Array.isArray(list) ? list : [];
+  const email = String(raw || '').trim().toLowerCase();
+  if (!email) return { list: current, error: 'Enter an email address.' };
+  if (!EMAIL_RE.test(email)) return { list: current, error: "That isn't an email address." };
+  if (current.includes(email)) return { list: current, error: 'Already on the list.' };
+  return { list: [...current, email] };
+}
+
+/** The PUT /report-settings body for one change: only the field that changed
+ *  (Codex on #809 — a time change carrying this screen's copy of the list
+ *  would put back an address another admin removed meanwhile). */
+export function dailySaveBody(patch) {
+  const body = {};
+  if (patch && 'send_time' in patch) body.report_send_time = patch.send_time;
+  if (patch && 'emails' in patch) body.report_email_list = patch.emails;
+  return body;
+}

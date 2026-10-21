@@ -537,6 +537,7 @@ export default function HotWorkPermitLog() {
           exists for today" and invites a duplicate entry. */}
       {fetchState !== 'ok' && (
         <OfflineNotice
+          pinned
           mode={fetchState}
           detail={fetchState === 'offline' ? t('offlineDetail') : undefined}
         />

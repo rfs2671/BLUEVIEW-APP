@@ -59,6 +59,6 @@ function buildStyles(colors) {
     scrollContent: { padding: spacing.lg, paddingBottom: 120 },
     titleSection: { marginBottom: spacing.xl },
     titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
-    titleText: { fontSize: 36, fontWeight: '200', color: colors.text.primary, letterSpacing: -1 },
+    titleText: { fontSize: 30, fontFamily: typography.display, fontWeight: '800', color: colors.text.primary, letterSpacing: -1 },
   });
 }

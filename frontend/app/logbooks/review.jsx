@@ -458,7 +458,7 @@ export default function CheckInReviewScreen() {
             />
           ) : items.length === 0 ? (
             <GlassCard style={s.emptyCard}>
-              <Check size={28} strokeWidth={1.5} color="#4ade80" />
+              <Check size={28} strokeWidth={1.5} color={semantic.verified} />
               <Text style={s.emptyText}>{t('empty')}</Text>
               <Text style={s.emptyHint}>{t('emptyHint')}</Text>
             </GlassCard>
@@ -486,7 +486,7 @@ export default function CheckInReviewScreen() {
                   {/* Why it's flagged */}
                   {isExpired && (
                     <View style={[s.reasonRow, s.reasonExpired]}>
-                      <ShieldAlert size={14} color="#fbbf24" />
+                      <ShieldAlert size={14} color={semantic.attention} />
                       <Text style={s.reasonText}>
                         {t('expiredSst')}
                         {item.sst_expiration
@@ -498,7 +498,7 @@ export default function CheckInReviewScreen() {
                   )}
                   {isUnknown && (
                     <View style={[s.reasonRow, s.reasonExpired]}>
-                      <ShieldAlert size={14} color="#fbbf24" />
+                      <ShieldAlert size={14} color={semantic.attention} />
                       <View style={{ flex: 1 }}>
                         <Text style={s.reasonText}>{t('unknownSst')}</Text>
                         {item.sst_review_reason && t(`reason_${item.sst_review_reason}`) !== `reason_${item.sst_review_reason}` ? (
@@ -511,7 +511,7 @@ export default function CheckInReviewScreen() {
                   {needsTrade && (
                     <View>
                       <View style={[s.reasonRow, s.reasonTrade]}>
-                        <Briefcase size={14} color="#93c5fd" />
+                        <Briefcase size={14} color={colors.primary} />
                         <View style={{ flex: 1 }}>
                           <Text style={s.reasonTextBlue}>{t('needsTrade')}</Text>
                           <Text style={s.reasonHint}>{t('needsTradeHint')}</Text>
@@ -548,7 +548,7 @@ export default function CheckInReviewScreen() {
                           disabled={busy}
                           style={[s.actionBtn, s.assignBtn, busy && s.btnBusy]}
                         >
-                          <Briefcase size={15} strokeWidth={2} color="#93c5fd" />
+                          <Briefcase size={15} strokeWidth={2} color={colors.primary} />
                           <Text style={[s.actionText, s.assignText]}>
                             {t('assignTrade')}
                           </Text>
@@ -637,7 +637,7 @@ export default function CheckInReviewScreen() {
                           disabled={busy}
                           style={[s.actionBtn, s.approveBtn, busy && s.btnBusy]}
                         >
-                          <Check size={15} strokeWidth={2} color="#4ade80" />
+                          <Check size={15} strokeWidth={2} color={semantic.verified} />
                           <Text style={[s.actionText, s.approveText]}>
                             {isUnknown ? t('admit') : t('approve')}
                           </Text>
@@ -647,7 +647,7 @@ export default function CheckInReviewScreen() {
                           disabled={busy}
                           style={[s.actionBtn, s.sendHomeBtn, busy && s.btnBusy]}
                         >
-                          <X size={15} strokeWidth={2} color="#f87171" />
+                          <X size={15} strokeWidth={2} color={semantic.criticalText} />
                           <Text style={[s.actionText, s.sendHomeText]}>
                             {t('sendHome')}
                           </Text>
@@ -725,11 +725,11 @@ function buildStyles(colors) {
       backgroundColor: semantic.attentionBg,
     },
     reasonTrade: {
-      borderColor: 'rgba(147,197,253,0.35)',
-      backgroundColor: 'rgba(59,130,246,0.10)',
+      borderColor: withAlpha(colors.primary, 0.35),
+      backgroundColor: withAlpha(colors.primary, 0.10),
     },
-    reasonText: { flex: 1, fontSize: 13, color: '#fbbf24', fontWeight: '600' },
-    reasonTextBlue: { fontSize: 13, color: '#93c5fd', fontWeight: '600' },
+    reasonText: { flex: 1, fontSize: 13, color: semantic.attention, fontWeight: '600' },
+    reasonTextBlue: { fontSize: 13, color: colors.primary, fontWeight: '600' },
     reasonHint: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
     cardImage: {
       width: '100%', height: 150, borderRadius: borderRadius.lg,
@@ -784,18 +784,18 @@ function buildStyles(colors) {
       backgroundColor: semantic.criticalBg,
     },
     actionText: { fontSize: 13, fontWeight: '600' },
-    approveText: { color: '#4ade80' },
-    sendHomeText: { color: '#f87171' },
+    approveText: { color: semantic.verified },
+    sendHomeText: { color: semantic.criticalText },
     assignBtn: {
       marginTop: spacing.sm,
-      borderColor: 'rgba(147,197,253,0.4)',
-      backgroundColor: 'rgba(59,130,246,0.08)',
+      borderColor: withAlpha(colors.primary, 0.4),
+      backgroundColor: withAlpha(colors.primary, 0.08),
     },
-    assignText: { color: '#93c5fd' },
+    assignText: { color: colors.primary },
     assignBox: {
       marginTop: spacing.sm, padding: spacing.sm,
       borderRadius: borderRadius.lg, borderWidth: 1,
-      borderColor: 'rgba(147,197,253,0.3)',
+      borderColor: withAlpha(colors.primary, 0.3),
       gap: spacing.xs,
     },
     assignPrompt: {

@@ -66,28 +66,17 @@ import { withAlpha } from './semanticColors';
 // (CameraOverlay, LogbookLockBar, RiskScoreCircle); this file measures the 16
 // CP screens and says nothing about the rest.
 //
-// FIVE of these are an exact string match for a hex already defined in
+// FOUR of these are an exact string match for a hex already defined in
 // theme.js and should resolve to that token, not to this palette, when the
 // migration happens: blue500 (theme colors.primary), amber400 (colors.warning
 // / state.attention), green400 (colors.success), red400 (colors.error /
-// state.criticalText), and blue400 (outdoor.accent). `white` is a SIXTH match
+// state.criticalText), and blue400 (outdoor.accent). `white` is a FIFTH match
 // by colour but not by string — the screens write '#fff', theme.js writes
 // '#ffffff'.
 export const palette = Object.freeze({
-  blue500:   '#3b82f6', // 6 uses, 2 files — exact match: theme colors.primary
-  blue300:   '#93c5fd', // 8 uses, 2 files
   white:     '#fff',    // 2 uses, 2 files — same COLOUR as theme colors.white ('#ffffff'), different literal
-  blue400:   '#60a5fa', // 5 uses, 2 files — exact match: theme outdoor.accent
-  amber400:  '#fbbf24', // 4 uses, 2 files — exact match: theme colors.warning / state.attention
-  green400:  '#4ade80', // 3 uses, 1 file  — exact match: theme colors.success
-  red400:    '#f87171', // 3 uses, 2 files — exact match: theme colors.error / state.criticalText
   gray500:   '#6b7280', // 2 uses, 1 file
-  violet500: '#8b5cf6', // 2 uses, 2 files
-  cyan500:   '#06b6d4', // 1 use,  1 file
-  emerald500:'#10b981', // 1 use,  1 file
   slate400:  '#94a3b8', // 1 use,  1 file
-  pink400:   '#f472b6', // 1 use,  1 file
-  amber500:  '#f59e0b', // 1 use,  1 file
   black:     '#000000', // 0 standalone uses — survives as a TINT BASE only
 });
 
@@ -114,7 +103,7 @@ export const palette = Object.freeze({
 export const alpha = Object.freeze({
   a03: 0.03, a04: 0.04, a05: 0.05, a06: 0.06,
   a07: 0.07, a08: 0.08, a10: 0.1,  a15: 0.15,
-  a20: 0.2,  a25: 0.25, a30: 0.3,  a35: 0.35, a40: 0.4,
+  
   a60: 0.6,  a90: 0.9,
 });
 
@@ -146,22 +135,6 @@ export const MEASURED_TINTS = Object.freeze([
   { base: 'black',      step: 'a06',  uses: 2,   via: 'withAlpha' },
   { base: 'black',      step: 'a60',  uses: 1,   via: 'withAlpha' },
   { base: 'black',      step: 'a90',  uses: 1,   via: 'withAlpha' },
-  { base: 'blue300',    step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'blue300',    step: 'a35',  uses: 1,   via: 'rgba' },
-  { base: 'blue300',    step: 'a40',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',    step: 'a10',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',    step: 'a15',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',    step: 'a25',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',    step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',    step: 'a08',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',    step: 'a10',  uses: 4,   via: 'rgba' },
-  { base: 'blue500',    step: 'a15',  uses: 2,   via: 'rgba' },
-  { base: 'blue500',    step: 'a20',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',    step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'violet500',  step: 'a15',  uses: 1,   via: 'rgba' },
-  { base: 'violet500',  step: 'a20',  uses: 2,   via: 'rgba' },
-  { base: 'violet500',  step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'violet500',  step: 'a40',  uses: 2,   via: 'rgba' },
   { base: 'white',      step: 'a03',  uses: 1,   via: 'withAlpha' },
   { base: 'white',      step: 'a04',  uses: 7,   via: 'withAlpha' },
   { base: 'white',      step: 'a05',  uses: 9,   via: 'withAlpha' },
@@ -196,15 +169,14 @@ export const fontSize = Object.freeze({
   f17: 17, // 2 uses,  2 files
   f18: 18, // 2 uses,  2 files  — theme typography.sizes.lg
   f22: 22, // 1 use,   1 file
+  f28: 28, // 1 use,   1 file  — the bold display titles
   f32: 32, // 2 uses,  2 files
-  f48: 48, // 1 use,   1 file
 });
 
 // ─── Font weights ────────────────────────────────────────────────────────────
 // 5 distinct, 68 occurrences. Strings, because React Native's fontWeight is a
 // string in every one of the measured call sites.
 export const fontWeight = Object.freeze({
-  w200: '200', // 3 uses,  3 files
   w500: '500', // 18 uses, 5 files
   w600: '600', // 31 uses, 8 files
   w700: '700', // 15 uses, 3 files

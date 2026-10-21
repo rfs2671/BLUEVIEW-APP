@@ -278,6 +278,10 @@ def answer_outcome(path: str, answer, wording=None):
             return True, "check_failed"
         if wording == "fixed":
             return True, "no_model_wording"
+        if wording == "fixed_by_design":
+            # The subs answer: built, never reworded (a count of companies
+            # the check can't verify).
+            return False, "fixed_by_design"
         return False, "phrased"
     if path == "job_agent":
         if a.startswith(RECORDS_PREFIX):
@@ -286,6 +290,12 @@ def answer_outcome(path: str, answer, wording=None):
             return True, "no_records"
     if a in (ALL_JOBS_FAILED_TEXT, GENERAL_FAILED_TEXT):
         return True, "model_failed"
+    if path == "brain":
+        from lib import dm_brain
+        if a == dm_brain.UNVERIFIED_TEXT:
+            return True, "unverified"
+        if dm_brain.cant_answer(a):
+            return True, "cant_answer"
     if path == "menu_expired":
         return True, "menu_expired"
     return False, _OK_REASON.get(path, path or "answer")
@@ -402,6 +412,105 @@ def likely_first(jobs: List[Dict[str, Any]], likely_id: Optional[str]) -> Tuple[
     return [likely] + rest, f"Which job — {likely['label']}? Or another:"
 
 
+# ── NEVER THE SAME ANSWER TO A DIFFERENT QUESTION (dm_eval, Oct 20) ──────
+#
+# "Show me" after a plans answer got the plans text again, 16 s later; "the
+# drawing" and "picture" did too; "Cancel checklist" and "Done" got one
+# sentence twice. An answer identical to the last one, sent for a
+# different question inside REPEAT_WINDOW, is the assistant not having
+# understood: it is not sent, and one short question goes instead.
+REPEAT_WINDOW = timedelta(minutes=30)
+_HEARD_RE = re.compile(r"^Heard: .*?\n\n", re.DOTALL)
+
+
+_Q_STOP = frozenset(
+    "a an the is are was were be to of in on at for and or how many much what who whats "
+    "what's which do does did i me my we our you your it its this that there here now "
+    "today please pls can could would will any about".split())
+
+
+def _q_words(text: Any) -> set:
+    return {w for w in re.findall(r"[^\W_]+", str(text or "").lower()) if w not in _Q_STOP}
+
+
+def _same_question(a: Any, b: Any) -> bool:
+    """The same question in other words: identical, or half its content
+    words shared ("open items at 8 walworth" / "and the open items?")."""
+    wa, wb = _q_words(a), _q_words(b)
+    if wa == wb:
+        return True
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= 0.5
+
+
+def _aware(v: Any) -> Optional[datetime]:
+    if not isinstance(v, datetime):
+        return None
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
+
+def repeat_of_last(reply: Any, history: Iterable[dict], question: Any,
+                   now: datetime) -> Optional[str]:
+    """The earlier answer `reply` repeats word for word -- any of Levelog's
+    text answers in this chat inside REPEAT_WINDOW, given for a DIFFERENT
+    question -- else None. Not just the last one: a sheet or a question in
+    between does not make the same words new ("the drawing", then
+    "picture", Oct 20).
+
+    Not a repeat: the same question asked again or reworded (half its
+    words shared), or a reply-to -- pointing at a message is context, and
+    the same answer about it can be right ("The list", replying to it)."""
+    text = " ".join(str(reply or "").split())
+    if not text or "(This is a reply to " in str(question or ""):
+        return None
+    rows = list(history or [])
+    for i in range(len(rows) - 1, -1, -1):
+        row = rows[i]
+        # A sheet sent ("[Sheet] SSP-011.00 — …") is an image, not words.
+        if str(row.get("sender") or "") != "bot" or str(row.get("body") or "").startswith("[Sheet]"):
+            continue
+        at = _aware(row.get("created_at") or row.get("timestamp"))
+        if not at or now - at > REPEAT_WINDOW:
+            return None
+        last = " ".join(_HEARD_RE.sub("", str(row.get("body") or "")).split())
+        if last != text:
+            continue
+        return None if any(_same_question(q, question) for q in _asked_for(rows, i)) \
+            else last
+    return None
+
+
+def _asked_for(rows: List[dict], i: int) -> List[str]:
+    """What was asked for Levelog's answer at rows[i]: the nearest message of
+    theirs before it -- and when that was only a pick from a "Which job?"
+    menu ("588", "1"), the question the menu was asked for too."""
+    out = []
+    j = i - 1
+    while j >= 0:
+        if str(rows[j].get("sender") or "") == "bot":
+            j -= 1
+            continue
+        out.append(str(rows[j].get("body") or ""))
+        k = j - 1
+        while k >= 0 and str(rows[k].get("sender") or "") != "bot":
+            k -= 1
+        if k < 0 or not is_menu_message(rows[k].get("body")):
+            break
+        j = k - 1
+    return out
+
+
+def repeat_question(sheet: str = "", asked_already: bool = False) -> str:
+    """The one short question that goes instead of a repeated answer -- and,
+    when it has just been asked, other words (never the same question
+    twice either)."""
+    if asked_already:
+        return ("I'm not getting it — say it another way"
+                + (", or “show me” for the drawing." if sheet else "."))
+    if sheet:
+        return f"That's what I just sent. Want the drawing — {sheet}? Say “show me”."
+    return "That's what I just sent. What should I look at differently?"
+
+
 _EMPTY_RE = re.compile(r"^[\s.?!…,;:-]*$")
 _NUDGE = {"hello", "hi", "hey", "ping", "bump", "anyone", "and", "so", "well", "hello?"}
 
@@ -414,6 +523,66 @@ def is_nudge(text: Any) -> bool:
         return True
     words = re.findall(r"[a-z]+", t)
     return 0 < len(words) <= 2 and all(w in _NUDGE for w in words)
+
+
+# ── A BARE "DONE" / "CANCEL <THING>" THAT NO FLOW TOOK (dm_eval, Oct 20) ──
+#
+# "Cancel checklist" and "Done" both reached the job agent, which answered
+# both with "Checklist creation or cancellation is done in the app." -- a
+# claim about a feature, made twice, to two different messages. Nothing was
+# open: every flow that owns a "done" or a "cancel" (a walk, a pending
+# action, a reminder, an open question) runs before this and took nothing.
+# So the answer is about THAT, in fixed words: what is done, or that there
+# is nothing of that name to cancel. Never the model.
+_DONE_RE = re.compile(
+    r"^(?:ok(?:ay)?\W*)?(?:i'?m |we'?re |all |it'?s |im )?(?:done|finished|all done|done here|"
+    r"done with (?:it|that|this|everything)|that'?s it|thats all|that'?s all|listo|terminé|"
+    r"termine|fartik)\W*$")
+# Things another flow cancels for real (a chase setting, the brief, a
+# report schedule, a reminder, alerts): never claimed here.
+_CANCEL_OWNED = re.compile(
+    r"\b(chas\w*|brief\w*|report\w*|remind\w*|alert\w*|notification\w*|schedul\w*|"
+    r"setting\w*|sub|subs|job|jobs|person|contact)\b")
+_CANCEL_RE = re.compile(
+    r"^(?:please |pls |can you |could you )?cancel "
+    r"(?:the |my |this |that |our )?([a-z][a-z'&/ -]{1,40}?)\W*$")
+
+
+def closer(text: Any) -> Optional[Tuple[str, str]]:
+    """("done", "") for a bare "Done" / "all done" / "finished";
+    ("cancel", "checklist") for "Cancel checklist" / "cancel the walk".
+    None for anything else -- a question, or "cancel it" / "never mind",
+    which are dm_actions.is_drop's."""
+    t = " ".join(str(text or "").strip().lower().split())
+    if not t or "?" in t:
+        return None
+    if _DONE_RE.match(t):
+        return ("done", "")
+    m = _CANCEL_RE.match(t)
+    thing = m.group(1).strip() if m else ""
+    if m and thing not in ("it", "that", "this", "them") and not _CANCEL_OWNED.search(thing):
+        return ("cancel", thing)
+    return None
+
+
+def done_reply(walk_job: str = "", last_bot: str = "") -> str:
+    """"Done with what?" -- with the open walk named, else Levelog's last
+    message quoted, so they can say which."""
+    if walk_job:
+        return f"Done with what? Your walk at {walk_job} is still open."
+    last = " ".join(str(last_bot or "").split())
+    # Its own last reply is no context ("There's no checklist open here…").
+    if last and not (last.startswith("Done with what?") or last.endswith("open here to cancel.")):
+        last = last if len(last) <= 60 else last[:57].rstrip() + "…"
+        return f"Done with what? My last message was: “{last}”"
+    return "Done with what?"
+
+
+def cancel_reply(thing: str, walk_job: str = "") -> str:
+    """Nothing of that name is open here."""
+    if walk_job and re.search(r"\b(walk|walkthrough|punch|list)\b", thing):
+        return f"Your walk at {walk_job} is still open — nothing else to cancel."
+    return f"There's no {thing} open here to cancel."
 
 
 _MEDIA = {"image": "photo", "video": "video", "document": "document", "sticker": "sticker",
@@ -610,6 +779,10 @@ DM_AGENT_CLAUSE = (
     "stored: read them with recent_voice_notes (the latest ones, or one "
     "person's) or search_project_history (records marked 🎤). Never say you "
     "cannot access, hear or listen to voice notes, recordings or audio. "
+    "PHOTOS FOR A CHECKLIST OR PUNCH LIST are sent right here: each photo "
+    "with a caption or a voice note becomes an item of a draft only they see "
+    "until they say \"send\". Never say you cannot make a checklist or punch "
+    "list from photos, or that they should upload photos in the app. "
     "A REPLY-TO: when the message replies to an earlier one, what it replied "
     "to is given in the question (\"This is a reply to their earlier photo, "
     "captioned …\"): its words and what it is. Use it; never say you cannot "

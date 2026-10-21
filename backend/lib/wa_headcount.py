@@ -14,6 +14,8 @@ check-in rows:
   * list      everyone on site now, with their check-in time
   * challenge "doesn't make sense", "are you sure": the same question,
               read from the records again -- never revised from memory
+  * subs      "how many subs on site", "what's the +1 sub": every company
+              on site now with its count -- never the worker headcount
 
 The model may only rephrase the fixed answer. `verify` then checks every
 number and every capitalised word in what it wrote against this turn's
@@ -40,6 +42,8 @@ MAX_LISTED = 40
 COUNT, ADDED, LIST, CHALLENGE = "count", "added", "list", "challenge"
 #: "is J&G on site": a yes / no about one sub (only with a sub named).
 PRESENCE = "presence"
+#: "how many subs on site", "what's the +1 sub": the companies on site.
+SUBS = "subs"
 
 _ADDED_RE = re.compile(
     r"\bwho (?:are|were|is|was) the (?:\d+|two|three|four|five|new|extra) ?"
@@ -61,6 +65,24 @@ _CHALLENGE_RE = re.compile(
     r"|are you sure|that'?s (?:not right|wrong|not true|not correct)|that is wrong"
     r"|\bwrong\b|\byou said\b|\bbefore you said\b|\bcheck again\b",
     re.IGNORECASE)
+# Mon 9:01 AM, 588: "What's the +1 sub?" got "I don't have that in the
+# records", and "How many subs on site?" / "How many companies on site" got
+# the worker headcount again. A question about the companies is answered
+# with the companies.
+_SUB_WORD = r"(?:subs?|sub-?contractors?|companies|company|trades|outfits)"
+_SUBS_RE = re.compile(
+    rf"\bhow many {_SUB_WORD}\b|\b(?:which|what) {_SUB_WORD}\b"
+    rf"|\b(?:list|name) (?:the |all )?(?:the )?{_SUB_WORD}\b",
+    re.IGNORECASE)
+# "the +1 sub", "the 2 more subs", "the other subs", "the rest of the subs":
+# the line "(+1 more sub)" asked about.
+_SUBS_MORE_RE = re.compile(
+    rf"\+\s?\d+\s*(?:more\s+)?{_SUB_WORD}"
+    rf"|\b(?:\d+|one|two|three) more {_SUB_WORD}"
+    rf"|\b(?:other|remaining|rest of the|last|missing|extra) {_SUB_WORD}",
+    re.IGNORECASE)
+_SUBS_HINT = re.compile(r"\b(on ?site|here|there|today|now|checked in|working|in at|showed up)\b",
+                        re.IGNORECASE)
 _ON_SITE_HINT = re.compile(r"\b(workers?|crew|guys|people|on ?site|checked in|men)\b",
                            re.IGNORECASE)
 
@@ -72,7 +94,7 @@ _CARDS_RE = re.compile(r"\b(sst|cards?|osha|cert\w*|cleared|approv\w*|review\w*|
 
 
 def intent(text: str) -> Optional[str]:
-    """COUNT / ADDED / LIST / CHALLENGE, or None (not a headcount question)."""
+    """COUNT / ADDED / LIST / CHALLENGE / SUBS, or None (not a headcount question)."""
     t = str(text or "")
     if _CARDS_RE.search(t):
         return None
@@ -81,6 +103,8 @@ def intent(text: str) -> Optional[str]:
         return None
     if _CHALLENGE_RE.search(t):
         return CHALLENGE
+    if _SUBS_MORE_RE.search(t) or (_SUBS_RE.search(t) and _SUBS_HINT.search(t)):
+        return SUBS
     if _ADDED_RE.search(t) and (_ON_SITE_HINT.search(t) or re.search(
             r"\b(added|new|extra|came|arrived|showed up)\b", t, re.IGNORECASE)):
         return ADDED
@@ -340,6 +364,30 @@ def _companies_line(by_co: List[tuple]) -> str:
     return top + (f" (+{more} more sub{'s' if more != 1 else ''})" if more > 0 else "") + "."
 
 
+def compose_subs(data: Dict[str, Any], job: str, question: str = "") -> str:
+    """Every company on site now, by name: "4 subs on site at 588: Arkon
+    Builders, Quality Plumbing, J&G, Power Direct." -- a question about the
+    subs is answered with the subs, not their head counts (dm_eval, Oct 20).
+    Asked about the ones the short answer left out ("what's the +1 sub"):
+    those first, with their counts."""
+    by_co = list(data["by_company"])
+    if not data["total"]:
+        return f"Nobody has checked in at {job} today."
+    subs = [(c, n) for c, n in by_co if c != NO_COMPANY]
+    unknown = dict(by_co).get(NO_COMPANY, 0)
+    tail = (f" Plus {unknown} with no company on record." if unknown else "")
+    if not subs:
+        return f"No company on record for the {unknown} on site at {job} now."
+    line = (f"{len(subs)} sub{'s' if len(subs) != 1 else ''} on site at {job}: "
+            + ", ".join(c for c, _n in subs) + "." + tail)
+    rest = [(c, n) for c, n in by_co[TOP_COMPANIES:] if c != NO_COMPANY]
+    if rest and _SUBS_MORE_RE.search(str(question or "")):
+        head = (f"The other sub{'s' if len(rest) != 1 else ''}: "
+                + ", ".join(f"{c} {n}" for c, n in rest) + ".")
+        return f"{head}\n{line}"
+    return line
+
+
 def _names(ws: List[Dict[str, Any]], timed: bool = True) -> str:
     return _join([w["name"] + (f" ({hhmm(w['at'])})" if timed and w.get("at") else "")
                   for w in ws])
@@ -352,6 +400,9 @@ def compose_short(kind: str, data: Dict[str, Any], job: str, since_label: str = 
     `job`: the short job name ("588"). `company`: the sub the question
     names, `data` summarized from its check-ins only."""
     from lib import wa_style
+    if kind == SUBS:
+        out = compose_subs(data, job, question)
+        return {"short": out, "full": out}
     asked = kind == LIST or wa_style.asks_for_list(question) if names is None else names
     total, added = data["total"], list(data.get("added") or [])
     left = data.get("checked_out") or 0
@@ -422,6 +473,8 @@ ok okay sure sorry correct you per by first then latest earlier later list
 everyone all one two three four five six seven eight nine ten twelve
 note noted again checking checked-in onsite
 want names more subs sub came yes isn't left
+far need full other others rest arrived joined showed send see number like
+back around gone away
 """.split())
 
 
@@ -439,17 +492,18 @@ total count headcount brief your new added extra plus checked check
 """.split())
 
 
-def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> bool:
-    """A rephrasing goes out only if it says the same facts:
+def check(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> Optional[str]:
+    """Why a rephrasing may NOT go out, or None when it says the same facts:
 
       * every word in it is from this turn's data or plain English (so no
-        invented name, in any case);
-      * every number is one of the data's;
+        invented name, in any case; "Arkon's" is Arkon) -- "word";
+      * every number is one of the data's ("09" is 9) -- "number";
       * each company's number is ITS count ("Arkon 12", "12 from Arkon"),
         and a number "on site" is the total, a number "since" the added --
-        so swapping verified numbers between facts is caught.
+        so swapping verified numbers between facts is caught --
+        "company_count", "on_site_count", "since_count".
 
-    False = send the fixed answer instead."""
+    The reason is logged with the rejected draft (dm_eval shows both)."""
     reply = reply or ""
     allowed_text = " ".join(
         [job, since_label, str(data["total"]), str(len(data.get("added") or []))]
@@ -457,34 +511,40 @@ def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") ->
         + [f"{w['name']} {w['company']} {clock(w['at'])}"
            for w in list(data["workers"]) + list(data.get("added") or [])]
         + [hhmm(data.get("since"))])
-    nums = set(re.findall(r"\d+", allowed_text))
+    nums = {str(int(n)) for n in re.findall(r"\d+", allowed_text)}
     words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", allowed_text)}
     for n in re.findall(r"\d+", reply):
-        if n not in nums:
-            return False
+        if str(int(n)) not in nums:
+            return "number"
     for w in re.findall(r"[A-Za-z][A-Za-z'’.-]*", reply):
         lw = w.lower().strip(".'’-")
-        if lw and lw not in words and lw not in _PLAIN and lw not in _COMMON:
-            return False
+        if lw and not ({lw, re.sub(r"['’]s$", "", lw)} & (words | _PLAIN | _COMMON)):
+            return "word"
     counts = dict(data["by_company"])
     for company, n in counts.items():
         c = re.escape(company)
-        for m in re.finditer(rf"{c}\W{{1,3}}(\d+)(?![\d:])", reply, re.IGNORECASE):
+        for m in re.finditer(rf"{c}(?:['’]s)?\W{{1,3}}(\d+)(?![\d:])", reply, re.IGNORECASE):
             if int(m.group(1)) != n:
-                return False
+                return "company_count"
         for m in re.finditer(rf"(?<![\d:])(\d+)\s+(?:from |at |with |of |workers? from )?{c}",
                              reply, re.IGNORECASE):
             if int(m.group(1)) != n:
-                return False
+                return "company_count"
     for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?on\s?-?site",
                          reply, re.IGNORECASE):
         if int(m.group(1)) != data["total"]:
-            return False
+            return "on_site_count"
     for m in re.finditer(r"(?<![\d:])(\d+)\s+(?:workers?\s+|guys\s+|people\s+)?"
-                         r"(?:since|added|new|checked in since|came in)", reply, re.IGNORECASE):
+                         r"(?:since|added|new|checked in since|came in|arrived|joined|showed up|showed)",
+                         reply, re.IGNORECASE):
         if int(m.group(1)) != len(data.get("added") or []):
-            return False
-    return True
+            return "since_count"
+    return None
+
+
+def verify(reply: str, data: Dict[str, Any], job: str, since_label: str = "") -> bool:
+    """True = the rephrasing may go out; False = send the fixed answer."""
+    return check(reply, data, job, since_label) is None
 
 
 PHRASE_PROMPT = (

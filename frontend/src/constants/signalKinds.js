@@ -22,7 +22,7 @@
  *   kinds:  array of signal_kind entries.
  */
 
-import { semantic } from '../styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../styles/semanticColors';
 
 export const SIGNAL_FAMILIES = [
   {
@@ -289,7 +289,7 @@ export const TOTAL_SIGNAL_KINDS = Object.keys(SIGNAL_KIND_INDEX).length;
 // Severity → display palette. Mirrors lib/dob_signal_templates.py
 // SEVERITY_INFO/WARNING/CRITICAL colors used by the activity feed.
 export const SEVERITY_PALETTE = {
-  info: { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', label: 'Info' },
-  warning: { get color() { return semantic.attention; }, get bg() { return semantic.attentionBg; }, label: 'Warning' },
-  critical: { color: semantic.critical, textColor: semantic.criticalText, bg: 'rgba(239, 68, 68, 0.15)', label: 'Critical' },
+  get info() { return { get color() { return chrome.brand; }, get bg() { return withAlpha(chrome.brand, 0.15); }, label: 'Info' }; },
+  get warning() { return { get color() { return semantic.attention; }, get bg() { return semantic.attentionBg; }, label: 'Warning' }; },
+  critical: { get color() { return semantic.critical; }, get textColor() { return semantic.criticalText; }, bg: 'rgba(239, 68, 68, 0.15)', label: 'Critical' },
 };

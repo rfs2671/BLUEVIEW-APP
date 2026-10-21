@@ -52,7 +52,7 @@ import {
 import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
-import { semantic } from '../styles/semanticColors';
+import { semantic, withAlpha } from '../styles/semanticColors';
 import { notificationsAPI } from '../utils/api';
 
 const SEVERITY_ICONS = {
@@ -62,7 +62,7 @@ const SEVERITY_ICONS = {
 };
 
 const SEVERITY_COLORS = {
-  critical: semantic.critical,
+  get critical() { return semantic.critical; },
   warning: '#fbbf24',
   info: '#94a3b8',
 };
@@ -363,7 +363,7 @@ function _makeStyles(colors) {
       marginBottom: spacing.xs,
     },
     itemCardUnread: {
-      borderColor: 'rgba(96, 165, 250, 0.35)',
+      borderColor: withAlpha(colors.primary, 0.35),
       borderWidth: 1,
     },
     itemRow: {

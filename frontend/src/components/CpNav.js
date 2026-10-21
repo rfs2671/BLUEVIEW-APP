@@ -13,21 +13,19 @@
  */
 
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
+import { View, StyleSheet, Pressable, Text } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from 'expo-blur';
 import { LayoutDashboard, QrCode, Settings } from 'lucide-react-native';
-import { colors, borderRadius, spacing } from '../styles/theme';
+import { spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
-import { withAlpha } from '../styles/semanticColors';
 import CheckinQrModal from './CheckinQrModal';
 
-// ─── The pill's geometry, and the clearance every CP screen owes it ─────────
+// ─── The bar's geometry, and the clearance every CP screen owes it ──────────
 //
 // DERIVED, NOT MEASURED-AND-WRITTEN-DOWN. Every term below is the same token
 // the styles at the bottom of this file are built from, so changing
-// `spacing.sm` moves the pill and the clearance together. A number copied off
+// `spacing.sm` moves the bar and the clearance together. A number copied off
 // a screenshot would not.
 //
 // WHAT THE SCREENS DID BEFORE. /logbooks and /documents hardcoded
@@ -37,31 +35,47 @@ import CheckinQrModal from './CheckinQrModal';
 // 110 until an unrelated react-native-web scroll fix bumped it to 140. So the
 // clearance was a coincidence that happened to be roughly right on gesture
 // navigation and WRONG on 3-button, where the inset is ~48 rather than ~24
-// and the pill covered the last row of every list.
+// and the nav covered the last row of every list.
 //
 // `numberOfLines={1}` ON navLabel IS WHAT KEEPS THIS TRUE. The height below
-// assumes each item is ONE line tall. This nav is `width: '100%'` with
-// `navItem: flex: 1`, so items share the width and a squeezed label wraps —
-// two lines, a taller item, a taller pill, and this constant silently
-// understating the clearance on exactly the narrow phones where it is
-// tightest. Removing that prop without changing this number is the visible
-// error; they are one mechanism in two places.
-//   Measured, three items, 320pt wide: with the prop 58, without it 70.
+// assumes each item is ONE label line tall. This nav's items are equal-width
+// `flex: 1` columns, so a squeezed label wraps: two lines, a taller item, a
+// taller bar, and this constant silently understating the clearance on
+// exactly the narrow phones where it is tightest. Removing that prop without
+// changing this number is the visible error; they are one mechanism in two
+// places. (`lineHeight` is explicit for the same reason: the label's height
+// is a token here, not whatever the platform's default line box happens to be.)
 
 const NAV_ICON_SIZE = 18;
 
-// How far the pill floats above the safe-area inset. Applied inline at render
-// (see `container`), because a StyleSheet is built before any inset exists.
-export const CP_NAV_BOTTOM_OFFSET = 24;
+// One tab, top to bottom: the 3pt rule that lights up on the active tab, the
+// padding under it, the icon, the gap, ONE label line, the padding under that.
+const NAV_ITEM_RULE = 3;
+const NAV_ITEM_PAD_TOP = 6;
+const NAV_ITEM_GAP = 3;
+const NAV_LABEL_LINE_HEIGHT = 14;
+const NAV_ITEM_PAD_BOTTOM = 5;
+const NAV_ITEM_HEIGHT =
+  NAV_ITEM_RULE + NAV_ITEM_PAD_TOP + NAV_ICON_SIZE + NAV_ITEM_GAP
+  + NAV_LABEL_LINE_HEIGHT + NAV_ITEM_PAD_BOTTOM;
 
-// blurContent's padding, top and bottom  +  navItem's padding, top and bottom
-//   + the tallest thing in the row, which is the icon, not the 11pt label.
+// The bar's constant bottom padding, UNDER the labels and ABOVE the system
+// navigation bar. Applied inline at render as
+// `insets.bottom + CP_NAV_BOTTOM_OFFSET` (see `container`), because a
+// StyleSheet is built before any inset exists. It equals the bar's top
+// padding (`spacing.sm`), which is why the height below counts `spacing.sm`
+// twice; CpNav.clearance.test.cjs pins the two together.
+export const CP_NAV_BOTTOM_OFFSET = spacing.sm;
+
+// The bar's height WITHOUT the safe-area inset: its top and bottom padding
+// (spacing.sm each) plus one item. The item is the icon AND the label line
+// stacked, so unlike the old pill the label counts toward the height.
 export const CP_NAV_PILL_HEIGHT =
-  spacing.sm * 2 + (spacing.sm + 4) * 2 + NAV_ICON_SIZE;
+  spacing.sm * 2 + NAV_ITEM_HEIGHT;
 
-// The gap left between the top of the pill and the last row of content. Not
+// The gap left between the top of the bar and the last row of content. Not
 // styling slack: this is a gloved thumb outdoors reaching for the last item in
-// a list, and a row that is merely visible behind the pill is not tappable.
+// a list, and a row that is merely visible behind the bar is not tappable.
 const CP_NAV_BREATHING_ROOM = spacing.lg;
 
 /**
@@ -69,10 +83,12 @@ const CP_NAV_BREATHING_ROOM = spacing.lg;
  *
  * Spread it as `{ paddingBottom: insets.bottom + CP_NAV_CLEARANCE }` — the
  * inset is added by the SCREEN, not baked in here, because this module cannot
- * see it and the value differs between gesture and 3-button navigation.
+ * see it and the value differs between gesture and 3-button navigation. The
+ * bar is flush to the bottom edge and grows upward by that same inset, so the
+ * clearance is the bar's own height plus breathing room.
  */
 export const CP_NAV_CLEARANCE =
-  CP_NAV_BOTTOM_OFFSET + CP_NAV_PILL_HEIGHT + CP_NAV_BREATHING_ROOM;
+  CP_NAV_PILL_HEIGHT + CP_NAV_BREATHING_ROOM;
 
 
 // CHECK-IN IS NOT A ROUTE. It opens a modal in place, because the CP reaches
@@ -113,17 +129,24 @@ const CP_NAV_ITEMS = [
 // rather than a wrap, which protects this constant and not the reading.
 
 const NavItem = ({ item, isActive, onPress, colors: c }) => {
+  const [isHovered, setIsHovered] = useState(false);
   const Icon = item.icon;
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.navItem, isActive && styles.navItemActive]}
+      onHoverIn={() => setIsHovered(true)}
+      onHoverOut={() => setIsHovered(false)}
+      style={[
+        styles.navItem,
+        isActive && { opacity: 1, borderTopColor: c.barActive },
+        isHovered && !isActive && styles.navItemHover,
+      ]}
     >
-      <Icon size={NAV_ICON_SIZE} strokeWidth={1.5} color={isActive ? c.text.primary : c.text.muted} />
+      <Icon size={NAV_ICON_SIZE} strokeWidth={1.8} color={c.onBar} />
       {/* numberOfLines IS LOAD-BEARING. See the note on navLabel. */}
       <Text
         numberOfLines={1}
-        style={[styles.navLabel, { color: isActive ? c.text.primary : c.text.muted }]}
+        style={[styles.navLabel, { color: c.onBar }]}
       >
         {item.label}
       </Text>
@@ -135,14 +158,17 @@ const CpNav = () => {
   const router   = useRouter();
   const pathname = usePathname();
   const insets   = useSafeAreaInsets();
-  const { isDark, colors: c } = useTheme();
+  const { colors: c } = useTheme();
   const [showCheckinQr, setShowCheckinQr] = useState(false);
 
-  // blurContent already carries a near-opaque background, so the nav
-  // reads fine without the blur layer.
-  const navInner = (
-    <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : withAlpha('#ffffff', 0.9) }]}>
-      <View style={styles.nav}>
+  return (
+    <>
+      <View
+        style={[
+          styles.container,
+          { backgroundColor: c.bar, paddingBottom: insets.bottom + CP_NAV_BOTTOM_OFFSET },
+        ]}
+      >
         {CP_NAV_ITEMS.map((item) => {
           const isActive =
             pathname === item.path ||
@@ -163,25 +189,6 @@ const CpNav = () => {
           );
         })}
       </View>
-    </View>
-  );
-
-  return (
-    <View style={[styles.container, { bottom: insets.bottom + CP_NAV_BOTTOM_OFFSET }]}>
-      <View style={styles.innerContainer}>
-        {/* Web keeps expo-blur; native falls back to a plain View —
-            the native BlurView was throwing a render exception on
-            device, and blurContent's near-opaque fill already covers
-            the look. Reversible. */}
-        {Platform.OS === 'web' ? (
-          <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-            {navInner}
-          </BlurView>
-        ) : (
-          <View style={styles.blur}>{navInner}</View>
-        )}
-        <View style={[styles.border, { borderColor: colors.glass.border }]} />
-      </View>
 
       {/* No `project` prop. The nav is on screens that have no project context
           at all (settings) and on one whose project list is filtered to
@@ -191,63 +198,65 @@ const CpNav = () => {
         visible={showCheckinQr}
         onClose={() => setShowCheckinQr(false)}
       />
-    </View>
+    </>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     // OVERRIDDEN AT RENDER. The component passes
-    // { bottom: insets.bottom + CP_NAV_BOTTOM_OFFSET } inline, which REPLACES
-    // this value — it does not add to it. The one below is therefore a
-    // fallback that only applies if these styles are used without the
-    // component.
+    // { paddingBottom: insets.bottom + CP_NAV_BOTTOM_OFFSET } inline, which
+    // REPLACES the fallback below — it does not add to it. The fallback only
+    // applies if these styles are used without the component. The background
+    // is inline too, from the theme's `bar` token, so it follows light/dark.
     //
     // It has to be done inline: a StyleSheet is built once at module load,
     // before any inset exists. And it has to be done at all because absolute
     // positioning puts this outside the inset flow — neither the screen's
-    // SafeAreaView nor its scroll padding reaches it, so a hardcoded offset
-    // leaves the nav under the buttons on 3-button navigation. The screens
-    // add the same inset to their own clearance; see CP_NAV_CLEARANCE.
+    // SafeAreaView nor its scroll padding reaches it, so a hardcoded padding
+    // leaves the labels under the buttons on 3-button navigation. The bar is
+    // flush to the bottom edge (bottom: 0) and grows upward by the inset, so
+    // its fill runs under the system bar. The screens add the same inset to
+    // their own clearance; see CP_NAV_CLEARANCE.
     position: 'absolute',
-    bottom: CP_NAV_BOTTOM_OFFSET, left: 0, right: 0,
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
+    bottom: 0, left: 0, right: 0,
+    flexDirection: 'row',
+    paddingTop: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingBottom: CP_NAV_BOTTOM_OFFSET,
   },
-  innerContainer: {
-    width: '100%', maxWidth: 520,
-    borderRadius: borderRadius.full, overflow: 'hidden',
-  },
-  blur:        { borderRadius: borderRadius.full },
-  blurContent: { paddingVertical: spacing.sm, paddingHorizontal: spacing.sm },
-  nav: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
-  },
+  // Equal-width columns, icon stacked over the label. minWidth: 0 lets a flex
+  // child shrink below its content so the label ellipsizes rather than
+  // widening its column. Inactive at 72%; the active tab is full opacity with
+  // a brass top rule (colour applied inline from the theme).
   navItem: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: spacing.xs, paddingVertical: spacing.sm + 4, paddingHorizontal: spacing.xs,
-    borderRadius: borderRadius.lg,
+    flex: 1, minWidth: 0, alignItems: 'center',
+    gap: NAV_ITEM_GAP,
+    paddingTop: NAV_ITEM_PAD_TOP, paddingBottom: NAV_ITEM_PAD_BOTTOM,
+    borderTopWidth: NAV_ITEM_RULE, borderTopColor: 'transparent',
+    opacity: 0.72,
   },
-  navItemActive: { backgroundColor: withAlpha('#808080', 0.2) },
+  navItemHover: { opacity: 1 },
 
-  // THE PILL'S HEIGHT IS DECOUPLED FROM ITEM COUNT ON PURPOSE, and
+  // THE BAR'S HEIGHT IS DECOUPLED FROM ITEM COUNT ON PURPOSE, and
   // `numberOfLines={1}` on this Text is the whole mechanism. Do not remove it
   // as noise, and do not "fix" a cramped label by shortening the word instead.
   //
-  // WHY IT MATTERS. Three CP screens clear this nav with a hardcoded
-  // paddingBottom (120 on /logbooks and /documents, 140 on /settings). Those
-  // numbers were sized by hand against the pill as it was. If the pill grows,
-  // it eats that clearance and starts covering the last row of content — the
-  // class of defect this nav has already produced once, when absolute
-  // positioning put it under the system buttons on 3-button navigation.
+  // WHY IT MATTERS. Three CP screens clear this nav with
+  // `insets.bottom + CP_NAV_CLEARANCE`, which is derived from the bar's height
+  // as it is. If the bar grows, it eats that clearance and starts covering the
+  // last row of content — the class of defect this nav has already produced
+  // once, when absolute positioning put it under the system buttons on
+  // 3-button navigation.
   //
-  // WHY IT GROWS. Unlike FloatingNav — which sizes its pill to content and
-  // scrolls the row horizontally — this nav is `width: '100%'` with
-  // `navItem: flex: 1`, so items SHARE the width equally. Add an item and every
-  // label gets less room. Without numberOfLines a squeezed label wraps to two
-  // lines, the item gets taller, and the pill grows with it.
+  // WHY IT GROWS. This nav's items are `flex: 1` columns, so they SHARE the
+  // width equally. Add an item and every label gets less room. Without
+  // numberOfLines a squeezed label wraps to two lines, the item gets taller,
+  // and the bar grows with it.
   //
-  // MEASURED, on this component, at the third item:
+  // MEASURED, on the earlier floating-pill layout (the pill heights below are
+  // that layout's, kept as the record of the wrap mechanism; the bar's own
+  // derived height is CP_NAV_PILL_HEIGHT), at the third item:
   //
   //   375pt wide, label "Check-In QR"          pill 58   (12pt headroom)
   //   320pt wide, label "Check-In QR"          pill 70   <- wrapped
@@ -261,12 +270,13 @@ const styles = StyleSheet.create({
   // at 1.3x every label is ~1.3x wider.
   //
   // With numberOfLines the label ellipsizes instead of wrapping, and the height
-  // stops depending on item count, label length and font scale together. That
+  // stops depending on item count, label length and font scale together; the
+  // explicit lineHeight fixes the one line to a token. That
   // is what makes a FOURTH item safe to add later without moving every screen's
   // clearance. Keep it.
   //
   // THE FOURTH ITEM ARRIVED (the superintendent log, label "Super"), and the
-  // measurements above were NOT re-taken on a device for it — the pill height
+  // measurements above were NOT re-taken on a device for it — the bar height
   // is asserted to be unchanged by derivation instead, in
   // CpNav.clearance.test.cjs, which is sound because the derivation provably
   // contains no item-count or label-width term. What is NOT covered by that
@@ -275,11 +285,7 @@ const styles = StyleSheet.create({
   // added, re-measure rather than extending the same reasoning again — four
   // ~72pt columns is where icon + any label stops being readable at all, and
   // the failure then is not the pill growing, it is every label reading "Da…".
-  navLabel: { fontSize: 11, fontWeight: '500' },
-  border: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: borderRadius.full, borderWidth: 1, pointerEvents: 'none',
-  },
+  navLabel: { fontSize: 11, lineHeight: NAV_LABEL_LINE_HEIGHT, fontWeight: '600' },
 });
 
 export default CpNav;

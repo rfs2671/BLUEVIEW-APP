@@ -41,7 +41,7 @@ import {
   warmDocCache,
 } from '../../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import { useIsWide } from '../../src/hooks/useIsDesktop';
 
@@ -60,9 +60,9 @@ const isViewable = (filename) => extOf(filename) === 'pdf';
 const getFileIcon = (filename) => {
   const ext = extOf(filename);
   if (['pdf'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
-  if (['doc', 'docx'].includes(ext)) return { Icon: FileText, color: '#3b82f6' };
+  if (['doc', 'docx'].includes(ext)) return { Icon: FileText, color: chrome.brand };
   if (['xls', 'xlsx'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
-  return { Icon: File, color: '#94a3b8' };
+  return { Icon: File, color: semantic.neutral };
 };
 
 const formatFileSize = (bytes) => {
@@ -492,8 +492,8 @@ function buildStyles(colors, isDark) {
   },
   siteBadgeText: {
     ...typography.label,
-    fontSize: 14,
-    color: '#4ade80',
+    fontSize: 12,
+    color: semantic.verified,
     letterSpacing: 1,
   },
   projectName: {
@@ -519,8 +519,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.xs,
   },
   titleText: {
-    fontSize: 32,
-    fontWeight: '200',
+    fontSize: 28,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
   },
   searchBox: {

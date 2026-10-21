@@ -507,7 +507,7 @@ export default function SiteCheckInsScreen() {
                   {isExpiredSst && (
                     <GlassCard style={s.reviewCard}>
                       <View style={s.reviewHeader}>
-                        <AlertTriangle size={14} strokeWidth={1.5} color="#fbbf24" />
+                        <AlertTriangle size={14} strokeWidth={1.5} color={semantic.attention} />
                         <Text style={s.reviewTitle}>
                           Expired SST
                           {checkin.sst_expiration
@@ -534,7 +534,7 @@ export default function SiteCheckInsScreen() {
                             style={[s.reviewBtn, s.approveBtn,
                               reviewingId === checkinId && s.reviewBtnDisabled]}
                           >
-                            <Check size={14} strokeWidth={2} color="#4ade80" />
+                            <Check size={14} strokeWidth={2} color={semantic.verified} />
                             <Text style={[s.reviewBtnText, s.approveText]}>Approve</Text>
                           </Pressable>
                           <Pressable
@@ -543,7 +543,7 @@ export default function SiteCheckInsScreen() {
                             style={[s.reviewBtn, s.sendHomeBtn,
                               reviewingId === checkinId && s.reviewBtnDisabled]}
                           >
-                            <X size={14} strokeWidth={2} color="#f87171" />
+                            <X size={14} strokeWidth={2} color={semantic.criticalText} />
                             <Text style={[s.reviewBtnText, s.sendHomeText]}>Send home</Text>
                           </Pressable>
                         </View>
@@ -613,7 +613,7 @@ export default function SiteCheckInsScreen() {
                             style={[s.reviewBtn, s.approveBtn,
                               reviewingId === checkinId && s.reviewBtnDisabled]}
                           >
-                            <Check size={14} strokeWidth={2} color="#4ade80" />
+                            <Check size={14} strokeWidth={2} color={semantic.verified} />
                             <Text style={[s.reviewBtnText, s.approveText]}>Admit</Text>
                           </Pressable>
                           <Pressable
@@ -622,7 +622,7 @@ export default function SiteCheckInsScreen() {
                             style={[s.reviewBtn, s.sendHomeBtn,
                               reviewingId === checkinId && s.reviewBtnDisabled]}
                           >
-                            <X size={14} strokeWidth={2} color="#f87171" />
+                            <X size={14} strokeWidth={2} color={semantic.criticalText} />
                             <Text style={[s.reviewBtnText, s.sendHomeText]}>Send home</Text>
                           </Pressable>
                         </View>
@@ -694,9 +694,9 @@ function buildStyles(colors, isDark) {
     borderColor: withAlpha('#94a3b8', 0.3),
   },
   siteBadgeText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
-    color: '#4ade80',
+    color: semantic.verified,
     letterSpacing: 0.5,
   },
   projectName: {
@@ -729,8 +729,8 @@ function buildStyles(colors, isDark) {
     padding: spacing.xs,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -750,7 +750,7 @@ function buildStyles(colors, isDark) {
   },
   statValue: {
     fontSize: 36,
-    fontWeight: '200',
+    fontFamily: typography.num, fontWeight: '600',
     color: colors.text.primary,
   },
   activeIndicator: {
@@ -762,10 +762,10 @@ function buildStyles(colors, isDark) {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#4ade80',
+    backgroundColor: semantic.verified,
   },
   activeValue: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   mb12: {
     marginBottom: spacing.sm + 4,
@@ -825,7 +825,7 @@ function buildStyles(colors, isDark) {
   reviewTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#fbbf24',
+    color: semantic.attention,
   },
   reviewedText: {
     fontSize: 15,
@@ -871,10 +871,10 @@ function buildStyles(colors, isDark) {
     fontWeight: '600',
   },
   approveText: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   sendHomeText: {
-    color: '#f87171',
+    color: semantic.criticalText,
   },
   timeSection: {
     minWidth: 60,
@@ -959,12 +959,12 @@ function buildStyles(colors, isDark) {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#4ade80',
+    backgroundColor: semantic.verified,
   },
   statusText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#4ade80',
+    color: semantic.verified,
     letterSpacing: 0.5,
   },
   statusDone: {

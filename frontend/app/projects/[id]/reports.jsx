@@ -9,23 +9,27 @@ import {
   Linking,
   Platform,
   Share,
+  TextInput,
+  Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { ArrowLeft, FileText, Download, Check, Share2, ExternalLink, Calendar } from 'lucide-react-native';
+import { ArrowLeft, FileText, Download, Check, Share2, ExternalLink, Calendar, Mail, Plus, Trash2 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import DateInput from '../../../src/components/DateInput';
 import { toStoredDate } from '../../../src/utils/dateEntry';
-import apiClient, { projectReportsAPI, getToken } from '../../../src/utils/api';
+import apiClient, { projectReportsAPI, projectsAPI, getToken } from '../../../src/utils/api';
 import {
   PRESETS, KINDS, periodLabel, pdfName, settingsBody, toggled, rangeProblem, whoLine, madeLabel,
-  shareText,
+  shareText, SEND_TIMES, timeLabel, addEmail, dailySaveBody,
 } from '../../../src/utils/projectReports';
+import { isOfflineError } from '../../../src/utils/offlineState';
+import { readCachedProject } from '../../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
@@ -40,6 +44,8 @@ import { useT } from '../../../src/i18n';
 //     and PMs picked; by WhatsApp DM and / or email.
 //   * Every report made -- scheduled or asked for, here or in WhatsApp --
 //     with its period, when, who asked; open, download, share.
+//   * The daily report's send time and the extra addresses it is emailed to
+//     (admins) -- what the separate Report Settings screen used to hold.
 export default function ProjectReportsScreen() {
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
@@ -54,6 +60,12 @@ export default function ProjectReportsScreen() {
   const [making, setMaking] = useState(false);
   const [busy, setBusy] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [savingDaily, setSavingDaily] = useState(false);
+  // The daily report's time and addresses from this device's saved copy of
+  // the job, shown read-only when the settings could not be read (offline) —
+  // as the old Report Settings screen did. Never a save target.
+  const [cachedDaily, setCachedDaily] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -65,8 +77,12 @@ export default function ProjectReportsScreen() {
     }
     try {
       setSettings(await projectReportsAPI.settings(projectId));
+      setCachedDaily(null);
     } catch (e) {
       setSettings(null);
+      const saved = await readCachedProject(projectId).catch(() => null);
+      setCachedDaily(saved && Array.isArray(saved.report_email_list)
+        ? { send_time: saved.report_send_time || '18:00', emails: saved.report_email_list } : null);
     }
   }, [projectId]);
 
@@ -205,6 +221,76 @@ export default function ProjectReportsScreen() {
     }
   };
 
+  // The daily report's send time and addresses (PUT /report-settings). Saved
+  // on each change, like the rest of this card; nothing is queued offline.
+  // ONLY THE FIELD THAT CHANGED IS SENT (Codex on #809): a time change sent
+  // with this screen's copy of the list would put back an address another
+  // admin removed while it was open.
+  const saveDaily = async (patch) => {
+    const daily = { ...((settings || {}).daily || {}), ...patch };
+    setSavingDaily(true);
+    setSettings((s) => ({ ...(s || {}), daily: { ...daily, email_list: (daily.emails || []).length } }));
+    try {
+      const out = await projectsAPI.updateReportSettings(projectId, dailySaveBody(patch));
+      const emails = out.report_email_list || [];
+      setSettings((s) => ({ ...(s || {}),
+        daily: { ...daily, send_time: out.report_send_time, emails, email_list: emails.length } }));
+    } catch (e) {
+      toast?.error?.('Not saved', isOfflineError(e)
+        ? 'You are offline. Nothing was saved — reconnect and try again.' : 'Try again.');
+      load();
+    } finally {
+      setSavingDaily(false);
+    }
+  };
+
+  // An address is added to, or removed from, the list AS IT IS NOW on the
+  // server — read again first — never this screen's copy from when it opened.
+  const currentEmails = async () => {
+    const fresh = await projectReportsAPI.settings(projectId);
+    setSettings(fresh);
+    return ((fresh || {}).daily || {}).emails || [];
+  };
+
+  const editDailyEmails = async (change) => {
+    setSavingDaily(true);
+    let list;
+    try {
+      list = change(await currentEmails());
+    } catch (e) {
+      setSavingDaily(false);
+      toast?.error?.('Not saved', isOfflineError(e)
+        ? 'You are offline. Nothing was saved — reconnect and try again.' : 'Try again.');
+      return;
+    }
+    if (list) await saveDaily({ emails: list });
+    else setSavingDaily(false);
+  };
+
+  const addDailyEmail = () => {
+    const check = addEmail(((settings || {}).daily || {}).emails, newEmail);
+    if (check.error) { toast?.error?.('Email', check.error); return; }
+    const typed = newEmail;
+    setNewEmail('');
+    editDailyEmails((now) => {
+      const r = addEmail(now, typed);
+      if (r.error) { toast?.error?.('Email', r.error); return null; }
+      return r.list;
+    });
+  };
+
+  const removeDailyEmail = (email) => {
+    const drop = () => editDailyEmails((now) => now.filter((e) => e !== email));
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Remove ${email}?`)) drop();
+    } else {
+      Alert.alert('Remove email', `Remove ${email} from the daily report?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: drop },
+      ]);
+    }
+  };
+
   const text = { color: colors.text.primary };
   const muted = { color: colors.text.muted };
   const chosen = { borderColor: colors.primary };
@@ -234,8 +320,7 @@ export default function ProjectReportsScreen() {
   );
 
   return (
-    <View style={styles.flex}>
-      <AnimatedBackground />
+    <AnimatedBackground>
       <SafeAreaView style={styles.flex} edges={['top']}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} hitSlop={12} accessibilityLabel="Back">
@@ -300,9 +385,53 @@ export default function ProjectReportsScreen() {
               {KINDS.map((k) => box((cur.schedules || []).includes(k.key), k.label,
                 () => save({ ...cur, schedules: toggled(cur.schedules, k.key) }), `k-${k.key}`,
                 k.key === 'daily' && cur.daily
-                  ? `${k.hint} (${cur.daily.send_time} ET; also to the ${cur.daily.email_list} address`
-                    + `${cur.daily.email_list === 1 ? '' : 'es'} on the report email list)`
+                  ? `${k.hint} (${timeLabel(cur.daily.send_time)} ET`
+                    + (cur.daily.email_list
+                      ? `; also emailed to ${cur.daily.email_list} address`
+                        + `${cur.daily.email_list === 1 ? '' : 'es'})` : ')')
                   : k.hint))}
+              {canEdit && cur.daily && Array.isArray(cur.daily.emails) && (
+                <View style={styles.daily}>
+                  <Text style={[styles.label, muted]}>Daily report — time (New York)</Text>
+                  <View style={styles.chips}>
+                    {SEND_TIMES.map((t) => (
+                      <Pressable key={t} onPress={() => saveDaily({ send_time: t })}
+                        disabled={savingDaily} accessibilityRole="radio"
+                        accessibilityState={{ selected: cur.daily.send_time === t }}
+                        style={[styles.chip, cur.daily.send_time === t && chosen]}>
+                        <Text style={[styles.chipText, text]}>{timeLabel(t)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={[styles.label, muted]}>Daily report — also email to</Text>
+                  {cur.daily.emails.length === 0 && (
+                    <Text style={[styles.hint, muted]}>No extra addresses.</Text>
+                  )}
+                  {cur.daily.emails.map((email) => (
+                    <View key={email} style={styles.pmRow}>
+                      <Mail size={16} color={muted.color} />
+                      <Text style={[styles.line, text, styles.grow]}>{email}</Text>
+                      <Pressable onPress={() => removeDailyEmail(email)} disabled={savingDaily}
+                        hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${email}`}>
+                        <Trash2 size={16} color={colors.status.error} />
+                      </Pressable>
+                    </View>
+                  ))}
+                  <View style={[styles.chips, styles.gap]}>
+                    <TextInput value={newEmail} onChangeText={setNewEmail}
+                      placeholder="email@example.com" placeholderTextColor={muted.color}
+                      keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
+                      onSubmitEditing={addDailyEmail} editable={!savingDaily}
+                      accessibilityLabel="Email address for the daily report"
+                      style={[styles.input, styles.grow, text, { borderColor: colors.glass.border }]} />
+                    <Pressable onPress={addDailyEmail} disabled={savingDaily} hitSlop={8}
+                      accessibilityRole="button" accessibilityLabel="Add email" style={styles.act}>
+                      <Plus size={16} color={text.color} />
+                      <Text style={[styles.actText, text]}>Add</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
               <Text style={[styles.label, muted]}>Send to</Text>
               {(cur.people || []).length === 0 && (
                 <Text style={[styles.line, muted]}>No admins or PMs on this job.</Text>
@@ -318,6 +447,27 @@ export default function ProjectReportsScreen() {
               {box(!!(cur.delivery || {}).email, 'Email (the PDF attached)',
                 () => save({ ...cur, delivery: { ...cur.delivery, email: !(cur.delivery || {}).email } }),
                 'd-email')}
+            </GlassCard>
+          )}
+
+          {!settings && cachedDaily && (
+            <GlassCard style={styles.card}>
+              <Text style={[styles.section, text]}>Send automatically</Text>
+              <Text style={[styles.hint, muted]}>
+                Offline — the saved copy on this device, read-only. Reconnect to change it.
+              </Text>
+              <Text style={[styles.label, muted]}>Daily report — time (New York)</Text>
+              <Text style={[styles.line, text]}>{timeLabel(cachedDaily.send_time)}</Text>
+              <Text style={[styles.label, muted]}>Daily report — also email to</Text>
+              {cachedDaily.emails.length === 0 && (
+                <Text style={[styles.hint, muted]}>No extra addresses.</Text>
+              )}
+              {cachedDaily.emails.map((email) => (
+                <View key={email} style={styles.pmRow}>
+                  <Mail size={16} color={muted.color} />
+                  <Text style={[styles.line, text, styles.grow]}>{email}</Text>
+                </View>
+              ))}
             </GlassCard>
           )}
 
@@ -353,7 +503,7 @@ export default function ProjectReportsScreen() {
           ))}
         </ScrollView>
       </SafeAreaView>
-    </View>
+    </AnimatedBackground>
   );
 }
 
@@ -382,6 +532,7 @@ const styles = StyleSheet.create({
   pmRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs },
   box: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(148,163,184,0.6)',
          alignItems: 'center', justifyContent: 'center' },
+  daily: { marginTop: spacing.xs },
   rowHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   grow: { flex: 1 },
   line: { fontSize: 15, lineHeight: 21 },

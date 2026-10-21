@@ -17,6 +17,7 @@ import DraftConflictNotice from '../../src/components/DraftConflictNotice';
 import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { readsLogbooksOnly, PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY } from '../../src/utils/pmLogbooks';
 import { logbooksAPI, projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
@@ -1082,8 +1083,8 @@ export default function PreShiftSignIn() {
           <>
             {f.needs_trade ? (
               <View style={styles.flagReasonRow}>
-                <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
-                <Text style={[styles.flagReasonText, { color: '#93c5fd' }]}>
+                <Briefcase size={14} strokeWidth={2} color={colors.primary} />
+                <Text style={[styles.flagReasonText, { color: colors.primary }]}>
                   No trade assigned
                 </Text>
               </View>
@@ -1152,8 +1153,8 @@ export default function PreShiftSignIn() {
                 disabled={busy}
                 style={[styles.flagBtn, styles.flagBtnAssign, busy && styles.flagBtnBusy]}
               >
-                <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
-                <Text style={[styles.flagBtnText, { color: '#93c5fd' }]}>
+                <Briefcase size={14} strokeWidth={2} color={colors.primary} />
+                <Text style={[styles.flagBtnText, { color: colors.primary }]}>
                   {f.needs_trade ? 'Assign Trade' : 'Change Trade'}
                 </Text>
               </Pressable>
@@ -1182,6 +1183,35 @@ export default function PreShiftSignIn() {
     );
   }
 
+  // A Site Manager / PM on "Assigned jobs only" reads a FILED sheet; an open
+  // one is the CP's work in progress, and its Save Draft / Submit would only
+  // meet the server's refusal after he had typed into it. This screen owns no
+  // LogbookStepper, so it says so itself, in the same words.
+  if (readsLogbooksOnly(user) && !locked) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <GlassButton
+                variant="icon"
+                icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => router.push('/logbooks')}
+              />
+              <View>
+                <Text style={styles.headerTitle}>Daily Pre-Shift Sign-In</Text>
+                <Text style={styles.headerSub}>{PM_NOT_FILED_TITLE}</Text>
+              </View>
+            </View>
+          </View>
+          <View style={styles.scrollContent}>
+            <Text style={styles.headerSub}>{PM_NOT_FILED_BODY}</Text>
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -1189,10 +1219,11 @@ export default function PreShiftSignIn() {
           <View style={styles.headerLeft}>
             <GlassButton
               variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.onBar} />}
+              style={styles.headerBackBtn}
               onPress={() => router.push('/logbooks')}
             />
-            <View>
+            <View style={styles.headerTextCol}>
               {/* The CP fills the same record the PDF files and the worker
                   signs for at the gate, so it carries the same name here.
                   The subtitle keeps what the old title said — this IS the
@@ -1203,7 +1234,7 @@ export default function PreShiftSignIn() {
             </View>
           </View>
           <View style={styles.countBadge}>
-            <Users size={14} strokeWidth={1.5} color="#60a5fa" />
+            <Users size={14} strokeWidth={1.5} color={colors.barActive} />
             <Text style={styles.countText}>{filledWorkers.length}</Text>
           </View>
         </View>
@@ -1278,7 +1309,7 @@ export default function PreShiftSignIn() {
                   <Text style={styles.workerIndex}>{index + 1}</Text>
                   {worker.auto_filled && (
                     <View style={styles.autoFilledBadge}>
-                      <Lock size={10} strokeWidth={2} color="#60a5fa" />
+                      <Lock size={10} strokeWidth={2} color={colors.primary} />
                       <Text style={styles.autoFilledText}>Auto-filled</Text>
                     </View>
                   )}
@@ -1570,23 +1601,26 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.sm + 2,
+    backgroundColor: colors.bar,
+    marginBottom: spacing.md,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flex: 1 },
-  headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 12, color: colors.text.muted },
+  headerBackBtn: { backgroundColor: 'transparent', borderColor: withAlpha(colors.onBar, 0.35), borderWidth: 1, width: 44, height: 44 },
+  headerTextCol: { flex: 1, minWidth: 0 },
+  headerTitle: { fontFamily: typography.display, fontSize: 16, fontWeight: '700', color: colors.onBar },
+  headerSub: { fontSize: 12, color: withAlpha(colors.onBar, 0.78) },
   countBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(96,165,250,0.15)',
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: spacing.sm + 2,
     paddingVertical: 4,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(96,165,250,0.3)',
+    borderColor: colors.barActive,
   },
-  countText: { fontSize: 13, fontWeight: '700', color: '#60a5fa' },
+  countText: { fontSize: 13, fontWeight: '700', color: colors.barActive },
   scrollView: { flex: 1 },
   scrollContent: { paddingHorizontal: spacing.md, paddingBottom: spacing.xl * 2 },
   dateCard: {
@@ -1598,9 +1632,9 @@ function buildStyles(colors, isDark) {
   },
   dateText: { fontSize: 14, color: colors.text.secondary },
   section: { marginBottom: spacing.md, padding: spacing.lg },
-  sectionTitle: { fontSize: 16, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
+  sectionTitle: { flexShrink: 1, fontFamily: typography.display, fontSize: 16, fontWeight: '800', color: colors.text.primary, marginBottom: spacing.md },
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
-  sectionSubtitle: { fontSize: 12, color: colors.text.muted, marginBottom: spacing.md, marginTop: -spacing.sm },
+  sectionSubtitle: { fontSize: 13, color: colors.text.secondary, marginBottom: spacing.md, marginTop: -spacing.sm },
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1645,14 +1679,14 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(96,165,250,0.1)',
+    backgroundColor: withAlpha(colors.primary, 0.1),
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(96,165,250,0.25)',
+    borderColor: withAlpha(colors.primary, 0.25),
   },
-  autoFilledText: { fontSize: 10, color: '#60a5fa', fontWeight: '600' },
+  autoFilledText: { fontSize: 10, color: colors.primary, fontWeight: '600' },
 
   // FIX 1 — per-row warning block (specific reason + tap-only actions)
   flagBlock: {

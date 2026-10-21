@@ -90,7 +90,7 @@ export default function DemoScreen() {
             <>
               <GlassCard style={s.card}>
                 <View style={s.projRow}>
-                  <Building2 size={20} strokeWidth={1.5} color="#3b82f6" />
+                  <Building2 size={20} strokeWidth={1.5} color={colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.projName}>{demo.name}</Text>
                     <Text style={s.projAddr}>{demo.address}</Text>
@@ -164,7 +164,7 @@ function buildStyles(colors, isDark) {
     projAddr: { fontSize: 13, color: colors.text.muted, marginTop: 2 },
     summaryRow: { flexDirection: 'row', gap: spacing.sm },
     summaryCell: { flex: 1, alignItems: 'center' },
-    summaryVal: { fontSize: 22, fontWeight: '300', color: colors.text.primary },
+    summaryVal: { fontSize: 22, fontFamily: typography.num, fontWeight: '600', color: colors.text.primary },
     summaryLabel: { alignSelf: 'stretch', fontSize: 11, textAlign: 'center', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.3 },
     cardLabel: { fontSize: 11, letterSpacing: 1, color: colors.text.muted, fontFamily: typography.medium, marginBottom: spacing.sm },
     activityRow: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.glass.border },

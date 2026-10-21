@@ -60,7 +60,7 @@ const buildToastConfig = (colors, isDark) => ({
   info: {
     icon: Info,
     borderColor: withAlpha('#94a3b8', 0.5),
-    bgColor: isDark ? '#171e2c' : _mixOpaque('#94a3b8', '#ffffff', 0.18),
+    bgColor: isDark ? '#1C2B38' : _mixOpaque('#94a3b8', '#ffffff', 0.18),
     iconColor: colors.text.secondary,
   },
 });

@@ -1,48 +1,67 @@
 // ─── Dark palette ────────────────────────────────────────────────────────────
 const _dark = {
-  success: '#4ade80',
-  warning: '#fbbf24',
-  error:   '#f87171',
-  primary: '#3b82f6',
+  success: '#5FBF8A',
+  warning: '#E3C27A',
+  error:   '#F28B6E',
+  primary: '#E3C27A',
+  onPrimary: '#141A1F',
+  accent: '#E3C27A',
+  selected: '#E3C27A',
+  onSelected: '#141A1F',
+  chip: '#243746',
+  bar: '#0E161D',
+  onBar: '#E8EDF2',
+  barActive: '#E3C27A',
 
   background: {
-    start:  '#050a12',
-    middle: '#0A1929',
-    end:    '#050a12',
+    start:  '#131E27',
+    middle: '#131E27',
+    end:    '#131E27',
   },
 
   glass: {
-    background:      'rgba(255, 255, 255, 0.08)',
-    backgroundHover: 'rgba(255, 255, 255, 0.12)',
-    border:          'rgba(255, 255, 255, 0.15)',
-    borderHover:     'rgba(255, 255, 255, 0.3)',
-    card:            'rgba(255, 255, 255, 0.06)',
-    cardHover:       'rgba(255, 255, 255, 0.10)',
+    background:      'rgba(28, 43, 56, 0.92)',
+    backgroundHover: 'rgba(36, 55, 70, 0.96)',
+    border:          'rgba(44, 65, 83, 1)',
+    borderHover:     'rgba(157, 170, 182, 0.55)',
+    card:            'rgba(28, 43, 56, 0.92)',
+    cardHover:       'rgba(36, 55, 70, 0.96)',
+  },
+
+  // The card AURA: a very thin rim and a soft halo in the website's steel blue, so a card reads as floating above the
+  // ground instead of outlined on it. On navy the halo is a pale blue light with no offset (a dark shadow is invisible
+  // there); on paper it is the same blue as a soft shadow that sits a little below the card. Read by src/styles/aura.js.
+  aura: {
+    rim:     'rgba(140, 186, 222, 0.24)',
+    color:   '#78ACD6',
+    opacity: 0.18,
+    radius:  10,
+    offset:  { width: 0, height: 0 },
   },
 
   shadow: {
-    color:   'rgba(0, 0, 0, 0.3)',
-    offset:  { width: 0, height: 4 },
-    opacity: 0.3,
-    radius:  12,
+    color:   'rgba(0, 0, 0, 0.25)',
+    offset:  { width: 0, height: 2 },
+    opacity: 0.25,
+    radius:  8,
   },
 
   border: {
-    subtle: 'rgba(255, 255, 255, 0.1)',
-    medium: 'rgba(255, 255, 255, 0.2)',
-    strong: 'rgba(255, 255, 255, 0.3)',
+    subtle: 'rgba(44, 65, 83, 0.6)',
+    medium: 'rgba(44, 65, 83, 1)',
+    strong: 'rgba(157, 170, 182, 0.45)',
   },
 
   text: {
-    primary:   'rgba(255, 255, 255, 0.9)',
-    secondary: 'rgba(255, 255, 255, 0.6)',
+    primary:   'rgba(232, 237, 242, 1)',
+    secondary: 'rgba(197, 207, 216, 1)',
     // 0.40 → 0.55: at 0.40 this was 3.59–3.79:1 on every dark surface, below
     // WCAG AA 4.5:1 for text. 0.55 clears it everywhere (5.44–6.28:1).
-    muted:     'rgba(255, 255, 255, 0.55)',
+    muted:     'rgba(157, 170, 182, 1)',
     // `subtle` stays at 0.30 (2.6–2.7:1). It is placeholder/disabled/meta-dot
     // text, which WCAG exempts; raising it would collapse the muted/subtle
     // hierarchy and make disabled inputs read as active.
-    subtle:    'rgba(255, 255, 255, 0.3)',
+    subtle:    'rgba(157, 170, 182, 0.6)',
   },
 
   // ── Semantic STATE values, per theme ────────────────────────────────────
@@ -52,26 +71,26 @@ const _dark = {
   // palette so each theme carries values that clear AA on ITS surfaces.
   // Dark keeps exactly what shipped — this half is a zero-pixel change.
   state: {
-    attention:    '#fbbf24',  // amber-400  — 8.61:1 worst dark surface
-    critical:     '#ef4444',  // red-500    — icons/dots (3.0 bar), 3.82:1
-    criticalText: '#f87171',  // red-400    — text, 5.19:1
-    criticalFill: '#dc2626',  // red-600    — fill behind WHITE text (4.83:1)
-    verified:     '#22c55e',  // green-500  — 6.30:1
+    attention:    '#E3C27A',
+    critical:     '#F28B6E',
+    criticalText: '#F28B6E',
+    criticalFill: '#A83E12',
+    verified:     '#5FBF8A',
   },
 
   iconPod: {
-    background: 'transparent',
-    border:     'rgba(255, 255, 255, 0.15)',
-    iconColor:  'rgba(255, 255, 255, 0.6)',           // same as text.secondary
+    background: 'rgba(227, 194, 122, 1)',
+    border:     'rgba(227, 194, 122, 1)',
+    iconColor:  'rgba(20, 26, 31, 1)',
   },
 
   status: {
-    success:   '#4ade80',
-    successBg: 'rgba(74, 222, 128, 0.2)',
-    error:     '#f87171',
-    errorBg:   'rgba(248, 113, 113, 0.1)',
-    warning:   '#fbbf24',
-    warningBg: 'rgba(251, 191, 36, 0.2)',
+    success:   '#5FBF8A',
+    successBg: 'rgba(95, 191, 138, 0.2)',
+    error:     '#F28B6E',
+    errorBg:   'rgba(242, 139, 110, 0.12)',
+    warning:   '#E3C27A',
+    warningBg: 'rgba(227, 194, 122, 0.2)',
     // ── PR #15D D1 — 5-tier hazard-ratio palette (dark) ────────
     // L6 maps the backend hazard_ratio_to_color_tier output to:
     //   green   → status.success    (existing, ratio < 0.75)
@@ -103,46 +122,62 @@ const _dark = {
 //
 // ─────────────────────────────────────────────────────────────────────────────
 const _light = {
-  success: '#2E7D32',
-  warning: '#E65100',
-  error:   '#C62828',
-  primary: '#1565C0',
+  success: '#1E5B3A',
+  warning: '#7A5300',
+  error:   '#A83E12',
+  primary: '#243746',
+  onPrimary: '#FFFFFF',
+  accent: '#B47C1F',
+  selected: '#D8A044',
+  onSelected: '#151A1D',
+  chip: '#F2F3F0',
+  bar: '#243746',
+  onBar: '#FFFFFF',
+  barActive: '#E3C27A',
 
   background: {
-    start:  '#d0dcf0',
-    middle: '#D6E4F7',
-    end:    '#ccd8ee',
+    start:  '#ECEDE9',
+    middle: '#ECEDE9',
+    end:    '#ECEDE9',
   },
 
   glass: {
-    background:      'rgba(255, 255, 255, 0.85)',   // from-white/85
-    backgroundHover: 'rgba(255, 255, 255, 0.95)',
-    border:          'rgba(191, 219, 254, 0.60)',   // border-blue-200/60
-    borderHover:     'rgba(147, 197, 253, 1.0)',     // border-blue-300
-    card:            'rgba(255, 255, 255, 0.80)',   // bg-white/80
-    cardHover:       'rgba(255, 255, 255, 0.92)',
-    cardGradientEnd: 'rgba(219, 234, 254, 0.70)',   // to-blue-100/70 (#DBEAFE at 70%)
+    background:      'rgba(255, 255, 255, 0.96)',
+    backgroundHover: 'rgba(242, 243, 240, 0.98)',
+    border:          'rgba(201, 204, 198, 1)',
+    borderHover:     'rgba(166, 170, 163, 1)',
+    card:            'rgba(255, 255, 255, 0.96)',
+    cardHover:       'rgba(242, 243, 240, 0.98)',
+    cardGradientEnd: 'rgba(255, 255, 255, 0.96)',
+  },
+
+  aura: {
+    rim:     'rgba(69, 140, 181, 0.18)',
+    color:   '#458CB5',
+    opacity: 0.20,
+    radius:  10,
+    offset:  { width: 0, height: 4 },
   },
 
   shadow: {
-    color:   'rgba(30, 58, 138, 0.15)',
-    offset:  { width: 0, height: 8 },
-    opacity: 0.15,
-    radius:  24,
+    color:   'rgba(21, 26, 29, 0.08)',
+    offset:  { width: 0, height: 2 },
+    opacity: 0.12,
+    radius:  8,
   },
 
   border: {
-    subtle: 'rgba(191, 219, 254, 0.40)',   // blue-200/40
-    medium: 'rgba(191, 219, 254, 0.60)',   // blue-200/60
-    strong: 'rgba(147, 197, 253, 0.70)',   // blue-300/70
+    subtle: 'rgba(201, 204, 198, 0.55)',
+    medium: 'rgba(201, 204, 198, 0.9)',
+    strong: 'rgba(166, 170, 163, 0.9)',
   },
 
   text: {
-    primary:   '#0A1929',
-    secondary: 'rgba(10, 25, 41, 0.75)',   // 6.40:1 at the darkest gradient stop
-    muted:     'rgba(10, 25, 41, 0.65)',   // 4.75:1 at the darkest gradient stop
+    primary:   '#151A1D',
+    secondary: 'rgba(55, 67, 75, 1)',
+    muted:     'rgba(79, 90, 97, 1)',
     // See the dark palette: `subtle` is placeholder/disabled text (WCAG-exempt).
-    subtle:    'rgba(10, 25, 41, 0.50)',
+    subtle:    'rgba(79, 90, 97, 0.7)',
   },
 
   // ── Semantic STATE values, light theme ──────────────────────────────────
@@ -158,26 +193,26 @@ const _light = {
   // lightness/saturation change on amber's own hue, keeping 42.5° of hue
   // separation from red (dark theme has 57°).
   state: {
-    attention:    '#7A5300',  // dark gold-amber — 4.77:1 worst surface
-    critical:     '#C62828',  // red — icons/dots (3.0 bar), 3.92:1
-    criticalText: '#B91C1C',  // red-700 — text, 4.51:1
-    criticalFill: '#B91C1C',  // fill behind WHITE text — 6.02:1 on white
-    verified:     '#166534',  // green-800 — 4.97:1
+    attention:    '#7A5300',
+    critical:     '#A83E12',
+    criticalText: '#A83E12',
+    criticalFill: '#A83E12',
+    verified:     '#1E5B3A',
   },
 
   iconPod: {
-    background: 'rgba(21, 101, 192, 0.10)',   // bg-[#1565C0]/10
-    border:     'rgba(21, 101, 192, 0.20)',   // border-[#1565C0]/20
-    iconColor:  '#1565C0',                     // primary blue
+    background: 'rgba(36, 55, 70, 1)',
+    border:     'rgba(36, 55, 70, 1)',
+    iconColor:  '#FFFFFF',
   },
 
   status: {
-    success:   '#2E7D32',
-    successBg: 'rgba(46, 125, 50, 0.10)',
-    error:     '#C62828',
-    errorBg:   'rgba(198, 40, 40, 0.08)',
-    warning:   '#E65100',
-    warningBg: 'rgba(230, 81, 0, 0.10)',
+    success:   '#1E5B3A',
+    successBg: 'rgba(30, 91, 58, 0.10)',
+    error:     '#A83E12',
+    errorBg:   'rgba(168, 62, 18, 0.08)',
+    warning:   '#7A5300',
+    warningBg: 'rgba(122, 83, 0, 0.10)',
     // ── PR #15D D1 — 5-tier hazard-ratio palette (light) ────────
     // See _dark.status.caution comment for the L6 mapping. Light
     // values are Material amber-300 (#FFD54F) for caution and
@@ -231,7 +266,12 @@ function _applyPalette(target, source) {
 export const colors = {};
 _applyPalette(colors, _dark);
 
+// Which palette `colors` holds right now. ThemeProvider reads it so it never assumes the palette it finds is dark.
+let _activeMode = 'dark';
+export const getActiveMode = () => _activeMode;
+
 export function applyTheme(mode) {
+  _activeMode = mode === 'light' ? 'light' : 'dark';
   _applyPalette(colors, mode === 'light' ? _light : _dark);
 }
 
@@ -247,10 +287,10 @@ export const spacing = {
 
 export const borderRadius = {
   sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
-  xxl: 32,
+  md: 10,
+  lg: 14,
+  xl: 14,
+  xxl: 14,
   full: 9999,
 };
 
@@ -283,34 +323,41 @@ export const borderRadius = {
 //   textDim   rgba(10,25,41,0.65)  →  4.8:1  (AA) — the floor; nothing dimmer
 export const outdoor = {
   // Page background — the three stops AnimatedBackground paints.
-  backgroundStart: '#d0dcf0',
-  backgroundMiddle: '#D6E4F7',
-  backgroundEnd: '#ccd8ee',
+  backgroundStart: '#ECEDE9',
+  backgroundMiddle: '#ECEDE9',
+  backgroundEnd: '#ECEDE9',
 
   // Card fill: the white→blue-100 vertical gradient GlassCard uses in light
   // mode. NOT a flat white — the flat fill is what read as foreign.
-  cardTop: 'rgba(255, 255, 255, 0.92)',
-  cardBottom: 'rgba(219, 234, 254, 0.65)',
+  cardTop: 'rgba(255, 255, 255, 0.84)',
+  cardBottom: 'rgba(250, 251, 248, 0.80)',
   // A sunken well inside a card (read-only values, hints).
-  surfaceSunk: 'rgba(219, 234, 254, 0.45)',
+  surfaceSunk: 'rgba(36, 55, 70, 0.06)',
   // An opaque surface for the header strip and the footer.
-  surface: 'rgba(255, 255, 255, 0.85)',
-  surfaceSelected: '#1565C0',
+  surface: 'rgba(255, 255, 255, 0.96)',
+  surfaceSelected: '#243746',
+  // The concept's selected state on paper is brass with ink text, and its top bar is navy with white type.
+  selected: '#D8A044',
+  onSelected: '#151A1D',
+  bar: '#243746',
+  onBar: '#FFFFFF',
+  barLine: 'rgba(255, 255, 255, 0.35)',
+  barSub: 'rgba(255, 255, 255, 0.78)',
 
-  text: '#0A1929',
-  textSoft: 'rgba(10, 25, 41, 0.75)',
-  textDim: 'rgba(10, 25, 41, 0.65)',
+  text: '#151A1D',
+  textSoft: 'rgba(55, 67, 75, 1)',
+  textDim: 'rgba(79, 90, 97, 1)',
   textOnSelected: '#ffffff',
 
   // The glass border — present but soft. GlassCard draws exactly this, so the
   // "no visible border" in the brief is not what the app actually does.
-  line: 'rgba(191, 219, 254, 0.60)',
-  lineStrong: 'rgba(147, 197, 253, 0.70)',
+  line: 'rgba(201, 204, 198, 1)',
+  lineStrong: 'rgba(166, 170, 163, 0.9)',
 
   // The accent the reference screen's count badge uses.
-  accent: '#60a5fa',
-  accentBg: 'rgba(96, 165, 250, 0.15)',
-  accentBorder: 'rgba(96, 165, 250, 0.30)',
+  accent: '#B47C1F',
+  accentBg: 'rgba(216, 160, 68, 0.16)',
+  accentBorder: 'rgba(180, 124, 31, 0.40)',
 
   warnBg: '#fef3c7',
   warnBorder: '#d97706',
@@ -320,17 +367,18 @@ export const outdoor = {
   okBorder: '#15803d',
   ok: '#166534',
 
-  scrim: 'rgba(10, 25, 41, 0.72)',
+  scrim: 'rgba(21, 26, 29, 0.72)',
 };
 
-// The soft diffuse card shadow, from _light.shadow + GlassCard's elevation.
-// Spread as a style object so a consumer cannot get half of it.
+// The card aura of the light theme (_light.aura), so the pinned-light surfaces float the same way the rest of the
+// app's cards do; the elevation is the one src/styles/aura.js gives Android. Spread as a style object so a consumer
+// cannot get half of it.
 export const outdoorShadow = {
-  shadowColor: 'rgba(30, 58, 138, 0.15)',
-  shadowOffset: { width: 0, height: 8 },
-  shadowOpacity: 0.15,
-  shadowRadius: 24,
-  elevation: 6,
+  shadowColor: '#458CB5',
+  shadowOffset: { width: 0, height: 4 },
+  shadowOpacity: 0.20,
+  shadowRadius: 10,
+  elevation: 4,
 };
 
 // ─── Touch targets ───────────────────────────────────────────────────────────
@@ -350,21 +398,39 @@ export const touchTarget = {
   primary: 72,
 };
 
+// ─── Typefaces ────────────────────────────────────────────────────────────────
+//
+// The app keeps the platform's own font (Roboto on Android, San Francisco on iOS, the system font on the web), as it
+// always has. The role names exist so a title, a count and a label can each be given a face later without touching
+// the screens that use them; until faces are bundled with the app they are all undefined, which is what
+// `typography.regular/medium/semibold` always were.
+const _ui = undefined;
+const _display = undefined;
+const _num = undefined;
+const _mono = undefined;
+
 export const typography = {
+  regular: _ui,
+  medium: _ui,
+  semibold: _ui,
+  bold: _ui,
+  display: _display,
+  num: _num,
+  mono: _mono,
   // 12 and 13 are the two most-used sizes across the CP screens (86
   // occurrences between them) and neither had a token, which is why those
   // screens carry literals. They are named here so the stepper does not have
   // to invent them again: `fine` is sub-label text, `dense` is body text in a
   // packed row. `xl` is unchanged and still the largest.
   sizes: { fine: 12, dense: 13, xs: 11, sm: 14, md: 16, lg: 18, xl: 24 },
-  hero:  { fontSize: 48, fontWeight: '200', letterSpacing: -1 },
-  h1:    { fontSize: 36, fontWeight: '300', letterSpacing: -0.5 },
-  h2:    { fontSize: 24, fontWeight: '400' },
-  h3:    { fontSize: 18, fontWeight: '500' },
+  hero:  { fontFamily: _display, fontSize: 40, fontWeight: '800', letterSpacing: -1.2 },
+  h1:    { fontFamily: _display, fontSize: 30, fontWeight: '800', letterSpacing: -0.9 },
+  h2:    { fontFamily: _display, fontSize: 24, fontWeight: '700', letterSpacing: -0.4 },
+  h3:    { fontFamily: _display, fontSize: 18, fontWeight: '700' },
   body:  { fontSize: 16, fontWeight: '400' },
   small: { fontSize: 14, fontWeight: '400' },
-  label: { fontSize: 11, fontWeight: '500', letterSpacing: 2, textTransform: 'uppercase' },
-  stat:  { fontSize: 36, fontWeight: '200' },
+  label: { fontFamily: _mono, fontSize: 11, fontWeight: '600', letterSpacing: 1.8, textTransform: 'uppercase' },
+  stat:  { fontFamily: _num, fontSize: 40, fontWeight: '600' },
 };
 
 export default { colors, spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow };

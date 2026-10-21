@@ -635,10 +635,10 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#000' },
   msg: { color: '#fff', fontSize: 15, textAlign: 'center', marginBottom: 24, lineHeight: 22 },
   primaryBtn: {
-    backgroundColor: '#3b82f6', paddingHorizontal: 28, paddingVertical: 12,
+    backgroundColor: '#E3C27A', paddingHorizontal: 28, paddingVertical: 12,
     borderRadius: 8, marginBottom: 12,
   },
-  primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  primaryBtnText: { color: '#141A1F', fontSize: 15, fontWeight: '600' },
   secondaryBtn: { paddingHorizontal: 28, paddingVertical: 12 },
   secondaryBtnText: { color: '#94a3b8', fontSize: 15 },
   // The capture chrome's styles moved with it, into CameraOverlay.

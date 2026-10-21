@@ -41,8 +41,8 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
-  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
-  major_a: { label: 'MAJOR A', color: semantic.neutralStrong, bg: withAlpha('#94a3b8', 0.15) },
+  major_b: { label: 'MAJOR B', get color() { return semantic.neutralStrong; }, get bg() { return semantic.neutralBg; } },
+  major_a: { label: 'MAJOR A', get color() { return semantic.neutralStrong; }, bg: withAlpha('#94a3b8', 0.15) },
 };
 
 const ROLE_HELPER = {
@@ -577,7 +577,7 @@ export default function SafetyStaffScreen() {
           onRequestClose={() => setShowAddModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>
@@ -707,7 +707,7 @@ export default function SafetyStaffScreen() {
           onRequestClose={() => setShowEditModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>
@@ -838,8 +838,8 @@ function buildStyles(colors, isDark) {
     titleSection: { marginBottom: spacing.lg },
     titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
     titleText: {
-      fontSize: 48,
-      fontWeight: '200',
+      fontSize: 32,
+      fontFamily: typography.display, fontWeight: '800',
       color: colors.text.primary,
       letterSpacing: -1,
     },
@@ -866,7 +866,7 @@ function buildStyles(colors, isDark) {
       borderColor: colors.glass.border,
     },
     pillText: { fontSize: 13, fontWeight: '500' },
-    pillTextActive: { color: '#fff' },
+    pillTextActive: { color: colors.onPrimary },
     pillTextInactive: { color: colors.text.muted },
     amberBanner: {
       flexDirection: 'row',
@@ -1013,7 +1013,7 @@ function buildStyles(colors, isDark) {
       padding: spacing.md,
     },
     roleOptionActive: {
-      backgroundColor: 'rgba(59,130,246,0.15)',
+      backgroundColor: withAlpha(colors.primary, 0.15),
       borderColor: colors.primary || '#3b82f6',
     },
     roleOptionText: { fontSize: 14, color: colors.text.muted },

@@ -12,6 +12,8 @@ import LogbookLockBar from '../LogbookLockBar';
 import FiledLogView from './FiledLogView';
 import { outdoor } from '../../styles/theme';
 import { submitRefused, isOverridable } from '../../utils/draftFreshness';
+import { useAuth } from '../../context/AuthContext';
+import { readsLogbooksOnly, PM_NOT_FILED_TITLE, PM_NOT_FILED_BODY } from '../../utils/pmLogbooks';
 
 /**
  * The chrome every logbook form wears.
@@ -175,8 +177,18 @@ export default function LogbookStepper({
   // NOT `locked`: that renders LogbookLockBar's "FINALIZED — read-only" and
   // offers Amend, which would be a claim about a document this device could
   // not read.
-  unavailable = null,
+  unavailable: unavailableProp = null,
 }) {
+  // A Site Manager / PM reads logs; he does not compose one. Any link that
+  // lands him on an unfiled log (a deep link, an old notification) shows
+  // why instead of a form the server refuses to save.
+  // It is the same notice as `unavailable` below: no fields, no footer, no
+  // lock bar. A FILED log is unaffected — it renders FiledLogView as for
+  // anyone, with its photographs.
+  const { user } = useAuth();
+  const pmNotice = (readsLogbooksOnly(user) && !locked && !loading)
+    ? { title: PM_NOT_FILED_TITLE, body: PM_NOT_FILED_BODY } : null;
+  const unavailable = unavailableProp || pmNotice;
   const total = steps.length;
   // Named once, so the gate and the grey fill can never disagree about what a
   // conflict is. A verdict object with `conflict: false` — the ordinary clean
@@ -208,12 +220,12 @@ export default function LogbookStepper({
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.header}>
             <Pressable
-              style={s.headerBack}
+              style={s.barBack}
               accessibilityRole="button"
               accessibilityLabel="Back"
               onPress={onExit}
             >
-              <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+              <ArrowLeft size={24} strokeWidth={2} color={outdoor.onBar} />
             </Pressable>
             <View style={s.headerText}>
               <Text style={s.headerTitle}>{title}</Text>
@@ -254,12 +266,12 @@ export default function LogbookStepper({
       <SafeAreaView style={s.container} edges={['top']}>
         <View style={s.header}>
           <Pressable
-            style={s.headerBack}
+            style={s.barBack}
             accessibilityRole="button"
             accessibilityLabel={a11yProgressLabel ? undefined : 'Back'}
             onPress={() => ((locked || step === 1) ? onExit() : onStepChange(step - 1))}
           >
-            <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+            <ArrowLeft size={24} strokeWidth={2} color={outdoor.onBar} />
           </Pressable>
           <View style={s.headerText}>
             <Text style={s.headerTitle}>{title}</Text>
@@ -401,6 +413,7 @@ export default function LogbookStepper({
           )}
 
           <LogbookLockBar
+            pinned
             logType={logType}
             locked={locked}
             logId={logId}

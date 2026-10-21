@@ -354,7 +354,7 @@ export default function SiteDevicesScreen() {
           onRequestClose={() => setShowCreateModal(false)}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
             style={s.modalOverlay}
           >
             <View style={s.modalContent}>
@@ -546,8 +546,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 48,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },

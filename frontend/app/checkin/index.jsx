@@ -275,7 +275,7 @@ export default function CheckInScreen() {
               <GlassCard style={s.methodCard}>
                 <View style={s.methodHeader}>
                   <IconPod size={44}>
-                    <UserCheck size={20} strokeWidth={1.5} color="#3b82f6" />
+                    <UserCheck size={20} strokeWidth={1.5} color={colors.primary} />
                   </IconPod>
                   <View style={s.methodInfo}>
                     <Text style={s.methodTitle}>Manual Check-In</Text>
@@ -336,7 +336,7 @@ export default function CheckInScreen() {
                 {/* Check In Button */}
                 <GlassButton
                   title={checkingIn ? 'Checking In...' : 'Check In Worker'}
-                  icon={<CheckCircle size={20} strokeWidth={1.5} color="#fff" />}
+                  icon={<CheckCircle size={20} strokeWidth={1.5} color={colors.onPrimary} />}
                   onPress={handleCheckIn}
                   loading={checkingIn}
                   disabled={!selectedWorker || checkingIn}
@@ -482,8 +482,8 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 42,
-    fontWeight: '200',
+    fontSize: 32,
+    fontFamily: typography.display, fontWeight: '800',
     color: colors.text.primary,
     letterSpacing: -1,
   },
@@ -567,7 +567,7 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     gap: spacing.md,
     padding: spacing.md,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    backgroundColor: withAlpha(colors.primary, 0.1),
     borderRadius: borderRadius.lg,
     marginBottom: spacing.md,
   },
@@ -575,14 +575,14 @@ function buildStyles(colors, isDark) {
     width: 44,
     height: 44,
     borderRadius: borderRadius.full,
-    backgroundColor: '#3b82f6',
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   workerInitial: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#fff',
+    color: colors.onPrimary,
   },
   workerInfo: {
     flex: 1,
@@ -601,7 +601,7 @@ function buildStyles(colors, isDark) {
   },
   changeBtnText: {
     fontSize: 13,
-    color: '#3b82f6',
+    color: colors.primary,
     fontWeight: '500',
   },
   selectWorkerBtn: {
@@ -618,14 +618,14 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   checkInBtn: {
-    backgroundColor: '#10b981',
-    borderColor: '#10b981',
+    backgroundColor: semantic.verified,
+    borderColor: semantic.verified,
   },
   checkInBtnDisabled: {
     opacity: 0.5,
   },
   checkInBtnText: {
-    color: '#fff',
+    color: colors.onPrimary,
     fontWeight: '600',
   },
   nfcBtn: {

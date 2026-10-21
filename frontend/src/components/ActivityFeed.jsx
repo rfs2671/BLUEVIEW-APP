@@ -89,7 +89,7 @@ function buildSeverityPalette(colors) {
     },
     info: {
       color: colors.primary,
-      bg: 'rgba(59, 130, 246, 0.12)',
+      bg: withAlpha(colors.primary, 0.12),
       border: colors.primary,
       label: 'Info',
       Icon: Info,
@@ -392,7 +392,7 @@ function FilterPanel({
             filters.unread_only && styles.checkboxActive,
           ]}
         >
-          {filters.unread_only ? <CheckCheck size={12} color="#fff" /> : null}
+          {filters.unread_only ? <CheckCheck size={12} color={colors.onPrimary} /> : null}
         </View>
         <Text style={styles.unreadToggleText}>Show unread only</Text>
       </Pressable>
@@ -824,8 +824,8 @@ function buildStyles(colors, isDark) {
       backgroundColor: colors.glass.background,
     },
     headerBtnPrimary: {
-      backgroundColor: 'rgba(59, 130, 246, 0.10)',
-      borderColor: 'rgba(59, 130, 246, 0.40)',
+      backgroundColor: withAlpha(colors.primary, 0.10),
+      borderColor: withAlpha(colors.primary, 0.40),
     },
     headerBtnPressed: {
       opacity: 0.7,
@@ -923,7 +923,7 @@ function buildStyles(colors, isDark) {
       borderColor: colors.glass.border,
     },
     pillActive: {
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      backgroundColor: withAlpha(colors.primary, 0.12),
       borderColor: colors.primary,
     },
     pillText: {

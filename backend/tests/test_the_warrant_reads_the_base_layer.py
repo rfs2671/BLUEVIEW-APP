@@ -134,7 +134,8 @@ class TheOtherCallersKeepTheFullPage(unittest.TestCase):
 
       _fetch_page_base    PRODUCES the base from the full - it is the source
       _fetch_page_thumb   produces the 400px thumbnail, same reason
-      _send_plan_image    delivers to a person who may zoom; not a model
+      _plan_media_url     delivers to a person who may zoom (a group's
+                          _send_plan_image, a DM's _dm_send_sheet); not a model
       debug_test_plan...  the same delivery path, behind a debug route
 
     Only one caller was ever a vision call. If a second appears, it should
@@ -147,8 +148,12 @@ class TheOtherCallersKeepTheFullPage(unittest.TestCase):
                           f"{fn.__name__} must build from the full page")
 
     def test_the_human_delivery_path_is_unchanged(self):
+        # The image a group or a DM is sent (_send_plan_image, _dm_send_sheet)
+        # is made by _plan_media_url, from the full page.
         self.assertIn("_fetch_page_jpeg(page_rec)",
-                      inspect.getsource(server._send_plan_image))
+                      inspect.getsource(server._plan_media_url))
+        for fn in (server._send_plan_image, server._dm_send_sheet):
+            self.assertIn("_plan_media_url(", inspect.getsource(fn), fn.__name__)
 
     def test_only_one_vision_call_reads_a_stored_page_image(self):
         """The indexer renders from the PDF with `_render_pdf_page`, so it is
