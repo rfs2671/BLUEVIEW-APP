@@ -92,6 +92,8 @@ th { text-align: left; font-size: 7.5pt; letter-spacing: .6px; text-transform: u
 td { padding: 4px 5px; border-bottom: 1px solid #e3e7ee; vertical-align: top; }
 td.n, th.n { text-align: right; white-space: nowrap; }
 tr { page-break-inside: avoid; }
+table.ev td { padding: 2px 5px; font-size: 8pt; }
+table.ev td:nth-child(1) { width: 5%; } table.ev td:nth-child(2) { width: 27%; }
 .chip { display: inline-block; font-size: 7pt; font-weight: 700; padding: 1px 6px; border-radius: 8px;
         color: #fff; background: #5b6676; vertical-align: 1px; }
 .chip.new { background: #067647; } .chip.adv { background: #1F6FEB; } .chip.warn { background: #B54708; }
@@ -613,7 +615,7 @@ def _basis(rep: Dict[str, Any], report_id: str) -> str:
     return (f"<section class='keep'><h2>Basis, data notes and evidence</h2>{levels}"
             f"<div class='two'><div><h4>What this report does not contain</h4><ul class='tight'>{lim}</ul></div>"
             f"<div><h4>Data notes</h4><ul class='tight'>{notes or '<li>No discrepancies to note.</li>'}</ul></div></div>"
-            f"<h3>Evidence index</h3><table><tr><th>ID</th><th>Source</th><th>Detail</th></tr>{''.join(ev)}</table>"
+            f"<h3>Evidence index</h3><table class='ev'><tr><th>ID</th><th>Source</th><th>Detail</th></tr>{''.join(ev)}</table>"
             f"<div class='legend'><b>G</b> site check-ins · <b>L</b> filed daily logs · <b>R</b> DOB/DOT record · "
             f"<b>S</b> project schedule · <b>F</b> financial figures</div>"
             f"<div class='foot'>Generated {_e(_fmt(rep['generated'].astimezone(P.NY), '%B %-d, %Y %-I:%M %p'))} ET "
