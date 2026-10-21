@@ -141,3 +141,54 @@ class AJobFiledUnderTwoBuildingsIsOneSite(unittest.TestCase):
         self.assertEqual([e["number"] for e in rep["regulatory"]["issued"]], ["B23173802-S5"])
         self.assertEqual(rep["regulatory"]["excluded"], [])
         self.assertTrue(any("3430621" in n and "also appear under this project" in n for n in rep["data_notes"]), rep["data_notes"])
+
+
+class StreetPermitsIssuedTogetherAreOneLine(unittest.TestCase):
+    """The first real 588 run with live DOT data listed 20 street permits (one
+    application: sidewalk, roadway, equipment, fence ...) and buried every risk."""
+
+    def permits(self, n, expires="2026-11-02", issued="2026-08-03", status="ISSUED & PRINTED", start=18):
+        from datetime import datetime, timezone
+        seen = datetime(2026, 8, 3, tzinfo=timezone.utc)
+        return [{"_id": f"p{i}", "record_type": "dot_permit", "raw_id": f"dotpermit:B02202621{i:02d}",
+                 "number": f"B02202621{i:02d}", "issue_date": issued, "expiration_date": expires,
+                 "status": status, "detected_at": seen,
+                 "status_history": [{"status": status, "at": seen, "source": "first_seen"}]}
+                for i in range(start, start + n)]
+
+    def regulatory(self, rows):
+        from lib import report_regulatory as RG
+        from datetime import datetime, timezone, date
+        return RG.build([], rows, date(2026, 10, 1), date(2026, 10, 19), today=date(2026, 10, 19),
+                        sync={"tracking": True, "dob": datetime(2026, 10, 20, tzinfo=timezone.utc), "dob_complete": True,
+                              "dot": datetime(2026, 10, 20, tzinfo=timezone.utc)},
+                        now=datetime(2026, 10, 20, tzinfo=timezone.utc))
+
+    def test_a_series_is_one_entry_that_keeps_every_number(self):
+        got = self.regulatory(self.permits(15))
+        self.assertEqual(len(got["expiring"]), 1)
+        e = got["expiring"][0]
+        self.assertEqual(len(e["members"]), 15)
+        self.assertIn("(15)", e["kind"])
+        self.assertIn("+14 more", e["number"])
+
+    def test_two_permits_are_not_a_series(self):
+        self.assertEqual(len(self.regulatory(self.permits(2))["expiring"]), 2)
+
+    def test_permits_with_different_expiry_or_status_do_not_group(self):
+        rows = self.permits(3) + self.permits(3, expires="2026-11-10", start=30) \
+            + self.permits(1, status="EXPIRED", start=40)
+        got = self.regulatory(rows)
+        self.assertEqual(sorted(len(e.get("members") or [1]) for e in got["expiring"]), [1, 3, 3])
+
+    def test_dob_records_never_group(self):
+        from lib import report_regulatory as RG
+        self.assertEqual(RG._collapse_series([{"type": "permit", "issued": None, "status": "x", "expires": None,
+                                                "number": str(i), "id": str(i), "kind": "DOB permit"} for i in range(5)]).__len__(), 5)
+
+    def test_the_report_says_it_once_and_the_evidence_lists_the_numbers(self):
+        from lib import progress_report as PR
+        from datetime import date
+        got = self.regulatory(self.permits(15))
+        out = PR.coming_up([], date(2026, 10, 19), None, got)
+        self.assertEqual([o["what"] for o in out], ["15 DOT street permits expire"])

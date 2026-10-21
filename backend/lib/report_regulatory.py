@@ -172,6 +172,34 @@ def _expiry(r: Dict[str, Any]) -> Optional[date]:
     return wa_gc.parse_dob_date(r.get("expiration_date"))
 
 
+SERIES_MIN = 3
+
+
+def _collapse_series(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """DOT street permits issued together (one application: sidewalk, roadway,
+    equipment, fence ... all issued the same day, same status, same expiry) as ONE
+    entry. The first real 588 report listed 20 of them, burying every real risk.
+    Nothing is dropped: `members` carries every number, and the evidence index
+    prints them. Only DOT permits group, and only 3 or more that agree on date,
+    status and expiry."""
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for e in entries:
+        key = (e["issued"], e["status"], e["expires"], e.get("changed_on")) if e.get("type") == "dot_permit" else None
+        groups.setdefault(key if key else id(e), []).append(e)
+    out: List[Dict[str, Any]] = []
+    for g in groups.values():
+        if len(g) < SERIES_MIN:
+            out += g
+            continue
+        g = sorted(g, key=lambda x: x["number"])
+        first = dict(g[0])
+        first["members"] = [x["number"] for x in g]
+        first["kind"] = f"{first['kind']}s ({len(g)})"
+        first["number"] = f"{g[0]['number']} +{len(g) - 1} more"
+        out.append(first)
+    return sorted(out, key=lambda x: entries.index(next(e for e in entries if e["id"] == x["id"])))
+
+
 FRESH_HOURS = 24
 
 
@@ -365,6 +393,8 @@ def build(dob_rows: Iterable[Dict[str, Any]], dot_rows: Iterable[Dict[str, Any]]
 
     def newest(x: Dict[str, Any]):
         return (x["issued"] or date.min, x["kind"], x["number"])
+    for k in ("issued", "changed", "expiring"):
+        out[k] = _collapse_series(out[k])
     for k in ("issued", "changed", "open", "swo_active", "swo_lifted"):
         out[k].sort(key=newest, reverse=True)
     out["expiring"].sort(key=lambda x: (x["expires"], x["kind"], x["number"]))

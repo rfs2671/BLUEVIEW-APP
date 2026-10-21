@@ -837,7 +837,8 @@ def coming_up(events: Iterable[dict], end: date, plan: Optional[Dict[str, Any]],
                         "kind": str(e.get("kind") or "")})
     seen = {(o["date"], o["what"]) for o in out}
     for p in regulatory.get("expiring") or []:
-        what = f"{p['kind']} {p['number']} expires".strip()
+        what = (f"{len(p['members'])} DOT street permits expire" if p.get("members")
+                else f"{p['kind']} {p['number']} expires".strip())
         num = str(p.get("number") or "").upper()
         # The same expiry may already be there as a city event worded differently
         # ("DOB permit expires · #B23173802-S5"): one line, not two (found on
@@ -1098,7 +1099,8 @@ def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
         out.append({"level": "watch", "src": "R", "ref": ",".join(p["id"] for p in soon[:5]),
                     "refs": [p["id"] for p in soon[:3]],
                     "text": ("Permits expiring within 30 days: " if len(soon) > 1 else "Permit expiring within 30 days: ")
-                    + _join([f"{p['kind']} {p['number']} ({_dayy(p['expires'])})".strip() for p in soon[:3]]) + "."})
+                    + _join([(f"{len(p['members'])} DOT street permits ({_dayy(p['expires'])})" if p.get("members")
+                              else f"{p['kind']} {p['number']} ({_dayy(p['expires'])})").strip() for p in soon[:3]]) + "."})
     insp = rep["inspections"]
     if insp["failed"]:
         out.append({"level": "high", "src": "L", "ref": "",
@@ -1327,7 +1329,8 @@ def evidence(rep: Dict[str, Any], checkins: List[dict], logs: List[dict]) -> Lis
             n += 1
             r["ref_id"] = f"R{n}"
             out.append({"id": f"R{n}", "kind": "regulatory", "label": f"{r['kind']} {r['number']}".strip(),
-                        "detail": f"{r['source'].upper()} record; status {r['status'] or 'not stated'}",
+                        "detail": f"{r['source'].upper()} record; status {r['status'] or 'not stated'}"
+                                  + (f"; permits {', '.join(r['members'][:40])}" if r.get("members") else ""),
                         "record": r["id"], "row_id": r["row_id"], "link": r["link"], "issued": r["issued"]})
     plan = rep["schedule"]
     if plan and plan.get("usable"):
