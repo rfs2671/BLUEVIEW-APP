@@ -56,9 +56,15 @@ from lib.datefmt import strftime as _fmt
 NY = base.NY
 ENGINE_VERSION = "2026.10.2"
 UPCOMING_DAYS = 30
-#: 4-6 photographs, never more: a few good ones, not a gallery.
-MIN_PHOTOS, MAX_PHOTOS = 4, 8
-MAX_PER_SUB = 2
+#: A row of up to FIVE photographs per sub, spread across the period in date order
+#: (the real 588 logs held 209 photographs in 11 days; the first version judged 30
+#: and showed 2 per sub). Never padded: a sub with three qualifying photographs
+#: gets three. MAX_PHOTOS is the page budget for the whole report.
+MIN_PHOTOS, MAX_PHOTOS = 4, 35
+MAX_PER_SUB = 5
+#: What vision is asked to judge: up to this many photographs per sub, evenly
+#: spread over the period (cost is about $0.0005 each and verdicts are cached).
+JUDGE_PER_SUB = 14
 #: A photograph must show installed work STRONGLY to appear: fewer than four
 #: photographs is better than a weak one used to fill the page.
 MIN_SCORE = 6.0
@@ -653,21 +659,30 @@ def work_line(work: Any, place: Any) -> str:
     return f"{w} — {p}" if p else w
 
 
-def to_judge(cands: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
-    """Which photos to send to vision (it costs): each sub's first 2 and last
-    2, then the rest spread over the period."""
+def _spread(items: List[Any], n: int) -> List[Any]:
+    """`n` of `items` at even intervals, first and last included."""
+    if len(items) <= n:
+        return list(items)
+    if n <= 1:
+        return [items[0]]
+    return [items[round(i * (len(items) - 1) / (n - 1))] for i in range(n)]
+
+
+def to_judge(cands: List[Dict[str, Any]], limit: int = 100, per_sub: int = JUDGE_PER_SUB) -> List[Dict[str, Any]]:
+    """Which photos to send to vision (it costs): for each sub, up to `per_sub`
+    spread EVENLY over the period (so the first week and the last week are both
+    judged, and a sub who filed ten a day is sampled across all of its days),
+    within `limit` in all."""
     by_sub: Dict[str, List[dict]] = defaultdict(list)
-    for c in cands:
+    for c in sorted(cands, key=lambda c: (str(c["date"]), c["key"])):
         by_sub[company_key(c["sub"]) or c["source"]].append(c)
+    quota = per_sub
+    if sum(min(len(g), per_sub) for g in by_sub.values()) > limit and by_sub:
+        quota = max(1, limit // len(by_sub))
     picked: List[dict] = []
     for group in by_sub.values():
-        for c in group[:2] + group[-2:]:
-            if c not in picked:
-                picked.append(c)
-    rest = [c for c in cands if c not in picked]
-    step = max(1, len(rest) // max(1, limit - len(picked))) if rest else 1
-    picked += rest[::step]
-    return picked[:limit]
+        picked += _spread(group, quota)
+    return sorted(picked, key=lambda c: (str(c["date"]), c["key"]))[:limit]
 
 
 WORK_FAMILIES = ("framing", "plumbing", "electrical", "hvac", "scaffolding", "stairs", "concrete", "masonry",
@@ -790,27 +805,27 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
             good.append({**c, "score": float(v.get("score") or 0),
                          "caption": WORK_CAPTION.get(str(v.get("work") or "none"), WORK_CAPTION["none"]),
                          "work": str(v.get("work") or "none")})
-    chosen: List[dict] = []
-    per_sub: Counter = Counter()
-
-    def add(c: Dict[str, Any]) -> bool:
-        k = company_key(c["sub"]) or c["sub"]
-        if len(chosen) >= most or per_sub[k] >= MAX_PER_SUB or any(x["key"] == c["key"] for x in chosen):
-            return False
-        if any(company_key(x["sub"]) == company_key(c["sub"]) and x["date"] == c["date"]
-               and x["where"] == c["where"] for x in chosen):
-            return False
-        chosen.append(c)
-        per_sub[k] += 1
-        return True
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
         by_sub[company_key(c["sub"]) or c["sub"]].append(c)
-    queues = [sorted(g, key=lambda c: (-c["score"], c["date"])) for _, g in sorted(by_sub.items())]
-    while len(chosen) < most and any(queues):
-        for q in queues:
-            while q and not add(q.pop(0)):
-                pass
+    chosen: List[dict] = []
+    for _, group in sorted(by_sub.items()):
+        # A ROW THAT READS AS PROGRESS: the qualifying photographs in date order,
+        # cut into as many equal stretches as the row has places, the strongest
+        # photograph of each stretch -- never two of one sub, day and place.
+        group = sorted(group, key=lambda c: (str(c["date"]), c["key"]))
+        n = min(MAX_PER_SUB, len(group))
+        row: List[dict] = []
+        for i in range(n):
+            lo, hi = i * len(group) // n, (i + 1) * len(group) // n
+            for c in sorted(group[lo:hi], key=lambda c: (-c["score"], str(c["date"]))):
+                if any(x["date"] == c["date"] and x["where"] == c["where"] for x in row):
+                    continue
+                row.append(c)
+                break
+        chosen += row
+    if len(chosen) > most:                 # the page budget: the weakest go first
+        chosen = sorted(chosen, key=lambda c: -c["score"])[:most]
     chosen.sort(key=lambda c: (c["date"], c["sub"]))
     return chosen
 

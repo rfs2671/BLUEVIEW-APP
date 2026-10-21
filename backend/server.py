@@ -51612,8 +51612,8 @@ def _report_pdf(html_text: str) -> bytes:
 
 REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
 #: Photos sent to vision per report (each is one call, cached by photo).
-REPORT_JUDGE_MAX = 30
-REPORT_JUDGE_AT_ONCE = 4
+REPORT_JUDGE_MAX = 100
+REPORT_JUDGE_AT_ONCE = 8
 
 
 def _report_photo_bytes(c: dict) -> Optional[bytes]:
@@ -51782,6 +51782,17 @@ async def _report_photos(rep: dict, project_id: str) -> List[dict]:
             if v:
                 verdicts[c["key"]] = v
     await asyncio.gather(*(one(c) for c in todo))
+    # A photo the model gave no usable answer for is asked about ONCE more (a
+    # transient error or a cut-off reply), then counted: the real 588 run lost
+    # about a third of its judged photos with no trace.
+    again = [c for c in todo if c["key"] not in verdicts]
+    if again:
+        await asyncio.gather(*(one(c) for c in again))
+    unjudged = [c for c in todo if c["key"] not in verdicts]
+    filed = len(rep.get("photo_candidates") or [])
+    logger.info(f"[report] photos: {filed} filed, {len(todo)} sent to be judged, "
+                f"{len(unjudged)} with no usable verdict after a retry")
+    rep["photos_unjudged"] = len(unjudged)
     chosen = progress_report.pick_photos(todo, verdicts)
     rep["photo_review"] = progress_report.photo_review(todo, verdicts, chosen)
     return chosen
