@@ -51210,8 +51210,10 @@ async def _brief_for_user(user: dict, now: datetime,
     for p, job in zip(projects, jobs):
         job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
     own_today, own_later = by_job.get(None, ([], []))
-    return wa_brief.compose_messages(now, jobs, {"today": own_today, "later": own_later},
-                                     max_jobs=None if every_job else wa_brief.MAX_JOB_MESSAGES)
+    return wa_brief.compose_messages(
+        now, jobs, {"today": own_today, "later": own_later},
+        max_jobs=None if every_job else wa_brief.MAX_JOB_MESSAGES,
+        already=None if every_job else await _brief_sent_parts(str(user.get("_id")), today))
 
 
 #: Wed Oct 14: WaAPI's send-message answered HTTP 500 at 8:05, the ledger
@@ -51385,16 +51387,43 @@ def _brief_part_window(day: str, part: str) -> str:
 BRIEF_SEND_GAP_SECONDS = 3
 #: How many people's briefs are sent at once.
 BRIEF_CONCURRENCY = 8
+#: Per person (user id): when their last brief message was sent (the clock
+#: below), and one lock, so the gap holds ACROSS calls too -- the morning
+#: tick, a retry, "send me my brief", "brief all" right after "+N more".
+_BRIEF_LAST_SEND: Dict[str, float] = {}
+_BRIEF_SEND_LOCKS: Dict[str, asyncio.Lock] = {}
+_brief_clock = _time.monotonic
+
+
+def _brief_send_lock(uid: str) -> asyncio.Lock:
+    return _BRIEF_SEND_LOCKS.setdefault(uid, asyncio.Lock())
+
+
+async def _brief_pace(uid: str) -> None:
+    """Wait until BRIEF_SEND_GAP_SECONDS after this person's last brief
+    message, then stamp now. Call it holding _brief_send_lock(uid)."""
+    last = _BRIEF_LAST_SEND.get(uid)
+    if last is not None and BRIEF_SEND_GAP_SECONDS > 0:
+        wait = last + BRIEF_SEND_GAP_SECONDS - _brief_clock()
+        if wait > 0:
+            await asyncio.sleep(wait)
+    _BRIEF_LAST_SEND[uid] = _brief_clock()
 
 
 async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]]) -> dict:
     """Send each message of today's brief not already out, at least
-    BRIEF_SEND_GAP_SECONDS apart. {sent, already, failed (the last WaAPI
-    error, or None), busy (another run is sending one), refused (refused
-    before WaAPI; the rest are not tried)}."""
+    BRIEF_SEND_GAP_SECONDS after the person's previous one (_brief_pace).
+    {sent, already, failed (the last WaAPI error, or None), busy (another
+    run is sending one), refused (refused before WaAPI; the rest are not
+    tried)}."""
+    async with _brief_send_lock(uid):
+        return await _brief_send_parts_locked(uid, day, messages)
+
+
+async def _brief_send_parts_locked(uid: str, day: str,
+                                   messages: List[Tuple[str, str]]) -> dict:
     out: Dict[str, Any] = {"sent": 0, "already": 0, "failed": None, "busy": False,
                            "refused": False}
-    tried = False
     for part, text in messages:
         window = _brief_part_window(day, part)
         key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, window)
@@ -51402,9 +51431,7 @@ async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]])
         if (row or {}).get("status") == "sent":
             out["already"] += 1
             continue
-        if tried and BRIEF_SEND_GAP_SECONDS > 0:
-            await asyncio.sleep(BRIEF_SEND_GAP_SECONDS)
-        tried = True
+        await _brief_pace(uid)
         if await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND, window=window):
             out["sent"] += 1
             continue
@@ -51418,6 +51445,36 @@ async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]])
             out["refused"] = True
             break
     return out
+
+
+async def _brief_part_sent(uid: str, company_id: Any, day: str, part: str,
+                           now: datetime) -> None:
+    """One message of today's brief went out another way (a resend): its
+    canonical ledger row (_brief_part_window), unless one is already sent."""
+    window = _brief_part_window(day, part)
+    key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, window)
+    try:
+        row = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+        if (row or {}).get("status") == "sent":
+            return
+        await db[WA_LEDGER].replace_one({"_id": key}, {
+            "_id": key, "user_id": uid, "company_id": str(company_id or ""),
+            "project_id": None, "kind": MORNING_BRIEF_KIND, "window": window,
+            "status": "sent", "created_at": now, "finished_at": now,
+            "expires_at": now + timedelta(days=WA_LEDGER_RETENTION_DAYS)}, upsert=True)
+    except Exception as e:
+        logger.warning(f"[wa-brief] part ledger write failed: {type(e).__name__}")
+
+
+async def _brief_sent_parts(uid: str, day: str) -> set:
+    """The parts of `day`'s brief already sent to this person."""
+    try:
+        rows = await db[WA_LEDGER].find(
+            {"user_id": uid, "kind": MORNING_BRIEF_KIND, "status": "sent",
+             "window": {"$regex": f"^{re.escape(day)}:"}}, {"window": 1}).to_list(500)
+    except Exception:
+        return set()
+    return {str(r.get("window") or "")[len(day) + 1:] for r in rows}
 
 
 async def _brief_mark_sent(uid: str, company_id: Any, day: str, now: datetime,
@@ -51584,13 +51641,18 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime,
             return "nothing"
         return "sent"
     sent, run = 0, uuid.uuid4().hex[:8]     # each resend: its own ledger rows
-    for i, (part, text) in enumerate(messages):
-        meta = None
-        if i >= wa_dm.REPLY_WINDOW_MAX_SENDS - 1:
-            meta = {"user_id": uid, "company_id": str(user.get("company_id") or ""),
-                    "kind": MORNING_BRIEF_KIND, "window": f"{today}:resend-{run}:{part}"}
-        if await send_whatsapp_message(dm_chat, text, dm_meta=meta):
-            sent += 1
+    async with _brief_send_lock(uid):
+        for i, (part, text) in enumerate(messages):
+            meta = None
+            if i >= wa_dm.REPLY_WINDOW_MAX_SENDS - 1:
+                meta = {"user_id": uid, "company_id": str(user.get("company_id") or ""),
+                        "kind": MORNING_BRIEF_KIND, "window": f"{today}:resend-{run}:{part}"}
+            await _brief_pace(uid)
+            if await send_whatsapp_message(dm_chat, text, dm_meta=meta):
+                sent += 1
+                # Also under the part's own key ({day}:{part}), as the morning
+                # sends it: "brief all" and the tick then never send it again.
+                await _brief_part_sent(uid, user.get("company_id"), today, part, now)
     if sent < len(messages):
         await _brief_log(uid, user.get("company_id"), today, "failed", reason="send_failed",
                          now=now)

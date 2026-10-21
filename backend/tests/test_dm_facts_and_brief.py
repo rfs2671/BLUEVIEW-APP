@@ -557,6 +557,23 @@ class UserLevel(_Harness, unittest.TestCase):
         # Under the morning's own ledger keys.
         self.assertEqual(_part(db, "p7", day=today)["status"], "sent")
 
+    def test_send_me_my_brief_then_brief_all_sends_only_the_cut_jobs(self):
+        # Codex on #842: the resend's own ledger rows left the canonical
+        # {day}:{part} rows empty, and "brief all" sent the top 6 again.
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        jobs = [(f"p{i}", f"job message {i}") for i in range(8)]
+
+        async def brief(user, now, every_job=False):
+            return jobs if every_job else jobs[:6] + [("more", "+2 more jobs")]
+        today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
+        with _Ctx(db) as c, patch.object(server, "_brief_for_user", brief):
+            self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief")
+            self.assertEqual(len(_texts(c)), 7)
+            self._send(c, f"{ADMIN_PHONE}@c.us", "brief all", mid="D2")
+        self.assertEqual(_texts(c)[7:], ["job message 6", "job message 7"])
+        self.assertEqual(_part(db, "p0", day=today)["status"], "sent")
+
     def test_settings(self):
         db = _world()
         _optin(db, "u_admin", ADMIN_PHONE)

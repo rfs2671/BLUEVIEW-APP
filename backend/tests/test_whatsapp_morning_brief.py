@@ -1045,6 +1045,15 @@ class TheTopSix(unittest.TestCase):
         self.assertEqual(len(msgs), 6)
         self.assertFalse(any(t.endswith("reply 'brief all'") for _p, t in msgs))
 
+    def test_cut_jobs_already_sent_today_are_not_counted(self):
+        jobs = [_sev_job(f"New {i}", new=1) for i in range(6)] \
+            + [_sev_job("Permit", soon=1), _sev_job("Late", late=1)]
+        msgs = wa_brief.compose_messages(TUE_8, jobs, already={"id_Permit"})
+        self.assertEqual(msgs[-1][1], "*Tue Oct 13*\n\n+1 more job — reply 'brief all'")
+        msgs = wa_brief.compose_messages(TUE_8, jobs, already={"id_Permit", "id_Late"})
+        self.assertEqual(len(msgs), 6)
+        self.assertNotIn(wa_brief.MORE, [p for p, _t in msgs])
+
     def test_brief_all_is_an_exact_command(self):
         for t in ("brief all", "Brief All", " BRIEF ALL. ", "brief  all!"):
             self.assertTrue(wa_brief.is_brief_all(t), t)
@@ -1093,25 +1102,80 @@ class BriefAll(unittest.TestCase):
             _tick(c, THU_7 + timedelta(minutes=30))
             self.assertEqual(len(_texts(c)), 10)
 
+    def test_brief_all_before_the_morning_leaves_no_stale_more_line(self):
+        db = _eight_jobs()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        user = next(u for u in db.users.rows if u["_id"] == "u_admin")
+        with _Ctx(db) as c:
+            early = THU_7 - timedelta(minutes=30)
+            self.assertEqual(_run(server._brief_resend(user, f"{ADMIN_PHONE}@c.us", early,
+                                                       every_job=True)), "sent")
+            self.assertEqual(len(_texts(c)), 8)
+            r = _tick(c, THU_7)
+        # Every job already out; no "+2 more jobs" for jobs they have.
+        self.assertEqual(len(_texts(c)), 8)
+        self.assertFalse(any("reply 'brief all'" in t for t in _texts(c)))
+        self.assertEqual(r["sent"], 1)
+
 
 class ThePacing(unittest.TestCase):
 
-    def test_parts_to_one_person_are_at_least_3_seconds_apart(self):
-        sleeps = []
+    def _paced(self):
+        """A clock that moves only when the brief sleeps; the sleeps and the
+        send times, per person."""
+        clock, sleeps, sent = [1000.0], [], []
 
         async def sleep(s):
             sleeps.append(s)
+            clock[0] += s
 
         async def dm(uid, text, **kw):
+            sent.append((uid, clock[0]))
             return True
-        with _Ctx(_db()), patch.object(server, "BRIEF_SEND_GAP_SECONDS", 3), \
-                patch.object(server, "send_whatsapp_dm", dm), \
-                patch.object(server.asyncio, "sleep", sleep):
+        return clock, sleeps, sent, (
+            patch.object(server, "BRIEF_SEND_GAP_SECONDS", 3),
+            patch.object(server, "send_whatsapp_dm", dm),
+            patch.object(server, "_brief_clock", lambda: clock[0]),
+            patch.object(server.asyncio, "sleep", sleep))
+
+    def test_parts_to_one_person_are_at_least_3_seconds_apart(self):
+        _clock, sleeps, sent, ps = self._paced()
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
             out = _run(server._brief_send_parts(
                 "u_admin", "2026-10-08", [("a", "1"), ("b", "2"), ("c", "3")]))
         self.assertEqual(out["sent"], 3)
         self.assertEqual(len(sleeps), 2)                  # between parts, not before the first
         self.assertTrue(all(s >= 3 for s in sleeps), sleeps)
+
+    def test_the_gap_holds_across_calls(self):
+        # "brief all" right after the morning's "+N more": the next call's
+        # first message still waits 3 s after the last one.
+        _clock, sleeps, sent, ps = self._paced()
+
+        async def both():
+            await server._brief_send_parts("u_admin", "2026-10-08", [("a", "1"), ("b", "2")])
+            await server._brief_send_parts("u_admin", "2026-10-08", [("c", "3")])
+            # Someone else is not held up by it.
+            await server._brief_send_parts("u_pm", "2026-10-08", [("a", "1")])
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
+            _run(both())
+        self.assertEqual(sleeps, [3, 3])
+        times = [t for uid, t in sent if uid == "u_admin"]
+        self.assertTrue(all(b - a >= 3 for a, b in zip(times, times[1:])), times)
+        self.assertEqual(len(sent), 4)
+
+    def test_overlapping_calls_to_one_person_are_paced_too(self):
+        _clock, sleeps, sent, ps = self._paced()
+
+        async def both():
+            await asyncio.gather(
+                server._brief_send_parts("u_admin", "2026-10-08", [("a", "1"), ("b", "2")]),
+                server._brief_send_parts("u_admin", "2026-10-08", [("c", "3"), ("d", "4")]))
+        with _Ctx(_db()), ps[0], ps[1], ps[2], ps[3]:
+            _run(both())
+        times = [t for _uid, t in sent]
+        self.assertEqual(len(times), 4)
+        self.assertTrue(all(b - a >= 3 for a, b in zip(times, times[1:])), times)
 
     def test_people_are_not_held_up_behind_each_other(self):
         db = _world()
@@ -1132,7 +1196,7 @@ class ThePacing(unittest.TestCase):
             _tick(None, THU_7)
         sends = [e[1] for e in events if e[0] == "send"]
         self.assertEqual(sends.count("u_admin"), 2)
-        self.assertIn(("sleep", 3), events)
+        self.assertTrue(any(e[0] == "sleep" and e[1] > 2.9 for e in events), events)
         # The PM's brief went out while the admin's was pacing, not after it.
         last_admin = len(sends) - 1 - sends[::-1].index("u_admin")
         self.assertLess(sends.index("u_pm"), last_admin)

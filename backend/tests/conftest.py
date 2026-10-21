@@ -114,6 +114,9 @@ def _reset_shared_state():
     gap = getattr(server, "BRIEF_SEND_GAP_SECONDS", None)
     if gap is not None:
         server.BRIEF_SEND_GAP_SECONDS = 0
+        # Per-person pacing state: each test (its own event loop) starts clean.
+        server._BRIEF_LAST_SEND.clear()
+        server._BRIEF_SEND_LOCKS.clear()
     yield
     if gap is not None:
         server.BRIEF_SEND_GAP_SECONDS = gap

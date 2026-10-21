@@ -703,7 +703,8 @@ def job_severity(job: Dict[str, Any]) -> Tuple:
 
 def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
                      own: Optional[Dict[str, List[str]]] = None,
-                     max_jobs: Optional[int] = MAX_JOB_MESSAGES) -> List[Tuple[str, str]]:
+                     max_jobs: Optional[int] = MAX_JOB_MESSAGES,
+                     already: Optional[Iterable[str]] = None) -> List[Tuple[str, str]]:
     """[(part, text)]: one message per job with something to say (part: the
     job's id), then at most one more (part REST). jobs: [{id, label, items,
     today, you, waiting, check, headcount, uses_checkins, later}] in display
@@ -720,7 +721,9 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
     More than `max_jobs` job messages: only the `max_jobs` most severe
     (job_severity) are kept, in the order above, and the last message says
     "+N more jobs — reply 'brief all'" (its own message, part MORE, when
-    there is no other last message). max_jobs=None: every job ("brief all")."""
+    there is no other last message). max_jobs=None: every job ("brief all").
+    `already`: parts sent today by another way ("brief all" before the
+    morning); a cut job among them is not counted in "+N more"."""
     day = header(now_utc)
     msgs: List[Tuple[Tuple, str, str]] = []
     quiet = []
@@ -740,7 +743,9 @@ def compose_messages(now_utc: datetime, jobs: List[Dict[str, Any]],
     cut = 0
     if max_jobs is not None and len(msgs) > max_jobs:
         keep = sorted(msgs, key=lambda m: job_severity(jobs[m[3]]))[:max_jobs]
-        cut = len(msgs) - len(keep)
+        kept = {m[1] for m in keep}
+        done = set(already or ())
+        cut = sum(1 for m in msgs if m[1] not in kept and m[1] not in done)
         msgs = keep
     msgs.sort(key=lambda m: m[0])
     out = [(part, text) for _k, part, text, _j in msgs]
