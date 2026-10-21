@@ -403,6 +403,10 @@ def brief_status_text(log: Optional[Dict[str, Any]], ledger: Optional[Dict[str, 
         log["reason"] = {"failed": "send_failed", "sending": "send_failed",
                          "skipped_shabbos": "shabbos"}.get(lst)
     if status in ("sent", "resent"):
+        # A stored time has no zone (Mongo): it is UTC. Never the machine's
+        # own zone -- on an Eastern PC 8:03 AM ET read as "12:03 PM".
+        if isinstance(at, datetime) and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
         t = _fmt(at.astimezone(NY), "%-I:%M %p") if isinstance(at, datetime) else ""
         return f"{which} went out" + (f" at {t}." if t else ".")
     if status == "failed":

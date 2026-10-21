@@ -306,6 +306,20 @@ class BriefStatus(unittest.TestCase):
             text = _run(server._brief_status_for("u_admin", None, THU_7 + timedelta(hours=3)))
         self.assertEqual(text, "Today's brief went out at 7:05 AM.")
 
+    def test_a_stored_time_is_utc_on_any_machine(self):
+        # Oct 20: sent 8:03:50 AM ET, stored naive (Mongo) -- shown as "12:03 PM"
+        # on an Eastern machine, which read it in its own zone.
+        sent = datetime(2026, 10, 20, 12, 3, 50)                       # naive UTC, as stored
+        now = datetime(2026, 10, 20, 14, 0, tzinfo=timezone.utc)
+        with patch.dict(os.environ, {"TZ": "America/New_York"}):
+            if hasattr(__import__("time"), "tzset"):
+                __import__("time").tzset()
+            text = wa_facts.brief_status_text({"status": "sent", "at": sent}, None,
+                                              {"brief_time": "08:00"}, now, date(2026, 10, 20))
+        if hasattr(__import__("time"), "tzset"):
+            __import__("time").tzset()
+        self.assertEqual(text, "Today's brief went out at 8:03 AM.")
+
     def test_no_record_is_never_a_guess(self):
         s = {"brief_time": "07:00"}
         text = wa_facts.brief_status_text(None, None, s, WED, WED.astimezone(NY).date())
