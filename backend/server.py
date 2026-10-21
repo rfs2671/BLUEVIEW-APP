@@ -16444,8 +16444,10 @@ async def get_projects_dob_summary(
                 }},
                 # open = resolution_state NOT in the closed set. null /
                 # absent counts as open (conservative for compliance).
+                # The same rule as wa_alerts.open_dob_violations (the
+                # morning brief, the DM assistant's facts).
                 {"$match": {"resolution_state": {
-                    "$nin": ["certified", "dismissed", "paid", "resolved"]}}},
+                    "$nin": list(wa_alerts.RESOLVED_STATES)}}},
                 {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
             ],
             "open_complaints": [
@@ -42036,7 +42038,7 @@ def _normalize_dob_date_to_iso(raw):
     return None
 
 
-_CLOSED_RESOLUTION_STATES = ("certified", "dismissed", "paid", "resolved")
+_CLOSED_RESOLUTION_STATES = wa_alerts.RESOLVED_STATES
 
 
 def _swo_resolution_state(rec: dict) -> str:
@@ -47074,7 +47076,6 @@ async def _quiet_queue_job() -> None:
 
 GC_PROPOSAL_TTL_HOURS = 72
 GC_MAX_POSTS_PER_PROJECT_RUN = 5
-_GC_CLOSED_STATES = ("certified", "dismissed", "paid", "resolved")
 
 
 async def _company_main_admin(company_id: Any) -> Optional[dict]:
@@ -51056,8 +51057,15 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "project_id": pid,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000)
+    items = wa_brief.job_items(rows, since, now, dot_rows, synced)
+    # Mondays: the job's open violations too, once a week; a record already
+    # a 🔴 New line today is not listed twice.
+    open_lines = (wa_brief.open_items(rows, dot_rows, wa_gc.today_et(now),
+                                      skip={i["record"] for i in items if i.get("record")},
+                                      synced=synced)
+                  if wa_brief.is_review_day(now) else [])
     return {"id": pid, "label": wa_assistant.street_label(project),
-            "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
+            "items": items, "open": open_lines,
             **await _brief_follow_ups(pid, company_id, now, me),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
@@ -53795,13 +53803,12 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
     try:
         rows = await db.dob_logs.find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "record_type": {"$in": ["violation", "permit"]},
+            "record_type": {"$in": ["violation", "swo", "permit"]},
             "is_deleted": {"$ne": True}}).to_list(2000)
         latest = _gc_latest_per_record(rows)
         week_ago = now - timedelta(days=7)
-        open_v = [r for r in latest if r.get("record_type") == "violation"
-                  and str(r.get("resolution_state") or "").lower()
-                  not in _GC_CLOSED_STATES]
+        # The app's rule (wa_alerts.open_dob_violations): stop-work orders count.
+        open_v = wa_alerts.open_dob_violations(rows)
 
         def _when(r):
             v = r.get("detected_at")
