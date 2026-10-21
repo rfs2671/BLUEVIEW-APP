@@ -1251,11 +1251,11 @@ def data_notes(rep: Dict[str, Any], logs: List[dict], checkins: List[dict], work
         verb = "was" if len(left) == 1 else "were"
         out.append(f"{len(left)} DOB record{'s' if len(left) != 1 else ''} for another building {verb} left out "
                    f"({parts}); this project's BIN is {', '.join(reg.get('bins') or []) or 'unknown'}. They are listed "
-                   "in the report's stored snapshot for review; if they belong to this site, add the BIN to the project.")
+                   "in the report's stored snapshot for review.")
     if reg.get("bins_inferred"):
         out.append("Records filed under BIN " + ", ".join(reg["bins_inferred"]) + " are included because their jobs also "
                    "appear under this project's BIN " + ", ".join(reg.get("bins") or []) + " (one DOB job can cover more than "
-                   "one building of a lot); add the BIN to the project to confirm it.")
+                   "one building of a lot).")
     if reg.get("bin_unverified"):
         out.append(f"{reg['bin_unverified']} DOB record row{'s' if reg['bin_unverified'] != 1 else ''} carry no building "
                    "number (BIN), so whether they belong to this site could not be checked; they are included.")
