@@ -30,7 +30,9 @@ a blank line between sections, an empty section left out --
       item's stored summary ("Send calcs — ⚠️ 2 days late"); the quote is
       for search and the app
   Waiting on others: what they asked someone else for, and open punch per
-      assignee ("Chris: 4 punch items (oldest 2 days)")
+      assignee ("Chris: 4 punch items (oldest 2 days)"); punch assigned to
+      the recipient is under You ("3 punch items (oldest 2 days)"). Punch
+      counts only items of walks sent live, never a shadow walk's.
   Today / Later this week: Upcoming events, today's under Today
 
 A last short message holds the recipient's own reminders, the quiet jobs
@@ -449,28 +451,57 @@ def _age(d: date, today: date) -> str:
     return "today" if n <= 0 else f"{n} day{'s' if n != 1 else ''}"
 
 
-def punch_sections(rows: Iterable[Dict[str, Any]], today: date
+def sent_punch(r: Dict[str, Any]) -> bool:
+    """The item really went out: its walk was sent live. A walk sent while
+    the project's "Punch sends" was shadow (the default) stores its items
+    with send_mode "shadow" -- open, but nobody was ever told about them --
+    so no brief counts them (server.py stores send_mode on each row when
+    the walk is sent)."""
+    return r.get("send_mode") == "live"
+
+
+def _punch_day(r: Dict[str, Any], today: date) -> date:
+    at = r.get("assigned_at") or r.get("created_at")
+    if isinstance(at, datetime):
+        return local_now(at if at.tzinfo else at.replace(tzinfo=timezone.utc)).date()
+    return today
+
+
+def punch_sections(rows: Iterable[Dict[str, Any]], today: date,
+                   me: Optional[Dict[str, Any]] = None
                    ) -> Tuple[Dict[str, List[date]], List[str]]:
     """Open punch per assignee ({name: [assigned days]}), and the Check
-    line: '• 1 punch item ready to check'."""
+    line: '• 1 punch item ready to check'. Only items of walks sent live
+    (sent_punch); the recipient's own items (`me`) are theirs to do, not
+    waited on (own_punch_lines)."""
     by: Dict[str, List[date]] = {}
     ready = 0
     for r in rows:
+        if not sent_punch(r):
+            continue
         st = r.get("status")
         if st == "ready_to_check":
             ready += 1
             continue
-        if st != "open":
+        if st != "open" or (me and is_me(r.get("assignee"), me)):
             continue
         who = ((r.get("assignee") or {}).get("name") or "").strip() or "Unassigned"
-        at = r.get("assigned_at") or r.get("created_at")
-        if isinstance(at, datetime):
-            d = local_now(at if at.tzinfo else at.replace(tzinfo=timezone.utc)).date()
-        else:
-            d = today
-        by.setdefault(who, []).append(d)
+        by.setdefault(who, []).append(_punch_day(r, today))
     check = [f"• {ready} punch item{'s' if ready != 1 else ''} ready to check"] if ready else []
     return by, check
+
+
+def own_punch_lines(rows: Iterable[Dict[str, Any]], today: date,
+                    me: Dict[str, Any]) -> List[str]:
+    """The You line for open punch assigned to the recipient (by user id,
+    or their WhatsApp number): ['• 3 punch items (oldest 2 days)']."""
+    days = [_punch_day(r, today) for r in rows
+            if sent_punch(r) and r.get("status") == "open" and is_me(r.get("assignee"), me)]
+    if not days:
+        return []
+    n, age = len(days), _age(min(days), today)
+    return [f"• {n} punch item{'s' if n != 1 else ''} "
+            + (f"(oldest {age})" if n > 1 else f"({age})")]
 
 
 def waiting_lines(tasks: List[Tuple[Tuple, str, str]], punch: Dict[str, List[date]],

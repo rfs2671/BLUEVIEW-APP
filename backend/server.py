@@ -51079,7 +51079,8 @@ async def _brief_since(user_id: str, now: datetime) -> datetime:
 async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
                             me: Optional[dict]) -> dict:
     """The job's You / Waiting on others / Check lines: items due today,
-    late or ASAP that `me` owns or asked for, and its punch. A read that
+    late or ASAP that `me` owns or asked for, and its punch (`me`'s own
+    under You, everyone else's under Waiting on others). A read that
     fails leaves its lines out."""
     today = wa_brief.local_now(now).date()
     you, tasks, by_person, check = [], [], {}, []
@@ -51093,10 +51094,14 @@ async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
         except Exception as e:
             logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
     try:
+        # Only walks sent live: a shadow walk's items (send_mode "shadow",
+        # stored on each row when the walk is sent) never reached anyone.
         rows = await db[punch.COLLECTION].find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
-        by_person, check = wa_brief.punch_sections(rows, today)
+            "status": {"$in": ["open", "ready_to_check"]}, "send_mode": "live"}).to_list(2000)
+        by_person, check = wa_brief.punch_sections(rows, today, me)
+        if me:
+            you = you + wa_brief.own_punch_lines(rows, today, me)
     except Exception as e:
         logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
     return {"you": you, "waiting": wa_brief.waiting_lines(tasks, by_person, today),

@@ -713,10 +713,15 @@ def _att(_id, quote, due_at, owner=None, requester=None, sender="17185550101",
     return row
 
 
-def _punch_row(seq, name, status="open", days_ago=0):
+def _punch_row(seq, name, status="open", days_ago=0, send_mode="live", walk_id="w_live",
+               assignee=None):
+    """A punch item as a walk's send stores it: send_mode "live" (sent) or
+    "shadow" (shown to the walker, sent to no one)."""
     return {"_id": f"{THOMAS}:P-588-{seq}", "pid": f"P-588-{seq}", "seq": seq,
             "company_id": CO_A, "project_id": THOMAS, "status": status,
-            "assignee": {"kind": "sender_map", "id": name, "name": name} if name else None,
+            "assignee": assignee or ({"kind": "sender_map", "id": name, "name": name}
+                                     if name else None),
+            "walk_id": walk_id, "send_mode": send_mode,
             "assigned_at": MON_8 - timedelta(days=days_ago)}
 
 
@@ -816,6 +821,68 @@ class FollowUps(unittest.TestCase):
             "• Chris: 1 punch item (today)"]), brief)
         self.assertNotIn("other company", brief)
         self.assertNotIn("I'll send the calcs Sunday", brief)     # the summary, not the quote
+
+
+class PunchShadowAndOwn(unittest.TestCase):
+    """Meilich (the admin) got "Meilich: 47 punch items" under Waiting on
+    others: the 47 were walk 6a868363's, sent in shadow mode (to no one),
+    and assigned to him. A shadow walk's items are in no punch line; the
+    recipient's own are under You."""
+
+    ME = {"user_id": "u_admin", "digits": {ADMIN_PHONE[-10:]}}
+    MINE = {"kind": "user", "id": "u_admin", "name": "Ana Admin"}
+
+    def _brief(self, rows):
+        db = _db()
+        db[server.punch.COLLECTION].rows.extend(rows)
+        _optin(db, "u_admin", ADMIN_PHONE)
+        with _Ctx(db) as c:
+            _tick(c, MON_8)
+        return "\n\n".join(_texts(c))
+
+    def test_shadow_walk_items_are_in_no_punch_line(self):
+        rows = [_punch_row(i, None, send_mode="shadow", walk_id="6a868363", assignee=self.MINE)
+                for i in range(1, 48)]
+        rows += [_punch_row(100 + i, "Chris Lopez", send_mode="shadow", walk_id="6a868363")
+                 for i in range(3)]
+        rows.append(_punch_row(200, "Chris Lopez", status="ready_to_check",
+                               send_mode="shadow", walk_id="6a868363"))
+        rows.append(_punch_row(201, "Chris Lopez", send_mode=None, walk_id="6a868363"))
+        by, check = wa_brief.punch_sections(rows, date(2026, 10, 12), self.ME)
+        self.assertEqual((by, check), ({}, []))
+        self.assertEqual(wa_brief.own_punch_lines(rows, date(2026, 10, 12), self.ME), [])
+        lines = self._brief(rows).split("\n")
+        self.assertEqual([ln for ln in lines if "punch item" in ln], [])
+        self.assertNotIn("⏳ *Waiting on others*", lines)
+        self.assertNotIn("✅ *You*", lines)
+        self.assertNotIn("🔍 *Check*", lines)
+
+    def test_my_items_on_a_sent_walk_are_under_you(self):
+        rows = [_punch_row(1, None, days_ago=2, assignee=self.MINE),
+                _punch_row(2, None, assignee=self.MINE),
+                # by WhatsApp number: a People entry carrying the recipient's jid
+                _punch_row(3, None, assignee={"kind": "sender_map", "id": "sm_1",
+                                              "name": "Ana A", "jid": f"{ADMIN_PHONE}@c.us"}),
+                _punch_row(4, "Chris Lopez", days_ago=1)]
+        by, _ = wa_brief.punch_sections(rows, date(2026, 10, 12), self.ME)
+        self.assertEqual(wa_brief.waiting_lines([], by, date(2026, 10, 12)),
+                         ["• Chris: 1 punch item (1 day)"])
+        self.assertEqual(wa_brief.own_punch_lines(rows, date(2026, 10, 12), self.ME),
+                         ["• 3 punch items (oldest 2 days)"])
+        self.assertIn("\n".join([
+            "*Mon Oct 12* · *588 Thomas S Boyland St*", "",
+            "✅ *You*",
+            "• 3 punch items (oldest 2 days)",
+            "",
+            "⏳ *Waiting on others*",
+            "• Chris: 1 punch item (1 day)"]), self._brief(rows))
+
+    def test_someone_elses_items_on_a_sent_walk_stay_waiting(self):
+        rows = [_punch_row(1, "Yeyzmar B Bate", days_ago=1), _punch_row(2, "Yeyzmar B Bate")]
+        lines = self._brief(rows).split("\n")
+        self.assertIn("⏳ *Waiting on others*", lines)
+        self.assertIn("• Yeyzmar: 2 punch items (oldest 1 day)", lines)
+        self.assertNotIn("✅ *You*", lines)
 
 
 NO_CI = wa_brief.NO_CHECKINS
