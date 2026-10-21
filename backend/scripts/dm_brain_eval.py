@@ -570,8 +570,12 @@ async def main_async(a) -> int:
         print("  (none: is `railway link` on the production environment and the backend service?)")
     numbered = list(enumerate(rows, 1))
     if a.pick:
-        want = {int(x) for x in a.pick.split(",") if x.strip().isdigit()}
+        # "30,31,32,37" -- or "30 31 32 37", what PowerShell makes of an
+        # unquoted 30,31,32,37.
+        want = {int(x) for x in re.split(r"[,\s]+", a.pick) if x.isdigit()}
         numbered = [(i, r) for i, r in numbered if i in want]
+        if want and not numbered:
+            print(f"  --pick {a.pick!r}: none of {sorted(want)} is between 1 and {len(rows)}")
     cache: dict = {}
     print(f"Fixed cases ({len(FIXED_CASES)}) on {', '.join(models)} …", flush=True)
     fixed = await _fixed(server, rows, cache, a.email, models)
