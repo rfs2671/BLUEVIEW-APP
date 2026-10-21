@@ -127,8 +127,25 @@ table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px
 """
 
 
+#: Record numbers of the report being rendered (summonses, permits): they print
+#: as filed, never as a scrubbed phone number. Set by render_html.
+_KEEP: frozenset = frozenset()
+
+
+def _record_numbers(reps: List[Dict[str, Any]]) -> frozenset:
+    out = set()
+    for rep in reps:
+        reg = rep.get("regulatory") or {}
+        for lst in ("swo_active", "open", "swo_lifted", "issued", "changed", "expiring"):
+            for r in reg.get(lst) or []:
+                out.add(str(r.get("number") or ""))
+                out.update(str(m) for m in r.get("members") or [])
+    out.discard("")
+    return frozenset(out)
+
+
 def _e(v: Any) -> str:
-    return html.escape(base.no_phone(v))
+    return html.escape(base.no_phone(v, _KEEP))
 
 
 def _tag(src: str, ref: str = "") -> str:
@@ -611,6 +628,8 @@ def render_html(reps: List[Dict[str, Any]], *, gc: str = "", title: str = "", no
     """The PDF's HTML: per job the executive overview first, then the sections
     that have something to say (progress, schedule, photographs, workforce,
     regulatory, financial) and the basis page."""
+    global _KEEP
+    _KEEP = _record_numbers(reps)
     images = images or {}
     head = f"{reps[0]['job']} · {reps[0]['period']}" if len(reps) == 1 else title
     css = (CSS.replace('"HEADER"', '"' + head.replace('"', "'") + '"')

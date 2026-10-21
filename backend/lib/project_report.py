@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from lib import attendance as att
@@ -61,8 +61,13 @@ _PHONE = re.compile(r"(?<![\w*])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d
                     r"|\+\d[\d\s().-]{8,}\d")
 
 
-def no_phone(text: Any) -> str:
-    return _PHONE.sub("[number]", " ".join(str(text or "").split()))
+def no_phone(text: Any, keep: Iterable[str] = ()) -> str:
+    """`text` with phone numbers replaced. `keep`: numbers that are RECORDS, not
+    phones, and print as filed: a 10-digit OATH summons (0704345557) matches the
+    phone pattern and printed as "[number]" on the first live-DOT report."""
+    kept = {str(k) for k in keep or () if k}
+    return _PHONE.sub(lambda m: m.group(0) if m.group(0) in kept else "[number]",
+                      " ".join(str(text or "").split()))
 
 
 def _d(v: Any) -> Optional[date]:

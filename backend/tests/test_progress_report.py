@@ -784,3 +784,32 @@ class RealDataRound2(unittest.TestCase):
                "b": {"ok": True, "kind": "progress", "score": 8, "work": "framing"}}
         review = P.photo_review([c, {**c, "key": "b"}], ver, [])
         self.assertEqual(len(review), 1)
+
+
+class ARecordNumberIsNotAPhoneNumber(unittest.TestCase):
+    """The first live-DOT report printed three OATH summonses as "DOT summons
+    [number]": a 10-digit ticket number matches the phone pattern."""
+
+    def report_with_summons(self):
+        from datetime import datetime, timezone
+        seen = datetime(2026, 9, 29, tzinfo=timezone.utc)
+        row = {"_id": "t1", "record_type": "dot_violation", "raw_id": "oath:0704345557", "number": "0704345557",
+               "issue_date": "2026-09-29", "status": "NEW ISSUANCE", "detected_at": seen,
+               "status_history": [{"status": "NEW ISSUANCE", "at": seen, "source": "first_seen"}]}
+        rows = F.unified_rows(schedule=False)
+        rows["dot_rows"] = list(rows["dot_rows"]) + [row]
+        return F.report(**{k: rows[k] for k in ("dot_rows",)})
+
+    def test_the_summons_number_prints_as_filed_everywhere(self):
+        r = self.report_with_summons()
+        html = RR.render_html([r], gc=F.GC, title="t", now=F.NOW, images={})
+        self.assertIn("0704345557", html)
+        self.assertNotIn("DOT summons [number]", html)
+        self.assertNotIn("DOT summons\n[number]", html)
+
+    def test_a_phone_number_in_free_text_is_still_scrubbed(self):
+        from lib import project_report as base
+        self.assertEqual(base.no_phone("call 718-555-0123 now"), "call [number] now")
+        self.assertEqual(base.no_phone("ticket 0704345557", keep=["0704345557"]), "ticket 0704345557")
+        self.assertEqual(base.no_phone("ticket 0704345557 or 7185550123", keep=["0704345557"]),
+                         "ticket 0704345557 or [number]")

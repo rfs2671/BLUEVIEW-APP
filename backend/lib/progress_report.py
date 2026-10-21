@@ -1091,7 +1091,7 @@ def risks(rep: Dict[str, Any]) -> List[Dict[str, Any]]:
     if opens:
         out.append({"level": "high", "src": "R", "ref": ",".join(r["id"] for r in opens[:5]),
                     "refs": [r["id"] for r in opens[:3]],
-                    "text": f"{_n(len(opens), 'DOB/DOT violation or complaint')} open: "
+                    "text": f"{_n(len(opens), 'DOB/DOT violation or complaint', 'DOB/DOT violations or complaints')} open: "
                     + _join([f"{r['kind']} {r['number']}".strip() for r in opens[:3]])
                     + (f" and {len(opens) - 3} more" if len(opens) > 3 else "") + "."})
     soon = [p for p in reg["expiring"] if p["expires"] and (p["expires"] - rep["end"]).days <= 30]
@@ -1181,7 +1181,7 @@ def overview(rep: Dict[str, Any]) -> List[str]:
             bits.append(f"{_n(len(reg['swo_active']), 'stop work or vacate order')} active")
         others = [r for r in reg["open"] if r["id"] not in {x["id"] for x in reg["swo_active"]}]
         if others:
-            bits.append(f"{_n(len(others), 'DOB/DOT violation or complaint')} open")
+            bits.append(f"{_n(len(others), 'DOB/DOT violation or complaint', 'DOB/DOT violations or complaints')} open")
         if reg["issued"]:
             bits.append(f"{_n(len(reg['issued']), 'record')} issued in the period")
         out.append("Regulatory — " + (_join(bits) if bits else
