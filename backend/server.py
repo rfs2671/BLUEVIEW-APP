@@ -51641,7 +51641,7 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     # A verdict is cached under the JUDGE'S VERSION: the group-photo flow shares
     # this collection with another prompt and shape, and an older report verdict
     # (progress / other only) would pass a photo of stacked materials.
-    ckey = f"report-v2:{key}"
+    ckey = f"report-v3:{key}"
     try:
         cached = await db[REPORT_PHOTO_VERDICTS].find_one({"_id": ckey})
     except Exception:

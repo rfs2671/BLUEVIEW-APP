@@ -230,6 +230,22 @@ async def dot_probe(server, project):
                                     f"hearing {log.get('hearing_date')} | {str(log.get('description') or '')[:70]}")
         lines.append(f"{q['dataset']} {q['kind']}: {', '.join(['returned', str(len(recs))])} rows, matched {len(hits)}")
         lines += ["   " + h for h in hits]
+        if q["kind"] == "dot_violation":
+            # every returned row on the street (old or new name) or at 588 in Brooklyn,
+            # RAW fields, so a row the matcher rejected can be seen and explained
+            for rec in recs:
+                if not isinstance(rec, dict):
+                    continue
+                st = str(rec.get("violation_location_street_name") or "").upper()
+                near = ("HOPKINSON" in st or "BOYLAND" in st
+                        or (str(rec.get("violation_location_house") or "").strip() == pk.get("house")
+                            and dot_sync.boro_code(rec.get("violation_location_borough")) == pk.get("boro")))
+                if near:
+                    lines.append("   NEAR " + " | ".join(f"{k}={rec.get(k)}" for k in (
+                        "ticket_number", "violation_date", "violation_location_borough", "violation_location_house",
+                        "violation_location_street_name", "violation_location_block_no", "violation_location_lot_no",
+                        "hearing_status", "hearing_result", "penalty_imposed", "total_violation_amount",
+                        "paid_amount", "balance_due", "issuing_agency")) + f" | matched={dot_sync.match(q['kind'], pk, rec)}")
     return "\n".join(lines) + "\n"
 
 
