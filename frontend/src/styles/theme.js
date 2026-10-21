@@ -28,6 +28,17 @@ const _dark = {
     cardHover:       'rgba(36, 55, 70, 0.96)',
   },
 
+  // The card AURA: a very thin rim and a soft halo in the website's steel blue, so a card reads as floating above the
+  // ground instead of outlined on it. On navy the halo is a pale blue light with no offset (a dark shadow is invisible
+  // there); on paper it is the same blue as a soft shadow that sits a little below the card. Read by src/styles/aura.js.
+  aura: {
+    rim:     'rgba(140, 186, 222, 0.24)',
+    color:   '#78ACD6',
+    opacity: 0.18,
+    radius:  10,
+    offset:  { width: 0, height: 0 },
+  },
+
   shadow: {
     color:   'rgba(0, 0, 0, 0.25)',
     offset:  { width: 0, height: 2 },
@@ -138,6 +149,14 @@ const _light = {
     card:            'rgba(255, 255, 255, 0.96)',
     cardHover:       'rgba(242, 243, 240, 0.98)',
     cardGradientEnd: 'rgba(255, 255, 255, 0.96)',
+  },
+
+  aura: {
+    rim:     'rgba(69, 140, 181, 0.18)',
+    color:   '#458CB5',
+    opacity: 0.20,
+    radius:  10,
+    offset:  { width: 0, height: 4 },
   },
 
   shadow: {
@@ -351,14 +370,15 @@ export const outdoor = {
   scrim: 'rgba(21, 26, 29, 0.72)',
 };
 
-// The soft diffuse card shadow, from _light.shadow + GlassCard's elevation.
-// Spread as a style object so a consumer cannot get half of it.
+// The card aura of the light theme (_light.aura), so the pinned-light surfaces float the same way the rest of the
+// app's cards do; the elevation is the one src/styles/aura.js gives Android. Spread as a style object so a consumer
+// cannot get half of it.
 export const outdoorShadow = {
-  shadowColor: 'rgba(21, 26, 29, 0.08)',
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.12,
-  shadowRadius: 8,
-  elevation: 6,
+  shadowColor: '#458CB5',
+  shadowOffset: { width: 0, height: 4 },
+  shadowOpacity: 0.20,
+  shadowRadius: 10,
+  elevation: 4,
 };
 
 // ─── Touch targets ───────────────────────────────────────────────────────────

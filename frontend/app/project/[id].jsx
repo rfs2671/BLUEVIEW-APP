@@ -78,6 +78,7 @@ import { isValidBin } from '../../src/utils/bin';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
+import { auraRim, auraShadow } from '../../src/styles/aura';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -1899,8 +1900,8 @@ function buildStyles(colors, isDark) {
     width: '47%',
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
+    ...auraRim(colors),
+    ...auraShadow(colors, undefined, { translucent: true }),
     padding: spacing.md,
     alignItems: 'flex-start',
     gap: spacing.md,

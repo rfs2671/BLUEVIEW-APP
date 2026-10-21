@@ -5,25 +5,52 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
+import { auraShadow, auraRim } from '../styles/aura';
 
 /**
- * Platform shadow helper.
+ * A card's caller-supplied style, split between the two views a card is now drawn with. The OUTER view places the card
+ * (margins, position, size, flex) and, on iOS, casts the aura: an iOS shadow is clipped away by `overflow: 'hidden'` on
+ * the same view, so the shadow cannot live on the view that rounds and clips the card's layers. The INNER view keeps
+ * everything else exactly as the single view had it (padding, fill, radius overrides, alignment) and keeps the clip.
  */
-function glassShadow() {
-  if (!colors.shadow) return {};
-  const s = colors.shadow;
-  if (Platform.OS === 'web') {
-    return {
-      boxShadow: `${s.offset.width}px ${s.offset.height}px ${s.radius}px ${s.color}`,
-    };
-  }
-  return {
-    shadowColor:   s.color,
-    shadowOffset:  s.offset,
-    shadowOpacity: s.opacity,
-    shadowRadius:  s.radius,
-    elevation:     6,
-  };
+const OUTER_KEYS = new Set([
+  'margin', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight', 'marginHorizontal', 'marginVertical',
+  'marginStart', 'marginEnd', 'position', 'top', 'bottom', 'left', 'right', 'start', 'end', 'zIndex',
+  'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight',
+  'flex', 'flexGrow', 'flexShrink', 'flexBasis', 'alignSelf', 'aspectRatio', 'display', 'transform', 'opacity',
+]);
+// The inner view must take the outer one's vertical size so the clip still falls where it did on the single view.
+// A NUMBER is copied (a maxHeight of 300 keeps clipping at 300); a percentage cannot be (it would be a percentage of
+// the outer view), so the inner view grows and shrinks to fill instead, as does any card the caller flexes.
+const HEIGHT_KEYS = ['height', 'minHeight', 'maxHeight'];
+const FLEX_KEYS = ['flex', 'flexGrow', 'flexBasis', 'aspectRatio'];
+
+export function splitCardStyle(style) {
+  const flat = StyleSheet.flatten(style) || {};
+  const outer = {};
+  const inner = {};
+  Object.keys(flat).forEach((k) => {
+    if (OUTER_KEYS.has(k)) outer[k] = flat[k];
+    else inner[k] = flat[k];
+  });
+  let fill = FLEX_KEYS.some((k) => outer[k] !== undefined);
+  HEIGHT_KEYS.forEach((k) => {
+    if (typeof outer[k] === 'number') inner[k] = outer[k];
+    else if (outer[k] !== undefined) fill = true;
+  });
+  if (fill) { inner.flexGrow = 1; inner.flexShrink = 1; }
+  return { outer, inner };
+}
+
+/**
+ * The aura's shadow half, per view. The inner (clipping) view carries it on web and Android, where a clip does not
+ * remove a view's own shadow and Android's elevation needs the painted view; the outer view carries it on iOS.
+ */
+function innerAura(colors) {
+  return Platform.OS === 'ios' ? {} : auraShadow(colors);
+}
+function outerAura(colors) {
+  return Platform.OS === 'ios' ? auraShadow(colors) : {};
 }
 
 /* ── Gradient presets ─────────────────────────────────────────────────────────
@@ -79,16 +106,18 @@ export const GlassCard = ({
     ? (isDark ? MODAL_DARK_GRADIENT : MODAL_LIGHT_GRADIENT)
     : (isDark ? DARK_GRADIENT : LIGHT_GRADIENT);
 
+  const { outer, inner } = splitCardStyle(style);
+
   return (
     <CardWrapper
       {...cardProps}
       style={[
-        styles.cardContainer,
-        glassShadow(),
-        style,
+        outer,
+        outerAura(colors),
         isHovered && hoverEffect && styles.cardHovered,
       ]}
     >
+     <View style={[styles.cardContainer, innerAura(colors), inner]}>
       {/* The fill sits ABOVE the frost (it used to sit under it). expo-blur's web view applies saturate(180%) to everything
           behind it, which pushed the card's fill toward a saturated blue; drawn on top, the fill keeps the exact tone the
           palette names while the frost still shows through it. */}
@@ -129,6 +158,7 @@ export const GlassCard = ({
           isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
         ]}
       />
+     </View>
     </CardWrapper>
   );
 };
@@ -155,19 +185,26 @@ export const StatCard = ({ children, style, onPress }) => {
 
   const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
 
+  const { outer, inner } = splitCardStyle(style);
+
   return (
     <CardWrapper
       {...cardProps}
       style={[
-        isDark ? styles.statDark : styles.statLight,
-        glassShadow(),
-        style,
-        isHovered && {
-          ...(isDark && { borderColor: colors.glass.borderHover }),
-          transform: [{ scale: 1.03 }, { translateY: -4 }],
-        },
+        outer,
+        outerAura(colors),
+        isHovered && { transform: [{ scale: 1.03 }, { translateY: -4 }] },
       ]}
     >
+     <View
+      style={[
+        styles.statCard,
+        auraRim(colors),
+        innerAura(colors),
+        inner,
+        isHovered && { borderColor: colors.glass.borderHover },
+      ]}
+     >
       <LinearGradient
         colors={gradientColors}
         start={{ x: 0.5, y: 0 }}
@@ -175,6 +212,7 @@ export const StatCard = ({ children, style, onPress }) => {
         style={StyleSheet.absoluteFillObject}
       />
       <View style={styles.statPadded}>{children}</View>
+     </View>
     </CardWrapper>
   );
 };
@@ -226,8 +264,9 @@ export const GlassListItem = ({
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
-        isDark ? styles.listItemDark : styles.listItemLight,
-        glassShadow(),
+        styles.listItem,
+        auraRim(colors),
+        innerAura(colors),
         isHovered && {
           ...(isDark && { borderColor: colors.glass.borderHover }),
           transform: [{ scale: 1.01 }, { translateY: -2 }],
@@ -304,8 +343,7 @@ function buildStyles(colors, isDark) {
   borderOverlay: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: borderRadius.xxl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
+    ...auraRim(colors),
     pointerEvents: 'none',
     transition: 'all 0.2s ease',
   },
@@ -314,14 +352,7 @@ function buildStyles(colors, isDark) {
   },
 
   /* ── StatCard ───────────────────────────────────────────────────────────── */
-  statDark: {
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    overflow: 'hidden',
-    transition: 'all 0.2s ease',
-  },
-  statLight: {
+  statCard: {
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     transition: 'all 0.2s ease',
@@ -340,14 +371,7 @@ function buildStyles(colors, isDark) {
   },
 
   /* ── GlassListItem ─────────────────────────────────────────────────────── */
-  listItemDark: {
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    overflow: 'hidden',
-    transition: 'all 0.2s ease',
-  },
-  listItemLight: {
+  listItem: {
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
     transition: 'all 0.2s ease',
