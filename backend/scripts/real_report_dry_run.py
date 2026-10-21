@@ -198,6 +198,41 @@ async def bin_analysis(server, project):
     return "\n".join(lines) + "\n"
 
 
+async def bin_probe(server, project):
+    """For the project's BIN and every other BIN its stored DOB records mention:
+    what NYC Open Data holds for that BIN NOW (the sync's own BIN requests, no
+    address passes), and which of those records are NOT stored for the project.
+    A building whose filings exist but never reached the project shows here.
+    Read-only."""
+    from lib import report_regulatory as RG
+    pid = str(project.get("_id"))
+    rows = await server.db.dob_logs.find({"project_id": pid, "is_deleted": {"$ne": True}}).to_list(20000)
+    stored = {str(r.get("raw_dob_id") or "") for r in rows}
+    bins = sorted({str(project.get("nyc_bin") or "")} | {str(RG.row_bin(r) or "") for r in rows} - {""})
+    lines = [f"BINs asked about: {', '.join(bins)}", ""]
+    for b in bins:
+        try:
+            recs = await server._query_dob_apis(b, "")
+        except Exception as e:
+            lines.append(f"BIN {b}: request failed ({type(e).__name__}: {e})")
+            continue
+        missing = []
+        types = set()
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            types.add(str(rec.get("_record_type") or "?"))
+            # the key the sync stores it under (see _poll in server.py)
+            key = str(rec.get(rec.get("_id_field", "unique_key"), ""))
+            if rec.get("_record_type") == "permit" and rec.get("_collapsed_permit_id"):
+                key = f"permit:{rec.get('_collapsed_permit_id')}"
+            if key and key not in stored and not any(x.startswith(key) for x in stored):
+                missing.append(f"{rec.get('_record_type') or '?'} {key}")
+        lines.append(f"BIN {b}: record types returned: {', '.join(sorted(types)) or 'none'}")
+        lines.append(f"   not stored for this project: {'; '.join(missing[:30]) or 'none'}")
+    return "\n".join(lines) + "\n"
+
+
 def _soda_get(dataset, params):
     import urllib.parse
     import urllib.request
@@ -327,6 +362,9 @@ async def main(args):
     with open(os.path.join(out, "progress_report_real.dot_probe.txt"), "w", encoding="utf-8") as f:
         f.write(await dot_probe(server, project))
     print("wrote progress_report_real.dot_probe.txt")
+    with open(os.path.join(out, "progress_report_real.bin_probe.txt"), "w", encoding="utf-8") as f:
+        f.write(await bin_probe(server, project))
+    print("wrote progress_report_real.bin_probe.txt")
     photos = got["photos"]
     photo_lines = [f"{x.get('sub')} | {x.get('date')} | {x.get('where') or ''} | sees: {x.get('work')} | "
                    f"{x.get('caption')}" for x in photos]
