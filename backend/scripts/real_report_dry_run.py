@@ -230,6 +230,22 @@ async def bin_probe(server, project):
                 missing.append(f"{rec.get('_record_type') or '?'} {key}")
         lines.append(f"BIN {b}: record types returned: {', '.join(sorted(types)) or 'none'}")
         lines.append(f"   not stored for this project: {'; '.join(missing[:30]) or 'none'}")
+    # what the sync's site-BIN step adds on top of the project's own BIN: the records
+    # filed under the building's other BINs, from the same code the sync now runs
+    own = str(project.get("nyc_bin") or "")
+    try:
+        first = await server._query_dob_apis(own, project.get("address") or "")
+        more = await server._with_site_bins(pid, own, first, {})
+        added = []
+        for rec in more[len(first):]:
+            key = str(rec.get(rec.get("_id_field", "unique_key"), ""))
+            if rec.get("_record_type") == "permit" and rec.get("_collapsed_permit_id"):
+                key = f"permit:{rec.get('_collapsed_permit_id')}"
+            added.append(f"{rec.get('_record_type') or '?'} {key}" + ("" if key in stored else " (not stored yet)"))
+        lines += ["", "THE SYNC NOW ALSO FETCHES (records under the site's other BINs): "
+                  + ("; ".join(added[:60]) or "nothing")]
+    except Exception as e:
+        lines += ["", f"site-BIN step failed: {type(e).__name__}: {e}"]
     return "\n".join(lines) + "\n"
 
 

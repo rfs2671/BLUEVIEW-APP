@@ -108,6 +108,7 @@ from lib import upcoming  # noqa: E402
 from lib import wa_alerts  # noqa: E402
 from lib import status_history as status_hist  # noqa: E402
 from lib import dot_sync  # noqa: E402
+from lib import dob_site_bins  # noqa: E402
 from lib import source_sync  # noqa: E402
 from lib import wa_react  # noqa: E402
 from lib import wa_contact  # noqa: E402
@@ -42992,6 +42993,30 @@ def _plan_in_place_refresh(existing: dict, dob_log: dict, now: datetime):
     return update, changed, legacy
 
 
+async def _with_site_bins(project_id: str, nyc_bin: str, records: list,
+                          answered: Optional[Dict[str, bool]] = None) -> list:
+    """`records` plus everything filed under the job site's OTHER building BINs
+    (lib/dob_site_bins). A BIN counts only when one of its jobs is also a job
+    under the project's BIN; a neighbour's BIN is never fetched. Never raises: a
+    failure leaves the sync exactly as it was."""
+    try:
+        if not nyc_bin or _is_placeholder_bin(nyc_bin):
+            return records
+        added: list = []
+        for cand in dob_site_bins.candidate_bins(records, nyc_bin):
+            found = await _query_dob_apis(cand, "", answered)
+            if dob_site_bins.shares_job(records, nyc_bin, found, cand):
+                added += dob_site_bins.new_records(list(records) + added, found)
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} is part of the site "
+                            f"(shares a job with BIN {nyc_bin}); {len(found)} records")
+            else:
+                logger.info(f"[dob-sync] project {project_id}: BIN {cand} shares no job with BIN {nyc_bin}; not fetched")
+        return list(records) + added
+    except Exception as e:
+        logger.warning(f"[dob-sync] site BINs skipped for project {project_id}: {type(e).__name__}")
+        return records
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
@@ -43059,6 +43084,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
             & set(source_sync.DOB_SOURCES))
 
     raw_records = await _query_dob_apis(nyc_bin, project_address, answered)
+    raw_records = await _with_site_bins(project_id, nyc_bin, raw_records, answered)
 
     # --- BIN auto-heal ---
     # Scan returned records for a real BIN. DOB's datasets expose the
