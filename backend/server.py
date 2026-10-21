@@ -50397,23 +50397,40 @@ async def _waapi_contact_phone(jid: str) -> str:
     return ""
 
 
-DM_START_HINT_SECONDS = 24 * 3600
-
-
 async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
     """A DM from someone not using the assistant: True only when the number
-    is an eligible Admin / PM's own profile phone and they had no hint in the
-    last day. Everyone else is not answered at all (no "for admins only"
-    line telling a stranger this is a bot)."""
-    if await _dm_state_get("start_hint", chat):
-        return False
+    is ONE eligible Admin / PM's own profile phone (a shared number is
+    refused by START too), the number never opted in or out (STOP stays
+    silent), and today's hint is claimed here -- an insert keyed by number
+    and day, so a redelivered webhook can't send it twice. Everyone else is
+    not answered at all (no "for admins only" line telling a stranger this
+    is a bot). Codex on #838."""
     phone = await _resolve_dm_phone(chat, raw)
     if not phone:
         return False
-    users = [u for u in await _find_users_by_phone(phone) if wa_dm.is_dm_eligible(u)]
-    if not users:
+    users = await _find_users_by_phone(phone)
+    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
         return False
-    await _dm_state_set("start_hint", chat, DM_START_HINT_SECONDS)
+    digits = wa_dm.phone_digits(chat)
+    try:
+        if await db[WA_OPTINS].find_one(
+                {"$or": [{"phone": {"$in": _contact_phone_variants(phone)}},
+                         {"chat_digits": digits}]}, {"_id": 1}):
+            return False                     # opted out (or in another way): no hint
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    day = wa_brief.local_now(now).date().isoformat()
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[_DM_STATE].insert_one({
+            "_id": f"start_hint|{digits}|{day}", "kind": "start_hint", "group_id": digits,
+            "sender": "", "created_at": now, "expires_at": now + timedelta(days=1)})
+    except DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[wa-dm] start hint claim failed: {type(e).__name__}")
+        return False
     return True
 
 

@@ -146,6 +146,31 @@ class WhoMayUseIt(_Harness, unittest.TestCase):
         self.assertEqual(sent, [wa_assistant.START_HINT_TEXT])         # once, not per message
         self.assertEqual(self.agent_calls, [])
 
+    def test_no_hint_for_a_shared_number_or_after_stop(self):
+        """Codex on #838: START refuses a number on two people, and STOP means
+        quiet -- neither gets "Text START"."""
+        db = _db()
+        admin = next(u for u in db.users.rows if u["_id"] == "u_admin")
+        db.users.rows.append(dict(admin, _id="u_twin", name="Twin"))
+        with _Ctx(db=db) as c:
+            self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
+        db = _db()
+        db[server.WA_OPTINS].rows.append({"_id": "o_stop", "phone": ADMIN_PHONE, "user_id": "u_admin",
+                                          "status": "opted_out", "chat_digits": ADMIN_PHONE})
+        with _Ctx(db=db) as c:
+            self._send(c, f"{ADMIN_PHONE}@c.us", "who's on site", mid="D3")
+            self.assertEqual([p for p in c.wire.calls if "message" in p], [])
+
+    def test_the_daily_hint_is_claimed_once(self):
+        """Codex on #838: two deliveries racing -- one claim, one hint."""
+        db = _db()
+        with _Ctx(db=db):
+            async def both():
+                return await asyncio.gather(server._dm_start_hint_due(f"{ADMIN_PHONE}@c.us"),
+                                            server._dm_start_hint_due(f"{ADMIN_PHONE}@c.us"))
+            self.assertEqual(sorted(_run(both())), [False, True])
+
     def test_a_changed_profile_phone_fails_closed(self):
         db = _db()
         _optin(db, "u_admin", ADMIN_PHONE)
