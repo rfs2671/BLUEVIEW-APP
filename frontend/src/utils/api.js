@@ -932,6 +932,16 @@ export const dropboxAPI = {
     return response.data;
   },
 
+  // A 120-second link to one stored file, signed for this account. The bearer
+  // token rides in the header of THIS request only; the link it returns
+  // carries no token. `{ url }` is absolute, joined to the API base the app
+  // already talks to.
+  signedUrl: async (fileId) => {
+    const response = await apiClient.get(`/api/files/${encodeURIComponent(fileId)}/signed-url`);
+    const data = response.data || {};
+    return { ...data, url: data.path ? `${API_BASE_URL}${data.path}` : data.url };
+  },
+
   uploadFile: async (projectId, formData) => {
     // Web:   axios auto-sets `multipart/form-data; boundary=...` when the body
     //        is a browser FormData, BUT only if the header is absent. Our default

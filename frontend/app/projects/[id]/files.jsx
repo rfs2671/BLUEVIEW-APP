@@ -79,6 +79,13 @@ import { semantic, chrome, withAlpha } from '../../../src/styles/semanticColors'
 import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
+import { useT } from '../../../src/i18n';
+import {
+  openSignedDownload, startNativeDownload, shareDownloadedFile,
+} from '../../../src/utils/fileDownload';
+import {
+  downloadSource, downloadFraction, signedUrlErrorKey,
+} from '../../../src/utils/fileDownloadPlan';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
@@ -226,6 +233,9 @@ export default function ProjectFilesScreen() {
   const [uploading, setUploading] = useState(false);
   const [fileToDelete, setFileToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // The one native download in flight: { name, written, expected, cancel }.
+  const [download, setDownload] = useState(null);
+  const tDl = useT('fileDownload');
   // 'ok' | 'offline' | 'error'. This screen used to swallow the failure with
   // `.catch(() => [])`, which rendered a silent blank plan list.
   const [fetchState, setFetchState] = useState('ok');
@@ -808,39 +818,78 @@ export default function ProjectFilesScreen() {
     }
   };
 
+  // ── DOWNLOAD NEVER PUTS A TOKEN IN A URL ───────────────────────────────
+  //
+  // This used to build `/content?token=` from window.localStorage. A phone
+  // has no window.localStorage, so the token was empty and the browser opened
+  // on {"detail":"Not authenticated"}; on the web it worked by putting the
+  // 30-day session token in the address bar. See fileDownloadPlan.js.
   const handleDownloadFile = async (file) => {
-    // Downloading hands a REMOTE url to the OS — there is nothing to hand it
-    // offline, cached bytes or not. Don't dead-end the tap.
-    if (offline) {
-      toast.info('Not available offline', 'Downloads need a connection. Reconnect and try again.');
+    if (Platform.OS === 'web') {
+      if (offline) {
+        toast.info(tDl('offlineTitle'), tDl('offlineBody'));
+        return;
+      }
+      try {
+        const source = downloadSource(file);
+        if (source === 'stored') {
+          // A 120-second link signed for this account, opened in a new tab.
+          await openSignedDownload(file.id || file._id, { attachment: true });
+        } else if (source === 'dropbox') {
+          // Dropbox's own short-lived link; it never carried our token.
+          const res = await dropboxAPI.getFileUrl(projectId, file.path);
+          if (!res?.url) throw Object.assign(new Error('notStored'), { code: 'notStored' });
+          await Linking.openURL(res.url);
+        } else {
+          toast.error(tDl('failTitle'), tDl('notStored'));
+        }
+      } catch (error) {
+        toast.error(tDl('failTitle'), tDl(error?.code || signedUrlErrorKey(error)));
+      }
       return;
     }
+
+    // NATIVE: bytes to the device with the token in a HEADER, then the share
+    // sheet. A plan already saved for offline is shared from disk, so this is
+    // not refused offline up front.
+    if (download) return;
+    const job = startNativeDownload({
+      file,
+      projectId,
+      onProgress: (written, expected) =>
+        setDownload((d) => (d ? { ...d, written, expected } : d)),
+    });
+    setDownload({
+      name: file.name, written: 0, expected: Number(file?.size) || null, cancel: job.cancel,
+    });
     try {
-      // Direct-upload files carry their download URL on the record itself;
-      // only fall back to the Dropbox temp-link endpoint for synced files.
-      let url = file.directUrl || file.r2_url || null;
-      if (url && url.startsWith('/')) {
-        const tok = (typeof window !== 'undefined' && window.localStorage)
-          ? window.localStorage.getItem('blueview_token')
-          : null;
-        const base = process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
-        url = base + url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok || '');
-      }
-      if (!url && file.path) {
-        const res = await dropboxAPI.getFileUrl(projectId, file.path);
-        url = res?.url;
-      }
-      if (url) {
-        await Linking.openURL(url);
-        toast.success('Download', 'File download started');
-      } else {
-        toast.error('Error', 'No download URL available for this file');
+      const { uri } = await job.promise;
+      setDownload(null);
+      if (!(await shareDownloadedFile(uri, file))) {
+        toast.info(tDl('failTitle'), tDl('shareUnavailable'));
       }
     } catch (error) {
-      console.error('Failed to download:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not download file');
+      setDownload(null);
+      const code = error?.code || 'failBody';
+      if (code === 'cancelled') toast.info(tDl('downloading'), tDl('cancelled'));
+      else if (code === 'network' && offline) toast.info(tDl('offlineTitle'), tDl('offlineBody'));
+      else toast.error(tDl('failTitle'), tDl(code));
     }
   };
+
+  const downloadMeta = () => {
+    if (!download) return '';
+    const frac = downloadFraction(download.written, download.expected);
+    if (frac === null) {
+      return tDl('progressUnknown').replace('{done}', String(megabytes(download.written)));
+    }
+    return tDl('progress')
+      .replace('{pct}', String(Math.round(frac * 100)))
+      .replace('{total}', String(megabytes(download.expected)));
+  };
+  const downloadPct = download
+    ? downloadFraction(download.written, download.expected)
+    : null;
 
   // Opens the themed confirmation modal. Actual delete happens in confirmDeleteFile().
   const handleDeleteFile = (file) => {
@@ -1405,6 +1454,37 @@ export default function ProjectFilesScreen() {
           onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
         />
 
+        {/* NATIVE DOWNLOAD — progress and a way out. The backdrop does not
+            dismiss it: closing the sheet must not leave a transfer running
+            that nobody can see. Cancel (or the back button) stops it. */}
+        <Modal
+          visible={!!download}
+          transparent
+          animationType="fade"
+          onRequestClose={() => download?.cancel?.()}
+        >
+          <View style={s.modalOverlay}>
+            <View style={s.modalBackdrop} />
+            <GlassCard style={s.pickerCard}>
+              <Text style={s.pickerTitle}>{tDl('downloading')}</Text>
+              <Text style={s.dlName} numberOfLines={1}>{download?.name || ''}</Text>
+              <View style={s.dlTrack}>
+                {downloadPct === null ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <View style={[s.dlFill, { width: `${Math.round(downloadPct * 100)}%` }]} />
+                )}
+              </View>
+              <Text style={s.dlMeta}>{downloadMeta()}</Text>
+              <GlassButton
+                title={tDl('cancel')}
+                onPress={() => download?.cancel?.()}
+                accessibilityLabel={tDl('cancel')}
+              />
+            </GlassCard>
+          </View>
+        </Modal>
+
         {/* ── FOLDER PICKER ─────────────────────────────────────────────
             PICKER ONLY, NO TYPED PATH. Nobody types a Dropbox path, and the
             one who tries types it wrong -- the old free-text field on
@@ -1652,6 +1732,29 @@ function buildStyles(colors, isDark) {
   pickerCard: {
     padding: spacing.lg,
     maxHeight: '80%',
+  },
+  dlName: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  dlTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    backgroundColor: withAlpha(colors.text.primary, 0.12),
+  },
+  dlFill: {
+    height: 8,
+    backgroundColor: colors.primary,
+  },
+  dlMeta: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
   },
   pickerHeader: {
     flexDirection: 'row',

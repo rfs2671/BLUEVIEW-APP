@@ -2044,4 +2044,24 @@ export default {
     deniedBody: 'Owner, admin or CP access required',
   },
 
+  // ── Download button (Plans & Files) and the web viewer's open-in-browser ──
+  // Keys named by fileDownloadPlan.signedUrlErrorKey and fileDownload.js's
+  // error codes are looked up by those names; keep them in step.
+  fileDownload: {
+    downloading: 'Downloading',
+    progress: '{pct}% of {total} MB',
+    progressUnknown: '{done} MB so far',
+    cancel: 'Cancel',
+    failTitle: 'Download failed',
+    failBody: 'The file could not be downloaded. Try again.',
+    network: 'The connection dropped before the file finished. Try again with a better signal.',
+    noAccess: 'You do not have access to this file.',
+    notStored: 'This file is not available for download yet. It may still be syncing.',
+    cancelled: 'Download cancelled.',
+    popupBlocked: 'Your browser blocked the download tab. Allow pop-ups for Levelog and try again.',
+    shareUnavailable: 'This device has no share option for files.',
+    offlineTitle: 'Not available offline',
+    offlineBody: 'This file is not saved on this device. Reconnect and try again.',
+  },
+
 };
