@@ -356,8 +356,19 @@ def discover(db, company_id: str) -> SimpleNamespace:
     # GROUPS: bound to it, pending with it, or seen on its group messages.
     s.group_rows = list(db.whatsapp_groups.find(
         ours, {"wa_group_id": 1, "group_name": 1, "project_id": 1, "company_id": 1}))
+    # Pending groups with no company yet belong to whoever added the bot, by
+    # phone (server._pending_visible_query) -- this company's when one of its
+    # people added it, unless that phone is also another company's person.
+    user_phones: Set[str] = {v for u in users for v in digit_variants(u.get("phone"))}
+    if user_phones:
+        for u in db.users.find({"phone": {"$exists": True, "$nin": [None, ""]},
+                                "company_id": {"$nin": s.cvals}}, {"phone": 1}):
+            user_phones -= set(digit_variants(u.get("phone")))
+    added_by = sorted(user_phones | {"+" + p for p in user_phones})
     s.pending_rows = list(db.whatsapp_pending_groups.find(
-        {"company_id": {"$in": s.cvals}}, {"group_id": 1, "group_name": 1}))
+        _or({"company_id": {"$in": s.cvals}},
+            {"company_id": None, "added_by_phone": {"$in": added_by}}),
+        {"group_id": 1, "group_name": 1}))
     wa: Set[str] = {str(g.get("wa_group_id")) for g in s.group_rows if g.get("wa_group_id")}
     wa |= {str(g.get("group_id")) for g in s.pending_rows if g.get("group_id")}
     for m in db.whatsapp_messages.find({"company_id": {"$in": s.cvals},
@@ -538,6 +549,8 @@ def run(db, write: bool, args) -> int:
     prefs_n = _count(raw_db, "notification_preferences", pflt)
     print(f"  {'notification_preferences':32s} {prefs_n:6d}  $unset whatsapp_project."
           f"{{{','.join(PREF_FIELDS)}}} (rows kept)")
+    failed_counts = [c for c, n in counted.items() if n < 0] + (
+        ["notification_preferences"] if prefs_n < 0 else [])
     if not getattr(args, "include_global_debug", False):
         dbg = ", ".join(f"{c} {_count(raw_db, c, {})}" for c in GLOBAL_DEBUG)
         print(f"\nGlobal debug logs, no company link — NOT wiped: {dbg}.\n"
@@ -568,6 +581,13 @@ def run(db, write: bool, args) -> int:
         print("\nDRY RUN — nothing was written. Re-run with --i-know --reason \"...\" "
               "--session <id> to apply.")
         return OK
+
+    # 0. A count that failed is an unknown scope: stop before anything is
+    # left, deleted or unset (a dry run already printed it).
+    if failed_counts:
+        print(f"FAILED: could not count {', '.join(failed_counts)} — nothing was written. "
+              "Re-run when the database answers.")
+        return FAILED
 
     # 1. Leave the groups. Every leave is tried; any failure stops the run.
     if getattr(args, "leave_groups", False):

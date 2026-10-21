@@ -602,6 +602,47 @@ class TheFailures(unittest.TestCase):
         self.assertIn("MISMATCH", out)
 
 
+class CodexOn835(unittest.TestCase):
+    """Codex on #835: a failed count stops the run before any write; a pending
+    group with no company yet, added by one of the company's people, is its."""
+
+    def test_a_failed_count_writes_nothing(self):
+        db = _world()
+        before = db.snapshot()
+        real = _Coll.count_documents
+
+        def flaky(self, flt):
+            if self is db.whatsapp_send_log:
+                raise RuntimeError("count refused")
+            return real(self, flt)
+        with patch.object(_Coll, "count_documents", flaky):
+            code, out, _, _ = _run(db, True)
+        self.assertEqual(code, w.FAILED)
+        self.assertIn("could not count whatsapp_send_log", out)
+        self.assertEqual(db.snapshot(), before)
+
+    def test_an_unresolved_pending_group_added_by_its_person_is_in_scope(self):
+        db = _world()
+        mine, stranger, shared = ("120363000000004444@g.us", "120363000000005555@g.us",
+                                  "120363000000006666@g.us")
+        db.whatsapp_pending_groups.rows += [
+            {"_id": "pu_a", "group_id": mine, "company_id": None, "status": "pending",
+             "added_by_phone": "15550100001", "group_name": "Unresolved A"},
+            {"_id": "pu_x", "group_id": stranger, "company_id": None, "status": "pending",
+             "added_by_phone": "15550107777", "group_name": "Someone else"},
+            {"_id": "pu_s", "group_id": shared, "company_id": None, "status": "pending",
+             "added_by_phone": "15550100003", "group_name": "Shared person"}]
+        s = w.discover(db, CO_A)
+        self.assertIn(mine, s.groups)
+        self.assertNotIn(stranger, s.groups)
+        self.assertNotIn(shared, s.groups)          # that phone is also B's person
+        code, _out, _, _ = _run(db, True)
+        self.assertEqual(code, w.OK)
+        left = _ids(db, "whatsapp_pending_groups")
+        self.assertNotIn("pu_a", left)
+        self.assertTrue({"pu_x", "pu_s", "pb"} <= left)
+
+
 class LeavingGroups(unittest.TestCase):
 
     def test_off_by_default(self):
