@@ -228,7 +228,10 @@ _NUM_RE = re.compile(r"(?<![\w.])\d+(?:[:.,]\d+)*(?![\w])")
 # "321234567-01" (a dash and more digits after it).
 _PHONE_RE = re.compile(
     r"(?<![\w-])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\w-])"
-    r"|(?<![\w-])\+?1?\d{10}(?![\d-])")
+    r"|(?<![\w-])\+?1?\d{10}(?![\d-])"
+    # International, written with its "+": "+44 20 7946 0958", "+972-54-123-4567",
+    # "+972541234567" (8-15 digits). A permit number has no "+".
+    r"|(?<![\w+])\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}(?![\w-])")
 
 
 def _norm_num(s: str) -> str:

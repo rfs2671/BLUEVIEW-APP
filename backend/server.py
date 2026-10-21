@@ -56429,7 +56429,11 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
         except ReportSourceUnavailable:
             return REPORT_UNAVAILABLE
         if not await _send_report_media(dm_chat, doc, caption=_report_message(doc)):
+            # The PDF could not be attached: the link / app text went instead.
             await send_whatsapp_message(dm_chat, _report_message(doc, attached=False))
+            ctx["sent"].append("[report link]")
+            return (f"The PDF could NOT be attached; sent the report's summary with a link instead, for "
+                    f"{names}, {label}. Say so plainly -- don't say the PDF was attached.")
         ctx["sent"].append("[report]")
         return f"Sent the report PDF for {names}, {label}, with this summary on it:\n{_report_message(doc)}"
     if name == "propose_change":
@@ -56491,6 +56495,10 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
     return f"Unknown tool {name}."
 
 
+#: Tools that send something: one of each (same arguments) per turn.
+_DM_BRAIN_SENDS = ("send_sheet", "send_report", "resend_my_brief")
+
+
 def _dm_usage(usage: dict, resp: Any, model: str, started: float) -> None:
     """Add one model call's tokens, cost (DeepInfra's estimated_cost, when it
     sends one) and time to the turn's totals."""
@@ -56531,6 +56539,7 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     sources = [system] + [m["content"] for m in messages if isinstance(m.get("content"), str)]
     retries, deflects, calls, last_text, missing = 0, 0, 0, "", []
     cuts, claimed, yous = 0, 0, 0
+    done_sends: set = set()
     budget = dm_brain.MAX_TOKENS
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
 
@@ -56569,6 +56578,15 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
             for tc in asked:
                 calls += 1
                 name = tc.function.name
+                if name in _DM_BRAIN_SENDS:
+                    # The same send twice in one turn goes out once.
+                    key = (name, " ".join(str(tc.function.arguments or "").lower().split()))
+                    if key in done_sends:
+                        out = "Already done in this turn -- not sent again."
+                        trace.append({"tool": name, "args": {}, "result": out, "duplicate": True})
+                        msgs.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+                        continue
+                    done_sends.add(key)
                 try:
                     args = json.loads(tc.function.arguments or "{}")
                     if not isinstance(args, dict):
@@ -56769,11 +56787,11 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         usage=out.get("usage"),
         verify_retries=out.get("retries"), unverified=out.get("unverified") or None,
         stop=out.get("stop"), deflect_retries=out.get("deflect_retries") or None,
-        tools_tried=out.get("tools_tried") or [],
+        tools_tried=_dm_redact(out.get("tools_tried") or []),
         **({"draft": _dm_redact(out["draft"])} if out.get("draft") else {}))
     if out.get("cant_answer"):
         # Every "can't answer" is logged with the tools it tried (rule 3).
-        logger.info(f"[dm-brain] cant_answer tools={out.get('tools_tried')}")
+        logger.info(f"[dm-brain] cant_answer tools={_dm_redact(out.get('tools_tried') or [])}")
     if heard and message_id and out.get("used_job"):
         try:
             await db.whatsapp_voice_events.update_one(

@@ -462,6 +462,63 @@ class TheFlashFixes(_Brain):
         self.assertEqual(seen[-1], False)                            # and stopped
 
 
+class TheCodexFindings(_Brain):
+    """Codex on #824 (9cdc3e6)."""
+
+    def test_tools_tried_are_logged_without_phone_numbers(self):
+        llm = FakeLLM(resp(use("propose_change", {"action": "add_person", "name": "Jose",
+                                                  "phone": "+1 718-555-0123", "job": "588"})),
+                      resp(text("Save Jose on 588? Reply yes.")))
+        with _Ctx(db=self.db) as c:
+            self.say(c, "add jose 718 555 0123 to 588", llm)
+        row = self.db[server.DM_ANSWERS].rows[-1]
+        self.assertNotIn("555-0123", json.dumps(row["tools_tried"]))
+        self.assertTrue(row["tools_tried"][0].startswith("propose_change("))
+
+    def test_the_same_send_twice_goes_once(self):
+        sent = []
+
+        async def exec_(ctx, name, args):
+            sent.append(name)
+            ctx["sent"].append("[sheet]")
+            return "Sent the image of SSP-011.00 to them."
+        llm = FakeLLM(resp(use("send_sheet", {"job": "588", "sheet": "SSP-011.00"}, "a"),
+                           use("send_sheet", {"job": "588", "sheet": "SSP-011.00"}, "b"),
+                           use("send_sheet", {"job": "588", "sheet": "SSP-012.00"}, "c")),
+                      resp(text("Sent SSP-011.00 and SSP-012.00.")))
+        with _Ctx(db=self.db) as c, patch.object(server, "_dm_brain_exec", exec_):
+            self.say(c, "show me both", llm)
+        self.assertEqual(sent, ["send_sheet", "send_sheet"])            # 011 once, 012 once
+        self.assertIn("Already done in this turn", json.dumps(llm.calls[1]["messages"][-2:]))
+
+    def test_a_report_that_could_not_be_attached_says_so(self):
+        doc = {"_id": "r1", "job": "588", "period": "September"}
+
+        async def build(*a, **k):
+            return doc
+
+        async def media(*a, **k):
+            return False
+
+        def check(kw):
+            res = last_tool_results(kw)[0]
+            self.assertIn("could NOT be attached", res)
+            self.assertNotIn("Sent the report PDF", res)
+            return resp(text("Couldn't attach the PDF — sent you the summary and a link instead."))
+        llm = FakeLLM(resp(use("send_report", {"jobs": ["588"], "period": "September"})), check)
+        with _Ctx(db=self.db) as c, patch.object(server, "build_project_report", build), \
+                patch.object(server, "_send_report_media", media), \
+                patch.object(server, "_report_message", lambda d, attached=True: "588 · September"):
+            out = self.say(c, "september report", llm)
+        self.assertEqual(out[-1], "Couldn't attach the PDF — sent you the summary and a link instead.")
+
+    def test_international_numbers_are_redacted(self):
+        for t in ("+44 20 7946 0958", "+972-54-123-4567", "+972541234567"):
+            self.assertEqual(dm_brain.redact_phones(f"call {t}"), "call [number]", t)
+        for t in ("Permit 321234567-01-EW", "B23173802-S5", "ECB #39556258Y", "P-588-1"):
+            self.assertEqual(dm_brain.redact_phones(t), t)
+
+
 class TheWalkthrough(_Brain):
     def test_photo_talk_goes_to_the_brain_not_a_regex(self):
         q = ("I'm going to show you some pictures, I need to do a checklist, it's not going to be "
