@@ -16446,8 +16446,10 @@ async def get_projects_dob_summary(
                 }},
                 # open = resolution_state NOT in the closed set. null /
                 # absent counts as open (conservative for compliance).
+                # The same rule as wa_alerts.open_dob_violations (the
+                # morning brief, the DM assistant's facts).
                 {"$match": {"resolution_state": {
-                    "$nin": ["certified", "dismissed", "paid", "resolved"]}}},
+                    "$nin": list(wa_alerts.RESOLVED_STATES)}}},
                 {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
             ],
             "open_complaints": [
@@ -42038,7 +42040,7 @@ def _normalize_dob_date_to_iso(raw):
     return None
 
 
-_CLOSED_RESOLUTION_STATES = ("certified", "dismissed", "paid", "resolved")
+_CLOSED_RESOLUTION_STATES = wa_alerts.RESOLVED_STATES
 
 
 def _swo_resolution_state(rec: dict) -> str:
@@ -47076,7 +47078,6 @@ async def _quiet_queue_job() -> None:
 
 GC_PROPOSAL_TTL_HOURS = 72
 GC_MAX_POSTS_PER_PROJECT_RUN = 5
-_GC_CLOSED_STATES = ("certified", "dismissed", "paid", "resolved")
 
 
 async def _company_main_admin(company_id: Any) -> Optional[dict]:
@@ -50398,6 +50399,46 @@ async def _waapi_contact_phone(jid: str) -> str:
     return ""
 
 
+async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
+    """A DM from someone not using the assistant: True only when the number
+    is ONE eligible Admin / PM's own profile phone (a shared number is
+    refused by START too), the number never opted in or out (STOP stays
+    silent), and today's hint is claimed here -- an insert keyed by number
+    and day, so a redelivered webhook can't send it twice. Everyone else is
+    not answered at all (no "for admins only" line telling a stranger this
+    is a bot). Codex on #838."""
+    phone = await _resolve_dm_phone(chat, raw)
+    if not phone:
+        return False
+    users = await _find_users_by_phone(phone)
+    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+        return False
+    digits = wa_dm.phone_digits(chat)
+    # The same keys STOP writes: the chat, the phone, and the person.
+    keys = [{"phone": phone}, {"user_id": str(users[0].get("_id") or "")}]
+    if digits:
+        keys += [{"phone": digits}, {"chat_digits": digits}]
+    keys = [k for k in keys if all(k.values())]
+    try:
+        if await db[WA_OPTINS].find_one({"$or": keys}, {"_id": 1}):
+            return False                     # opted out (or in another way): no hint
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    day = wa_brief.local_now(now).date().isoformat()
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[_DM_STATE].insert_one({
+            "_id": f"start_hint|{digits}|{day}", "kind": "start_hint", "group_id": digits,
+            "sender": "", "created_at": now, "expires_at": now + timedelta(days=1)})
+    except DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[wa-dm] start hint claim failed: {type(e).__name__}")
+        return False
+    return True
+
+
 async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
     """The sender's real phone digits, or '' when it cannot be known.
 
@@ -51085,7 +51126,8 @@ async def _brief_since(user_id: str, now: datetime,
 async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
                             me: Optional[dict]) -> dict:
     """The job's You / Waiting on others / Check lines: items due today,
-    late or ASAP that `me` owns or asked for, and its punch. A read that
+    late or ASAP that `me` owns or asked for, and its punch (`me`'s own
+    under You, everyone else's under Waiting on others). A read that
     fails leaves its lines out."""
     today = wa_brief.local_now(now).date()
     you, tasks, by_person, check = [], [], {}, []
@@ -51099,10 +51141,14 @@ async def _brief_follow_ups(pid: str, company_id: str, now: datetime,
         except Exception as e:
             logger.warning(f"[wa-brief] due items failed: {type(e).__name__}")
     try:
+        # Only walks sent live: a shadow walk's items (send_mode "shadow",
+        # stored on each row when the walk is sent) never reached anyone.
         rows = await db[punch.COLLECTION].find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "status": {"$in": ["open", "ready_to_check"]}}).to_list(2000)
-        by_person, check = wa_brief.punch_sections(rows, today)
+            "status": {"$in": ["open", "ready_to_check"]}, "send_mode": "live"}).to_list(2000)
+        by_person, check = wa_brief.punch_sections(rows, today, me)
+        if me:
+            you = you + wa_brief.own_punch_lines(rows, today, me)
     except Exception as e:
         logger.warning(f"[wa-brief] punch read failed: {type(e).__name__}")
     return {"you": you, "waiting": wa_brief.waiting_lines(tasks, by_person, today),
@@ -51147,8 +51193,15 @@ async def _brief_job(project: dict, company_id: str, since: datetime,
         "project_id": pid,
         "company_id": _company_id_filter(company_id),
     }).to_list(2000)
+    items = wa_brief.job_items(rows, since, now, dot_rows, synced)
+    # Mondays: the job's open violations too, once a week; a record already
+    # a 🔴 New line today is not listed twice.
+    open_lines = (wa_brief.open_items(rows, dot_rows, wa_gc.today_et(now),
+                                      skip={i["record"] for i in items if i.get("record")},
+                                      synced=synced)
+                  if wa_brief.is_review_day(now) else [])
     return {"id": pid, "label": wa_assistant.street_label(project),
-            "items": wa_brief.job_items(rows, since, now, dot_rows, synced),
+            "items": items, "open": open_lines,
             **await _brief_follow_ups(pid, company_id, now, me),
             "headcount": wa_brief.headcount_line(checkins),
             "uses_checkins": bool(checkins) or await _brief_uses_checkins(
@@ -53993,13 +54046,12 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
     try:
         rows = await db.dob_logs.find({
             "project_id": pid, "company_id": _company_id_filter(company_id),
-            "record_type": {"$in": ["violation", "permit"]},
+            "record_type": {"$in": ["violation", "swo", "permit"]},
             "is_deleted": {"$ne": True}}).to_list(2000)
         latest = _gc_latest_per_record(rows)
         week_ago = now - timedelta(days=7)
-        open_v = [r for r in latest if r.get("record_type") == "violation"
-                  and str(r.get("resolution_state") or "").lower()
-                  not in _GC_CLOSED_STATES]
+        # The app's rule (wa_alerts.open_dob_violations): stop-work orders count.
+        open_v = wa_alerts.open_dob_violations(rows)
 
         def _when(r):
             v = r.get("detected_at")
@@ -54009,6 +54061,13 @@ async def _dm_job_facts(company_id: str, project: dict, now: datetime,
         lines.append(f"  open violations: {len(open_v)}; new in the last 7 days: {len(new_v)}")
         for r in new_v[:5]:
             facts = wa_gc.violation_facts(r)
+            if r.get("record_type") == "swo":
+                # A stop-work order keeps its number in its own field (Codex on #841).
+                num = str(r.get("stop_work_order_number") or r.get("violation_number") or "").strip()
+                lines.append(f"    new stop-work order {num or 'number not on record'} "
+                             f"issued {facts.get('violation_date', 'date not on record')}: "
+                             f"{facts.get('description', '')[:120]}")
+                continue
             lines.append(f"    new violation {facts.get('violation_number', '')} "
                          f"issued {facts.get('violation_date', 'date not on record')}: "
                          f"{facts.get('description', '')[:120]}")
@@ -73068,7 +73127,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if not parsed.get("has_image") or _punch_photo_caption_ref(
                     parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
-            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+            elif await _dm_start_hint_due(dm_chat, parsed.get("raw")):
+                await send_whatsapp_message(dm_chat, wa_assistant.START_HINT_TEXT)
             return
         # Opted in but never welcomed (START before the welcome existed):
         # welcomed now, once, and their message is still answered below.
