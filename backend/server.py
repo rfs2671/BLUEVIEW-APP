@@ -1958,6 +1958,13 @@ class RateLimiter:
         self._hits[key].append(now)
         return True
 
+    def recent(self, key: str) -> int:
+        """Hits for `key` inside the window, WITHOUT recording one. For a
+        limiter that counts only failures and must be read on every attempt."""
+        now = _time.time()
+        self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
+        return len(self._hits[key])
+
     def reset(self) -> None:
         """Clear all state. Used by tests; should not be called in
         production. Mirrors _FixedWindowCounter.reset in lib/rate_limits.py
@@ -29495,6 +29502,17 @@ _FILE_DOWNLOAD_SIG = re.compile(r"^[0-9a-f]{64}$")
 # is served whole (200), which every client must accept.
 _SINGLE_BYTE_RANGE = re.compile(r"^bytes=(\d+-\d*|-\d+)$")
 
+# REFUSED LINKS ARE COUNTED PER ADDRESS, GOOD ONES ARE NOT. A PDF viewer asks
+# one good link for many byte ranges, so a cap on every request would be tuned
+# against the user; a stream of forged or stale links is the shape worth
+# stopping. After this many refusals in a minute an address gets a 429 BEFORE
+# any signature is computed. A forged MAC is not reachable by guessing at any
+# rate -- this bounds the noise, not the odds. The per-address cap on all
+# requests to the route is the middleware's (lib/rate_limits.py).
+SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE = 20
+signed_download_refusal_limiter = RateLimiter(
+    max_requests=SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE, window_seconds=60)
+
 
 def _file_download_signature(file_id: str, kind: str, subject: str, exp: int) -> str:
     key = hmac.new(JWT_SECRET.encode(), _FILE_DOWNLOAD_KEY_LABEL,
@@ -29650,6 +29668,11 @@ _DOWNLOAD_REFUSAL_COPY = {
                 "Try again in a minute.",
                 "No se pudo obtener el archivo en este momento.",
                 "Inténtelo de nuevo en un minuto."),
+    "throttled": (429,
+                  "Too many download attempts from this connection.",
+                  "Wait a minute, then go back to Levelog and tap Download again.",
+                  "Demasiados intentos de descarga desde esta conexión.",
+                  "Espere un minuto, vuelva a Levelog y toque Descargar otra vez."),
 }
 
 
@@ -29683,8 +29706,16 @@ async def download_signed_file(file_id: str, request: Request,
     the link IS the credential, and it is checked here before anything else.
     Honours a single `Range`, so a PDF viewer can fetch the pages it needs.
     `dl=1` asks for an attachment instead of inline display."""
+    from lib.rate_limits import _client_ip
+    client_ip = _client_ip(request)
+    if signed_download_refusal_limiter.recent(client_ip) >= SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE:
+        logger.warning("[signed-download] throttled ip=%s", client_ip)
+        page = _download_refusal_page("throttled")
+        page.headers["Retry-After"] = "60"
+        return page
     reason = _check_file_download_signature(file_id, k, u, e, s)
     if reason:
+        signed_download_refusal_limiter.is_allowed(client_ip)  # records the refusal
         logger.info("[signed-download] refused file=%s reason=%s", file_id[:24], reason)
         return _download_refusal_page(reason)
     try:

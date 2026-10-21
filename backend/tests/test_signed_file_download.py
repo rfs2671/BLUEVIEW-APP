@@ -397,6 +397,55 @@ class TheQueryTokenIsStillAcceptedAndCounted(unittest.TestCase):
         self.assertEqual(lines, [])
 
 
+class RefusedLinksAreRateLimitedPerAddress(unittest.TestCase):
+    """Forged or stale links: 20 a minute per address, then 429 before any
+    MAC is computed. Good links are not counted -- a PDF viewer's ranges."""
+
+    def setUp(self):
+        server.signed_download_refusal_limiter.reset()
+
+    tearDown = setUp
+
+    def test_the_21st_refusal_from_one_address_is_429_and_storage_is_untouched(self):
+        cap = server.SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE
+
+        async def go(c, db, r2):
+            good = (await _link(c))["path"]
+            bad = _swap(good, "s", "0" * 64)
+            ip = {"X-Forwarded-For": "203.0.113.7"}
+            refused = [(await c.get(bad, headers=ip)).status_code for _ in range(cap)]
+            throttled = await c.get(bad, headers=ip)
+            # A GOOD link from the same address is throttled too: the cap is
+            # on the address, read before the signature.
+            good_after = await c.get(good, headers=ip)
+            other_ip = await c.get(good, headers={"X-Forwarded-For": "198.51.100.9"})
+            return refused, throttled, good_after, other_ip, len(r2.calls)
+        refused, throttled, good_after, other_ip, r2_calls = run(go)
+        self.assertEqual(refused, [403] * cap)
+        self.assertEqual(throttled.status_code, 429)
+        self.assertEqual(throttled.headers.get("retry-after"), "60")
+        self.assertIn("Too many download attempts", throttled.text)
+        self.assertIn("Demasiados intentos", throttled.text)
+        self.assertEqual(good_after.status_code, 429)
+        self.assertEqual(other_ip.status_code, 200, "another address is unaffected")
+        self.assertEqual(r2_calls, 1, "only the other address's good link reached storage")
+
+    def test_good_links_are_not_counted(self):
+        cap = server.SIGNED_DOWNLOAD_REFUSALS_PER_MINUTE
+
+        async def go(c, db, r2):
+            good = (await _link(c))["path"]
+            ip = {"X-Forwarded-For": "203.0.113.8", "Range": "bytes=0-9"}
+            return [(await c.get(good, headers=ip)).status_code for _ in range(cap + 5)]
+        self.assertEqual(run(go), [206] * (cap + 5))
+
+    def test_the_route_has_its_own_per_ip_bucket_in_the_middleware(self):
+        from lib import rate_limits
+        self.assertEqual(
+            rate_limits._match_rule("GET", f"/api/files/{FILE_A}/download"),
+            ("/api/files/{id}/download", "600/1 minute", "ip"))
+
+
 class TheRouteIsMountedOutsideTheAuthenticatedRouter(unittest.TestCase):
 
     def test_download_is_on_app_and_signed_url_on_the_api_router(self):

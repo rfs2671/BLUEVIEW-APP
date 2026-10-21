@@ -184,6 +184,18 @@ RATE_LIMITS: List[Tuple[str, str, str, str]] = [
     # the spend control, and it should not be tuned down to act as one.
     ("POST", "/api/whatsapp/webhook", "120/1 minute", "ip"),
 
+    # ── Signed file download (IP-scoped; the link IS the credential) ──
+    #
+    # It carries no bearer, so "user" would only ever downgrade to IP --
+    # named "ip" so the table says what it does. Its OWN bucket, not the
+    # __default__ one: a PDF viewer asks one link for many byte ranges, and
+    # those must not spend the allowance of every other unmatched route from
+    # the same address (an office or a site behind one NAT). 600/minute is a
+    # circuit breaker on storage egress, not a guess at a viewer's needs.
+    # Forged or stale links are capped far tighter, before any signature is
+    # computed, by signed_download_refusal_limiter in server.py.
+    ("GET", "/api/files/{id}/download", "600/1 minute", "ip"),
+
     # ── Admin (IP-scoped — should never get hit hard) ─────────────
     # /api/admin/_sentry_test gets its own tighter rule because it
     # raises by design and we don't want it abused into a
