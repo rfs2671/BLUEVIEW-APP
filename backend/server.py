@@ -3849,6 +3849,7 @@ from lib import plan_text  # noqa: E402
 from lib import plan_ocr  # noqa: E402
 from lib import plan_records  # noqa: E402
 from lib import plan_search  # noqa: E402
+from lib import plan_crop  # noqa: E402
 
 
 
@@ -57334,19 +57335,29 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
             title = page.get("sheet_title") or page.get("title") or ""
             if not page.get("page_jpeg_r2_key"):
                 return f"{label} is indexed but has no image yet (notes sheet or still rendering)."
+            # One picture of a sheet a turn: the answer's own picture of this
+            # sheet (after the words, _dm_plan_shots) is not sent again.
+            ctx.setdefault("sheets_sent", set()).add(str(page.get("_id")))
             if dry:
                 ctx["sent"].append(f"[sheet {label}]")
                 return f"(eval) Would send the image of {label} {title} here."
-            if await _dm_send_sheet(dm_chat, page):
+            # What this turn's plans evidence has on this sheet is marked on it.
+            shot = await _dm_plan_sheet_shot(ctx, page)
+            if await _dm_send_sheet(dm_chat, page, **shot):
                 ctx["sent"].append(f"[sheet {label}]")
                 return f"Sent the image of {label} {title} to them."
             return f"Found {label} but the image couldn't be sent (may still be rendering)."
         if name == "search_project_history" and _memory_disabled():
             return "Project history search is off."
-        return await _dispatch_agent_tool(
+        sink: list = []
+        out = await _dispatch_agent_tool(
             name, args, project_id=str(job["id"]), group_id=dm_chat,
             company_id=str(ident["company_id"]), sender=wa_dm.phone_digits(dm_chat),
-            reply_to=None, user_body=ctx["text"], record_sink=[])
+            reply_to=None, user_body=ctx["text"], record_sink=sink)
+        if sink and await _dm_plan_evidence(ctx, sink):
+            out += ("\n(A picture of the sheet, with where this is marked, goes to them right "
+                    "after your answer. No need to call send_sheet for it.)")
+        return out
     if name in ("list_subs", "find_sub"):
         project = None
         if args.get("job"):
@@ -57512,7 +57523,12 @@ async def _dm_brain_run(ctx: dict, messages: list, system: str, model: Optional[
     usage: Dict[str, Any] = {"input": 0, "output": 0, "calls": 0, "seconds": 0.0, "models": []}
 
     def acted() -> set:
-        return set(ctx.get("acted") or set()) | ({"sent"} if ctx.get("sent") else set())
+        # A plans answer's picture goes right after the words (_dm_plan_shots),
+        # so "here's the sheet" is true of it -- but only of the picture: a
+        # "sent the report" with no send this turn is still caught.
+        picture = ctx.get("plan_image_due") and dm_brain.sends_only_a_picture(last_text)
+        return set(ctx.get("acted") or set()) | (
+            {"sent"} if ctx.get("sent") or picture else set())
 
     def fix(note: str) -> None:
         msgs.append({"role": "assistant", "content": last_text or "(nothing)"})
@@ -57672,10 +57688,15 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
         logger.error(f"[dm-brain] model failed: {type(e).__name__}: {e}")
         out = {"reply": dm_brain.FAILED_TEXT, "trace": [], "rounds": 0, "retries": 0,
                "unverified": [], "stop": f"error:{type(e).__name__}"}
-    out["sent"] = ctx["sent"]
-    out["used_job"] = ctx["used_job"]
     if out.get("reply"):
         out["reply"] = dm_brain.redact_phones(out["reply"])
+    # Where on the sheets the answer came from: sent after the words
+    # (_dm_brain_reply); the eval only records it.
+    out["plan_shots"] = _dm_plan_shots(ctx, out)
+    if dry_run:
+        ctx["sent"] += [f"[sheet {s['label']}]" for s in out["plan_shots"]]
+    out["sent"] = ctx["sent"]
+    out["used_job"] = ctx["used_job"]
     return out
 
 
@@ -57771,6 +57792,8 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         if heard:
             reply = f'{DM_VOICE_HEARD_PREFIX}"{heard.strip()[:200]}"\n\n{reply}'
         await send_whatsapp_message(dm_chat, reply)
+        # The words first; then where on the sheet they came from.
+        await _dm_send_plan_shots(dm_chat, out.get("plan_shots") or [])
     elif eyes:
         await _react_to_message(dm_chat, message_id, "")
 
@@ -63678,18 +63701,22 @@ def _dm_cited_sheet(history: list, quoted: str = "", quoted_bot: bool = False) -
     return None
 
 
-async def _dm_send_sheet(dm_chat: str, page: dict) -> bool:
+async def _dm_send_sheet(dm_chat: str, page: dict, *, jpeg: Optional[bytes] = None,
+                         caption: Optional[str] = None) -> bool:
     """One sheet image to this DM chat, through the DM gate (opt-in or the
     reply window, paced, in the ledger) -- never straight to WaAPI. Kept in
-    the chat's history as "[Sheet] SSP-011.00 — title"."""
+    the chat's history as "[Sheet] SSP-011.00 — title". `jpeg`: this
+    picture of the sheet (a marked crop, _dm_plan_jpeg) instead of the
+    whole page; `caption`: its words."""
     label = page.get("sheet_number") or page.get("sheet_title") or "drawing"
-    caption = f"{label} — {page.get('sheet_title') or ''}".strip(" —")
+    caption = caption or f"{label} — {page.get('sheet_title') or ''}".strip(" —")
     verdict = await _dm_send_verdict(dm_chat, f"[sheet {label}]", None)
     if not verdict["allowed"]:
         logger.info(f"[wa-assistant] sheet refused ({verdict['reason']}) to {_log_chat(dm_chat)}")
         return False
     ledger_id = verdict.get("ledger_id")
-    media_url = await _plan_media_url(dm_chat, page)
+    media_url = (await _temp_jpeg_media_url(dm_chat, jpeg, label) if jpeg
+                 else await _plan_media_url(dm_chat, page))
     ok, body, err = False, None, "no image"
     if media_url:
         ok, body, err = await _waapi_send_dm_paced(
@@ -63713,6 +63740,159 @@ async def _dm_send_sheet(dm_chat: str, page: dict) -> bool:
     except Exception as e:
         logger.debug(f"[wa-assistant] sheet bot-log skipped: {type(e).__name__}")
     return True
+
+
+# ── WHERE A PLANS ANSWER CAME FROM, ON THE SHEET (lib/plan_crop) ────────────
+#
+# "Window protection details are on SSP-011.00" still sends a superintendent
+# hunting across a 36-inch sheet. The records search_plans returned say where
+# they are (`bbox`), so after the words the DM gets the sheet cropped to that
+# region with it boxed in red -- every candidate boxed and numbered when the
+# answer could rest on more than one place, or on a record nobody checked. A
+# record with no box (notes, callouts: plan_records KNOWN GAP), or one whose
+# box cannot be placed on the page image, sends the whole sheet and says so.
+#
+# Private DMs only, after the text and never instead of it: a picture that
+# cannot be made or sent is logged and the answer stands.
+_DM_PLAN_PAGE_FIELDS = {"_id": 1, "project_id": 1, "file_id": 1, "file_name": 1,
+                        "page_number": 1, "sheet_number": 1, "sheet_title": 1,
+                        "page_jpeg_r2_key": 1, "is_spec_page": 1}
+#: A turn that ended on one of these sent a fallback, not its own answer:
+#: no picture of where an answer came from.
+_DM_PLAN_SHOT_NO = ("content_filter", "truncated", "unverified", "unsupported_claim",
+                    "unverified_sender", "max_rounds")
+
+
+async def _dm_plan_evidence(ctx: dict, sink: list) -> bool:
+    """Keep one search_plans call's records for this turn's picture, with
+    the pages they cite. True when one of them can be shown."""
+    ctx.setdefault("plan_evidence", []).extend(sink)
+    pages = ctx.setdefault("plan_pages", {})
+    for hit in sink:
+        for r in hit.get("records") or []:
+            pid = str(r.get("page_id") or "")
+            if not pid or pid in pages:
+                continue
+            try:
+                pages[pid] = await db.document_page_index.find_one(
+                    {"_id": to_query_id(pid)}, _DM_PLAN_PAGE_FIELDS) or {}
+            except Exception as e:
+                logger.warning(f"[dm-brain] plan page read failed: {type(e).__name__}")
+                pages[pid] = {}
+    if _dm_plan_records(ctx):
+        ctx["plan_image_due"] = True
+    return bool(ctx.get("plan_image_due"))
+
+
+def _dm_plan_records(ctx: dict) -> list:
+    """This turn's plans evidence a picture can show, best first: records a
+    citation can name, on a page with an image. Not located-symbol rows: a
+    count rests on all of them and their census, never on one box."""
+    pages = ctx.get("plan_pages") or {}
+    return [r for hit in ctx.get("plan_evidence") or [] for r in hit.get("records") or []
+            if not plan_search.is_glyph_evidence(r) and plan_search.cite(r)
+            and (pages.get(str(r.get("page_id") or "")) or {}).get("page_jpeg_r2_key")]
+
+
+def _dm_plan_shots(ctx: dict, out: dict) -> list:
+    """The pictures that follow this answer, one per sheet (plan_crop.pick
+    decides which records it rests on and whether that is one place):
+    [{page, label, marks: [(number, record)], total, ambiguous, unverified,
+    pictures}]. None when the turn searched no plans, ended without its own
+    answer, or already sent those sheets (send_sheet)."""
+    reply = out.get("reply") or ""
+    stop = str(out.get("stop") or "")
+    if not reply or out.get("cant_answer") or stop in _DM_PLAN_SHOT_NO or stop.startswith("error"):
+        return []
+    records = _dm_plan_records(ctx)
+    if not records:
+        return []
+    choice = plan_crop.pick(records, reply)
+    groups = plan_crop.by_page(choice["marks"])
+    total = sum(len(marks) for _pid, marks in groups)
+    pages, sent = ctx["plan_pages"], ctx.get("sheets_sent") or set()
+    return [{"page": pages[pid], "marks": marks, "total": total,
+             "label": pages[pid].get("sheet_number") or plan_search.cite(marks[0][1]) or "drawing",
+             "ambiguous": choice["ambiguous"], "unverified": choice["unverified"],
+             "pictures": len(groups)}
+            for pid, marks in groups if pid not in sent]
+
+
+def _dm_plan_jpeg(src: bytes, page: dict, marks: list, numbered: bool
+                  ) -> Optional[Tuple[bytes, List[int]]]:
+    """(jpeg, the numbers boxed): the page image cropped to `marks` and
+    marked, or None when no mark's box can be placed on it.
+
+    A box is in PDF points (plan_crop); the page image is pdftoppm's render at
+    _render_dpi_for(file_name, page_number) -- the same call, on the same
+    name and page, that the indexer rendered it with -- so a point is dpi/72
+    pixels. A page missing either has no mapping, and gets none guessed."""
+    from PIL import Image
+    import io as _io
+    if not page.get("file_name") or not page.get("page_number"):
+        return None
+    dpi = _render_dpi_for(page["file_name"], int(page["page_number"]))
+    img = Image.open(_io.BytesIO(src))
+    scale = plan_crop.px_per_pt(dpi)
+    boxes = []
+    for n, r in marks:
+        box = plan_crop.to_pixels(r.get("bbox"), scale, img.size) if r.get("bbox") else None
+        if not box:
+            # One mark that can't be placed: a crop would claim to show
+            # every spot while one is missing -- the whole sheet instead
+            # (Codex on #836).
+            return None
+        boxes.append((n, box))
+    shot = plan_crop.render(img, boxes, px_per_inch=dpi, numbered=numbered)
+    buf = _io.BytesIO()
+    shot.save(buf, format="JPEG", quality=90)
+    return _compress_jpeg_for_whatsapp(buf.getvalue()), [n for n, _b in boxes]
+
+
+async def _dm_plan_picture(shot: dict) -> dict:
+    """{jpeg, caption} for one planned picture: the marked crop, or jpeg None
+    (the whole sheet) with a caption that says it is the whole sheet."""
+    page, marks = shot["page"], shot["marks"]
+    jpeg, numbers = None, [n for n, _r in marks]
+    if all(r.get("bbox") for _n, r in marks):
+        try:
+            src = await _fetch_page_jpeg(page)
+            got = await asyncio.to_thread(
+                _dm_plan_jpeg, src, page, marks, shot["total"] > 1) if src else None
+            if got:
+                jpeg, numbers = got
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan crop of {shot['label']} failed: {type(e).__name__}: {e}")
+    return {"jpeg": jpeg, "caption": plan_crop.caption(
+        shot["label"], numbers=numbers, total=shot["total"], ambiguous=shot["ambiguous"],
+        unverified=shot["unverified"], whole=jpeg is None, title=page.get("sheet_title") or "",
+        pictures=shot["pictures"])}
+
+
+async def _dm_plan_sheet_shot(ctx: dict, page: dict) -> dict:
+    """send_sheet's picture of `page` when this turn's plans evidence is on
+    it: {jpeg, caption} of the marked crop; {} for the whole sheet."""
+    pid = str(page.get("_id"))
+    marks = plan_crop.distinct([r for r in _dm_plan_records(ctx)
+                                if str(r.get("page_id")) == pid])[:plan_crop.MAX_MARKS]
+    if not marks:
+        return {}
+    shot = {"page": page, "marks": list(enumerate(marks, start=1)), "total": len(marks),
+            "label": page.get("sheet_number") or plan_search.cite(marks[0]) or "drawing",
+            "ambiguous": False, "unverified": any(plan_crop.is_unverified(r) for r in marks),
+            "pictures": 1}
+    pic = await _dm_plan_picture(shot)
+    return pic if pic["jpeg"] else {}
+
+
+async def _dm_send_plan_shots(dm_chat: str, shots: list) -> None:
+    """The pictures after a plans answer, one by one. Never raises: the
+    answer is already out."""
+    for shot in shots:
+        try:
+            await _dm_send_sheet(dm_chat, shot["page"], **await _dm_plan_picture(shot))
+        except Exception as e:
+            logger.warning(f"[dm-brain] plan picture of {shot.get('label')} failed: {type(e).__name__}")
 
 
 async def _dm_sheet_turn(ident: dict, dm_chat: str, text: str, history: list,
@@ -64013,6 +64193,12 @@ async def _plan_media_url(chat_id: str, page_rec: dict) -> Optional[str]:
         f"plan send: jpeg ok for sheet={sheet_ref} "
         f"src_size={len(jpeg_src)} compressed_size={len(jpeg)}"
     )
+    return await _temp_jpeg_media_url(chat_id, jpeg, sheet_ref)
+
+
+async def _temp_jpeg_media_url(chat_id: str, jpeg: bytes, sheet_ref: Any) -> Optional[str]:
+    """JPEG bytes uploaded as a temporary file: the URL WaAPI's send-media
+    fetches (1 hour), or None."""
     import uuid as _uuid
     # A person's chat is a phone: the temporary key carries a random id, never it.
     folder = chat_id if wa_dm.is_group_chat(chat_id) else "dm"

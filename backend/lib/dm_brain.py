@@ -372,6 +372,23 @@ def action_claims(reply: Any) -> List[str]:
     return [k for k, rx in _CLAIMS if rx.search(t)]
 
 
+_NOT_A_PICTURE = re.compile(r"\b(?:report|brief|pdf|summary|list|message|text|invoice|contract|"
+                            r"email|e-mail|file|document|link)\b", re.I)
+_A_PICTURE = re.compile(r"\b(?:sheets?|drawings?|plans?|pictures?|images?|screenshots?|crops?|"
+                        r"photos?|pages?)\b|\b[A-Z]{1,4}-?\d{1,4}(?:\.\d+)?\b", re.I)
+_SENT = dict(_CLAIMS)["sent"]
+
+
+def sends_only_a_picture(reply: Any) -> bool:
+    """Every "sent" in this reply is about the plans picture that follows it:
+    each sentence that says sent names the sheet / drawing / picture, and
+    none names a report, PDF, invoice, email or the like. Positive, not just
+    the absence of a few words (Codex on #836)."""
+    said = [x for x in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "")) if _SENT.search(x)]
+    return bool(said) and all(_A_PICTURE.search(x) and not _NOT_A_PICTURE.search(x)
+                              for x in said)
+
+
 def claim_note(claims: Sequence[str], tools: Sequence[str]) -> str:
     return (f"Before this goes out: your answer says it was {', '.join(claims)}, but no tool this turn "
             f"did that (tools called: {', '.join(tools) or 'none'}). Rewrite it: say what you found, or "
