@@ -71529,7 +71529,7 @@ async def _punch_post(sess: dict, group_id: str, batches: List[dict]) -> str:
         from lib import shabbos as _shabbos
         await _punch_save(sess, queued_until=quiet)     # "was it sent?": held, not sent
         lines.append(f"It's Shabbos / Yom Tov: these go out after it ends "
-                     f"({quiet.astimezone(_shabbos.NY):%a %-I:%M %p}).")
+                     f"({datefmt.strftime(quiet.astimezone(_shabbos.NY), '%a %-I:%M %p')}).")
     if failed:
         await _punch_save(sess, status="resend",
                           undelivered=[r["pid"] for b in failed for r in b["items"]])
