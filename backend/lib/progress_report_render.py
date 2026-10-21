@@ -59,7 +59,7 @@ h2 { font-size: 12.5pt; color: #12263F; margin: 0 0 6px; padding-bottom: 3px; bo
      page-break-after: avoid; }
 h3 { font-size: 9.5pt; margin: 10px 0 3px; color: #12263F; page-break-after: avoid; }
 h4 { font-size: 8pt; letter-spacing: 1.2px; text-transform: uppercase; color: #5b6676; margin: 0 0 4px; }
-section { margin-top: 12px; }
+section { margin-top: 8px; }
 section.pg { page-break-before: always; margin-top: 0; }
 .keep { page-break-inside: avoid; }
 p { margin: 0 0 6px; }
@@ -101,7 +101,7 @@ table.ev td:nth-child(1) { width: 5%; } table.ev td:nth-child(2) { width: 27%; }
 .chip.new { background: #067647; } .chip.adv { background: #1F6FEB; } .chip.warn { background: #B54708; }
 .chip.crit { background: #B42318; } .chip.soft { background: #e8edf5; color: #12263F; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
-.sub { border-top: 1px solid #e3e7ee; padding: 6px 0; page-break-inside: avoid; }
+.sub { border-top: 1px solid #e3e7ee; padding: 4px 0; page-break-inside: avoid; }
 .sub .name { font-weight: 700; }
 .sub .meta { color: #5b6676; font-size: 8pt; }
 .sub ul { margin: 3px 0 0 14px; padding: 0; }
