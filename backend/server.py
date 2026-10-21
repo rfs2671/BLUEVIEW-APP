@@ -56212,6 +56212,10 @@ async def _dm_brain_headcount(ctx: dict, job: dict, args: dict) -> str:
         "people_on_site": [{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
                            for w in data["workers"]],
         "since": label or None,
+        # The count itself, not just the list: a model that counts the names
+        # writes a figure no tool holds, and the evidence check re-asks
+        # (Oct 21 eval: "12" re-asked 3 of 8 cases, ~3s each).
+        "came_in_since_count": len(data.get("added") or []) if since else None,
         "came_in_since": ([{"name": w["name"], "sub": w["company"], "in_at": wa_headcount.clock(w["at"])}
                            for w in data.get("added") or []] if since else None),
         "checked_in_today_and_left": data.get("checked_out") or 0,
