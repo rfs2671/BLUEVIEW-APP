@@ -137,6 +137,22 @@ class TheTuesdayThree(_Brain):
         log = self.db[server.DM_ANSWERS].rows[-1]
         self.assertEqual((log["path"], log["tool_data"][0]["tool"]), ("brain", "headcount"))
 
+    def test_came_in_since_the_brief_is_counted_for_the_model(self):
+        """Oct 21 eval: the model counted the came-in-since names itself, so
+        its "12" was in no tool result and every such answer was re-asked."""
+        answer = "588: 31 on site. 13 came in since the brief — Arkon Builders, J&G, Power Direct."
+
+        def answer_from(kw):
+            res = json.loads(last_tool_results(kw)[0])
+            self.assertEqual(res["came_in_since_count"], len(res["came_in_since"]))
+            self.assertEqual(res["came_in_since_count"], 13)
+            return resp(text(answer))
+        llm = FakeLLM(resp(use("headcount", {"job": "588"})), answer_from)
+        with _Ctx(db=self.db) as c:
+            out = self.say(c, "How many came in since the brief at 588", llm)
+        self.assertEqual(out, [answer])
+        self.assertEqual(len(llm.calls), 2)                            # no evidence re-ask
+
     def test_dot_and_akron(self):
         """The model reads the subs list and DOT itself; "Akron" is matched
         by the model, not by keywords."""
