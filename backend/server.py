@@ -51612,8 +51612,8 @@ def _report_pdf(html_text: str) -> bytes:
 
 REPORT_PHOTO_VERDICTS = "report_photo_verdicts"
 #: Photos sent to vision per report (each is one call, cached by photo).
-REPORT_JUDGE_MAX = 30
-REPORT_JUDGE_AT_ONCE = 4
+REPORT_JUDGE_MAX = 100
+REPORT_JUDGE_AT_ONCE = 8
 
 
 def _report_photo_bytes(c: dict) -> Optional[bytes]:
@@ -51656,12 +51656,35 @@ async def _photo_verdict(raw: bytes, project_id: Any, endpoint: str) -> Optional
     return progress_report.parse_verdict(said)
 
 
-async def _photo_verdict_cache(key: str, v: dict) -> None:
+async def _photo_verdict_cache(key: str, v: dict, meta: Optional[dict] = None) -> None:
+    """Store one verdict. `meta` (project_id, company_id, log_id, date, photo_key)
+    is what lets a later report, or a schedule chart, ask "every photo of this
+    project in this period" without judging anything again."""
     try:
         await db[REPORT_PHOTO_VERDICTS].update_one(
-            {"_id": key}, {"$set": {**v, "at": datetime.now(timezone.utc)}}, upsert=True)
+            {"_id": key}, {"$set": {**v, **(meta or {}), "at": datetime.now(timezone.utc)}}, upsert=True)
     except Exception:
         pass
+
+
+def _verdict_id(key: str) -> str:
+    return f"report-v3:{key}"
+
+
+async def _stored_verdicts(keys: List[str]) -> Dict[str, dict]:
+    """{photo key: its stored verdict} for the keys already judged (by the filing-
+    time pipeline or an earlier report). One query; never raises."""
+    ids = [_verdict_id(k) for k in dict.fromkeys(keys) if k]
+    out: Dict[str, dict] = {}
+    if not ids:
+        return out
+    try:
+        for doc in await db[REPORT_PHOTO_VERDICTS].find({"_id": {"$in": ids}}).to_list(len(ids)):
+            if isinstance(doc, dict) and "ok" in doc:
+                out[str(doc["_id"])[len("report-v3:"):]] = {k: v for k, v in doc.items() if k not in ("_id", "at")}
+    except Exception as e:
+        logger.warning(f"[photos] stored verdicts unreadable: {type(e).__name__}")
+    return out
 
 
 async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
@@ -51689,6 +51712,98 @@ async def _report_judge_photo(c: dict, project_id: str) -> Optional[dict]:
     if v is not None:
         await _photo_verdict_cache(ckey, v)
     return v
+
+
+# ── THE FILING-TIME PHOTO PIPELINE ──────────────────────────────────────────
+#
+# A photograph is judged ONCE, soon after its daily log is filed, and the verdict
+# is stored (REPORT_PHOTO_VERDICTS, with project / company / log / date). A report
+# or a schedule chart then READS what is already known instead of judging a
+# fortnight of photographs while someone waits (the real 588 period held 209).
+# A sweep, not a hook in the submit endpoint: logs are filed, amended and
+# appended to by several routes, and a sweep catches every one of them, survives a
+# restart, and is safe to run twice. Nothing here sends anything.
+PHOTO_PIPELINE_DAYS = 7        # logs dated within this many days are looked at
+PHOTO_PIPELINE_BUDGET = 150    # photographs judged per tick (a backlog drains over ticks)
+PHOTO_PIPELINE_TRIES = 3       # ticks a photo the model cannot read is tried before it is left alone
+
+
+def _failure_id(key: str) -> str:
+    return f"report-v3-fail:{key}"
+
+
+async def _photo_pipeline_tick(now: Optional[datetime] = None, days: int = PHOTO_PIPELINE_DAYS,
+                               budget: int = PHOTO_PIPELINE_BUDGET) -> dict:
+    """Judge and store every unjudged photo of the recent FILED daily logs.
+    Returns counts. Never raises."""
+    report = {"logs": 0, "photos": 0, "already": 0, "judged": 0, "failed": 0, "given_up": 0}
+    if not QWEN_API_KEY:
+        return report
+    now = now or datetime.now(timezone.utc)
+    since = (now - timedelta(days=days)).date().isoformat()
+    try:
+        logs = await db.logbooks.find(
+            await unattended_project_filter({"log_type": "daily_jobsite", "is_deleted": {"$ne": True},
+                                             "date": {"$gte": since}}),
+            {"date": 1, "project_id": 1, "company_id": 1, "status": 1, "is_locked": 1, "is_amendment": 1,
+             "withdrawn": 1, "withdrawn_at": 1, "data.activities": 1}).to_list(3000)
+    except Exception as e:
+        logger.warning(f"[photo-pipeline] logs unreadable: {type(e).__name__}")
+        return report
+    found: List[Tuple[dict, dict]] = []
+    for lg in logs:
+        if not logbook_is_filed(lg) or logbook_is_withdrawn(lg):
+            continue
+        report["logs"] += 1
+        found += [(lg, ph) for ph in progress_report.log_photos(lg)]
+    report["photos"] = len(found)
+    stored = await _stored_verdicts([ph["key"] for _, ph in found])
+    tried: Dict[str, int] = {}
+    try:
+        ids = [_failure_id(k) for k in {ph["key"] for _, ph in found if ph["key"] not in stored}]
+        for doc in await db[REPORT_PHOTO_VERDICTS].find({"_id": {"$in": ids}}).to_list(len(ids) or 1):
+            tried[str(doc["_id"])[len("report-v3-fail:"):]] = int(doc.get("attempts") or 0)
+    except Exception:
+        pass
+    pending = []
+    for lg, ph in sorted(found, key=lambda x: str(x[1]["date"]), reverse=True):   # yesterday's first
+        if ph["key"] in stored:
+            report["already"] += 1
+        elif tried.get(ph["key"], 0) >= PHOTO_PIPELINE_TRIES:
+            report["given_up"] += 1
+        else:
+            pending.append((lg, ph))
+    sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
+
+    async def one(lg: dict, ph: dict) -> None:
+        async with sem:
+            raw = await asyncio.to_thread(_report_photo_bytes, {"photo": ph["photo"], "key": ph["key"]})
+            v = await _photo_verdict(raw, lg.get("project_id"), VISION_REPORT_PHOTO) if raw else None
+            if v is None:
+                report["failed"] += 1
+                try:
+                    await db[REPORT_PHOTO_VERDICTS].update_one(
+                        {"_id": _failure_id(ph["key"])},
+                        {"$inc": {"attempts": 1}, "$set": {"at": datetime.now(timezone.utc),
+                                                           "project_id": str(lg.get("project_id") or "")}}, upsert=True)
+                except Exception:
+                    pass
+                return
+            await _photo_verdict_cache(_verdict_id(ph["key"]), v, {
+                "photo_key": ph["key"], "project_id": str(lg.get("project_id") or ""),
+                "company_id": str(lg.get("company_id") or ""), "log_id": ph["log_id"], "date": ph["date"],
+                "source": "filing"})
+            report["judged"] += 1
+    await asyncio.gather(*(one(lg, ph) for lg, ph in pending[:budget]), return_exceptions=True)
+    logger.info(f"[photo-pipeline] {report}")
+    return report
+
+
+async def _photo_pipeline_job() -> None:
+    try:
+        await _photo_pipeline_tick()
+    except Exception as e:
+        logger.error(f"[photo-pipeline] tick failed: {type(e).__name__}: {e}")
 
 
 # ── PHOTOS POSTED IN A JOB GROUP (lib/wa_photos.py) ─────────────────────────
@@ -51772,8 +51887,11 @@ async def _group_photo_capture(row: dict, parsed: dict, project_id: Any, company
 async def _report_photos(rep: dict, project_id: str) -> List[dict]:
     """Up to 15 daily-log photos for the report: vision screens a capped set
     (blurry, people-only, documents out), then the pick."""
-    todo = progress_report.to_judge(rep["photo_candidates"], REPORT_JUDGE_MAX)
-    verdicts: Dict[str, dict] = {}
+    # Verdicts the filing-time pipeline (or an earlier report) already stored cost
+    # nothing; only photos with none are sent to vision, spread over the period.
+    verdicts: Dict[str, dict] = await _stored_verdicts([c["key"] for c in rep["photo_candidates"]])
+    missing = [c for c in rep["photo_candidates"] if c["key"] not in verdicts]
+    todo = progress_report.to_judge(missing, REPORT_JUDGE_MAX)
     sem = asyncio.Semaphore(REPORT_JUDGE_AT_ONCE)
 
     async def one(c):
@@ -51782,8 +51900,20 @@ async def _report_photos(rep: dict, project_id: str) -> List[dict]:
             if v:
                 verdicts[c["key"]] = v
     await asyncio.gather(*(one(c) for c in todo))
-    chosen = progress_report.pick_photos(todo, verdicts)
-    rep["photo_review"] = progress_report.photo_review(todo, verdicts, chosen)
+    # A photo the model gave no usable answer for is asked about ONCE more (a
+    # transient error or a cut-off reply), then counted: the real 588 run lost
+    # about a third of its judged photos with no trace.
+    again = [c for c in todo if c["key"] not in verdicts]
+    if again:
+        await asyncio.gather(*(one(c) for c in again))
+    unjudged = [c for c in todo if c["key"] not in verdicts]
+    filed = len(rep.get("photo_candidates") or [])
+    logger.info(f"[report] photos: {filed} filed, {filed - len(missing)} already judged, {len(todo)} sent to be "
+                f"judged now, {len(unjudged)} with no usable verdict after a retry")
+    rep["photos_unjudged"] = len(unjudged)
+    judged = [c for c in rep["photo_candidates"] if c["key"] in verdicts]
+    chosen = progress_report.pick_photos(judged, verdicts)
+    rep["photo_review"] = progress_report.photo_review(judged, verdicts, chosen)
     return chosen
 
 
@@ -80890,6 +81020,17 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=8),
+    )
+    # Filing-time photo pipeline: every unjudged photo of a recent filed daily log
+    # is judged once and the verdict stored, so reports are instant. Every 20 min.
+    scheduler.add_job(
+        _photo_pipeline_job,
+        IntervalTrigger(minutes=20),
+        id='photo_pipeline',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=4),
     )
     # One log line per group for last week: items, filter pass %, tokens, cost.
     scheduler.add_job(

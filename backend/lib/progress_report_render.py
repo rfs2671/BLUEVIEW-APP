@@ -113,13 +113,10 @@ table.floors th { text-align: center; padding: 2px 0; font-size: 7pt; }
 table.floors td.name { text-align: left; white-space: nowrap; padding-right: 8px; font-size: 8pt; border: 0;
                        border-bottom: 1px solid #e3e7ee; }
 .photos { font-size: 0; }
-.photo { display: inline-block; vertical-align: top; width: 48.5%; margin: 0 1.5% 10px 0; page-break-inside: avoid; font-size: 9pt; }
-.photos.three .photo { width: 31.8%; margin-right: 1.1%; }
-.photos.four .photo { width: 23.6%; margin-right: 1.1%; }
-/* THE WHOLE PHOTOGRAPH, never a crop: a portrait phone photo keeps its top and bottom. */
-.photo .frame { height: 2.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
-.photos.three .photo .frame { height: 2.0in; }
-.photos.four .photo .frame { height: 2.7in; }
+.strip-row { page-break-inside: avoid; margin-top: 10px; }
+.strip-row h4 { margin: 0 0 4px; font-size: 9.5pt; }
+.photo { display: inline-block; vertical-align: top; width: 19%; margin: 0 1% 6px 0; page-break-inside: avoid; font-size: 9pt; }
+.photo .frame { height: 1.9in; background: #eef1f5; border-radius: 3px; display: flex; align-items: center; justify-content: center; }
 .photo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
 .photo .cap { font-size: 8pt; margin-top: 3px; }
 .photo .cap b { font-size: 8.5pt; }
@@ -463,27 +460,33 @@ def _schedule_section(rep: Dict[str, Any]) -> str:
 
 
 def _photos(rep: Dict[str, Any], images: Dict[str, str]) -> str:
+    """One ROW per subcontractor: up to five photographs in date order, so the
+    row reads as progress over the period. Whole photographs (object-fit:
+    contain), portrait or landscape, never cropped."""
     shown = [p for p in rep["photos"] if images.get(p["key"])]
     if not shown:
         return ""
-    cells = []
+    order = {s["key"]: n for n, s in enumerate(rep.get("subs") or [])}
+    by_sub: Dict[str, List[Dict[str, Any]]] = {}
     for p in shown:
-        see = f"<br><span class='muted'>Shows: {_e(p['caption'])}</span>" if p.get("caption") else ""
-        cells.append(f"<div class='photo'><div class='frame'><img src='{images[p['key']]}'/></div>"
-                     f"<div class='cap'><b>{_e(p['sub'])}</b>{' · ' + _e(p['trade']) if p.get('trade') else ''}<br>"
-                     f"{_e(_fmt(p['date'], '%a %b %-d, %Y'))}{' · ' + _e(p['where']) if p.get('where') else ''}"
-                     f"{see}</div></div>")
-    from lib import report_image
-    ors = [report_image.orientation(images[p["key"]]) for p in shown]
-    portrait = sum(1 for o in ors if o == "portrait")
-    # Mostly-portrait phone photographs: four across at full height, so a
-    # portrait photograph is large instead of a sliver in a wide cell.
-    cols = ("four" if len(shown) > 4 and portrait * 10 >= len(shown) * 6 else
-            "three" if len(shown) > 4 else "")
-    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Photographs from the filed daily "
-            "logs, chosen for installed work that is clearly visible. Sub, date and location are as filed and are not "
-            "independently verified; “Shows” describes the picture only (automated).</p>"
-            f"<div class='photos {cols}'>{''.join(cells)}</div></section>")
+        by_sub.setdefault(P.company_key(p["sub"]) or p["sub"], []).append(p)
+    rows = []
+    for key, group in sorted(by_sub.items(), key=lambda kv: (order.get(kv[0], 99), kv[1][0]["sub"])):
+        group = sorted(group, key=lambda p: (str(p["date"]), p["key"]))
+        cells = []
+        for p in group:
+            see = f"<br><span class='muted'>{_e(p['caption'])}</span>" if p.get("caption") else ""
+            cells.append(f"<div class='photo'><div class='frame'><img src='{images[p['key']]}'/></div>"
+                         f"<div class='cap'>{_e(_fmt(p['date'], '%b %-d'))}"
+                         f"{' · ' + _e(p['where']) if p.get('where') else ''}{see}</div></div>")
+        trade = f" <span class='muted'>· {_e(group[0]['trade'])}</span>" if group[0].get("trade") else ""
+        rows.append(f"<div class='strip-row'><h4>{_e(group[0]['sub'])}{trade}</h4>"
+                    f"<div class='photos'>{''.join(cells)}</div></div>")
+    return (f"<section class='pg'><h2>Visual progress {_tag('L')}</h2><p class='muted'>Up to five photographs per "
+            "subcontractor from the filed daily logs, in date order across the period, chosen for installed work that is "
+            "clearly visible. Sub, date and location are as filed and are not independently verified; the words under "
+            "each photograph describe the picture only (automated).</p>"
+            f"{''.join(rows)}</section>")
 
 
 def _workforce(rep: Dict[str, Any]) -> str:

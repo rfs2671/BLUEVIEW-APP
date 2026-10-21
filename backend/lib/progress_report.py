@@ -56,9 +56,15 @@ from lib.datefmt import strftime as _fmt
 NY = base.NY
 ENGINE_VERSION = "2026.10.2"
 UPCOMING_DAYS = 30
-#: 4-6 photographs, never more: a few good ones, not a gallery.
-MIN_PHOTOS, MAX_PHOTOS = 4, 8
-MAX_PER_SUB = 2
+#: A row of up to FIVE photographs per sub, spread across the period in date order
+#: (the real 588 logs held 209 photographs in 11 days; the first version judged 30
+#: and showed 2 per sub). Never padded: a sub with three qualifying photographs
+#: gets three. MAX_PHOTOS is the page budget for the whole report.
+MIN_PHOTOS, MAX_PHOTOS = 4, 35
+MAX_PER_SUB = 5
+#: What vision is asked to judge: up to this many photographs per sub, evenly
+#: spread over the period (cost is about $0.0005 each and verdicts are cached).
+JUDGE_PER_SUB = 14
 #: A photograph must show installed work STRONGLY to appear: fewer than four
 #: photographs is better than a weak one used to fill the page.
 MIN_SCORE = 6.0
@@ -615,6 +621,37 @@ def _floor_matrix(cur: List[Dict[str, Any]], prev: List[Dict[str, Any]], canon: 
 
 # ── PHOTOS ───────────────────────────────────────────────────────────────────
 
+def photo_key(p: Dict[str, Any], log: str, n: int) -> str:
+    """The key a filed photo is known by: its stored file, else (a photo with only
+    its inline copy -- Codex on #803) the place it sits in the log. '' when it has
+    neither. ONE definition, used by the report AND by the filing-time pipeline,
+    so a verdict stored at filing is the one the report finds."""
+    key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
+    if not key and (p.get("base64") or p.get("thumb_base64")):
+        key = f"inline:{log}:{n}"
+    return str(key or "")
+
+
+def log_photos(logbook: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[{key, photo, log_id, date}] for every photograph in a daily jobsite log's
+    activity rows, keyed exactly as the report keys them. Tolerant of any shape."""
+    out: List[Dict[str, Any]] = []
+    data = logbook.get("data") if isinstance(logbook, dict) else None
+    rows = data.get("activities") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return out
+    log_id = str(logbook.get("_id") or "")
+    for slot, a in enumerate(rows):
+        if not isinstance(a, dict):
+            continue
+        for n, p in enumerate(a.get("photos") or []):
+            if isinstance(p, dict):
+                key = photo_key(p, f"{logbook.get('_id') or logbook.get('date')}:{slot}", n)
+                if key:
+                    out.append({"key": key, "photo": p, "log_id": log_id, "date": str(logbook.get("date") or "")[:10]})
+    return out
+
+
 def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
                      *_ignored: Any, **_ignored_kw: Any) -> List[Dict[str, Any]]:
     """The report's photographs come from the filed daily logs ONLY: each is
@@ -626,11 +663,7 @@ def photo_candidates(acts: List[Dict[str, Any]], start: date, end: date,
             continue
         place = floors_label(a["floors"]) or base.no_phone(a["where"])[:60]
         for n, p in enumerate(a["photos"]):
-            key = p.get("enhanced_r2_key") or p.get("original_r2_key") or p.get("thumb_r2_key")
-            # A filed photo with only its inline copy is a photo too (Codex on
-            # #803): keyed by where it is, read from the log by the server.
-            if not key and (p.get("base64") or p.get("thumb_base64")):
-                key = f"inline:{a['log']}:{n}"
+            key = photo_key(p, a["log"], n)
             if key:
                 out.append({"key": key, "date": a["date"], "sub": a["company"], "trade": a["trade"],
                             "where": place, "words": work_line(a["work"] or a["trade"], place),
@@ -653,21 +686,30 @@ def work_line(work: Any, place: Any) -> str:
     return f"{w} — {p}" if p else w
 
 
-def to_judge(cands: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
-    """Which photos to send to vision (it costs): each sub's first 2 and last
-    2, then the rest spread over the period."""
+def _spread(items: List[Any], n: int) -> List[Any]:
+    """`n` of `items` at even intervals, first and last included."""
+    if len(items) <= n:
+        return list(items)
+    if n <= 1:
+        return [items[0]]
+    return [items[round(i * (len(items) - 1) / (n - 1))] for i in range(n)]
+
+
+def to_judge(cands: List[Dict[str, Any]], limit: int = 100, per_sub: int = JUDGE_PER_SUB) -> List[Dict[str, Any]]:
+    """Which photos to send to vision (it costs): for each sub, up to `per_sub`
+    spread EVENLY over the period (so the first week and the last week are both
+    judged, and a sub who filed ten a day is sampled across all of its days),
+    within `limit` in all."""
     by_sub: Dict[str, List[dict]] = defaultdict(list)
-    for c in cands:
+    for c in sorted(cands, key=lambda c: (str(c["date"]), c["key"])):
         by_sub[company_key(c["sub"]) or c["source"]].append(c)
+    quota = per_sub
+    if sum(min(len(g), per_sub) for g in by_sub.values()) > limit and by_sub:
+        quota = max(1, limit // len(by_sub))
     picked: List[dict] = []
     for group in by_sub.values():
-        for c in group[:2] + group[-2:]:
-            if c not in picked:
-                picked.append(c)
-    rest = [c for c in cands if c not in picked]
-    step = max(1, len(rest) // max(1, limit - len(picked))) if rest else 1
-    picked += rest[::step]
-    return picked[:limit]
+        picked += _spread(group, quota)
+    return sorted(picked, key=lambda c: (str(c["date"]), c["key"]))[:limit]
 
 
 WORK_FAMILIES = ("framing", "plumbing", "electrical", "hvac", "scaffolding", "stairs", "concrete", "masonry",
@@ -790,27 +832,27 @@ def pick_photos(cands: List[Dict[str, Any]], verdicts: Dict[str, Dict[str, Any]]
             good.append({**c, "score": float(v.get("score") or 0),
                          "caption": WORK_CAPTION.get(str(v.get("work") or "none"), WORK_CAPTION["none"]),
                          "work": str(v.get("work") or "none")})
-    chosen: List[dict] = []
-    per_sub: Counter = Counter()
-
-    def add(c: Dict[str, Any]) -> bool:
-        k = company_key(c["sub"]) or c["sub"]
-        if len(chosen) >= most or per_sub[k] >= MAX_PER_SUB or any(x["key"] == c["key"] for x in chosen):
-            return False
-        if any(company_key(x["sub"]) == company_key(c["sub"]) and x["date"] == c["date"]
-               and x["where"] == c["where"] for x in chosen):
-            return False
-        chosen.append(c)
-        per_sub[k] += 1
-        return True
     by_sub: Dict[str, List[dict]] = defaultdict(list)
     for c in good:
         by_sub[company_key(c["sub"]) or c["sub"]].append(c)
-    queues = [sorted(g, key=lambda c: (-c["score"], c["date"])) for _, g in sorted(by_sub.items())]
-    while len(chosen) < most and any(queues):
-        for q in queues:
-            while q and not add(q.pop(0)):
-                pass
+    chosen: List[dict] = []
+    for _, group in sorted(by_sub.items()):
+        # A ROW THAT READS AS PROGRESS: the qualifying photographs in date order,
+        # cut into as many equal stretches as the row has places, the strongest
+        # photograph of each stretch -- never two of one sub, day and place.
+        group = sorted(group, key=lambda c: (str(c["date"]), c["key"]))
+        n = min(MAX_PER_SUB, len(group))
+        row: List[dict] = []
+        for i in range(n):
+            lo, hi = i * len(group) // n, (i + 1) * len(group) // n
+            for c in sorted(group[lo:hi], key=lambda c: (-c["score"], str(c["date"]))):
+                if any(x["date"] == c["date"] and x["where"] == c["where"] for x in row):
+                    continue
+                row.append(c)
+                break
+        chosen += row
+    if len(chosen) > most:                 # the page budget: the weakest go first
+        chosen = sorted(chosen, key=lambda c: -c["score"])[:most]
     chosen.sort(key=lambda c: (c["date"], c["sub"]))
     return chosen
 
