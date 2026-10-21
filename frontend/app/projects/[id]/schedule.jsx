@@ -298,8 +298,7 @@ export default function ProjectScheduleScreen() {
   }
 
   return (
-    <View style={styles.flex}>
-      <AnimatedBackground />
+    <AnimatedBackground>
       <SafeAreaView style={styles.flex} edges={['top']}>
         {header}
         <ScrollView contentContainerStyle={styles.body}>
@@ -323,7 +322,7 @@ export default function ProjectScheduleScreen() {
       <ConfirmDialog visible={dialog === 'stop'} title={t('stopTitle')} message={t('stopBody')}
         confirmLabel={t('stopAction')} cancelLabel={t('cancel')}
         onConfirm={() => discard('stop')} onCancel={() => setDialog(null)} />
-    </View>
+    </AnimatedBackground>
   );
 }
 
