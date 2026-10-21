@@ -356,7 +356,8 @@ class EverySender(unittest.TestCase):
 
     def test_wired(self):
         import inspect
-        for fn, needle in ((server._morning_brief_tick, "_shabbos_quiet("),
+        # The tick runs each person through _morning_brief_one.
+        for fn, needle in ((server._morning_brief_one, "_shabbos_quiet("),
                            (server._upcoming_notify_tick, "_shabbos_quiet("),
                            (server._gc_alerts_tick, "_shabbos_quiet("),
                            (server._gc_propose_tick, "_shabbos_quiet("),

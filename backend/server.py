@@ -51053,18 +51053,24 @@ async def _brief_settings(user_id: str) -> dict:
     return out
 
 
-async def _brief_since(user_id: str, now: datetime) -> datetime:
+async def _brief_since(user_id: str, now: datetime,
+                       before_day: Optional[str] = None) -> datetime:
     """When this person's last brief went out; else a day ago. Never more
-    than a few days back (a long weekend, not a backlog).
+    than a few days back (a long weekend, not a backlog). `before_day`:
+    that day's own brief is not counted ("brief all" sends the rest of
+    today's brief as the morning computed it, since the brief before).
 
     The whole brief's row (window: the day), never one message's ("day:part",
     _brief_part_window): a brief whose second message is retried at 8:35 is
     still "since yesterday's", not since its own first message at 8:05."""
     floor = now - _BRIEF_MAX_LOOKBACK
+    window: Dict[str, Any] = {"$regex": "^[^:]*$"}
+    if before_day:
+        window["$ne"] = before_day
     try:
         row = await db[WA_LEDGER].find_one(
             {"user_id": str(user_id), "kind": MORNING_BRIEF_KIND,
-             "status": "sent", "window": {"$regex": "^[^:]*$"}},
+             "status": "sent", "window": window},
             sort=[("created_at", -1)])
     except Exception:
         row = None
@@ -51175,9 +51181,11 @@ def wa_brief_day_range(now: datetime):
     return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
 
 
-async def _brief_for_user(user: dict, now: datetime) -> List[Tuple[str, str]]:
+async def _brief_for_user(user: dict, now: datetime,
+                          every_job: bool = False) -> List[Tuple[str, str]]:
     """The brief for one person: [(part, text)], one message per job with
-    something to say, then their reminders and quiet jobs
+    something to say (the 6 most severe; every_job: all of them, as of the
+    brief before today's), then their reminders and quiet jobs
     (wa_brief.compose_messages); [] when they have no jobs."""
     company_id = str(user.get("company_id") or "").strip()
     if not company_id:
@@ -51186,7 +51194,9 @@ async def _brief_for_user(user: dict, now: datetime) -> List[Tuple[str, str]]:
     projects = await _dm_assistant_projects(user, company_id, role)
     if not projects:
         return []
-    since = await _brief_since(str(user.get("_id")), now)
+    today = wa_brief.local_now(now).date().isoformat()
+    since = await _brief_since(str(user.get("_id")), now,
+                               before_day=today if every_job else None)
     me = await _brief_me(user)
     jobs = [await _brief_job(p, company_id, since, now, me) for p in projects]
     # Upcoming events: today's under each job's Today, the rest of the week
@@ -51200,7 +51210,8 @@ async def _brief_for_user(user: dict, now: datetime) -> List[Tuple[str, str]]:
     for p, job in zip(projects, jobs):
         job["today"], job["later"] = by_job.get(str(p.get("_id")), ([], []))
     own_today, own_later = by_job.get(None, ([], []))
-    return wa_brief.compose_messages(now, jobs, {"today": own_today, "later": own_later})
+    return wa_brief.compose_messages(now, jobs, {"today": own_today, "later": own_later},
+                                     max_jobs=None if every_job else wa_brief.MAX_JOB_MESSAGES)
 
 
 #: Wed Oct 14: WaAPI's send-message answered HTTP 500 at 8:05, the ledger
@@ -51368,12 +51379,22 @@ def _brief_part_window(day: str, part: str) -> str:
     return f"{day}:{part}"
 
 
+#: Seconds between two messages of one person's brief (WhatsApp flags a
+#: burst). Only that person waits: the tick runs people side by side
+#: (_morning_brief_tick). Tests set it to 0 (tests/conftest.py).
+BRIEF_SEND_GAP_SECONDS = 3
+#: How many people's briefs are sent at once.
+BRIEF_CONCURRENCY = 8
+
+
 async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]]) -> dict:
-    """Send each message of today's brief not already out. {sent, already,
-    failed (the last WaAPI error, or None), busy (another run is sending
-    one), refused (refused before WaAPI; the rest are not tried)}."""
+    """Send each message of today's brief not already out, at least
+    BRIEF_SEND_GAP_SECONDS apart. {sent, already, failed (the last WaAPI
+    error, or None), busy (another run is sending one), refused (refused
+    before WaAPI; the rest are not tried)}."""
     out: Dict[str, Any] = {"sent": 0, "already": 0, "failed": None, "busy": False,
                            "refused": False}
+    tried = False
     for part, text in messages:
         window = _brief_part_window(day, part)
         key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, window)
@@ -51381,6 +51402,9 @@ async def _brief_send_parts(uid: str, day: str, messages: List[Tuple[str, str]])
         if (row or {}).get("status") == "sent":
             out["already"] += 1
             continue
+        if tried and BRIEF_SEND_GAP_SECONDS > 0:
+            await asyncio.sleep(BRIEF_SEND_GAP_SECONDS)
+        tried = True
         if await send_whatsapp_dm(uid, text, kind=MORNING_BRIEF_KIND, window=window):
             out["sent"] += 1
             continue
@@ -51430,100 +51454,117 @@ async def _morning_brief_tick(now: Optional[datetime] = None) -> dict:
     except Exception as e:
         logger.warning(f"[wa-brief] opt-in read failed: {type(e).__name__}: {e}")
         return report
-    for optin in optins:
-        report["optins"] += 1
-        uid = str(optin.get("user_id") or "")
-        if not uid:
-            continue
-        company_id = optin.get("company_id")
-        try:
-            user = await db.users.find_one(
-                {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
-            company_id = (user or {}).get("company_id") or company_id
-            settings = await _brief_settings(uid)
-            due = wa_brief.is_due(now, settings["brief_time"], settings["brief_weekend"])
-            if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
-                    optin.get("company_id") or user.get("company_id"),
-                    user.get("company_id")):
-                report["skipped"] += 1
-                if due:
-                    await _brief_log(uid, company_id, today, "skipped", reason="not_eligible", now=now)
-                continue
-            if not due:
-                continue
-            report["due"] += 1
-            key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today)
-            had = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
-            log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{today}"}, {"status": 1})
-            if await _brief_claimed(uid, key, today, now):
-                report["already"] += 1
-                continue
-            if had or (log or {}).get("status") == "failed":
-                report["retried"] += 1
-            if await _shabbos_quiet(user.get("company_id"), None, now):
-                # Shabbos / Yom Tov: today's brief is skipped, not queued.
-                await _ledger_hold(key, "skipped_shabbos", user_id=uid,
-                                   company_id=user.get("company_id"),
-                                   kind=MORNING_BRIEF_KIND, window=today)
-                await _brief_log(uid, company_id, today, "skipped", reason="shabbos", now=now)
-                report["shabbos_skipped"] += 1
-                continue
-            messages = await _brief_for_user(user, now)
-            if not messages:
-                report["skipped"] += 1
-                await _brief_log(uid, company_id, today, "skipped", reason="no_jobs", now=now)
-                continue
-            out = await _brief_send_parts(uid, today, messages)
-            if out["refused"]:
-                # Refused before WaAPI: the person's own gates (the same for
-                # every message of the brief).
-                reason = await _dm_refusal_reason(uid, MORNING_BRIEF_KIND)
-                report["refused"] += 1
-                await _brief_log(uid, company_id, today, "refused",
-                                 reason=reason or "send_failed", now=now)
-                logger.warning(f"[wa-brief] refused for user {uid[-6:]}: {reason or 'unknown'}")
-            elif out["failed"] is not None:
-                # WaAPI said no to a message; those that went out stay out
-                # (their ledger rows), the next try sends only the rest.
-                report["failed"] += 1
-                final = await _brief_failed(uid, company_id, today, now, settings,
-                                            reason="send_failed", error=out["failed"])
-                logger.warning(f"[wa-brief] send failed for user {uid[-6:]} "
-                               f"({out['sent'] + out['already']}/{len(messages)} out)"
-                               f"{' (final)' if final else ', will retry'}: {out['failed']}")
-            elif out["busy"]:
-                report["already"] += 1      # another run has it in hand
-            else:
-                report["sent"] += 1
-                await _brief_mark_sent(uid, company_id, today, now)
-                await _brief_log(uid, company_id, today, "sent", attempt=True, now=now)
-        except Exception as e:
-            # The whole error, once per user: "user failed: KeyError" told
-            # nobody anything.
-            report["failed"] += 1
-            logger.exception(f"[wa-brief] user {uid[-6:]} failed: {type(e).__name__}: {e}")
-            try:
-                await _brief_failed(uid, company_id, today, now, await _brief_settings(uid),
-                                    reason="error", error=f"{type(e).__name__}: {e}")
-            except Exception as e2:
-                logger.warning(f"[wa-brief] failure not logged: {type(e2).__name__}")
+    gate = asyncio.Semaphore(BRIEF_CONCURRENCY)
+
+    async def _one(optin: dict) -> None:
+        async with gate:
+            await _morning_brief_one(optin, now, today, report)
+
+    # People side by side: one person's paced messages never hold up another's.
+    await asyncio.gather(*(_one(o) for o in optins))
     logger.info(f"[wa-brief] {report}")
     await _dm_answers_daily(now)
     return report
 
 
-async def _brief_resend(user: dict, dm_chat: str, now: datetime) -> str:
+async def _morning_brief_one(optin: dict, now: datetime, today: str, report: dict) -> None:
+    """One person's brief in the morning tick (counted in `report`)."""
+    report["optins"] += 1
+    uid = str(optin.get("user_id") or "")
+    if not uid:
+        return
+    company_id = optin.get("company_id")
+    try:
+        user = await db.users.find_one(
+            {"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
+        company_id = (user or {}).get("company_id") or company_id
+        settings = await _brief_settings(uid)
+        due = wa_brief.is_due(now, settings["brief_time"], settings["brief_weekend"])
+        if not wa_dm.is_dm_eligible(user) or not wa_security.same_company(
+                optin.get("company_id") or user.get("company_id"),
+                user.get("company_id")):
+            report["skipped"] += 1
+            if due:
+                await _brief_log(uid, company_id, today, "skipped", reason="not_eligible", now=now)
+            return
+        if not due:
+            return
+        report["due"] += 1
+        key = wa_dm.ledger_key(uid, None, MORNING_BRIEF_KIND, today)
+        had = await db[WA_LEDGER].find_one({"_id": key}, {"status": 1})
+        log = await db[wa_facts.BRIEF_LOG].find_one({"_id": f"{uid}:{today}"}, {"status": 1})
+        if await _brief_claimed(uid, key, today, now):
+            report["already"] += 1
+            return
+        if had or (log or {}).get("status") == "failed":
+            report["retried"] += 1
+        if await _shabbos_quiet(user.get("company_id"), None, now):
+            # Shabbos / Yom Tov: today's brief is skipped, not queued.
+            await _ledger_hold(key, "skipped_shabbos", user_id=uid,
+                               company_id=user.get("company_id"),
+                               kind=MORNING_BRIEF_KIND, window=today)
+            await _brief_log(uid, company_id, today, "skipped", reason="shabbos", now=now)
+            report["shabbos_skipped"] += 1
+            return
+        messages = await _brief_for_user(user, now)
+        if not messages:
+            report["skipped"] += 1
+            await _brief_log(uid, company_id, today, "skipped", reason="no_jobs", now=now)
+            return
+        out = await _brief_send_parts(uid, today, messages)
+        if out["refused"]:
+            # Refused before WaAPI: the person's own gates (the same for
+            # every message of the brief).
+            reason = await _dm_refusal_reason(uid, MORNING_BRIEF_KIND)
+            report["refused"] += 1
+            await _brief_log(uid, company_id, today, "refused",
+                             reason=reason or "send_failed", now=now)
+            logger.warning(f"[wa-brief] refused for user {uid[-6:]}: {reason or 'unknown'}")
+        elif out["failed"] is not None:
+            # WaAPI said no to a message; those that went out stay out
+            # (their ledger rows), the next try sends only the rest.
+            report["failed"] += 1
+            final = await _brief_failed(uid, company_id, today, now, settings,
+                                        reason="send_failed", error=out["failed"])
+            logger.warning(f"[wa-brief] send failed for user {uid[-6:]} "
+                           f"({out['sent'] + out['already']}/{len(messages)} out)"
+                           f"{' (final)' if final else ', will retry'}: {out['failed']}")
+        elif out["busy"]:
+            report["already"] += 1      # another run has it in hand
+        else:
+            report["sent"] += 1
+            await _brief_mark_sent(uid, company_id, today, now)
+            await _brief_log(uid, company_id, today, "sent", attempt=True, now=now)
+    except Exception as e:
+        # The whole error, once per user: "user failed: KeyError" told
+        # nobody anything.
+        report["failed"] += 1
+        logger.exception(f"[wa-brief] user {uid[-6:]} failed: {type(e).__name__}: {e}")
+        try:
+            await _brief_failed(uid, company_id, today, now, await _brief_settings(uid),
+                                reason="error", error=f"{type(e).__name__}: {e}")
+        except Exception as e2:
+            logger.warning(f"[wa-brief] failure not logged: {type(e2).__name__}")
+
+
+async def _brief_resend(user: dict, dm_chat: str, now: datetime,
+                        every_job: bool = False) -> str:
     """"send me my brief": today's brief, now, as replies to their message
     (their message opened the window). Recorded as resent in brief_log and
     in the ledger, so the morning tick does not send it a second time.
 
     The window allows wa_dm.REPLY_WINDOW_MAX_SENDS sends; the messages past
     its first ones (one is left for whatever else this turn says) go out
-    through their opt-in, each its own ledger row for this resend."""
+    through their opt-in, each its own ledger row for this resend.
+
+    every_job ("brief all"): the job messages this morning's brief left out
+    (more than wa_brief.MAX_JOB_MESSAGES jobs), under the morning's own
+    ledger keys (_brief_send_parts): a job already sent today is not sent
+    again. "nothing" when every job is already out."""
     uid = str(user.get("_id"))
     today = wa_brief.local_now(now).date().isoformat()
     try:
-        messages = await _brief_for_user(user, now)
+        messages = await _brief_for_user(user, now, every_job=every_job)
     except Exception as e:
         logger.exception(f"[wa-brief] resend for {uid[-6:]} failed: {type(e).__name__}: {e}")
         await _brief_log(uid, user.get("company_id"), today, "failed", reason="error",
@@ -51532,6 +51573,16 @@ async def _brief_resend(user: dict, dm_chat: str, now: datetime) -> str:
     if not messages:
         await send_whatsapp_message(dm_chat, wa_assistant.NO_JOBS_TEXT)
         return "no_jobs"
+    if every_job:
+        jobs = [(part, text) for part, text in messages
+                if part not in (wa_brief.REST, wa_brief.MORE)]
+        out = await _brief_send_parts(uid, today, jobs)
+        if out["refused"] or out["failed"] is not None:
+            return "failed"
+        if not out["sent"] and not out["busy"]:
+            await send_whatsapp_message(dm_chat, wa_brief.BRIEF_ALL_NOTHING)
+            return "nothing"
+        return "sent"
     sent, run = 0, uuid.uuid4().hex[:8]     # each resend: its own ledger rows
     for i, (part, text) in enumerate(messages):
         meta = None
@@ -56322,17 +56373,17 @@ async def _dm_action_undo(ident: dict, dm_chat: str, lang: str) -> None:
 
 async def _dm_user_level_turn(ident: dict, dm_chat: str, text: str, now: datetime,
                               topics: tuple = ("brief", "send_brief", "settings")) -> bool:
-    """"send me my brief", "why didn't I get my brief", "what are my
-    settings": answered from their own records. True when answered."""
+    """"send me my brief", "brief all", "why didn't I get my brief", "what
+    are my settings": answered from their own records. True when answered."""
     topic = wa_facts.user_topic(text)
     if topic not in topics:
         return False
     uid = str(ident.get("user_id") or "")
-    if topic == "send_brief":
+    if topic in ("send_brief", "brief_all"):
         user = await db.users.find_one({"_id": to_query_id(uid), "is_deleted": {"$ne": True}})
         if not user:
             return False
-        out = await _brief_resend(user, dm_chat, now)
+        out = await _brief_resend(user, dm_chat, now, every_job=topic == "brief_all")
         if out in ("error", "failed"):
             await send_whatsapp_message(
                 dm_chat, "I couldn't send your brief just now — it's logged and the team "
@@ -56384,6 +56435,9 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     now = datetime.now(timezone.utc)
     history = await _dm_history(dm_chat, now)
     await _dm_store_inbound(ident, dm_chat, text, message_id)
+    # "brief all" (the brief's "+N more jobs" line): an exact command.
+    if await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief_all",)):
+        return
     # "disregard", "never mind", "cancel", "forget it": any open question is
     # dropped -- never answered with the same question again (Mon 7:17 PM:
     # a "Which job?" answered "Disregard" with "Which job?", 4 times).
@@ -57016,8 +57070,11 @@ _DM_BRAIN_EXTRA_TOOLS = [
      "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "my_settings", "description": "Their own Levelog Assistant settings (brief time, alerts).",
      "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "resend_my_brief", "description": "Send them today's morning brief again, here.",
-     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "resend_my_brief", "description": (
+        "Send them today's morning brief again, here. all_jobs: true for only the jobs "
+        "this morning's brief left out ('+N more jobs — reply brief all')."),
+     "input_schema": {"type": "object", "properties": {
+         "all_jobs": {"type": "boolean"}}, "required": []}},
     {"name": "send_sheet", "description": (
         "Send a drawing sheet's image here (to them), e.g. after a plans answer cites SSP-011.00 "
         "and they say 'show me'."),
@@ -57452,7 +57509,8 @@ async def _dm_brain_exec(ctx: dict, name: str, args: dict) -> str:
         if dry:
             return "(eval) Would resend today's brief here."
         user = await db.users.find_one({"_id": to_query_id(ident["user_id"]), "is_deleted": {"$ne": True}})
-        out = await _brief_resend(user, dm_chat, now) if user else "error"
+        out = await _brief_resend(user, dm_chat, now, every_job=args.get("all_jobs") is True) \
+            if user else "error"
         if out not in ("error", "failed"):
             ctx["sent"].append("[brief]")
         return f"Brief resend: {out}."
@@ -57816,6 +57874,11 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     remind = await _dm_state_get(UPCOMING_REMIND_STATE, dm_chat)
     if remind and (upcoming.is_yes(text) or upcoming.is_no(text)):
         await _upcoming_dm_turn(ident, dm_chat, text, now)
+        return
+    # "brief all" (the brief's "+N more jobs" line): the rest of today's
+    # jobs, in code -- the same resend the resend_my_brief tool calls.
+    if not qbody and await _dm_user_level_turn(ident, dm_chat, text, now, topics=("brief_all",)):
+        await _dm_log_answer(ident, None, text, "[brief all]", "brain_command")
         return
 
     question = wa_assistant.with_quoted(text, qbody, bool(quoted.get("from_bot")), qtype) \

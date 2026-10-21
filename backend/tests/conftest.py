@@ -108,4 +108,12 @@ def _reset_shared_state():
     rate_limits.reset_counter()
     _reset_server_ip_limiters()
     feature_flags.cache_invalidate(None)
+    # The morning brief's 3 s between one person's messages: no wall-clock
+    # waits in tests (a test that checks the pacing sets it back itself).
+    server = sys.modules.get("server")
+    gap = getattr(server, "BRIEF_SEND_GAP_SECONDS", None)
+    if gap is not None:
+        server.BRIEF_SEND_GAP_SECONDS = 0
     yield
+    if gap is not None:
+        server.BRIEF_SEND_GAP_SECONDS = gap

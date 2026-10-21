@@ -29,7 +29,7 @@ os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import server  # noqa: E402
-from lib import wa_assistant, wa_dm, wa_facts  # noqa: E402
+from lib import wa_assistant, wa_brief, wa_dm, wa_facts  # noqa: E402
 from tests.test_whatsapp_phase1_foundations import ADMIN_PHONE, CO_A, _Ctx, _Wire  # noqa: E402
 from tests.test_whatsapp_dm_assistant import THOMAS, _Harness, _optin  # noqa: E402
 from tests.test_whatsapp_morning_brief import (  # noqa: E402
@@ -462,6 +462,9 @@ class UserLevel(_Harness, unittest.TestCase):
             "send me my brief": "send_brief",
             "resend the morning brief": "send_brief",
             "Can you send me today's brief again": "send_brief",
+            "brief all": "brief_all",
+            "Brief all.": "brief_all",
+            "brief all the subs": None,
             "what time is my brief": "settings",
             "what are my notification settings": "settings",
             "how many days has arkon been on 588": None,
@@ -517,7 +520,7 @@ class UserLevel(_Harness, unittest.TestCase):
         _optin(db, "u_admin", ADMIN_PHONE)
         n = wa_dm.REPLY_WINDOW_MAX_SENDS + 2
 
-        async def brief(user, now):
+        async def brief(user, now, every_job=False):
             return [(f"p{i}", f"message {i}") for i in range(n)] + [("rest", "the rest")]
         with _Ctx(db) as c, patch.object(server, "_brief_for_user", brief):
             self._send(c, f"{ADMIN_PHONE}@c.us", "send me my brief")
@@ -529,6 +532,30 @@ class UserLevel(_Harness, unittest.TestCase):
         today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
         self.assertEqual(_log(db, day=today)["status"], "resent")
         self.assertEqual(_ledger(db, day=today)["status"], "sent")
+
+    def test_brief_all_sends_the_jobs_the_morning_left_out_once(self):
+        db = _world()
+        _optin(db, "u_admin", ADMIN_PHONE)
+        jobs = [(f"p{i}", f"job message {i}") for i in range(8)]
+        asked = []
+
+        async def brief(user, now, every_job=False):
+            asked.append(every_job)
+            return jobs if every_job else jobs[:6] + [("more", "+2 more jobs")]
+        today = datetime.now(timezone.utc).astimezone(NY).date().isoformat()
+        with _Ctx(db) as c, patch.object(server, "_brief_for_user", brief):
+            # The morning: six jobs and the "+2 more" line.
+            _run(server._brief_send_parts("u_admin", today, jobs[:6] + [("more", "+2 more jobs")]))
+            self._send(c, f"{ADMIN_PHONE}@c.us", "brief all")
+            self.assertEqual(_texts(c)[7:], ["job message 6", "job message 7"])
+            reply = self._send(c, f"{ADMIN_PHONE}@c.us", "Brief all", mid="D2")
+        self.assertEqual(reply, wa_brief.BRIEF_ALL_NOTHING)
+        self.assertEqual(len(_texts(c)), 10)
+        self.assertEqual(asked, [True, True])
+        self.assertEqual(self.agent_calls, [])
+        self.assertEqual(self.llm_calls, [])
+        # Under the morning's own ledger keys.
+        self.assertEqual(_part(db, "p7", day=today)["status"], "sent")
 
     def test_settings(self):
         db = _world()

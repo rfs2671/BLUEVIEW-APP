@@ -576,6 +576,30 @@ class TheWalkthrough(_Brain):
         self.assertTrue(out[0].startswith("Walkthrough at"), out)
 
 
+class TheBriefAllCommand(_Brain):
+    def test_brief_all_is_code_not_the_model(self):
+        """"brief all" (the brief's "+N more jobs" line): the jobs this
+        morning left out, by the same resend the resend_my_brief tool
+        calls, under the morning's ledger keys; never the model."""
+        jobs = [(f"p{i}", f"job message {i}") for i in range(8)]
+
+        async def brief(user, now, every_job=False):
+            return jobs if every_job else jobs[:6]
+        llm = FakeLLM()
+        today = server.wa_brief.local_now(datetime.now(timezone.utc)).date().isoformat()
+        with _Ctx(db=self.db) as c, patch.object(server, "_brief_for_user", brief):
+            _run(server._brief_send_parts("u_admin", today, jobs[:6]))
+            out = self.say(c, "brief all", llm)
+            again = self.say(c, "Brief all", llm)
+        self.assertEqual(llm.calls, [])
+        self.assertEqual(out, ["job message 6", "job message 7"])
+        self.assertEqual(again, [server.wa_brief.BRIEF_ALL_NOTHING])
+
+    def test_the_tool_can_ask_for_every_job(self):
+        tool = next(t for t in server._DM_BRAIN_EXTRA_TOOLS if t["name"] == "resend_my_brief")
+        self.assertIn("all_jobs", tool["input_schema"]["properties"])
+
+
 class TheEvalMode(unittest.TestCase):
     def test_dry_run_writes_no_state(self):
         db = _db()
