@@ -56824,17 +56824,18 @@ def _dm_brain_client():
 
 
 async def _dm_brain_on(ident: Optional[dict]) -> bool:
-    """The brain answers this person: their company (or they) has the flag,
-    and the model can be reached."""
+    """The brain answers this person: on for everyone by default, unless
+    their company (or they) is on the off switch (flag dm_brain_off), or
+    the model can't be reached (no key)."""
     if not ident or not DM_BRAIN_API_KEY:
         return False
     try:
-        return await feature_flags.is_feature_enabled(
-            db, dm_brain.FLAG, company_id=str(ident.get("company_id") or ""),
+        return not await feature_flags.is_feature_enabled(
+            db, dm_brain.OFF_FLAG, company_id=str(ident.get("company_id") or ""),
             user_id=str(ident.get("user_id") or ""))
     except Exception as e:
-        logger.warning(f"[dm-brain] flag read failed: {type(e).__name__}")
-        return False
+        logger.warning(f"[dm-brain] off-switch read failed: {type(e).__name__}")
+        return True                                  # the brain is the default
 
 
 async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[datetime] = None) -> list:
@@ -72470,7 +72471,7 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
             await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
             return
-        # The DM brain answers this person (flag dm_brain_v2, per company).
+        # The DM brain answers this person (everyone, unless dm_brain_off).
         dm_brain_on = await _dm_brain_on(ident)
 
         # Transcribe audio if present.

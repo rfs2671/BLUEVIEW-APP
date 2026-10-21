@@ -33,6 +33,11 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+#: The brain answers every company's DMs by default (Oct 21: no trial).
+#: This flag is the off switch: a company (or user) on it, or everyone when
+#: it is on globally, gets the old pipeline. FLAG is the old opt-in name,
+#: no longer read.
+OFF_FLAG = "dm_brain_off"
 FLAG = "dm_brain_v2"
 #: DeepInfra, OpenAI-compatible; the key is the one the vision calls use
 #: (QWEN_API_KEY). Overridable for an eval or a rollback without a deploy.
