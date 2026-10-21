@@ -156,7 +156,9 @@ class AsSent(_Agent, unittest.TestCase):
     def test_the_held_back_answer_is_redacted(self):
         """Codex on #820: `repeated` is logged as `answer` is, no numbers."""
         digits = "".join(["5"] * 3 + ["0"] * 3 + ["1"] * 4)
-        self.words = f"Call the super at {digits}."
+        # Not "Call the super at ...": the old path drops a sentence that sends
+        # them to someone else (#840), and this test is about the redaction.
+        self.words = f"The super's cell is {digits}."
         with _Ctx(db=self.db) as c:
             self.say(c, "who is the super at 588")
             self.say(c, "what about the details at 588")

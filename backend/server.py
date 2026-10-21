@@ -56477,8 +56477,10 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     more = await _dm_state_get("dm_more", dm_chat)
     if more and more.get("full") and wa_style.wants_more(text):
         await _dm_state_clear("dm_more", dm_chat)
-        await send_whatsapp_message(dm_chat, str(more["full"]))
-        await _dm_log_answer(ident, None, text, str(more["full"]), "more")
+        # The rest of an earlier model answer: no "check with X" either.
+        full = _dm_old_no_referral(str(more["full"]), ident=ident, path="more")
+        await send_whatsapp_message(dm_chat, full)
+        await _dm_log_answer(ident, None, text, full, "more")
         return
     # About THEM -- their brief, their settings -- never a job (Wed 10:11
     # AM: "Why didn't I get morning brief" got "Which job?").
@@ -56525,7 +56527,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 str(clarify.get("headcount") or wa_headcount.ADDED), dm_chat,
                 since_iso=chosen["since"], since_said=chosen["label"]), heard,
                 project_id=str(clarify["project_id"]),
-                labels=[j["label"] for j in jobs], styled=True)
+                labels=[j["label"] for j in jobs], styled=True,
+                job_label=by_id[str(clarify["project_id"])]["label"])
             return
 
     # ── An open "Which job?" menu (10 minutes): a number, the house number
@@ -56622,7 +56625,7 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
                 since_said=str(last_hc.get("since_label") or ""), challenged=True,
                 names=last_hc.get("names"), companies=last_hc.get("companies")), heard,
                 project_id=str(last_hc["project_id"]),
-                labels=[j["label"] for j in jobs], styled=True)
+                labels=[j["label"] for j in jobs], styled=True, job_label=job["label"])
             return
         if hc != wa_headcount.SUBS:         # "what's the +1 sub": the job just counted
             hc = wa_headcount.ADDED if (ref and ref[0] != wa_headcount.AT
@@ -56729,7 +56732,8 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
     if hc in (wa_headcount.PRESENCE, wa_headcount.SUBS):
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
             ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
-            question=question, labels=[j["label"] for j in jobs], styled=True)
+            question=question, labels=[j["label"] for j in jobs], styled=True,
+            job_label=job["label"])
         return
     if hc in (wa_headcount.COUNT, wa_headcount.ADDED, wa_headcount.LIST):
         ref = wa_headcount.since_ref(core, now)
@@ -56760,14 +56764,16 @@ async def _dm_assistant_reply(ident: dict, dm_chat: str, body: str,
             return
         await _dm_send_answer(dm_chat, message_id, _dm_answer_headcount(
             ident, job, question, hc, dm_chat, own_words=core), heard, project_id=str(job["id"]),
-            question=question, labels=[j["label"] for j in jobs], styled=True)
+            question=question, labels=[j["label"] for j in jobs], styled=True,
+            job_label=job["label"])
         return
     trace: list = []
     await _dm_send_answer(dm_chat, message_id,
                           _dm_answer_job(ident, job["project"], dm_chat,
                                          question, message_id, trace, history), heard,
                           log=(ident, job["id"], question, "job_agent", trace),
-                          question=question, labels=[j["label"] for j in jobs])
+                          question=question, labels=[j["label"] for j in jobs],
+                          job_label=job["label"])
 
 
 def _dm_pick_since(text: str, options: list) -> Optional[dict]:
@@ -56867,15 +56873,33 @@ async def _dm_closer_turn(ident: dict, dm_chat: str, text: str, history: list,
     return True
 
 
+def _dm_old_no_referral(reply: Any, job_label: Optional[str] = None,
+                        ident: Optional[dict] = None, path: str = "") -> str:
+    """The OLD pipeline's model-written answer, without "check with X"
+    (dm_brain.no_referral); logged when anything was removed -- the company
+    and the path only, never the phone or the words."""
+    out, removed = dm_brain.no_referral(reply, job_label)
+    if removed:
+        logger.info(f"[dm-old] deflection removed company={(ident or {}).get('company_id') or '?'} "
+                    f"path={path or '?'} fallback={'yes' if out.startswith(dm_brain.NOT_FOUND_TEXT[:-1]) else 'no'}")
+    return out
+
+
 async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
                           heard: Optional[str] = None, log: Optional[tuple] = None,
                           project_id: Optional[str] = None, question: Optional[str] = None,
-                          labels: Any = (), styled: bool = False) -> None:
+                          labels: Any = (), styled: bool = False,
+                          job_label: Optional[str] = None) -> None:
     """Send the answer; 👀 on the question first if it takes over 5 s, and
     taken back if no answer comes. A voice note's answer opens with
     `Heard: "…"`. Every answer goes through the style post-check
     (lib/wa_style.py): short job names, no preamble, ~300 characters unless
-    a list was asked for -- the rest offered ("Want the names?")."""
+    a list was asked for -- the rest offered ("Want the names?").
+
+    NEVER "CHECK WITH X" (Oct 21: "How many framers in 588" got "check with
+    the site manager" -- they ARE the site manager / PM): the sentences that
+    send them elsewhere are dropped (dm_brain.no_referral); with nothing
+    left, "I couldn't find that in Levelog for <job>." -- never made up."""
     task = asyncio.ensure_future(answer_coro)
     eyes = False
     try:
@@ -56884,6 +56908,9 @@ async def _dm_send_answer(dm_chat: str, message_id: str, answer_coro,
     except asyncio.TimeoutError:
         eyes = await _react_to_message(dm_chat, message_id, wa_react.WORKING)
         reply = await task
+    if reply:
+        reply = _dm_old_no_referral(reply, job_label, ident=log[0] if log else None,
+                                    path=log[3] if log else "headcount")
     repeated = None
     if reply:
         asked = question if question is not None else (log[2] if log else "")
@@ -57171,19 +57198,39 @@ def _dm_brain_client():
     return _DM_BRAIN_CLIENT
 
 
-async def _dm_brain_on(ident: Optional[dict]) -> bool:
-    """The brain answers this person: on for everyone by default, unless
-    their company (or they) is on the off switch (flag dm_brain_off), or
-    the model can't be reached (no key)."""
-    if not ident or not DM_BRAIN_API_KEY:
-        return False
+async def _dm_brain_route(ident: Optional[dict]) -> Tuple[bool, str]:
+    """(on, reason): whether the brain answers this person, and why not
+    ("no_ident", "no_key", "flag_off"); reason "on" when it does."""
+    if not ident:
+        return False, "no_ident"
+    if not DM_BRAIN_API_KEY:
+        return False, "no_key"
     try:
-        return not await feature_flags.is_feature_enabled(
+        off = await feature_flags.is_feature_enabled(
             db, dm_brain.OFF_FLAG, company_id=str(ident.get("company_id") or ""),
             user_id=str(ident.get("user_id") or ""))
     except Exception as e:
         logger.warning(f"[dm-brain] off-switch read failed: {type(e).__name__}")
-        return True                                  # the brain is the default
+        return True, "on"                            # the brain is the default
+    return (False, "flag_off") if off else (True, "on")
+
+
+async def _dm_brain_on(ident: Optional[dict]) -> bool:
+    """The brain answers this person: on for everyone by default, unless
+    their company (or they) is on the off switch (flag dm_brain_off), or
+    the model can't be reached (no key). An opted-in admin / PM sent to the
+    old pipeline is logged with the reason -- the evidence of which path
+    answered (company only; never the phone or the words)."""
+    on, reason = await _dm_brain_route(ident)
+    if not on and ident:
+        logger.info(f"[dm-old] reason={reason} company={ident.get('company_id') or '?'}")
+    return on
+
+
+def _dm_brain_startup_line() -> str:
+    """The boot line: is the brain's key set, which model -- never the key."""
+    return (f"[dm-brain] startup key={'set' if DM_BRAIN_API_KEY else 'missing'} "
+            f"model={dm_brain.MODEL}")
 
 
 async def _dm_brain_history(dm_chat: str, now: datetime, before: Optional[datetime] = None) -> list:
@@ -57882,6 +57929,7 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
     if heard:
         question = f"[voice note] {question}"
 
+    t_start = _time.monotonic()
     task = asyncio.ensure_future(_dm_brain_answer(ident, dm_chat, question, history=history, now=now))
     # "typing…" in their chat while the brain works, sent again every 8 s.
     thinking = asyncio.Event()
@@ -57900,6 +57948,10 @@ async def _dm_brain_reply(ident: dict, dm_chat: str, text: str, message_id: str,
         except Exception:
             pass
     reply = out.get("reply")
+    # Which path answered, provably: one line per brain answer (no phone, no words).
+    logger.info(f"[dm-brain] answered company={ident.get('company_id') or '?'} "
+                f"tools={len(out.get('trace') or [])} rounds={out.get('rounds') or 0} "
+                f"ms={int((_time.monotonic() - t_start) * 1000)} stop={out.get('stop') or '?'}")
     if out.get("used_job"):
         await _dm_state_set("dm_job", dm_chat, wa_assistant.JOB_MEMORY_SECONDS,
                             project_id=out["used_job"])
@@ -79501,6 +79553,8 @@ async def shutdown_db_client():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting Levelog API with Sync Support...")
+    # Which DM path can answer (the brain needs its key): one line at boot.
+    logger.info(_dm_brain_startup_line())
 
     # ── WHICH VISION MODEL IS THIS BOX ACTUALLY RUNNING ────────────────────
     #
