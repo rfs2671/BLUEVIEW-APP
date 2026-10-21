@@ -50398,6 +50398,46 @@ async def _waapi_contact_phone(jid: str) -> str:
     return ""
 
 
+async def _dm_start_hint_due(chat: str, raw: Any = None) -> bool:
+    """A DM from someone not using the assistant: True only when the number
+    is ONE eligible Admin / PM's own profile phone (a shared number is
+    refused by START too), the number never opted in or out (STOP stays
+    silent), and today's hint is claimed here -- an insert keyed by number
+    and day, so a redelivered webhook can't send it twice. Everyone else is
+    not answered at all (no "for admins only" line telling a stranger this
+    is a bot). Codex on #838."""
+    phone = await _resolve_dm_phone(chat, raw)
+    if not phone:
+        return False
+    users = await _find_users_by_phone(phone)
+    if len(users) != 1 or not wa_dm.is_dm_eligible(users[0]):
+        return False
+    digits = wa_dm.phone_digits(chat)
+    # The same keys STOP writes: the chat, the phone, and the person.
+    keys = [{"phone": phone}, {"user_id": str(users[0].get("_id") or "")}]
+    if digits:
+        keys += [{"phone": digits}, {"chat_digits": digits}]
+    keys = [k for k in keys if all(k.values())]
+    try:
+        if await db[WA_OPTINS].find_one({"$or": keys}, {"_id": 1}):
+            return False                     # opted out (or in another way): no hint
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    day = wa_brief.local_now(now).date().isoformat()
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db[_DM_STATE].insert_one({
+            "_id": f"start_hint|{digits}|{day}", "kind": "start_hint", "group_id": digits,
+            "sender": "", "created_at": now, "expires_at": now + timedelta(days=1)})
+    except DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[wa-dm] start hint claim failed: {type(e).__name__}")
+        return False
+    return True
+
+
 async def _resolve_dm_phone(chat_id: str, raw: Any = None) -> str:
     """The sender's real phone digits, or '' when it cannot be known.
 
@@ -72948,7 +72988,10 @@ async def _process_whatsapp_message(payload: dict, voice_attempt: int = 0):
                 if not parsed.get("has_image") or _punch_photo_caption_ref(
                     parsed, parsed.get("body") or "") else None
             reply = await _punch_dm_done_by_number(dm_chat, ref, parsed) if ref else None
-            await send_whatsapp_message(dm_chat, reply or wa_assistant.NOT_FOR_YOU_TEXT)
+            if reply:
+                await send_whatsapp_message(dm_chat, reply)
+            elif await _dm_start_hint_due(dm_chat, parsed.get("raw")):
+                await send_whatsapp_message(dm_chat, wa_assistant.START_HINT_TEXT)
             return
         # Opted in but never welcomed (START before the welcome existed):
         # welcomed now, once, and their message is still answered below.
