@@ -26,6 +26,7 @@ import { DashboardSkeleton, StatCardSkeleton } from '../src/components/GlassSkel
 import FloatingNav from '../src/components/FloatingNav';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
+import { auraRim, auraShadow } from '../src/styles/aura';
 import { useToast } from '../src/components/Toast';
 import { useAuth, isCompanyAdmin, isAccountAdmin } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
@@ -112,7 +113,9 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         s.actionTile,
-        { width: tileWidth, backgroundColor: colors.glass.background, borderColor: colors.glass.border },
+        { width: tileWidth, backgroundColor: colors.glass.background },
+        auraRim(colors),
+        auraShadow(colors, undefined, { translucent: true }),
         isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
       ]}
     >
@@ -1341,7 +1344,6 @@ function buildStyles(colors, isDark) {
     alignItems: 'flex-start',
     justifyContent: 'center',
     gap: spacing.xs,
-    borderWidth: 1,
   },
   actionIcon: {
     marginBottom: spacing.xs,

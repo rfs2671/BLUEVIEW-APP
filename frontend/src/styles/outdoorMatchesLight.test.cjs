@@ -106,19 +106,20 @@ ok(norm(T.outdoor.onBar) === norm(L.onBar),
   `outdoor.onBar matches _light.onBar (${L.onBar})`);
 
 // ── Shadow ───────────────────────────────────────────────────────────────────
-console.log('\n── The soft diffuse shadow ──');
-ok(norm(T.outdoorShadow.shadowColor) === norm(L.shadow.color),
-  `shadowColor matches _light.shadow.color (${L.shadow.color})`);
-ok(T.outdoorShadow.shadowRadius === L.shadow.radius,
-  `shadowRadius matches _light.shadow.radius (${L.shadow.radius})`);
-ok(T.outdoorShadow.shadowOpacity === L.shadow.opacity,
-  `shadowOpacity matches _light.shadow.opacity (${L.shadow.opacity})`);
-ok(T.outdoorShadow.shadowOffset.height === L.shadow.offset.height
-  && T.outdoorShadow.shadowOffset.width === L.shadow.offset.width,
-`shadowOffset matches _light.shadow.offset (${JSON.stringify(L.shadow.offset)})`);
-ok(/elevation:\s*6/.test(glassSrc),
-  'GlassCard still uses elevation 6, and outdoorShadow does too');
-ok(T.outdoorShadow.elevation === 6, 'outdoorShadow.elevation === 6');
+console.log('\n── The card aura ──');
+ok(norm(T.outdoorShadow.shadowColor) === norm(L.aura.color),
+  `shadowColor matches _light.aura.color (${L.aura.color})`);
+ok(T.outdoorShadow.shadowRadius === L.aura.radius,
+  `shadowRadius matches _light.aura.radius (${L.aura.radius})`);
+ok(T.outdoorShadow.shadowOpacity === L.aura.opacity,
+  `shadowOpacity matches _light.aura.opacity (${L.aura.opacity})`);
+ok(T.outdoorShadow.shadowOffset.height === L.aura.offset.height
+  && T.outdoorShadow.shadowOffset.width === L.aura.offset.width,
+`shadowOffset matches _light.aura.offset (${JSON.stringify(L.aura.offset)})`);
+const auraSrc = fs.readFileSync(path.join(__dirname, 'aura.js'), 'utf8');
+ok(/elevation:\s*4/.test(auraSrc),
+  'the aura gives Android elevation 4, and outdoorShadow does too');
+ok(T.outdoorShadow.elevation === 4, 'outdoorShadow.elevation === 4');
 
 // ── It must NOT flip ─────────────────────────────────────────────────────────
 console.log('\n── It is pinned, not live ──');
