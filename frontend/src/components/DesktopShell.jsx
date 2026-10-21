@@ -9,7 +9,8 @@ import {
   Settings,
   Shield,
 } from 'lucide-react-native';
-import { chrome, border, surface, text } from '../styles/semanticColors';
+import { withAlpha } from '../styles/semanticColors';
+import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
 /**
@@ -26,8 +27,8 @@ import { spacing, borderRadius, typography } from '../styles/theme';
  *
  * Rail destinations mirror the mobile tab bar exactly (see
  * components/FloatingNav.js `navItems` + its Settings button), so there is one
- * navigation model, not two. Active state uses `chrome.brand` (primary blue)
- * per the color taxonomy — deliberately NOT `semantic.verified`, which means
+ * navigation model, not two. Active state is a brass tick and the bar's
+ * active ink (theme.js `barActive`/`onBar`) — deliberately NOT `semantic.verified`, which means
  * "confirmed clear", not "selected".
  */
 
@@ -94,17 +95,18 @@ function isBareRoute(pathname) {
 export default function DesktopShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { colors, isDark } = useTheme();
 
   if (isBareRoute(pathname)) return children;
 
+  // The rail is its own plane, anchored apart from the page: the bar navy of the phone's bottom bar in both themes
+  // (theme.js `bar`), with the active destination marked by a brass tick. Its text is the bar's own ink.
+  const railIdle = withAlpha(colors.onBar, 0.78);
+  const railActive = isDark ? colors.barActive : colors.onBar;
+
   return (
     <View style={styles.root}>
-      <View
-        style={[
-          styles.rail,
-          { borderRightColor: border.subtle, backgroundColor: surface.glass },
-        ]}
-      >
+      <View style={[styles.rail, { backgroundColor: colors.bar }]}>
         {RAIL_ITEMS.map((item) => {
           // Exact-match active state, mirroring FloatingNav so the rail and
           // the tab bar agree. Detail routes (e.g. /projects/123) highlight
@@ -119,20 +121,21 @@ export default function DesktopShell({ children }) {
               accessibilityLabel={item.label}
               style={({ hovered, pressed }) => [
                 styles.railItem,
-                active && { backgroundColor: surface.glassHover },
-                !active && hovered && { backgroundColor: surface.card },
+                active && { backgroundColor: withAlpha(colors.onBar, 0.10) },
+                !active && hovered && { backgroundColor: withAlpha(colors.onBar, 0.06) },
                 pressed && { opacity: 0.8 },
               ]}
             >
+              {active ? <View style={[styles.railTick, { backgroundColor: colors.barActive }]} /> : null}
               <Icon
                 size={20}
                 strokeWidth={1.5}
-                color={active ? chrome.brand : text.muted}
+                color={active ? railActive : railIdle}
               />
               <Text
                 style={[
                   styles.railLabel,
-                  { color: active ? chrome.brand : text.secondary },
+                  { color: active ? railActive : railIdle },
                   active && styles.railLabelActive,
                 ]}
                 numberOfLines={1}
@@ -159,7 +162,6 @@ const styles = StyleSheet.create({
   rail: {
     width: RAIL_WIDTH,
     flexShrink: 0,
-    borderRightWidth: 1,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.sm,
     gap: spacing.xs,
@@ -172,6 +174,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
   },
+  // The active destination's tick: a short brass bar on the rail's inner edge.
+  railTick: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3, borderRadius: 2 },
   railLabel: {
     fontSize: typography.sizes.sm,
     fontWeight: '500',

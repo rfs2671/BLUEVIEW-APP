@@ -79,6 +79,7 @@ import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
 import { auraRim, auraShadow } from '../../src/styles/aura';
+import CardSheen from '../../src/components/CardSheen';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -962,6 +963,7 @@ export default function ProjectDetailScreen() {
                     pressed && s.actionCardPressed,
                   ]}
                 >
+                  <CardSheen radius={borderRadius.xl} />
                   <View style={[s.actionIcon, { backgroundColor: colors.primary }]}>
                     <Icon size={20} strokeWidth={1.8} color={colors.onPrimary} />
                   </View>
@@ -1271,7 +1273,7 @@ export default function ProjectDetailScreen() {
                 style={({ pressed }) => [pressed && { opacity: 0.7 }]}
               >
                 <GlassCard style={s.dropboxRow}>
-                  <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
+                  <Cloud size={20} strokeWidth={1.5} color={isDark ? '#4D8DFF' : '#0061FF'} />
                   <View style={s.dropboxRowInfo}>
                     <Text style={s.dropboxRowPath} numberOfLines={1}>
                       {project?.dropbox_folder_path || 'Not linked'}
