@@ -426,9 +426,11 @@ class TheFlashFixes(_Brain):
         self.assertEqual(out, ["Your voice note: core drill on 3."])
 
     def test_who_is_the_asker(self):
-        tok = server._DM_ASKER.set({"user_id": "u_admin", "phone": "17185550100"})
+        tok = server._DM_ASKER.set({"user_id": "u_admin", "phones": ["17185550100"]})
         try:
             self.assertTrue(server._dm_is_asker("17185550100@c.us", None))
+            self.assertTrue(server._dm_is_asker("7185550100@s.whatsapp.net", None))   # with or without the 1
+            self.assertFalse(server._dm_is_asker("17185550100@lid", None))           # a @lid is no phone
             self.assertTrue(server._dm_is_asker("123@lid", {"kind": "user", "id": "u_admin"}))
             self.assertFalse(server._dm_is_asker("17185550199@c.us", {"kind": "user", "id": "u_meilich",
                                                                       "name": "Meilich Friedman"}))

@@ -55903,8 +55903,10 @@ def _dm_is_asker(jid: str, person: Optional[dict]) -> bool:
         return False
     if (person or {}).get("kind") == "user" and str((person or {}).get("id") or "") == str(asker.get("user_id") or ""):
         return True
-    digits = wa_dm.phone_digits(jid or "")
-    return bool(digits) and digits == str(asker.get("phone") or "")
+    if str(jid or "").endswith("@lid"):
+        return False                                   # a @lid is not a phone
+    digits = wa_dm.phone_digits(jid or "")[-10:]
+    return len(digits) == 10 and digits in {str(p)[-10:] for p in asker.get("phones") or [] if p}
 
 
 async def _wa_typing(chat_id: str, on: bool = True) -> bool:
@@ -56675,7 +56677,9 @@ async def _dm_brain_answer(ident: dict, dm_chat: str, text: str, *, history: lis
     ctx = {"ident": ident, "dm_chat": dm_chat, "text": text, "jobs": jobs, "by_id": by_id,
            "active": active if active in by_id else None, "dry_run": dry_run, "sent": [],
            "used_job": None}
-    _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phone": wa_dm.phone_digits(dm_chat)})
+    _DM_ASKER.set({"user_id": str(ident.get("user_id") or ""), "phones": [
+        p for p in ("" if str(dm_chat).endswith("@lid") else wa_dm.phone_digits(dm_chat),
+                    wa_dm.phone_digits(str((ident.get("user") or {}).get("phone") or ""))) if p]})
     try:
         out = await _dm_brain_run(ctx, messages, system)
     except Exception as e:
