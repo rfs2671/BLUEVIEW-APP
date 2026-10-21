@@ -200,6 +200,18 @@ class TheAnswerComesWithWhereItCameFrom(_Plans):
         self.assertEqual(out, [good])
         self.assertIn("no tool this turn", seen[0])
 
+    def test_one_mark_that_cannot_be_placed_sends_the_whole_sheet(self):
+        """Codex on #836: two candidates on A-201, one with no box -- a crop
+        of the other alone would say "1 possible spot". The whole sheet."""
+        boxless = dict(FAN_TOO, bbox=None)
+        answer = "EF-3 is the exhaust fan on A-201."
+        with _Ctx(db=self.db) as c:
+            self.ask(c, "where's EF-3 on 588", _search_then(answer), [FAN, boxless])
+            imgs = self.images(c)
+        self.assertEqual(len(imgs), 1)
+        self.assertIn("full sheet", imgs[0][0])
+        self.assertEqual(imgs[0][1].size, PAGE_PX)
+
     def test_no_plans_search_no_picture(self):
         with _Ctx(db=self.db) as c:
             self.ask(c, "hi", FakeLLM(resp(text("Hi — what do you need?"))), [FAN])

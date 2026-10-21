@@ -136,7 +136,9 @@ def pick(records: Iterable[Dict[str, Any]], answer: str, *,
             continue
         seen.add(k)
         pool.append(r)
-    pool = pool[:POOL]
+    # The answer is matched against EVERY search this turn (a refined second
+    # search comes after the first's hits); only the fallbacks take the top
+    # POOL (Codex on #836).
     if not pool:
         return {"marks": [], "ambiguous": False, "unverified": False}
     said = _norm(answer)
@@ -161,11 +163,11 @@ def pick(records: Iterable[Dict[str, Any]], answer: str, *,
         firsts: Dict[str, Dict[str, Any]] = {}
         for r in pool:
             firsts.setdefault(sheet_of(r) or str(r.get("page_id")), r)
-        marks = list(firsts.values()) if named else [pool[0]]
+        marks = list(firsts.values())[:POOL] if named else [pool[0]]
         ambiguous = len({location_key(r) for r in marks}) > 1
     unverified = any(is_unverified(r) for r in marks)
     if unverified:
-        marks = marks + [r for r in pool if r not in marks]
+        marks = marks + [r for r in pool[:POOL] if r not in marks]
     marks = distinct(marks)[:MAX_MARKS]
     ambiguous = ambiguous or (unverified and len(marks) > 1)
     return {"marks": marks, "ambiguous": ambiguous, "unverified": unverified}

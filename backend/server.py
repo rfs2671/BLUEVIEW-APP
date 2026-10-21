@@ -63753,10 +63753,12 @@ def _dm_plan_jpeg(src: bytes, page: dict, marks: list, numbered: bool
     boxes = []
     for n, r in marks:
         box = plan_crop.to_pixels(r.get("bbox"), scale, img.size) if r.get("bbox") else None
-        if box:
-            boxes.append((n, box))
-    if not boxes:
-        return None
+        if not box:
+            # One mark that can't be placed: a crop would claim to show
+            # every spot while one is missing -- the whole sheet instead
+            # (Codex on #836).
+            return None
+        boxes.append((n, box))
     shot = plan_crop.render(img, boxes, px_per_inch=dpi, numbered=numbered)
     buf = _io.BytesIO()
     shot.save(buf, format="JPEG", quality=90)
@@ -63768,7 +63770,7 @@ async def _dm_plan_picture(shot: dict) -> dict:
     (the whole sheet) with a caption that says it is the whole sheet."""
     page, marks = shot["page"], shot["marks"]
     jpeg, numbers = None, [n for n, _r in marks]
-    if any(r.get("bbox") for _n, r in marks):
+    if all(r.get("bbox") for _n, r in marks):
         try:
             src = await _fetch_page_jpeg(page)
             got = await asyncio.to_thread(

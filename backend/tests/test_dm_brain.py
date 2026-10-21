@@ -637,6 +637,19 @@ class TheFlag(unittest.TestCase):
         self.assertEqual(plan(None, on=False, everyone=True), (True, [], None))
 
 
+class TheSentPicture(unittest.TestCase):
+    def test_sent_counts_for_the_picture_only_when_it_names_it(self):
+        """Codex on #836: positive -- a sent must name the sheet/picture."""
+        for reply in ("Sent you A-201: EF-3 is the 800 CFM fan.",
+                      "I've sent you the sheet with the spot boxed.",
+                      "EF-3 is on SSP-011.00. Sending the drawing now."):
+            self.assertTrue(dm_brain.sends_only_a_picture(reply), reply)
+        for reply in ("I've sent you the invoice.", "I sent the contract.", "I sent the email.",
+                      "EF-3 is on A-201. I've sent it over.",
+                      "Sent you A-201 and the September report."):
+            self.assertFalse(dm_brain.sends_only_a_picture(reply), reply)
+
+
 class TheLib(unittest.TestCase):
     def test_unverified(self):
         src = ['{"on_site_now": 31, "by_sub": [{"sub": "Arkon", "on_site": 17}]} brief at 8:01', "588 Thomas"]

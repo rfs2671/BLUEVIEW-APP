@@ -157,6 +157,15 @@ class WhatTheAnswerRestsOn(unittest.TestCase):
         self.assertEqual([[n for n, _r in g] for _p, g in groups], [[1], [2]])
 
 
+class CodexOn836(unittest.TestCase):
+    def test_a_refined_second_search_is_matched_past_the_first_ones_hits(self):
+        first = [_rec("p1", f"DUCT {i} 10x10", [10 * i, 10, 10 * i + 5, 15], ordinal=i)
+                 for i in range(pc.POOL)]
+        refined = _rec("p2", "EF-7 EXHAUST FAN 1200 CFM", [100, 100, 150, 120], sheet="M-301")
+        got = pc.pick(first + [refined], "EF-7 is the 1200 CFM exhaust fan.")
+        self.assertEqual([r["quote"] for r in got["marks"]], [refined["quote"]])
+
+
 class TheCaptions(unittest.TestCase):
     def test_words(self):
         self.assertEqual(pc.caption("SSP-011.00", numbers=[1], total=1, ambiguous=False,
