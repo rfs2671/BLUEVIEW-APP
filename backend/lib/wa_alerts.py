@@ -166,6 +166,40 @@ def is_closed(r: Dict[str, Any]) -> bool:
     return bool(_t(r.get("closed_date")))
 
 
+# ── Open violations: one rule for the app, the DM facts and the brief ───────
+#
+# A DOB violation or stop-work order is OPEN when its record's NEWEST row
+# (latest_per_record) has a resolution_state outside RESOLVED_STATES; a
+# missing resolution_state counts as open (conservative). resolution_state
+# is classified at ingestion from DOB's own status words
+# (server._classify_resolution_state / _swo_resolution_state). The app's
+# open-violation tile (/api/dob-logs/summary) applies the same rule in its
+# aggregation, over the same record types.
+#
+# A DOT summons (dot_logs) is open when is_closed() says not: its stored
+# status is dot_sync.closed_reason() (PAID IN FULL / DISMISSED / COMPLIED)
+# once the summons is settled, else the hearing's status -- the rule
+# Upcoming's OATH hearings use.
+
+RESOLVED_STATES = ("certified", "dismissed", "paid", "resolved")
+OPEN_VIOLATION_TYPES = ("violation", "swo")
+
+
+def open_dob_violations(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The open DOB violations and stop-work orders among dob_logs rows:
+    the newest row of each, by raw_dob_id."""
+    return [r for r in latest_per_record(
+                r for r in rows if _t(r.get("record_type")).lower() in OPEN_VIOLATION_TYPES)
+            if _t(r.get("resolution_state")).lower() not in RESOLVED_STATES]
+
+
+def open_dot_summonses(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The open DOT summonses among dot_logs rows (one row per record)."""
+    return [r for r in rows
+            if _t(r.get("record_type")).lower() == "dot_violation"
+            and _t(r.get("number")) and not is_closed(r)]
+
+
 def record_number(r: Dict[str, Any]) -> str:
     """The record's own number. The keys are the field names the dob_logs
     extractors (server._extract_*_fields) STORE - not the dataset's names.
